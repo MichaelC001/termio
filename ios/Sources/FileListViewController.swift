@@ -1,4 +1,3 @@
-import TermioShared
 import UIKit
 
 /// What a file list needs from whoever owns the companion socket. The inspector
@@ -6,10 +5,10 @@ import UIKit
 protocol RemoteFileBrowsing: AnyObject {
     /// One directory's entries ("" is the project root). The reply may be slow (it
     /// crosses the wire) or immediate (the offline sample tree).
-    func listEntries(at path: String, then: @escaping ([WireFileEntry]) -> Void)
+    func listEntries(at path: String, then: @escaping ([DeviceFileEntry]) -> Void)
     /// Open a file in the read-only viewer.
     func openFile(at path: String)
-    /// The file's absolute path on the Mac — what "Copy Path" yields, ready to paste
+    /// The file's absolute path on the device — what "Copy Path" yields, ready to paste
     /// into an agent prompt.
     func absolutePath(for path: String) -> String
 }
@@ -21,7 +20,7 @@ protocol RemoteFileBrowsing: AnyObject {
 final class FileListViewController: UITableViewController {
     private let path: String
     private weak var browser: RemoteFileBrowsing?
-    private var entries: [WireFileEntry] = []
+    private var entries: [DeviceFileEntry] = []
     private var loaded = false
     private let spinner = UIActivityIndicatorView(style: .medium)
 
@@ -74,7 +73,7 @@ final class FileListViewController: UITableViewController {
         guard let browser else { return }
         let entry = entries[indexPath.row]
         let child = path.isEmpty ? entry.name : "\(path)/\(entry.name)"
-        if entry.isDir {
+        if entry.isDirectory {
             navigationController?.pushViewController(
                 FileListViewController(path: child, browser: browser), animated: true
             )
@@ -100,14 +99,14 @@ final class FileListViewController: UITableViewController {
 enum FileRow {
     /// `subtitle` is for the flat search results, where a name alone doesn't say which
     /// file it is; a directory listing needs none.
-    static func configure(_ cell: UITableViewCell, entry: WireFileEntry, subtitle: String? = nil) {
+    static func configure(_ cell: UITableViewCell, entry: DeviceFileEntry, subtitle: String? = nil) {
         var config = cell.defaultContentConfiguration()
         config.text = entry.name
         config.textProperties.font = .preferredFont(forTextStyle: .subheadline)
         config.secondaryText = subtitle
         config.secondaryTextProperties.font = .preferredFont(forTextStyle: .caption1)
         config.secondaryTextProperties.color = .secondaryLabel
-        let icon = entry.isDir ? FileIcons.folder() : FileIcons.icon(forFileName: entry.name)
+        let icon = entry.isDirectory ? FileIcons.folder() : FileIcons.icon(forFileName: entry.name)
         config.image = icon.image
         config.imageProperties.tintColor = icon.tint
         // Icons vary in width (folder vs logo vs symbol); a fixed layout box keeps
@@ -119,13 +118,13 @@ enum FileRow {
         // accessory type and a custom accessory view are mutually exclusive, so a row
         // that needs both draws both itself.
         cell.accessoryType = .none
-        cell.accessoryView = accessory(changed: entry.changed, isDir: entry.isDir)
+        cell.accessoryView = accessory(changed: entry.changed, isDirectory: entry.isDirectory)
     }
 
-    private static func accessory(changed: Bool, isDir: Bool) -> UIView? {
+    private static func accessory(changed: Bool, isDirectory: Bool) -> UIView? {
         var pieces: [UIView] = []
         if changed { pieces.append(changedDot()) }
-        if isDir { pieces.append(chevron()) }
+        if isDirectory { pieces.append(chevron()) }
         guard !pieces.isEmpty else { return nil }
         let stack = UIStackView(arrangedSubviews: pieces)
         stack.axis = .horizontal
@@ -142,13 +141,13 @@ enum FileRow {
     }
 
     static func menu(
-        for entry: WireFileEntry, in parent: String, browser: RemoteFileBrowsing
+        for entry: DeviceFileEntry, in parent: String, browser: RemoteFileBrowsing
     ) -> UIContextMenuConfiguration {
         let relative = parent.isEmpty ? entry.name : "\(parent)/\(entry.name)"
         let absolute = browser.absolutePath(for: relative)
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak browser] _ in
             var actions: [UIMenuElement] = []
-            if !entry.isDir {
+            if !entry.isDirectory {
                 actions.append(UIAction(title: localized("Open File"), image: UIImage(systemName: "doc.text")) { _ in
                     browser?.openFile(at: relative)
                 })

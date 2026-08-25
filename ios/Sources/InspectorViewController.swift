@@ -26,17 +26,17 @@ final class InspectorViewController: UIViewController {
     var onSendToAgent: ((String) -> Void)?
 
     /// The project root's entries. Deeper directories live on pushed screens.
-    private var rootEntries: [WireFileEntry] = []
+    private var rootEntries: [DeviceFileEntry] = []
     /// The working-tree changes, newest listing wins.
-    private var changes: [WireChange] = []
+    private var changes: [DeviceChange] = []
     private var changesLoaded = false
 
-    private var client: CompanionClient?
+    private var client: DeviceClient?
     /// Directory listings in flight, keyed by path — a pushed screen's reply must reach
     /// that screen, not whichever list asked last. A path can have more than one waiter
     /// (pull-to-refresh while the first load is still out), and dropping the earlier one
     /// would leave its screen spinning forever.
-    private var listingHandlers: [String: [([WireFileEntry]) -> Void]] = [:]
+    private var listingHandlers: [String: [([DeviceFileEntry]) -> Void]] = [:]
     /// The file path awaiting a `.file` reply, so late/errored replies don't open stale
     /// viewers.
     private var pendingRead: String?
@@ -130,7 +130,7 @@ final class InspectorViewController: UIViewController {
         }
         switch pane {
         case .changes:
-            client?.send(.listChanges(projectID: projectID))
+            client?.listChanges(projectID: projectID)
         case .files:
             listEntries(at: "") { [weak self] entries in
                 self?.rootEntries = entries
@@ -201,7 +201,7 @@ final class InspectorViewController: UIViewController {
         let work = DispatchWorkItem { [weak self] in
             guard let self, let projectID = session.projectRosterID else { return }
             setLoading(true)
-            client?.send(.searchFiles(projectID: projectID, query: query))
+            client?.searchFiles(projectID: projectID, query: query)
         }
         searchDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -228,10 +228,10 @@ final class InspectorViewController: UIViewController {
     private func connectFilePlane() {
         guard let companionURL, let projectID = session.projectRosterID else { return }
         setLoading(true)
-        let client = CompanionClient(url: companionURL)
+        let client = CompanionBackend(url: companionURL)
         client.onConnected = { [weak self] connected in
             guard let self, connected else { return }
-            client.send(.listChanges(projectID: projectID))
+            client.listChanges(projectID: projectID)
             if rootEntries.isEmpty {
                 listEntries(at: "") { [weak self] entries in
                     self?.rootEntries = entries
@@ -254,8 +254,8 @@ final class InspectorViewController: UIViewController {
         client.onSearchResults = { [weak self] query, paths, truncated in
             self?.receiveSearchResults(query: query, paths: paths, truncated: truncated)
         }
-        client.onWritten = { [weak self] _, mtime in
-            self?.activeViewer?.didSave(mtime: mtime)
+        client.onWritten = { [weak self] _, modifiedMilliseconds in
+            self?.activeViewer?.didSave(modifiedMilliseconds: modifiedMilliseconds)
         }
         client.onError = { [weak self] message in
             self?.receiveError(message)
@@ -297,7 +297,7 @@ final class InspectorViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    private func receiveChanges(_ files: [WireChange]) {
+    private func receiveChanges(_ files: [DeviceChange]) {
         setLoading(false)
         refreshControl.endRefreshing()
         changes = files
@@ -305,29 +305,29 @@ final class InspectorViewController: UIViewController {
         if pane == .changes { tableView.reloadData() }
     }
 
-    private func receiveListing(path: String, entries: [WireFileEntry]) {
+    private func receiveListing(path: String, entries: [DeviceFileEntry]) {
         setLoading(false)
         refreshControl.endRefreshing()
         guard let waiting = listingHandlers.removeValue(forKey: path) else { return }
         for handler in waiting { handler(entries) }
     }
 
-    private func receiveFile(_ file: WireFile) {
+    private func receiveFile(_ file: DeviceFile) {
         guard file.path == pendingRead else { return }
         pendingRead = nil
         setLoading(false)
-        if file.binary {
+        if file.isBinary {
             guard let quickLook = FileViewerController.quickLook(for: file) else { return }
             present(quickLook, animated: true)
             return
         }
         let viewer = FileViewerController(file: file)
-        viewer.onSave = { [weak self] data, baseMtime in
+        viewer.onSave = { [weak self] data, baseModifiedMilliseconds in
             guard let self, let projectID = session.projectRosterID else { return }
-            client?.send(.writeFile(
+            client?.writeFile(
                 projectID: projectID, path: file.path,
-                base64: data.base64EncodedString(), baseMtime: baseMtime
-            ))
+                data: data, baseModifiedMilliseconds: baseModifiedMilliseconds
+            )
         }
         viewer.onReload = { [weak self] in
             self?.openFile(at: file.path)
@@ -347,10 +347,10 @@ final class InspectorViewController: UIViewController {
         viewer.onRequestDiff = { [weak self, weak viewer] path, status in
             guard let self else { return }
             guard isLive, let projectID = session.projectRosterID else {
-                viewer?.receive(WireDiff(path: path, text: MockChanges.sampleDiff))
+                viewer?.receive(DeviceDiff(path: path, text: MockChanges.sampleDiff))
                 return
             }
-            client?.send(.readDiff(projectID: projectID, path: path, status: status))
+            client?.readDiff(projectID: projectID, path: path, status: status)
         }
         // A plain shell has no prompt to paste into; only an agent session gets the action.
         if session.agent.id != RosterAgent.terminal.id, let onSendToAgent {
@@ -364,26 +364,26 @@ final class InspectorViewController: UIViewController {
 // MARK: - File browsing
 
 extension InspectorViewController: RemoteFileBrowsing {
-    func listEntries(at path: String, then: @escaping ([WireFileEntry]) -> Void) {
+    func listEntries(at path: String, then: @escaping ([DeviceFileEntry]) -> Void) {
         guard isLive, let projectID = session.projectRosterID else {
             then(FileNode.sampleEntries(at: path))
             return
         }
         listingHandlers[path, default: []].append(then)
         setLoading(true)
-        client?.send(.listFiles(projectID: projectID, path: path))
+        client?.listFiles(projectID: projectID, path: path)
     }
 
     func openFile(at path: String) {
         guard isLive, let projectID = session.projectRosterID else { return }
         pendingRead = path
         setLoading(true)
-        client?.send(.readFile(
+        client?.readFile(
             projectID: projectID, path: path,
             // For the Mac-rendered Markdown preview, so the page matches this
             // screen's appearance.
-            dark: traitCollection.userInterfaceStyle == .dark
-        ))
+            darkAppearance: traitCollection.userInterfaceStyle == .dark
+        )
     }
 
     /// Join a project-relative path onto the Mac's absolute project root, so "Copy Path"
@@ -437,7 +437,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             let parent = (path as NSString).deletingLastPathComponent
             FileRow.configure(
                 cell,
-                entry: WireFileEntry(name: (path as NSString).lastPathComponent, isDir: false),
+                entry: DeviceFileEntry(name: (path as NSString).lastPathComponent, isDirectory: false),
                 subtitle: parent.isEmpty ? nil : parent
             )
         case .files:
@@ -476,7 +476,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         case .files:
             guard indexPath.row < rootEntries.count else { return }
             let entry = rootEntries[indexPath.row]
-            if entry.isDir {
+            if entry.isDirectory {
                 navigationController?.pushViewController(
                     FileListViewController(path: entry.name, browser: self), animated: true
                 )
@@ -502,7 +502,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
         case .files where isSearching:
             guard indexPath.row < searchResults.count else { return nil }
             let path = searchResults[indexPath.row]
-            let entry = WireFileEntry(name: (path as NSString).lastPathComponent, isDir: false)
+            let entry = DeviceFileEntry(name: (path as NSString).lastPathComponent, isDirectory: false)
             return FileRow.menu(for: entry, in: (path as NSString).deletingLastPathComponent, browser: self)
         case .files:
             guard indexPath.row < rootEntries.count else { return nil }
@@ -511,7 +511,7 @@ extension InspectorViewController: UITableViewDataSource, UITableViewDelegate {
             guard indexPath.row < changes.count else { return nil }
             let change = changes[indexPath.row]
             return FileRow.menu(
-                for: WireFileEntry(name: change.name, isDir: false),
+                for: DeviceFileEntry(name: change.name, isDirectory: false),
                 in: (change.path as NSString).deletingLastPathComponent, browser: self
             )
         }

@@ -17,9 +17,9 @@ import WebKit
 final class FileViewerController: UIViewController {
     private let fileName: String
     private let relativePath: String
-    private let file: WireFile
+    private let file: DeviceFile
 
-    /// Ship edited bytes to the Mac: `(payload, baseMtime)`; 0 forces the
+    /// Ship edited bytes to the device: `(payload, baseModifiedMilliseconds)`; 0 forces the
     /// write past the conflict check. nil = viewer stays read-only (offline
     /// demos, truncated reads).
     var onSave: ((Data, Int) -> Void)?
@@ -34,7 +34,7 @@ final class FileViewerController: UIViewController {
     private let editButton = UIButton(type: .system)
     private var rendered = false
 
-    /// The Mac-rendered Markdown preview (`WireFile.html`), shown in a web
+    /// The device-rendered Markdown preview (`DeviceFile.renderedHTML`), shown in a web
     /// view over the text view. Markdown
     /// opens in preview; the pencil flips to source (and editing, when
     /// allowed). One-way per open: the preview HTML was rendered from the
@@ -43,19 +43,20 @@ final class FileViewerController: UIViewController {
     private var previewing = false
 
     private var editMode = false
-    /// mtime (ms) the current buffer is based on; advanced by each `written`.
-    private var baseMtime: Int
+    /// Modification time (ms) the current buffer is based on; advanced by
+    /// each acknowledged write.
+    private var baseModifiedMilliseconds: Int
     /// The last content the Mac acknowledged, so idle flushes skip no-ops.
     private var savedText: String
     /// Content in flight (sent, not yet acked).
     private var pendingSaveText: String?
     private var saveDebounce: DispatchWorkItem?
 
-    init(file: WireFile) {
+    init(file: DeviceFile) {
         self.file = file
         fileName = (file.path as NSString).lastPathComponent
         relativePath = file.path
-        baseMtime = file.mtime
+        baseModifiedMilliseconds = file.modifiedMilliseconds
         savedText = file.data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
@@ -66,7 +67,7 @@ final class FileViewerController: UIViewController {
 
     /// A Quick Look controller for binary payloads, or nil when writing the
     /// temp file fails. The file keeps its real name so QL sniffs the type.
-    static func quickLook(for file: WireFile) -> UIViewController? {
+    static func quickLook(for file: DeviceFile) -> UIViewController? {
         guard let data = file.data else { return nil }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("companion-preview", isDirectory: true)
@@ -204,7 +205,7 @@ final class FileViewerController: UIViewController {
     /// text view with the same frame, and transparent so the themed page's own
     /// background shows through cleanly.
     private func configurePreview(below header: UIView, above footer: UIView) {
-        guard let html = file.html else { return }
+        guard let html = file.renderedHTML else { return }
         let web = WKWebView()
         web.isOpaque = false
         web.backgroundColor = .clear
@@ -233,7 +234,7 @@ final class FileViewerController: UIViewController {
     // MARK: - Content
 
     private var canEdit: Bool {
-        onSave != nil && !file.binary && !file.truncated
+        onSave != nil && !file.isBinary && !file.isTruncated
     }
 
     private func render() {
@@ -258,7 +259,7 @@ final class FileViewerController: UIViewController {
             CodeHighlighter.language(forFileNamed: fileName) ?? localized("plain text"),
             Self.format(bytes: file.size),
         ]
-        if file.truncated { parts.append(localized("truncated preview")) }
+        if file.isTruncated { parts.append(localized("truncated preview")) }
         if let state { parts.append(state) }
         footerLabel.text = parts.joined(separator: " · ")
     }
@@ -304,12 +305,12 @@ final class FileViewerController: UIViewController {
         guard force || (text != savedText && pendingSaveText == nil) else { return }
         pendingSaveText = text
         updateFooter(state: localized("saving…"))
-        onSave(Data(text.utf8), force ? 0 : baseMtime)
+        onSave(Data(text.utf8), force ? 0 : baseModifiedMilliseconds)
     }
 
     /// The Mac acknowledged the write (routed in by the inspector).
-    func didSave(mtime: Int) {
-        baseMtime = mtime
+    func didSave(modifiedMilliseconds: Int) {
+        baseModifiedMilliseconds = modifiedMilliseconds
         if let pending = pendingSaveText { savedText = pending }
         pendingSaveText = nil
         updateFooter(state: localized("saved"))

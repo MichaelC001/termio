@@ -242,7 +242,7 @@ final class FileNode {
 
     /// One directory's entries in the same shape the wire delivers, so the browser has a
     /// single code path. "" is the root.
-    static func sampleEntries(at path: String) -> [WireFileEntry] {
+    static func sampleEntries(at path: String) -> [DeviceFileEntry] {
         var level = sampleRoot
         if !path.isEmpty {
             for component in path.split(separator: "/") {
@@ -252,7 +252,7 @@ final class FileNode {
             }
         }
         return level.map {
-            WireFileEntry(name: $0.name, isDir: $0.isDirectory, changed: $0.changed || containsChange($0))
+            DeviceFileEntry(name: $0.name, isDirectory: $0.isDirectory, changed: $0.changed || containsChange($0))
         }
     }
 
@@ -273,17 +273,17 @@ final class FileNode {
 
 // MARK: - Mock changes
 
-/// The offline Changes pane and its diff — the same `WireChange` and unified-diff text a
+/// The offline Changes pane and its diff — the same `DeviceChange` and unified-diff text a
 /// live Mac sends, so the demo renders through the real reader rather than a stand-in.
 enum MockChanges {
-    static let samples: [WireChange] = [
-        WireChange(path: "Sources/termio/App.swift", status: "M", additions: 40, deletions: 12),
-        WireChange(path: "Sources/termio/SessionInfoView.swift", status: "M", additions: 18, deletions: 3),
-        WireChange(
+    static let samples: [DeviceChange] = [
+        DeviceChange(path: "Sources/termio/App.swift", status: "M", additions: 40, deletions: 12),
+        DeviceChange(path: "Sources/termio/SessionInfoView.swift", status: "M", additions: 18, deletions: 3),
+        DeviceChange(
             path: "Sources/termio/TermioStore/TermioStore+TerminalSurface.swift",
             status: "M", additions: 62, deletions: 41
         ),
-        WireChange(path: "Sources/termio/SessionHost.swift", status: "A", additions: 120, deletions: 0),
+        DeviceChange(path: "Sources/termio/SessionHost.swift", status: "A", additions: 120, deletions: 0),
     ]
 
     /// Full-context sample: one long unchanged run, so the fold band and its reveal are
