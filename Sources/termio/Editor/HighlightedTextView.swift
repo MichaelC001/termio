@@ -42,6 +42,10 @@ struct HighlightedTextView: NSViewRepresentable {
     /// is read at menu-open time, so a plain-shell session shows no item.
     var addToChat: ((String?) -> Void)? = nil
     var canAddToChat: (() -> Bool)? = nil
+    /// Whether this is the face on screen. Markdown keeps the editor mounted behind Preview
+    /// (rebuilding it re-highlights the whole document), so a dormant editor hides itself and
+    /// never claims focus. Non-Markdown files only ever have this face, hence the default.
+    var isActive: Bool = true
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
@@ -90,8 +94,11 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.string = text
+        // Metrics before content, and the content carrying them: `string =` inserts unstyled text,
+        // which TextKit lays out at the font's *natural* line height — the configured leading then
+        // arrived with the async highlight and every line grew at once, the jolt on opening a file.
         apply(to: textView)
+        storage.setAttributedString(NSAttributedString(string: text, attributes: baseAttributes))
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -125,14 +132,9 @@ struct HighlightedTextView: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observeScroll(of: scrollView)
 
-        // Claim first responder once the editor is in a window, so the Edit menu's Cut/Copy/Paste
-        // (and typing) act on this buffer instead of the terminal surface that held focus beneath
-        // the overlay. The terminal focus driver won't fight back — its `canFocus` bails while a
-        // file is open (see `requestTerminalFocus`).
-        DispatchQueue.main.async { [weak textView] in
-            guard let textView, let window = textView.window else { return }
-            window.makeFirstResponder(textView)
-        }
+        scrollView.isHidden = !isActive
+        context.coordinator.wasActive = isActive
+        if isActive { Self.claimFocus(textView) }
 
         // Reveal the requested line once the view has a real frame — at make time it hasn't been
         // laid out, so scrolling now would land nowhere.
@@ -147,8 +149,24 @@ struct HighlightedTextView: NSViewRepresentable {
         return scrollView
     }
 
+    /// Claims first responder so the Edit menu's Cut/Copy/Paste (and typing) act on this buffer
+    /// instead of the terminal surface beneath the overlay. Deferred because a view being made is
+    /// not yet in a window, and re-checked on arrival: by then Preview may have taken the screen,
+    /// and a hidden text view must not hold focus.
+    private static func claimFocus(_ textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, !textView.isHiddenOrHasHiddenAncestor,
+                  let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+        }
+    }
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? SavingTextView else { return }
+        if scrollView.isHidden == isActive { scrollView.isHidden = !isActive }
+        // Focus follows the flip, not the mount (see `claimFocus`).
+        if isActive, !context.coordinator.wasActive { Self.claimFocus(textView) }
+        context.coordinator.wasActive = isActive
         // Refresh the save closure each update so ⌘S always flushes the latest buffer (the closure
         // captures the view's current state, which SwiftUI re-creates on every change).
         textView.onSave = onSave
@@ -187,6 +205,12 @@ struct HighlightedTextView: NSViewRepresentable {
                 highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
                 highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
             }
+            // Re-lay out on the new metrics now rather than when the async pass returns, so a font
+            // or line-height change moves the text once instead of twice. `addAttributes` merges,
+            // leaving the colors already on screen alone until the re-highlight replaces them.
+            if storage.length > 0 {
+                storage.addAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
+            }
             storage.language = language
         }
 
@@ -197,7 +221,10 @@ struct HighlightedTextView: NSViewRepresentable {
         // throws the caret to the end of the document on any unrelated SwiftUI re-render.
         if textView.string != text, !textView.hasMarkedText() {
             let selection = textView.selectedRange()
-            textView.string = text
+            // Carrying the metrics for the same reason `makeNSView` does: a bare `string =` drops
+            // to the natural line height until the async highlight returns, so an external change
+            // would make the document jump.
+            storage.setAttributedString(NSAttributedString(string: text, attributes: baseAttributes))
             let length = (text as NSString).length
             let location = min(selection.location, length)
             textView.setSelectedRange(
@@ -256,6 +283,19 @@ struct HighlightedTextView: NSViewRepresentable {
         return leading + baselineOffset(lineSpacing: lineSpacing)
     }
 
+    /// The layout metrics every glyph carries from its first frame: the code face, the fixed line
+    /// box, and the centering lift. Highlightr's theme is configured with exactly these, so its
+    /// pass swaps colors onto text that already sits where it belongs and nothing reflows. They
+    /// also stand alone — a file past `highlightByteLimit`, or in a language hljs doesn't know,
+    /// never gets a highlight pass at all.
+    private var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: font,
+            .paragraphStyle: Self.paragraphStyle(font: font, lineSpacing: lineSpacing),
+            .baselineOffset: Self.baselineOffset(lineSpacing: lineSpacing),
+        ]
+    }
+
     private func apply(to textView: NSTextView) {
         // `NSText.font` is a whole-document setter — assigning it stamps the plain face over
         // every glyph, wiping the bold/italic variants the markdown highlight applied (invisible
@@ -300,6 +340,9 @@ struct HighlightedTextView: NSViewRepresentable {
         var appliedLanguage: String?
         /// The last jump target acted on, so `updateNSView` only re-scrolls on a genuine new hit.
         var appliedJumpLine: Int?
+        /// Previous `isActive`, so focus is claimed on the flip back to Edit rather than on every
+        /// update pass — re-asserting it would fight the find bar.
+        var wasActive = false
         weak var ruler: LineNumberRulerView?
         var onMatchesChanged: ((Int) -> Void)?
         private let text: Binding<String>
