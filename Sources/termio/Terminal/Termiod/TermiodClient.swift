@@ -877,7 +877,7 @@ enum Termiod {
         ///
         /// Omitted when false, so `nil` conflates "idle" with "never sampled".
         /// Harmless: both must read as today's no-confirm behaviour, never as
-        /// "unknown, so confirm" (`remote-to-device.decisions.md` §2).
+        /// "unknown, so confirm" (`20260814-remote-to-device.decisions.md` §2).
         let foregroundJob: Bool?
         /// The child's *current* directory — what `cd` moves, as opposed to `cwd`,
         /// which is where the session was created. A path on the **device**.
