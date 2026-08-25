@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// `Termiod.developmentDaemonCandidates` — the checkout half of daemon

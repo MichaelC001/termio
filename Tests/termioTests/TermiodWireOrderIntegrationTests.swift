@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// Roster-then-exit ordering, against a real daemon and this app's real client.

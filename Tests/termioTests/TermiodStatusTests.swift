@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import TermioShared
 @testable import termio
 
 /// `TermioStore.applyTermiodStatus` — where a host-reported workstream state

@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The two decisions on the clipboard side of the viewer↔device boundary.

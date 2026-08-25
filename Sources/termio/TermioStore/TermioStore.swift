@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
+import TermioShared
 
 /// App-wide state: the project/session tree plus a cache of live terminal
 /// surfaces. The cache ("SurfaceCache" in unpeel's terms) keeps one

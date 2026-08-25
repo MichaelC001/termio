@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The frames the Mac client negotiates for and now acts on. Decoding is where a

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GhosttyTerminal
+import TermioShared
 
 /// Session plumbing: sessions run inside a termiod daemon — the local one, or
 /// one reached over SSH — and this app is an attach client. Kept beside the

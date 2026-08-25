@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// Records what an install wrote instead of touching a machine, so the generated

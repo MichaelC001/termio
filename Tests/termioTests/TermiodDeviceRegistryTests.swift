@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The `host_id ↔ routes` map (`TermiodDeviceRegistry`). Its whole reason to
