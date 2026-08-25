@@ -1,22 +1,19 @@
 import Foundation
-import Network
 import TermioShared
-import UIKit
 
-/// v1 companion transport: a WebSocket to the Mac companion server (directly on
-/// LAN, or via a tunnel URL). Binary frames are raw PTY bytes; text frames are
-/// `CompanionControl` JSON. `TerminalViewController` bridges it to an
-/// `InMemoryTerminalSession`.
+/// v1 companion transport: a `WebSocketLink` to the Mac companion server
+/// (directly on LAN, or via a tunnel URL). Binary frames are raw PTY bytes;
+/// text frames are `CompanionControl` JSON. `TerminalViewController` bridges it
+/// to an `InMemoryTerminalSession`.
 ///
-/// The link self-heals: any socket drop (Mac app rebuild, phone sleep, network
-/// blip) schedules a backoff reconnect and re-attaches, and the server replays
-/// its ring buffer on attach so the screen repaints. Only a server-sent `exit`
-/// (the session ended) or `error` (the session no longer exists — e.g. the Mac
-/// app restarted) ends the loop.
+/// The link self-heals and re-attaches, and the server replays its ring buffer
+/// on attach so the screen repaints. Only a server-sent `exit` (the session
+/// ended) or `error` (the session no longer exists — e.g. the Mac app
+/// restarted) ends the loop.
 ///
 /// E2E encryption (CryptoKit) wraps the payloads in the next pass; the PoC
 /// proves the transport + PTY bridge first.
-final class CompanionTransport: NSObject {
+final class CompanionTransport {
     enum State {
         case connecting
         case connected
@@ -33,17 +30,8 @@ final class CompanionTransport: NSObject {
     /// socket opens. nil connects to a server that streams without attach
     /// (the standalone companion PoC).
     private let attachSessionID: String?
-    private var task: URLSessionWebSocketTask?
-    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-    // Reconnect state, all touched on the main queue.
-    private var stopped = true
-    private var isConnected = false
-    private var policy = ReconnectPolicy()
-    private var foregroundObserver: NSObjectProtocol?
-    private var pathMonitor: NWPathMonitor?
-    private var lastPathStatus: NWPath.Status?
-    private var pingTimer: Timer?
-    /// Only touched on the delegate queue (see `didOpen`).
+    private let link: WebSocketLink
+    /// Only touched on the link's delegate queue (see `sendPreamble`).
     private var everConnected = false
     /// Last grid the terminal reported, re-sent on every (re)connect and on
     /// foreground: the first resize often fires before the socket exists and
@@ -55,20 +43,20 @@ final class CompanionTransport: NSObject {
     private let gridLock = NSLock()
     /// Guards send order: `auth` must be the first frame on the socket. The
     /// terminal view calls `resize` (→ `sendGrid`) as it lays out, which can land
-    /// after `task.resume()` but before `didOpen` — URLSession then flushes that
-    /// queued `resize` *ahead* of the `auth` `didOpen` sends. The server refuses
+    /// after the dial but before the socket opens — URLSession then flushes that
+    /// queued `resize` *ahead* of the `auth` the open sends. The server refuses
     /// any non-`auth` control on an unauthenticated connection, so that stray
     /// `resize` trips "unauthorized" before `auth` is ever read (the roster socket
     /// never sends anything but `auth`, which is why the list works and the
-    /// terminal didn't). So grid and keystroke frames stay suppressed until
-    /// `didOpen` has queued the auth preamble and set this true. Guarded by `gridLock`.
+    /// terminal didn't). So grid and keystroke frames stay suppressed until the
+    /// open has queued the auth preamble and set this true. Guarded by `gridLock`.
     private var authSent = false
     /// Raw PTY input stays closed until the Mac acknowledges auth with its
     /// roster. Control messages remain optimistic because their version-0
     /// meanings are stable. Guarded by `gridLock`.
     private var authAccepted = false
 
-    /// Remote PTY bytes for the terminal. Fired on a URLSession queue.
+    /// Remote PTY bytes for the terminal. Fired on the link's delegate queue.
     var onOutput: ((Data) -> Void)?
     /// State transitions, delivered on the main queue.
     var onState: ((State) -> Void)?
@@ -76,39 +64,34 @@ final class CompanionTransport: NSObject {
     init(url: URL, attachSessionID: String? = nil) {
         self.url = url
         self.attachSessionID = attachSessionID
-    }
-
-    deinit {
-        if let observer = foregroundObserver {
-            NotificationCenter.default.removeObserver(observer)
+        link = WebSocketLink(configuration: .init(
+            name: "session", url: url, delegateQueue: nil, pingRunLoopMode: .common
+        ))
+        link.onConnecting = { [weak self] in
+            // A fresh socket has not sent its auth preamble yet — suppress grid
+            // and keystroke frames until it does, so nothing precedes `auth`.
+            guard let self else { return }
+            gridLock.lock()
+            authSent = false
+            authAccepted = false
+            gridLock.unlock()
         }
+        link.onOpen = { [weak self] in self?.sendPreamble() }
+        link.onUp = { [weak self] in self?.notify(.connected) }
+        link.onDown = { [weak self] in self?.notify(.reconnecting) }
+        link.onForeground = { [weak self] in
+            // The link survived the background trip; coming back to the app is
+            // still a claim — the Mac may have taken the winsize while we were
+            // away.
+            self?.reassertGrid()
+        }
+        link.onData = { [weak self] data in self?.onOutput?(data) }
+        link.onText = { [weak self] text in self?.receive(text) }
     }
 
     func start() {
-        stopped = false
-        policy.reset()
         notify(.connecting)
-        connect()
-        startPathMonitor()
-        startPingTimer()
-        if foregroundObserver == nil {
-            foregroundObserver = NotificationCenter.default.addObserver(
-                forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                guard let self, !stopped else { return }
-                if isConnected {
-                    // The link survived the background trip; coming back to
-                    // the app is still a claim — the Mac may have taken the
-                    // winsize while we were away.
-                    reassertGrid()
-                } else {
-                    // Skip any pending backoff — the user is looking at the
-                    // screen now.
-                    policy.reset()
-                    connect()
-                }
-            }
-        }
+        link.start()
     }
 
     func send(_ data: Data) {
@@ -119,7 +102,7 @@ final class CompanionTransport: NSObject {
         // Binary frames are raw PTY bytes permanently. Compression, encryption,
         // or multiplexing needs a separately negotiated mechanism and Wire gate
         // so a stale Mac can never interpret framing as keystrokes.
-        task?.send(.data(data)) { _ in }
+        link.send(data)
     }
 
     func resize(cols: Int, rows: Int) {
@@ -143,167 +126,17 @@ final class CompanionTransport: NSObject {
         let ready = authSent
         gridLock.unlock()
         guard ready, cols > 0, rows > 0 else { return }
-        let control = CompanionControl.resize(cols: cols, rows: rows).encoded()
-        task?.send(.string(control)) { _ in }
+        link.send(CompanionControl.resize(cols: cols, rows: rows).encoded())
     }
 
     func stop() {
-        stopped = true
-        isConnected = false
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        lastPathStatus = nil
-        pingTimer?.invalidate()
-        pingTimer = nil
-        if let observer = foregroundObserver {
-            NotificationCenter.default.removeObserver(observer)
-            foregroundObserver = nil
-        }
+        link.stop()
     }
 
-    /// Reconnect the instant the network path comes back (Wi-Fi rejoin, cellular
-    /// handoff, VPN toggle) instead of sitting out a scheduled backoff. Without
-    /// this the terminal stays dead for up to the 30s heartbeat after a network
-    /// switch that the phone itself already knows about.
-    private func startPathMonitor() {
-        guard pathMonitor == nil else { return }
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
-            guard let self, !stopped else { return }
-            let cameUp = path.status == .satisfied
-                && lastPathStatus != nil && lastPathStatus != .satisfied
-            lastPathStatus = path.status
-            guard cameUp, !isConnected else { return }
-            policy.reset()
-            connect()
-        }
-        monitor.start(queue: .main)
-        pathMonitor = monitor
-    }
-
-    /// A half-open socket (the Mac slept, the network switched under us, the
-    /// tunnel dropped the hop) never fails `receive` — the read just waits
-    /// forever on a connection nothing will ever answer, and the session looks
-    /// frozen rather than disconnected. A periodic ping is what notices, and
-    /// its failure forces the reconnect loop.
-    private func startPingTimer() {
-        pingTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            guard let self, !stopped, isConnected, let task else { return }
-            task.sendPing { [weak self] error in
-                guard error != nil else { return }
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, !stopped, task === self.task, isConnected else { return }
-                    isConnected = false
-                    notify(.reconnecting)
-                    policy.reset()
-                    connect()
-                }
-            }
-        }
-        // Common mode, or scrolling the scrollback holds the probe off for as
-        // long as the finger is down.
-        RunLoop.main.add(timer, forMode: .common)
-        pingTimer = timer
-    }
-
-    private func connect() {
-        guard !stopped else { return }
-        task?.cancel(with: .goingAway, reason: nil)
-        let task = session.webSocketTask(with: url)
-        // The server replays the session's ring buffer (up to 1 MB) as a single
-        // binary frame on attach; the 1 MB default cap would kill the socket
-        // mid-replay and loop the link in "Reconnecting…" forever.
-        task.maximumMessageSize = 8 << 20
-        self.task = task
-        // A fresh socket has not sent its auth preamble yet — suppress grid and
-        // keystroke frames until `didOpen` does, so nothing precedes `auth`.
-        gridLock.lock()
-        authSent = false
-        authAccepted = false
-        gridLock.unlock()
-        task.resume()
-        receive(on: task)
-    }
-
-    /// The socket died mid-session. Keep trying — the usual cause is the Mac
-    /// app rebuilding, and re-attach is idempotent (the server replays the
-    /// session's ring buffer to a fresh attach).
-    private func dropped(_ task: URLSessionWebSocketTask) {
-        DispatchQueue.main.async { [weak self] in
-            // A superseded task's death is not a drop of the current link.
-            guard let self, task === self.task, !stopped else { return }
-            isConnected = false
-            notify(.reconnecting)
-            // Fast burst then a slow heartbeat (see ReconnectPolicy): re-attach
-            // is idempotent, so quick when the Mac's rebuilding, light when the
-            // laptop's closed.
-            let delay = policy.nextDelay()
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, !stopped, !isConnected else { return }
-                connect()
-            }
-        }
-    }
-
-    /// A fatal control arrived — the session itself is over, stop reconnecting.
-    private func finish(_ state: State) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !stopped else { return }
-            stopped = true
-            isConnected = false
-            notify(state)
-        }
-    }
-
-    private func receive(on task: URLSessionWebSocketTask) {
-        task.receive { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let message):
-                switch message {
-                case .data(let data):
-                    onOutput?(data)
-                case .string(let text):
-                    if let roster = CompanionRoster.decode(text) {
-                        if roster.wire < Wire.minimumServer {
-                            task.cancel(with: .policyViolation, reason: nil)
-                            finish(.failed(localized("Update Termio on your Mac to connect this phone.")))
-                        } else {
-                            gridLock.lock()
-                            authAccepted = true
-                            gridLock.unlock()
-                        }
-                    } else {
-                        switch CompanionControl.decode(text) {
-                        case .exit:
-                            finish(.closed)
-                        case .error(let message):
-                            finish(.failed(message))
-                        default:
-                            break
-                        }
-                    }
-                @unknown default:
-                    break
-                }
-                receive(on: task)
-            case .failure:
-                dropped(task)
-            }
-        }
-    }
-
-    private func notify(_ state: State) {
-        DispatchQueue.main.async { [onState] in onState?(state) }
-    }
-}
-
-extension CompanionTransport: URLSessionWebSocketDelegate {
-    func urlSession(_: URLSession, webSocketTask task: URLSessionWebSocketTask,
-                    didOpenWithProtocol _: String?) {
+    /// The preamble every (re)connect puts on the wire, in this order: the
+    /// screen reset, auth, the attach it gates, and the grid claim the Mac's
+    /// repaint is driven by.
+    private func sendPreamble() {
         // On a REconnect the terminal still shows the dead link's screen; a
         // full reset (RIS) ahead of the server's ring-buffer replay keeps the
         // two byte streams from interleaving into garbage. Emitted here on the
@@ -315,9 +148,7 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
         // Auth precedes the attach on the same socket — the server refuses
         // the bridge (and everything else) until the token lands.
         if let token = CompanionLink.token(of: url) {
-            task.send(
-                .string(CompanionControl.auth(token: token, wire: Wire.current).encoded())
-            ) { _ in }
+            link.send(CompanionControl.auth(token: token, wire: Wire.current).encoded())
         } else {
             // No `?t=` on the URL: the Mac drops this socket after its ~10s
             // auth grace window, so the session just churns "Reconnecting…"
@@ -325,29 +156,54 @@ extension CompanionTransport: URLSessionWebSocketDelegate {
             Log.companion.error("session URL has no pairing token (?t=…) — the Mac will refuse this socket after ~10s. Re-pair via Settings ▸ Mobile.")
         }
         // Auth is now queued ahead of everything else, so grid/keystroke frames
-        // may flow. `URLSessionWebSocketTask` preserves send-call order, so the
-        // attach and grid below land after auth; and any external `resize` that
-        // fired during the connect stayed suppressed until this moment.
+        // may flow. The link preserves send order, so the attach and grid below
+        // land after auth; and any external `resize` that fired during the
+        // connect stayed suppressed until this moment.
         gridLock.lock()
         authSent = true
         gridLock.unlock()
         if let attachSessionID {
-            let attach = CompanionControl.attach(sessionID: attachSessionID).encoded()
-            task.send(.string(attach)) { _ in }
+            link.send(CompanionControl.attach(sessionID: attachSessionID).encoded())
         }
-        // The grid must follow the attach on every connect — the server's
-        // repaint of the freshly wiped screen is driven by this claim.
         sendGrid()
-        DispatchQueue.main.async { [weak self] in
-            guard let self, task === self.task, !stopped else { return }
-            isConnected = true
-            policy.reset()
-            notify(.connected)
+    }
+
+    private func receive(_ text: String) {
+        if let roster = CompanionRoster.decode(text) {
+            if roster.wire < Wire.minimumServer {
+                finish(
+                    .failed(localized("Update Termio on your Mac to connect this phone.")),
+                    closeCode: .policyViolation
+                )
+            } else {
+                gridLock.lock()
+                authAccepted = true
+                gridLock.unlock()
+            }
+            return
+        }
+        switch CompanionControl.decode(text) {
+        case .exit:
+            finish(.closed)
+        case .error(let message):
+            finish(.failed(message))
+        default:
+            break
         }
     }
 
-    func urlSession(_: URLSession, webSocketTask task: URLSessionWebSocketTask,
-                    didCloseWith _: URLSessionWebSocketTask.CloseCode, reason _: Data?) {
-        dropped(task)
+    /// A fatal control arrived — the session itself is over, stop reconnecting.
+    private func finish(
+        _ state: State, closeCode: URLSessionWebSocketTask.CloseCode = .goingAway
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !link.isStopped else { return }
+            link.stop(closeCode: closeCode)
+            notify(state)
+        }
+    }
+
+    private func notify(_ state: State) {
+        DispatchQueue.main.async { [onState] in onState?(state) }
     }
 }
