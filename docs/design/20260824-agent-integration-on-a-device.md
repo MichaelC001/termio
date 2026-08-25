@@ -60,12 +60,22 @@ because every hook form ends in `2>/dev/null || true`:
   front of everything else in this table. Now asked twice, the second pass through
   the login shell with the binary as `$0`.
 
-Still open: the **local** half of the XDG rule. `LocalAgentConfigStore` and
-`AgentSessionStore` resolve with `expandingTildeInPath`, so a *Mac* whose owner
-sets `XDG_CONFIG_HOME` installs skills where OpenCode does not read them. The
-window is narrow (a GUI-launched app does not inherit a login shell's environment,
-so reading the variable would itself need the `AgentAvailability` login-shell
-probe) and no report exists; recorded rather than built.
+The rule holds on **both** machines. `XDGBaseDirectories.expand` is the local
+spelling of `SSHAgentConfigStore.quote`'s shell one, and it is what
+`LocalAgentConfigStore` and `AgentSessionStore` resolve through — a Mac whose
+owner sets `XDG_CONFIG_HOME` would otherwise install skills where OpenCode does
+not read them, and miss OpenCode's session records under `XDG_DATA_HOME`.
+
+Applying it needed the variables, which a Finder-launched app does not inherit,
+so `AgentAvailability`'s login-shell probe now carries them: one spawn, the same
+bound and the same cache as `PATH`, because a second login shell would pay for
+another rc that can take seconds. Both variables are unset on a default account,
+where this resolves exactly as `expandingTildeInPath` always did.
+
+There is no trade here, which is why it is a plain rule rather than a heuristic:
+every agent termio files under `~/.config` — OpenCode, Amp, Crush — documents
+XDG support. An agent that hardcoded the literal default would be the one case
+this rule got wrong, and the catalog has none.
 
 ## The problem
 

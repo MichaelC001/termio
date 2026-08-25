@@ -22,13 +22,17 @@ enum AgentAvailability {
     // Guarded by `pathLock` on every access; the lock is the synchronization the
     // compiler cannot see.
     nonisolated(unsafe) private static var pathCache: [String]?
+    /// The login-shell values of the variables a Finder-launched app never sees.
+    /// Populated by the same probe and guarded by the same lock.
+    nonisolated(unsafe) private static var environmentCache: [String: String]?
 
     private static func pathDirectories() -> [String] {
         pathLock.withLock {
             if let cached = pathCache { return cached }
-            let resolved = resolvePathDirectories()
-            pathCache = resolved
-            return resolved
+            let resolved = probeLoginShell()
+            pathCache = resolved.path
+            environmentCache = resolved.environment
+            return resolved.path
         }
     }
 
@@ -74,22 +78,48 @@ enum AgentAvailability {
         }
     }
 
-    private static func resolvePathDirectories() -> [String] {
+    /// One login-shell spawn answers for everything a GUI-launched app cannot see
+    /// about its user's environment. `PATH` is why this exists; the XDG bases ride
+    /// along because they have the same problem and asking twice would mean paying
+    /// for a second shell whose rc can take seconds.
+    private static func probeLoginShell() -> (path: [String], environment: [String: String]) {
+        let names = ["XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+        // `${VAR-}` rather than `$VAR`, so an unset variable is an empty field and
+        // the fields stay positional under `set -u`.
+        let fields = (["$PATH"] + names.map { "${\($0)-}" })
+            .map { "\"\($0)\"" }
+            .joined(separator: " ")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: loginShell)
-        process.arguments = ["-ilc", "printf %s \"$PATH\""]
+        process.arguments = ["-ilc", "printf '%s\\n' \(fields)"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return [] }
+        do { try process.run() } catch { return ([], [:]) }
         // Bound the probe: a login shell whose rc blocks must not hang forever.
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
             if process.isRunning { process.terminate() }
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
-            .split(separator: ":").map(String.init)
+        let lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
+        guard let path = lines.first else { return ([], [:]) }
+        var environment: [String: String] = [:]
+        for (index, name) in names.enumerated() {
+            let value = index + 1 < lines.count ? lines[index + 1] : ""
+            if !value.isEmpty { environment[name] = value }
+        }
+        return (path.split(separator: ":").map(String.init), environment)
+    }
+
+    /// A login-shell environment value, for the variables a Finder launch drops.
+    /// Non-blocking: the process environment until the probe lands, which only
+    /// means an early call answers the way today's code already does.
+    static func loginShellEnvironment(_ name: String) -> String? {
+        if let value = ProcessInfo.processInfo.environment[name], !value.isEmpty { return value }
+        var resolved: [String: String]?
+        pathLock.withLock { resolved = environmentCache }
+        return resolved?[name]
     }
 
     /// The user's real login shell, read from the password database rather than the

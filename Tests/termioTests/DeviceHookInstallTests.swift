@@ -98,6 +98,21 @@ final class DeviceHookInstallTests: XCTestCase {
             SSHAgentConfigStore.quote("~/.configurable/x"), "\"$HOME\"/'.configurable/x'")
     }
 
+    /// The local half of the same rule the remote store spells in shell. Both
+    /// variables are unset on a default macOS account, so this is also the
+    /// assertion that the common path did not move.
+    func testTheLocalStoreExpandsTheSameBasesTheRemoteOneDoes() {
+        let home = NSHomeDirectory()
+        XCTAssertEqual(
+            XDGBaseDirectories.expand("~/.config/opencode/plugin"),
+            ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map { $0 + "/opencode/plugin" }
+                ?? home + "/.config/opencode/plugin")
+        XCTAssertEqual(XDGBaseDirectories.expand("~/.pi/agent"), home + "/.pi/agent")
+        XCTAssertEqual(XDGBaseDirectories.expand("/etc/x"), "/etc/x")
+        // A boundary, not a prefix: `.configurable` is not `.config`.
+        XCTAssertEqual(XDGBaseDirectories.expand("~/.configurable"), home + "/.configurable")
+    }
+
     /// A merge is computed from bytes that were read a network round trip ago.
     /// Committing it unconditionally is what silently discards the edit somebody
     /// made in between — so a stale commit must be refused, not merged over.

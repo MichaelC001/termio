@@ -38,7 +38,7 @@ enum AgentSessionStore {
     /// store), and only for `jsonl` records, which double as the transcript.
     static func transcript(agent: AgentPreset, id: String) -> String? {
         guard let spec = agent.resumeSpec.discover, spec.format == .jsonl else { return nil }
-        let root = URL(fileURLWithPath: (spec.root as NSString).expandingTildeInPath)
+        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(spec.root))
         let keys: [URLResourceKey] = [.isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys) else { return nil }
@@ -73,7 +73,7 @@ enum AgentSessionStore {
     private static func match(agent: AgentPreset, directory: String, after launchedAt: Date?,
                               newest: Bool = false) -> (url: URL, id: String)? {
         guard let launchedAt, let spec = agent.resumeSpec.discover else { return nil }
-        let root = URL(fileURLWithPath: (spec.root as NSString).expandingTildeInPath)
+        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(spec.root))
         let target = canonical(directory)
         return bestMatch(in: root, ext: spec.format.fileExtension, after: launchedAt,
                          newest: newest) { url in
