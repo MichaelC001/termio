@@ -90,6 +90,23 @@ struct GitHubIssueProvider: IssueProvider {
         return raw.map { IssueLabel(name: $0.name, colorHex: $0.color ?? "") }
     }
 
+    /// The repository `slug` was forked from, or `nil` when it isn't a fork. The
+    /// half of the fork problem no git remote can answer: `git clone <my-fork>`
+    /// leaves a checkout whose only remote is the fork, and GitHub's own `parent`
+    /// is then the sole record of where the issues actually live. Discovery only —
+    /// termio surfaces the parent as a choice and never writes it back as a remote.
+    func forkParent(of slug: String) async throws -> String? {
+        struct RawRepository: Decodable {
+            struct Parent: Decodable { let fullName: String }
+            let fork: Bool
+            let parent: Parent?
+        }
+        guard let url = URL(string: "https://api.github.com/repos/\(slug)") else { return nil }
+        let raw: RawRepository = try await get(url)
+        guard raw.fork else { return nil }
+        return raw.parent?.fullName
+    }
+
     // MARK: Pull-request extras (GitHub-specific, outside the tracker protocol)
 
     /// The PR's changed files as `GitChange` rows (the git pane's own model) *with the

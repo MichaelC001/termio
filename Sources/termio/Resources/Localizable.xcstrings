@@ -2512,12 +2512,32 @@
         }
       }
     },
-    "This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.": {
+    "None of this project’s remotes point at github.com, so there is no issue tracker to show.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "该项目的 origin 远程仓库未指向 github.com，因此没有可显示的 issue 跟踪器。"
+            "value": "该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。"
+          }
+        }
+      }
+    },
+    "Repository": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仓库"
+          }
+        }
+      }
+    },
+    "Choose which repository’s issues to show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择显示哪个仓库的 issue"
           }
         }
       }

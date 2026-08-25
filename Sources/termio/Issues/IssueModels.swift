@@ -95,6 +95,20 @@ struct IssueContainer: Hashable, Sendable {
     let id: String
 }
 
+/// A repository the Issues pane could bind this project to. Usually there is
+/// exactly one and the pane never mentions it; a fork checkout has several, and
+/// then the user picks (#427).
+struct IssueRepositoryCandidate: Hashable, Identifiable, Sendable {
+    /// `owner/repo` — unique across the list, so it doubles as the identity.
+    let slug: String
+    /// The git remote this came from, or `nil` for a repository the pane knows
+    /// about without the checkout naming it: the fork parent GitHub reported, or
+    /// a slug the user picked before the remote went away.
+    let remoteName: String?
+
+    var id: String { slug }
+}
+
 /// The list request: which kind, and the light filters the top bar offers.
 /// Selected labels combine as AND, GitHub's own filter semantics.
 struct IssueQuery: Hashable, Sendable {
