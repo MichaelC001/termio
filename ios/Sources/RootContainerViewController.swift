@@ -27,12 +27,20 @@ import UIKit
 final class RootContainerViewController: UIViewController {
     /// The one live roster model, shared by every home screen.
     let store = RosterStore()
+    /// Which workspace the home screens are showing. Lives here rather than on a
+    /// screen because the rail that sets it is the shell's, and the lists that
+    /// read it are in different tabs.
+    let workspaceScope = WorkspaceScope()
+    /// The Projects tab's root list.
+    private lazy var projectList: ProjectListViewController = {
+        let list = ProjectListViewController(store: store, scope: workspaceScope)
+        list.onOpenWorkspaceRail = { [weak self] in self?.setWorkspaceRail(open: true) }
+        return list
+    }()
     /// The Projects tab's stack: the root list, plus a pushed project page.
     /// Plain UIKit views only — terminals never enter this stack (see the
     /// containment note above), so a real navigation controller is safe here.
-    private lazy var projectsNav = HomeNavigationController(
-        rootViewController: ProjectListViewController(store: store)
-    )
+    private lazy var projectsNav = HomeNavigationController(rootViewController: projectList)
     /// The Chats tab's stack: the flat chat list (nothing pushes onto it yet;
     /// a nav keeps both tabs the same shape).
     private lazy var chatsNav = HomeNavigationController(
@@ -100,19 +108,30 @@ final class RootContainerViewController: UIViewController {
 
     private var themeObserver: NSObjectProtocol?
     private var pairingObserver: NSObjectProtocol?
+    private var rosterObserver: NSObjectProtocol?
 
     deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-        if let pairingObserver {
-            NotificationCenter.default.removeObserver(pairingObserver)
+        for observer in [themeObserver, pairingObserver, rosterObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         themeObserver = installThemeBackdrop()
+
+        // Registered before the tabs load their views, so the first roster has
+        // already named the workspace in scope — and a roster that closes it has
+        // already moved on — by the time the lists re-filter on the same push.
+        rosterObserver = NotificationCenter.default.addObserver(
+            forName: RosterStore.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.workspaceScope.reconcile(against: self.store.projects)
+            }
+        }
+        configureWorkspaceRailGesture()
 
         // The native tab controller is the permanent base layer. Its selected
         // navigation stack can change without affecting terminal overlays,
@@ -193,6 +212,7 @@ final class RootContainerViewController: UIViewController {
     func open(_ screen: UIViewController, sessionKey: String? = nil, animated: Bool = true) {
         loadViewIfNeeded()
         guard activeScreen !== screen else { return }
+        dismissWorkspaceRailImmediately()
 
         if let sessionKey {
             recentTerminals[sessionKey] = screen
@@ -275,6 +295,213 @@ final class RootContainerViewController: UIViewController {
             screen.view.frame = offscreen
             finish()
         }
+    }
+
+    // MARK: - Workspace rail
+
+    /// The rail's content; the panel's motion and gestures stay here so one
+    /// place owns its frames and a drag can always take it back mid-flight.
+    private lazy var workspaceRail: WorkspaceRailViewController = {
+        let rail = WorkspaceRailViewController(store: store, scope: workspaceScope)
+        rail.onSelect = { [weak self] in self?.setWorkspaceRail(open: false) }
+        return rail
+    }()
+    /// Holds the dimming and the panel together, so one `isHidden` keeps the
+    /// closed rail from intercepting a single touch.
+    private let railContainer = UIView()
+    private let railDim = UIControl()
+    /// 0 closed, 1 open. The *model* position: during a settle it already holds
+    /// the target, which is why an interrupt reads the layer instead.
+    private var railProgress: CGFloat = 0
+    private var railAnimator: UIViewPropertyAnimator?
+    /// Where the rail stood when the current drag started, so a drag that begins
+    /// mid-settle continues from there instead of snapping to the finger.
+    private var railDragStart: CGFloat = 0
+    private var railInstalled = false
+
+    private var railWidth: CGFloat { min(view.bounds.width * 0.78, 320) }
+
+    /// The rail is offered on a tab-bar home root and nowhere else. On a pushed
+    /// page the left edge is the system back gesture, and inside a terminal the
+    /// surface's own pan already means leftward-drawer / rightward-back — a
+    /// second recognizer on either would be two gestures fighting for one edge.
+    /// A single workspace is no choice at all, so there is nothing to reveal.
+    private var canPresentWorkspaceRail: Bool {
+        guard activeScreen == nil else { return false }
+        guard RailMachine.roster(from: store.projects).workspaceCount > 1 else { return false }
+        guard let nav = homeTabs.selectedViewController as? UINavigationController,
+              nav.viewControllers.count == 1,
+              nav.viewControllers.first is WorkspaceScoped
+        else { return false }
+        return true
+    }
+
+    private func configureWorkspaceRailGesture() {
+        let edge = UIScreenEdgePanGestureRecognizer(
+            target: self, action: #selector(handleRailEdgePan(_:))
+        )
+        edge.edges = .left
+        edge.delegate = self
+        view.addGestureRecognizer(edge)
+    }
+
+    /// The opener beside the page title, and the rail's own dismissals. An edge
+    /// gesture on its own is undiscoverable, so the tap is not a convenience.
+    func setWorkspaceRail(open: Bool) {
+        guard open ? canPresentWorkspaceRail : railInstalled else { return }
+        installWorkspaceRailIfNeeded()
+        if open { presentRailContainer() }
+        settleRail(open: open, velocityX: 0)
+    }
+
+    private func installWorkspaceRailIfNeeded() {
+        guard !railInstalled else { return }
+        railInstalled = true
+
+        railContainer.frame = view.bounds
+        railContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        railContainer.isHidden = true
+        view.addSubview(railContainer)
+
+        railDim.backgroundColor = .black
+        railDim.alpha = 0
+        railDim.frame = railContainer.bounds
+        railDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        railDim.addAction(UIAction { [weak self] _ in
+            self?.setWorkspaceRail(open: false)
+        }, for: .touchUpInside)
+        railContainer.addSubview(railDim)
+
+        addChild(workspaceRail)
+        railContainer.addSubview(workspaceRail.view)
+        workspaceRail.didMove(toParent: self)
+        workspaceRail.view.layer.shadowColor = UIColor.black.cgColor
+        workspaceRail.view.layer.shadowOpacity = 0.3
+        workspaceRail.view.layer.shadowRadius = 12
+        workspaceRail.view.layer.shadowOffset = CGSize(width: 4, height: 0)
+
+        // Swiping the open rail leftwards puts it away — the terminal drawer's
+        // close pan, mirrored.
+        let closePan = UIPanGestureRecognizer(target: self, action: #selector(handleRailClosePan(_:)))
+        closePan.delegate = self
+        workspaceRail.view.addGestureRecognizer(closePan)
+
+        layoutRail(progress: 0)
+    }
+
+    /// Bring the rail up as the top layer and give it fresh contents. Called on
+    /// every open, including the first frame of a drag, so a roster push while
+    /// it was away can never be shown stale.
+    private func presentRailContainer() {
+        workspaceRail.reload()
+        railContainer.isHidden = false
+        view.bringSubviewToFront(railContainer)
+    }
+
+    /// Frames only — no `isHidden`, no hit-testing. This runs inside the settle
+    /// animation, where flipping visibility would hide the panel on the first
+    /// frame of a close instead of the last.
+    private func layoutRail(progress: CGFloat) {
+        railProgress = progress
+        let width = railWidth
+        workspaceRail.view.frame = CGRect(
+            x: -width + width * progress, y: 0, width: width, height: view.bounds.height
+        )
+        railDim.alpha = 0.15 * progress
+    }
+
+    /// Take an in-flight settle back at exactly where it is on screen. Reading
+    /// the presentation layer rather than `railProgress` is the whole point: the
+    /// model position is already at the target the moment the animator starts.
+    private func interruptRailAnimation() {
+        guard let animator = railAnimator else { return }
+        railAnimator = nil
+        guard animator.isRunning else { return }
+        let presented = workspaceRail.view.layer.presentation()?.frame.origin.x
+        animator.stopAnimation(true)
+        guard let presented else { return }
+        layoutRail(progress: max(0, min(1, (presented + railWidth) / railWidth)))
+    }
+
+    /// Release: run to open or closed with the fling carried into the spring.
+    /// The velocity is normalized to fractions of the *remaining* travel per
+    /// second toward the committed target, so a flick keeps its speed and a
+    /// reversal or a gentle release starts from rest.
+    private func settleRail(open: Bool, velocityX: CGFloat) {
+        interruptRailAnimation()
+        railDim.isUserInteractionEnabled = open
+        let width = railWidth
+        let remaining = width * (open ? 1 - railProgress : railProgress)
+        let towardTarget = open ? velocityX : -velocityX
+        let initial = remaining > 1 ? min(max(towardTarget / remaining, 0), 30) : 0
+        let timing = UISpringTimingParameters(
+            dampingRatio: 0.9, initialVelocity: CGVector(dx: initial, dy: 0)
+        )
+        let animator = UIViewPropertyAnimator(duration: 0.35, timingParameters: timing)
+        animator.isInterruptible = true
+        animator.addAnimations { self.layoutRail(progress: open ? 1 : 0) }
+        animator.addCompletion { [weak self] position in
+            guard let self, position == .end else { return }
+            railAnimator = nil
+            if !open { railContainer.isHidden = true }
+        }
+        railAnimator = animator
+        animator.startAnimation()
+    }
+
+    /// The reveal: drag right from the left edge of a home screen. Tracks the
+    /// finger from the first `.changed`, never waiting for `.ended`.
+    @objc private func handleRailEdgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            installWorkspaceRailIfNeeded()
+            interruptRailAnimation()
+            presentRailContainer()
+            railDim.isUserInteractionEnabled = true
+            railDragStart = railProgress
+        case .changed:
+            let progress = railDragStart + pan.translation(in: view).x / railWidth
+            layoutRail(progress: max(0, min(1, progress)))
+        case .ended, .cancelled:
+            let velocityX = pan.velocity(in: view).x
+            // A decisive flick wins over position in either direction; position
+            // only decides a gentle release. Otherwise a hard flick back still
+            // committed the way the finger had already travelled.
+            let open = pan.state == .ended
+                && (abs(velocityX) > 300 ? velocityX > 0 : railProgress > 0.4)
+            settleRail(open: open, velocityX: velocityX)
+        default:
+            break
+        }
+    }
+
+    /// The dismissal: drag the open rail back off the left edge.
+    @objc private func handleRailClosePan(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            interruptRailAnimation()
+            railDragStart = railProgress
+        case .changed:
+            let progress = railDragStart + pan.translation(in: view).x / railWidth
+            layoutRail(progress: max(0, min(1, progress)))
+        case .ended, .cancelled:
+            let velocityX = pan.velocity(in: view).x
+            let open = pan.state != .ended
+                || (abs(velocityX) > 300 ? velocityX > 0 : railProgress > 0.6)
+            settleRail(open: open, velocityX: velocityX)
+        default:
+            break
+        }
+    }
+
+    /// A terminal is about to cover the shell — the rail has no business over
+    /// it, and the surface owns every pan from here.
+    private func dismissWorkspaceRailImmediately() {
+        guard railInstalled, railProgress > 0 || railAnimator != nil else { return }
+        interruptRailAnimation()
+        railDim.isUserInteractionEnabled = false
+        layoutRail(progress: 0)
+        railContainer.isHidden = true
     }
 
     // MARK: - Interactive back (finger-tracked right-swipe)
@@ -407,6 +634,21 @@ final class RootContainerViewController: UIViewController {
         screen.view.removeFromSuperview()
         (screen as? TerminalViewController)?.releaseOrphanedSurfaceLayers()
         screen.removeFromParent()
+    }
+}
+
+// MARK: - Rail gesture gating
+
+extension RootContainerViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        if gesture is UIScreenEdgePanGestureRecognizer {
+            return canPresentWorkspaceRail
+        }
+        // The close pan rides the rail's own view, over a vertically scrolling
+        // table: only a clearly horizontal drag is the rail's.
+        guard let pan = gesture as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: view)
+        return abs(velocity.x) > abs(velocity.y)
     }
 }
 

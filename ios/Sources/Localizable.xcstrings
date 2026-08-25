@@ -1511,16 +1511,6 @@
         }
       }
     },
-    "on %@": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 %@ 上"
-          }
-        }
-      }
-    },
     "plain text": {
       "localizations": {
         "zh-Hans": {
@@ -1717,6 +1707,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "主题"
+          }
+        }
+      }
+    },
+    "Workspaces": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "工作区"
           }
         }
       }
