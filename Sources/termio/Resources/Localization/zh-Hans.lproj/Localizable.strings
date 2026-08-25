@@ -92,12 +92,12 @@
 	<string>添加并连接</string>
 	<key>Add Agent</key>
 	<string>添加 Agent</string>
+	<key>Add Device</key>
+	<string>添加设备</string>
 	<key>Add Host</key>
 	<string>添加主机</string>
 	<key>Add Host…</key>
 	<string>添加主机…</string>
-	<key>Add Machine</key>
-	<string>添加设备</string>
 	<key>Add SSH Host</key>
 	<string>添加 SSH 主机</string>
 	<key>Add to Chat</key>
@@ -416,6 +416,8 @@
 	<string>部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Device Unavailable</key>
+	<string>设备不可用</string>
 	<key>Devices</key>
 	<string>设备</string>
 	<key>Discard %lld Files…</key>
@@ -638,8 +640,6 @@
 	<string>正在查找 Agent 命令行工具…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>与 %@ 的连接已断开。会话仍在那台机器上运行。</string>
-	<key>Machine Unavailable</key>
-	<string>设备不可用</string>
 	<key>Machines</key>
 	<string>设备</string>
 	<key>Match Case</key>
@@ -852,6 +852,8 @@
 	<string>在编辑器中打开</string>
 	<key>Open on GitHub</key>
 	<string>在 GitHub 上打开</string>
+	<key>Open one to see how it is reached and what it runs.</key>
+	<string>打开一台可查看它的连接方式和运行内容。</string>
 	<key>Open the invite on your iPhone to install it with TestFlight.</key>
 	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
@@ -1212,10 +1214,8 @@
 	<string>加粗字形</string>
 	<key>This Mac</key>
 	<string>本机</string>
-	<key>This Mac and the machines you reach from it, and what each one runs</key>
-	<string>本机以及你能连接的设备，和每台设备上运行的内容</string>
-	<key>This Mac, and every machine you can reach from it. Open one to see what runs there.</key>
-	<string>本机，以及你能从这里连接的每台设备。打开一台可查看它上面运行的内容。</string>
+	<key>This Mac and the machines you reach from it</key>
+	<string>本机以及你能连接的设备</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
 	<key>This agent is no longer on your list.</key>
@@ -1228,6 +1228,8 @@
 	<string>这个分支没有基础分支尚未包含的内容。</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>这个检出没有其他分支可以对比。</string>
+	<key>This device is no longer in your configuration.</key>
+	<string>该设备已不在你的配置中。</string>
 	<key>This device sent a name the file tree can’t show.</key>
 	<string>该设备返回了文件树无法显示的名称。</string>
 	<key>This device’s termiod is too old to browse files.</key>
@@ -1242,8 +1244,6 @@
 	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。</string>
-	<key>This machine is no longer in your configuration.</key>
-	<string>该设备已不在你的配置中。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
 	<key>This month</key>

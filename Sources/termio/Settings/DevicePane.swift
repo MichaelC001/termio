@@ -15,7 +15,7 @@ import SwiftUI
 /// four rungs with independent states turn choosing a machine into infrastructure
 /// triage. So the pane promises one outcome — "Ready", or "Set up this device" —
 /// and the rungs are the disclosure underneath it.
-struct MachinePane: View {
+struct DevicePane: View {
     let machine: KnownDevice
     let host: SSHConfigHost?
     @ObservedObject var settings: AppSettings
@@ -26,7 +26,7 @@ struct MachinePane: View {
     let onSetUpKey: (String, String) -> Void
     let onEditConfig: () -> Void
 
-    @StateObject private var model: MachinePaneModel
+    @StateObject private var model: DevicePaneModel
     private enum ProbeState { case idle, running, result(SSHProbeResult) }
     @State private var probe: ProbeState = .idle
 
@@ -46,7 +46,7 @@ struct MachinePane: View {
         self.onConnect = onConnect
         self.onSetUpKey = onSetUpKey
         self.onEditConfig = onEditConfig
-        _model = StateObject(wrappedValue: MachinePaneModel(device: machine, settings: settings))
+        _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
     }
 
     var body: some View {

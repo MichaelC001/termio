@@ -94,8 +94,8 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .workspaces: WorkspaceSettingsTab(store: store)
-        case .machines:
-            MachinesSettingsTab(
+        case .devices:
+            DevicesSettingsTab(
                 settings: settings, store: store,
                 onConnect: onSSHConnect, onSetUpKey: onSetUpKey
             )

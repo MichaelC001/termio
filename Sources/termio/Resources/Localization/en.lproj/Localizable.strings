@@ -92,12 +92,12 @@
 	<string>Add &amp; Connect</string>
 	<key>Add Agent</key>
 	<string>Add Agent</string>
+	<key>Add Device</key>
+	<string>Add Device</string>
 	<key>Add Host</key>
 	<string>Add Host</string>
 	<key>Add Host…</key>
 	<string>Add Host…</string>
-	<key>Add Machine</key>
-	<string>Add Machine</string>
 	<key>Add SSH Host</key>
 	<string>Add SSH Host</string>
 	<key>Add to Chat</key>
@@ -416,6 +416,8 @@
 	<string>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
+	<key>Device Unavailable</key>
+	<string>Device Unavailable</string>
 	<key>Devices</key>
 	<string>Devices</string>
 	<key>Discard %lld Files…</key>
@@ -638,8 +640,6 @@
 	<string>Looking for agent CLIs…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>Lost the connection to %@. The session is still running there.</string>
-	<key>Machine Unavailable</key>
-	<string>Machine Unavailable</string>
 	<key>Machines</key>
 	<string>Machines</string>
 	<key>Match Case</key>
@@ -852,6 +852,8 @@
 	<string>Open in Editor</string>
 	<key>Open on GitHub</key>
 	<string>Open on GitHub</string>
+	<key>Open one to see how it is reached and what it runs.</key>
+	<string>Open one to see how it is reached and what it runs.</string>
 	<key>Open the invite on your iPhone to install it with TestFlight.</key>
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
@@ -1212,10 +1214,8 @@
 	<string>Thicken glyphs</string>
 	<key>This Mac</key>
 	<string>This Mac</string>
-	<key>This Mac and the machines you reach from it, and what each one runs</key>
-	<string>This Mac and the machines you reach from it, and what each one runs</string>
-	<key>This Mac, and every machine you can reach from it. Open one to see what runs there.</key>
-	<string>This Mac, and every machine you can reach from it. Open one to see what runs there.</string>
+	<key>This Mac and the machines you reach from it</key>
+	<string>This Mac and the machines you reach from it</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
 	<key>This agent is no longer on your list.</key>
@@ -1228,6 +1228,8 @@
 	<string>This branch has nothing the base branch doesn’t already have.</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>This checkout has no other branch to compare with.</string>
+	<key>This device is no longer in your configuration.</key>
+	<string>This device is no longer in your configuration.</string>
 	<key>This device sent a name the file tree can’t show.</key>
 	<string>This device sent a name the file tree can’t show.</string>
 	<key>This device’s termiod is too old to browse files.</key>
@@ -1242,8 +1244,6 @@
 	<string>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</string>
-	<key>This machine is no longer in your configuration.</key>
-	<string>This machine is no longer in your configuration.</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>

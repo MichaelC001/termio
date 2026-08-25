@@ -441,6 +441,16 @@
         }
       }
     },
+    "Add Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加设备"
+          }
+        }
+      }
+    },
     "Add Host": {
       "localizations": {
         "zh-Hans": {
@@ -457,16 +467,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "添加主机…"
-          }
-        }
-      }
-    },
-    "Add Machine": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "添加设备"
           }
         }
       }
@@ -2043,6 +2043,16 @@
         }
       }
     },
+    "Device Unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备不可用"
+          }
+        }
+      }
+    },
     "Devices": {
       "localizations": {
         "zh-Hans": {
@@ -3154,16 +3164,6 @@
         }
       }
     },
-    "Machine Unavailable": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备不可用"
-          }
-        }
-      }
-    },
     "Machines": {
       "localizations": {
         "zh-Hans": {
@@ -4223,6 +4223,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 GitHub 上打开"
+          }
+        }
+      }
+    },
+    "Open one to see how it is reached and what it runs.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开一台可查看它的连接方式和运行内容。"
           }
         }
       }
@@ -6028,22 +6038,12 @@
         }
       }
     },
-    "This Mac and the machines you reach from it, and what each one runs": {
+    "This Mac and the machines you reach from it": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本机以及你能连接的设备，和每台设备上运行的内容"
-          }
-        }
-      }
-    },
-    "This Mac, and every machine you can reach from it. Open one to see what runs there.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "本机，以及你能从这里连接的每台设备。打开一台可查看它上面运行的内容。"
+            "value": "本机以及你能连接的设备"
           }
         }
       }
@@ -6104,6 +6104,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个检出没有其他分支可以对比。"
+          }
+        }
+      }
+    },
+    "This device is no longer in your configuration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备已不在你的配置中。"
           }
         }
       }
@@ -6174,16 +6184,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。"
-          }
-        }
-      }
-    },
-    "This machine is no longer in your configuration.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "该设备已不在你的配置中。"
           }
         }
       }
