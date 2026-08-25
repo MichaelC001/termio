@@ -12,10 +12,16 @@
 //!   parses every manifest in both languages and asserts the same values, because
 //!   a manifest the two disagree about is a bug the user experiences as "my agent
 //!   shows up in the list but never gets hooks", and it is silent.
+//! - [`apple_json`] reproduces Foundation's `JSONSerialization` output byte for
+//!   byte, so migrating a user's `~/.claude/settings.json` from the Swift writer
+//!   to this one rewrites nothing.
 //! - [`machine`] is what the daemon knows about its own box that a remote writer
 //!   had to ask for: `$HOME`, the XDG bases, the login-shell `PATH`.
+//! - [`install`] is the installers themselves.
 
+pub mod apple_json;
 #[cfg(test)]
 mod fixture;
+pub mod install;
 pub mod machine;
 pub mod manifest;
