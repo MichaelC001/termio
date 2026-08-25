@@ -172,8 +172,9 @@ struct FileBrowserView: View {
         .onChange(of: browserState.selection) {
             // The table fires native selection on a clean click — reliably, unlike a
             // click recognizer, which `NSOutlineView`'s own primary-button tracking
-            // swallows. So selection IS the click handler: a file opens, a folder opens
-            // (expands). Collapse stays on the disclosure triangle.
+            // swallows. So a selection *change* opens: a file opens, a folder opens
+            // (expands). Collapse stays on the disclosure triangle. This is also what
+            // carries an arrow-key walk through the tree, which sends no click at all.
             if let url = browserState.selection {
                 if isDirectory(url) {
                     toggleSelectedFolder()
@@ -186,6 +187,23 @@ struct FileBrowserView: View {
                 QLPreviewPanel.shared().reloadData()
             }
         }
+        .onReceive(browserState.rowClicked) { activateClickedRow() }
+    }
+
+    /// Opens the file under a click the selection binding cannot report: re-clicking the
+    /// already-selected row changes no selection, so nothing publishes. That is how you
+    /// re-open a file you just closed — closing the detail leaves the row selected, as it
+    /// does in VS Code and Zed, the highlight marking where you are rather than what is
+    /// open — and without this the row stays dead until some other row is clicked first.
+    private func activateClickedRow() {
+        // `clickedRow` is only meaningful during the action send `rowClicked` is delivering.
+        // -1 is the empty area below the rows, which must not re-open what is still selected.
+        guard let outline = browserState.outlineView, outline.clickedRow >= 0 else { return }
+        // Folders belong to the selection handler, which toggles and then clears. Skipping a
+        // file that is already open is both the Zed/VS Code no-op and what stops a click that
+        // *did* move the selection from being opened twice, once down each path.
+        guard let url = browserState.selection, !isDirectory(url), store.openFileURL != url else { return }
+        onActivate(url)
     }
 
     /// Toggle (expand/collapse) the folder whose row was just selected, on the native
@@ -297,7 +315,10 @@ struct FileBrowserView: View {
                 onDrop: { sources, destination in receive(sources, into: destination) },
                 rootURL: root.url,
                 actions: treeActions,
-                captureOutline: { browserState.outlineView = $0 }
+                captureOutline: { outline in
+                    browserState.outlineView = outline
+                    if let outline { browserState.observeClicks(on: outline) }
+                }
             )
             .onKeyPress(.space) {
                 guard browserState.selection != nil else { return .ignored }
