@@ -18,8 +18,10 @@ final class InspectorCheckoutTests: XCTestCase {
     }
 
     private func derive(_ session: Session, in project: Project?,
-                        localRoot: String?, routeDeviceID: String? = nil) -> Checkout {
+                        localRoot: String?, liveWorkingDirectory: String? = nil,
+                        routeDeviceID: String? = nil) -> Checkout {
         TermioStore.checkout(for: session, in: project, localRoot: localRoot,
+                             liveWorkingDirectory: liveWorkingDirectory,
                              routeDeviceID: routeDeviceID)
     }
 
@@ -89,6 +91,52 @@ final class InspectorCheckoutTests: XCTestCase {
         let loose = derive(Session(title: "shell", agent: .terminal),
                            in: nil, localRoot: "/Users/me/elsewhere")
         XCTAssertEqual(loose.localRoot, "/Users/me/elsewhere")
+    }
+
+    /// A loose terminal is wherever it wandered — on this Mac and on a device
+    /// alike. The panes used to follow a local `cd` and pin a remote one to the
+    /// directory the session was spawned in, so the same `cd ..` moved the tree
+    /// here and did nothing there.
+    func testALooseTerminalOnADeviceFollowsItsWorkingDirectory() {
+        var session = Session(title: "ukvps", agent: .terminal)
+        session.termiodRemoteHost = "ukvps"
+        session.deviceID = "device-a"
+        session.termiodRemoteCwd = "/home/me/repo/proto"
+
+        let checkout = derive(session, in: nil, localRoot: nil,
+                              liveWorkingDirectory: "/home/me")
+
+        XCTAssertEqual(checkout.root, "/home/me")
+        XCTAssertNil(checkout.localRoot, "still nothing this Mac may read")
+    }
+
+    /// The slot decides whether the root follows the shell: a project session's
+    /// root is its checkout on both machines, so no live cwd is offered and the
+    /// spawn directory stands.
+    func testAProjectSessionOnADeviceStaysAtItsCheckout() {
+        var session = Session(title: "ukvps", agent: .terminal)
+        session.termiodRemoteHost = "ukvps"
+        session.deviceID = "device-a"
+        session.termiodRemoteCwd = "/home/me/repo/proto"
+
+        let checkout = derive(session, in: project("/Users/me/proto"), localRoot: "/Users/me/proto")
+
+        XCTAssertEqual(checkout.root, "/home/me/repo/proto")
+    }
+
+    /// A plain `ssh` terminal runs its PTY *here*, so the cwd sampled for it is a
+    /// directory on this Mac. Handing that back as a path on the box is the
+    /// wrong-machine mixup the checkout exists to prevent, so it is refused even
+    /// though the slot follows the shell.
+    func testAPlainSSHTerminalNeverTakesTheLocalCwdAsARemoteRoot() {
+        var session = Session(title: "shell", agent: .terminal)
+        session.sshHost = "ukvps"
+
+        let checkout = derive(session, in: nil, localRoot: NSHomeDirectory(),
+                              liveWorkingDirectory: "/Users/me/Documents")
+
+        XCTAssertNil(checkout.root)
+        XCTAssertNil(checkout.localRoot)
     }
 
     /// The identity is the device, not the road to it: the same box reached by a

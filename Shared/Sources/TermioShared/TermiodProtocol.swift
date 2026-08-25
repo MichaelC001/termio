@@ -127,6 +127,50 @@ public enum Termiod {
         return (kind, payload)
     }
 
+    /// Blocks until `descriptor` has a frame's first byte to read, or `seconds`
+    /// pass with nothing arriving.
+    ///
+    /// Every other read here is unbounded, and correctly so: a session's pipe is
+    /// *meant* to sit quiet until the program writes. A request is the opposite —
+    /// it was asked, so an answer is owed. The host does not owe one it has never
+    /// heard of, though: unknown ops are dropped on the floor rather than refused
+    /// (termiod/src/daemon.rs), so a client asking a daemon that predates an op
+    /// waits forever on a reply nobody will send, holding the thread, the
+    /// connection, and on the SSH road a child process with it. This is the bound
+    /// that turns that into an error a pane can show.
+    ///
+    /// Only the first byte is guarded. A host that starts a frame and then stalls
+    /// mid-payload still blocks, which is the same exposure every other read here
+    /// already carries and not what this exists to fix.
+    public static func waitForReadable(
+        _ descriptor: Int32, seconds: Int, operation: String
+    ) throws {
+        // Monotonic: a wall clock that steps — NTP, a laptop waking, the user
+        // changing the date — would cut a live request short or stretch it past
+        // the bound this exists to impose.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(seconds))
+        while true {
+            let remaining = clock.now.duration(to: deadline)
+            guard remaining > .zero else { throw TermiodClientError.timedOut(operation) }
+            // Whole milliseconds *and* the sub-second remainder: dropping the
+            // remainder would poll for 1 ms on the last stretch and call that a
+            // timeout. Clamped before the conversion, not after — the seconds
+            // come from a caller, and a large one must saturate rather than
+            // overflow on the way to `Int32`.
+            let components = remaining.components
+            let whole = min(components.seconds, Int64(Int32.max) / 1000) * 1000
+            let fraction = components.attoseconds / 1_000_000_000_000_000
+            var descriptors = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptors, 1, Int32(clamping: whole + fraction + 1))
+            if ready > 0 { return }
+            if ready == 0 { throw TermiodClientError.timedOut(operation) }
+            // Interrupted before anything arrived — the deadline above is what
+            // decides whether to keep waiting, not the signal.
+            guard errno == EINTR else { throw TermiodClientError.connectionClosed }
+        }
+    }
+
     /// `R` payload: rows then cols, each a big-endian u16.
     public static func resizePayload(_ rows: UInt16, _ cols: UInt16) -> Data {
         var payload = Data(capacity: 4)
@@ -307,6 +351,23 @@ public enum Termiod {
         }
     }
 
+    /// `limit` is a total across all files, which is what bounds a one-letter
+    /// query in a monorepo — the host stops streaming there and says so.
+    public struct FsSearchOperation: Encodable, Sendable {
+        public let op = "fs_search"
+        public let root: String
+        public let query: String
+        public let limit: UInt64
+        public let seq: UInt64
+
+        public init(root: String, query: String, limit: UInt64, seq: UInt64) {
+            self.root = root
+            self.query = query
+            self.limit = limit
+            self.seq = seq
+        }
+    }
+
     /// Only the `op` tag — the second decode pass picks the payload shape.
     private struct ControlTag: Decodable {
         let op: String
@@ -383,6 +444,38 @@ public enum Termiod {
 
     public struct FsListedPayload: Decodable, Sendable {
         public let listings: [PathListingPayload]
+    }
+
+    /// One batch of `fs.search` hits, addressed to the connection that asked.
+    /// `request` echoes the `fs_search` seq; a channel carrying a single search
+    /// can ignore it, and this client's does.
+    public struct SearchResultsPayload: Decodable, Sendable {
+        public let matches: [SearchMatchPayload]
+    }
+
+    public struct SearchMatchPayload: Decodable, Sendable {
+        public let path: String
+        public let line: UInt64
+        public let text: String
+    }
+
+    /// The terminal reply to `fs_search`: how many hits streamed, and why the
+    /// stream ended.
+    public struct FsSearchedPayload: Decodable, Sendable {
+        public let matches: UInt64
+        public let limitHit: Bool
+        public let canceled: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case matches, limitHit, canceled
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            matches = try container.decodeIfPresent(UInt64.self, forKey: .matches) ?? 0
+            limitHit = try container.decodeIfPresent(Bool.self, forKey: .limitHit) ?? false
+            canceled = try container.decodeIfPresent(Bool.self, forKey: .canceled) ?? false
+        }
     }
 
     /// The reply header for `fs_read`: `length` bytes from `offset` follow as
@@ -735,6 +828,10 @@ public enum Termiod {
         case resized(ResizedPayload)
         case roster(RosterPayload)
         case sessionExited(SessionExitedPayload)
+        /// One batch of `fs.search` hits, streamed to the connection that asked
+        /// (`TermiodFiles.swift`). The only event addressed to a request rather
+        /// than to a session, which is why it carries no `session`.
+        case searchResults(SearchResultsPayload)
         case unknown(String)
     }
 
@@ -799,6 +896,9 @@ public enum Termiod {
         /// tree. It rides the same decode table as everything else, so an
         /// unexpected reply on any channel is ignored rather than fatal.
         case fsFile(FsFilePayload)
+        /// The terminal reply to `fs_search`, closing a stream whose hits
+        /// arrived as `search_results` events.
+        case fsSearched(FsSearchedPayload)
         /// The addressed half of `writer_changed`: sent to one client to tell it
         /// who owns size now (§C.5). Same payload shape, so it feeds the same
         /// handler — a client that only listened to the broadcast would still be
@@ -839,6 +939,8 @@ public enum Termiod {
             return .fsListed(try decoder.decode(FsListedPayload.self, from: payload))
         case "fs_file":
             return .fsFile(try decoder.decode(FsFilePayload.self, from: payload))
+        case "fs_searched":
+            return .fsSearched(try decoder.decode(FsSearchedPayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "error":
@@ -867,6 +969,8 @@ public enum Termiod {
             return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":
             return .sessionExited(try decoder.decode(SessionExitedPayload.self, from: payload))
+        case "search_results":
+            return .searchResults(try decoder.decode(SearchResultsPayload.self, from: payload))
         default:
             return .unknown(tag.ev)
         }
@@ -931,6 +1035,12 @@ public enum TermiodClientError: LocalizedError {
     case malformedFrame
     case handshakeRejected(String)
     case requestFailed(String)
+    /// The device accepted the request and then said nothing for long enough
+    /// that waiting further is worse than answering. Distinct from a closed
+    /// connection: the pipe is open, the host is simply not replying — which is
+    /// exactly what a daemon too old for the op does, since unknown ops are
+    /// dropped rather than refused (`daemon.rs`, the `Control::Unknown` arm).
+    case timedOut(String)
 
     public var errorDescription: String? {
         switch self {
@@ -948,6 +1058,8 @@ public enum TermiodClientError: LocalizedError {
             return "termiod hello rejected: \(message)"
         case .requestFailed(let message):
             return message
+        case .timedOut(let operation):
+            return "the device stopped answering \(operation)"
         }
     }
 }

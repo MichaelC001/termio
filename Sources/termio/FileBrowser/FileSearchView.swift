@@ -1,22 +1,36 @@
 import AppKit
 import SwiftUI
+import TermioShared
+
+/// Which machine the Search pane searches, and therefore what a hit opens. The
+/// pane is one pane either way — a field, hits grouped under their file, click to
+/// open — so the two roads differ only here.
+enum SearchScope {
+    /// This Mac: `git grep` under a local root (`ContentSearch`), and a hit opens
+    /// the editor at its line.
+    case thisMac(URL)
+    /// Another machine: that device's own `fs.search`, and a hit opens the
+    /// read-only preview the device's file tree already uses. `root` is a path on
+    /// **that** box, so it is carried as a string; the `URL`s the rows build from
+    /// it are synthetic (names and icons only), exactly like `RemoteFileNode`.
+    case device(DeviceFileProvider, host: String, root: String)
+}
 
 /// The inspector's Search pane — a sibling of Files / Changes / Info on the
 /// toolbar switch, searching file *contents* (VS Code's ⇧⌘F; the filename jump
-/// lives in Open Quickly, ⌘⇧O). Queries run debounced through `ContentSearch`
-/// (`git grep`, ignore rules for free), results group under their file with the
-/// matched substring tinted accent, and clicking a hit opens the editor
-/// scrolled to that line.
+/// lives in Open Quickly, ⌘⇧O). Queries run debounced through `git grep` — this
+/// Mac's own for a local root, the device's for a checkout on another machine —
+/// results group under their file with the matched substring tinted accent, and
+/// clicking a hit opens the file scrolled to that line.
 struct FileSearchView: View {
+    @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @Environment(\.colorScheme) private var colorScheme
 
-    /// The project (or worktree) root the search runs under.
-    let rootURL: URL
+    /// The root the search runs under, and the machine it lives on.
+    let scope: SearchScope
     /// Leaves the pane (back to the Files tab) — Esc in an empty field.
     let onDismiss: () -> Void
-    /// Opens a hit in the editor at its 1-based line.
-    let onOpen: (_ url: URL, _ line: Int) -> Void
 
     /// Total hits kept per query — past this the footer says so and the user
     /// should sharpen the query rather than scroll.
@@ -28,8 +42,14 @@ struct FileSearchView: View {
     @State private var query = ""
     @State private var matches: [ContentMatch] = []
     @State private var isSearching = false
+    /// What the device said when it refused to search — shown in place of the
+    /// no-matches state, since "nothing here" and "the search never ran" are
+    /// different answers and only one of them is about the query.
+    @State private var failure: String?
     /// The in-flight debounce+grep, cancelled by the next keystroke.
     @State private var searchTask: Task<Void, Never>?
+    /// The in-flight download of a hit's file, for a device checkout.
+    @State private var openTask: Task<Void, Never>?
     @State private var fieldFocused = false
     @State private var focusRequest = 0
     @State private var isVisible = false
@@ -48,7 +68,16 @@ struct FileSearchView: View {
         .onDisappear {
             isVisible = false
             searchTask?.cancel()
+            openTask?.cancel()
         }
+    }
+
+    /// Whether a hit is a file this Mac can hand to the Finder. A device's is
+    /// not: the row's URL names a path over there, so a drag would produce a
+    /// promise nothing can keep.
+    private var allowsDrag: Bool {
+        if case .thisMac = scope { return true }
+        return false
     }
 
     // MARK: - Pieces
@@ -66,9 +95,9 @@ struct FileSearchView: View {
                     text: $query,
                     isFocused: $fieldFocused,
                     focusRequest: focusRequest,
-                    placeholder: localized("Search Project"),
+                    placeholder: placeholder,
                     onSubmit: {
-                        if let first = matches.first { onOpen(first.url, first.line) }
+                        if let first = matches.first { open(first) }
                     },
                     // Esc clears a live query first; a second Esc (empty field)
                     // leaves the pane.
@@ -114,6 +143,15 @@ struct FileSearchView: View {
         }
     }
 
+    /// What the field invites: the project locally, the machine by name for a
+    /// checkout on a device — the same "say which box" rule the empty states use.
+    private var placeholder: String {
+        switch scope {
+        case .thisMac: return localized("Search Project")
+        case .device(_, let host, _): return localized("Search \(host)")
+        }
+    }
+
     /// The field's own chrome, replacing the `NSSearchField` bezel (stripped in
     /// `makeNSView`): a Liquid Glass capsule on macOS 26 — same material recipe as
     /// the toolbar's `InspectorTabsToolbar` track — and a flat capsule fill below.
@@ -137,12 +175,12 @@ struct FileSearchView: View {
     /// empty). Flat rows keyed by `path` / `path:line` make the diff
     /// unambiguous.
     private enum ResultRow: Identifiable {
-        case header(relative: String, url: URL, count: Int, firstLine: Int, isExpanded: Bool)
+        case header(relative: String, url: URL, count: Int, isExpanded: Bool)
         case match(ContentMatch)
 
         var id: String {
             switch self {
-            case .header(let relative, _, _, _, _): return relative
+            case .header(let relative, _, _, _): return relative
             case .match(let match): return "\(match.relative):\(match.line)"
             }
         }
@@ -152,8 +190,8 @@ struct FileSearchView: View {
         var out: [ResultRow] = []
         for group in groups {
             let isExpanded = !collapsedFiles.contains(group.relative)
-            out.append(.header(relative: group.relative, url: group.url, count: group.items.count,
-                               firstLine: group.items[0].line, isExpanded: isExpanded))
+            out.append(.header(relative: group.relative, url: group.url,
+                               count: group.items.count, isExpanded: isExpanded))
             if isExpanded {
                 for match in group.items { out.append(.match(match)) }
             }
@@ -167,7 +205,7 @@ struct FileSearchView: View {
             LazyVStack(spacing: 0, pinnedViews: []) {
                 ForEach(rows) { row in
                     switch row {
-                    case .header(let relative, let url, let count, let firstLine, let isExpanded):
+                    case .header(let relative, let url, let count, let isExpanded):
                         FileHeaderRow(
                             url: url,
                             relative: relative,
@@ -183,14 +221,15 @@ struct FileSearchView: View {
                                     }
                                 }
                             },
-                            open: { onOpen(url, firstLine) }
+                            allowsDrag: allowsDrag,
+                            open: { openFirstHit(inFile: relative) }
                         )
                     case .match(let match):
                         MatchRow(
                             match: match,
                             query: trimmedQuery,
                             chrome: chrome,
-                            open: { onOpen(match.url, match.line) }
+                            open: { open(match) }
                         )
                     }
                 }
@@ -203,12 +242,16 @@ struct FileSearchView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 18))
                         .foregroundStyle(.quaternary)
-                    Text(localized("No Matches"))
+                    Text(failure == nil ? localized("No Matches") : localized("Can’t Search"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text(localized("Try another search term."))
+                    // The device's own words when it refused: it named the cause,
+                    // and "no matches" would be a different — and wrong — answer.
+                    Text(failure ?? localized("Try another search term."))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
                 }
             }
         }
@@ -249,22 +292,127 @@ struct FileSearchView: View {
     /// exactly what would strand the grep beyond cancellation's reach.
     private func scheduleSearch() {
         searchTask?.cancel()
+        // Cleared here rather than inside the task: the message belongs to the
+        // query that produced it, and the debounce would otherwise leave it
+        // sitting under a quarter second of a different one.
+        failure = nil
         let trimmed = trimmedQuery
         guard !trimmed.isEmpty else {
             matches = []
             isSearching = false
             return
         }
-        let root = rootURL
         let limit = Self.matchLimit
         searchTask = Task {
             try? await Task.sleep(for: Self.debounce)
             guard !Task.isCancelled else { return }
             isSearching = true
-            let found = await ContentSearch.search(trimmed, under: root, limit: limit)
+            let found = await find(trimmed, limit: limit)
             guard !Task.isCancelled else { return }
             matches = found
             isSearching = false
+        }
+    }
+
+    /// Runs one query on whichever machine holds the root. The device's search is
+    /// a network round trip, so its failures are shown rather than swallowed —
+    /// `git grep` outside a repo, a daemon too old for `fs.search`, a box that
+    /// stopped answering.
+    private func find(_ query: String, limit: Int) async -> [ContentMatch] {
+        switch scope {
+        case .thisMac(let root):
+            return await ContentSearch.search(query, under: root, limit: limit)
+        case .device(let provider, let host, let root):
+            do {
+                let result = try await provider.search(query, limit: limit)
+                let base = URL(fileURLWithPath: root, isDirectory: true)
+                return result.hits.map { hit in
+                    ContentMatch(
+                        relative: hit.path,
+                        url: base.appendingPathComponent(hit.path),
+                        line: hit.line,
+                        text: hit.text)
+                }
+            } catch {
+                guard !Task.isCancelled else { return [] }
+                Log.files.error("""
+                device search \(host, privacy: .public):\(root, privacy: .public): \
+                \(String(describing: error), privacy: .public)
+                """)
+                failure = Self.message(for: error, fallback: localized("The search failed."))
+                return []
+            }
+        }
+    }
+
+    /// The device described what went wrong; wording it is this client's job, and
+    /// only for the cases the client decides itself — a daemon that named a cause
+    /// is quoted verbatim. `fallback` says which of the two round trips failed,
+    /// since an error with no message of its own tells the user nothing else.
+    private static func message(for error: Error, fallback: String) -> String {
+        switch error {
+        case DeviceFileError.unsupported:
+            return localized("This device’s termiod is too old to browse files.")
+        case DeviceFileError.tooLarge:
+            return localized("Preview is capped at 1 MB.")
+        case DeviceFileError.notRegularFile:
+            return localized("Only regular files can be previewed.")
+        case TermiodClientError.timedOut:
+            // Silence, not a refusal — and the likeliest cause is a host that
+            // has never heard of the op, so the sentence names that.
+            return localized("This device didn’t answer. Its termiod may be too old to search.")
+        case TermiodClientError.requestFailed(let detail) where !detail.isEmpty:
+            return detail
+        default:
+            return fallback
+        }
+    }
+
+    // MARK: - Opening a hit
+
+    private func openFirstHit(inFile relative: String) {
+        guard let match = matches.first(where: { $0.relative == relative }) else { return }
+        open(match)
+    }
+
+    /// Opens a hit at its line: the editor for a local file, and for a device the
+    /// same read-only preview its file tree opens — the bytes are downloaded,
+    /// never edited in place.
+    private func open(_ match: ContentMatch) {
+        guard case .device(let provider, let host, _) = scope else {
+            store.openFileInEditor(match.url, at: match.line)
+            return
+        }
+        openTask?.cancel()
+        let path = match.url.path
+        let name = match.url.lastPathComponent
+        let line = match.line
+        let generation = store.filePresentationGeneration
+        openTask = Task { @MainActor in
+            do {
+                let data = try await provider.read(
+                    path, limit: Termiod.filePreviewByteLimit)
+                try Task.checkCancellation()
+                let lease = try RemotePreviewStorage.stage(data, named: name)
+                store.presentRemoteFilePreview(
+                    lease, expectedGeneration: generation, at: line)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                Log.files.error("""
+                device read \(host, privacy: .public):\(path, privacy: .public): \
+                \(String(describing: error), privacy: .public)
+                """)
+                // The click has to answer for itself: the results list stays on
+                // screen, so a failure recorded only in the pane's empty state
+                // would be a click that did nothing.
+                let alert = NSAlert()
+                alert.messageText = "“\(name)” couldn’t be opened."
+                alert.informativeText = Self.message(
+                    for: error, fallback: localized("The read failed."))
+                alert.runModal()
+            }
         }
     }
 
@@ -418,6 +566,9 @@ private struct FileHeaderRow: View {
     let isExpanded: Bool
     let chrome: ChromeTheme?
     let toggleExpanded: () -> Void
+    /// Whether the row's file exists on this Mac. A device's does not, so it is
+    /// not draggable — the URL names a path over there.
+    let allowsDrag: Bool
     let open: () -> Void
 
     @State private var isHovering = false
@@ -471,7 +622,21 @@ private struct FileHeaderRow: View {
                 .animation(.easeInOut(duration: 0.12), value: isHovering)
         )
         .onHover { isHovering = $0 }
-        .draggable(url)
+        .draggableFile(url, when: allowsDrag)
+    }
+}
+
+private extension View {
+    /// Drags the row out as its file, but only when the file is on this Mac. A
+    /// device's row carries a path on that box, and a drag promising the Finder
+    /// a local file at that path would be a promise nothing can keep.
+    @ViewBuilder
+    func draggableFile(_ url: URL, when allowed: Bool) -> some View {
+        if allowed {
+            draggable(url)
+        } else {
+            self
+        }
     }
 }
 
