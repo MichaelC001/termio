@@ -1056,7 +1056,10 @@ struct AgentManifest: Decodable {
         }
     }
 
-    private enum ManifestError: LocalizedError {
+    /// Internal rather than private so the cross-language fixture test can tell
+    /// a schema refusal (whose sentence must match the Rust parser's word for
+    /// word) from a decode failure (whose wording is each language's own).
+    enum ManifestError: LocalizedError {
         case invalid(String)
 
         var errorDescription: String? {

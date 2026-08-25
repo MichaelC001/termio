@@ -1,0 +1,11 @@
+{
+  "id": "hooksOutrankScrape",
+  "name": "Hooks Outrank Scrape",
+  "status": { "working": ["never used"] },
+  "titleStatus": { "attention": ["Action Required"] },
+  "hooks": {
+    "type": "toml",
+    "file": "~/.outrank/config.toml",
+    "events": [{ "on": "Stop", "state": "done" }]
+  }
+}

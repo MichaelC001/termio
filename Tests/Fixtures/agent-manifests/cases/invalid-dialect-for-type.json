@@ -1,0 +1,6 @@
+{
+  "id": "invalidDialect",
+  "name": "Invalid Dialect",
+  "hooks": { "type": "plugin", "dir": "~/.x", "dialect": "cursor",
+             "events": [{ "on": "Stop", "state": "done" }] }
+}

@@ -92,7 +92,14 @@ fn spawn_daemon() -> Result<()> {
 }
 
 async fn request(msg: &Control) -> Result<Control> {
-    let mut stream = connect_channel(ChannelRole::Control).await?;
+    request_with_capabilities(msg, &[]).await
+}
+
+/// A request on a control channel that negotiates extra capabilities. The
+/// daemon refuses a verb whose capability was not asked for, so a verb that
+/// needs one has to say so at the handshake rather than at use.
+async fn request_with_capabilities(msg: &Control, extra: &[&str]) -> Result<Control> {
+    let mut stream = connect_control(extra).await?;
     write_control(&mut stream, msg).await?;
     match read_frame(&mut stream).await? {
         Some(Frame::Control(c)) => Ok(c),
@@ -102,13 +109,22 @@ async fn request(msg: &Control) -> Result<Control> {
 }
 
 async fn connect_channel(role: ChannelRole) -> Result<UnixStream> {
-    Ok(connect_channel_with_identity(role, false, false).await?.0)
+    Ok(connect_channel_with_identity(role, false, false, &[]).await?.0)
+}
+
+async fn connect_control(extra: &[&str]) -> Result<UnixStream> {
+    Ok(
+        connect_channel_with_identity(ChannelRole::Control, false, false, extra)
+            .await?
+            .0,
+    )
 }
 
 async fn connect_channel_with_identity(
     role: ChannelRole,
     snapshot: bool,
     grid_diff: bool,
+    extra: &[&str],
 ) -> Result<(UnixStream, Option<String>)> {
     let mut stream = connect().await?;
     let mut caps = vec!["events".to_string(), "send_wait".to_string()];
@@ -119,6 +135,7 @@ async fn connect_channel_with_identity(
     if grid_diff {
         caps.push("grid_diff".to_string());
     }
+    caps.extend(extra.iter().map(|cap| cap.to_string()));
     write_control(
         &mut stream,
         &Control::Hello {
@@ -277,6 +294,26 @@ pub async fn set_status(id: &str, status: &str, title: Option<String>) -> Result
     }
 }
 
+/// Install (or remove) termio's agent integration on the daemon's box.
+pub async fn install_agents(
+    request: crate::agent::install::InstallRequest,
+) -> Result<Vec<crate::agent::install::InstallResult>> {
+    let control = Control::InstallAgents {
+        enabled: request.enabled,
+        agents: request.agents,
+        hooks: request.hooks,
+        skills: request.skills,
+        reporter: request.reporter,
+        hook_version: Some(request.hook_version),
+        seq: Some(1),
+    };
+    match request_with_capabilities(&control, &["agents"]).await? {
+        Control::AgentsInstalled { results, .. } => Ok(results),
+        Control::Error { message, .. } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
 /// Local terminal window size via TIOCGWINSZ, with a sane fallback.
 pub fn term_size() -> (u16, u16) {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -334,7 +371,7 @@ pub async fn observe(
 ) -> Result<()> {
     let (local_rows, local_cols) = term_size();
     let mut stream = if grid_diff {
-        connect_channel_with_identity(ChannelRole::Attach, true, true)
+        connect_channel_with_identity(ChannelRole::Attach, true, true, &[])
             .await?
             .0
     } else {
@@ -493,7 +530,7 @@ pub async fn attach(
         }
         None => {
             let (stream, id) =
-                connect_channel_with_identity(ChannelRole::Attach, true, grid_diff).await?;
+                connect_channel_with_identity(ChannelRole::Attach, true, grid_diff, &[]).await?;
             let (r, w) = stream.into_split();
             (Box::new(r) as LinkRead, Box::new(w) as LinkWrite, None, id)
         }

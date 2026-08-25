@@ -1,0 +1,1183 @@
+[
+  {
+    "definition": {
+      "command": null,
+      "displayName": "Terminal",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "terminalGlyph",
+      "id": "terminal",
+      "installURL": null,
+      "order": 0,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": null,
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "terminal"
+    },
+    "file": "Sources/termio/Resources/terminal.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "amp",
+      "displayName": "Amp",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "ampPlugin",
+        "directory": "~/.config/amp/plugins",
+        "events": [
+          {
+            "matcher": null,
+            "name": "agent.start",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "agent.end",
+            "state": "done"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "plugin"
+      },
+      "icon": "image",
+      "id": "amp",
+      "installURL": "https://ampcode.com/manual",
+      "order": 50,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.config/agents/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "amp"
+    },
+    "file": "Sources/termio/Resources/agents/amp.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "agy",
+      "displayName": "Antigravity",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "image",
+      "id": "antigravity",
+      "installURL": "https://antigravity.google/product/antigravity-cli",
+      "order": 80,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.gemini/antigravity/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "antigravity"
+    },
+    "file": "Sources/termio/Resources/agents/antigravity.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "claude",
+      "displayName": "Claude Code",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": true,
+        "conversation": null,
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": "clear",
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": "*",
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": "*",
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": "*",
+            "name": "PermissionRequest",
+            "state": "attention"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.claude/settings.json",
+        "promptTitle": null,
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "vector:claude",
+      "id": "claudeCode",
+      "installURL": "https://claude.com/claude-code",
+      "order": 10,
+      "permissionBypassFlag": "--dangerously-skip-permissions",
+      "resume": {
+        "create": "--session-id {id}",
+        "discover": null,
+        "resume": "--resume {id}",
+        "seed": null,
+        "store": {
+          "isDirectory": false,
+          "name": "{id}.jsonl",
+          "root": "~/.claude/projects",
+          "transcriptName": null
+        }
+      },
+      "skillDir": "~/.claude/skills",
+      "statusRules": null,
+      "tintHex": "#D97757",
+      "titleRules": {
+        "attention": [],
+        "working": [
+          "^[⠀-⣿◐-◓] "
+        ]
+      },
+      "wireName": "claude"
+    },
+    "file": "Sources/termio/Resources/agents/claude.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "cline",
+      "displayName": "Cline",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "clineScripts",
+        "directory": "~/.cline/hooks",
+        "events": [
+          {
+            "matcher": null,
+            "name": "TaskStart",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "TaskResume",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "TaskComplete",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "TaskCancel",
+            "state": "done"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "scripts"
+      },
+      "icon": "image",
+      "id": "cline",
+      "installURL": "https://docs.cline.bot/cli/overview",
+      "order": 88,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.cline/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "cline"
+    },
+    "file": "Sources/termio/Resources/agents/cline.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "codex",
+      "displayName": "Codex",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": true,
+        "conversation": "session_id",
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PermissionRequest",
+            "state": "attention"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.codex/hooks.json",
+        "promptTitle": "prompt",
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "vector:codex",
+      "id": "codex",
+      "installURL": "https://developers.openai.com/codex/cli",
+      "order": 20,
+      "permissionBypassFlag": "--dangerously-bypass-approvals-and-sandbox",
+      "resume": {
+        "create": null,
+        "discover": {
+          "cwd": "payload.cwd",
+          "format": "jsonl",
+          "id": "payload.id",
+          "root": "~/.codex/sessions"
+        },
+        "resume": "resume {id}",
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.codex/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": {
+        "attention": [
+          "Action Required"
+        ],
+        "working": [
+          "(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"
+        ]
+      },
+      "wireName": "codex"
+    },
+    "file": "Sources/termio/Resources/agents/codex.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "copilot",
+      "displayName": "Copilot",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "session_id",
+        "dialect": "copilotFlat",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.copilot/hooks/termio.json",
+        "promptTitle": "prompt",
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "image",
+      "id": "copilot",
+      "installURL": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+      "order": 65,
+      "permissionBypassFlag": "--allow-all-tools",
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.copilot/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "copilot"
+    },
+    "file": "Sources/termio/Resources/agents/copilot.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "crush",
+      "displayName": "Crush",
+      "emitsProgressStatus": true,
+      "hooks": null,
+      "icon": "image",
+      "id": "crush",
+      "installURL": "https://github.com/charmbracelet/crush",
+      "order": 85,
+      "permissionBypassFlag": "--yolo",
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.config/crush/skills",
+      "statusRules": {
+        "attention": [
+          "Permission Required",
+          "Allow for Session"
+        ],
+        "working": [
+          "Waiting for tool response",
+          "Brrrrr\\.\\.\\.",
+          "Prrrrrrrr\\.\\.\\.",
+          "Processing\\.\\.\\.",
+          "Thinking\\.\\.\\.",
+          "\\bWorking(\\.\\.\\.|!)"
+        ]
+      },
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "crush"
+    },
+    "file": "Sources/termio/Resources/agents/crush.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "cursor-agent",
+      "displayName": "Cursor",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "cursorFlat",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "beforeSubmitPrompt",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "preToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "postToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "subagentStop",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.cursor/hooks.json",
+        "promptTitle": null,
+        "tool": null,
+        "type": "json"
+      },
+      "icon": "image",
+      "id": "cursor",
+      "installURL": "https://cursor.com/docs/cli",
+      "order": 60,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.cursor/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "cursor"
+    },
+    "file": "Sources/termio/Resources/agents/cursor.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "droid",
+      "displayName": "Droid",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": true,
+        "conversation": "session_id",
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.factory/settings.json",
+        "promptTitle": null,
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "image",
+      "id": "droid",
+      "installURL": "https://docs.factory.ai/droid-cli/overview",
+      "order": 55,
+      "permissionBypassFlag": "--skip-permissions-unsafe",
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.factory/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "droid"
+    },
+    "file": "Sources/termio/Resources/agents/droid.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "grok",
+      "displayName": "Grok",
+      "emitsProgressStatus": true,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "sessionId",
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.grok/hooks/termio.json",
+        "promptTitle": null,
+        "tool": null,
+        "type": "json"
+      },
+      "icon": "vector:grok",
+      "id": "grok",
+      "installURL": "https://x.ai/cli",
+      "order": 95,
+      "permissionBypassFlag": "--yolo",
+      "resume": {
+        "create": "--session-id {id}",
+        "discover": null,
+        "resume": "--resume {id}",
+        "seed": null,
+        "store": {
+          "isDirectory": true,
+          "name": "{id}",
+          "root": "~/.grok/sessions",
+          "transcriptName": "chat_history.jsonl"
+        }
+      },
+      "skillDir": "~/.grok/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": {
+        "attention": [
+          "Action Required"
+        ],
+        "working": []
+      },
+      "wireName": "grok"
+    },
+    "file": "Sources/termio/Resources/agents/grok.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "hermes",
+      "displayName": "Hermes",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "image",
+      "id": "hermes",
+      "installURL": "https://hermes-agent.nousresearch.com/#downloads",
+      "order": 90,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.hermes/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "hermes"
+    },
+    "file": "Sources/termio/Resources/agents/hermes.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "kimi",
+      "displayName": "Kimi",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "kimiTOML",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "Interrupt",
+            "state": "done"
+          }
+        ],
+        "file": "~/.kimi-code/config.toml",
+        "promptTitle": null,
+        "tool": null,
+        "type": "toml"
+      },
+      "icon": "image",
+      "id": "kimi",
+      "installURL": "https://moonshotai.github.io/kimi-code",
+      "order": 70,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.kimi-code/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "kimi"
+    },
+    "file": "Sources/termio/Resources/agents/kimi.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "opencode",
+      "displayName": "OpenCode",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "properties.sessionID",
+        "dialect": "openCodePlugin",
+        "directory": "~/.config/opencode/plugin",
+        "events": [
+          {
+            "matcher": "busy",
+            "name": "session.status",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "session.idle",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "permission.updated",
+            "state": "attention"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "plugin"
+      },
+      "icon": "image",
+      "id": "opencode",
+      "installURL": "https://opencode.ai",
+      "order": 30,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": {
+          "cwd": "directory",
+          "format": "json",
+          "id": "id",
+          "root": "~/.local/share/opencode/storage/session"
+        },
+        "resume": "--session {id}",
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.config/opencode/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "opencode"
+    },
+    "file": "Sources/termio/Resources/agents/opencode.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "pi",
+      "displayName": "Pi",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "context",
+        "dialect": "piPlugin",
+        "directory": "~/.pi/agent/extensions",
+        "events": [
+          {
+            "matcher": null,
+            "name": "session_start",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "agent_start",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "agent_end",
+            "state": "done"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "plugin"
+      },
+      "icon": "image",
+      "id": "pi",
+      "installURL": "https://pi.dev",
+      "order": 40,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": "--session-id {id}",
+        "discover": null,
+        "resume": "--session-id {id}",
+        "seed": "session-file",
+        "store": {
+          "isDirectory": false,
+          "name": "*_{id}.jsonl",
+          "root": "~/.pi/agent/sessions",
+          "transcriptName": null
+        }
+      },
+      "skillDir": "~/.pi/agent/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "pi"
+    },
+    "file": "Sources/termio/Resources/agents/pi.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "qwen",
+      "displayName": "Qwen Code",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": true,
+        "conversation": "session_id",
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": null,
+            "name": "UserPromptSubmit",
+            "state": "working"
+          },
+          {
+            "matcher": "*",
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": "*",
+            "name": "PostToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.qwen/settings.json",
+        "promptTitle": "prompt",
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "image",
+      "id": "qwen",
+      "installURL": "https://github.com/QwenLM/qwen-code",
+      "order": 75,
+      "permissionBypassFlag": "--yolo",
+      "resume": {
+        "create": "--session-id {id}",
+        "discover": null,
+        "resume": "--resume {id}",
+        "seed": null,
+        "store": {
+          "isDirectory": false,
+          "name": "chats/{id}.jsonl",
+          "root": "~/.qwen/tmp",
+          "transcriptName": null
+        }
+      },
+      "skillDir": "~/.qwen/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": {
+        "attention": [
+          "^✳"
+        ],
+        "working": [
+          "^◐"
+        ]
+      },
+      "wireName": "qwen"
+    },
+    "file": "Sources/termio/Resources/agents/qwen.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": null,
+      "displayName": "Bare Minimum",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "terminalGlyph",
+      "id": "bareMinimum",
+      "installURL": null,
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": null,
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "bareMinimum"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/bare-minimum.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "full-agent --flag",
+      "displayName": "Full House",
+      "emitsProgressStatus": true,
+      "hooks": {
+        "capturesTranscript": true,
+        "conversation": "session_id",
+        "dialect": "copilotFlat",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "SessionStart",
+            "state": "idle"
+          },
+          {
+            "matcher": "*",
+            "name": "PreToolUse",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "PermissionRequest",
+            "state": "attention"
+          },
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.full/hooks/termio.json",
+        "promptTitle": "prompt",
+        "tool": "tool_name",
+        "type": "json"
+      },
+      "icon": "symbol:bolt.fill",
+      "id": "fullHouse",
+      "installURL": "https://example.com/full",
+      "order": 42,
+      "permissionBypassFlag": "--yolo",
+      "resume": {
+        "create": "--session-id {id}",
+        "discover": null,
+        "resume": "--resume {id}",
+        "seed": "session-file",
+        "store": {
+          "isDirectory": true,
+          "name": "{id}",
+          "root": "~/.full/sessions",
+          "transcriptName": "chat.jsonl"
+        }
+      },
+      "skillDir": "~/.full/skills",
+      "statusRules": null,
+      "tintHex": "#AABBCC",
+      "titleRules": {
+        "attention": [
+          "blocked"
+        ],
+        "working": [
+          "^spin"
+        ]
+      },
+      "wireName": "full"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/full-house.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": null,
+      "displayName": "Hooks Outrank Scrape",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "kimiTOML",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.outrank/config.toml",
+        "promptTitle": null,
+        "tool": null,
+        "type": "toml"
+      },
+      "icon": "terminalGlyph",
+      "id": "hooksOutrankScrape",
+      "installURL": null,
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": null,
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": {
+        "attention": [
+          "Action Required"
+        ],
+        "working": []
+      },
+      "wireName": "hooksOutrankScrape"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/hooks-outrank-screen-scrape.json",
+    "result": "ok"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-conversation-locator.json",
+    "message": "invalidConversationLocator: hook conversation must name a stdin JSON field, not 'payload.id'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-dialect-for-type.json",
+    "message": "invalidDialect: hook dialect 'cursor' does not match type 'plugin'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-hook-state.json",
+    "message": "invalidHookState: invalid hook state 'finished'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-icon-vector.json",
+    "message": "invalidIconVector: unknown icon vector 'midjourney'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-missing-hook-file.json",
+    "message": "invalidMissingHookFile: json hooks require 'file'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-resume-preset.json",
+    "message": "invalidResumePreset: unknown resume preset 'aider'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-skills-block.json",
+    "message": "invalidSkillsBlock: skills require 'dir'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-store-pair.json",
+    "message": "invalidStorePair: storeRoot and storeMatch must be set together",
+    "result": "invalid"
+  },
+  {
+    "definition": {
+      "command": null,
+      "displayName": "Legacy Shapes",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "clineScripts",
+        "directory": "~/.legacy/hooks",
+        "events": [
+          {
+            "matcher": null,
+            "name": "TaskStart",
+            "state": "working"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "scripts"
+      },
+      "icon": "vector:codex",
+      "id": "legacyShapes",
+      "installURL": "https://example.com/legacy",
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": {
+          "cwd": "payload.cwd",
+          "format": "jsonl",
+          "id": "payload.id",
+          "root": "~/.codex/sessions"
+        },
+        "resume": "resume {id}",
+        "seed": null,
+        "store": null
+      },
+      "skillDir": null,
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "legacyShapes"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/legacy-preset-and-event.json",
+    "result": "ok"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/malformed-missing-name.json",
+    "result": "malformed"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/malformed-not-json.json",
+    "result": "malformed"
+  },
+  {
+    "definition": {
+      "command": "scrape",
+      "displayName": "Screen Scrape Only",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "image",
+      "id": "screenScrapeOnly",
+      "installURL": null,
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": null,
+      "statusRules": {
+        "attention": [
+          "Permission Required"
+        ],
+        "working": [
+          "Thinking\\.\\.\\."
+        ]
+      },
+      "tintHex": "#D97757",
+      "titleRules": null,
+      "wireName": "screenScrapeOnly"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/screen-scrape-only.json",
+    "result": "ok"
+  }
+]

@@ -38,6 +38,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "files",
     "upload",
     "git",
+    "agents",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -420,6 +421,10 @@ fn default_cols() -> u16 {
     80
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for CreateSpec {
     fn default() -> Self {
         CreateSpec {
@@ -703,6 +708,40 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Install termio's agent integration on this box, or remove it
+    /// (capability `agents`).
+    ///
+    /// The machine that owns the files decides what goes in them: the client
+    /// says *which agents are on the user's list* — a preference — and the
+    /// daemon works out where each one keeps its config, whether its CLI is
+    /// even here, and what to merge. What used to be forty to sixty sequential
+    /// `ssh` round trips is this one message.
+    ///
+    /// The client never names a destination. Every path written comes from a
+    /// manifest this box already has — the daemon's own bundled roster, or the
+    /// user's own `~/.termio/config/agents` — so the write surface is fixed by
+    /// the box rather than chosen by the caller.
+    InstallAgents {
+        /// `false` removes every integration termio has ever installed.
+        #[serde(default = "default_true")]
+        enabled: bool,
+        /// The agent ids the user has enabled, or absent for the whole catalog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agents: Option<Vec<String>>,
+        #[serde(default = "default_true")]
+        hooks: bool,
+        #[serde(default = "default_true")]
+        skills: bool,
+        /// What an installed hook runs to report status. Only the client knows
+        /// whether an app is listening, and where its CLI copy is.
+        reporter: crate::agent::install::Reporter,
+        /// Version stamped into each hook command, so the first sync after an
+        /// upgrade rewrites the hooks. Absent means this daemon's own version.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hook_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
 
     // Daemon → client responses.
     Ok {
@@ -868,6 +907,16 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
+    /// Reply to `install_agents`, one row per agent per kind. Every agent the
+    /// request selected appears, including the ones that were refused and the
+    /// ones whose dialect this daemon does not write yet: a silent no-op is what
+    /// "no hooks on the VPS" looked like, and it is the failure this must not
+    /// have.
+    AgentsInstalled {
+        results: Vec<crate::agent::install::InstallResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
     /// Sent when the attached session's process exits (retained for v0).
     Exited { id: String, status: i32 },
     WaitResult {
@@ -926,7 +975,8 @@ impl Control {
             | Control::UploadCommit { seq, .. }
             | Control::UploadAbort { seq, .. }
             | Control::Wait { seq, .. }
-            | Control::SetStatus { seq, .. } => *seq,
+            | Control::SetStatus { seq, .. }
+            | Control::InstallAgents { seq, .. } => *seq,
             _ => None,
         }
     }

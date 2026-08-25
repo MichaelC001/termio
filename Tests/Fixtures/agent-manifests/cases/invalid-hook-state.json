@@ -1,0 +1,5 @@
+{
+  "id": "invalidHookState",
+  "name": "Invalid Hook State",
+  "hooks": { "file": "~/.x.json", "events": [{ "on": "Stop", "state": "finished" }] }
+}

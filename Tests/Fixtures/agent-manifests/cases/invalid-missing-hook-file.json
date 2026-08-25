@@ -1,0 +1,2 @@
+{ "id": "invalidMissingHookFile", "name": "Invalid Missing Hook File",
+  "hooks": { "type": "json", "events": [{ "on": "Stop", "state": "done" }] } }

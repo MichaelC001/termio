@@ -1422,6 +1422,49 @@ async fn process_control(
             };
             send_response(out, response_cache, seq, response);
         }
+        Control::InstallAgents {
+            enabled,
+            agents,
+            hooks,
+            skills,
+            reporter,
+            hook_version,
+            seq,
+        } => {
+            if !connection.capabilities.contains("agents") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the agents capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                let request = crate::agent::install::InstallRequest {
+                    enabled,
+                    agents,
+                    hooks,
+                    skills,
+                    reporter,
+                    hook_version: hook_version
+                        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+                };
+                // A dozen agents is a few dozen small reads, merges and renames.
+                // That is blocking work, and it must not sit on the runtime that
+                // is also carrying somebody's keystrokes.
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let installed =
+                        tokio::task::spawn_blocking(move || crate::agent::install::run(&request))
+                            .await;
+                    let response = match installed {
+                        Ok(results) => Control::AgentsInstalled { results, re: seq },
+                        Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
         Control::Detach { .. } => return Ok(ControlFlow::Close),
         Control::RequestSnapshot { seq } => {
             let _ = out.send(Outbound::Control(error(
@@ -1474,6 +1517,7 @@ async fn process_control(
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
+        | Control::AgentsInstalled { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)

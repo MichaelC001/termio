@@ -7,6 +7,7 @@
 //!
 //! See `ARCHITECTURE.md` and `README.md`.
 
+mod agent;
 mod client;
 mod daemon;
 mod files;
@@ -101,6 +102,17 @@ enum Cmd {
         title: Option<String>,
     },
 
+    /// Install termio's agent integration into this box's agent configs.
+    ///
+    /// The daemon owns the files, so it decides what goes in them: it reads the
+    /// same agent manifests the Mac app reads, works out which agent CLIs are
+    /// actually here, and merges. The client only says which agents the user
+    /// has enabled.
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
+
     /// Attach to a session (interactively by default, or as an observer).
     Attach {
         /// Session id or name to attach to / create.
@@ -163,6 +175,113 @@ enum Cmd {
         #[command(subcommand)]
         cmd: service::ServiceCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Install status hooks and the termio skill for the agents on this box.
+    Install {
+        /// Only these agent ids (repeatable). Default: every agent in the
+        /// catalog whose CLI is installed here.
+        #[arg(long)]
+        agent: Vec<String>,
+        /// Install the skill but not the hooks.
+        #[arg(long)]
+        no_hooks: bool,
+        /// Install the hooks but not the skill.
+        #[arg(long)]
+        no_skills: bool,
+        /// Point the installed hooks at a termio app's CLI copy instead of this
+        /// daemon. Used when the app on this same machine is what is listening.
+        #[arg(long, value_name = "PATH")]
+        termio_cli: Option<String>,
+        /// Version stamped into each hook command. Defaults to this daemon's.
+        #[arg(long, value_name = "VERSION")]
+        hook_version: Option<String>,
+        /// Emit the per-agent results as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Remove every agent integration termio has installed on this box.
+    Uninstall {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+async fn run_agent(cmd: AgentCmd) -> Result<()> {
+    use agent::install::{InstallRequest, InstallStatus, Reporter};
+
+    let (request, json) = match cmd {
+        AgentCmd::Install {
+            agent,
+            no_hooks,
+            no_skills,
+            termio_cli,
+            hook_version,
+            json,
+        } => (
+            InstallRequest {
+                enabled: true,
+                agents: (!agent.is_empty()).then_some(agent),
+                hooks: !no_hooks,
+                skills: !no_skills,
+                reporter: match termio_cli {
+                    Some(path) => Reporter::TermioCli { path },
+                    None => Reporter::TermiodDaemon,
+                },
+                hook_version: hook_version
+                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            },
+            json,
+        ),
+        AgentCmd::Uninstall { json } => (
+            InstallRequest {
+                enabled: false,
+                agents: None,
+                hooks: true,
+                skills: true,
+                reporter: Reporter::TermiodDaemon,
+                hook_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            json,
+        ),
+    };
+
+    let removing = !request.enabled;
+    let results = client::install_agents(request).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+        return Ok(());
+    }
+    if results.is_empty() {
+        // Removal sweeps every directory termio has ever written into and has
+        // nothing per-agent to report; an install with nothing to report found
+        // no agent on this box at all.
+        println!(
+            "{}",
+            if removing {
+                "removed every agent integration termio installed"
+            } else {
+                "no agent on this box declares an integration to install"
+            }
+        );
+        return Ok(());
+    }
+    for result in &results {
+        let mark = match result.status {
+            InstallStatus::Installed => "ok",
+            InstallStatus::Failed => "failed",
+            InstallStatus::Skipped => "skipped",
+        };
+        print!("{:<8} {:<14} {:<6} {}", mark, result.name, result.kind, result.path);
+        match &result.detail {
+            Some(detail) => println!(" — {detail}"),
+            None => println!(),
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -353,6 +472,8 @@ async fn main() -> Result<()> {
                 client::attach(&target, create_if_missing, grid_diff, host.as_deref()).await
             }
         }
+
+        Cmd::Agent { cmd } => run_agent(cmd).await,
 
         Cmd::Stdio => client::stdio().await,
 
