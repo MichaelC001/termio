@@ -119,9 +119,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return args[index + 1]
     }
 
-    /// A `WireFile` for `-demo file`: real Swift source (this file's header),
+    /// A `DeviceFile` for `-demo file`: real Swift source (this file's header),
     /// enough lines to exercise highlighting, scrolling, and the footer.
-    private static func sampleFile() -> WireFile {
+    private static func sampleFile() -> DeviceFile {
         let code = """
         import UIKit
 
@@ -146,12 +146,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         """
-        return WireFile(
+        return DeviceFile(
             path: "ios/Sources/RootContainerViewController.swift",
-            base64: Data(code.utf8).base64EncodedString(),
+            data: Data(code.utf8),
             size: code.utf8.count,
-            binary: false,
-            truncated: false
+            isBinary: false,
+            isTruncated: false
         )
     }
 }

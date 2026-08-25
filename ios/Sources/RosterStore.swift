@@ -26,7 +26,7 @@ final class RosterStore {
     /// never types a host, it only chooses one the Mac already knows (the SSH
     /// twin of Projects ＋ reopening a known folder). Empty until the Mac
     /// answers, or when the config has no hosts.
-    private(set) var sshHosts: [WireSSHHost] = []
+    private(set) var sshHosts: [DeviceSSHHost] = []
     private(set) var companionURL: URL?
     /// `MockSession.key` of the session filling the screen — its row gets the
     /// current-chat pill wherever session rows render.
@@ -38,7 +38,7 @@ final class RosterStore {
     /// A `start` failed on the Mac; the shell presents the alert.
     var onStartError: ((String) -> Void)?
 
-    private var client: CompanionClient?
+    private var client: DeviceClient?
     /// True when the current connection came from the paired-Mac list (not a
     /// `-roster-url` dev launch arg) — only then may a roster's identity be
     /// adopted into that list.
@@ -145,7 +145,7 @@ final class RosterStore {
     func startSession(agent: RosterAgent, in project: MockProject) {
         guard let projectID = project.rosterID else { return }
         pendingStart = (project, agent)
-        client?.send(.start(projectID: projectID, agent: agent.id))
+        client?.startSession(projectID: projectID, agentID: agent.id)
     }
 
     /// The Terminals tab's ＋: open a plain login shell at `~` in the loose
@@ -157,7 +157,7 @@ final class RosterStore {
     /// placeholder stands in until the roster push carries the real container.
     func startNewTerminal() {
         pendingStart = (terminalsProject ?? .terminalsPlaceholder, nil)
-        client?.send(.startTerminal)
+        client?.startTerminal()
     }
 
     /// The Terminals tab's ＋ → "New SSH": an `ssh <host>` terminal in that same
@@ -168,12 +168,12 @@ final class RosterStore {
         let host = host.trimmingCharacters(in: .whitespaces)
         guard !host.isEmpty else { return }
         pendingStart = (terminalsProject ?? .terminalsPlaceholder, nil)
-        client?.send(.startSSH(host: host))
+        client?.startSSH(host: host)
     }
 
     /// Close on the Mac; the next roster push drops the row everywhere.
     func stopSession(_ sessionID: String) {
-        client?.send(.stop(sessionID: sessionID))
+        client?.stopSession(id: sessionID)
     }
 
     // MARK: - Socket
@@ -209,14 +209,14 @@ final class RosterStore {
         connectionIsPersisted = persisted
         companionURL = url
         CompanionLink.state = .connecting
-        let client = CompanionClient(url: url)
+        let client = CompanionBackend(url: url)
         client.onConnected = { [weak self] connected in
             CompanionLink.state = connected ? .connected : .connecting
             // Refresh the SSH host list on every (re)connect so New SSH reflects
             // the Mac's current ~/.ssh/config without a manual pull.
-            if connected { self?.client?.send(.sshConfigHosts) }
+            if connected { self?.client?.requestSSHHosts() }
         }
-        client.onSSHConfig = { [weak self] hosts in
+        client.onSSHHosts = { [weak self] hosts in
             guard let self else { return }
             sshHosts = hosts
             NotificationCenter.default.post(name: Self.didChange, object: nil)
@@ -225,22 +225,19 @@ final class RosterStore {
             guard let self else { return }
             // The roster names its Mac; key the pairing list by that identity
             // (first roster after a fresh pairing, or a rename on the Mac).
-            if connectionIsPersisted, let macID = roster.macID {
-                CompanionLink.adoptIdentity(macID: macID, name: roster.macName)
+            if connectionIsPersisted, let deviceID = roster.deviceID {
+                CompanionLink.adoptIdentity(macID: deviceID, name: roster.deviceName)
             }
             enabledAgents = roster.agents
-            let agentsByID = Dictionary(
-                roster.agents.map { ($0.id, $0) },
-                uniquingKeysWith: { _, latest in latest })
-            projects = roster.projects.map {
-                MockProject(roster: $0, agentsByID: agentsByID)
-            }
+            projects = roster.projects
             NotificationCenter.default.post(name: Self.didChange, object: nil)
             // Open terminals track their session's live status from here —
             // the roster socket is the app's only status feed.
             let statuses = Dictionary(
                 roster.projects.flatMap { project in
-                    project.sessions.map { ($0.id, SessionStatus(wire: $0.status)) }
+                    project.sessions.compactMap { session in
+                        session.rosterID.map { ($0, session.status) }
+                    }
                 },
                 uniquingKeysWith: { first, _ in first }
             )

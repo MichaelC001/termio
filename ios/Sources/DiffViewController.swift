@@ -19,7 +19,7 @@ import UIKit
 /// - **Selection feeds the agent.** Long-press → "Send to Agent" bracketed-pastes the
 ///   selected code into the session's PTY: the thing a phone diff is *for*.
 final class DiffViewController: UIViewController {
-    private var files: [WireChange]
+    private var files: [DeviceChange]
     private var index: Int
 
     /// Ask the owner (which holds the companion socket) for one file's diff, passing the
@@ -50,13 +50,13 @@ final class DiffViewController: UIViewController {
     /// A `readDiff` is outstanding, so a failure belongs to this screen.
     var isAwaitingDiff: Bool { pendingPath != nil }
 
-    private var change: WireChange? {
+    private var change: DeviceChange? {
         files.indices.contains(index) ? files[index] : nil
     }
 
     private var document: DiffDocument? { textView.document }
 
-    init(files: [WireChange], index: Int) {
+    init(files: [DeviceChange], index: Int) {
         self.files = files
         self.index = min(max(index, 0), max(files.count - 1, 0))
         super.init(nibName: nil, bundle: nil)
@@ -247,11 +247,11 @@ final class DiffViewController: UIViewController {
     }
 
     /// A `readDiff` reply arrived (routed in by the owner).
-    func receive(_ diff: WireDiff) {
+    func receive(_ diff: DeviceDiff) {
         guard diff.path == pendingPath else { return }
         pendingPath = nil
         spinner.stopAnimating()
-        guard !diff.binary else {
+        guard !diff.isBinary else {
             show(status: localized("Binary file — no text diff to show."))
             return
         }

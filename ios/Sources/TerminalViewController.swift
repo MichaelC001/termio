@@ -50,7 +50,7 @@ final class TerminalViewController: UIViewController {
     private var lastFittedSize: CGSize = .zero
     private var fitDebounce: DispatchWorkItem?
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
-    private var companion: CompanionTransport?
+    private var companion: DeviceSession?
     private var companionSession: InMemoryTerminalSession?
     private let headerBar = UIStackView()
     private let contextLabel = UILabel()
@@ -81,7 +81,7 @@ final class TerminalViewController: UIViewController {
     private var terminalBottomConstraint: NSLayoutConstraint?
     /// Main-thread only — fed from the companion byte stream, read on key taps.
     private var altScreenSniffer = AlternateScreenSniffer()
-    private var uploadClient: CompanionClient?
+    private var uploadClient: DeviceClient?
     private var uploadQueue: [(name: String, data: Data)] = []
     private var uploadInFlight = false
     private var uploadTotal = 0
@@ -601,7 +601,7 @@ final class TerminalViewController: UIViewController {
         uploadInFlight = true
         terminalView.keyBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
         if uploadClient == nil {
-            let client = CompanionClient(url: url)
+            let client = CompanionBackend(url: url)
             client.onUploaded = { [weak self] path in
                 guard let self else { return }
                 self.typeUploadedPath(path)
@@ -621,9 +621,7 @@ final class TerminalViewController: UIViewController {
             client.start()
             uploadClient = client
         }
-        uploadClient?.send(
-            .upload(projectID: projectID, name: item.name, base64: item.data.base64EncodedString())
-        )
+        uploadClient?.upload(projectID: projectID, name: item.name, data: item.data)
     }
 
     /// Pastes a diff selection into the TUI's input line — the drawer's "Send to Agent",
@@ -673,7 +671,7 @@ final class TerminalViewController: UIViewController {
         case .demoShell:
             return shellSession.terminalSession
         case .companion(let url):
-            let transport = CompanionTransport(url: url, attachSessionID: session.rosterID)
+            let transport = CompanionDeviceSession(url: url, attachSessionID: session.rosterID)
             // The phone mirrors the Mac's PTY through a live libghostty surface,
             // which answers terminal queries (XTVERSION, DA, DSR) on its own. The
             // Mac's authoritative surface already answered; the phone's duplicate
@@ -689,7 +687,7 @@ final class TerminalViewController: UIViewController {
                     transport?.send(data)
                 },
                 resize: { [weak transport] viewport in
-                    transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
+                    transport?.resize(columns: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
@@ -725,7 +723,7 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    private func companionStateChanged(_ state: CompanionTransport.State) {
+    private func companionStateChanged(_ state: DeviceSessionState) {
         // The status line earns its place only while the link is in doubt;
         // once connected it yields to the project · branch context line.
         statusLabel.isHidden = false
