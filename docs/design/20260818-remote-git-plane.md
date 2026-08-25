@@ -5,9 +5,9 @@ type: rfc
 created: 2026-08-18
 updated: 2026-08-18
 related:
-  - one-workspace-source.md
-  - one-workspace-source.review-codex.md
-  - agent-permission-questions.md
+  - 20260818-one-workspace-source.md
+  - 20260818-one-workspace-source.review-codex.md
+  - 20260803-agent-permission-questions.md
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
 ---
@@ -99,7 +99,7 @@ and an answer. This is the posture the project already takes for ssh itself, and
 Zed's remote docs state the same: SSH's prompts are shown in the UI.
 
 **Prior art in this repo, cited honestly.**
-`docs/design/agent-permission-questions.md` is an agent permission prompt
+`20260803-agent-permission-questions.md` is an agent permission prompt
 forwarded from a session to the phone and answered there. Its status is "built,
 measured, shelved" — the mechanism was proven end-to-end and then shelved for
 lack of evidence about who wanted it, not because it failed. An askpass prompt
@@ -144,7 +144,7 @@ it, so each stage is worth shipping alone.
 `git.log`, `git.show` + commit diff, `git.branches`, `git.blame`. Nothing here
 can prompt, nothing needs the network, and it fills the History and Compare tabs
 that the workspace-source review flagged as unbacked
-(`one-workspace-source.review-codex.md`, "Search, Changes, and Issues have no
+(`20260818-one-workspace-source.review-codex.md`, "Search, Changes, and Issues have no
 staging").
 
 Biggest win per verb: a scrollable commit list with diffs beats `git log -p` in
@@ -189,7 +189,7 @@ cancellable, with progress surfaced (§7.2).
 The askpass prompt is a typed object on a protocol that multiple clients already
 attach to. So the answer need not come from the Mac that started the operation —
 it can come from the phone, which is exactly the shape
-`agent-permission-questions.md` built and proved.
+`20260803-agent-permission-questions.md` built and proved.
 
 Zed cannot do this: their askpass socket is local to the client process that
 spawned the child. Here the prompt is a protocol event, and the device may have
@@ -252,7 +252,7 @@ repository per workspace and says so; multi-repo is out of scope.
 ## 8. Prerequisites
 
 1. **The workspace reference.** Every verb here needs a `(device, root)`. That
-   decision is unresolved in `one-workspace-source.md` and its review; a `.host`
+   decision is unresolved in `20260818-one-workspace-source.md` and its review; a `.host`
    container cannot supply it, because `hostContainer` keeps one root per alias
    with first-writer-wins. **This RFC is blocked on that decision** and should
    not be implemented before it.

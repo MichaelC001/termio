@@ -5,11 +5,11 @@ type: rfc
 created: 2026-08-19
 updated: 2026-08-22
 related:
-  - one-path-local-through-termiod.md
-  - one-path-local-through-termiod.review-claude.md
-  - one-workspace-source.md
-  - one-workspace-source.review-codex.md
-  - remote-git-plane.md
+  - 20260817-one-path-local-through-termiod.md
+  - 20260817-one-path-local-through-termiod.review-claude.md
+  - 20260818-one-workspace-source.md
+  - 20260818-one-workspace-source.review-codex.md
+  - 20260818-remote-git-plane.md
   - 20260805-termiod-device-architecture.md
   - 20260819-device-workspace-project.md
   - 20260818-termiod-web-client-ghostty-wasm.md
@@ -33,8 +33,8 @@ place to read *why*:
 | --- | --- |
 | `20260805-termiod-device-architecture.md` | **The normative invariants.** §4 the presentation boundary, §4.1 what each side owns, §5 the four planes and one connection, §5.1 the connection as an object |
 | `20260819-device-workspace-project.md` | The vocabulary: Device → Workspace → Project → Session, and which of those a device owns |
-| `one-path-local-through-termiod.md` | The Swift-side inventory, the daemon-lifecycle blockers, the CLI verb-by-verb split |
-| `remote-git-plane.md` | The git tiers, and the askpass mechanism |
+| `20260817-one-path-local-through-termiod.md` | The Swift-side inventory, the daemon-lifecycle blockers, the CLI verb-by-verb split |
+| `20260818-remote-git-plane.md` | The git tiers, and the askpass mechanism |
 
 This document does the three things none of them can do individually:
 
@@ -53,7 +53,7 @@ This document does the three things none of them can do individually:
   *invariants* stand; its *order* does not. Where §8 numbers a step, §6 cites it
   and says where it now sits. The one piece of §8's numbering worth keeping is
   its 4a/4b/4c split of the connection work, which §6 Stage 4 adopts verbatim.
-- **This RFC supersedes `one-workspace-source.md` §5's stage order**, for the
+- **This RFC supersedes `20260818-one-workspace-source.md` §5's stage order**, for the
   reason its own codex review gave (§7.3).
 
 The deciding rule is unchanged, from device architecture §4.1: *would two people
@@ -335,7 +335,7 @@ plus hello. Locally 0.2 ms; remotely 26–33 ms with a warm ControlMaster and
 230–300 ms without. A tree that expands one directory per click is inside that
 budget; a search that re-issues per keystroke is not. Stage 3's gate measures it.
 
-`remote-git-plane.md` §8.1 names a *second* prerequisite — the workspace
+`20260818-remote-git-plane.md` §8.1 names a *second* prerequisite — the workspace
 reference — and that one is resolved (`Checkout`). §8.1 should be struck; §8.2
 and §8.3 stand.
 
@@ -378,7 +378,7 @@ worktrees, reviewed and approved, and neither committed nor merged** (§2.4):
 and the gates at the end of this section are what stands between the two.
 
 Nothing below is a proposal. It is the shape the implementation settled on,
-recorded because two of the decisions contradict what `one-path-local-through-termiod.md`
+recorded because two of the decisions contradict what `20260817-one-path-local-through-termiod.md`
 §3.2 specified, and a later reader comparing the two needs to know which won.
 
 #### The wire, as built
@@ -430,7 +430,7 @@ directions cost differently:
 
 Which is why only an explicit `true` confirms. `nil` is nobody answering and
 must never be read as "unknown, so confirm" — that would tax every close on the
-sessions the shipped rule deliberately exempts (`remote-to-device.decisions.md` §2).
+sessions the shipped rule deliberately exempts (`20260814-remote-to-device.decisions.md` §2).
 
 #### Resolving the group, per platform
 
@@ -702,7 +702,7 @@ passes a field-identical check while `cwd` silently rots.
 
 ### Stage 11 — remote git's new scope: mutation, askpass, network
 
-`remote-git-plane.md` §5 Stages 2–4, in its order, and **only** these — the read
+`20260818-remote-git-plane.md` §5 Stages 2–4, in its order, and **only** these — the read
 tier (its Stage 1) landed in `d38f50c` and is consumed in Stage 9 above.
 
 - **Local mutation tier**: staging, commit, discard, stash, branch ops, ignore
@@ -736,13 +736,13 @@ editor-adjacent and termio's editor is a preview (§9.5).
    sits at Stage 9 here and needs no request plane — `fs.*` and `git.*` are their
    own verbs and shipped that way.
 
-2. **`remote-git-plane.md` §8.1 is stale.** It says the workspace reference "is
+2. **`20260818-remote-git-plane.md` §8.1 is stale.** It says the workspace reference "is
    unresolved" and that the RFC "should not be implemented before it". `Checkout`
    (`DeviceContext.swift:56-101`) resolves it, with the `host_id`-first identity
    the codex review asked for. Strike §8.1; §8.2 and §8.3 stand. Its §5 Stage 1
    is done in Rust, which §8.1 would have forbidden starting.
 
-3. **`one-workspace-source.md` §2's `ProjectLocation` should not be built.** A
+3. **`20260818-one-workspace-source.md` §2's `ProjectLocation` should not be built.** A
    two-case enum keyed on `deviceID` is a second spelling of `KnownDevice` +
    `Checkout`, which is already in the tree, already tested
    (`InspectorCheckoutTests`, 6 tests), and already consumed by every inspector
@@ -750,21 +750,21 @@ editor-adjacent and termio's editor is a preview (§9.5).
    codex review anticipated this: it proposed `WorkspaceReference { deviceID;
    root }`, and `Checkout` *is* that struct.
 
-4. **`one-workspace-source.md` §5's stage order is inverted**, and this document
+4. **`20260818-one-workspace-source.md` §5's stage order is inverted**, and this document
    supersedes it. It put "delete SFTP" last, behind editing and mutations; its
    own review disagreed and was right. That deletion shipped first and removed
    1,409 lines.
 
 5. **The brief's "delete `RemoteFileTree.swift`" is wrong.** §4.3.
 
-6. **`one-path-local-through-termiod.md` §5.2 item 1 and
+6. **`20260817-one-path-local-through-termiod.md` §5.2 item 1 and
    `one-binary-and-a-daemon-that-ships.md` §1 both lead with a solved problem.**
    "A released build cannot start a daemon at all" was true when written:
    `2199f35` builds, `lipo`s, arch-checks and signs `termiod` into
    `Contents/Resources`, and `daemonBinaryPath()` resolves it. What is left is
    Stage 5, a much smaller item than either RFC prices it at.
 
-7. **`one-path-local-through-termiod.md` Stage 2 item `4a` is partly done, not
+7. **`20260817-one-path-local-through-termiod.md` Stage 2 item `4a` is partly done, not
    done.** The last revision of this document said "done"; that overstated it.
    `multiplexingArguments` ships, `BatchMode`/`ConnectTimeout` do not, and the
    missing pair is the difference between a named error and a hang. Corrected in
@@ -777,7 +777,7 @@ editor-adjacent and termio's editor is a preview (§9.5).
    status reporting would die silently. And a router named `termio` cannot
    dispatch to a binary named `termio`. **Do not re-propose.**
 
-9. **`one-path-local-through-termiod.md` §3.2's `foreground_changed` event does
+9. **`20260817-one-path-local-through-termiod.md` §3.2's `foreground_changed` event does
    not exist and should not be built.** That section specifies
    `E { ev: "foreground_changed", session, pid, argv, cwd? }` as a debounced
    push. The implementation instead reuses `E roster`, which already carried
@@ -789,7 +789,7 @@ editor-adjacent and termio's editor is a preview (§9.5).
    needs no second shape to version. **Strike the `foreground_changed` line from
    §3.2; its three rules stand.**
 
-10. **`one-path-local-through-termiod.md` §3.2's last sentence is inverted by the
+10. **`20260817-one-path-local-through-termiod.md` §3.2's last sentence is inverted by the
     mechanism.** It reads: *"`foreground_job` rides `list` rather than an event
     because its consumer asks once, at close time, and a stale push is worse than
     a fresh question."* The premise does not hold. `Session::info()` reads the
@@ -831,7 +831,7 @@ so nobody reads the absence as an oversight.
   for the same reason.
 - **QUIC, discovery, `grid_diff` by default.**
 - **Session survival across a daemon restart.** Decided against
-  (`one-path-local-through-termiod.md` §5.2 item 7): a holder process or an
+  (`20260817-one-path-local-through-termiod.md` §5.2 item 7): a holder process or an
   `exec`-preserving re-exec is a supervisor design, and it reintroduces the
   failure mode the daemon exists to remove — two processes disagreeing about who
   owns a PTY. Make restarts rare and honest instead.

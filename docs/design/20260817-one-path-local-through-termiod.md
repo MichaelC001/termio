@@ -5,10 +5,10 @@ type: rfc
 created: 2026-08-17
 updated: 2026-08-24
 related:
-  - one-path-local-through-termiod.review-claude.md
+  - 20260817-one-path-local-through-termiod.review-claude.md
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
-  - remote-to-device.md
+  - 20260814-remote-to-device.md
 ---
 
 # One path — local sessions run through termiod too
@@ -321,7 +321,7 @@ Three rules the shape encodes:
 `foreground_job` rides `list` rather than an event because its consumer asks
 once, at close time, and a stale push is worse than a fresh question.
 
-**Skew rule, restated from `remote-to-device.decisions.md` §2:** an absent field
+**Skew rule, restated from `20260814-remote-to-device.decisions.md` §2:** an absent field
 preserves today's no-confirm behaviour. It must never be read as "unknown, so
 confirm" — that would tax every close on exactly the sessions the shipped rule
 deliberately exempts.
@@ -514,7 +514,7 @@ that trade is acceptable.
      (`TermiodClient.swift:369-406`), so it and its PTY children run under the
      identity the user already granted. Under launchd (item 4) it is its own
      responsible process. This repo already reasons in exactly those terms —
-     `docs/design/20260713-loose-terminal-entity.md:143-146` forbids walking
+     `20260713-loose-terminal-entity.md:143-146` forbids walking
      down from `$HOME` because the resulting prompts are "attributed to Termio
      as the responsible process" — and after Stage 7 it is the daemon, not the
      app, doing the walking. **I did not test this**, so it is a risk row in §9
@@ -1277,7 +1277,7 @@ way the git pane will name its missing history verbs.
 | **Dev and release fight over one session table** | Same socket derivation, *and* a single launchd label, plist and target (`service.rs:26`, `:44-47`, `:116-118`) that item 4 then makes both apps rewrite on every launch (§5.2 item 2) | Stage 1 item 3 on both axes, with criteria that check `host_id` differs **and** that two plists survive alternating relaunches |
 | **The daemon ships but the bundle does not pass notarization** | It is the first nested Mach-O other than Sparkle; signing is inside-out and order-dependent, and `--deep` verification does not catch nested code (§5.2 item 1) | Stage 1 item 1 signs it before the outer seal with `--options runtime`; the criteria check the authority, the runtime flag, and a clean `notarytool log` |
 | **An arm64-only daemon inside a universal app** | The app `lipo`s two slices and fails loudly if one is missing (`build-app.sh:152-161`); nothing builds a macOS `x86_64` `termiod` at all (`termiod.yml:98,122`, no Rust step in `release.yml`) | Same check, applied to the daemon: `lipo -archs` in Stage 1's criteria, runnable without credentials |
-| **The daemon becomes its own TCC responsible process** | Under launchd it is, and this repo already writes rules keyed on that attribution (`docs/design/20260713-loose-terminal-entity.md:143-146`); after Stage 7 the daemon does the directory walking | Untested — Stage 1 carries a fresh-account first-launch check, and a failure means the launchd job is the wrong shape on macOS, not that the check was pessimistic |
+| **The daemon becomes its own TCC responsible process** | Under launchd it is, and this repo already writes rules keyed on that attribution (`20260713-loose-terminal-entity.md:143-146`); after Stage 7 the daemon does the directory walking | Untested — Stage 1 carries a fresh-account first-launch check, and a failure means the launchd job is the wrong shape on macOS, not that the check was pessimistic |
 | **A Sparkle update takes every session down** | Nothing stops the daemon on quit or on update (`TermioStore.swift:756-761`), a second one refuses to start (`daemon.rs:313-317`), and the only remedy buries the roster (§5.2 items 7 and 9) | Stage 1 item 6 decides it before the daemon ever ships: a compatibility window, no `min_proto` raise in the bundling release, and a criterion that updates in place from the previous release |
 | **Panels regress for local projects** | Stage 7 replaces a working local path with a round trip | `fs.list` replies are `seq`-stamped and clients cache indefinitely (§C.12), so a visited directory is 0-RTT; the criterion measures the cold expansion, and the local socket makes it sub-millisecond |
 

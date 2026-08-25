@@ -3,7 +3,7 @@ title: "Competitive analysis: cmux (manaflow-ai)"
 status: done
 type: research
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-08-24
 ---
 
 # cmux (manaflow-ai)
@@ -131,6 +131,41 @@ an emphasis on **programmability** and **multitasking**.
   relegated to the de-emphasized cloud product).
 - **Where not to fight head-on**: breadth, mindshare, community, programmable
   surface — don't compete with cmux on these dimensions.
+
+## Business model & funding
+
+> Researched 2026-08-24.
+
+- **Funding**: **~$500K** total — Y Combinator (S24) and Scribble Ventures.
+  ~3 people in SF. An order of magnitude below Conductor's $22M despite far more
+  GitHub mindshare.
+- **Revenue**: **never disclosed.** GetLatka lists Manaflow at ~$330K ARR /
+  $1.4M valuation tagged 2025, but that is a scraped estimate **and it predates
+  the pivot** — it belongs to the old cmux.sh workflow-automation product, not
+  the terminal. **Do not cite it as cmux revenue.**
+- **Licensing**: GPL-3.0-or-later plus a **commercial license** sold to
+  organizations that cannot ship copyleft code. The local terminal is free
+  forever.
+- **Pricing**:
+
+  | Tier | Price | Unlocks |
+  | --- | --- | --- |
+  | Free | $0 | Native terminal, local agents, local history, browser panes, SSH, automation, community support |
+  | Pro | **$30/mo** ($240/yr) | Cloud agents, model gateway, cloud history, iOS beta, **20 compute-hours/month** |
+  | Team | **$35/seat/mo** | Centralized seats, pooled cloud hours, team rules, unified billing |
+  | Enterprise | Custom | SSO, audit logs, self-hosting |
+
+- **Where the paywall sits**: **metered cloud compute-hours**, plus the
+  commercial license. Not collaboration.
+
+### vs. Termio
+
+cmux's revenue surface is exactly the ground Termio's non-negotiable #3 rules
+out — the paid tier's headline unit is 20 cloud compute-hours. That makes it a
+direct competitor on product and a **non**-competitor on business model: cmux
+cannot serve a buyer who refuses to put code on a vendor's machine, and Termio
+cannot collect usage revenue that scales on its own. Termio's answer is the
+second person (Team at $20/seat), which cmux does not charge for at all.
 
 ## References
 

@@ -5,10 +5,10 @@ type: rfc
 created: 2026-08-18
 updated: 2026-08-18
 related:
-  - one-workspace-source.review-codex.md
-  - remote-git-plane.md
-  - one-path-local-through-termiod.md
-  - remote-to-device.md
+  - 20260818-one-workspace-source.review-codex.md
+  - 20260818-remote-git-plane.md
+  - 20260817-one-path-local-through-termiod.md
+  - 20260814-remote-to-device.md
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
 ---
@@ -23,14 +23,14 @@ related:
 ## 0. What changed since the first draft
 
 The first draft of this RFC proposed a `WorkspaceSource` enum read by the
-inspector panes. Its review (`one-workspace-source.review-codex.md`) rejected
+inspector panes. Its review (`20260818-one-workspace-source.review-codex.md`) rejected
 that shape on two counts, both correct:
 
 - keying a device by SSH **alias** mistakes a route for identity, so one box
   reached by LAN, WAN, and Tailscale names forks into three workspaces, when
   `DeviceContext.swift:214-225` already prefers `deviceID`;
 - keeping `.local` as a lasting public case preserves the local special-case
-  that `one-path-local-through-termiod.md` exists to delete.
+  that `20260817-one-path-local-through-termiod.md` exists to delete.
 
 It also found that `.host` provably cannot own a workspace root
 (`hostContainer` keeps one root per alias, first-writer-wins), and that the
@@ -258,7 +258,7 @@ save and is corrected here.
 | Stage 2 capability negotiation and linger/gap gates | §5 Stage 3 |
 | Conditional save before Stage 3 | §5 Stage 4 |
 | Connection ownership as a prerequisite | Still open — see §7.1 |
-| Search/Changes/Issues staging | Partly here, partly `remote-git-plane.md`; Issues repository identity remains unsolved |
+| Search/Changes/Issues staging | Partly here, partly `20260818-remote-git-plane.md`; Issues repository identity remains unsolved |
 | Watcher quota and eligibility | Still open — see §7.2 |
 
 ## 7. Still open

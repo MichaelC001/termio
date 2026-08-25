@@ -3,7 +3,7 @@ title: Keyboard and command design
 status: active
 type: design
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-25
 ---
 
 # Keyboard and command design
@@ -20,19 +20,20 @@ and that decides its key, its confirmation, and whether it may cascade.
   end a process. They need no confirmation, because nothing is lost.
 - Keys that end a process are few, named, and confirm when there is live work.
 
-⌘W is always the first kind. ⌘Q is the second. That is the whole design; the rest
-of this doc is why the obvious alternative is wrong and how the neighbours answer
+⌘Q and ⌘W are both the second kind, at two scales: ⌘Q ends every session, ⌘W ends
+the one in front of you. That is the whole design; the rest of this doc is which
+object each key acts on, when a process key may ask, and how the neighbours answer
 the same question.
 
 This replaces the earlier "termio is sidebar-shaped, not tab-shaped" framing,
-which described the same conclusion but couldn't be applied to a key you hadn't
-already decided. Presentation-or-process can.
+which described a conclusion but couldn't be applied to a key you hadn't already
+decided. Presentation-or-process can.
 
-## Why the literal translation is wrong
+## Which object ⌘W acts on
 
 Every tabbed terminal binds ⌘W to "close the surface", and in those apps the
 surface *is* the process — closing it kills the program. termio's objects don't
-line up that way:
+line up one-to-one:
 
 | termio | tabbed terminal (iTerm2, Ghostty) |
 | --- | --- |
@@ -41,22 +42,32 @@ line up that way:
 | **Split group** — the layout, persisted | tab |
 | **Window** — one, always | one of many |
 
-So `close_surface` has two possible readings in termio: *remove this pane from
-the layout* (Ungroup), or *end this session*. Structurally the first is the
-faithful one — it's the same "close the thing in front" — while the second
-smuggles in a process kill that the original binding only implies because tabs
-and processes are the same object there.
+So `close_surface` has two possible readings in termio: *remove this pane from the
+layout* (Ungroup), or *end this session*. **The session is the one users arrive
+expecting** — it is the tab-shaped object here, the thing that appears in the
+sidebar, gets named, and is what "close this" means when you look at the screen.
+The pane is a layout slot; nobody's ⌘W habit is about layout slots.
 
-Choosing the second reading is what produced [#242](https://github.com/termio-sh/termio/issues/242):
-⌘W fell through to closing the single window, the app terminated with it, and
-every agent died with no confirmation. Two users reported it the same day.
+The first cut of this doc chose the pane, on the argument that it is the
+structurally faithful translation — same "close the thing in front", no smuggled
+process kill. That reasoning holds and was still the wrong trade: it optimised for
+what the key *doesn't* destroy at the cost of what the key *is for*, and left the
+verb people actually wanted — Close Session — with no key at all
+([#242 follow-up](https://github.com/termio-sh/termio/issues/242)).
+
+What has to stay true is the part #242 was really about. That bug was not "⌘W
+killed a session"; it was ⌘W closing the single window, the app terminating with
+it, and **every** agent dying at once with no confirmation. The app now outlives
+its window, so ⌘W's blast radius is one session, chosen deliberately, with the
+confirmation policy below deciding whether it asks first.
 
 ## The map
 
 | Key | Action | Kind |
 | --- | --- | --- |
-| ⌘W | Ungroup the focused pane; with no split, close the window; in an auxiliary window, close that window; with the palette up, dismiss it | presentation |
+| ⌘W | End the focused session; with no session left, close the window; in an auxiliary window, close that window; with the palette up, dismiss it | process |
 | ⌘⇧W | Close the frontmost window | presentation |
+| *(unbound)* | Ungroup the focused pane — the session keeps running | presentation |
 | ⌘M | Minimize the frontmost window | presentation |
 | ⌘D / ⌘⇧D | Split right / down | presentation |
 | ⌥⌘ arrows | Focus pane by direction | presentation |
@@ -65,10 +76,15 @@ every agent died with no confirmation. Two users reported it the same day.
 | ⌃⌘F | Toggle full screen | presentation |
 | ⌘T / ⌘N | New Terminal / New Chat | creation |
 | ⌘Q | Quit — **confirms** when any session is working or needs you | process |
-| *(unbound)* | Close Session — **confirms** only for a shell with a command running | process |
 
 Closing the window keeps the app running with every session alive; the Dock icon
-brings the window back. Only ⌘Q reaches the teardown that kills PTYs.
+brings the window back. ⌘W ends the one session it is aimed at; only ⌘Q reaches
+the teardown that kills every PTY at once.
+
+The last-session fallthrough is Chrome's: when there is nothing left to close, the
+key closes the window rather than going inert. Close Session therefore stays
+*enabled* in the menu with no session selected — a dimmed item would swallow ⌘W
+before the fallthrough could run.
 
 Window-scoped commands resolve the **key window**, so ⌘W and ⌘⇧W close Settings
 when Settings is in front rather than reaching past it to the terminal behind.
@@ -84,9 +100,21 @@ how alarming the command sounds:
 
 - **⌘Q** confirms when a session is `working` or `needs-you`. An all-idle app
   quits without a word.
-- **Close Session** confirms only for a plain shell with a command running in
+- **⌘W / Close Session** confirms only for a plain shell with a command running in
   front of it — the iTerm2 carve-out. Agent sessions close without a word.
-- **⌘W** never confirms, because after #242 it destroys nothing.
+- **⌘⇧W** never confirms, because closing the window destroys nothing.
+
+Every one of these dialogs takes **Return to confirm and Escape to cancel**, with the
+destructive button added first so it is the default and the initial first responder
+(`TermioStore.applyConfirmationKeys`). Ghostty puts Return on Cancel and cmux puts it
+on Confirm; the reasoning for following cmux is under *Ghostty* below.
+
+That carve-out is what made ⌘W = Close Session viable at all. Under the *first*
+confirmation rule — ask whenever the PTY is alive — this binding would have put a
+dialog in front of nearly every press, and a dialog that always fires is one people
+dismiss reflexively. Relaxing the rule to "what would be lost" came first; the
+binding only became affordable afterwards. If the confirmation rule is ever
+tightened back, this binding has to be reconsidered with it.
 
 The first cut of this rule confirmed whenever the session's PTY was alive, and
 that shipped. It was wrong for a reason worth recording: an agent session's PTY
@@ -121,8 +149,8 @@ comparison. Its published shortcut table and changelog (2026-02-09):
 | --- | --- |
 | ⌘W | **Close Tab** — closes the focused tab; if it's the last tab, closes the workspace/window |
 | ⌘⇧W | Close Workspace (with a confirmation dialog) |
-| ⌃⌘W | Close Window |
-| ⌘D | confirms the close dialog (the macOS "Don't Save" mnemonic) |
+| ⌃⌘W | Close Window (with a confirmation dialog) |
+| Return | confirms the close dialog; Escape cancels |
 
 cmux lets ⌘W cascade all the way up to closing the window, and gates the cascade
 with a confirmation — plus a separate "running process" dialog. It also enforces
@@ -130,9 +158,22 @@ the routing with a CI lint and a review-bot rule whose stated purpose is that �
 must close the active window "instead of falling through to workspace panel
 closing." They care enough about this one key to gate it in CI.
 
-**Where termio differs:** cmux needs the confirmation because its close still
-tears things down. termio's doesn't, so there's no dialog to dismiss at all. The
-divergence isn't taste — it follows from the window close being non-destructive.
+**The confirmation keys are the part worth copying, and this doc had them wrong.**
+An earlier revision of this table recorded cmux as binding ⌘D to confirm, the macOS
+"Don't Save" mnemonic. cmux did ship exactly that, in
+[#1219](https://github.com/manaflow-ai/cmux/pull/1219) — and **removed it nine hours
+later** in [#1279](https://github.com/manaflow-ai/cmux/pull/1279): the Close button
+became the default and the initial first responder so **Return confirms**, the custom
+⌘D was deleted, and an XCUITest was added so it can't drift back. Their quit
+confirmation (`QuitConfirmationAlertPresenter`) is built the same way — Quit added
+first so Return quits — plus a "Don't warn again for Cmd+Q" suppression checkbox.
+Checked against cmux `main`, 2026-08-25.
+
+**Where termio differs:** the cascade is the same shape — close the focused thing,
+fall through to the window when nothing is left — but the dialogs aren't. cmux
+gates the cascade with a confirmation and adds a separate running-process one;
+termio asks only for a shell with a live command, and never for the window close,
+because closing the window destroys nothing here.
 
 ### Zed — the same object problem, solved by context
 
@@ -171,10 +212,29 @@ emitting marks; termio's works regardless of the user's shell config, at the cos
 of saying nothing about an agent — which termio answers by not asking for agent
 sessions at all.
 
-Its close dialog also defaults focus to **Cancel**, so Return cancels. termio's
-does the same, after a first cut where Escape landed on the destructive button.
-Two independent implementations converging on that is the strongest signal in this
-doc that it's the right default.
+Its close dialog defaults focus to **Cancel**, so Return cancels. termio shipped that
+too, and **no longer does** — this is the one place the neighbours split, so the
+disagreement is worth stating rather than averaging away:
+
+- **Ghostty:** Return cancels. Its dialog is raised by `confirm-close-surface` on a
+  key the user may not have meant to press, and the surface is one shell.
+- **cmux:** Return confirms, on both the close dialog and the quit sheet, enforced
+  by a UI test after they tried the Cancel-default design and dropped it same-day.
+- **herdr:** doesn't ask at all — closing a pane kills it and its process with no
+  prompt. A built-in `confirm_close_tab` is an open request
+  ([discussion #648](https://github.com/ogulcancelik/herdr/discussions/648)); the
+  community plugin that fills the gap uses tmux's `y`/Escape, so Return isn't a
+  confirm key there either — but it's a TUI, where Return can't be one.
+
+termio follows cmux, for the reason its own reversal makes plain: this dialog only
+appears after the user pressed ⌘W or ⌘Q **on purpose**, and a confirmation whose
+"yes" the keyboard cannot reach isn't cautious, it's a dead end you have to take
+your hands off the keys to answer. So Return confirms, Escape cancels, and the
+destructive button still draws destructive. What survives from the Ghostty reading
+is the part that was actually load-bearing: **the dialog must be rare.** It fires
+only for a plain shell with a live foreground job, never for an agent session — see
+*Confirmation policy* above. A dialog that fires constantly is the failure mode; a
+dialog you can answer with Return is not.
 
 Ghostty users push back on that dialog even at its lower frequency —
 [#9669](https://github.com/ghostty-org/ghostty/discussions/9669) asks for a
@@ -198,8 +258,7 @@ of truth for every rebindable command, the ⌘⇧P palette searches it, Settings
 Keyboard rebinds it, and the surface's ghostty unbind set is *derived* from it so
 a rebind can't be swallowed by the terminal. The lesson taken from Raycast is
 restraint — a command earns a default key by being pressed constantly, not by
-existing. Split Left and Split Up ship unbound for this reason, as does Close
-Session.
+existing. Split Left, Split Up, and Ungroup ship unbound for this reason.
 
 ## Resolution: one action that branches, not a context tree
 
@@ -212,15 +271,16 @@ explicit:
 
 VS Code says the same thing with `when` clauses. termio does not: `KeyCommandCatalog`
 is a flat table, and ⌘W resolves itself *imperatively*, inside one action — is the
-key window an auxiliary one, is there a split, otherwise close the window.
+key window an auxiliary one, is a session selected, otherwise close the window.
 
 At this size that is the simpler design, and it stays honest because there is
 exactly one place to read. It is deliberate, not an oversight — but it only earns
 that defence if the decision is *isolated and tested*, because this is the binding
-that regresses silently: the window still closes, just the wrong one. cmux guards
+that regresses silently: the window still closes, just the wrong one — and now that
+the key ends a process, a regression can also end the wrong session. cmux guards
 the same key with a CI lint. termio's equivalent is `CloseCommand.action`, a pure
-function over "what is in front" × "is there a split", with `CloseCommandTests`
-pinning every combination.
+function over "what is in front" × "is a session selected", with
+`CloseCommandTests` pinning every combination.
 
 Keeping the decision pure also made a case visible that the imperative version had
 wrong: the ⌘⇧P palette is a **borderless** panel, and `performClose` on a window
@@ -228,7 +288,7 @@ with no close button only beeps. Routing it to the store flag that owns the
 palette's presentation turns a dead key into a dismiss.
 
 The known cost shows up one layer in: with a diff or editor detail open in the
-inspector, ⌘W ungroups a pane instead of closing the detail. Zed would close it —
+inspector, ⌘W closes the session instead of the detail. Zed would close the detail —
 its `Workspace` context binds ⌘W to `CloseActiveDock`.
 
 That symptom is **not** fixed by adding another branch. Zed's dock binding matches
@@ -241,14 +301,28 @@ notion, which is the refactor, not a patch.
 same key, or when a binding's correctness depends on which region has focus. Until
 then, branch and keep it in one function.
 
+## Reversed
+
+- **⌘W = Ungroup** shipped from 2026-08-12 to 2026-08-25, then lost the key to
+  Close Session — the literal iTerm2/Ghostty reading and the original
+  recommendation in [#204](https://github.com/termio-sh/termio/issues/204),
+  arrived at a second time by the browser route: ⌘W closes a tab, and the
+  tab-shaped object here is the session.
+
+  The argument that had rejected it was that its running-job prompt would fire on
+  nearly every press, since `working` is an agent's normal state. That objection
+  died with the confirmation rewrite in this doc's own *Confirmation policy*
+  section: agent sessions don't prompt at all, so the dialog is now rare enough
+  that the binding costs nothing it used to. Ungroup keeps the menu verb.
+
+  **The cost, recorded so it isn't rediscovered as a surprise:** ⌘W now ends an
+  agent session with no dialog and no undo. Chrome has ⌘⇧T; termio has nothing
+  that reopens a closed session. If that becomes the complaint, the answer is a
+  reopen, not a confirmation — a dialog on every press is the failure mode this
+  doc already has a section about.
+
 ## Rejected
 
-- **⌘W = Close Session.** The literal iTerm2/Ghostty reading, and the original
-  recommendation in [#204](https://github.com/termio-sh/termio/issues/204).
-  Adopting it means adopting its running-job prompt too — and with agents,
-  `working` is the *normal* state, so the prompt would fire on nearly every press.
-  A dialog that always fires is one people learn to dismiss reflexively, which
-  arrives back at #242 by a slower road.
 - **⌘1…⌘9 to select the Nth session.** Ghostty's `goto_tab` and the
   Safari/Chrome convention, but there is no stable Nth: with `recentActivity`
   sorting, selecting a session reorders the tree, so pressing ⌘4 changes what ⌘1

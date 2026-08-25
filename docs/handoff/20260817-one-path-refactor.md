@@ -5,8 +5,8 @@ type: design
 created: 2026-08-17
 updated: 2026-08-17
 related:
-  - ../rfcs/one-path-local-through-termiod.md
-  - ../rfcs/remote-to-device.md
+  - ../design/20260817-one-path-local-through-termiod.md
+  - ../design/20260814-remote-to-device.md
   - ../design/20260805-termiod-device-architecture.md
 ---
 
@@ -75,7 +75,7 @@ The daemon ran ahead; the client never caught up.
 
 ## 3. The plan
 
-`docs/rfcs/one-path-local-through-termiod.md` (869 lines). Verified: the
+`docs/design/20260817-one-path-local-through-termiod.md` (869 lines). Verified: the
 inventory cites real file:line, not guessed names.
 
 Its most valuable finding, which no one anticipated: **deleting the in-process

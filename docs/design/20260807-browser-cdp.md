@@ -5,7 +5,7 @@ type: design
 created: 2026-08-07
 updated: 2026-08-12
 related:
-  - companion-wire-protocol.md
+  - 20260810-companion-wire-protocol.md
   - termiod-session-protocol.md
   - agent-extensibility.md
 ---
@@ -290,7 +290,7 @@ time and we get browser-harness's weak primitive with none of its recovery.
 is real, that one rejects synthetic events — is not eliminable by any interface.
 browser-harness stores it as per-domain markdown. termio's equivalent already
 exists: **skills**, with a distribution format defined in
-[agent-plugins.md](./agent-plugins.md). Also free.
+[20260812-agent-plugins.md](./agent-plugins.md). Also free.
 
 That yields the full picture:
 
@@ -354,7 +354,7 @@ in their browser from their pocket.
    own repo, transferred from `runbrowser/runbrowser` with history intact. The
    accepted cost is cross-repo protocol sync — the extension and the companion
    server define two ends of one contract and now ship from two repos, which is
-   the skew problem `companion-wire-protocol.md` exists to describe. Version the
+   the skew problem `20260810-companion-wire-protocol.md` exists to describe. Version the
    handshake accordingly.
 2. **Web Store listing** — unavoidable cost, and the long pole. v0 can ship the
    extension unpacked in the bundle with the Settings button revealing it and

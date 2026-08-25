@@ -6,7 +6,7 @@ created: 2026-08-12
 updated: 2026-08-12
 related:
   - agent-extensibility.md
-  - browser-cdp.md
+  - 20260807-browser-cdp.md
 ---
 
 # Agent Plugins
@@ -31,7 +31,7 @@ plugin authored for any conforming host works here, and a plugin we ship works
 elsewhere.
 
 This is not the "plugin system" argument rejected in
-[browser-cdp.md §10](./browser-cdp.md). That objection was against **inventing** a
+[20260807-browser-cdp.md §10](./browser-cdp.md). That objection was against **inventing** a
 bespoke extension API for a single internal consumer. Adopting a published
 standard with an existing ecosystem is a different act, and the objection does
 not transfer.

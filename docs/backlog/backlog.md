@@ -5,7 +5,7 @@ type: backlog
 created: 2026-07-03
 updated: 2026-07-16
 related:
-  - rfcs/fork-libghostty-spm.md
+  - design/20260703-fork-libghostty-spm.md
   - design/20260628-session-history-search-resume.md
 ---
 
@@ -46,7 +46,7 @@ published; the foundation (`include/ghostty/vt/render.h`, nightly signed
 
 ## libghostty-spm soft fork (bridge, not home)
 
-Per `rfcs/fork-libghostty-spm.md` — Option B confirmed, executed as a bridge
+Per `design/20260703-fork-libghostty-spm.md` — Option B confirmed, executed as a bridge
 until the official packages land.
 
 - [ ] **Fork libghostty-spm and land the deadlock fix** (`receive()` releases

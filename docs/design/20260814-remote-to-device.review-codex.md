@@ -22,9 +22,9 @@ two-copies failure at different layers.
 
 The most serious defect is staging. The settled architecture requires a durable
 connection object, deletion of the `TERMIO_TERMIOD` fork, and only then a device
-switcher (`docs/design/20260805-termiod-device-architecture.md:513-531`). This RFC
+switcher (`20260805-termiod-device-architecture.md:513-531`). This RFC
 starts with the switcher, calls that stage client-only, and omits deletion of the
-flag (`docs/rfcs/remote-to-device.md:163-176`). That ordering cannot produce a
+flag (`docs/design/20260814-remote-to-device.md:163-176`). That ordering cannot produce a
 truthful current-device UI.
 
 ## Where the design recreates two copies
@@ -44,7 +44,7 @@ The problem is promoting both sides into independent user-facing authorities.
 
 ### 1. The ownership test is false, and it selects the wrong authority
 
-“Did termio produce this state itself?” (`docs/rfcs/remote-to-device.md:53-63`)
+“Did termio produce this state itself?” (`docs/design/20260814-remote-to-device.md:53-63`)
 does not classify the RFC’s own table:
 
 - The user produces a display name and colour choice.
@@ -60,7 +60,7 @@ state belongs to `termiod`.
 The typed-target row is therefore an architectural violation, not an exception.
 A `user@host` value is an SSH route. Persisting it in Settings creates the host
 database that `CLAUDE.md:42-44` forbids. “It cannot be written to
-`~/.ssh/config`” does not make termio its owner (`docs/rfcs/remote-to-device.md:71`);
+`~/.ssh/config`” does not make termio its owner (`docs/design/20260814-remote-to-device.md:71`);
 it means the target must remain ephemeral or the design needs an explicit,
 user-authored route mechanism consistent with the settled read-only rule.
 
@@ -80,7 +80,7 @@ can occupy both the known-device section and the untried-route section.
 ### 2. “Current device” and focused session can disagree
 
 The RFC says new work and panels follow the current device while running
-sessions remain cross-device (`docs/rfcs/remote-to-device.md:125-140`). It never
+sessions remain cross-device (`docs/design/20260814-remote-to-device.md:125-140`). It never
 defines what happens when the user clicks a session on another device.
 
 Today there is one focus authority. Changing `selectedSessionID` saves and
@@ -99,7 +99,7 @@ two incompatible outcomes:
   where the next terminal and project will be created.
 
 The wording also drifts from “current device” to “focused device” at
-`docs/rfcs/remote-to-device.md:144-146`. Those cannot remain informal synonyms.
+`docs/design/20260814-remote-to-device.md:144-146`. Those cannot remain informal synonyms.
 The RFC needs a transition table for launch, switcher selection, session
 selection, pane focus, Connect, route loss, closing the last session on a device,
 and app restore. It must name which state controls terminal input, panels,
@@ -108,7 +108,7 @@ creation commands, the indicator, and the title bar after every transition.
 The session-list description is internally inconsistent too: it first promises a
 cross-device list with a device column, then says the attention badge avoids
 “flattening every device into one list”
-(`docs/rfcs/remote-to-device.md:133-142`). Pick one information architecture.
+(`docs/design/20260814-remote-to-device.md:133-142`). Pick one information architecture.
 
 ### 3. The staging order directly violates the settled architecture
 
@@ -119,9 +119,9 @@ The companion design deliberately orders the work as:
 3. add the switcher, reading readiness from that connection object.
 
 That order is explicit at
-`docs/design/20260805-termiod-device-architecture.md:513-531`. The RFC reverses
+`20260805-termiod-device-architecture.md:513-531`. The RFC reverses
 it. Stage 1 adds the switcher and single-device collapse as a client-only change;
-the flag is absent from every stage (`docs/rfcs/remote-to-device.md:163-176`).
+the flag is absent from every stage (`docs/design/20260814-remote-to-device.md:163-176`).
 
 The current source still has two execution paths. `Termiod.isEnabled` reads
 `TERMIO_TERMIOD` (`Sources/termio/Terminal/Termiod/TermiodClient.swift:17-20`),
@@ -138,7 +138,7 @@ daemon path points into the working tree unless an environment variable override
 it (`Sources/termio/Terminal/Termiod/TermiodClient.swift:55-63`), while the
 architecture records that the launchd service is never installed automatically
 and that Linux lifecycle work is incomplete
-(`docs/design/20260805-termiod-device-architecture.md:502-512`). Packaging,
+(`20260805-termiod-device-architecture.md:502-512`). Packaging,
 installation, startup failure, upgrade rollback, old-session adoption, and the
 removal of the in-process fallback need their own stage and release criteria
 before the UI claims there is one path.
@@ -146,7 +146,7 @@ before the UI claims there is one path.
 ### 4. The RFC does not decide the fate of plain SSH
 
 The data-model table says `Session.sshHost` is removed and “such a session is a
-device session” (`docs/rfcs/remote-to-device.md:153-161`). The vocabulary and
+device session” (`docs/design/20260814-remote-to-device.md:153-161`). The vocabulary and
 staging sections never say what happens to the shipped `New SSH Connection`
 command. Today that command is separate from the durable termiod action
 (`Sources/termio/App/App.swift:2127-2133`), and `Session.sshHost` specifically
@@ -174,7 +174,7 @@ Those states have different safe actions.
 
 The architecture already requires a `TermiodConnection` that owns a coherent
 “reachable / degraded / gone” state
-(`docs/design/20260805-termiod-device-architecture.md:395-411`) and says the
+(`20260805-termiod-device-architecture.md:395-411`) and says the
 switcher must consume it. The current registry cannot substitute: `lastSeen` is
 intentionally cleared on launch so persisted data never claims current
 reachability (`Sources/termio/Terminal/Termiod/TermiodDevice.swift:71-79`). The
@@ -201,11 +201,11 @@ switcher.
 ### 6. Literal single-device collapse hides the only recovery surface
 
 “No indicator, no submenu, no Settings tab”
-(`docs/rfcs/remote-to-device.md:108-112`) is too strong once termiod is the only
+(`docs/design/20260814-remote-to-device.md:108-112`) is too strong once termiod is the only
 PTY owner. A one-device user is the user most likely to have no alternative when
 the local daemon fails. Hiding Devices also hides the RFC’s only home for install
 status, version, and device-scoped maintenance
-(`docs/rfcs/remote-to-device.md:65-70,119-123`).
+(`docs/design/20260814-remote-to-device.md:65-70,119-123`).
 
 The correct promise is no steady-state tax. Failure and maintenance still need a
 reachable surface. The RFC also needs to define “one”: one learned identity, one
@@ -223,7 +223,7 @@ stated guarantee that the same machine keeps the same colour. The settled
 architecture says the identifier belongs to one daemon installation/socket:
 the dev and release channels on one Mac are two devices, and a changed `TMPDIR`
 can mint a new identity
-(`docs/design/20260805-termiod-device-architecture.md:561-576`). A reinstallation
+(`20260805-termiod-device-architecture.md:561-576`). A reinstallation
 can therefore change the colour of the same hardware; a cloned identifier gives
 two machines the same colour at exactly the moment they most need distinction.
 That follows from the settled identity decision and does not reopen it.
@@ -248,7 +248,7 @@ remain authoritative.
 
 The presentation boundary says the host cannot resolve viewer presentation. It
 does not say which parts of a viewer may use colour
-(`docs/design/20260805-termiod-device-architecture.md:272-309`). “Chrome only” is
+(`20260805-termiod-device-architecture.md:272-309`). “Chrome only” is
 a client design choice, not an architectural consequence.
 
 Keeping device colour out of the terminal grid is still correct. The terminal
@@ -264,7 +264,7 @@ The claimed repo-wide ban on accent-coloured control backgrounds is not an
 invariant. The app strips AppKit’s saturated blue selection, but its themed
 sidebar intentionally uses an accent-tinted selected-row fill
 (`Sources/termio/Sidebar/SidebarView.swift:1318-1371`). The “neutral rather than
-accent-coloured controls” sentence in `docs/design/agent-plugins.md:176-187` is
+accent-coloured controls” sentence in `20260812-agent-plugins.md:176-187` is
 the grammar of that Settings tab, not a global rule.
 
 A swatch beside a device label survives this attack because it occupies a

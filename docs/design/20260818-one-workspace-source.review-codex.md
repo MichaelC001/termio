@@ -51,9 +51,9 @@ viewer cannot derive one from the session without extending the roster shape.
 | `TermioStore+Termiod.swift:534-538` | Correct. A remote session opened from a project is appended to that local `Project` and selected. |
 | `FileBrowserView.swift:53-54` | Correct. The pane derives its remote branch from `session.sshHost` only. |
 | `DeviceContext.swift:154`, `:218` | Correct. Both sites use `session.termiodRemoteHost ?? session.sshHost`. |
-| `one-path-local-through-termiod.md:116-124` | Correct. It records the local/SFTP/dead split and the termiod fall-through. Its own `TermioStore.swift:416-422` citation is broad enough to include the current guards. |
-| `one-path-local-through-termiod.md:73-79`, `:1236-1260` | Correct. Plain SSH stays terminal-only, SFTP retires, and the Stage 7 gate is zero `SFTP` references. |
-| `one-path-local-through-termiod.md:70-77` | Correct. The settled pane result is to name the missing daemon and offer installation. |
+| `20260817-one-path-local-through-termiod.md:116-124` | Correct. It records the local/SFTP/dead split and the termiod fall-through. Its own `TermioStore.swift:416-422` citation is broad enough to include the current guards. |
+| `20260817-one-path-local-through-termiod.md:73-79`, `:1236-1260` | Correct. Plain SSH stays terminal-only, SFTP retires, and the Stage 7 gate is zero `SFTP` references. |
+| `20260817-one-path-local-through-termiod.md:70-77` | Correct. The settled pane result is to name the missing daemon and offer installation. |
 | `SFTPClient.swift:52-53`, `:22-38` | Correct. The only open flag is `SSH_FXF_READ`, and the packet table has no write, rename, create-directory, or remove operations. |
 | `FileBrowserView.swift:68`, `:216`, `:231`, `:249` | Correct. These are the SFTP tree, Search, Changes, and Issues gates. |
 | `protocol.rs:457`, `:473`, `:485`, `:499`, `:516`, `:535`, `:548`, `:555` | Correct. They are `SubscribeResource`, `FsList`, `FsRead`, `UploadOpen`, `FsSearch`, `GitDiff`, `FsMatch`, and `UploadCommit`. The repeated citations in §5 point to the same definitions. |
@@ -61,7 +61,7 @@ viewer cannot derive one from the session without extending the roster shape.
 | `TermiodClient.swift:29-31` | Correct for the attach channel declining `resources`, `fs_watch`, and `files`. The explicit “own channel” design is at lines 35-37, just outside the citation. |
 | `daemon.rs:1497-1499` | Correct but loose. The workspace-root error ends at line 1497; the `resolve_project_dest` call is line 1499. |
 | `files.rs:709-743` | Correct. Commit checks size, checks the new-content sha256, syncs, sets permissions, and renames the dotfile. It does not check the old destination version. |
-| `one-path-local-through-termiod.md:1260` | Correct. It is the zero-SFTP gate. |
+| `20260817-one-path-local-through-termiod.md:1260` | Correct. It is the zero-SFTP gate. |
 | `SFTPClient.swift:20` | Correct. `concurrentReads` is 8. |
 | `TermioStore+ProjectActions.swift:422-440` | Correct. `hostContainer` creates one alias-keyed `.host` block and gives it the first non-`~` root. |
 | `Models.swift:328` | Correct. This is `Session.termiodRemoteCwd`. |
@@ -99,7 +99,7 @@ It recreates the same split in two ways.
 
 First, `alias` is a route, not a device. The accepted architecture makes
 `host_id` the identity and `~/.ssh/config` the route authority
-(`docs/design/20260805-termiod-device-architecture.md:85-104`). A workspace
+(`20260805-termiod-device-architecture.md:85-104`). A workspace
 keyed by alias forks when the same box is reached through LAN, WAN, and
 Tailscale names. `DeviceContext` already prefers `deviceID` when both ends know
 it (`Sources/termio/TermioStore/DeviceContext.swift:214-225`); the new source
@@ -108,7 +108,7 @@ must not regress to the bootstrap identity.
 Second, `.local` permanently names a direct-`FileManager` backend. The accepted
 target says the Mac is one device, local and VPS sessions differ only in
 `TermiodRoute`, and the inspector reads the workspace's device
-(`docs/rfcs/one-path-local-through-termiod.md:224-237`). Keeping local as a
+(`docs/design/20260817-one-path-local-through-termiod.md:224-237`). Keeping local as a
 public source variant makes every workspace consumer preserve the branch that
 the one-path RFC exists to delete.
 
@@ -140,9 +140,9 @@ not a staged local URL that later guesses where to save.
 Open question 1 is already answered by the architecture. A workspace is a
 canonical directory root on a device. It is a scope for files, git, and watch
 state, distinct from a process container and distinct from a session
-(`docs/design/20260730-termiod-session-protocol.md:126-142`). The device design
+(`20260730-termiod-session-protocol.md:126-142`). The device design
 then makes it first-class and enumerable, with identity `(device, path)`
-(`docs/design/20260805-termiod-device-architecture.md:164-188`).
+(`20260805-termiod-device-architecture.md:164-188`).
 
 Of the two choices offered by the RFC, derive the selected workspace from the
 session, never from `.host`. That describes association, not ownership: the
@@ -180,7 +180,7 @@ one checkout per project and device (`Sources/termio/App/Models.swift:113-128`),
 so it cannot represent a base checkout and two remote worktrees. The workspace
 registry already scheduled by the device architecture must own enumeration and
 creation before remote worktrees can behave like local ones
-(`docs/design/20260805-termiod-device-architecture.md:551-556`).
+(`20260805-termiod-device-architecture.md:551-556`).
 
 ## The staging is not independently shippable as written
 
@@ -196,7 +196,7 @@ creation before remote worktrees can behave like local ones
 There is a larger prerequisite. The accepted migration orders connection
 ownership before panel work: one `TermiodConnection` per device owns health and
 reconnect, and resource subscriptions recover through it
-(`docs/rfcs/one-path-local-through-termiod.md:1075-1107`). The current helper is
+(`docs/design/20260817-one-path-local-through-termiod.md:1075-1107`). The current helper is
 explicitly one-shot: `withControlChannel` opens a transport, runs a closure, and
 closes it (`Sources/termio/Terminal/Termiod/TermiodClient.swift:1025-1042`). A
 file pane can hold another transport open, but that rebuilds per-pane connection
@@ -205,7 +205,7 @@ ownership at the workspace layer.
 If the implementation instead follows the device architecture's single pipe
 with multiplexed channels, that work has an explicit additive protocol bump
 because `hello` fixes one role per connection today
-(`docs/design/20260805-termiod-device-architecture.md:395-404`). The RFC must say
+(`20260805-termiod-device-architecture.md:395-404`). The RFC must say
 which prerequisite it relies on. “New channel, no protocol change” cannot mean
 both “another SSH stdio process” and “a channel on the durable device
 connection.”
@@ -344,9 +344,9 @@ hide unsupported controls, or add the missing verbs in a later RFC. “Git statu
 | --- | --- |
 | 1. Container or session? | Already answered by both architecture docs: workspace is `(device, canonical path)`, and a session references it. Use session association during migration; never let `.host` own the root. The remaining question is the wire and state migration for that reference. |
 | 2. Trust? | Partly useful, but “trust” conflates read authority with resource cost. SSH access already grants reads. The open decision is which roots may start recursive watch/index work and what quota and eviction policy the daemon enforces. |
-| 3. Multi-client? | Already answered. The device architecture requires viewers to connect directly to the device (`docs/design/20260805-termiod-device-architecture.md:136-162`), and `resource.rs` already supports independent subscribers sharing one watcher. The phone must not relay through the Mac. |
-| 4. Plain SSH? | Already answered by `one-path-local-through-termiod.md:68-77,1241-1252`: it stays terminal-only; the pane names the missing daemon and offers installation. |
-| 5. Protobuf? | Outside this RFC and mostly answered. The protocol spec says control JSON is deliberate because it is low-rate and debuggability wins (`docs/design/20260730-termiod-session-protocol.md:175-197`), and rejects gRPC/protobuf/CBOR for the hot path (`:985-989`). A future payload-codegen proposal needs its own evidence. `WireProtocol.swift` is not the termiod mirror. |
+| 3. Multi-client? | Already answered. The device architecture requires viewers to connect directly to the device (`20260805-termiod-device-architecture.md:136-162`), and `resource.rs` already supports independent subscribers sharing one watcher. The phone must not relay through the Mac. |
+| 4. Plain SSH? | Already answered by `20260817-one-path-local-through-termiod.md:68-77,1241-1252`: it stays terminal-only; the pane names the missing daemon and offers installation. |
+| 5. Protobuf? | Outside this RFC and mostly answered. The protocol spec says control JSON is deliberate because it is low-rate and debuggability wins (`20260730-termiod-session-protocol.md:175-197`), and rejects gRPC/protobuf/CBOR for the hot path (`:985-989`). A future payload-codegen proposal needs its own evidence. `WireProtocol.swift` is not the termiod mirror. |
 
 Replace the closed questions with the ones implementation cannot avoid:
 

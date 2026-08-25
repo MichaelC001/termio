@@ -55,7 +55,7 @@ with `termiod/tests/snapshot_prologue.rs` as the acceptance test; the reference
 client and the Mac client stopped synthesising preludes of their own.
 2026-08-19: §C.13 gained the read tier — `git.log`, `git.show`, `git.branches`
 beside `git.diff` — so the History and Compare tabs can be served by the device
-that owns the checkout. Stage 1 of `../rfcs/remote-git-plane.md`; the section
+that owns the checkout. Stage 1 of `../design/20260818-remote-git-plane.md`; the section
 heading's "read-only" now means "this tier reads", not "the kind will never
 mutate".
 2026-08-22: reserved the `tunnel` capability name (§C.3, new §C.14 — VS Code
@@ -779,7 +779,7 @@ contend with the agent committing in the terminal beside it.
 This still deletes the majority of Zed's git surface (mutation RPCs,
 optimistic-update reconciliation, a write-permission model). The mutation and
 network tiers are designed and staged in
-[remote-git-plane.md](../rfcs/remote-git-plane.md) §5, deliberately behind
+[20260818-remote-git-plane.md](../design/20260818-remote-git-plane.md) §5, deliberately behind
 this one: they need answers for prompt forwarding and index-lock contention
 that reads do not. Zed's proto carries deprecated `RepositoryEntry` debris
 from migrating git between two replication schemes; a single-mechanism

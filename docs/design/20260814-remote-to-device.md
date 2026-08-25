@@ -8,8 +8,8 @@ related:
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-hot-path-and-client-classes.md
-  - remote-to-device.decisions.md
-  - ../design/20260819-device-workspace-project.md
+  - 20260814-remote-to-device.decisions.md
+  - 20260819-device-workspace-project.md
 ---
 
 # Every machine is a device, every place you work is a project
@@ -21,7 +21,7 @@ related:
 > device without a Mac in the path.
 
 This revision replaces the first draft wholesale. Two adversarial reviews
-(`remote-to-device.review-claude.md`, `remote-to-device.review-codex.md`) landed
+(`20260814-remote-to-device.review-claude.md`, `20260814-remote-to-device.review-codex.md`) landed
 the same verdict — *the thesis is right and the draft does not deliver it; it
 retires the word while leaving the fork intact and, after the rename, harder to
 name.* Both are accepted. What follows is what the draft was missing: a naming
@@ -312,7 +312,7 @@ one-machine user is the one most likely to have no alternative when the local
 daemon fails (review-codex §6). The promise is *no steady-state tax*, not
 literal absence.
 
-**Against one list: the coexistence decision.** `remote-to-device.decisions.md`
+**Against one list: the coexistence decision.** `20260814-remote-to-device.decisions.md`
 §1, written against the first draft, decided the opposite — that
 `Settings ▸ SSH` and `Settings ▸ Devices` **coexist**, split at the handshake:
 
@@ -396,7 +396,7 @@ Two consequences, both scheduled:
    It rides as an **optional additive field** on the existing session payload and
    needs no `proto` bump: the protocol already treats unknown control ops and
    events as ignorable, and its `caps` and error codes as additive
-   (`remote-to-device.decisions.md` §2). **Skew rule:** an older daemon that omits
+   (`20260814-remote-to-device.decisions.md` §2). **Skew rule:** an older daemon that omits
    the field preserves today's no-confirm behaviour. It must never be read as
    "unknown, so confirm", which would tax every close on exactly the sessions the
    shipped rule deliberately exempts. Both directions — old client / new daemon
@@ -692,7 +692,7 @@ route, and no alias left in `~/.ssh/config` does not count toward "more than one
 ### 10.1 The first draft's questions, and where each went
 
 The pre-rewrite draft carried seven. None is silently dropped; two were settled in
-`remote-to-device.decisions.md` and the rest are answered by the model in §1.
+`20260814-remote-to-device.decisions.md` and the rest are answered by the model in §1.
 
 | Draft question | Disposition |
 | --- | --- |
@@ -700,8 +700,8 @@ The pre-rewrite draft carried seven. None is silently dropped; two were settled 
 | 2. How far colour bleeds — chrome only, or the whole space | **Dissolved** with it. The presentation boundary still stands: the viewer decides, and nothing tints the grid |
 | 3. Guardrail strength on a non-local device | **Closed, and the question was wrong.** All three proposals were the local/remote fork wearing a warning triangle. §6 keys confirmation on irreversibility and blast radius, never on locality, and names the live defect: today the non-local session has *less* protection, not more |
 | 4. Does `Connect to…` belong in the `+` menu | **Answered by §4.1.** There is no `Connect to…`; `New Terminal on…` takes the slot `New Remote Terminal` occupies today, and the dead-end `(No SSH hosts in ~/.ssh/config)` row it complained about is replaced by `Add Host…` and `Other…` |
-| 5. Does `Settings ▸ Devices` subsume `Settings ▸ SSH` | **Decided coexist** in `remote-to-device.decisions.md` §1; §4.2 keeps that decision's key rule as a field-placement test and argues one tab instead of two, with the divergence and the Add Host reversal recorded there |
-| 6. Does foreground-job parity belong in this RFC | **Decided yes** in `remote-to-device.decisions.md` §2, and it gates the fork deletion. Carried as stage 0d (§8) with the additive-field and skew rules in §6 |
+| 5. Does `Settings ▸ Devices` subsume `Settings ▸ SSH` | **Decided coexist** in `20260814-remote-to-device.decisions.md` §1; §4.2 keeps that decision's key rule as a field-placement test and argues one tab instead of two, with the divergence and the Add Host reversal recorded there |
+| 6. Does foreground-job parity belong in this RFC | **Decided yes** in `20260814-remote-to-device.decisions.md` §2, and it gates the fork deletion. Carried as stage 0d (§8) with the additive-field and skew rules in §6 |
 | 7. What does an unreachable device look like | **Answered by §5.** Five named states with shipped copy, no eager probing, and one owner — the device's `TermiodConnection` |
 
 ---

@@ -42,25 +42,25 @@ from the real front matter).
 | active | design | [iOS libghostty "non-functional" panel + teardown UAF — root-cause findings](design/20260706-ios-ghostty-renderer-panic-investigation-findings.md) |
 | active | design | [iOS terminal input & attachments](design/20260703-ios-terminal-input.md) |
 | active | design | [iOS TestFlight runbook — build, upload, and drive ASC from the API](runbook/ios-testflight-runbook.md) |
-| active | design | [Keyboard and command design](design/keyboard-command-design.md) |
+| active | design | [Keyboard and command design](design/20260812-keyboard-command-design.md) |
 | active | design | [macOS release runbook — cut, notarize, publish termio.dmg](runbook/macos-release-runbook.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
 | active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
-| active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](rfcs/push-to-talk-voice-dictation.md) |
-| active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](rfcs/unify-server-plane.md) |
+| active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](design/20260704-push-to-talk-voice-dictation.md) |
+| active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](design/20260819-unify-server-plane.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/20260628-session-history-search-resume.md) |
 | approved | design | [Agent Resume Identity — keeping the resume pin on the live conversation](design/20260716-agent-resume-identity.md) |
 | approved | design | [Git worktree creation & lifecycle (Codex-aligned)](design/20260706-worktree-creation-lifecycle.md) |
 | approved | design | [Refresh session identity when Claude Code /clear rotates the conversation](design/20260720-clear-conversation-rotation.md) |
 | approved | design | [Worktree information architecture](design/20260628-worktree-information-architecture.md) |
-| approved | rfc | [Theme store — browse 50, install on demand, library is truth](rfcs/theme-store.md) |
+| approved | rfc | [Theme store — browse 50, install on demand, library is truth](design/20260814-theme-store.md) |
 | archived | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/20260706-ios-scroll-renderer-health.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/20260629-sandbox-vm.md) |
 | archived | essay | ["From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"](essays/from-ide-to-ade.md) |
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
-| built, measured, shelved | design | [Agent permission questions on the phone](design/agent-permission-questions.md) |
+| built, measured, shelved | design | [Agent permission questions on the phone](design/20260803-agent-permission-questions.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | design | ["Sandbox removal & restoration (Apple Seatbelt subsystem)"](design/20260718-sandbox-removal-and-restoration.md) |
@@ -82,8 +82,8 @@ from the real front matter).
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
-| draft | design | [Agent Plugins](design/agent-plugins.md) |
-| draft | design | [Browser Control over CDP](design/browser-cdp.md) |
+| draft | design | [Agent Plugins](design/20260812-agent-plugins.md) |
+| draft | design | [Browser Control over CDP](design/20260807-browser-cdp.md) |
 | draft | design | [Device → Workspace → Project](design/20260819-device-workspace-project.md) |
 | draft | design | [Device Architecture — one server per device, every UI a client](design/20260805-termiod-device-architecture.md) |
 | draft | design | [Hot path, attach join point, and client classes](design/20260805-termiod-hot-path-and-client-classes.md) |
@@ -101,27 +101,30 @@ from the real front matter).
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
-| draft | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](rfcs/one-workspace-source.review-codex.md) |
-| draft | rfc | ["Adversarial review: Retire remote — every machine is a device"](rfcs/remote-to-device.review-codex.md) |
+| draft | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](design/20260818-one-workspace-source.review-codex.md) |
+| draft | rfc | ["Adversarial review: Retire remote — every machine is a device"](design/20260814-remote-to-device.review-codex.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
-| draft | rfc | [A project carries its machine — delete the host container](rfcs/one-workspace-source.md) |
-| draft | rfc | [Adversarial review — Retire "remote", every machine is a device](rfcs/remote-to-device.review-claude.md) |
-| draft | rfc | [Automation — scheduled agent runs](rfcs/automation-scheduled-agent-runs.md) |
-| draft | rfc | [Companion Wire Protocol](design/companion-wire-protocol.md) |
-| draft | rfc | [Device RFC blocking decisions](rfcs/remote-to-device.decisions.md) |
-| draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](rfcs/fork-libghostty-spm.md) |
+| draft | rfc | [A project carries its machine — delete the host container](design/20260818-one-workspace-source.md) |
+| draft | rfc | [Adversarial review — Retire "remote", every machine is a device](design/20260814-remote-to-device.review-claude.md) |
+| draft | rfc | [Automation — scheduled agent runs](design/20260702-automation-scheduled-agent-runs.md) |
+| draft | rfc | [Companion Wire Protocol](design/20260810-companion-wire-protocol.md) |
+| draft | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
+| draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](design/20260703-fork-libghostty-spm.md) |
+| draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
+| draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |
 | draft | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
-| draft | rfc | [Remote git — the pane's verbs run on the device](rfcs/remote-git-plane.md) |
-| draft | rfc | [Review — One path, local sessions run through termiod too](rfcs/one-path-local-through-termiod.review-claude.md) |
+| draft | rfc | [Remote git — the pane's verbs run on the device](design/20260818-remote-git-plane.md) |
+| draft | rfc | [Review — One path, local sessions run through termiod too](design/20260817-one-path-local-through-termiod.review-claude.md) |
+| draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
-| in-review | rfc | [Every machine is a device, every place you work is a project](rfcs/remote-to-device.md) |
-| in-review | rfc | [One path — local sessions run through termiod too](rfcs/one-path-local-through-termiod.md) |
-| in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](rfcs/split-panes.md) |
+| in-review | rfc | [Every machine is a device, every place you work is a project](design/20260814-remote-to-device.md) |
+| in-review | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
+| in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](design/20260702-split-panes.md) |
 | resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->

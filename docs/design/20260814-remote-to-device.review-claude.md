@@ -5,7 +5,7 @@ type: rfc
 created: 2026-08-15
 updated: 2026-08-15
 related:
-  - remote-to-device.md
+  - 20260814-remote-to-device.md
   - 20260805-termiod-device-architecture.md
 ---
 

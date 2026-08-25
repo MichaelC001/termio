@@ -22,7 +22,7 @@ between these definitions without saying so.
 | Source | "Workspace" means | Owned by |
 | --- | --- | --- |
 | `20260805-termiod-device-architecture.md` §2.2 | *"a directory root on a device — what the UI calls a project"*, i.e. `(device, path)` | the device's `termiod`, as an enumerable object |
-| `rfcs/remote-to-device.md` §3 ownership table | listed beside sessions and processes: *"the device's `termiod` / on the device / viewers cache, never own"* | the device |
+| `design/20260814-remote-to-device.md` §3 ownership table | listed beside sessions and processes: *"the device's `termiod` / on the device / viewers cache, never own"* | the device |
 | Shipped code (#345) | a **named scope in the sidebar** holding projects and loose sessions — not a directory at all | the Mac's `state.json` |
 
 The shipped meaning is the newest and the one users see, and #346 already

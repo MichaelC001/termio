@@ -5,14 +5,14 @@ type: rfc
 created: 2026-08-17
 updated: 2026-08-17
 related:
-  - one-path-local-through-termiod.md
+  - 20260817-one-path-local-through-termiod.md
   - 20260805-termiod-device-architecture.md
   - 20260730-termiod-session-protocol.md
 ---
 
 # Review — One path, local sessions run through termiod too
 
-Adversarial read of `docs/rfcs/one-path-local-through-termiod.md` at `b4e3e6c`.
+Adversarial read of `docs/design/20260817-one-path-local-through-termiod.md` at `b4e3e6c`.
 Every claim below was checked against the tree; where I could not check
 something I say so instead of guessing.
 
