@@ -8,7 +8,7 @@
 //!
 //! Beside it sit four request/response verbs: `git.diff`, `git.log`,
 //! `git.show`, `git.branches`. All of them read; the mutation and network
-//! tiers are staged separately (`docs/rfcs/remote-git-plane.md` §5) because
+//! tiers are staged separately (`docs/design/20260818-remote-git-plane.md` §5) because
 //! they need a design for prompts and for index-lock contention that reads do
 //! not. Every one of them runs the box's own `git` as a child process, so the
 //! box's config, hooks, and credential helper are the ones in force — nothing

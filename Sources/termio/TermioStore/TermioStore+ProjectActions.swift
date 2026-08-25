@@ -852,13 +852,32 @@ extension TermioStore {
         alert.alertStyle = .warning
         alert.messageText = "Close “\(displayTitle(for: session))”?"
         alert.informativeText = reason
-        // Cancel first so it owns both Return and Escape; the destructive button
-        // takes a deliberate click (see the quit confirmation in `App.swift`).
-        alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Close Session")
-        alert.buttons.last?.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        alert.addButton(withTitle: "Cancel")
+        Self.applyConfirmationKeys(to: alert)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         closeSession(id)
+    }
+
+    /// Wires the two keys every close confirmation answers to: **Return confirms**
+    /// and Escape cancels. The confirm button goes first and is made the default
+    /// and the initial first responder — a destructive button doesn't get default
+    /// treatment on its own, so Return would otherwise land nowhere.
+    ///
+    /// This is the reverse of the first cut, which put Cancel first so Return
+    /// cancelled and the destructive button took ⌘D. cmux shipped exactly that
+    /// design and removed it the same day
+    /// ([#1219](https://github.com/manaflow-ai/cmux/pull/1219) →
+    /// [#1279](https://github.com/manaflow-ai/cmux/pull/1279), with an XCUITest
+    /// pinning Return). The dialog answers a key the user just pressed on purpose;
+    /// making the answer unreachable from the keyboard isn't safety, it's a dead end.
+    static func applyConfirmationKeys(to alert: NSAlert) {
+        guard let confirm = alert.buttons.first else { return }
+        confirm.hasDestructiveAction = true
+        confirm.keyEquivalent = "\r"
+        confirm.keyEquivalentModifierMask = []
+        alert.window.initialFirstResponder = confirm
+        alert.buttons.dropFirst().first?.keyEquivalent = "\u{1b}"
     }
 
     /// Whether a command is running in front of the session's shell, given what
@@ -889,7 +908,7 @@ extension TermioStore {
     /// dialog the user dismisses, and one that started within it closes unasked —
     /// which is exactly the shipped no-confirm rule. So only an explicit `true`
     /// confirms; an absent field must never read as "unknown, so confirm"
-    /// (`remote-to-device.decisions.md` §2).
+    /// (`20260814-remote-to-device.decisions.md` §2).
     func closeConfirmationReason(for session: Session) -> String? {
         guard session.agent.isShell else { return nil }
         let running = termiodLinks[session.id]?.latestInformation?.foregroundJob
