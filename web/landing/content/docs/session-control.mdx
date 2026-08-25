@@ -17,13 +17,18 @@ working, finishes, or stops to ask a question, the hook reports that to Termio, 
 the sidebar’s [status dots](/docs/sidebar#status) reflect exactly what’s happening
 instead of being guessed from output.
 
-Turn it on from **Settings ▸ General ▸ Live agent status** (Termio also offers it
+Turn it on from **Settings ▸ Agents ▸ Live agent status** (Termio also offers it
 once on first launch). Toggling it off removes the hooks again, leaving any hooks
 you added yourself untouched.
 
+The switch says whether you want the feature; each machine installs it for its own
+agents. Open a machine under **Settings ▸ Machines** and use **Set up this
+device** — or **Reinstall hooks** — to put the hooks on that box. That is what
+gives an agent running on a VPS the same status dots as one running here.
+
 ## Session control
 
-**Settings ▸ General ▸ Session control** turns on the `termio sessions`
+**Settings ▸ Agents ▸ Session control** turns on the `termio sessions`
 orchestration API below, and teaches your agents it exists by installing a
 `termio` **agent skill** into each agent’s skills folder (`~/.claude/skills`,
 `~/.codex/skills`). The skill loads on demand — an agent carries only its
@@ -54,7 +59,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## The `termio` command-line tool
 
-Turn on **Settings ▸ General ▸ Command-line tool**. It symlinks a `termio`
+Turn on **Settings ▸ Machines ▸ This Mac ▸ Command-line tool**. It symlinks a `termio`
 command onto your `PATH` (at `/usr/local/bin/termio`; macOS asks for permission
 once), and turning it off removes the link again.
 
