@@ -248,9 +248,15 @@ final class DevicePaneModel: ObservableObject {
 
         step = .installIntegration
         let target = device.integrationTarget
-        let hooks = AgentStatusHooks.sync(enabled: settings.agentHooksEnabled, target: target)
-        let skill = SessionSkillInstaller.sync(
-            enabled: settings.sessionControlEnabled, target: target)
+        // Off the main actor: this rung is one blocking `ssh` per config file, and
+        // there is one config file per agent. Left inline it freezes the window for
+        // the length of the whole install.
+        let hooksWanted = settings.agentHooksEnabled
+        let controlWanted = settings.sessionControlEnabled
+        let (hooks, skill) = await Task.detached {
+            (AgentStatusHooks.sync(enabled: hooksWanted, target: target),
+             SessionSkillInstaller.sync(enabled: controlWanted, target: target))
+        }.value
         // A rung that reached the machine but could not write every agent's config
         // is still a failure of *this* rung, and the one worth naming.
         let refused = hooks.failed + skill.failed

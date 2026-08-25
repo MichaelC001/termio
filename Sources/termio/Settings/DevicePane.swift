@@ -264,16 +264,22 @@ struct DevicePane: View {
                 }
             }
             InstallButtonRow(title: localized("Reinstall hooks")) {
-                .summarizing(
-                    AgentStatusHooks.sync(
-                        enabled: settings.agentHooksEnabled, target: machine.integrationTarget),
-                    headline: localized("Hooks reinstalled"), unit: localized("agents"))
+                let wanted = settings.agentHooksEnabled
+                let target = machine.integrationTarget
+                return await Task.detached {
+                    .summarizing(
+                        AgentStatusHooks.sync(enabled: wanted, target: target),
+                        headline: localized("Hooks reinstalled"), unit: localized("agents"))
+                }.value
             }
             InstallButtonRow(title: localized("Reinstall skill")) {
-                .summarizing(
-                    SessionSkillInstaller.sync(
-                        enabled: settings.sessionControlEnabled, target: machine.integrationTarget),
-                    headline: localized("Skill reinstalled"), unit: localized("agents"))
+                let wanted = settings.sessionControlEnabled
+                let target = machine.integrationTarget
+                return await Task.detached {
+                    .summarizing(
+                        SessionSkillInstaller.sync(enabled: wanted, target: target),
+                        headline: localized("Skill reinstalled"), unit: localized("agents"))
+                }.value
             }
         } header: {
             SectionHeaderLabel(title: localized("Installed by Termio"))
@@ -317,7 +323,7 @@ struct CommandLineToolRow: View {
         if isOn {
             // For re-linking after something else has touched /usr/local/bin;
             // install is idempotent. Reports through its own feedback line.
-            InstallButtonRow(title: buttonTitle) { withAnimation { runInstall() } }
+            InstallButtonRow(title: buttonTitle) { runInstall() }
         }
     }
 

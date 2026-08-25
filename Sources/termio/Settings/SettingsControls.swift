@@ -207,16 +207,40 @@ extension View {
 
 /// A settings action that writes outside the app, with its result shown next to
 /// the button: the action performs the install and hands back the line to display.
+///
+/// The action is `async` because on a device it is not a function call — it is
+/// dozens of blocking `ssh` round trips. The hook installers read and write one
+/// config per agent, the skill installer probes and writes one more, and every one
+/// of those is a `Process` with `waitUntilExit()`. Run in the button's handler that
+/// is not a slow button, it is a beachball: the main thread sits in `waitUntilExit`
+/// while the window stops drawing.
+///
+/// So the work is awaited, the button disables itself while it runs, and a spinner
+/// stands where the result will be. The caller is what moves the work off the main
+/// actor; this type's job is to not block on it.
 struct InstallButtonRow: View {
     let title: String
-    let action: () -> InstallFeedback
+    let action: () async -> InstallFeedback
 
     @State private var state = InstallFeedbackState()
+    @State private var running = false
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(title) { withAnimation { state.show(action()) } }
-            if let feedback = state.feedback {
+            Button(title) {
+                running = true
+                Task {
+                    let result = await action()
+                    running = false
+                    withAnimation { state.show(result) }
+                }
+            }
+            .disabled(running)
+            if running {
+                ProgressView()
+                    .controlSize(.small)
+                    .transition(.opacity)
+            } else if let feedback = state.feedback {
                 InstallFeedbackLabel(feedback: feedback)
             }
             Spacer(minLength: 0)
