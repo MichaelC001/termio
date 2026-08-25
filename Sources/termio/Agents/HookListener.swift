@@ -526,16 +526,21 @@ private struct JSONHookFile: AgentStatusInstaller {
     }
 
     private enum FileState {
-        case missing
+        /// No file, or a zero-byte one — nothing to merge into either way. Carries
+        /// whatever is there so the commit's precondition can still name it.
+        case missing(Data?)
         case unreadable
-        case ok([String: Any])
+        case ok([String: Any], Data)
     }
 
     func install() -> Bool {
         let root: [String: Any]
+        /// The exact bytes this merge is computed from; the write commits against
+        /// them so a config edited in between is refused rather than discarded.
+        let expected: Data?
         switch readState(at: path) {
-        case .ok(let dictionary): root = dictionary
-        case .missing: root = [:]
+        case .ok(let dictionary, let data): root = dictionary; expected = data
+        case .missing(let data): root = [:]; expected = data
         case .unreadable:
             AgentStatusHooks.log("refusing to modify unparseable \(path)")
             return false
@@ -575,7 +580,7 @@ private struct JSONHookFile: AgentStatusInstaller {
             hooks[event.name] = groups
         }
         settings["hooks"] = hooks
-        guard write(settings, to: path) else { return false }
+        guard write(settings, to: path, ifUnchangedFrom: expected) else { return false }
 
         // Publish the replacement before removing its predecessor. If the new file
         // could not be written, retain the working legacy integration for next launch.
@@ -595,7 +600,7 @@ private struct JSONHookFile: AgentStatusInstaller {
 
     private func uninstall(at candidatePath: String, removeFileWhenEmpty: Bool) {
         // Nothing to remove if the file is absent; never overwrite one we can't read.
-        guard case .ok(let root) = readState(at: candidatePath) else { return }
+        guard case .ok(let root, let expected) = readState(at: candidatePath) else { return }
         var settings = root
         guard var hooks = settings["hooks"] as? [String: Any] else { return }
         stripTermioEntries(from: &hooks)
@@ -607,7 +612,7 @@ private struct JSONHookFile: AgentStatusInstaller {
         if removeFileWhenEmpty, settings.isEmpty {
             store.remove(candidatePath)
         } else {
-            write(settings, to: candidatePath)
+            write(settings, to: candidatePath, ifUnchangedFrom: expected)
         }
     }
 
@@ -661,27 +666,29 @@ private struct JSONHookFile: AgentStatusInstaller {
     }
 
     private func readState(at candidatePath: String) -> FileState {
-        guard store.exists(candidatePath) else { return .missing }
+        guard store.exists(candidatePath) else { return .missing(nil) }
         guard let data = store.read(candidatePath) else { return .unreadable }
-        if data.isEmpty { return .missing }
+        if data.isEmpty { return .missing(data) }
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any] else { return .unreadable }
-        return .ok(dictionary)
+        return .ok(dictionary, data)
     }
 
     /// Returns whether the file now holds `settings` — true both for a fresh write
     /// and for the skipped identical one, false only when the write threw.
     @discardableResult
-    private func write(_ settings: [String: Any], to destinationPath: String) -> Bool {
+    private func write(
+        _ settings: [String: Any], to destinationPath: String, ifUnchangedFrom expected: Data?
+    ) -> Bool {
         do {
             let data = try JSONSerialization.data(
                 withJSONObject: settings,
                 options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            // The store skips a write whose bytes already match (the common case on
-            // every launch): avoids needless churn on a user-owned file and shrinks
-            // the window where the write could clobber a concurrent hand-edit.
-            // `.sortedKeys` is what makes those bytes stable.
-            return store.writeIfChanged(data, to: destinationPath)
+            // Skip a write whose bytes already match — the common case on every
+            // launch — so a user-owned file sees no churn at all. `.sortedKeys` is
+            // what makes those bytes stable.
+            if data == expected { return true }
+            return store.write(data, to: destinationPath, ifUnchangedFrom: expected)
         } catch {
             AgentStatusHooks.log("could not encode \(destinationPath): \(error)")
             return false
@@ -1071,17 +1078,26 @@ private struct TOMLHookBlock: AgentStatusInstaller {
     }
 
     func install() -> Bool {
-        let existing = store.readText(path) ?? ""
-        let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
+        // The bytes the merge is computed from, committed against below: this is a
+        // user-owned file, and over a network the read and the write are two round
+        // trips with the user's own editor in between.
+        let expected = store.exists(path) ? store.read(path) : nil
+        let base = Self.stripBlock(from: expected.map { String(decoding: $0, as: UTF8.self) } ?? "")
+            .trimmingCharacters(in: .newlines)
         let block = Self.render(events: events, reporter: reporter)
         let updated = base.isEmpty ? block + "\n" : base + "\n\n" + block + "\n"
-        return store.writeIfChanged(Data(updated.utf8), to: path)
+        let data = Data(updated.utf8)
+        if data == expected { return true }
+        return store.write(data, to: path, ifUnchangedFrom: expected)
     }
 
     func uninstall() {
-        guard let existing = store.readText(path) else { return }
-        let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
-        store.writeIfChanged(Data((base.isEmpty ? "" : base + "\n").utf8), to: path)
+        guard let expected = store.read(path) else { return }
+        let base = Self.stripBlock(from: String(decoding: expected, as: UTF8.self))
+            .trimmingCharacters(in: .newlines)
+        let data = Data((base.isEmpty ? "" : base + "\n").utf8)
+        if data == expected { return }
+        store.write(data, to: path, ifUnchangedFrom: expected)
     }
 
     /// The termio-managed block: a comment banner around one `[[hooks]]` table per

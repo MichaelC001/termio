@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The files an agent integration is written into, on whichever machine the
@@ -63,6 +64,31 @@ extension AgentConfigStore {
     func writeIfChanged(_ data: Data, to path: String, executable: Bool = false) -> Bool {
         if read(path) == data { return true }
         return write(data, to: path, executable: executable)
+    }
+
+    /// Commits a **merge**: writes `data` only while the file still holds exactly
+    /// the bytes the merge was computed from. `expected == nil` means it must
+    /// still be absent.
+    ///
+    /// A hook is a merge into a file the user also owns and edits, and over a
+    /// network the read and the write are two round trips with the user's own
+    /// editor in between — read-modify-write there silently discards their edits,
+    /// the one failure this must never produce. Refusing is the whole guarantee;
+    /// re-merging in a loop is not, and a loop that keeps rewriting a file
+    /// somebody is typing in is its own hazard. So a lost race reports the agent
+    /// as not installed, and the machine pane's setup button is the retry.
+    ///
+    /// This generic form still reads and writes separately, which is the best a
+    /// `FileManager` store can do and is honest for one: locally the window is a
+    /// few microseconds inside one process. `SSHAgentConfigStore` overrides it
+    /// with a single remote check-and-rename.
+    @discardableResult
+    func write(_ data: Data, to path: String, ifUnchangedFrom expected: Data?) -> Bool {
+        guard read(path) == expected else {
+            AgentStatusHooks.log("\(path) changed underneath the merge — not writing")
+            return false
+        }
+        return write(data, to: path, executable: false)
     }
 }
 
@@ -172,6 +198,48 @@ struct SSHAgentConfigStore: AgentConfigStore {
         return true
     }
 
+    /// The precondition and the write are one remote command, so nothing can slip
+    /// between the digest and the rename — the check/use race a two-round-trip
+    /// version would still have.
+    ///
+    /// The expected digest is computed here rather than remotely: hashing what we
+    /// already hold costs nothing, and comparing digests rather than shipping the
+    /// old bytes back keeps the command small.
+    @discardableResult
+    func write(_ data: Data, to path: String, ifUnchangedFrom expected: Data?) -> Bool {
+        let quoted = Self.quote(path)
+        let expectedDigest = expected.map(Self.sha256) ?? ""
+        let script = """
+            \(Self.digestFunction)
+            if [ -e \(quoted) ]; then actual=$(__termio_digest < \(quoted)); else actual=""; fi
+            [ "$actual" = '\(expectedDigest)' ] || exit 9
+            mkdir -p "$(dirname \(quoted))" \
+            && base64 -d > \(quoted).termio-tmp \
+            && mv \(quoted).termio-tmp \(quoted)
+            """
+        guard run(script, stdin: data.base64EncodedString()) != nil else {
+            AgentStatusHooks.log("\(host):\(path) changed underneath the merge, or could not be written")
+            return false
+        }
+        return true
+    }
+
+    /// `sha256sum` is GNU coreutils and `shasum` is the Perl one Debian-minimal
+    /// images sometimes lack; `openssl` is the third thing a box that has neither
+    /// usually still has. A machine with none of them fails the precondition
+    /// rather than skipping it — the refusal is the point.
+    private static let digestFunction = """
+        __termio_digest() {
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+          elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+          else openssl dgst -sha256 -r | cut -d' ' -f1; fi
+        }
+        """
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     @discardableResult
     func remove(_ path: String) -> Bool {
         guard run("rm -rf \(Self.quote(path))") != nil else {
@@ -189,16 +257,28 @@ struct SSHAgentConfigStore: AgentConfigStore {
     func isCommandInstalled(_ command: String) -> Bool {
         let binary = command.split(separator: " ").first.map(String.init) ?? ""
         guard !binary.isEmpty else { return true }
-        // `command -v` is POSIX, unlike `which`, and is a shell builtin — so this
-        // costs one multiplexed ssh channel and no remote process.
+        // Asked twice, because the shell `ssh` runs a command in is neither
+        // interactive nor a login shell, and the agents worth finding are the ones
+        // that live outside the default `PATH`. On a stock Ubuntu box `claude`
+        // installs to `~/.local/bin`, which only `~/.profile` adds — so the plain
+        // probe answers "no" for an agent that is sitting right there, the machine
+        // reports "No agent CLIs found", and no skill is installed anywhere.
         //
-        // A login shell is what resolves the user's `PATH`: an agent installed by
-        // a version manager lives on a `PATH` that only `~/.profile` sets, and a
-        // non-interactive ssh command does not read it. Answering `true` when the
-        // probe itself fails keeps a broken link from reading as "not installed".
-        guard let result = run(
-            "command -v \(Self.quote(binary)) >/dev/null 2>&1 && echo yes || echo no")
-        else { return true }
+        // The login shell gets the binary as `$0` rather than interpolated into
+        // its script, so nothing about the name can reach the inner parser. A
+        // shell that assigns positional parameters differently (fish) simply finds
+        // nothing on the second pass and the first pass still stands.
+        //
+        // Answering `true` when the probe itself could not run keeps a broken link
+        // from reading as "not installed" — the same don't-cry-wolf rule as local.
+        let quoted = Self.quote(binary)
+        let script = """
+            if command -v \(quoted) >/dev/null 2>&1; then echo yes; exit 0; fi
+            if [ -n "$SHELL" ] && "$SHELL" -lc 'command -v "$0" >/dev/null 2>&1' \(quoted); \
+            then echo yes; exit 0; fi
+            echo no
+            """
+        guard let result = run(script) else { return true }
         return result.trimmingCharacters(in: .whitespacesAndNewlines) != "no"
     }
 
@@ -253,16 +333,27 @@ struct SSHAgentConfigStore: AgentConfigStore {
         // is a no-op there and only ever changes where a device install lands:
         // on a box whose owner moved their config, `~/.config` would write a
         // plugin into a directory the agent does not read.
-        if rest == ".config" { return xdgConfigHome }
-        if rest.hasPrefix(".config/") {
-            return xdgConfigHome + "/" + singleQuoted(String(rest.dropFirst(".config/".count)))
+        for base in xdgBases {
+            if rest == base.prefix { return base.expansion }
+            if rest.hasPrefix(base.prefix + "/") {
+                let tail = String(rest.dropFirst(base.prefix.count + 1))
+                return base.expansion + "/" + singleQuoted(tail)
+            }
         }
         return "\"$HOME\"/" + singleQuoted(rest)
     }
 
-    /// `$XDG_CONFIG_HOME` when the device sets it, and the spec's own default
+    /// The XDG variable when the device sets it, and the spec's own default
     /// otherwise. Double-quoted so a home directory with spaces survives.
-    private static let xdgConfigHome = "\"${XDG_CONFIG_HOME:-$HOME/.config}\""
+    ///
+    /// `.local/share` carries no manifest path the store reads *today* — session
+    /// discovery is a local `FileManager` walk — but it is the same rule, and the
+    /// spelling is what has to be right the moment a remote reader wants
+    /// OpenCode's `resume.discover.root`.
+    private static let xdgBases: [(prefix: String, expansion: String)] = [
+        (".config", "\"${XDG_CONFIG_HOME:-$HOME/.config}\""),
+        (".local/share", "\"${XDG_DATA_HOME:-$HOME/.local/share}\""),
+    ]
 
     private static func singleQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"

@@ -84,11 +84,44 @@ final class DeviceHookInstallTests: XCTestCase {
             "\"${XDG_CONFIG_HOME:-$HOME/.config}\"/'opencode/plugin'")
         XCTAssertEqual(
             SSHAgentConfigStore.quote("~/.config"), "\"${XDG_CONFIG_HOME:-$HOME/.config}\"")
-        // Everything outside `~/.config` is untouched: Pi and Claude Code keep
+        XCTAssertEqual(
+            SSHAgentConfigStore.quote("~/.local/share/opencode/storage"),
+            "\"${XDG_DATA_HOME:-$HOME/.local/share}\"/'opencode/storage'")
+        // Everything outside the XDG bases is untouched: Pi and Claude Code keep
         // their own dot-directories, which no spec relocates.
         XCTAssertEqual(
             SSHAgentConfigStore.quote("~/.pi/agent/extensions"),
             "\"$HOME\"/'.pi/agent/extensions'")
+        // `.configurable` is not `.config`, and a prefix match that ignored the
+        // boundary would rewrite it.
+        XCTAssertEqual(
+            SSHAgentConfigStore.quote("~/.configurable/x"), "\"$HOME\"/'.configurable/x'")
+    }
+
+    /// A merge is computed from bytes that were read a network round trip ago.
+    /// Committing it unconditionally is what silently discards the edit somebody
+    /// made in between — so a stale commit must be refused, not merged over.
+    func testAMergeAgainstStaleBytesIsRefused() {
+        let store = RecordingConfigStore()
+        let path = "~/.claude/settings.json"
+        store.write(Data("{\"a\":1}".utf8), to: path, executable: false)
+        let read = store.read(path)
+        store.write(Data("{\"a\":2}".utf8), to: path, executable: false)
+
+        XCTAssertFalse(store.write(Data("{\"merged\":1}".utf8), to: path, ifUnchangedFrom: read))
+        XCTAssertEqual(store.read(path), Data("{\"a\":2}".utf8), "the newer bytes must survive")
+        XCTAssertTrue(
+            store.write(Data("{\"merged\":1}".utf8), to: path,
+                        ifUnchangedFrom: Data("{\"a\":2}".utf8)))
+    }
+
+    /// `nil` means "must still be absent", so two installs racing to create the
+    /// same config cannot both win.
+    func testCreatingAConfigRequiresItToStillBeAbsent() {
+        let store = RecordingConfigStore()
+        let path = "~/.codex/hooks.json"
+        XCTAssertTrue(store.write(Data("{}".utf8), to: path, ifUnchangedFrom: nil))
+        XCTAssertFalse(store.write(Data("{\"b\":1}".utf8), to: path, ifUnchangedFrom: nil))
     }
 
     /// The three plugin dialects used to decline on a device outright.

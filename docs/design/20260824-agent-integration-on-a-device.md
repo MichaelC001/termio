@@ -31,8 +31,8 @@ re-do it:
 | D2 — device hook command | **Done.** `AgentStatusHooks.reportCommand(reporter:)` emits the `set-status` form, drops the stdin-mining flags, and keeps Cursor's `printf '{}'` contract. `HookReportCommandTests`. |
 | D5 — policy in the client | **Done.** `AgentConfigStore` is the seam; all four hook dialects and the skill installer go through it, and paths stay unexpanded because `~` means the *target's* home. |
 | D6 — the v0 SSH arm | **Done.** `SSHAgentConfigStore`, riding `Termiod.sshArguments(host:)`. |
-| D3 — `home:` dest | Not built. |
-| D4 — `expect_sha256` | Not built. Until it is, the SSH arm's hook merge is read-modify-write with no precondition. |
+| D3 — `home:` dest | Not built. Belongs to the v1 transfer-plane arm; the v0 SSH arm never touches `UploadOpen`. |
+| D4 — `expect_sha256` | **Done on the v0 arm**, which is where the race actually is. `AgentConfigStore.write(_:to:ifUnchangedFrom:)` commits a merge against the bytes it was computed from; `SSHAgentConfigStore` does the digest check and the rename in one remote command, so nothing slips between them. A lost race reports the agent as not installed and the pane's setup button is the retry — no re-merge loop, which would fight a live editor. The protocol-level `UploadCommit { expect_sha256 }` is still owed by the v1 arm. |
 | — | **Done.** A machine's pane calls both installers with `device.integrationTarget` (`MachinePaneModel.setUp`), so §D6's surface exists and a device target now reaches them. |
 | — | **Done.** The plugin dialects install on a device: the three templates take a `HookReporter` and generate the `termiod set-status` form. `DeviceHookInstallTests`. |
 
@@ -50,9 +50,22 @@ because every hook form ends in `2>/dev/null || true`:
   OpenCode resolves its global config under `$XDG_CONFIG_HOME/opencode` and Amp
   documents `$XDG_CONFIG_HOME/amp/plugins`, so a Linux box whose owner moved their
   config would take a plugin into a directory the agent never reads.
-  `SSHAgentConfigStore.quote` emits `${XDG_CONFIG_HOME:-$HOME/.config}`.
-  Still open: `resume.discover.root` for OpenCode is `~/.local/share/opencode/…`,
-  which is `XDG_DATA_HOME` and has the same exposure on a device.
+  `SSHAgentConfigStore.quote` expands both XDG bases.
+- **The probe asked the wrong shell.** `ssh host 'cmd'` is neither interactive nor
+  a login shell, and the agents worth finding are the ones outside the default
+  `PATH`: on a stock Ubuntu box `claude` installs to `~/.local/bin`, which only
+  `~/.profile` adds. A plain `command -v` answered "no" for an agent sitting right
+  there, so the machine reported *No agent CLIs found*, the setup chain stopped at
+  the probe rung, and no skill was installed anywhere. This was the blocker in
+  front of everything else in this table. Now asked twice, the second pass through
+  the login shell with the binary as `$0`.
+
+Still open: the **local** half of the XDG rule. `LocalAgentConfigStore` and
+`AgentSessionStore` resolve with `expandingTildeInPath`, so a *Mac* whose owner
+sets `XDG_CONFIG_HOME` installs skills where OpenCode does not read them. The
+window is narrow (a GUI-launched app does not inherit a login shell's environment,
+so reading the variable would itself need the `AgentAvailability` login-shell
+probe) and no report exists; recorded rather than built.
 
 ## The problem
 
