@@ -665,10 +665,10 @@ extension TermioStore {
                 + "process running on \(deviceDescription)."
             : "This session isn't open in Termio. Closing it stops the process "
                 + "running on \(deviceDescription)."
-        alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Close Session")
-        alert.buttons.last?.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        alert.addButton(withTitle: "Cancel")
+        Self.applyConfirmationKeys(to: alert)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         closeDeviceSessions([information])
     }
 
@@ -683,10 +683,10 @@ extension TermioStore {
         alert.messageText = "Close \(rows.count) session\(rows.count == 1 ? "" : "s")?"
         alert.informativeText = "These sessions aren't open in Termio. Closing them "
             + "stops every one of their processes on \(deviceDescription)."
-        alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Close Sessions")
-        alert.buttons.last?.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        alert.addButton(withTitle: "Cancel")
+        Self.applyConfirmationKeys(to: alert)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         closeDeviceSessions(rows)
     }
 

@@ -5,7 +5,7 @@ import AppKit
 /// Menu actions hang off the app delegate rather than a window, so the close keys
 /// have to work out their own target — the app's one hand-rolled substitute for the
 /// context tree Zed and VS Code resolve bindings against
-/// (`docs/design/keyboard-command-design.md`). Two branches don't justify a context
+/// (`docs/design/20260812-keyboard-command-design.md`). Two branches don't justify a context
 /// engine, but they do justify keeping the decision in one readable, testable place:
 /// this routing regresses silently, which is why cmux guards the same key with a CI
 /// lint. `CloseCommandTests` is termio's version of that guard.
@@ -26,14 +26,14 @@ enum CloseCommand {
         case nothing
         case dismissPalette
         case closeKeyWindow
-        case ungroupPane
+        case closeSession
         case closeMainWindow
     }
 
-    /// - Parameter ungroupingSplit: whether this key peels a pane off a split before
-    ///   it will consider the window — true for ⌘W with a split on screen, false for
-    ///   ⌘⇧W, which closes the window whatever the layout.
-    static func action(for frontmost: Frontmost, ungroupingSplit: Bool) -> Action {
+    /// - Parameter closingSession: whether this key ends the focused session before
+    ///   it will consider the window — true for ⌘W with a session on screen, false
+    ///   for ⌘⇧W, which closes the window whatever is selected.
+    static func action(for frontmost: Frontmost, closingSession: Bool) -> Action {
         switch frontmost {
         case .nothing:
             // Nothing is on screen, so there is nothing to close. Acting on the
@@ -46,9 +46,17 @@ enum CloseCommand {
             // the user is worse than leaving the key inert.
             return closable ? .closeKeyWindow : .nothing
         case .mainWindow:
-            return ungroupingSplit ? .ungroupPane : .closeMainWindow
+            // Chrome's last tab: with nothing left to close, the key closes the
+            // window instead of going inert.
+            return closingSession ? .closeSession : .closeMainWindow
         }
     }
+
+    /// Whether a command that acts on the terminal layout — Ungroup, which ships
+    /// unbound but can be given a key in Settings ▸ Keyboard — may run right now.
+    /// It needs the same target check the close keys get: a pane must never be
+    /// peeled off behind a Settings window.
+    static func actsOnTerminal(_ frontmost: Frontmost) -> Bool { frontmost == .mainWindow }
 
     /// Classifies the live key window. Split from `action(for:ungroupingSplit:)` so
     /// the decision itself stays free of AppKit state and can be tested.

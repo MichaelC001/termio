@@ -15,6 +15,7 @@ enum KeyCommandID: String, CaseIterable, Identifiable {
     // Session
     case nextSession = "session.next"
     case previousSession = "session.previous"
+    case closeSession = "session.close"
     // Branch
     case newWorktree = "branch.new-worktree"
     case newPullRequest = "branch.new-pull-request"
@@ -89,6 +90,11 @@ enum KeyCommandCatalog {
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("]"))),
         .init(id: .previousSession, category: localized("Session"), title: localized("Previous Session"),
               defaultShortcut: .init(modifiers: [.command, .shift], key: .char("["))),
+        // ⌘W is Chrome's Close Tab, read onto termio's tab-shaped object: the
+        // session. With no session in the window it falls through to closing the
+        // window, the way Chrome's last tab does, and ⌘⇧W stays the window key.
+        .init(id: .closeSession, category: localized("Session"), title: localized("Close Session"),
+              defaultShortcut: .init(modifiers: [.command], key: .char("w"))),
         // Branch — GitHub Desktop's Branch-menu bindings verbatim: New Branch
         // is ⌘⇧N there, and termio's branch-creation verb is the worktree.
         .init(id: .newWorktree, category: localized("Branch"), title: localized("New Worktree…"),
@@ -107,8 +113,10 @@ enum KeyCommandCatalog {
         .init(id: .splitUp, category: localized("Panes"), title: localized("Split Up"), defaultShortcut: nil),
         .init(id: .splitZoom, category: localized("Panes"), title: localized("Zoom Split"),
               defaultShortcut: .init(modifiers: [.command, .shift], key: .return)),
-        .init(id: .ungroup, category: localized("Panes"), title: localized("Ungroup"),
-              defaultShortcut: .init(modifiers: [.command], key: .char("w"))),
+        // Unbound since ⌘W became Close Session: peeling a pane out of a split
+        // without touching its session is the rarer of the two, so it keeps the
+        // menu verb and leaves the key to the one people press constantly.
+        .init(id: .ungroup, category: localized("Panes"), title: localized("Ungroup"), defaultShortcut: nil),
         .init(id: .focusPaneLeft, category: localized("Panes"), title: localized("Focus Pane Left"),
               defaultShortcut: .init(modifiers: [.command, .option], key: .left)),
         .init(id: .focusPaneRight, category: localized("Panes"), title: localized("Focus Pane Right"),
