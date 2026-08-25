@@ -61,6 +61,16 @@
         }
       }
     },
+    "%@ is ready.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 已就绪。"
+          }
+        }
+      }
+    },
     "%@ isn’t a UTF-8 text file.": {
       "localizations": {
         "zh-Hans": {
@@ -77,6 +87,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 暂不支持这台设备。"
+          }
+        }
+      }
+    },
+    "%@ isn’t installed on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未安装在 %2$@ 上"
           }
         }
       }
@@ -531,6 +551,26 @@
         }
       }
     },
+    "Agents on %@ can run, and report their status back here.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 Agent 可以运行，并把状态报告回这里。"
+          }
+        }
+      }
+    },
+    "Agents on %@ can run.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 Agent 可以运行。"
+          }
+        }
+      }
+    },
     "Agents won’t show as working.": {
       "localizations": {
         "zh-Hans": {
@@ -698,6 +738,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "应用"
+          }
+        }
+      }
+    },
+    "Asking %@ what it has.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在询问 %@ 上有什么。"
           }
         }
       }
@@ -872,6 +922,16 @@
         }
       }
     },
+    "Can’t check on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %@ 上检查"
+          }
+        }
+      }
+    },
     "Can’t open as text": {
       "localizations": {
         "zh-Hans": {
@@ -898,6 +958,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "连不上 %@"
+          }
+        }
+      }
+    },
+    "Can’t reach %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接 %@。"
           }
         }
       }
@@ -2093,6 +2163,16 @@
         }
       }
     },
+    "Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拖动列表可更改 Agent 的显示顺序。就绪状态针对 %@ — 在“设备”中打开它可安装缺少的内容。"
+          }
+        }
+      }
+    },
     "Duplicate to Themes Folder": {
       "localizations": {
         "zh-Hans": {
@@ -2404,6 +2484,16 @@
         }
       }
     },
+    "Get %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取 %@"
+          }
+        }
+      }
+    },
     "Git ignore patterns cannot represent a filename containing a line break.": {
       "localizations": {
         "zh-Hans": {
@@ -2704,6 +2794,16 @@
         }
       }
     },
+    "Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装 `%@` 命令行工具，然后为每个 Agent 安装 Termio 的 hooks 和技能。"
+          }
+        }
+      }
+    },
     "Integration": {
       "localizations": {
         "zh-Hans": {
@@ -2990,6 +3090,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agent 实时状态"
+          }
+        }
+      }
+    },
+    "Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 实时状态和会话控制在“设置 ▸ Agents”中开启；这里把它们安装到 %@ 上。"
           }
         }
       }
@@ -3594,6 +3704,16 @@
         }
       }
     },
+    "No agent CLIs found on %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上未找到任何 Agent 命令行工具。"
+          }
+        }
+      }
+    },
     "No agent CLIs found.": {
       "localizations": {
         "zh-Hans": {
@@ -3811,6 +3931,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未安装"
+          }
+        }
+      }
+    },
+    "Not installed on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未安装在 %@ 上"
           }
         }
       }
@@ -5098,6 +5228,16 @@
         }
       }
     },
+    "Set Up %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置 %@"
+          }
+        }
+      }
+    },
     "Set Up Key": {
       "localizations": {
         "zh-Hans": {
@@ -5234,6 +5374,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "侧栏"
+          }
+        }
+      }
+    },
+    "Signs in with %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 %@ 登录"
           }
         }
       }
@@ -5754,6 +5904,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。"
+          }
+        }
+      }
+    },
+    "The session host on %@. Sessions keep running there after you disconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。"
           }
         }
       }
@@ -6375,6 +6535,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "开启后，选中文本会直接拷贝到剪贴板。"
+          }
+        }
+      }
+    },
+    "Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每个 Agent 的命令行工具在 %@ 上的位置。留空则使用该 Agent 的默认值。"
           }
         }
       }

@@ -16,10 +16,14 @@
 	<string>%@ is a dark theme in the %@ slot.</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>%@ is a light theme in the %@ slot.</string>
+	<key>%@ is ready.</key>
+	<string>%@ is ready.</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ isn’t a UTF-8 text file.</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ isn’t available on this device yet.</string>
+	<key>%@ isn’t installed on %@</key>
+	<string>%@ isn’t installed on %@</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ isn’t on your PATH</string>
 	<key>%@ keeps exiting — retrying every %llds</key>
@@ -110,6 +114,10 @@
 	<string>Agent skill</string>
 	<key>Agents</key>
 	<string>Agents</string>
+	<key>Agents on %@ can run, and report their status back here.</key>
+	<string>Agents on %@ can run, and report their status back here.</string>
+	<key>Agents on %@ can run.</key>
+	<string>Agents on %@ can run.</string>
 	<key>Agents won’t show as working.</key>
 	<string>Agents won’t show as working.</string>
 	<key>Alias</key>
@@ -148,6 +156,8 @@
 	<string>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</string>
 	<key>Apply</key>
 	<string>Apply</string>
+	<key>Asking %@ what it has.</key>
+	<string>Asking %@ what it has.</string>
 	<key>Assigned to Me</key>
 	<string>Assigned to Me</string>
 	<key>Assignee</key>
@@ -182,12 +192,16 @@
 	<string>Cancel</string>
 	<key>Can’t browse %@</key>
 	<string>Can’t browse %@</string>
+	<key>Can’t check on %@</key>
+	<string>Can’t check on %@</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
 	<string>Can’t preview</string>
 	<key>Can’t reach %@</key>
 	<string>Can’t reach %@</string>
+	<key>Can’t reach %@.</key>
+	<string>Can’t reach %@.</string>
 	<key>Can’t reach %@: %@</key>
 	<string>Can’t reach %@: %@</string>
 	<key>Change Theme…</key>
@@ -426,6 +440,8 @@
 	<string>Draft</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
+	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
+	<string>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>Duplicate to Themes Folder</string>
 	<key>Edit</key>
@@ -488,6 +504,8 @@
 	<string>From your session history</string>
 	<key>General</key>
 	<string>General</string>
+	<key>Get %@</key>
+	<string>Get %@</string>
 	<key>Git ignore patterns cannot represent a filename containing a line break.</key>
 	<string>Git ignore patterns cannot represent a filename containing a line break.</string>
 	<key>Git worktree</key>
@@ -548,6 +566,8 @@
 	<string>Installing %@…</string>
 	<key>Installing hooks and skill…</key>
 	<string>Installing hooks and skill…</string>
+	<key>Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.</key>
+	<string>Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.</string>
 	<key>Integration</key>
 	<string>Integration</string>
 	<key>Integrations</key>
@@ -606,6 +626,8 @@
 	<string>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</string>
 	<key>Live agent status</key>
 	<string>Live agent status</string>
+	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
+	<string>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</string>
 	<key>Live agent status is off</key>
 	<string>Live agent status is off</string>
 	<key>Local</key>
@@ -726,6 +748,8 @@
 	<string>No Pull Requests</string>
 	<key>No Session</key>
 	<string>No Session</string>
+	<key>No agent CLIs found on %@.</key>
+	<string>No agent CLIs found on %@.</string>
 	<key>No agent CLIs found.</key>
 	<string>No agent CLIs found.</string>
 	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
@@ -770,6 +794,8 @@
 	<string>Not a valid regular expression</string>
 	<key>Not installed</key>
 	<string>Not installed</string>
+	<key>Not installed on %@</key>
+	<string>Not installed on %@</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to Compare</key>
@@ -1026,6 +1052,8 @@
 	<string>Session control</string>
 	<key>Sessions</key>
 	<string>Sessions</string>
+	<key>Set Up %@</key>
+	<string>Set Up %@</string>
 	<key>Set Up Key</key>
 	<string>Set Up Key</string>
 	<key>Set Up Key…</key>
@@ -1054,6 +1082,8 @@
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</string>
 	<key>Sidebar</key>
 	<string>Sidebar</string>
+	<key>Signs in with %@</key>
+	<string>Signs in with %@</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>Signs in with the keys ssh offers by default.</string>
 	<key>Size: %lld pt</key>
@@ -1158,6 +1188,8 @@
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
+	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
+	<string>The session host on %@. Sessions keep running there after you disconnect.</string>
 	<key>The session host went away</key>
 	<string>The session host went away</string>
 	<key>The sidebar shows this workspace</key>
@@ -1282,6 +1314,8 @@
 	<string>WeChat group</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
+	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
+	<string>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</string>
 	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
 	<string>Whether you want these at all. Each machine installs them for its own agents, under Machines.</string>
 	<key>Window</key>

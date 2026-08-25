@@ -16,10 +16,14 @@
 	<string>“%@”是深色主题，与“%@”插槽不匹配。</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>“%@”是浅色主题，与“%@”插槽不匹配。</string>
+	<key>%@ is ready.</key>
+	<string>%@ 已就绪。</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ 不是 UTF-8 文本文件。</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ 暂不支持这台设备。</string>
+	<key>%@ isn’t installed on %@</key>
+	<string>%1$@ 未安装在 %2$@ 上</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
 	<key>%@ keeps exiting — retrying every %llds</key>
@@ -110,6 +114,10 @@
 	<string>Agent 技能</string>
 	<key>Agents</key>
 	<string>Agent</string>
+	<key>Agents on %@ can run, and report their status back here.</key>
+	<string>%@ 上的 Agent 可以运行，并把状态报告回这里。</string>
+	<key>Agents on %@ can run.</key>
+	<string>%@ 上的 Agent 可以运行。</string>
 	<key>Agents won’t show as working.</key>
 	<string>Agent 将不会显示为工作中。</string>
 	<key>Alias</key>
@@ -148,6 +156,8 @@
 	<string>将 Host 块追加到 ~/.ssh/config，该别名也可直接用于 `ssh %@`。</string>
 	<key>Apply</key>
 	<string>应用</string>
+	<key>Asking %@ what it has.</key>
+	<string>正在询问 %@ 上有什么。</string>
 	<key>Assigned to Me</key>
 	<string>指派给我</string>
 	<key>Assignee</key>
@@ -182,12 +192,16 @@
 	<string>取消</string>
 	<key>Can’t browse %@</key>
 	<string>无法浏览 %@</string>
+	<key>Can’t check on %@</key>
+	<string>无法在 %@ 上检查</string>
 	<key>Can’t open as text</key>
 	<string>无法以文本打开</string>
 	<key>Can’t preview</key>
 	<string>无法预览</string>
 	<key>Can’t reach %@</key>
 	<string>连不上 %@</string>
+	<key>Can’t reach %@.</key>
+	<string>无法连接 %@。</string>
 	<key>Can’t reach %@: %@</key>
 	<string>连不上 %@：%@</string>
 	<key>Change Theme…</key>
@@ -426,6 +440,8 @@
 	<string>草稿</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
+	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
+	<string>拖动列表可更改 Agent 的显示顺序。就绪状态针对 %@ — 在“设备”中打开它可安装缺少的内容。</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>复制到主题文件夹</string>
 	<key>Edit</key>
@@ -488,6 +504,8 @@
 	<string>来自你的会话历史</string>
 	<key>General</key>
 	<string>通用</string>
+	<key>Get %@</key>
+	<string>获取 %@</string>
 	<key>Git ignore patterns cannot represent a filename containing a line break.</key>
 	<string>Git 忽略模式无法表示包含换行符的文件名。</string>
 	<key>Git worktree</key>
@@ -548,6 +566,8 @@
 	<string>正在安装 %@…</string>
 	<key>Installing hooks and skill…</key>
 	<string>正在安装 hooks 和技能…</string>
+	<key>Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.</key>
+	<string>安装 `%@` 命令行工具，然后为每个 Agent 安装 Termio 的 hooks 和技能。</string>
 	<key>Integration</key>
 	<string>集成</string>
 	<key>Integrations</key>
@@ -606,6 +626,8 @@
 	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
 	<key>Live agent status</key>
 	<string>Agent 实时状态</string>
+	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
+	<string>Agent 实时状态和会话控制在“设置 ▸ Agents”中开启；这里把它们安装到 %@ 上。</string>
 	<key>Live agent status is off</key>
 	<string>Agent 实时状态已关闭</string>
 	<key>Local</key>
@@ -726,6 +748,8 @@
 	<string>没有 PR</string>
 	<key>No Session</key>
 	<string>没有会话</string>
+	<key>No agent CLIs found on %@.</key>
+	<string>在 %@ 上未找到任何 Agent 命令行工具。</string>
 	<key>No agent CLIs found.</key>
 	<string>未找到任何 Agent 命令行工具。</string>
 	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
@@ -770,6 +794,8 @@
 	<string>不是有效的正则表达式</string>
 	<key>Not installed</key>
 	<string>未安装</string>
+	<key>Not installed on %@</key>
+	<string>未安装在 %@ 上</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to Compare</key>
@@ -1026,6 +1052,8 @@
 	<string>会话控制</string>
 	<key>Sessions</key>
 	<string>会话</string>
+	<key>Set Up %@</key>
+	<string>设置 %@</string>
 	<key>Set Up Key</key>
 	<string>设置密钥</string>
 	<key>Set Up Key…</key>
@@ -1054,6 +1082,8 @@
 	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 Termio 的 hooks 安装到各 Agent 的配置中。</string>
 	<key>Sidebar</key>
 	<string>侧栏</string>
+	<key>Signs in with %@</key>
+	<string>使用 %@ 登录</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>使用 ssh 默认提供的密钥登录。</string>
 	<key>Size: %lld pt</key>
@@ -1158,6 +1188,8 @@
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
+	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
+	<string>%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。</string>
 	<key>The session host went away</key>
 	<string>承载会话的进程消失了</string>
 	<key>The sidebar shows this workspace</key>
@@ -1282,6 +1314,8 @@
 	<string>微信群</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
+	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
+	<string>每个 Agent 的命令行工具在 %@ 上的位置。留空则使用该 Agent 的默认值。</string>
 	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
 	<string>决定你是否需要这些功能。每台设备在“设备”中为自己的 Agent 安装它们。</string>
 	<key>Window</key>

@@ -126,7 +126,13 @@ struct MachinePane: View {
     private var outcomeSubtext: String {
         switch model.readiness {
         case .ready:
-            return localized("Agents on \(machine.name) can run, and report their status back here.")
+            // Only promise the reporting when it was actually asked for: with both
+            // integration switches off, setup deliberately installs nothing, and
+            // "reports their status back here" would be a claim about hooks that
+            // are not there.
+            return reportsStatus
+                ? localized("Agents on \(machine.name) can run, and report their status back here.")
+                : localized("Agents on \(machine.name) can run.")
         case .checking:
             return localized("Asking \(machine.name) what it has.")
         case .blocked(let reason):
@@ -138,6 +144,13 @@ struct MachinePane: View {
                 ? localized("Installs the `\(CommandLineTool.toolName)` command-line tool, then Termio’s hooks and skill for each agent.")
                 : localized("Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.")
         }
+    }
+
+    /// Whether anything on this machine is meant to report status — the two
+    /// switches live on the Agents tab, because wanting the feature is a
+    /// preference and installing it is a machine operation (RFC §D1).
+    private var reportsStatus: Bool {
+        settings.agentHooksEnabled || settings.sessionControlEnabled
     }
 
     // MARK: Reached by — the route half
