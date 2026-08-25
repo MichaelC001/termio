@@ -1,0 +1,12 @@
+{
+  "id": "configHomeAgent",
+  "name": "Config Home Agent",
+  "command": "cha",
+  "configHome": { "env": "CHA_HOME", "path": "~/.cha" },
+  "skills": { "dir": "~/.cha/skills" },
+  "hooks": {
+    "type": "json",
+    "file": "~/.cha/settings.json",
+    "events": [{ "on": "Stop", "state": "done" }]
+  }
+}

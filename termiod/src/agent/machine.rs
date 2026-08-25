@@ -14,6 +14,7 @@
 //!   app is started from Finder), so the login-shell probe stays — but as the one
 //!   mechanism it always was, asked once and cached, not as an SSH workaround.
 
+use super::manifest::ConfigHome;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -95,6 +96,61 @@ const XDG_BASES: [(&str, &str); 2] = [
 /// character.
 pub fn expand(path: &str) -> PathBuf {
     expand_with(path, home_directory(), &login_environment)
+}
+
+/// Resolve a manifest path against this box, honouring the agent's own
+/// config-home variable when it declares one.
+///
+/// **Order: the agent's variable, then the XDG base, then `~`.** The two
+/// overrides compose rather than race. An agent that documents its own variable
+/// is saying "my whole tree is here", which is a more specific statement than
+/// "my tree is under the config base", so it wins; the XDG base applies only
+/// when the agent's variable is unset or empty. Nothing in the catalog needs
+/// both today — no agent with a config-home variable keeps its tree under
+/// `~/.config` — but the rule has to be decided somewhere rather than left to
+/// whichever check happens to run first.
+///
+/// `Err` means *do not install*, with the sentence to show for it.
+pub fn resolve(path: &str, home: Option<&ConfigHome>) -> std::result::Result<PathBuf, String> {
+    resolve_with(path, home, &login_environment, home_directory())
+}
+
+fn resolve_with(
+    path: &str,
+    home: Option<&ConfigHome>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    home_directory: Option<PathBuf>,
+) -> std::result::Result<PathBuf, String> {
+    let Some(config_home) = home else {
+        return Ok(expand_with(path, home_directory, lookup));
+    };
+    // An unset or empty variable is the default, not an error: it is what every
+    // account that never moved its config has.
+    let Some(moved) = lookup(&config_home.env).filter(|value| !value.trim().is_empty()) else {
+        return Ok(expand_with(path, home_directory, lookup));
+    };
+    // A comma is ambiguous and this refuses rather than guesses — see
+    // `AMBIGUOUS_CONFIG_HOME`.
+    if moved.contains(',') {
+        return Err(format!(
+            "{} names more than one directory ({moved}); \
+             set it to a single directory to install here",
+            config_home.env
+        ));
+    }
+    if !crate::agent::manifest::is_under(path, &config_home.path) {
+        // The manifest validated this at load, so reaching it means a manifest
+        // changed underneath a running daemon. Fall back rather than write
+        // somewhere the prefix does not describe.
+        return Ok(expand_with(path, home_directory, lookup));
+    }
+    let tail = path[config_home.path.len()..].trim_start_matches('/');
+    let moved = expand_with(moved.trim(), home_directory, lookup);
+    Ok(if tail.is_empty() {
+        moved
+    } else {
+        moved.join(tail)
+    })
 }
 
 fn expand_with(
@@ -341,6 +397,128 @@ mod tests {
         assert!(!is_command_installed("/nonexistent/agent-cli"));
         // The empty command is the plain login shell, which is always available.
         assert!(is_command_installed(""));
+    }
+
+    fn home(env: &str, path: &str) -> ConfigHome {
+        ConfigHome {
+            env: env.to_string(),
+            path: path.to_string(),
+        }
+    }
+
+    /// Resolution with a stated environment, so these assert the rule rather
+    /// than whatever this machine happens to export.
+    fn at(path: &str, home: Option<&ConfigHome>, env: &[(&str, &str)]) -> Result<String, String> {
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let lookup = move |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        resolve_with(path, home, &lookup, Some(PathBuf::from("/home/u")))
+            .map(|path| path.display().to_string())
+    }
+
+    /// The four states the field has to survive, and the reason it exists: an
+    /// agent whose owner moved its config gets the install where the agent
+    /// actually reads, and one who did not is unaffected.
+    #[test]
+    fn a_config_home_variable_moves_the_install() {
+        let claude = home("CLAUDE_CONFIG_DIR", "~/.claude");
+
+        // Unset: the documented default, which is every account that never
+        // touched it.
+        assert_eq!(
+            at("~/.claude/settings.json", Some(&claude), &[]),
+            Ok("/home/u/.claude/settings.json".into())
+        );
+        // Set: the whole tree moves, prefix replaced and tail kept.
+        assert_eq!(
+            at("~/.claude/settings.json", Some(&claude), &[("CLAUDE_CONFIG_DIR", "/srv/work")]),
+            Ok("/srv/work/settings.json".into())
+        );
+        assert_eq!(
+            at("~/.claude/skills/termio/SKILL.md", Some(&claude), &[("CLAUDE_CONFIG_DIR", "/srv/work")]),
+            Ok("/srv/work/skills/termio/SKILL.md".into())
+        );
+        // Empty: not a directory named "", the default.
+        assert_eq!(
+            at("~/.claude/settings.json", Some(&claude), &[("CLAUDE_CONFIG_DIR", "   ")]),
+            Ok("/home/u/.claude/settings.json".into())
+        );
+        // The variable may itself be `~`-relative.
+        assert_eq!(
+            at("~/.claude/settings.json", Some(&claude), &[("CLAUDE_CONFIG_DIR", "~/work")]),
+            Ok("/home/u/work/settings.json".into())
+        );
+    }
+
+    /// A comma is ambiguous. Claude Code's own entry describes one directory;
+    /// the comma-separated form is ccusage's convention for *reading* across
+    /// profiles. Installing into the first would wire up one profile and leave
+    /// the others silent, which reads as an agent that reports sometimes.
+    #[test]
+    fn more_than_one_directory_is_refused_rather_than_guessed() {
+        let claude = home("CLAUDE_CONFIG_DIR", "~/.claude");
+        let outcome = at(
+            "~/.claude/settings.json",
+            Some(&claude),
+            &[("CLAUDE_CONFIG_DIR", "~/.claude-work,~/.claude-personal")],
+        );
+        let error = outcome.expect_err("must refuse");
+        assert!(error.contains("CLAUDE_CONFIG_DIR"), "{error}");
+        assert!(error.contains("more than one directory"), "{error}");
+    }
+
+    /// The two overrides compose in a stated order rather than racing. Nothing
+    /// in the catalog needs both today, but the rule has to be decided
+    /// somewhere.
+    #[test]
+    fn an_agents_own_variable_outranks_the_xdg_base() {
+        let under_xdg = home("SOME_AGENT_HOME", "~/.config/some-agent");
+        let env = [
+            ("XDG_CONFIG_HOME", "/xdg"),
+            ("SOME_AGENT_HOME", "/agent-home"),
+        ];
+        assert_eq!(
+            at("~/.config/some-agent/hooks.json", Some(&under_xdg), &env),
+            Ok("/agent-home/hooks.json".into())
+        );
+        // With only the XDG base set, the XDG base applies.
+        assert_eq!(
+            at("~/.config/some-agent/hooks.json", Some(&under_xdg), &env[..1]),
+            Ok("/xdg/some-agent/hooks.json".into())
+        );
+        // And an agent that declares no variable is untouched by this at all.
+        assert_eq!(
+            at("~/.config/some-agent/hooks.json", None, &env),
+            Ok("/xdg/some-agent/hooks.json".into())
+        );
+    }
+
+    /// A prefix that is a text prefix but not a path prefix must not match, or
+    /// `~/.pi/agent` would claim `~/.pi/agentic`.
+    #[test]
+    fn the_prefix_is_matched_by_path_component() {
+        let pi = home("PI_DIR", "~/.pi/agent");
+        assert_eq!(
+            at("~/.pi/agent/extensions", Some(&pi), &[("PI_DIR", "/elsewhere")]),
+            Ok("/elsewhere/extensions".into())
+        );
+        // Outside the declared prefix: fall back rather than write somewhere
+        // the prefix does not describe.
+        assert_eq!(
+            at("~/.pi/agentic/x", Some(&pi), &[("PI_DIR", "/elsewhere")]),
+            Ok("/home/u/.pi/agentic/x".into())
+        );
+        // The home itself resolves to the moved directory, with no stray slash.
+        assert_eq!(
+            at("~/.pi/agent", Some(&pi), &[("PI_DIR", "/elsewhere")]),
+            Ok("/elsewhere".into())
+        );
     }
 
     /// The probe has to look past the `PATH` this process inherited. A daemon

@@ -261,15 +261,13 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
         // included, so a shipped hook a user override removed or redirected is
         // cleaned too.
         let mut seen: Vec<&HookSpec> = Vec::new();
-        for spec in catalog
-            .bundled
-            .iter()
-            .chain(catalog.all.iter())
-            .filter_map(|agent| agent.hooks.as_ref())
-        {
+        for agent in catalog.bundled.iter().chain(catalog.all.iter()) {
+            let Some(spec) = agent.hooks.as_ref() else {
+                continue;
+            };
             if !seen.contains(&spec) {
                 seen.push(spec);
-                uninstall_hooks(spec);
+                uninstall_hooks(agent, spec);
             }
         }
         return Vec::new();
@@ -277,8 +275,8 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
 
     // A full user override may intentionally remove or redirect a shipped hook.
     // Remove that old managed wiring before installing the merged catalog.
-    for spec in catalog.stale_bundled_hooks() {
-        uninstall_hooks(&spec);
+    for (agent, spec) in catalog.stale_bundled_hooks() {
+        uninstall_hooks(&agent, &spec);
     }
 
     selected(catalog, request)
@@ -288,6 +286,14 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
             Some(install_hooks(agent, spec, request))
         })
         .collect()
+}
+
+/// Where a manifest path lands on this box, honouring the agent's own
+/// config-home variable. Resolved once per agent and handed to the installers
+/// already absolute, so every dialect gets the same answer and none of them has
+/// to know the rule.
+fn resolved(agent: &AgentDefinition, path: &str) -> std::result::Result<String, String> {
+    machine::resolve(path, agent.config_home.as_ref()).map(|path| path.display().to_string())
 }
 
 fn install_hooks(
@@ -306,12 +312,18 @@ fn install_hooks(
                     Some("incomplete JSON hook manifest".into()),
                 );
             };
-            let installer = JsonHookFile::new(file, spec, request);
+            let file = match resolved(agent, file) {
+                Ok(file) => file,
+                Err(reason) => {
+                    return InstallResult::new(agent, "hooks", "", InstallStatus::Failed, Some(reason))
+                }
+            };
+            let installer = JsonHookFile::new(&file, spec, request);
             let outcome = installer.install();
             InstallResult::new(
                 agent,
                 "hooks",
-                &machine::expand(file).display().to_string(),
+                &file,
                 if outcome.is_ok() {
                     InstallStatus::Installed
                 } else {
@@ -330,12 +342,18 @@ fn install_hooks(
                     Some("incomplete script hook manifest".into()),
                 );
             };
-            let installer = ScriptHookDirectory::new(directory, spec, request);
+            let directory = match resolved(agent, directory) {
+                Ok(directory) => directory,
+                Err(reason) => {
+                    return InstallResult::new(agent, "hooks", "", InstallStatus::Failed, Some(reason))
+                }
+            };
+            let installer = ScriptHookDirectory::new(&directory, spec, request);
             let outcome = installer.install();
             InstallResult::new(
                 agent,
                 "hooks",
-                &machine::expand(directory).display().to_string(),
+                &directory,
                 if outcome.is_ok() {
                     InstallStatus::Installed
                 } else {
@@ -345,7 +363,14 @@ fn install_hooks(
             )
         }
         HookType::Plugin => {
-            let installer = match PluginFile::new(spec, request) {
+            let directory = match spec.directory.as_deref().map(|d| resolved(agent, d)) {
+                Some(Ok(directory)) => directory,
+                Some(Err(reason)) => {
+                    return InstallResult::new(agent, "hooks", "", InstallStatus::Failed, Some(reason))
+                }
+                None => String::new(),
+            };
+            let installer = match PluginFile::new(&directory, spec, request) {
                 Some(installer) => installer,
                 None => {
                     return InstallResult::new(
@@ -357,7 +382,7 @@ fn install_hooks(
                     )
                 }
             };
-            let path = machine::expand(&installer.path).display().to_string();
+            let path = installer.path.clone();
             let outcome = installer.install();
             InstallResult::new(
                 agent,
@@ -381,12 +406,18 @@ fn install_hooks(
                     Some("incomplete TOML hook manifest".into()),
                 );
             };
-            let installer = TomlHookBlock::new(file, spec, request);
+            let file = match resolved(agent, file) {
+                Ok(file) => file,
+                Err(reason) => {
+                    return InstallResult::new(agent, "hooks", "", InstallStatus::Failed, Some(reason))
+                }
+            };
+            let installer = TomlHookBlock::new(&file, spec, request);
             let outcome = installer.install();
             InstallResult::new(
                 agent,
                 "hooks",
-                &machine::expand(file).display().to_string(),
+                &file,
                 if outcome.is_ok() {
                     InstallStatus::Installed
                 } else {
@@ -398,16 +429,25 @@ fn install_hooks(
     }
 }
 
-fn uninstall_hooks(spec: &HookSpec) {
-    match (spec.hook_type, spec.file.as_deref(), spec.directory.as_deref()) {
-        (HookType::Json, Some(file), _) => JsonHookFile::bare(file, spec.dialect).uninstall(),
-        (HookType::Scripts, _, Some(directory)) => {
-            ScriptHookDirectory::bare(directory).uninstall()
+/// Sweep one agent's wiring. Resolved against the *current* config home: if the
+/// variable moved since the install, the old tree is left alone rather than
+/// hunted for, because guessing at directories to delete in is a worse failure
+/// than leaving a stale file behind.
+fn uninstall_hooks(agent: &AgentDefinition, spec: &HookSpec) {
+    let file = spec.file.as_deref().map(|file| resolved(agent, file));
+    let directory = spec
+        .directory
+        .as_deref()
+        .map(|directory| resolved(agent, directory));
+    match (spec.hook_type, file, directory) {
+        (HookType::Json, Some(Ok(file)), _) => JsonHookFile::bare(&file, spec.dialect).uninstall(),
+        (HookType::Scripts, _, Some(Ok(directory))) => {
+            ScriptHookDirectory::bare(&directory).uninstall()
         }
-        (HookType::Plugin, _, Some(directory)) => PluginFile::bare(directory, spec.dialect)
+        (HookType::Plugin, _, Some(Ok(directory))) => PluginFile::bare(&directory, spec.dialect)
             .map(|installer| installer.uninstall())
             .unwrap_or(()),
-        (HookType::Toml, Some(file), _) => TomlHookBlock::bare(file).uninstall(),
+        (HookType::Toml, Some(Ok(file)), _) => TomlHookBlock::bare(&file).uninstall(),
         _ => {}
     }
 }
@@ -895,8 +935,10 @@ struct PluginFile {
 }
 
 impl PluginFile {
-    fn new(spec: &HookSpec, request: &InstallRequest) -> Option<PluginFile> {
-        let directory = spec.directory.as_deref()?;
+    fn new(directory: &str, spec: &HookSpec, request: &InstallRequest) -> Option<PluginFile> {
+        if directory.is_empty() {
+            return None;
+        }
         let (filename, legacy) = super::plugin::filenames(spec.dialect)?;
         // A device drops the conversation plumbing rather than tracking an id
         // the daemon has no field for. One fact about `SetStatus`, applied here
@@ -1105,9 +1147,11 @@ fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallR
             let Some(directory) = agent.skill_dir.as_deref() else {
                 continue;
             };
-            let folder = format!("{directory}/termio");
+            let Ok(folder) = resolved(agent, &format!("{directory}/termio")) else {
+                continue;
+            };
             if seen.insert(folder.clone()) {
-                let resolved = machine::expand(&folder);
+                let resolved = PathBuf::from(&folder);
                 if resolved.exists() {
                     // termio owns the folder, so there is no user content in it
                     // to preserve.
@@ -1136,11 +1180,21 @@ fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallR
             if !present {
                 return None;
             }
-            let path = format!("{directory}/termio/SKILL.md");
+            let path = match resolved(agent, &format!("{directory}/termio/SKILL.md")) {
+                Ok(path) => path,
+                Err(reason) => {
+                    return Some(InstallResult::new(
+                        agent,
+                        "skill",
+                        "",
+                        InstallStatus::Failed,
+                        Some(reason),
+                    ))
+                }
+            };
             if !seen.insert(path.clone()) {
                 return None;
             }
-            let resolved = machine::expand(&path).display().to_string();
             // Byte-compare, no version field: the skill is one whole document
             // termio owns.
             let outcome = if read_bytes(&path).as_deref() == Some(skill.as_bytes()) {
@@ -1151,7 +1205,7 @@ fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallR
             Some(InstallResult::new(
                 agent,
                 "skill",
-                &resolved,
+                &path,
                 if outcome.is_ok() {
                     InstallStatus::Installed
                 } else {
@@ -1490,7 +1544,7 @@ pub(super) mod tests {
         std::fs::write(directory.join("termio.js"), theirs).expect("fixture");
 
         let request = device_request("/home/u/.local/bin/termiod");
-        let error = PluginFile::new(&spec, &request)
+        let error = PluginFile::new(&directory.display().to_string(), &spec, &request)
             .expect("a plugin dialect")
             .install()
             .expect_err("must refuse");
@@ -1524,7 +1578,7 @@ pub(super) mod tests {
 
         let request = device_request("/home/u/.local/bin/termiod");
         for _ in 0..2 {
-            PluginFile::new(&spec, &request)
+            PluginFile::new(&directory.display().to_string(), &spec, &request)
                 .expect("a plugin dialect")
                 .install()
                 .expect("installs");

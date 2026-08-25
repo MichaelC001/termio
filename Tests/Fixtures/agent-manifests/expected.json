@@ -2,6 +2,7 @@
   {
     "definition": {
       "command": null,
+      "configHome": null,
       "displayName": "Terminal",
       "emitsProgressStatus": false,
       "hooks": null,
@@ -29,6 +30,7 @@
   {
     "definition": {
       "command": "amp",
+      "configHome": null,
       "displayName": "Amp",
       "emitsProgressStatus": false,
       "hooks": {
@@ -77,6 +79,7 @@
   {
     "definition": {
       "command": "agy",
+      "configHome": null,
       "displayName": "Antigravity",
       "emitsProgressStatus": false,
       "hooks": null,
@@ -104,6 +107,10 @@
   {
     "definition": {
       "command": "claude",
+      "configHome": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "path": "~/.claude"
+      },
       "displayName": "Claude Code",
       "emitsProgressStatus": false,
       "hooks": {
@@ -182,6 +189,7 @@
   {
     "definition": {
       "command": "cline",
+      "configHome": null,
       "displayName": "Cline",
       "emitsProgressStatus": false,
       "hooks": {
@@ -255,6 +263,10 @@
   {
     "definition": {
       "command": "codex",
+      "configHome": {
+        "env": "CODEX_HOME",
+        "path": "~/.codex"
+      },
       "displayName": "Codex",
       "emitsProgressStatus": false,
       "hooks": {
@@ -335,6 +347,10 @@
   {
     "definition": {
       "command": "copilot",
+      "configHome": {
+        "env": "COPILOT_HOME",
+        "path": "~/.copilot"
+      },
       "displayName": "Copilot",
       "emitsProgressStatus": false,
       "hooks": {
@@ -398,6 +414,7 @@
   {
     "definition": {
       "command": "crush",
+      "configHome": null,
       "displayName": "Crush",
       "emitsProgressStatus": true,
       "hooks": null,
@@ -438,6 +455,7 @@
   {
     "definition": {
       "command": "cursor-agent",
+      "configHome": null,
       "displayName": "Cursor",
       "emitsProgressStatus": false,
       "hooks": {
@@ -501,6 +519,7 @@
   {
     "definition": {
       "command": "droid",
+      "configHome": null,
       "displayName": "Droid",
       "emitsProgressStatus": false,
       "hooks": {
@@ -564,6 +583,10 @@
   {
     "definition": {
       "command": "grok",
+      "configHome": {
+        "env": "GROK_HOME",
+        "path": "~/.grok"
+      },
       "displayName": "Grok",
       "emitsProgressStatus": true,
       "hooks": {
@@ -637,6 +660,10 @@
   {
     "definition": {
       "command": "hermes",
+      "configHome": {
+        "env": "HERMES_HOME",
+        "path": "~/.hermes"
+      },
       "displayName": "Hermes",
       "emitsProgressStatus": false,
       "hooks": null,
@@ -664,6 +691,10 @@
   {
     "definition": {
       "command": "kimi",
+      "configHome": {
+        "env": "KIMI_CODE_HOME",
+        "path": "~/.kimi-code"
+      },
       "displayName": "Kimi",
       "emitsProgressStatus": false,
       "hooks": {
@@ -717,6 +748,7 @@
   {
     "definition": {
       "command": "opencode",
+      "configHome": null,
       "displayName": "OpenCode",
       "emitsProgressStatus": false,
       "hooks": {
@@ -775,6 +807,7 @@
   {
     "definition": {
       "command": "pi",
+      "configHome": null,
       "displayName": "Pi",
       "emitsProgressStatus": false,
       "hooks": {
@@ -833,6 +866,7 @@
   {
     "definition": {
       "command": "qwen",
+      "configHome": null,
       "displayName": "Qwen Code",
       "emitsProgressStatus": false,
       "hooks": {
@@ -908,6 +942,7 @@
   {
     "definition": {
       "command": null,
+      "configHome": null,
       "displayName": "Bare Minimum",
       "emitsProgressStatus": false,
       "hooks": null,
@@ -934,7 +969,102 @@
   },
   {
     "definition": {
+      "command": null,
+      "configHome": {
+        "env": "NESTED_AGENT_DIR",
+        "path": "~/.nested/agent"
+      },
+      "displayName": "Config Home Nested",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "context",
+        "dialect": "piPlugin",
+        "directory": "~/.nested/agent/extensions",
+        "events": [
+          {
+            "matcher": null,
+            "name": "agent_start",
+            "state": "working"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "plugin"
+      },
+      "icon": "terminalGlyph",
+      "id": "configHomeNested",
+      "installURL": null,
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.nested/agent/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "configHomeNested"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/config-home-nested-prefix.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
+      "command": "cha",
+      "configHome": {
+        "env": "CHA_HOME",
+        "path": "~/.cha"
+      },
+      "displayName": "Config Home Agent",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": null,
+        "dialect": "claudeNested",
+        "directory": null,
+        "events": [
+          {
+            "matcher": null,
+            "name": "Stop",
+            "state": "done"
+          }
+        ],
+        "file": "~/.cha/settings.json",
+        "promptTitle": null,
+        "tool": null,
+        "type": "json"
+      },
+      "icon": "terminalGlyph",
+      "id": "configHomeAgent",
+      "installURL": null,
+      "order": 1000000,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.cha/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "configHomeAgent"
+    },
+    "file": "Tests/Fixtures/agent-manifests/cases/config-home.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
       "command": "full-agent --flag",
+      "configHome": null,
       "displayName": "Full House",
       "emitsProgressStatus": true,
       "hooks": {
@@ -1005,6 +1135,7 @@
   {
     "definition": {
       "command": null,
+      "configHome": null,
       "displayName": "Hooks Outrank Scrape",
       "emitsProgressStatus": false,
       "hooks": {
@@ -1051,6 +1182,31 @@
     "result": "ok"
   },
   {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-config-home-env-name.json",
+    "message": "invalidConfigHomeEnvName: configHome env must name an environment variable, not '$X_HOME'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-config-home-missing-env.json",
+    "message": "invalidConfigHomeEnv: configHome requires 'env'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-config-home-missing-path.json",
+    "message": "invalidConfigHomePath: configHome requires 'path'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-config-home-outside-prefix.json",
+    "message": "invalidConfigHomeOutside: configHome path '~/.x' does not contain '~/.xtra/skills'",
+    "result": "invalid"
+  },
+  {
+    "file": "Tests/Fixtures/agent-manifests/cases/invalid-config-home-relative-path.json",
+    "message": "invalidConfigHomeRelative: configHome path must start with '~/', not '/etc/x'",
+    "result": "invalid"
+  },
+  {
     "file": "Tests/Fixtures/agent-manifests/cases/invalid-conversation-locator.json",
     "message": "invalidConversationLocator: hook conversation must name a stdin JSON field, not 'payload.id'",
     "result": "invalid"
@@ -1093,6 +1249,7 @@
   {
     "definition": {
       "command": null,
+      "configHome": null,
       "displayName": "Legacy Shapes",
       "emitsProgressStatus": false,
       "hooks": {
@@ -1149,6 +1306,7 @@
   {
     "definition": {
       "command": "scrape",
+      "configHome": null,
       "displayName": "Screen Scrape Only",
       "emitsProgressStatus": false,
       "hooks": null,

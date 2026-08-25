@@ -99,6 +99,9 @@ final class AgentManifestFixtureTests: XCTestCase {
             "wireName": agent.wireName,
             "installURL": value(agent.installURL?.absoluteString),
             "skillDir": value(agent.skillDir),
+            "configHome": value(agent.configHome.map { home in
+                ["env": home.env, "path": home.path] as [String: Any]
+            }),
             "emitsProgressStatus": agent.emitsProgressStatus,
             "tintHex": value(agent.tintHex),
             "icon": describe(agent.icon),

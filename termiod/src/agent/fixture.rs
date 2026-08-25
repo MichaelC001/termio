@@ -102,6 +102,10 @@ fn describe(agent: &AgentDefinition) -> Value {
         "wireName": agent.wire_name,
         "installURL": agent.install_url,
         "skillDir": agent.skill_dir,
+        "configHome": agent.config_home.as_ref().map(|home| json!({
+            "env": home.env,
+            "path": home.path,
+        })),
         "emitsProgressStatus": agent.emits_progress_status,
         "tintHex": agent.tint_hex,
         "icon": match &agent.icon {

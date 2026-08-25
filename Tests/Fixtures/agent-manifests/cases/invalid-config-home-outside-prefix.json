@@ -1,0 +1,6 @@
+{
+  "id": "invalidConfigHomeOutside",
+  "name": "Invalid Config Home Outside",
+  "configHome": { "env": "X_HOME", "path": "~/.x" },
+  "skills": { "dir": "~/.xtra/skills" }
+}

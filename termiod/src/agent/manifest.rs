@@ -84,6 +84,32 @@ pub struct AgentDefinition {
     /// The agent's user-level skills directory as the manifest declared it,
     /// unexpanded. `None` when the agent has no skills ecosystem.
     pub skill_dir: Option<String>,
+    /// The environment variable that moves this agent's config tree, and the
+    /// prefix it replaces. `None` for an agent that documents none.
+    pub config_home: Option<ConfigHome>,
+}
+
+/// A documented per-agent config-home override.
+///
+/// Every manifest path here names a fixed directory — `~/.claude`,
+/// `~/.codex` — and an agent that lets its owner move that directory reads a
+/// variable to find it. Without this, a user who moved their config gets an
+/// install into a directory the agent never reads, and every hook form ends in
+/// `2>/dev/null || true`, so nothing says a word. It is the same silent miss as
+/// the XDG one and it is more common, because people set these to keep
+/// profiles apart.
+///
+/// The prefix is stated rather than derived. It is usually the obvious one, but
+/// not always: Pi's variable names `~/.pi/agent`, not `~/.pi`. Deriving it from
+/// the manifest's own paths would be guesswork, and guessing wrong moves an
+/// install somewhere nothing looks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigHome {
+    /// The variable the agent documents, e.g. `CLAUDE_CONFIG_DIR`.
+    pub env: String,
+    /// The path prefix it replaces, unexpanded, e.g. `~/.claude`. Every other
+    /// path the manifest declares must sit under it.
+    pub path: String,
 }
 
 /// The icon a manifest points at, carried as the reference rather than the
@@ -274,6 +300,17 @@ pub struct AgentManifest {
     pub hooks: Option<HookConfig>,
     #[serde(default)]
     pub skills: Option<SkillsSpec>,
+    #[serde(default, rename = "configHome")]
+    pub config_home: Option<ConfigHomeSpec>,
+}
+
+/// The manifest's `configHome` — a variable name and the prefix it replaces.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigHomeSpec {
+    #[serde(default)]
+    pub env: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -391,6 +428,7 @@ impl AgentManifest {
         let icon = self.resolved_icon()?;
         let hooks = self.resolved_hooks()?;
         let skill_dir = self.resolved_skill_dir()?;
+        let config_home = self.resolved_config_home(hooks.as_ref(), skill_dir.as_deref())?;
         // Hooks are the session's status authority, so an agent that has them
         // never also carries screen-scrape rules — one source of truth per pane.
         let screen_rules = if hooks.is_none() {
@@ -420,7 +458,60 @@ impl AgentManifest {
             emits_progress_status: self.progress_status.unwrap_or(false),
             hooks,
             skill_dir,
+            config_home,
         })
+    }
+
+    /// Validate the `configHome` block, and check that it actually is the home
+    /// the rest of the manifest hangs off.
+    ///
+    /// A prefix that does not cover the paths it claims to is the failure worth
+    /// catching here: the install would keep working while the variable is
+    /// unset and silently move to the wrong place the day somebody sets it,
+    /// which is the whole class of bug this field exists to close.
+    fn resolved_config_home(
+        &self,
+        hooks: Option<&HookSpec>,
+        skill_dir: Option<&str>,
+    ) -> Result<Option<ConfigHome>> {
+        let Some(spec) = &self.config_home else {
+            return Ok(None);
+        };
+        let Some(env) = spec.env.as_deref().map(trim_spaces).filter(|v| !v.is_empty()) else {
+            return Err(invalid(format!("{}: configHome requires 'env'", self.id)));
+        };
+        let Some(path) = spec.path.as_deref().map(trim_spaces).filter(|v| !v.is_empty()) else {
+            return Err(invalid(format!("{}: configHome requires 'path'", self.id)));
+        };
+        if !env.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return Err(invalid(format!(
+                "{}: configHome env must name an environment variable, not '{env}'",
+                self.id
+            )));
+        }
+        if !path.starts_with("~/") {
+            return Err(invalid(format!(
+                "{}: configHome path must start with '~/', not '{path}'",
+                self.id
+            )));
+        }
+        let declared = hooks
+            .into_iter()
+            .flat_map(|hooks| hooks.file.iter().chain(hooks.directory.iter()))
+            .map(String::as_str)
+            .chain(skill_dir);
+        for candidate in declared {
+            if !is_under(candidate, path) {
+                return Err(invalid(format!(
+                    "{}: configHome path '{path}' does not contain '{candidate}'",
+                    self.id
+                )));
+            }
+        }
+        Ok(Some(ConfigHome {
+            env: env.to_string(),
+            path: path.to_string(),
+        }))
     }
 
     fn resolved_icon(&self) -> Result<IconReference> {
@@ -855,6 +946,19 @@ fn trimmed_non_empty(value: &Option<String>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+/// Whether `candidate` sits at or under `prefix`, as path components rather
+/// than as text — `~/.pi/agent` contains `~/.pi/agent/skills` but not
+/// `~/.pi/agentic`.
+pub fn is_under(candidate: &str, prefix: &str) -> bool {
+    let candidate = candidate.trim_end_matches('/');
+    let prefix = prefix.trim_end_matches('/');
+    candidate == prefix
+        || candidate
+            .strip_prefix(prefix)
+            .map(|rest| rest.starts_with('/'))
+            .unwrap_or(false)
+}
+
 /// A bare JavaScript/JSON identifier: a letter or `_` then letters, digits, `_`.
 fn is_identifier(value: &str) -> bool {
     let mut chars = value.chars();
@@ -931,14 +1035,18 @@ impl AgentCatalog {
 
     /// Bundled hook specs removed or redirected by full user overrides — the
     /// old managed wiring an install has to clean before writing the new.
-    pub fn stale_bundled_hooks(&self) -> Vec<HookSpec> {
+    ///
+    /// Each comes back with the bundled definition it belongs to, because the
+    /// paths have to be resolved against *that* definition's config home: a
+    /// user override may have changed the variable along with the paths.
+    pub fn stale_bundled_hooks(&self) -> Vec<(AgentDefinition, HookSpec)> {
         self.bundled
             .iter()
             .filter_map(|definition| {
                 let bundled = definition.hooks.as_ref()?;
                 match self.find(&definition.id).and_then(|live| live.hooks.as_ref()) {
                     Some(live) if live == bundled => None,
-                    _ => Some(bundled.clone()),
+                    _ => Some((definition.clone(), bundled.clone())),
                 }
             })
             .collect()

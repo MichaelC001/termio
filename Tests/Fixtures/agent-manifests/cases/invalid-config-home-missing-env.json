@@ -1,0 +1,2 @@
+{ "id": "invalidConfigHomeEnv", "name": "Invalid Config Home Env",
+  "configHome": { "path": "~/.x" } }
