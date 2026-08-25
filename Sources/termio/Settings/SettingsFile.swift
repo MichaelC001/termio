@@ -80,6 +80,15 @@ final class SettingsStore {
             ?? defaults.dictionary(forKey: key) as? [String: String]
     }
 
+    /// A nested JSON object, for the one setting that is a *section* rather than a
+    /// value: the per-machine block (`DeviceSettingsSection`). No `UserDefaults`
+    /// fallback, deliberately — a section has never lived in the registration
+    /// domain, and a Ghostty config cannot express one, so "absent" here means
+    /// exactly "the user has not set a per-machine value" with nothing beneath it.
+    func object(_ key: String) -> [String: Any]? {
+        chosen[key] as? [String: Any]
+    }
+
     /// Whether the user chose this key themselves, as opposed to inheriting it.
     /// Lets a Reset control clear the value instead of writing today's default
     /// back in as if it were a choice.

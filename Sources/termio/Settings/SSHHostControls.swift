@@ -1,294 +1,64 @@
 import AppKit
 import SwiftUI
 
-/// Settings ▸ Devices: the connectable hosts from `~/.ssh/config`, each one click
-/// away from a terminal. The config file stays the single source of truth —
-/// termio reads the same hosts `ssh` itself resolves and writes nothing behind
-/// the user's back: Add Host appends a plain block, Edit opens the raw file.
-struct DevicesSettingsTab: View {
-    @ObservedObject var settings: AppSettings
-    /// Opens an SSH terminal to the alias in the main window (wired to
-    /// `TermioStore.addSSHSession` by the app delegate).
-    let onConnect: (String) -> Void
-    /// Runs `ssh-copy-id <alias>` with a public key, for a host whose probe found
-    /// it wants a password (wired to `TermioStore.addKeyInstallSession`).
-    let onSetUpKey: (String, String) -> Void
+/// The `~/.ssh/config` half of a machine — how it is reached — as controls the
+/// Machines surface composes.
+///
+/// This file was `DevicesSettingsTab`, a top-level tab that was only ever the
+/// route half. RFC §D2 folded it into a machine's pane so a box's route and its
+/// capabilities read as one thing; what is left here is the shared pieces that
+/// pane and the roster both draw with, plus the Add Host sheet the File menu also
+/// opens.
 
-    @State private var hosts: [SSHConfigHost] = []
-    @State private var publicKeys: [SSHPublicKey] = []
-    @State private var addingHost = false
-    @State private var configEditor: ConfigEditorTarget?
-    /// The key whose Copy button is briefly confirming, so the click visibly took.
-    @State private var copiedKeyID: String?
-
-    /// Which file the editor sheet shows — usually `~/.ssh/config`, but a host
-    /// defined in an `Include`d file opens that file, at its `Host` line.
-    private struct ConfigEditorTarget: Identifiable {
-        let url: URL
-        let line: Int?
-        var id: String { "\(url.path)#\(line ?? 0)" }
-    }
-
-    var body: some View {
-        Form {
-            hostsSection
-            configSection
-            if !publicKeys.isEmpty { keysSection }
-        }
-        .formStyle(.grouped)
-        .onAppear(perform: reload)
-        .sheet(isPresented: $addingHost, onDismiss: reload) {
-            AddSSHHostSheet(existingAliases: Set(hosts.map(\.alias)))
-        }
-        .sheet(item: $configEditor, onDismiss: reload) { target in
-            FileEditorView(
-                url: target.url,
-                settings: settings,
-                jumpLine: target.line,
-                showsInspectorChrome: false,
-                onClose: { configEditor = nil }
-            )
-            .frame(minWidth: 640, minHeight: 460)
-            // The editor's own header controls belong to the inspector, which a sheet
-            // doesn't have — so supply the one control that still applies. Escape closes
-            // too; the visible button is the guaranteed way out.
-            .overlay(alignment: .topTrailing) {
-                Button { configEditor = nil } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .background(.thinMaterial, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help(localized("Close (Esc)"))
-                .padding(8)
-            }
-        }
-    }
-
-    private var hostsSection: some View {
-        Section {
-            if hosts.isEmpty {
-                Text(localized("No hosts yet — add one, or write a Host block in ~/.ssh/config."))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(hosts) { host in
-                SSHHostRow(
-                    host: host,
-                    keyToInstall: SSHConfigFile.publicKeyToInstall(for: host, keys: publicKeys),
-                    connect: { onConnect(host.alias) },
-                    setUpKey: { onSetUpKey(host.alias, $0.url.path) },
-                    editInConfig: { presentEditor(for: host) }
-                )
-            }
-            Button { addingHost = true } label: {
-                Label(localized("Add Host"), systemImage: "plus")
-            }
-        } header: {
-            SectionHeaderLabel(title: localized("Hosts"))
-        } footer: {
-            Text(.init(localized("Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.")))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var configSection: some View {
-        Section {
-            LabeledContent {
-                Button(localized("Edit")) { presentEditor(for: nil) }
-            } label: {
-                SettingsLabel(
-                    title: "~/.ssh/config",
-                    subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list."),
-                    titleFont: .headline
-                )
-            }
-        } header: {
-            SectionHeaderLabel(title: localized("Config file"))
-        }
-    }
-
-    private var keysSection: some View {
-        Section {
-            ForEach(publicKeys) { key in
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(key.name)
-                        Text(key.comment.isEmpty ? key.algorithm : "\(key.algorithm) · \(key.comment)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Button(copiedKeyID == key.id ? localized("Copied") : localized("Copy")) { copy(key) }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-            }
-        } header: {
-            SectionHeaderLabel(title: localized("Public keys"))
-        } footer: {
-            Text(localized("The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Opens the editor sheet on a host's defining file at its `Host` line, or on
-    /// `~/.ssh/config` itself. The config is created empty first when missing so
-    /// the editor never opens onto a nonexistent file.
-    private func presentEditor(for host: SSHConfigHost?) {
-        // Symlinks resolve before the editor opens: its atomic auto-save would
-        // otherwise replace a dotfile-managed link with a plain file.
-        if let host {
-            configEditor = ConfigEditorTarget(url: host.file.resolvingSymlinksInPath(), line: host.line)
-        } else {
-            try? SSHConfigFile.ensureConfigExists()
-            configEditor = ConfigEditorTarget(url: SSHConfigFile.writableConfigURL, line: nil)
-        }
-    }
-
-    private func reload() {
-        hosts = SSHConfigFile.hosts()
-        publicKeys = SSHConfigFile.publicKeys()
-    }
-
-    private func copy(_ key: SSHPublicKey) {
-        guard let text = try? String(contentsOf: key.url, encoding: .utf8) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(
-            text.trimmingCharacters(in: .whitespacesAndNewlines), forType: .string
-        )
-        copiedKeyID = key.id
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            if copiedKeyID == key.id { copiedKeyID = nil }
-        }
-    }
-}
-
-/// One host row: alias over its `user@host` destination (with the pinned key's
-/// filename when the block sets one), and a Test Connection probe. Live
-/// connecting is a launch, not a setting — it lives in the context menu (and
-/// the sidebar / File menu), keeping this pane about configuring and verifying
-/// hosts.
-private struct SSHHostRow: View {
-    let host: SSHConfigHost
-    /// The key an install would put on this host, or nil when there is none to
-    /// send — which is what decides whether the password advice can offer a fix.
-    let keyToInstall: SSHPublicKey?
-    let connect: () -> Void
-    let setUpKey: (SSHPublicKey) -> Void
-    let editInConfig: () -> Void
-
-    private enum ProbeState { case idle, running, result(SSHProbeResult) }
-    @State private var probe: ProbeState = .idle
-
-    /// `user@host`, plus the identity file's name when the block pins one — the
-    /// full path stays in the tooltip.
-    private var subtitle: String {
-        guard let identityFile = host.identityFile else { return host.destinationLabel }
-        let keyName = (identityFile as NSString).lastPathComponent
-        return "\(host.destinationLabel) · \(keyName)"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(host.alias).font(.headline)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(host.identityFile.map { localized("Uses \($0)") } ?? "")
-                }
-                Spacer(minLength: 8)
-                probeControl
-            }
-            if case .result(.wantsPassword) = probe { passwordAdvice }
-        }
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button(localized("Connect"), action: connect)
-            Button(localized("Test Connection"), action: runProbe)
-            if let keyToInstall {
-                Button(localized("Set Up Key…")) { setUpKey(keyToInstall) }
-            }
-            Button(localized("Edit in Config"), action: editInConfig)
-            Button(localized("Copy ssh Command")) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString("ssh \(host.alias)", forType: .string)
-            }
-        }
-    }
-
-    /// The one probe outcome with a fix worth offering in place. A password is a
-    /// dead end for everything but the plain shell — the daemon connections that
-    /// carry sessions and the file tree set `BatchMode=yes` and can never answer a
-    /// prompt — so the row says that plainly and offers the install that ends it.
-    @ViewBuilder
-    private var passwordAdvice: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(keyToInstall == nil
-                 ? localized("This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.")
-                 : localized("This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            if let keyToInstall {
-                Button(localized("Set Up Key…")) { setUpKey(keyToInstall) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(localized("Runs ssh-copy-id with \(keyToInstall.name) in a terminal — the host asks for your password once, there."))
-            }
-        }
-        .padding(.top, 2)
-    }
-
-    /// The trailing control: a Test button that turns into a spinner while the
-    /// probe runs, then a tinted result badge that re-tests on click.
-    @ViewBuilder
-    private var probeControl: some View {
-        switch probe {
-        case .idle:
-            Button(localized("Test"), action: runProbe)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        case .running:
-            ProgressView()
-                .controlSize(.small)
-                .frame(minWidth: 44)
-        case .result(let outcome):
-            Button(action: runProbe) {
-                Text(outcome.label)
-                    .foregroundStyle(outcome.tint)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .help(localized("\(outcome.detail) — click to re-test"))
-        }
-    }
-
-    /// Runs the non-interactive probe off the main thread, hopping back to update
-    /// the badge. A fresh click just re-arms it.
-    private func runProbe() {
-        probe = .running
-        Task { @MainActor in
-            probe = .result(await SSHConfigFile.testConnection(alias: host.alias))
-        }
-    }
-}
-
-/// How each probe outcome reads in the row: a short tinted label — the wording
+/// How each probe outcome reads in a row: a short tinted label — the wording
 /// itself distinguishes outcomes, so color is reinforcement, not the only
 /// signal — with the raw ssh detail in the tooltip.
-private extension SSHProbeResult {
+
+/// Which file the config editor shows — usually `~/.ssh/config`, but a host
+/// defined in an `Include`d file opens that file, at its `Host` line.
+struct SSHConfigEditorTarget: Identifiable {
+    let url: URL
+    let line: Int?
+    var id: String { "\(url.path)#\(line ?? 0)" }
+}
+
+/// The raw-config editor, presented as a sheet from the Machines tab. The config
+/// file stays the single source of truth: Termio reads the hosts `ssh` itself
+/// resolves and never writes a separate list behind the user's back.
+struct SSHConfigEditorSheet: View {
+    let target: SSHConfigEditorTarget
+    @ObservedObject var settings: AppSettings
+    let onClose: () -> Void
+
+    var body: some View {
+        FileEditorView(
+            url: target.url,
+            settings: settings,
+            jumpLine: target.line,
+            showsInspectorChrome: false,
+            onClose: onClose
+        )
+        .frame(minWidth: 640, minHeight: 460)
+        // The editor's own header controls belong to the inspector, which a sheet
+        // doesn't have — so supply the one control that still applies. Escape closes
+        // too; the visible button is the guaranteed way out.
+        .overlay(alignment: .topTrailing) {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .background(.thinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help(localized("Close (Esc)"))
+            .padding(8)
+        }
+    }
+}
+
+extension SSHProbeResult {
     var label: String {
         switch self {
         case .reachable: return localized("Reachable")

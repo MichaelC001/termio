@@ -16,10 +16,14 @@
 	<string>%@ is a dark theme in the %@ slot.</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>%@ is a light theme in the %@ slot.</string>
+	<key>%@ is ready.</key>
+	<string>%@ is ready.</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ isn’t a UTF-8 text file.</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ isn’t available on this device yet.</string>
+	<key>%@ isn’t installed on %@</key>
+	<string>%@ isn’t installed on %@</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ isn’t on your PATH</string>
 	<key>%@ keeps exiting — retrying every %llds</key>
@@ -92,6 +96,8 @@
 	<string>Add Host</string>
 	<key>Add Host…</key>
 	<string>Add Host…</string>
+	<key>Add Machine</key>
+	<string>Add Machine</string>
 	<key>Add SSH Host</key>
 	<string>Add SSH Host</string>
 	<key>Add to Chat</key>
@@ -108,6 +114,10 @@
 	<string>Agent skill</string>
 	<key>Agents</key>
 	<string>Agents</string>
+	<key>Agents on %@ can run, and report their status back here.</key>
+	<string>Agents on %@ can run, and report their status back here.</string>
+	<key>Agents on %@ can run.</key>
+	<string>Agents on %@ can run.</string>
 	<key>Agents won’t show as working.</key>
 	<string>Agents won’t show as working.</string>
 	<key>Alias</key>
@@ -146,6 +156,8 @@
 	<string>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</string>
 	<key>Apply</key>
 	<string>Apply</string>
+	<key>Asking %@ what it has.</key>
+	<string>Asking %@ what it has.</string>
 	<key>Assigned to Me</key>
 	<string>Assigned to Me</string>
 	<key>Assignee</key>
@@ -180,12 +192,16 @@
 	<string>Cancel</string>
 	<key>Can’t browse %@</key>
 	<string>Can’t browse %@</string>
+	<key>Can’t check on %@</key>
+	<string>Can’t check on %@</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
 	<string>Can’t preview</string>
 	<key>Can’t reach %@</key>
 	<string>Can’t reach %@</string>
+	<key>Can’t reach %@.</key>
+	<string>Can’t reach %@.</string>
 	<key>Can’t reach %@: %@</key>
 	<string>Can’t reach %@: %@</string>
 	<key>Change Theme…</key>
@@ -198,10 +214,16 @@
 	<string>Chat with the developer and other users.</string>
 	<key>Chats</key>
 	<string>Chats</string>
+	<key>Check Again</key>
+	<string>Check Again</string>
 	<key>Check for Updates…</key>
 	<string>Check for Updates…</string>
 	<key>Checked out on %@</key>
 	<string>Checked out on %@</string>
+	<key>Checking the machine…</key>
+	<string>Checking the machine…</string>
+	<key>Checking…</key>
+	<string>Checking…</string>
 	<key>Choose a different name.</key>
 	<string>Choose a different name.</string>
 	<key>Choose a name for this workspace.</key>
@@ -388,6 +410,10 @@
 	<string>Deletes the custom agent’s manifest from this Mac.</string>
 	<key>Delete…</key>
 	<string>Delete…</string>
+	<key>Deploy</key>
+	<string>Deploy</string>
+	<key>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</key>
+	<string>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
 	<key>Devices</key>
@@ -414,6 +440,8 @@
 	<string>Draft</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
+	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
+	<string>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>Duplicate to Themes Folder</string>
 	<key>Edit</key>
@@ -472,8 +500,12 @@
 	<string>Font name</string>
 	<key>From your Ghostty config</key>
 	<string>From your Ghostty config</string>
+	<key>From your session history</key>
+	<string>From your session history</string>
 	<key>General</key>
 	<string>General</string>
+	<key>Get %@</key>
+	<string>Get %@</string>
 	<key>Git ignore patterns cannot represent a filename containing a line break.</key>
 	<string>Git ignore patterns cannot represent a filename containing a line break.</string>
 	<key>Git worktree</key>
@@ -498,6 +530,8 @@
 	<string>Hooks reinstalled</string>
 	<key>Host</key>
 	<string>Host</string>
+	<key>Host block</key>
+	<string>Host block</string>
 	<key>Host not found</key>
 	<string>Host not found</string>
 	<key>Hosts</key>
@@ -522,10 +556,20 @@
 	<string>Inspector Pane</string>
 	<key>Install %@</key>
 	<string>Install %@</string>
+	<key>Install Page</key>
+	<string>Install Page</string>
+	<key>Installed by Termio</key>
+	<string>Installed by Termio</string>
 	<key>Installed.</key>
 	<string>Installed.</string>
 	<key>Installing %@…</key>
 	<string>Installing %@…</string>
+	<key>Installing hooks and skill…</key>
+	<string>Installing hooks and skill…</string>
+	<key>Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.</key>
+	<string>Installs the `%@` command-line tool, then Termio’s hooks and skill for each agent.</string>
+	<key>Integration</key>
+	<string>Integration</string>
 	<key>Integrations</key>
 	<string>Integrations</string>
 	<key>Interface</key>
@@ -552,6 +596,8 @@
 	<string>Labels</string>
 	<key>Language</key>
 	<string>Language</string>
+	<key>Language, notifications, and GitHub</key>
+	<string>Language, notifications, and GitHub</string>
 	<key>Last 30 days</key>
 	<string>Last 30 days</string>
 	<key>Last 7 days</key>
@@ -564,6 +610,8 @@
 	<string>Launch</string>
 	<key>Let your agents coordinate?</key>
 	<string>Let your agents coordinate?</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
+	<string>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</string>
 	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</key>
 	<string>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</string>
 	<key>Light</key>
@@ -578,14 +626,22 @@
 	<string>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</string>
 	<key>Live agent status</key>
 	<string>Live agent status</string>
+	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
+	<string>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</string>
 	<key>Live agent status is off</key>
 	<string>Live agent status is off</string>
 	<key>Local</key>
 	<string>Local</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
+	<key>Looking for agent CLIs…</key>
+	<string>Looking for agent CLIs…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>Lost the connection to %@. The session is still running there.</string>
+	<key>Machine Unavailable</key>
+	<string>Machine Unavailable</string>
+	<key>Machines</key>
+	<string>Machines</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -692,6 +748,12 @@
 	<string>No Pull Requests</string>
 	<key>No Session</key>
 	<string>No Session</string>
+	<key>No agent CLIs found on %@.</key>
+	<string>No agent CLIs found on %@.</string>
+	<key>No agent CLIs found.</key>
+	<string>No agent CLIs found.</string>
+	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
+	<string>No agents on your list yet — add one in Settings ▸ Agents.</string>
 	<key>No bundled tool to install from.</key>
 	<string>No bundled tool to install from.</string>
 	<key>No description provided.</key>
@@ -722,6 +784,8 @@
 	<string>No textual changes to show.</string>
 	<key>No theme matches “%@”</key>
 	<string>No theme matches “%@”</string>
+	<key>None</key>
+	<string>None</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
 	<key>Not Now</key>
@@ -730,12 +794,16 @@
 	<string>Not a valid regular expression</string>
 	<key>Not installed</key>
 	<string>Not installed</string>
+	<key>Not installed on %@</key>
+	<string>Not installed on %@</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to Compare</key>
 	<string>Nothing to Compare</string>
 	<key>Nothing to install.</key>
 	<string>Nothing to install.</string>
+	<key>Nothing to reach — this is the machine you’re on.</key>
+	<string>Nothing to reach — this is the machine you’re on.</string>
 	<key>Notifications</key>
 	<string>Notifications</string>
 	<key>Notifications for Termio are turned off in System Settings.</key>
@@ -788,6 +856,8 @@
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
 	<string>Opened outside Termio on this device</string>
+	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
+	<string>Opens the ~/.ssh/config entry this machine is defined in.</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
 	<key>Pair your iPhone and remote access</key>
@@ -846,10 +916,16 @@
 	<string>Range</string>
 	<key>Reachable</key>
 	<string>Reachable</string>
+	<key>Reached by</key>
+	<string>Reached by</string>
+	<key>Reached over SSH</key>
+	<string>Reached over SSH</string>
 	<key>Reaching %@…</key>
 	<string>Reaching %@…</string>
 	<key>Reads ~/.ssh/config directly — Termio keeps no separate host list.</key>
 	<string>Reads ~/.ssh/config directly — Termio keeps no separate host list.</string>
+	<key>Ready</key>
+	<string>Ready</string>
 	<key>Recent</key>
 	<string>Recent</string>
 	<key>Recent Activity</key>
@@ -922,10 +998,14 @@
 	<string>Rotate the pairing token?</string>
 	<key>Row padding</key>
 	<string>Row padding</string>
+	<key>Run Termio from the built app to install its command-line tool.</key>
+	<string>Run Termio from the built app to install its command-line tool.</string>
 	<key>Run a command…</key>
 	<string>Run a command…</string>
 	<key>Running terminal sessions will end. You can relaunch later instead.</key>
 	<string>Running terminal sessions will end. You can relaunch later instead.</string>
+	<key>Runs</key>
+	<string>Runs</string>
 	<key>Runs on %@</key>
 	<string>Runs on %@</string>
 	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
@@ -972,10 +1052,16 @@
 	<string>Session control</string>
 	<key>Sessions</key>
 	<string>Sessions</string>
+	<key>Set Up %@</key>
+	<string>Set Up %@</string>
 	<key>Set Up Key</key>
 	<string>Set Up Key</string>
 	<key>Set Up Key…</key>
 	<string>Set Up Key…</string>
+	<key>Set the path it launches from on each machine, under Machines.</key>
+	<string>Set the path it launches from on each machine, under Machines.</string>
+	<key>Set up this device</key>
+	<string>Set up this device</string>
 	<key>Settings</key>
 	<string>Settings</string>
 	<key>Settings…</key>
@@ -990,10 +1076,16 @@
 	<string>Show Project Files</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</string>
+	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>
+	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</key>
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</string>
 	<key>Sidebar</key>
 	<string>Sidebar</string>
+	<key>Signs in with %@</key>
+	<string>Signs in with %@</string>
+	<key>Signs in with the keys ssh offers by default.</key>
+	<string>Signs in with the keys ssh offers by default.</string>
 	<key>Size: %lld pt</key>
 	<string>Size: %lld pt</string>
 	<key>Skill reinstalled</key>
@@ -1086,12 +1178,18 @@
 	<string>The ignore rule couldn’t be added.</string>
 	<key>The listing failed.</key>
 	<string>The listing failed.</string>
+	<key>The machine Termio is running on</key>
+	<string>The machine Termio is running on</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
+	<key>The machine you’re on</key>
+	<string>The machine you’re on</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
+	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
+	<string>The session host on %@. Sessions keep running there after you disconnect.</string>
 	<key>The session host went away</key>
 	<string>The session host went away</string>
 	<key>The sidebar shows this workspace</key>
@@ -1114,6 +1212,10 @@
 	<string>Thicken glyphs</string>
 	<key>This Mac</key>
 	<string>This Mac</string>
+	<key>This Mac and the machines you reach from it, and what each one runs</key>
+	<string>This Mac and the machines you reach from it, and what each one runs</string>
+	<key>This Mac, and every machine you can reach from it. Open one to see what runs there.</key>
+	<string>This Mac, and every machine you can reach from it. Open one to see what runs there.</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
 	<key>This agent is no longer on your list.</key>
@@ -1140,6 +1242,8 @@
 	<string>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</string>
+	<key>This machine is no longer in your configuration.</key>
+	<string>This machine is no longer in your configuration.</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>
@@ -1210,6 +1314,10 @@
 	<string>WeChat group</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
+	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
+	<string>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</string>
+	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
+	<string>Whether you want these at all. Each machine installs them for its own agents, under Machines.</string>
 	<key>Window</key>
 	<string>Window</string>
 	<key>Working Directory</key>

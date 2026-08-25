@@ -888,6 +888,20 @@ extension TermioStore {
         }
     }
 
+    /// The same check without the HUD, for a caller that already shows its own
+    /// progress — Settings ▸ Machines runs it as the first rung of "Set up this
+    /// device", where a borderless panel over the preferences window would be
+    /// chrome fighting chrome.
+    ///
+    /// `static` because it touches nothing on the store: the device a successful
+    /// check reveals is handed back rather than adopted here, so a caller that is
+    /// only *inspecting* a machine does not silently rewrite the registry.
+    static func remoteReadyCheck(host: String) async -> RemoteSetupResult {
+        await Task.detached(priority: .userInitiated) {
+            performRemoteReadyCheck(host: host)
+        }.value
+    }
+
     /// The blocking half of `ensureRemoteReady`, run off-main. Probes for the
     /// remote binary and, when missing, invokes the local `termiod remote deploy`.
     /// `nonisolated` because it is invoked from a background queue and touches only
