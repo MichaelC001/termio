@@ -14,7 +14,33 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     private var binary = ""
     private var daemon: Process?
     private var socketDirectory: URL?
+    private var socketPath = ""
     private var root = URL(fileURLWithPath: "/")
+
+    /// Starts a daemon on this test's socket and waits for it to answer. Split
+    /// out because one test kills it mid-flight to make sure a pooled channel
+    /// that died between requests reconnects rather than failing the click.
+    private func startDaemon() throws -> Process {
+        // A killed daemon leaves its socket file behind, and a client that finds
+        // one nobody is listening on would try to autostart a daemon from the
+        // bundle rather than use this test's binary. Wait for *this* daemon's
+        // socket, not for a corpse.
+        try? FileManager.default.removeItem(atPath: socketPath)
+        let serve = Process()
+        serve.executableURL = URL(fileURLWithPath: binary)
+        serve.arguments = ["serve"]
+        serve.environment = ProcessInfo.processInfo.environment.merging(
+            ["TERMIOD_SOCK": socketPath]) { _, new in new }
+        serve.standardOutput = FileHandle.nullDevice
+        serve.standardError = FileHandle.nullDevice
+        try serve.run()
+
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: socketPath), Date() < deadline {
+            usleep(50_000)
+        }
+        return serve
+    }
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -31,21 +57,8 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         let socket = directory.appendingPathComponent("termiod.sock").path
         XCTAssertLessThan(socket.utf8.count, 104, "socket path must fit sun_path")
         setenv("TERMIOD_SOCK", socket, 1)
-
-        let serve = Process()
-        serve.executableURL = URL(fileURLWithPath: binary)
-        serve.arguments = ["serve"]
-        serve.environment = ProcessInfo.processInfo.environment.merging(
-            ["TERMIOD_SOCK": socket]) { _, new in new }
-        serve.standardOutput = FileHandle.nullDevice
-        serve.standardError = FileHandle.nullDevice
-        try serve.run()
-        daemon = serve
-
-        let deadline = Date().addingTimeInterval(10)
-        while !FileManager.default.fileExists(atPath: socket), Date() < deadline {
-            usleep(50_000)
-        }
+        socketPath = socket
+        daemon = try startDaemon()
 
         // A tree with one of everything the pane draws: a file, a directory, a
         // nested file, and the VCS directory the host stubs rather than walks.
@@ -76,6 +89,10 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        // The pool is process-wide and keyed by route, so a channel left open
+        // here would be handed to the next test — pointed at a daemon this one
+        // is about to kill.
+        Termiod.ControlPool.closeAll()
         daemon?.terminate()
         daemon?.waitUntilExit()
         if let socketDirectory {
@@ -268,4 +285,94 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertTrue(result.hits.isEmpty)
         XCTAssertFalse(result.limitHit)
     }
+
+    // MARK: - The pooled channel
+
+    /// The premise of the whole pool: a second request reaches the device over
+    /// the connection the first one opened. If this ever stops holding, nothing
+    /// fails — every call still answers — the app just quietly goes back to an
+    /// SSH handshake per folder expand.
+    func testASecondRequestReusesTheFirstsConnection() throws {
+        _ = try Termiod.listDirectories(route: .local, root: root.path, paths: [root.path])
+        let first = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        _ = try Termiod.readFile(route: .local, path: root.appendingPathComponent("a.txt").path)
+        let second = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        XCTAssertTrue(first === second, "the files plane must hold one channel per device")
+    }
+
+    /// A channel that negotiated one capability set must not answer for another:
+    /// the daemon settles capabilities at the handshake, so handing a `files`
+    /// channel a request it never negotiated would hang on a reply it will not
+    /// send.
+    func testChannelsAreKeyedByWhatTheyNegotiated() throws {
+        let files = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        let other = try Termiod.ControlPool.channel(route: .local, caps: ["files", "git"])
+        XCTAssertFalse(files === other)
+    }
+
+    /// Requests are demultiplexed by `re`, so several may be outstanding at once
+    /// — the daemon `tokio::spawn`s each one and answers out of order. This is
+    /// the claim that would fail loudest if the routing were wrong: with replies
+    /// matched by arrival instead of by id, a listing would come back holding a
+    /// file's bytes.
+    func testConcurrentRequestsOnOneChannelGetTheirOwnAnswers() throws {
+        let done = expectation(description: "all requests answered")
+        done.expectedFulfillmentCount = 3
+        let listed = UncheckedBox<[Termiod.DirectoryListing]>([])
+        let read = UncheckedBox<Data>(Data())
+        let found = UncheckedBox<Termiod.SearchResult?>(nil)
+        let root = root
+
+        // The search is much the slowest of the three, so it is issued first: if
+        // anything serialised behind it, the other two would land after it
+        // rather than while it runs.
+        DispatchQueue.global().async {
+            found.value = try? Termiod.searchContents(
+                route: .local, root: root.path, query: "nested", limit: 400)
+            done.fulfill()
+        }
+        DispatchQueue.global().async {
+            listed.value = (try? Termiod.listDirectories(
+                route: .local, root: root.path, paths: [root.path])) ?? []
+            done.fulfill()
+        }
+        DispatchQueue.global().async {
+            read.value = (try? Termiod.readFile(
+                route: .local, path: root.appendingPathComponent("sub/b.txt").path))?.data ?? Data()
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 30)
+
+        XCTAssertEqual(listed.value.first?.path, root.path)
+        XCTAssertTrue(listed.value.first?.entries.contains { $0.name == "a.txt" } ?? false)
+        XCTAssertEqual(read.value, Data(nestedContents.utf8), "the read got its own bytes")
+        XCTAssertEqual(found.value?.hits.count, 400)
+    }
+
+    /// The cost of holding a connection: it can die between requests, and the
+    /// first click after a laptop wakes must reconnect rather than show an error.
+    /// Killing the daemon under a live pooled channel is exactly that.
+    func testAChannelThatDiedBetweenRequestsReconnects() throws {
+        _ = try Termiod.listDirectories(route: .local, root: root.path, paths: [root.path])
+
+        daemon?.terminate()
+        daemon?.waitUntilExit()
+        daemon = nil
+        // The client is not told; it finds out by writing into a dead pipe,
+        // which is the case this has to survive without raising SIGPIPE.
+        let restarted = try startDaemon()
+        daemon = restarted
+
+        let listings = try Termiod.listDirectories(
+            route: .local, root: root.path, paths: [root.path])
+        XCTAssertTrue(listings.first?.entries.contains { $0.name == "a.txt" } ?? false)
+    }
+}
+
+/// A box for handing a result back from a detached queue in a test. The values
+/// are read only after `wait(for:)` has returned, which is the barrier that
+/// makes this safe; the compiler cannot see that.
+private final class UncheckedBox<Value>: @unchecked Sendable {
+    var value: Value
+    init(_ value: Value) { self.value = value }
 }

@@ -30,9 +30,9 @@ public enum Termiod {
     /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
     /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
     /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
-    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates, which need a channel that outlives one request |
+    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates. The channel that outlives a request now exists (`TermiodControlPool.swift`); what is still missing is a tree that applies deltas rather than re-listing |
     /// | `fs_watch`   | no      | ditto |
-    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on its own control channel (`TermiodFiles.swift`), never an attachment |
+    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on the device's pooled control channel (`TermiodFiles.swift`), never an attachment |
     /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
     /// | `git`        | no      | ditto |
     ///
@@ -186,10 +186,12 @@ public enum Termiod {
     /// it to that layout; there is no partial credit on a wire format.
     public static func decodeFileChunk(
         _ payload: Data
-    ) throws -> (offset: UInt64, last: Bool, data: Data) {
+    ) throws -> (request: UInt64, offset: UInt64, last: Bool, data: Data) {
         let headerSize = 17
         guard payload.count >= headerSize else { throw TermiodClientError.malformedFrame }
         let bytes = [UInt8](payload)
+        var request: UInt64 = 0
+        for index in 0 ..< 8 { request = request << 8 | UInt64(bytes[index]) }
         var offset: UInt64 = 0
         for index in 8 ..< 16 { offset = offset << 8 | UInt64(bytes[index]) }
         let last: Bool
@@ -198,7 +200,24 @@ public enum Termiod {
         case 1: last = true
         default: throw TermiodClientError.malformedFrame
         }
-        return (offset, last, payload.dropFirst(headerSize))
+        return (request, offset, last, payload.dropFirst(headerSize))
+    }
+
+    /// The `re` a reply is addressed to, read without decoding the reply itself.
+    ///
+    /// Every response the daemon sends echoes the `seq` of the request that
+    /// caused it (termiod/src/protocol.rs — `re` on `FsListed`, `FsFile`,
+    /// `FsSearched`, `error`, and the rest). On a channel carrying one request
+    /// at a time that field is redundant, which is why nothing read it until
+    /// now; on a channel carrying several it is the only thing that says whose
+    /// answer just arrived. Split out from `decodeControl` so demultiplexing
+    /// costs one small decode and no call site has to change shape.
+    ///
+    /// `nil` for a frame that answers nobody — `hello_ok`, a broadcast event,
+    /// or a daemon too old to stamp its replies.
+    public static func responseID(of payload: Data) -> UInt64? {
+        struct ResponseTag: Decodable { let re: UInt64? }
+        return try? JSONDecoder().decode(ResponseTag.self, from: payload).re
     }
 
     /// `U` payload: id_len u8, upload id, offset u64 big-endian, then bytes —
@@ -461,9 +480,11 @@ public enum Termiod {
     }
 
     /// One batch of `fs.search` hits, addressed to the connection that asked.
-    /// `request` echoes the `fs_search` seq; a channel carrying a single search
-    /// can ignore it, and this client's does.
+    /// `request` echoes the `fs_search` seq — the only routing a streamed reply
+    /// has, since a batch of hits names no session and a pooled channel may be
+    /// carrying a listing and a read alongside the grep.
     public struct SearchResultsPayload: Decodable, Sendable {
+        public let request: UInt64
         public let matches: [SearchMatchPayload]
     }
 
