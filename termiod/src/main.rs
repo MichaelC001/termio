@@ -222,29 +222,28 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
             hook_version,
             json,
         } => (
-            InstallRequest {
-                enabled: true,
-                agents: (!agent.is_empty()).then_some(agent),
-                hooks: !no_hooks,
-                skills: !no_skills,
-                reporter: match termio_cli {
+            InstallRequest::new(
+                true,
+                (!agent.is_empty()).then_some(agent),
+                !no_hooks,
+                !no_skills,
+                match termio_cli {
                     Some(path) => Reporter::TermioCli { path },
                     None => Reporter::TermiodDaemon,
                 },
-                hook_version: hook_version
-                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
-            },
+                hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+            ),
             json,
         ),
         AgentCmd::Uninstall { json } => (
-            InstallRequest {
-                enabled: false,
-                agents: None,
-                hooks: true,
-                skills: true,
-                reporter: Reporter::TermiodDaemon,
-                hook_version: env!("CARGO_PKG_VERSION").to_string(),
-            },
+            InstallRequest::new(
+                false,
+                None,
+                true,
+                true,
+                Reporter::TermiodDaemon,
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
             json,
         ),
     };

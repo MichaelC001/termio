@@ -1452,15 +1452,14 @@ async fn process_control(
                 );
                 send_response(out, response_cache, seq, response);
             } else {
-                let request = crate::agent::install::InstallRequest {
+                let request = crate::agent::install::InstallRequest::new(
                     enabled,
                     agents,
                     hooks,
                     skills,
                     reporter,
-                    hook_version: hook_version
-                        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
-                };
+                    hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+                );
                 // A dozen agents is a few dozen small reads, merges and renames.
                 // That is blocking work, and it must not sit on the runtime that
                 // is also carrying somebody's keystrokes.

@@ -93,11 +93,25 @@ fn pad(width: usize, out: &mut String) {
 }
 
 fn write_string(text: &str, out: &mut String) {
+    out.push_str(&string_literal(text, false));
+}
+
+/// A JSON string literal, quotes included, escaped the way Foundation escapes.
+///
+/// `escape_slashes` is the `withoutEscapingSlashes` option inverted, and it is
+/// not cosmetic: the hook files this module writes are produced *without*
+/// slash escaping, and the plugin sources in [`super::plugin`] are produced
+/// *with* it, because Swift builds those through a plain
+/// `JSONSerialization.data(withJSONObject:)` that has no such option. Both
+/// spellings are on disk in a user's home right now, so both have to exist here.
+pub fn string_literal(text: &str, escape_slashes: bool) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for character in text.chars() {
         match character {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            '/' if escape_slashes => out.push_str("\\/"),
             '\u{8}' => out.push_str("\\b"),
             '\t' => out.push_str("\\t"),
             '\n' => out.push_str("\\n"),
@@ -110,6 +124,7 @@ fn write_string(text: &str, out: &mut String) {
         }
     }
     out.push('"');
+    out
 }
 
 /// Foundation prints a double through `%.17g`, and an integer exactly.
