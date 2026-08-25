@@ -442,10 +442,10 @@
 	<string>不对比</string>
 	<key>Draft</key>
 	<string>草稿</string>
+	<key>Drag an agent onto another to reorder. Readiness is for the device above.</key>
+	<string>把一个 agent 拖到另一个上面即可调整顺序。就绪状态针对上方选中的设备。</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
-	<key>Drag the list to change the order agents appear in. Readiness is for the device above.</key>
-	<string>拖动列表可调整 agent 的显示顺序。就绪状态针对上方选中的设备。</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>复制到主题文件夹</string>
 	<key>Edit</key>
@@ -656,6 +656,10 @@
 	<string>移动设备</string>
 	<key>Mobile Access</key>
 	<string>移动访问</string>
+	<key>Move Down</key>
+	<string>下移</string>
+	<key>Move Up</key>
+	<string>上移</string>
 	<key>Move to Trash</key>
 	<string>移到废纸篓</string>
 	<key>Move to Workspace</key>

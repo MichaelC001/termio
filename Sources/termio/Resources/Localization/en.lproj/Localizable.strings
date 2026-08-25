@@ -442,10 +442,10 @@
 	<string>Don’t Compare</string>
 	<key>Draft</key>
 	<string>Draft</string>
+	<key>Drag an agent onto another to reorder. Readiness is for the device above.</key>
+	<string>Drag an agent onto another to reorder. Readiness is for the device above.</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
-	<key>Drag the list to change the order agents appear in. Readiness is for the device above.</key>
-	<string>Drag the list to change the order agents appear in. Readiness is for the device above.</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>Duplicate to Themes Folder</string>
 	<key>Edit</key>
@@ -656,6 +656,10 @@
 	<string>Mobile</string>
 	<key>Mobile Access</key>
 	<string>Mobile Access</string>
+	<key>Move Down</key>
+	<string>Move Down</string>
+	<key>Move Up</key>
+	<string>Move Up</string>
 	<key>Move to Trash</key>
 	<string>Move to Trash</string>
 	<key>Move to Workspace</key>

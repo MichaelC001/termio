@@ -11,7 +11,11 @@ struct IconBadge: View {
 
     var body: some View {
         glyph
-            .frame(width: 22, height: 22)
+            // The same column `SettingsSymbolBadge` occupies. An agent keeps its
+            // own brand mark rather than being forced into a tinted square — the
+            // mark *is* its identity — but it has to start where every other
+            // row's icon starts or the column stops lining up.
+            .frame(width: settingsRowIconWidth, height: settingsRowIconWidth)
     }
 
     @ViewBuilder

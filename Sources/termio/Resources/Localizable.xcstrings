@@ -2173,22 +2173,22 @@
         }
       }
     },
+    "Drag an agent onto another to reorder. Readiness is for the device above.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把一个 agent 拖到另一个上面即可调整顺序。就绪状态针对上方选中的设备。"
+          }
+        }
+      }
+    },
     "Drag the list to change the order agents appear in.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "拖动列表可以调整 Agent 出现的顺序。"
-          }
-        }
-      }
-    },
-    "Drag the list to change the order agents appear in. Readiness is for the device above.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "拖动列表可调整 agent 的显示顺序。就绪状态针对上方选中的设备。"
           }
         }
       }
@@ -3240,6 +3240,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "移动访问"
+          }
+        }
+      }
+    },
+    "Move Down": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下移"
+          }
+        }
+      }
+    },
+    "Move Up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上移"
           }
         }
       }

@@ -45,13 +45,16 @@ struct AgentSettingsTab: View {
     var body: some View {
         let _ = catalogVersion
         VStack(spacing: 0) {
-            // A `List`, not a `Form`: `onMove` is only honoured by an editable
-            // list, so the same rows in a grouped `Form` render fine and silently
-            // stop reordering — and agent order is what the New Chat menu reads.
-            // A roster the user reorders is a list in macOS anyway; `Form` is the
-            // idiom for the controls inside one agent's pane, which is where it
-            // still lives.
-            List {
+            DeviceScopeBar(store: store, selection: $deviceScope)
+            Divider()
+            // A grouped `Form`, like every other pane. It was a `List` because
+            // `onMove` is only honoured by an editable list — in a `Form` the same
+            // rows render and silently stop reordering, and agent order is what
+            // the New Chat menu reads. That is a real constraint, so reordering
+            // was rebuilt rather than dropped: rows are draggable onto each other,
+            // and the context menu carries Move Up / Move Down, which works
+            // whatever a drag does.
+            Form {
                 Section {
                     DefaultChatAgentRow(settings: settings)
                 } header: {
@@ -63,17 +66,31 @@ struct AgentSettingsTab: View {
                         NavigationLink(value: AgentRoute(id: preset.id)) {
                             AgentListRow(settings: settings, preset: preset, device: device)
                         }
+                        .draggable(preset.id)
+                        .dropDestination(for: String.self) { ids, _ in
+                            guard let dragged = ids.first else { return false }
+                            return move(dragged, onto: preset)
+                        }
                         .contextMenu {
+                            Button(localized("Move Up")) { move(preset, by: -1) }
+                                .disabled(listedAgents.first?.id == preset.id)
+                            Button(localized("Move Down")) { move(preset, by: 1) }
+                                .disabled(listedAgents.last?.id == preset.id)
+                            Divider()
                             Button(localized("Remove from List")) { remove(preset) }
                         }
                     }
-                    .onMove(perform: moveListed)
+                    AddAgentRow(
+                        addable: addableAgents,
+                        onAdd: add,
+                        onCustom: createCustomAgent
+                    )
                 } header: {
                     SectionHeaderLabel(title: localized("Agents"))
                 } footer: {
                     // No longer names the device: the picker above does, and a
                     // footnote repeating it goes stale the moment it is changed.
-                    Text(localized("Drag the list to change the order agents appear in. Readiness is for the device above."))
+                    Text(localized("Drag an agent onto another to reorder. Readiness is for the device above."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -99,6 +116,9 @@ struct AgentSettingsTab: View {
                     // machine is a machine operation — but the machine is named
                     // by the control at the top of this page, so it happens here
                     // rather than sending you to another tab to finish the job.
+                    // A bare button under a toggle reads as attached to that
+                    // toggle. As a labelled row it reads as its own action, which
+                    // is what it is — both switches at once, on one machine.
                     InstallButtonRow(title: localized("Install on \(device.name)")) {
                         .summarizing(
                             AgentStatusHooks.sync(
@@ -117,14 +137,7 @@ struct AgentSettingsTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .listStyle(.inset)
-
-            Divider()
-            AddAgentBar(
-                addable: addableAgents,
-                onAdd: add,
-                onCustom: createCustomAgent
-            )
+            .formStyle(.grouped)
         }
         .navigationDestination(for: AgentRoute.self) { route in
             detail(for: route.id)
@@ -214,9 +227,29 @@ struct AgentSettingsTab: View {
 
     /// Persists a drag as the new arrangement; `setEnabledOrder` keeps every
     /// other id ranked behind it so the ordering stays total.
-    private func moveListed(from source: IndexSet, to destination: Int) {
+    /// Drops `draggedID` at `target`'s position. Returns false for a drag that
+    /// changes nothing, so a row dropped on itself is not recorded as an edit.
+    private func move(_ draggedID: String, onto target: AgentPreset) -> Bool {
         var ids = listedAgents.map(\.id)
-        ids.move(fromOffsets: source, toOffset: destination)
+        guard draggedID != target.id,
+              let from = ids.firstIndex(of: draggedID),
+              let to = ids.firstIndex(of: target.id)
+        else { return false }
+        ids.remove(at: from)
+        ids.insert(draggedID, at: to)
+        settings.setEnabledOrder(ids)
+        return true
+    }
+
+    /// The keyboard- and menu-reachable half of reordering. Drag is the nice way;
+    /// this is the way that cannot quietly stop working, which matters because
+    /// the last container change is exactly what broke `onMove`.
+    private func move(_ preset: AgentPreset, by offset: Int) {
+        var ids = listedAgents.map(\.id)
+        guard let from = ids.firstIndex(of: preset.id) else { return }
+        let to = from + offset
+        guard ids.indices.contains(to) else { return }
+        ids.swapAt(from, to)
         settings.setEnabledOrder(ids)
     }
 }
@@ -228,15 +261,17 @@ private struct AgentRoute: Hashable {
     let id: String
 }
 
-/// The list's footer action, shaped like the sidebar bottom bars in Mail and
-/// Reminders: the whole bar is the pull-down's hit target, so the control reads as
-/// part of the pane rather than a small floating button.
-private struct AddAgentBar: View {
+/// The roster's add action, as the last row of the roster.
+///
+/// A pull-down rather than a button: the agents worth adding are a known list,
+/// and a sheet to pick one from it would be a window for a menu's worth of
+/// choice. Styled as a row of the group — inside a grouped `Form` the card
+/// already draws the surface, so a second rounded rect on top of it is what made
+/// this read as bolted on to the window's bottom edge.
+private struct AddAgentRow: View {
     let addable: [AgentPreset]
     let onAdd: (AgentPreset) -> Void
     let onCustom: () -> Void
-
-    @State private var hovering = false
 
     var body: some View {
         Menu {
@@ -248,33 +283,20 @@ private struct AddAgentBar: View {
             if !addable.isEmpty { Divider() }
             Button(localized("Custom Agent…")) { onCustom() }
         } label: {
-            HStack(spacing: 8) {
-                // Same 22pt frame IconBadge uses, so the plus sits in the rows'
-                // icon column instead of starting its own margin.
+            HStack(spacing: 12) {
+                // The rows' icon column, so the label starts where agent names do.
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22)
+                    .frame(width: settingsRowIconWidth, height: 26)
                 Text(localized("Add Agent"))
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 28)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(hovering ? 0.07 : 0))
-            )
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .onHover { hovering = $0 }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
     }
 }
 
