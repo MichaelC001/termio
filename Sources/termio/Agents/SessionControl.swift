@@ -716,41 +716,42 @@ enum SessionSkillInstaller {
     /// is picked up automatically. The `installed` predicate is injectable for
     /// tests; the default resolves the agent's command like a session launch would.
     static func skillTargets(
-        installed: (AgentDefinition) -> Bool = { agent in
+        target: AgentIntegrationTarget = .thisMac,
+        installed: ((AgentDefinition) -> Bool)? = nil
+    ) -> [(name: String, path: String)] {
+        let isInstalled = installed ?? { agent in
             guard let command = agent.command else { return true }
-            return AgentAvailability.isCommandInstalled(command)
+            return target.store.isCommandInstalled(command)
         }
-    ) -> [(name: String, url: URL)] {
         let catalog = AgentCatalog.shared
         var seen = Set<String>()
         return catalog.all.compactMap { agent in
-            guard let directory = agent.skillDir, installed(agent) else { return nil }
-            let url = skillFileURL(directory: directory)
-            guard seen.insert(url.path).inserted else { return nil }
-            return (agent.displayName, url)
+            guard let directory = agent.skillDir, isInstalled(agent) else { return nil }
+            let path = skillPath(directory: directory)
+            guard seen.insert(path).inserted else { return nil }
+            return (agent.displayName, path)
         }
     }
 
     /// Every skills directory termio has ever installed into — bundled declarations
     /// plus the live catalog — so uninstalling also sweeps a shipped dir that a user
     /// override removed or redirected. Mirrors `AgentStatusHooks.allKnownInstallers`.
-    static var allKnownSkillTargets: [(name: String, url: URL)] {
+    static var allKnownSkillTargets: [(name: String, path: String)] {
         let catalog = AgentCatalog.shared
         var seen = Set<String>()
         return (catalog.bundled + catalog.all).compactMap { agent in
             guard let directory = agent.skillDir else { return nil }
-            let url = skillFileURL(directory: directory)
-            guard seen.insert(url.path).inserted else { return nil }
-            return (agent.displayName, url)
+            let path = skillPath(directory: directory)
+            guard seen.insert(path).inserted else { return nil }
+            return (agent.displayName, path)
         }
     }
 
     /// Where an agent's declared skills directory carries termio's skill
-    /// (`<dir>/termio/SKILL.md`), with `~` expanded. The pure path logic, so tests
-    /// can pin it without touching the real home directory.
-    static func skillFileURL(directory: String) -> URL {
-        URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
-            .appendingPathComponent("termio/SKILL.md")
+    /// (`<dir>/termio/SKILL.md`). Left unexpanded: `~` names the home directory of
+    /// the machine the agent runs on, which only the target's store can resolve.
+    static func skillPath(directory: String) -> String {
+        directory + "/termio/SKILL.md"
     }
 
     /// The instruction files earlier versions wrote the guidance into.
@@ -769,9 +770,11 @@ enum SessionSkillInstaller {
     /// (installable from GitHub via `npx skills add` / `gh skill`) and at
     /// https://termio.sh/skill.md (`web/landing/public/skill.md`); a test keeps
     /// all copies identical.
-    static var skill: String? {
+    static func skill(for target: AgentIntegrationTarget = .thisMac) -> String? {
         Bundle.termioResources
-            .url(forResource: "SKILL", withExtension: "md", subdirectory: "skills/termio")
+            .url(
+                forResource: "SKILL", withExtension: "md",
+                subdirectory: target.skillResourceDirectory)
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
     }
 
@@ -780,31 +783,38 @@ enum SessionSkillInstaller {
     /// since no UI asks about it. Every sync also strips the legacy instruction-
     /// file block, so re-enabling after an upgrade migrates in place.
     @discardableResult
-    static func sync(enabled: Bool) -> InstallOutcome {
+    static func sync(enabled: Bool, target: AgentIntegrationTarget = .thisMac) -> InstallOutcome {
         var outcome = InstallOutcome()
-        for url in legacyTargets { removeLegacyBlock(from: url) }
+        // Only this Mac ever carried the pre-skill instruction-file block, so only
+        // this Mac has one to migrate away from.
+        if target.isLocal {
+            for url in legacyTargets { removeLegacyBlock(from: url) }
+        }
         if enabled {
-            guard let skill else {
+            guard let skill = skill(for: target) else {
                 FileHandle.standardError.write(
                     Data("termio: session skill resource missing from the app bundle\n".utf8))
-                for (name, _) in skillTargets() { outcome.record(name, installed: false) }
+                for (name, _) in skillTargets(target: target) {
+                    outcome.record(name, installed: false)
+                }
                 return outcome
             }
-            for (name, url) in skillTargets() {
-                outcome.record(name, installed: write(skill, to: url))
+            for (name, path) in skillTargets(target: target) {
+                outcome.record(
+                    name, installed: target.store.writeIfChanged(Data(skill.utf8), to: path))
             }
         } else {
-            for (_, url) in allKnownSkillTargets { removeSkill(at: url) }
+            for (_, path) in allKnownSkillTargets { removeSkill(at: path, in: target.store) }
         }
         return outcome
     }
 
     /// Removes the installed skill folder wholesale — termio owns the folder, so
     /// there is no user content inside it to preserve.
-    private static func removeSkill(at url: URL) {
-        let folder = url.deletingLastPathComponent()
-        guard FileManager.default.fileExists(atPath: folder.path) else { return }
-        try? FileManager.default.removeItem(at: folder)
+    private static func removeSkill(at path: String, in store: AgentConfigStore) {
+        let folder = (path as NSString).deletingLastPathComponent
+        guard store.exists(folder) else { return }
+        store.remove(folder)
     }
 
     /// Strips the marker-wrapped block earlier versions injected into the

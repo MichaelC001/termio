@@ -271,50 +271,62 @@ enum AgentStatusHooks {
     /// the install rather than leaving the click silent; the uninstall path reports
     /// nothing, since no UI asks about it.
     @discardableResult
-    static func sync(enabled: Bool) -> InstallOutcome {
-        // Every hook references the channel-stable CLI copy, so make sure it carries
-        // this build's content before (re)stamping its path anywhere.
-        CommandLineTool.refreshSupportCopy()
+    static func sync(enabled: Bool, target: AgentIntegrationTarget = .thisMac) -> InstallOutcome {
+        // Every local hook references the channel-stable CLI copy, so make sure it
+        // carries this build's content before (re)stamping its path anywhere. A
+        // device's hooks invoke its own `termiod`, which `termiod remote deploy`
+        // keeps current — there is nothing here to refresh for it.
+        if target.isLocal { CommandLineTool.refreshSupportCopy() }
         var outcome = InstallOutcome()
         if enabled {
             // A full user override may intentionally remove/redirect a shipped hook.
             // Remove that old managed wiring before installing the merged catalog.
-            for installer in staleBundledInstallers { installer.uninstall() }
-            for (name, installer) in installers {
+            for installer in staleBundledInstallers(target) { installer.uninstall() }
+            for (name, installer) in installers(target) {
                 outcome.record(name, installed: installer.install())
             }
         } else {
-            for installer in allKnownInstallers { installer.uninstall() }
+            for installer in allKnownInstallers(target) { installer.uninstall() }
         }
         return outcome
     }
 
     /// Each hook-carrying agent's display name paired with its installer, so an
     /// install result can be reported per agent rather than as one opaque total.
-    private static var installers: [(name: String, installer: AgentStatusInstaller)] {
+    private static func installers(
+        _ target: AgentIntegrationTarget
+    ) -> [(name: String, installer: AgentStatusInstaller)] {
         AgentCatalog.shared.all.compactMap { agent in
             agent.hookSpec
-                .flatMap { installer(id: agent.id, spec: $0) }
+                .flatMap { installer(id: agent.id, spec: $0, target: target) }
                 .map { (agent.displayName, $0) }
         }
     }
 
-    private static var staleBundledInstallers: [AgentStatusInstaller] {
-        AgentCatalog.shared.staleBundledHookSpecs.compactMap { installer(id: "bundled", spec: $0) }
+    private static func staleBundledInstallers(
+        _ target: AgentIntegrationTarget
+    ) -> [AgentStatusInstaller] {
+        AgentCatalog.shared.staleBundledHookSpecs.compactMap {
+            installer(id: "bundled", spec: $0, target: target)
+        }
     }
 
-    private static var allKnownInstallers: [AgentStatusInstaller] {
+    private static func allKnownInstallers(
+        _ target: AgentIntegrationTarget
+    ) -> [AgentStatusInstaller] {
         let specs = AgentCatalog.shared.bundled.compactMap(\.hookSpec)
             + AgentCatalog.shared.all.compactMap(\.hookSpec)
-        return Set(specs).compactMap { installer(id: "catalog", spec: $0) }
+        return Set(specs).compactMap { installer(id: "catalog", spec: $0, target: target) }
     }
 
-    private static func installer(id: String, spec: AgentHookSpec) -> AgentStatusInstaller? {
+    private static func installer(
+        id: String, spec: AgentHookSpec, target: AgentIntegrationTarget
+    ) -> AgentStatusInstaller? {
         switch spec.type {
-        case .json: return JSONHookFile.manifest(id: id, spec: spec)
-        case .toml: return TOMLHookBlock.manifest(id: id, spec: spec)
-        case .plugin: return PluginFile.manifest(id: id, spec: spec)
-        case .scripts: return ScriptHookDirectory.manifest(id: id, spec: spec)
+        case .json: return JSONHookFile.manifest(id: id, spec: spec, target: target)
+        case .toml: return TOMLHookBlock.manifest(id: id, spec: spec, target: target)
+        case .plugin: return PluginFile.manifest(id: id, spec: spec, target: target)
+        case .scripts: return ScriptHookDirectory.manifest(id: id, spec: spec, target: target)
         }
     }
 
@@ -337,9 +349,23 @@ enum AgentStatusHooks {
     static func reportCommand(
         state: String, withTranscript: Bool = false, conversationField: String? = nil,
         toolField: String? = nil, promptTitleField: String? = nil,
-        dialect: HookDialect = .claudeNested
+        dialect: HookDialect = .claudeNested,
+        reporter: HookReporter = .termioCLI
     ) -> String {
-        var command = "\(shellQuote(cliPath)) agent report \(state)"
+        // A device has no `termio` and no app to report to; its hooks talk to the
+        // daemon that owns their PTY, which broadcasts `E status` to every viewer.
+        // The stdin-mining options have no counterpart in `SetStatus` and are
+        // dropped rather than emitted as flags the remote binary would reject —
+        // see `HookReporter.termiodDaemon`.
+        guard reporter == .termioCLI else {
+            var command = "\(shellQuote(reporter.binaryPath)) set-status"
+            command += " \"$TERMIOD_SESSION_ID\" \(state)"
+            command += dialect == .cursorFlat
+                ? " 2>/dev/null; printf '{}'"
+                : " 2>/dev/null || true"
+            return command + " \(hookVersionComment)"
+        }
+        var command = "\(shellQuote(reporter.binaryPath)) agent report \(state)"
         // Claude feeds each hook a JSON blob on stdin carrying `transcript_path`; the
         // CLI mines it out (jq-free) so termio can address the raw Q&A log. Only enabled
         // for agents that reliably provide stdin, so the CLI's `cat` can't block.
@@ -442,7 +468,11 @@ enum HookDialect: Hashable {
 /// Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`) both
 /// use exactly this structure, differing only in path and event names.
 private struct JSONHookFile: AgentStatusInstaller {
-    let url: URL
+    /// The manifest's path, unexpanded — `~` is the target machine's home, which
+    /// only `store` can resolve.
+    let path: String
+    let store: AgentConfigStore
+    let reporter: HookReporter
     /// `(event name, normalized state, matcher)`. `matcher` is `"*"` for Claude's
     /// tool events (the shape it expects) and `nil` everywhere else — Codex treats
     /// a missing matcher as "match every occurrence".
@@ -468,20 +498,23 @@ private struct JSONHookFile: AgentStatusInstaller {
     var removesFileWhenEmpty = false
     /// Previous termio-owned filenames to strip during both install and uninstall.
     /// Keeping this on the installer prevents a rename from loading duplicate hooks.
-    var legacyURLs: [URL] = []
+    var legacyPaths: [String] = []
 
-    static func manifest(id: String, spec: AgentHookSpec) -> JSONHookFile? {
+    static func manifest(
+        id: String, spec: AgentHookSpec, target: AgentIntegrationTarget
+    ) -> JSONHookFile? {
         guard spec.type == .json, let file = spec.file else {
             AgentStatusHooks.log("\(id): incomplete JSON hook manifest")
             return nil
         }
-        let url = URL(fileURLWithPath: (file as NSString).expandingTildeInPath)
-        let isDedicatedTermioFile = url.lastPathComponent == "termio.json"
-        let legacyURLs = isDedicatedTermioFile
-            ? [url.deletingLastPathComponent().appendingPathComponent("termio-status.json")]
+        let isDedicatedTermioFile = (file as NSString).lastPathComponent == "termio.json"
+        let legacyPaths = isDedicatedTermioFile
+            ? [(file as NSString).deletingLastPathComponent + "/termio-status.json"]
             : []
         return JSONHookFile(
-            url: url,
+            path: file,
+            store: target.store,
+            reporter: target.reporter,
             events: spec.events,
             capturesTranscript: spec.capturesTranscript,
             conversationField: spec.conversation,
@@ -489,7 +522,7 @@ private struct JSONHookFile: AgentStatusInstaller {
             promptTitleField: spec.promptTitle,
             dialect: spec.dialect,
             removesFileWhenEmpty: isDedicatedTermioFile,
-            legacyURLs: legacyURLs)
+            legacyPaths: legacyPaths)
     }
 
     private enum FileState {
@@ -500,11 +533,11 @@ private struct JSONHookFile: AgentStatusInstaller {
 
     func install() -> Bool {
         let root: [String: Any]
-        switch readState(at: url) {
+        switch readState(at: path) {
         case .ok(let dictionary): root = dictionary
         case .missing: root = [:]
         case .unreadable:
-            AgentStatusHooks.log("refusing to modify unparseable \(url.path)")
+            AgentStatusHooks.log("refusing to modify unparseable \(path)")
             return false
         }
 
@@ -527,7 +560,7 @@ private struct JSONHookFile: AgentStatusInstaller {
             let command = AgentStatusHooks.reportCommand(
                 state: event.state, withTranscript: capturesTranscript,
                 conversationField: conversationField, toolField: toolField,
-                promptTitleField: promptTitleField, dialect: dialect)
+                promptTitleField: promptTitleField, dialect: dialect, reporter: reporter)
             let group: [String: Any]
             if dialect == .cursorFlat {
                 group = ["command": command]
@@ -542,27 +575,27 @@ private struct JSONHookFile: AgentStatusInstaller {
             hooks[event.name] = groups
         }
         settings["hooks"] = hooks
-        guard write(settings, to: url) else { return false }
+        guard write(settings, to: path) else { return false }
 
         // Publish the replacement before removing its predecessor. If the new file
         // could not be written, retain the working legacy integration for next launch.
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        for legacyURL in legacyURLs {
-            uninstall(at: legacyURL, removeFileWhenEmpty: true)
+        guard store.exists(path) else { return false }
+        for legacyPath in legacyPaths {
+            uninstall(at: legacyPath, removeFileWhenEmpty: true)
         }
         return true
     }
 
     func uninstall() {
-        uninstall(at: url, removeFileWhenEmpty: removesFileWhenEmpty)
-        for legacyURL in legacyURLs {
-            uninstall(at: legacyURL, removeFileWhenEmpty: true)
+        uninstall(at: path, removeFileWhenEmpty: removesFileWhenEmpty)
+        for legacyPath in legacyPaths {
+            uninstall(at: legacyPath, removeFileWhenEmpty: true)
         }
     }
 
-    private func uninstall(at candidateURL: URL, removeFileWhenEmpty: Bool) {
+    private func uninstall(at candidatePath: String, removeFileWhenEmpty: Bool) {
         // Nothing to remove if the file is absent; never overwrite one we can't read.
-        guard case .ok(let root) = readState(at: candidateURL) else { return }
+        guard case .ok(let root) = readState(at: candidatePath) else { return }
         var settings = root
         guard var hooks = settings["hooks"] as? [String: Any] else { return }
         stripTermioEntries(from: &hooks)
@@ -572,13 +605,9 @@ private struct JSONHookFile: AgentStatusInstaller {
             settings["hooks"] = hooks
         }
         if removeFileWhenEmpty, settings.isEmpty {
-            do {
-                try FileManager.default.removeItem(at: candidateURL)
-            } catch {
-                AgentStatusHooks.log("could not remove \(candidateURL.path): \(error)")
-            }
+            store.remove(candidatePath)
         } else {
-            write(settings, to: candidateURL)
+            write(settings, to: candidatePath)
         }
     }
 
@@ -631,9 +660,9 @@ private struct JSONHookFile: AgentStatusInstaller {
         return hooks.contains { ($0["command"] as? String).map(isOurs) == true }
     }
 
-    private func readState(at candidateURL: URL) -> FileState {
-        guard FileManager.default.fileExists(atPath: candidateURL.path) else { return .missing }
-        guard let data = try? Data(contentsOf: candidateURL) else { return .unreadable }
+    private func readState(at candidatePath: String) -> FileState {
+        guard store.exists(candidatePath) else { return .missing }
+        guard let data = store.read(candidatePath) else { return .unreadable }
         if data.isEmpty { return .missing }
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any] else { return .unreadable }
@@ -643,22 +672,18 @@ private struct JSONHookFile: AgentStatusInstaller {
     /// Returns whether the file now holds `settings` — true both for a fresh write
     /// and for the skipped identical one, false only when the write threw.
     @discardableResult
-    private func write(_ settings: [String: Any], to destinationURL: URL) -> Bool {
+    private func write(_ settings: [String: Any], to destinationPath: String) -> Bool {
         do {
-            try FileManager.default.createDirectory(
-                at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try JSONSerialization.data(
                 withJSONObject: settings,
                 options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-            // Skip the write when the result is byte-identical to what's already
-            // there (the common case on every launch): avoids needless churn on a
-            // user-owned file and shrinks the window where this atomic write could
-            // clobber a concurrent hand-edit. `.sortedKeys` makes the bytes stable.
-            if (try? Data(contentsOf: destinationURL)) == data { return true }
-            try data.write(to: destinationURL, options: .atomic)
-            return true
+            // The store skips a write whose bytes already match (the common case on
+            // every launch): avoids needless churn on a user-owned file and shrinks
+            // the window where the write could clobber a concurrent hand-edit.
+            // `.sortedKeys` is what makes those bytes stable.
+            return store.writeIfChanged(data, to: destinationPath)
         } catch {
-            AgentStatusHooks.log("could not write \(destinationURL.path): \(error)")
+            AgentStatusHooks.log("could not encode \(destinationPath): \(error)")
             return false
         }
     }
@@ -672,10 +697,14 @@ private struct JSONHookFile: AgentStatusInstaller {
 /// carries termio's marker, so a user's own hook of that name is never claimed, and an
 /// event termio no longer manages has its old script swept on the next install.
 private struct ScriptHookDirectory: AgentStatusInstaller {
-    let directory: URL
+    let directory: String
+    let store: AgentConfigStore
+    let reporter: HookReporter
     let events: [AgentHookEvent]
 
-    static func manifest(id: String, spec: AgentHookSpec) -> ScriptHookDirectory? {
+    static func manifest(
+        id: String, spec: AgentHookSpec, target: AgentIntegrationTarget
+    ) -> ScriptHookDirectory? {
         guard spec.type == .scripts, let directory = spec.directory else {
             AgentStatusHooks.log("\(id): incomplete script hook manifest")
             return nil
@@ -684,36 +713,27 @@ private struct ScriptHookDirectory: AgentStatusInstaller {
             AgentStatusHooks.log("\(id): hook dialect is not a script directory")
             return nil
         }
-        let expanded = (directory as NSString).expandingTildeInPath
         return ScriptHookDirectory(
-            directory: URL(fileURLWithPath: expanded, isDirectory: true), events: spec.events)
+            directory: directory, store: target.store, reporter: target.reporter,
+            events: spec.events)
     }
 
     func install() -> Bool {
-        do {
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true)
-        } catch {
-            AgentStatusHooks.log("could not create \(directory.path): \(error)")
-            return false
-        }
         sweepOwnedScripts(keeping: Set(events.map(\.name)))
         var installed = true
         for event in events {
-            let url = directory.appendingPathComponent(event.name)
+            let path = directory + "/" + event.name
             let contents = script(for: event)
-            if let existing = try? String(contentsOf: url, encoding: .utf8),
-               existing != contents, !isOwned(existing) {
-                AgentStatusHooks.log("refusing to overwrite non-termio hook \(url.path)")
+            if let existing = store.readText(path), existing != contents, !isOwned(existing) {
+                AgentStatusHooks.log("refusing to overwrite non-termio hook \(path)")
                 installed = false
                 continue
             }
-            do {
-                try Data(contents.utf8).write(to: url, options: .atomic)
-                try FileManager.default.setAttributes(
-                    [.posixPermissions: 0o755], ofItemAtPath: url.path)
-            } catch {
-                AgentStatusHooks.log("could not write \(url.path): \(error)")
+            // Always written rather than skipped-when-identical: the agent execs
+            // these by name, so the mode is as much a part of the install as the
+            // bytes, and a file left non-executable by anything else is repaired
+            // by re-writing it.
+            if !store.write(Data(contents.utf8), to: path, executable: true) {
                 installed = false
             }
         }
@@ -726,21 +746,16 @@ private struct ScriptHookDirectory: AgentStatusInstaller {
 
     /// Removes every script in the directory that is ours and not in `keeping`.
     private func sweepOwnedScripts(keeping: Set<String>) {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil) else { return }
-        for url in entries where !keeping.contains(url.lastPathComponent) {
-            guard let existing = try? String(contentsOf: url, encoding: .utf8),
-                  isOwned(existing) else { continue }
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                AgentStatusHooks.log("could not remove \(url.path): \(error)")
-            }
+        guard let names = store.listDirectory(directory) else { return }
+        for name in names where !keeping.contains(name) {
+            let path = directory + "/" + name
+            guard let existing = store.readText(path), isOwned(existing) else { continue }
+            store.remove(path)
         }
     }
 
     private func script(for event: AgentHookEvent) -> String {
-        let command = AgentStatusHooks.reportCommand(state: event.state)
+        let command = AgentStatusHooks.reportCommand(state: event.state, reporter: reporter)
         return "#!/bin/sh\n\(command)\n"
     }
 
@@ -756,13 +771,26 @@ private struct ScriptHookDirectory: AgentStatusInstaller {
 /// report into the socket — OpenCode via its session lifecycle events, Pi via
 /// `agent_start`/`agent_end`. Uninstall removes the file only if it's ours.
 private struct PluginFile: AgentStatusInstaller {
-    let url: URL
+    let path: String
+    let store: AgentConfigStore
     let contents: String
-    let legacyURLs: [URL]
+    let legacyPaths: [String]
 
-    static func manifest(id: String, spec: AgentHookSpec) -> PluginFile? {
+    static func manifest(
+        id: String, spec: AgentHookSpec, target: AgentIntegrationTarget
+    ) -> PluginFile? {
         guard spec.type == .plugin, let directory = spec.directory else {
             AgentStatusHooks.log("\(id): incomplete plugin hook manifest")
+            return nil
+        }
+        // Unlike every other dialect, a plugin's report path is baked into
+        // JavaScript that shells out to the `termio` CLI and reads
+        // `TERMIO_SESSION` — neither of which exists on a device. Porting the
+        // three templates to `termiod set-status` is real work with no shared
+        // code to lean on, so a device install declines here rather than
+        // dropping a plugin that would fail silently on every turn.
+        guard target.isLocal else {
+            AgentStatusHooks.log("\(id): plugin hooks are not installed on a device yet")
             return nil
         }
         let filename: String
@@ -785,59 +813,42 @@ private struct PluginFile: AgentStatusInstaller {
             AgentStatusHooks.log("\(id): hook dialect is not a plugin template")
             return nil
         }
-        let expanded = (directory as NSString).expandingTildeInPath
-        let directoryURL = URL(fileURLWithPath: expanded, isDirectory: true)
         return PluginFile(
-            url: directoryURL.appendingPathComponent(filename),
+            path: directory + "/" + filename,
+            store: target.store,
             contents: contents,
-            legacyURLs: [directoryURL.appendingPathComponent(legacyFilename)])
+            legacyPaths: [directory + "/" + legacyFilename])
     }
 
     func install() -> Bool {
-        let data = Data(contents.utf8)
-        if FileManager.default.fileExists(atPath: url.path) {
+        if store.exists(path) {
             // `termio.js` is a deliberately simple name, so never claim a user's
             // pre-existing file merely because it occupies our desired path.
-            guard let existing = try? String(contentsOf: url, encoding: .utf8),
-                  existing == contents || isOwned(existing)
+            guard let existing = store.readText(path), existing == contents || isOwned(existing)
             else {
-                AgentStatusHooks.log("refusing to overwrite non-termio plugin \(url.path)")
+                AgentStatusHooks.log("refusing to overwrite non-termio plugin \(path)")
                 return false
             }
         }
-        if (try? Data(contentsOf: url)) != data {
-            do {
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: url, options: .atomic)
-            } catch {
-                AgentStatusHooks.log("could not write \(url.path): \(error)")
-                return false
-            }
-        }
-        for legacyURL in legacyURLs {
-            removeOwnedFile(at: legacyURL)
+        guard store.writeIfChanged(Data(contents.utf8), to: path) else { return false }
+        for legacyPath in legacyPaths {
+            removeOwnedFile(at: legacyPath)
         }
         return true
     }
 
     func uninstall() {
-        removeOwnedFile(at: url)
-        for legacyURL in legacyURLs {
-            removeOwnedFile(at: legacyURL)
+        removeOwnedFile(at: path)
+        for legacyPath in legacyPaths {
+            removeOwnedFile(at: legacyPath)
         }
     }
 
-    private func removeOwnedFile(at candidateURL: URL) {
+    private func removeOwnedFile(at candidatePath: String) {
         // Only remove a file we recognize as ours, so a user file that happens to
         // share the name is never deleted.
-        guard let existing = try? String(contentsOf: candidateURL, encoding: .utf8),
-              isOwned(existing) else { return }
-        do {
-            try FileManager.default.removeItem(at: candidateURL)
-        } catch {
-            AgentStatusHooks.log("could not remove \(candidateURL.path): \(error)")
-        }
+        guard let existing = store.readText(candidatePath), isOwned(existing) else { return }
+        store.remove(candidatePath)
     }
 
     private func isOwned(_ source: String) -> Bool {
@@ -996,44 +1007,47 @@ private struct PluginFile: AgentStatusInstaller {
 /// the shared report command ends in `|| true`, so the standard command is safe on
 /// Kimi's blockable events — no clean-stdout handling is required.
 private struct TOMLHookBlock: AgentStatusInstaller {
-    let url: URL
+    let path: String
+    let store: AgentConfigStore
+    let reporter: HookReporter
     let events: [AgentHookEvent]
 
     private static let blockBegin = "# >>> termio agent-status hooks (managed — do not edit) >>>"
     private static let blockEnd = "# <<< termio agent-status hooks <<<"
 
-    static func manifest(id: String, spec: AgentHookSpec) -> TOMLHookBlock? {
+    static func manifest(
+        id: String, spec: AgentHookSpec, target: AgentIntegrationTarget
+    ) -> TOMLHookBlock? {
         guard spec.type == .toml, spec.dialect == .kimiTOML, let file = spec.file else {
             AgentStatusHooks.log("\(id): incomplete TOML hook manifest")
             return nil
         }
         return TOMLHookBlock(
-            url: URL(fileURLWithPath: (file as NSString).expandingTildeInPath),
-            events: spec.events)
+            path: file, store: target.store, reporter: target.reporter, events: spec.events)
     }
 
     func install() -> Bool {
-        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let existing = store.readText(path) ?? ""
         let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
-        let block = Self.render(events: events)
+        let block = Self.render(events: events, reporter: reporter)
         let updated = base.isEmpty ? block + "\n" : base + "\n\n" + block + "\n"
-        return Self.write(updated, to: url)
+        return store.writeIfChanged(Data(updated.utf8), to: path)
     }
 
     func uninstall() {
-        guard let existing = try? String(contentsOf: url, encoding: .utf8) else { return }
+        guard let existing = store.readText(path) else { return }
         let base = Self.stripBlock(from: existing).trimmingCharacters(in: .newlines)
-        Self.write(base.isEmpty ? "" : base + "\n", to: url)
+        store.writeIfChanged(Data((base.isEmpty ? "" : base + "\n").utf8), to: path)
     }
 
     /// The termio-managed block: a comment banner around one `[[hooks]]` table per
     /// event. The command is embedded as a TOML multi-line literal string (`'''…'''`)
     /// so the shell one-liner's single and double quotes need no escaping — it never
     /// contains three consecutive single quotes.
-    private static func render(events: [AgentHookEvent]) -> String {
+    private static func render(events: [AgentHookEvent], reporter: HookReporter) -> String {
         var lines = [blockBegin]
         for event in events {
-            let command = AgentStatusHooks.reportCommand(state: event.state)
+            let command = AgentStatusHooks.reportCommand(state: event.state, reporter: reporter)
             lines.append("[[hooks]]")
             lines.append("event = \"\(event.name)\"")
             if let matcher = event.matcher { lines.append("matcher = \"\(matcher)\"") }
@@ -1056,21 +1070,5 @@ private struct TOMLHookBlock: AgentStatusInstaller {
         var result = text
         result.removeSubrange(begin.lowerBound..<end.upperBound)
         return result
-    }
-
-    @discardableResult
-    private static func write(_ contents: String, to url: URL) -> Bool {
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = Data(contents.utf8)
-            // No-op when the result is byte-identical (the common case each launch).
-            if (try? Data(contentsOf: url)) == data { return true }
-            try data.write(to: url, options: .atomic)
-            return true
-        } catch {
-            AgentStatusHooks.log("could not write \(url.path): \(error)")
-            return false
-        }
     }
 }

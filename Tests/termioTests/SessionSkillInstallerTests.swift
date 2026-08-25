@@ -34,9 +34,21 @@ final class SessionSkillInstallerTests: XCTestCase {
     /// `.copy` path or a renamed file would otherwise only surface as a silent
     /// per-target install failure at launch.
     func testBundledSkillResolves() throws {
-        let skill = try XCTUnwrap(SessionSkillInstaller.skill)
+        let skill = try XCTUnwrap(SessionSkillInstaller.skill())
         XCTAssertTrue(skill.hasPrefix("---\nname: termio\n"))
         XCTAssertTrue(skill.hasSuffix("\n"))
+    }
+
+    /// A device gets a different document, not the Mac's: this one teaches the
+    /// `termiod` CLI, because a box has no `termio` binary and no app to report
+    /// to. Installing the Mac's there would name a program that isn't installed.
+    func testDeviceSkillTeachesTheDaemonCLI() throws {
+        let device = try XCTUnwrap(SessionSkillInstaller.skill(for: .device(host: "vps")))
+        XCTAssertTrue(device.hasPrefix("---\nname: termio\n"))
+        XCTAssertTrue(device.contains("TERMIOD_SESSION_ID"))
+        XCTAssertTrue(device.contains("termiod list"))
+        XCTAssertFalse(device.contains("termio sessions"))
+        XCTAssertNotEqual(device, SessionSkillInstaller.skill())
     }
 
     /// A manifest's `skills.dir` is the declaration the installer trusts — a user
@@ -50,14 +62,28 @@ final class SessionSkillInstallerTests: XCTestCase {
         XCTAssertEqual(manifest.skills?.dir, "~/.custom/skills")
     }
 
-    /// A declared skills directory resolves to `<dir>/termio/SKILL.md` with `~`
-    /// expanded — the only pure logic between the manifest and the file system.
-    func testSkillFileURLExpandsTilde() throws {
+    /// A declared skills directory composes to `<dir>/termio/SKILL.md`, and stays
+    /// unexpanded: `~` is the home directory of the machine the agent runs on, so
+    /// expanding it here would silently mean this Mac for every device too.
+    func testSkillPathComposesWithoutExpandingTilde() throws {
+        let path = SessionSkillInstaller.skillPath(directory: "~/custom/skills")
+        XCTAssertEqual(path, "~/custom/skills/termio/SKILL.md")
+    }
+
+    /// Expansion is the store's job, and only the local store may answer it with
+    /// this process's home.
+    func testLocalStoreExpandsTildeAgainstThisHome() throws {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let url = SessionSkillInstaller.skillFileURL(directory: "~/custom/skills")
-        XCTAssertEqual(url.lastPathComponent, "SKILL.md")
-        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "termio")
-        XCTAssertTrue(url.path.hasPrefix(home + "/custom/skills/termio/"))
+        let resolved = LocalAgentConfigStore()
+            .resolve(SessionSkillInstaller.skillPath(directory: "~/custom/skills"))
+        XCTAssertEqual(resolved, home + "/custom/skills/termio/SKILL.md")
+    }
+
+    /// A device's `~` belongs to the remote shell, so the store must hand the path
+    /// through untouched rather than stamping this Mac's home into it.
+    func testDeviceStoreLeavesTildeForTheRemoteShell() throws {
+        let path = SessionSkillInstaller.skillPath(directory: "~/.claude/skills")
+        XCTAssertEqual(SSHAgentConfigStore(host: "vps").resolve(path), path)
     }
 
     /// Installation skips agents whose CLI isn't installed — a machine without

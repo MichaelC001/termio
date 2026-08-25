@@ -1055,6 +1055,34 @@ fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Metered>) {
     }
 }
 
+/// The environment this daemon adds to every session it spawns, layered *after*
+/// the client's `CreateSpec.env` so a client cannot spoof either value.
+///
+/// A hook installed for an agent on this machine reports by running
+/// `termiod set-status`, which needs two things the child would otherwise have
+/// to guess:
+///
+/// - **which session it is.** `Pty::spawn` sets `TERMIOD_SESSION=1`, which says
+///   *that* you are inside a termiod session and never *which* one. `TERMIO_SESSION`
+///   is not reused for the identity: it is on `LAUNCHER_ENV_KEYS` precisely so a
+///   stale value cannot leak into a later session, and giving it a second meaning
+///   here would fight that.
+/// - **which socket to report on.** Resolved from this daemon's own view rather
+///   than left to the child, because `paths::socket_path()` falls back to a
+///   uid-scoped temp dir when `XDG_RUNTIME_DIR` is absent — so a daemon started
+///   from an ssh exec channel and a hook process that inherited a different
+///   environment can otherwise resolve two different sockets.
+fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(String, String)> {
+    env.push(("TERMIOD_SESSION_ID".to_string(), id.to_string()));
+    match crate::paths::socket_path() {
+        Ok(path) => env.push(("TERMIOD_SOCK".to_string(), path.display().to_string())),
+        // Not fatal: the child falls back to resolving the default path itself,
+        // which is right whenever this daemon is on the default path too.
+        Err(err) => eprintln!("termiod: could not resolve socket path for session env: {err}"),
+    }
+    env
+}
+
 /// Spawn a session task. On process exit the session id is sent to the
 /// manager so it can remove the handle from the table.
 #[allow(clippy::too_many_arguments)]
@@ -1076,6 +1104,7 @@ pub fn spawn(
     } else {
         Some(cwd.as_str())
     };
+    let env = daemon_owned_env(&id, env);
     let (pty, child) = Pty::spawn(&argv, cwd_opt, &env, rows, cols)?;
     let pty = Arc::new(pty);
     let pid = pty.pid;
@@ -1648,9 +1677,9 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog, ClientDelivery, ClientEntry,
-        ClientEvent, ClientPlane, ClientRole, Session, SessionHandle, SessionMsg, Sidecar,
-        SidecarCommand, SidecarQueue, SidecarResult, Vt,
+        daemon_owned_env, handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog,
+        ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
+        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
     };
     use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
@@ -1663,6 +1692,39 @@ mod tests {
 
     fn chunk(len: usize) -> Bytes {
         Bytes::from(vec![b'x'; len])
+    }
+
+    /// A hook reports with `termiod set-status --id "$TERMIOD_SESSION_ID"`, so a
+    /// session that cannot name itself cannot report at all.
+    #[test]
+    fn session_env_carries_the_session_id() {
+        let id = SessionId::new("s-42");
+        let env = daemon_owned_env(&id, Vec::new());
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "TERMIOD_SESSION_ID")
+                .map(|(_, value)| value.as_str()),
+            Some("s-42")
+        );
+    }
+
+    /// `Pty::spawn` applies the pairs in order, so the daemon's entries must come
+    /// last — otherwise a client could name itself another session and report
+    /// status on that session's behalf.
+    #[test]
+    fn daemon_env_outranks_a_client_supplied_value() {
+        let id = SessionId::new("real");
+        let env = daemon_owned_env(
+            &id,
+            vec![("TERMIOD_SESSION_ID".to_string(), "spoofed".to_string())],
+        );
+        assert_eq!(
+            env.iter()
+                .filter(|(key, _)| key == "TERMIOD_SESSION_ID")
+                .last()
+                .map(|(_, value)| value.as_str()),
+            Some("real")
+        );
     }
 
     /// The write token as a plain str, so the assertions read as they did
