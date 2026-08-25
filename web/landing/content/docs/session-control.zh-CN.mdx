@@ -3,8 +3,8 @@ title: 会话控制与命令行
 description: Termio 的编排 API——让 Agent 汇报自己在做什么的状态 hooks，以及让你（或另一个 Agent）从 shell 里派生、驱动和监督会话的 termio sessions 命令行。
 x-i18n:
   source_path: session-control.mdx
-  source_hash: c51862ad7e768ef4905dc4f6e02dbd18c66d6e276bb00b2a82601a7c416a647e
-  generated_at: 2026-08-18
+  source_hash: 3a1f2496cddc4948ccc577a9911214fb1fe6cc90b445d5d15beef925156a7bc5
+  generated_at: 2026-08-25
 ---
 
 你在侧栏看到的实时状态背后，是两个相关的可选功能：让 Agent 汇报自己在做什么的**状态
@@ -18,12 +18,16 @@ Cursor 以及基于插件的那些）。当 Agent 开始工作、完成，或者
 汇报给 Termio，于是侧栏的 [状态点](/zh-CN/docs/sidebar#status) 反映的就是实际发生的事，
 而不是从输出里猜出来的。
 
-在 **设置 ▸ 通用 ▸ Agent 实时状态** 里打开（Termio 也会在首次启动时问你一次）。关掉它会
+在 **设置 ▸ Agents ▸ Agent 实时状态** 里打开（Termio 也会在首次启动时问你一次）。关掉它会
 把这些 hooks 移除，同时不动你自己加的任何 hook。
+
+这个开关只决定你是否需要这个功能；安装则由每台设备各自完成。在 **设置 ▸ 设备** 中打开一台
+设备，用 **设置此设备**——或 **重新安装 hooks**——把 hooks 装到那台机器上。这正是让跑在 VPS
+上的 Agent 拥有和本机一样的状态点的原因。
 
 ## 会话控制
 
-**设置 ▸ 通用 ▸ 会话控制** 打开下面这套 `termio sessions` 编排 API，并通过往每个 Agent 的
+**设置 ▸ Agents ▸ 会话控制** 打开下面这套 `termio sessions` 编排 API，并通过往每个 Agent 的
 技能文件夹（`~/.claude/skills`、`~/.codex/skills`）里安装一个 `termio` **Agent 技能**，
 来告诉你的 Agent 它存在。技能按需加载——Agent 平时只带着那一行描述，直到某个任务真的需要
 驱动同伴会话——而 Termio 每次启动都会重新确认它，因此应用更新会自动传播，手改过的内容也会
@@ -50,7 +54,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## `termio` 命令行工具
 
-打开 **设置 ▸ 通用 ▸ 命令行工具**。它会把一个 `termio` 命令软链到你的 `PATH` 上
+打开 **设置 ▸ 设备 ▸ 本机 ▸ 命令行工具**。它会把一个 `termio` 命令软链到你的 `PATH` 上
 （位于 `/usr/local/bin/termio`；macOS 会要求授权一次），关掉则移除这个链接。
 
 ### 打开项目
