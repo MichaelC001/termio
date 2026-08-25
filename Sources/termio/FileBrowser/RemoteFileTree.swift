@@ -28,6 +28,38 @@ final class RemotePreviewLease {
     }
 }
 
+/// Where a staged file came from, and which version of it — everything a save
+/// needs to put the bytes back where they were read.
+///
+/// Held beside the open file rather than inside the lease: the lease owns a
+/// temp directory's lifetime, and this owns a different claim — that those bytes
+/// *are* that file on that machine, as it stood at that moment. The version is
+/// carried rather than re-read at save time, because re-reading would answer
+/// about a file that may already have changed, which is the one question a save
+/// must not get wrong.
+struct RemoteDocument: Hashable {
+    let route: TermiodRoute
+    /// The checkout the write stays inside. The host confines it too — this is
+    /// the client half of the same rule the tree and search are rooted by.
+    let root: String
+    /// The absolute path on that machine.
+    let path: String
+    /// `fs_file`'s `mtime`, and 0 when the host did not report one. Zero means
+    /// no version, so a save carrying it claims nothing and is not checked —
+    /// the honest behaviour against a daemon too old to answer.
+    let mtime: UInt64
+    /// The machine, for the sentence shown when a save is refused.
+    let host: String
+
+    var provider: DeviceFileProvider { DeviceFileProvider(route: route, root: root) }
+
+    /// The same document, re-versioned after a write landed — what the next save
+    /// must claim, since the file on the device now carries a new mtime.
+    func read(at mtime: UInt64) -> RemoteDocument {
+        RemoteDocument(route: route, root: root, path: path, mtime: mtime, host: host)
+    }
+}
+
 @MainActor
 enum RemotePreviewStorage {
     private static var liveDirectories: Set<URL> = []
@@ -224,13 +256,19 @@ final class RemoteFileBrowserModel: ObservableObject {
     }
 
     /// Downloads the file into a uniquely-named temp file (keeping the device
-    /// file's name, so icon and syntax detection work) for the read-only
-    /// overlay. Throws `DeviceFileError.tooLarge` past the preview cap.
-    func stageForPreview(_ node: RemoteFileNode) async throws -> RemotePreviewLease {
+    /// file's name, so icon and syntax detection work) for the overlay, and
+    /// answers with where it came from so a save can put it back. Throws
+    /// `DeviceFileError.tooLarge` past the preview cap.
+    func stageForPreview(
+        _ node: RemoteFileNode
+    ) async throws -> (lease: RemotePreviewLease, origin: RemoteDocument) {
         guard node.canPreview else { throw DeviceFileError.notRegularFile }
-        let data = try await provider.read(node.path, limit: Self.previewByteLimit)
+        let file = try await provider.read(node.path, limit: Self.previewByteLimit)
         try Task.checkCancellation()
-        return try RemotePreviewStorage.stage(data, named: node.name)
+        let lease = try RemotePreviewStorage.stage(file.data, named: node.name)
+        return (lease, RemoteDocument(
+            route: checkout.device.route, root: root, path: node.path,
+            mtime: file.mtime, host: host))
     }
 
     /// Routes a failure into the pane's state: an already-loaded tree stays up
@@ -409,13 +447,14 @@ struct RemoteFileTreeView: View {
         let presentationGeneration = store.filePresentationGeneration
         previewTask = Task { @MainActor in
             do {
-                let lease = try await model.stageForPreview(node)
+                let staged = try await model.stageForPreview(node)
                 guard !Task.isCancelled, requestID == previewRequestID else { return }
                 // Adoption is conditional on no other local/remote presentation
                 // winning while the download was in flight. HTML/SVG is routed
                 // to source, and failed raster decoding never falls into WebKit.
                 _ = store.presentRemoteFilePreview(
-                    lease, expectedGeneration: presentationGeneration)
+                    staged.lease, expectedGeneration: presentationGeneration,
+                    origin: staged.origin)
             } catch DeviceFileError.tooLarge {
                 guard !Task.isCancelled, requestID == previewRequestID else { return }
                 let alert = NSAlert()

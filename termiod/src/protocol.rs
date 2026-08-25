@@ -381,6 +381,10 @@ pub enum ErrorCode {
     CreateFailed,
     Denied,
     Busy,
+    /// The write was refused because what it would replace has changed since
+    /// the writer read it. Its own code because a client shows it as a question
+    /// (overwrite, or not) rather than as a failure.
+    Conflict,
     #[default]
     Internal,
 }
@@ -685,6 +689,14 @@ pub enum Control {
     },
     UploadCommit {
         upload_id: String,
+        /// The version the writer read, for a commit that replaces a file it
+        /// read first (§C.12 save). The host refuses the commit when the
+        /// destination has moved on, which is what keeps two writers in one
+        /// checkout — usually a person and an agent — from silently
+        /// overwriting each other. Omitted for a transfer that overwrites
+        /// nothing, like a paste into a scratch directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_unmodified_since: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -813,6 +825,12 @@ pub enum Control {
         length: u64,
         #[serde(default)]
         truncated: bool,
+        /// The file's modification time in whole seconds — the version this
+        /// read holds. A client that means to write the file back sends it to
+        /// `upload_commit` as `if_unmodified_since`. Absent from a host too old
+        /// to report it, which reads as 0: no version, so no check.
+        #[serde(default)]
+        mtime: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -904,6 +922,12 @@ pub enum Control {
     UploadAck { upload_id: String, offset: u64 },
     UploadCommitted {
         path: String,
+        /// The version the write produced, in whole seconds. A client saving
+        /// the same file again sends this back as `if_unmodified_since`;
+        /// without it the second save would claim the version the file was
+        /// *opened* at and be refused by its own first write.
+        #[serde(default)]
+        mtime: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },

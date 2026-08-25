@@ -21,6 +21,18 @@ struct FileEditorView: View {
     let jumpLine: Int?
     /// The original remote name when `url` is a randomized staged copy.
     let displayName: String?
+    /// Where the buffer belongs when it belongs on another machine — `url` is
+    /// then a staged copy on this Mac, and a save has to travel back. `nil` for
+    /// a local file, where writing `url` *is* the save.
+    ///
+    /// A save over the network is not free the way a local write is, so a remote
+    /// document is not auto-saved on the idle timer: ⌘S and closing are what
+    /// send it. That difference is deliberate and is the one place the two kinds
+    /// of document behave differently.
+    let remote: RemoteDocument?
+    /// Records the version a save produced, so the next one claims it rather
+    /// than the version the file was opened at.
+    let onRemoteSave: ((RemoteDocument) -> Void)?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
@@ -61,6 +73,13 @@ struct FileEditorView: View {
     @State private var saveError: String?
     /// The pending debounced write, cancelled and rescheduled on each keystroke.
     @State private var saveTask: Task<Void, Never>?
+    /// The in-flight save to the device, so a second ⌘S doesn't start a race
+    /// with the first.
+    @State private var pushTask: Task<Void, Never>?
+    @State private var pushing = false
+    /// The device's own sentence when it refused a save because the file changed
+    /// under us. Non-nil raises the overwrite question.
+    @State private var conflict: String?
     @State private var findBarVisible = false
     @State private var findQuery = ""
     @State private var findOptions = FindOptions()
@@ -92,6 +111,8 @@ struct FileEditorView: View {
 
     init(url: URL, settings: AppSettings, readOnly: Bool = false, jumpLine: Int? = nil,
          displayName: String? = nil,
+         remote: RemoteDocument? = nil,
+         onRemoteSave: ((RemoteDocument) -> Void)? = nil,
          addToChat: ((String?) -> Void)? = nil, canAddToChat: (() -> Bool)? = nil,
          showsInspectorChrome: Bool = true, onClose: @escaping () -> Void) {
         self.url = url
@@ -99,6 +120,8 @@ struct FileEditorView: View {
         self.readOnly = readOnly
         self.jumpLine = jumpLine
         self.displayName = displayName
+        self.remote = remote
+        self.onRemoteSave = onRemoteSave
         self.addToChat = addToChat
         self.canAddToChat = canAddToChat
         self.showsInspectorChrome = showsInspectorChrome
@@ -194,6 +217,15 @@ struct FileEditorView: View {
             if jumpLine != nil, mode == .preview { mode = .edit }
         }
         .onExitCommand { close() }
+        .alert(
+            localized("\(fileName) changed on \(remote?.host ?? "")"),
+            isPresented: Binding(get: { conflict != nil },
+                                 set: { if !$0 { conflict = nil } }),
+            actions: { conflictAlert },
+            message: {
+                Text(localized(
+                    "Somebody else wrote this file after you opened it. Overwriting replaces their version."))
+            })
         // A safety flush if the overlay goes away without the close button (file switch, app quit).
         .onDisappear {
             if !readOnly { saveTask?.cancel(); writeIfNeeded() }
@@ -282,11 +314,20 @@ struct FileEditorView: View {
                     .truncationMode(.middle)
             }
             // A faint dot while an auto-save is pending — quieter than a word, no button to click.
-            if isDirty {
+            // On a device document the dot means something stronger: the bytes are
+            // still on this Mac only, and it clears when the machine has taken
+            // them. The spinner beside it is the crossing itself.
+            if pushing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help(localized("Saving to \(remote?.host ?? "")…"))
+            } else if isDirty {
                 Circle()
                     .fill(Color.secondary)
                     .frame(width: 5, height: 5)
-                    .help(localized("Unsaved changes — saving…"))
+                    .help(remote == nil
+                          ? localized("Unsaved changes — saving…")
+                          : localized("Unsaved changes — press ⌘S to save to \(remote?.host ?? "")"))
                     .transition(.opacity)
             }
             if let saveError {
@@ -379,6 +420,10 @@ struct FileEditorView: View {
     /// after the last keystroke actually hits the disk.
     private func scheduleSave() {
         saveTask?.cancel()
+        // A device document saves on ⌘S and on close only — every save is a
+        // round trip to another machine, and arming one on each quiet pause
+        // would send the file over and over as you type.
+        guard remote == nil else { return }
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 600_000_000)
             if Task.isCancelled { return }
@@ -391,6 +436,20 @@ struct FileEditorView: View {
         saveTask?.cancel()
         writeIfNeeded()
         onClose()
+    }
+
+    /// The device refused the save: the file changed after it was read. Overwrite
+    /// re-sends claiming nothing, which is the one case where "I know, do it
+    /// anyway" is the right answer — the alternative, deciding it silently, is
+    /// what loses an agent's work.
+    private var conflictAlert: some View {
+        Group {
+            Button(localized("Overwrite"), role: .destructive) {
+                conflict = nil
+                pushToDevice(text, overwriting: true)
+            }
+            Button(localized("Cancel"), role: .cancel) { conflict = nil }
+        }
     }
 
     /// ⌘F: show the find bar. Skipped in Markdown Preview mode — there's no NSTextView to
@@ -462,11 +521,62 @@ struct FileEditorView: View {
         guard !readOnly, loaded, text != savedText else { return }
         do {
             try text.write(to: url, atomically: true, encoding: .utf8)
-            savedText = text
             saveError = nil
+            // A local file is saved the moment its bytes are on disk. A staged
+            // copy is not: the file the user thinks they saved is on another
+            // machine, so `savedText` — which is what the unsaved dot reads —
+            // only advances once the device has taken it.
+            if remote == nil {
+                savedText = text
+            } else {
+                pushToDevice(text)
+            }
         } catch {
             saveError = localized("Save failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Sends the buffer to the machine it came from, claiming the version it was
+    /// read at. A refusal means somebody else — most likely an agent with a
+    /// shell in the same checkout — wrote the file first, and that is asked
+    /// about rather than decided here.
+    private func pushToDevice(_ contents: String, overwriting: Bool = false) {
+        guard let remote else { return }
+        pushTask?.cancel()
+        pushing = true
+        pushTask = Task { @MainActor in
+            do {
+                let landed = try await remote.provider.write(
+                    remote.path, data: Data(contents.utf8),
+                    ifUnmodifiedSince: overwriting ? nil : versionToClaim(remote))
+                guard !Task.isCancelled else { return }
+                savedText = contents
+                saveError = nil
+                conflict = nil
+                onRemoteSave?(remote.read(at: landed))
+            } catch let error as DeviceFileError {
+                guard !Task.isCancelled else { return }
+                if case .conflict(let message) = error {
+                    conflict = message
+                } else {
+                    saveError = localized("Save failed: \(error.localizedDescription)")
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                guard !(error is CancellationError) else { return }
+                saveError = localized("Save failed: \(error.localizedDescription)")
+            }
+            pushing = false
+        }
+    }
+
+    /// The version a save claims, and `nil` when there is none to claim: a host
+    /// too old to report an mtime answers 0, and sending 0 would fail every
+    /// save against a file whose real mtime is anything else. No version means
+    /// no check — the same bargain every other absent field in this protocol
+    /// makes.
+    private func versionToClaim(_ document: RemoteDocument) -> UInt64? {
+        document.mtime == 0 ? nil : document.mtime
     }
 
     /// Maps a file to a highlight.js language id, matched against grammars the bundled highlight.js

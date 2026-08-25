@@ -21,6 +21,16 @@
         }
       }
     },
+    "%1$@ changed on %2$@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 在 %2$@ 上已被修改"
+          }
+        }
+      }
+    },
     "%@ and %@": {
       "localizations": {
         "zh-Hans": {
@@ -4297,6 +4307,16 @@
         }
       }
     },
+    "Overwrite": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "覆盖"
+          }
+        }
+      }
+    },
     "Padding: %lld pt": {
       "localizations": {
         "zh-Hans": {
@@ -5118,6 +5138,16 @@
         }
       }
     },
+    "Saving to %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保存到 %@…"
+          }
+        }
+      }
+    },
     "Scan the QR code with WeChat to join the Chinese community group.": {
       "localizations": {
         "zh-Hans": {
@@ -5484,6 +5514,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "跳过权限确认"
+          }
+        }
+      }
+    },
+    "Somebody else wrote this file after you opened it. Overwriting replaces their version.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在你打开之后，有人写入了这个文件。覆盖会替换掉对方的版本。"
           }
         }
       }
@@ -6475,6 +6515,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消固定"
+          }
+        }
+      }
+    },
+    "Unsaved changes — press ⌘S to save to %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有未保存的更改 — 按 ⌘S 保存到 %@"
           }
         }
       }

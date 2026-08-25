@@ -1230,6 +1230,7 @@ async fn process_control(
                                 offset: window.offset,
                                 length: window.data.len() as u64,
                                 truncated: window.truncated,
+                                mtime: window.mtime,
                                 re: seq,
                             }));
                             send_file_chunks(&out, seq.unwrap_or(0), window.offset, &window.data);
@@ -1340,7 +1341,11 @@ async fn process_control(
             };
             send_response(out, response_cache, seq, response);
         }
-        Control::UploadCommit { upload_id, seq } => {
+        Control::UploadCommit {
+            upload_id,
+            if_unmodified_since,
+            seq,
+        } => {
             let response = if !connection.capabilities.contains("upload") {
                 error(
                     seq,
@@ -1349,11 +1354,18 @@ async fn process_control(
                     false,
                 )
             } else {
-                match manager.uploads.commit(&upload_id) {
-                    Ok(path) => Control::UploadCommitted {
+                match manager.uploads.commit(&upload_id, if_unmodified_since) {
+                    Ok((path, mtime)) => Control::UploadCommitted {
                         path: path.display().to_string(),
+                        mtime,
                         re: seq,
                     },
+                    // A refused *version* is not a refused request: the client
+                    // asks the person whether to overwrite, so it has to be
+                    // able to tell this apart from a denial.
+                    Err(e) if e.to_string().starts_with("conflict: ") => {
+                        error(seq, ErrorCode::Conflict, format!("{e:#}"), false)
+                    }
                     Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
                 }
             };

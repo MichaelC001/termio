@@ -390,12 +390,15 @@ struct FileSearchView: View {
         let generation = store.filePresentationGeneration
         openTask = Task { @MainActor in
             do {
-                let data = try await provider.read(
+                let file = try await provider.read(
                     path, limit: Termiod.filePreviewByteLimit)
                 try Task.checkCancellation()
-                let lease = try RemotePreviewStorage.stage(data, named: name)
+                let lease = try RemotePreviewStorage.stage(file.data, named: name)
                 store.presentRemoteFilePreview(
-                    lease, expectedGeneration: generation, at: line)
+                    lease, expectedGeneration: generation, at: line,
+                    origin: RemoteDocument(
+                        route: provider.route, root: provider.root, path: path,
+                        mtime: file.mtime, host: host))
             } catch is CancellationError {
                 return
             } catch {

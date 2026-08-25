@@ -286,30 +286,44 @@ public enum Termiod {
     /// session UUID — and the daemon reaps whatever lands there when that
     /// session dies, so a pasted screenshot never outlives the conversation it
     /// belonged to.
+    /// `dest` is either `temp:<name>` with `session` naming whose scratch
+    /// directory receives it — a paste crossing to the device — or a path with
+    /// `root` naming the checkout it must stay inside, which is a **save**. The
+    /// two are the same transfer; only where it lands differs, so they are one
+    /// operation rather than two verbs that would drift apart.
     public struct UploadOpenOperation: Encodable, Sendable {
         public let op = "upload_open"
         public let dest: String
-        public let session: String
+        public let session: String?
+        public let root: String?
         public let size: UInt64
         public let sha256: String
         public let seq: UInt64
 
-        public init(dest: String, session: String, size: UInt64, sha256: String, seq: UInt64) {
+        public init(dest: String, session: String? = nil, root: String? = nil,
+                    size: UInt64, sha256: String, seq: UInt64) {
             self.dest = dest
             self.session = session
+            self.root = root
             self.size = size
             self.sha256 = sha256
             self.seq = seq
         }
     }
 
+    /// `ifUnmodifiedSince` is the version the writer read (`fs_file`'s `mtime`).
+    /// The host refuses the commit when the destination has moved on since,
+    /// which is what stops a save from silently overwriting whoever else is
+    /// working in that checkout. Omitted when the transfer replaces nothing.
     public struct UploadCommitOperation: Encodable, Sendable {
         public let op = "upload_commit"
         public let uploadId: String
+        public let ifUnmodifiedSince: UInt64?
         public let seq: UInt64
 
-        public init(uploadId: String, seq: UInt64) {
+        public init(uploadId: String, ifUnmodifiedSince: UInt64? = nil, seq: UInt64) {
             self.uploadId = uploadId
+            self.ifUnmodifiedSince = ifUnmodifiedSince
             self.seq = seq
         }
     }
@@ -486,9 +500,13 @@ public enum Termiod {
         public let offset: UInt64
         public let length: UInt64
         public let truncated: Bool
+        /// The file's modification time in whole seconds — the version this read
+        /// holds, handed back on save as `ifUnmodifiedSince`. Zero on a host too
+        /// old to report one, which means "no version" and so no check.
+        public let mtime: UInt64
 
         private enum CodingKeys: String, CodingKey {
-            case size, offset, length, truncated
+            case size, offset, length, truncated, mtime
         }
 
         public init(from decoder: Decoder) throws {
@@ -497,6 +515,7 @@ public enum Termiod {
             offset = try container.decode(UInt64.self, forKey: .offset)
             length = try container.decode(UInt64.self, forKey: .length)
             truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+            mtime = try container.decodeIfPresent(UInt64.self, forKey: .mtime) ?? 0
         }
     }
 
@@ -876,6 +895,21 @@ public enum Termiod {
     /// *that* machine, which is the whole point of the transfer.
     public struct UploadCommittedPayload: Decodable, Sendable {
         public let path: String
+        /// The version the write produced. Sent back as `ifUnmodifiedSince` by a
+        /// second save of the same file, which would otherwise claim the version
+        /// the file was opened at and be refused by its own first write. Zero on
+        /// a host too old to report it.
+        public let mtime: UInt64
+
+        private enum CodingKeys: String, CodingKey {
+            case path, mtime
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            path = try container.decode(String.self, forKey: .path)
+            mtime = try container.decodeIfPresent(UInt64.self, forKey: .mtime) ?? 0
+        }
     }
 
     /// Decoded control frames the client reacts to. Anything else — unknown

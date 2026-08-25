@@ -8,6 +8,8 @@
 …and %lld more</string>
 	<key> Cost is estimated at API rates.</key>
 	<string> Cost is estimated at API rates.</string>
+	<key>%1$@ changed on %2$@</key>
+	<string>%1$@ changed on %2$@</string>
 	<key>%@ and %@</key>
 	<string>%@ and %@</string>
 	<key>%@ didn’t come up — check the network and retry</key>
@@ -866,6 +868,8 @@
 	<string>Opened outside Termio on this device</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>Opens the ~/.ssh/config entry this machine is defined in.</string>
+	<key>Overwrite</key>
+	<string>Overwrite</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
 	<key>Pair your iPhone and remote access</key>
@@ -1030,6 +1034,8 @@
 	<string>Save</string>
 	<key>Save failed: %@</key>
 	<string>Save failed: %@</string>
+	<key>Saving to %@…</key>
+	<string>Saving to %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>Scan the QR code with WeChat to join the Chinese community group.</string>
 	<key>Scrollback history and text selection</key>
@@ -1104,6 +1110,8 @@
 	<string>Skill reinstalled</string>
 	<key>Skip permission prompts</key>
 	<string>Skip permission prompts</string>
+	<key>Somebody else wrote this file after you opened it. Overwriting replaces their version.</key>
+	<string>Somebody else wrote this file after you opened it. Overwriting replaces their version.</string>
 	<key>Something else already owns %@.</key>
 	<string>Something else already owns %@.</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
@@ -1302,6 +1310,8 @@
 	<string>Ungroup</string>
 	<key>Unpin</key>
 	<string>Unpin</string>
+	<key>Unsaved changes — press ⌘S to save to %@</key>
+	<string>Unsaved changes — press ⌘S to save to %@</string>
 	<key>Unsaved changes — saving…</key>
 	<string>Unsaved changes — saving…</string>
 	<key>Update</key>

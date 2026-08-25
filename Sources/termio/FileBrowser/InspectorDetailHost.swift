@@ -273,6 +273,8 @@ struct InspectorDetailContent: View {
                                readOnly: store.openFileReadOnly,
                                jumpLine: store.openFileLine,
                                displayName: store.openFileDisplayName,
+                               remote: store.openFileRemote,
+                               onRemoteSave: { store.openFileRemote = $0 },
                                addToChat: { selection in
                                    if let selection {
                                        _ = store.addSnippetToSelectedSessionPrompt(selection)
