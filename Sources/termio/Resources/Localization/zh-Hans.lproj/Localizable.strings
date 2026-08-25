@@ -1258,6 +1258,10 @@
 	<string>该设备返回了文件树无法显示的名称。</string>
 	<key>This device’s termiod is too old to browse files.</key>
 	<string>该设备上的 termiod 版本过旧，无法浏览文件。</string>
+	<key>This device’s termiod is too old to install agent integration.</key>
+	<string>该设备上的 termiod 版本过旧，无法安装 Agent 集成。</string>
+	<key>This device’s termiod is too old to report its agents.</key>
+	<string>该设备上的 termiod 版本过旧，无法查询其 Agent。</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>此差异太大，无法在此显示，请在 GitHub 上打开该文件。</string>
 	<key>This file is binary — open it on GitHub to view.</key>

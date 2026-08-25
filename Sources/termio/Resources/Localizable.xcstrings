@@ -6258,6 +6258,26 @@
         }
       }
     },
+    "This device’s termiod is too old to install agent integration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法安装 Agent 集成。"
+          }
+        }
+      }
+    },
+    "This device’s termiod is too old to report its agents.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法查询其 Agent。"
+          }
+        }
+      }
+    },
     "This diff is too large to show here — open the file on GitHub.": {
       "localizations": {
         "zh-Hans": {
