@@ -68,6 +68,12 @@ struct FileEditorView: View {
     /// empty placeholder.
     @State private var loaded = false
     @State private var loadFailed = false
+    /// Which faces have been visited. Both stay mounted afterwards (see `editorContent`), but
+    /// neither is built before it is first asked for.
+    @State private var mountedEditor = false
+    @State private var mountedReader = false
+    /// What Preview renders — the buffer as of the last flip into Preview, not the live one.
+    @State private var previewSource = ""
     /// Set when the file is too large for syntax highlighting (see `highlightByteLimit`).
     @State private var highlightDisabled = false
     @State private var saveError: String?
@@ -202,6 +208,10 @@ struct FileEditorView: View {
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         .task { await load() }
+        // Keyed to the load as well as the mode, because the mode is chosen in `init` — before
+        // there is any text to render.
+        .onChange(of: mode, initial: true) { activateMode() }
+        .onChange(of: loaded) { activateMode() }
         .onReceive(NotificationCenter.default.publisher(for: .termioShowFindBar)) { _ in
             openFindBar()
         }
@@ -234,21 +244,51 @@ struct FileEditorView: View {
 
     /// The scrolling body — the Markdown reader in Preview, else the Highlightr source editor. It
     /// scrolls below the fixed header; the source editor also carries the right-click "Close".
+    ///
+    /// Both faces stay mounted once visited; the flip only changes which one shows. An `if`/`else`
+    /// here is a structural branch, so SwiftUI rebuilt one side on every flip — a fresh `WKWebView`
+    /// and page load one way, a whole-document re-highlight and TextKit re-layout the other.
     @ViewBuilder private var editorContent: some View {
+        let showsReader = isMarkdown && mode == .preview
+        ZStack {
+            if mountedReader {
+                // `previewSource`, not `text`: a reader that outlives its own visibility would
+                // re-render the whole document into a hidden web view on every keystroke.
+                MarkdownReaderView(
+                    source: previewSource,
+                    fileURL: url,
+                    settings: settings,
+                    colorScheme: colorScheme,
+                    addToChat: addToChat,
+                    canAddToChat: canAddToChat,
+                    isActive: showsReader
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(showsReader)
+            }
+            if mountedEditor {
+                sourceEditor(isActive: !showsReader)
+                    .allowsHitTesting(!showsReader)
+            }
+        }
+    }
+
+    /// Mounts the face the mode names and hands Preview the current buffer. Only the flip refreshes
+    /// it, so typing in Edit never renders a document nobody is looking at.
+    private func activateMode() {
+        guard loaded else { return }
         if isMarkdown && mode == .preview {
-            // Render the *live* buffer, so flipping over from Edit shows unsaved keystrokes
-            // without a round-trip through disk.
-            MarkdownReaderView(
-                source: text,
-                fileURL: url,
-                settings: settings,
-                colorScheme: colorScheme,
-                addToChat: addToChat,
-                canAddToChat: canAddToChat
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            previewSource = text
+            mountedReader = true
         } else {
-            HighlightedTextView(
+            mountedEditor = true
+        }
+    }
+
+    /// The Highlightr source editor with its find bar. Split out so `editorContent` reads as the
+    /// two faces it switches between.
+    private func sourceEditor(isActive: Bool) -> some View {
+        HighlightedTextView(
                 text: $text,
                 language: highlightDisabled ? nil : language,
                 theme: colorScheme == .dark ? "xcode-dark" : "xcode",
@@ -267,27 +307,28 @@ struct FileEditorView: View {
                     findMatchCount = count
                     if count > 0, findFocusedIndex >= count { findFocusedIndex = 0 }
                 },
-                showsCloseMenuItem: true,
-                addToChat: addToChat,
-                canAddToChat: canAddToChat,
-                onSave: saveNow
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if findBarVisible {
-                    FileFindBar(
-                        query: $findQuery,
-                        options: $findOptions,
-                        currentMatch: findMatchCount == 0 ? 0 : findFocusedIndex + 1,
-                        totalMatches: findMatchCount,
-                        onSubmit: submitFind,
-                        onNext: { advanceFind(by: 1) },
-                        onPrevious: { advanceFind(by: -1) },
-                        onClose: closeFindBar,
-                        focusTrigger: findFocusTrigger
-                    )
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+            showsCloseMenuItem: true,
+            addToChat: addToChat,
+            canAddToChat: canAddToChat,
+            isActive: isActive,
+            onSave: saveNow
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            // Gated on `isActive` too: a dormant editor must not leave a bar floating over Preview.
+            if findBarVisible, isActive {
+                FileFindBar(
+                    query: $findQuery,
+                    options: $findOptions,
+                    currentMatch: findMatchCount == 0 ? 0 : findFocusedIndex + 1,
+                    totalMatches: findMatchCount,
+                    onSubmit: submitFind,
+                    onNext: { advanceFind(by: 1) },
+                    onPrevious: { advanceFind(by: -1) },
+                    onClose: closeFindBar,
+                    focusTrigger: findFocusTrigger
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
