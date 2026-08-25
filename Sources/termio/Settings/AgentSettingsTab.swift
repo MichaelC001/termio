@@ -95,12 +95,24 @@ struct AgentSettingsTab: View {
                         )
                     }
                     .toggleStyle(.switch)
+                    // The switch is the preference; putting the files on a
+                    // machine is a machine operation — but the machine is named
+                    // by the control at the top of this page, so it happens here
+                    // rather than sending you to another tab to finish the job.
+                    InstallButtonRow(title: localized("Install on \(device.name)")) {
+                        .summarizing(
+                            AgentStatusHooks.sync(
+                                enabled: settings.agentHooksEnabled,
+                                target: device.integrationTarget)
+                                .merged(with: SessionSkillInstaller.sync(
+                                    enabled: settings.sessionControlEnabled,
+                                    target: device.integrationTarget)),
+                            headline: localized("Installed"), unit: localized("agents"))
+                    }
                 } header: {
                     SectionHeaderLabel(title: localized("Integration"))
                 } footer: {
-                    // The switch is the preference; installing the files it needs
-                    // is a machine operation and stays on the machine's pane.
-                    Text(localized("Whether you want these at all. Each machine installs them for its own agents, under Machines."))
+                    Text(localized("Whether you want these at all, and putting them on the selected device."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -134,6 +146,7 @@ struct AgentSettingsTab: View {
             AgentDetailPane(
                 settings: settings,
                 preset: preset,
+                device: device,
                 onRemove: { remove(preset) },
                 // Editing and deletion exist only for agents backed by a user
                 // manifest; bundled agents just leave the list.
@@ -341,6 +354,10 @@ private struct AgentListRow: View {
 private struct AgentDetailPane: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
+    /// The device this pane configures, from the scope control on the roster.
+    /// Where an agent's CLI lives is a fact about a machine, but *which* machine
+    /// is now a control on this page rather than a different tab to go to.
+    let device: KnownDevice
     let onRemove: () -> Void
     /// True for agents backed by a manifest in the user's config folder — the only
     /// ones whose file can be opened or deleted from here.
@@ -365,7 +382,7 @@ private struct AgentDetailPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(preset.displayName)
                             .font(.title3.weight(.semibold))
-                        Text(settings.command(for: preset) ?? localized("Login shell"))
+                        Text(settings.command(for: preset, on: device) ?? localized("Login shell"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -399,11 +416,28 @@ private struct AgentDetailPane: View {
             }
 
             Section {
-                // Where this agent's CLI lives is a fact about a machine, and the
-                // field that sets it now lives on that machine's pane (RFC §D1).
-                // What is left here is the link that gets the CLI in the first
-                // place — an install page on the web, which is the same page
-                // whichever machine you are installing on.
+                // Where an agent's CLI lives is still a fact about a machine —
+                // it is the *machine* that is now named by a control on this page
+                // instead of being a different tab you had to go to.
+                LabeledContent {
+                    TextField(
+                        "",
+                        text: Binding(
+                            get: { settings.commandPath(for: preset, on: device) ?? "" },
+                            set: { settings.setCommandPath($0, for: preset, on: device) }
+                        ),
+                        prompt: Text(preset.command ?? localized("Login shell"))
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .labelsHidden()
+                    .frame(minWidth: 180)
+                } label: {
+                    SettingsLabel(
+                        title: localized("Path"),
+                        subtext: localized("Where \(preset.displayName) launches from on \(device.name). Leave empty to use its default."),
+                        titleFont: .headline
+                    )
+                }
                 LabeledContent {
                     if let url = preset.installURL {
                         Link(localized("Install Page"), destination: url)
@@ -413,7 +447,7 @@ private struct AgentDetailPane: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Get \(preset.displayName)"),
-                        subtext: localized("Set the path it launches from on each machine, under Machines."),
+                        subtext: localized("The install page — the same one whichever machine you are installing on."),
                         titleFont: .headline
                     )
                 }
@@ -491,7 +525,7 @@ private struct AgentDetailPane: View {
         }
     }
 
-    private var effectiveCommand: String { settings.command(for: preset) ?? "" }
+    private var effectiveCommand: String { settings.command(for: preset, on: device) ?? "" }
 }
 
 /// Shown when the pushed agent stops existing while its pane is open — a custom

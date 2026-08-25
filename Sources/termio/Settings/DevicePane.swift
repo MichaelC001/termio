@@ -56,7 +56,6 @@ struct DevicePane: View {
                 SectionHeaderLabel(title: localized("Status"))
             }
             reachedBySection
-            runsSection
             integrationSection
         }
         .formStyle(.grouped)
@@ -241,36 +240,6 @@ struct DevicePane: View {
         }
     }
 
-    // MARK: Runs — the identity half
-
-    private var runsSection: some View {
-        Section {
-            ForEach(listedAgents) { preset in
-                MachineAgentRow(
-                    preset: preset,
-                    machine: machine,
-                    settings: settings,
-                    readiness: model.readiness.isBusy ? nil : model.readiness(for: preset)
-                )
-            }
-            if listedAgents.isEmpty {
-                Text(localized("No agents on your list yet — add one in Settings ▸ Agents."))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            SectionHeaderLabel(title: localized("Runs"))
-        } footer: {
-            Text(localized("Where each agent’s CLI lives on \(machine.name). Leave a path empty to use the agent’s default."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var listedAgents: [AgentPreset] {
-        settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentListed))
-    }
-
     // MARK: The ladder, as disclosure
 
     /// The rungs behind the one line. Each is still individually runnable — a
@@ -307,68 +276,9 @@ struct DevicePane: View {
         } header: {
             SectionHeaderLabel(title: localized("Installed by Termio"))
         } footer: {
-            Text(localized("Live agent status and session control are switched on in Settings ▸ Agents; this installs them on \(machine.name)."))
+            Text(localized("What Termio puts on \(machine.name) so its agents can report. Which agents run there, and where each launches from, is Settings ▸ Agents with \(machine.name) selected."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-}
-
-/// One agent's presence on one machine, and the path it launches from there.
-///
-/// The readiness word is D4's three-state rule. `nil` means the probe has not
-/// answered yet and the row says nothing rather than guessing — the same
-/// don't-cry-wolf discipline `AgentAvailability` follows, extended to the case
-/// that only exists once a machine is reached over a network.
-private struct MachineAgentRow: View {
-    let preset: AgentPreset
-    let machine: KnownDevice
-    @ObservedObject var settings: AppSettings
-    let readiness: AgentReadiness?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                IconBadge(preset.icon)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(preset.displayName)
-                    if let status {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 8)
-                TextField(
-                    "",
-                    text: Binding(
-                        get: { settings.commandPath(for: preset, on: machine) ?? "" },
-                        set: { settings.setCommandPath($0, for: preset, on: machine) }
-                    ),
-                    prompt: Text(preset.command ?? localized("Login shell"))
-                )
-                .textFieldStyle(.plain)
-                .multilineTextAlignment(.trailing)
-                .labelsHidden()
-                .frame(minWidth: 140)
-                if readiness == .missing {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .help(localized("\(preset.displayName) isn’t installed on \(machine.name)"))
-                }
-            }
-        }
-    }
-
-    /// A present CLI says nothing — the path field beside it is already the whole
-    /// answer. The other two states are the ones worth a word.
-    private var status: String? {
-        switch readiness {
-        case .missing: return localized("Not installed on \(machine.name)")
-        case .unknown: return localized("Can’t check on \(machine.name)")
-        case .available, nil: return nil
         }
     }
 }

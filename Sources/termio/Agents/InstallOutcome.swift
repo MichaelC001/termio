@@ -16,6 +16,24 @@ struct InstallOutcome {
 
     var isEmpty: Bool { succeeded.isEmpty && failed.isEmpty }
 
+    /// Two installs reported as one. Hooks and the skill are one action to the
+    /// user, so an agent that took both is named once, and an agent that took
+    /// one and refused the other counts as refused — reporting it as installed
+    /// would be the optimistic half of a mixed result.
+    func merged(with other: InstallOutcome) -> InstallOutcome {
+        let refused = Set(failed).union(other.failed)
+        var combined = InstallOutcome()
+        var seen = Set<String>()
+        for name in succeeded + other.succeeded
+        where !refused.contains(name) && seen.insert(name).inserted {
+            combined.record(name, installed: true)
+        }
+        for name in failed + other.failed where seen.insert(name).inserted {
+            combined.record(name, installed: false)
+        }
+        return combined
+    }
+
     mutating func record(_ name: String, installed: Bool) {
         if installed { succeeded.append(name) } else { failed.append(name) }
     }

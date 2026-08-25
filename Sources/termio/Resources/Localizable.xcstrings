@@ -2774,6 +2774,16 @@
         }
       }
     },
+    "Installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装"
+          }
+        }
+      }
+    },
     "Installed by Termio": {
       "localizations": {
         "zh-Hans": {
@@ -3110,16 +3120,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agent 实时状态"
-          }
-        }
-      }
-    },
-    "Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Agent 实时状态和会话控制在“设置 ▸ Agents”中开启；这里把它们安装到 %@ 上。"
           }
         }
       }
@@ -3734,16 +3734,6 @@
         }
       }
     },
-    "No agents on your list yet — add one in Settings ▸ Agents.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "你的列表中还没有 Agent — 在“设置 ▸ Agents”中添加一个。"
-          }
-        }
-      }
-    },
     "No bundled tool to install from.": {
       "localizations": {
         "zh-Hans": {
@@ -4323,6 +4313,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "粘贴"
+          }
+        }
+      }
+    },
+    "Path": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "路径"
           }
         }
       }
@@ -5278,16 +5278,6 @@
         }
       }
     },
-    "Set the path it launches from on each machine, under Machines.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在“设备”中为每台设备设置它的启动路径。"
-          }
-        }
-      }
-    },
     "Set up this device": {
       "localizations": {
         "zh-Hans": {
@@ -5864,6 +5854,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法添加忽略规则。"
+          }
+        }
+      }
+    },
+    "The install page — the same one whichever machine you are installing on.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装页面 —— 无论装在哪台机器上都是同一个页面。"
           }
         }
       }
@@ -6549,22 +6549,12 @@
         }
       }
     },
-    "Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.": {
+    "Whether you want these at all, and putting them on the selected device.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每个 Agent 的命令行工具在 %@ 上的位置。留空则使用该 Agent 的默认值。"
-          }
-        }
-      }
-    },
-    "Whether you want these at all. Each machine installs them for its own agents, under Machines.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "决定你是否需要这些功能。每台设备在“设备”中为自己的 Agent 安装它们。"
+            "value": "是否启用这些功能，以及把它们装到选中的设备上。"
           }
         }
       }

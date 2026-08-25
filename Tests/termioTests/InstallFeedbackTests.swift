@@ -66,3 +66,33 @@ final class InstallFeedbackTests: XCTestCase {
         XCTAssertNotEqual(first, state)
     }
 }
+
+/// Hooks and the skill are two installs the user asked for with one click, so
+/// they are reported as one line. What that line may not do is round a mixed
+/// result up: an agent that took its hook and refused the skill is not installed.
+final class InstallOutcomeMergeTests: XCTestCase {
+    private func outcome(succeeded: [String], failed: [String] = []) -> InstallOutcome {
+        var result = InstallOutcome()
+        for name in succeeded { result.record(name, installed: true) }
+        for name in failed { result.record(name, installed: false) }
+        return result
+    }
+
+    func testAnAgentThatTookBothIsNamedOnce() {
+        let merged = outcome(succeeded: ["Claude Code", "Codex"])
+            .merged(with: outcome(succeeded: ["Claude Code", "Codex"]))
+        XCTAssertEqual(merged.succeeded, ["Claude Code", "Codex"])
+        XCTAssertTrue(merged.failed.isEmpty)
+    }
+
+    func testRefusingEitherHalfCountsAsRefused() {
+        let merged = outcome(succeeded: ["Claude Code", "Codex"])
+            .merged(with: outcome(succeeded: ["Codex"], failed: ["Claude Code"]))
+        XCTAssertEqual(merged.succeeded, ["Codex"])
+        XCTAssertEqual(merged.failed, ["Claude Code"])
+    }
+
+    func testNothingToInstallStaysEmpty() {
+        XCTAssertTrue(InstallOutcome().merged(with: InstallOutcome()).isEmpty)
+    }
+}

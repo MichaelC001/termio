@@ -562,6 +562,8 @@
 	<string>Install %@</string>
 	<key>Install Page</key>
 	<string>Install Page</string>
+	<key>Installed</key>
+	<string>Installed</string>
 	<key>Installed by Termio</key>
 	<string>Installed by Termio</string>
 	<key>Installed.</key>
@@ -630,8 +632,6 @@
 	<string>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</string>
 	<key>Live agent status</key>
 	<string>Live agent status</string>
-	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
-	<string>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</string>
 	<key>Live agent status is off</key>
 	<string>Live agent status is off</string>
 	<key>Local</key>
@@ -754,8 +754,6 @@
 	<string>No agent CLIs found on %@.</string>
 	<key>No agent CLIs found.</key>
 	<string>No agent CLIs found.</string>
-	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
-	<string>No agents on your list yet — add one in Settings ▸ Agents.</string>
 	<key>No bundled tool to install from.</key>
 	<string>No bundled tool to install from.</string>
 	<key>No description provided.</key>
@@ -872,6 +870,8 @@
 	<string>Password</string>
 	<key>Paste</key>
 	<string>Paste</string>
+	<key>Path</key>
+	<string>Path</string>
 	<key>Permissions</key>
 	<string>Permissions</string>
 	<key>Pick a file on the left to see its changes.</key>
@@ -1062,8 +1062,6 @@
 	<string>Set Up Key</string>
 	<key>Set Up Key…</key>
 	<string>Set Up Key…</string>
-	<key>Set the path it launches from on each machine, under Machines.</key>
-	<string>Set the path it launches from on each machine, under Machines.</string>
 	<key>Set up this device</key>
 	<string>Set up this device</string>
 	<key>Settings</key>
@@ -1180,6 +1178,8 @@
 	<string>The folder was removed, but git couldn’t prune its stale worktree metadata.</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>The ignore rule couldn’t be added.</string>
+	<key>The install page — the same one whichever machine you are installing on.</key>
+	<string>The install page — the same one whichever machine you are installing on.</string>
 	<key>The listing failed.</key>
 	<string>The listing failed.</string>
 	<key>The machine Termio is running on</key>
@@ -1316,10 +1316,8 @@
 	<string>WeChat group</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
-	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
-	<string>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</string>
-	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
-	<string>Whether you want these at all. Each machine installs them for its own agents, under Machines.</string>
+	<key>Whether you want these at all, and putting them on the selected device.</key>
+	<string>Whether you want these at all, and putting them on the selected device.</string>
 	<key>Window</key>
 	<string>Window</string>
 	<key>Working Directory</key>

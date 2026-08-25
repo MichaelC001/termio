@@ -562,6 +562,8 @@
 	<string>安装 %@</string>
 	<key>Install Page</key>
 	<string>安装页面</string>
+	<key>Installed</key>
+	<string>已安装</string>
 	<key>Installed by Termio</key>
 	<string>Termio 安装的内容</string>
 	<key>Installed.</key>
@@ -630,8 +632,6 @@
 	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
 	<key>Live agent status</key>
 	<string>Agent 实时状态</string>
-	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
-	<string>Agent 实时状态和会话控制在“设置 ▸ Agents”中开启；这里把它们安装到 %@ 上。</string>
 	<key>Live agent status is off</key>
 	<string>Agent 实时状态已关闭</string>
 	<key>Local</key>
@@ -754,8 +754,6 @@
 	<string>在 %@ 上未找到任何 Agent 命令行工具。</string>
 	<key>No agent CLIs found.</key>
 	<string>未找到任何 Agent 命令行工具。</string>
-	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
-	<string>你的列表中还没有 Agent — 在“设置 ▸ Agents”中添加一个。</string>
 	<key>No bundled tool to install from.</key>
 	<string>应用包中没有可安装的工具。</string>
 	<key>No description provided.</key>
@@ -872,6 +870,8 @@
 	<string>密码</string>
 	<key>Paste</key>
 	<string>粘贴</string>
+	<key>Path</key>
+	<string>路径</string>
 	<key>Permissions</key>
 	<string>权限</string>
 	<key>Pick a file on the left to see its changes.</key>
@@ -1062,8 +1062,6 @@
 	<string>设置密钥</string>
 	<key>Set Up Key…</key>
 	<string>设置密钥…</string>
-	<key>Set the path it launches from on each machine, under Machines.</key>
-	<string>在“设备”中为每台设备设置它的启动路径。</string>
 	<key>Set up this device</key>
 	<string>设置此设备</string>
 	<key>Settings</key>
@@ -1180,6 +1178,8 @@
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
+	<key>The install page — the same one whichever machine you are installing on.</key>
+	<string>安装页面 —— 无论装在哪台机器上都是同一个页面。</string>
 	<key>The listing failed.</key>
 	<string>读取目录失败。</string>
 	<key>The machine Termio is running on</key>
@@ -1316,10 +1316,8 @@
 	<string>微信群</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
-	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
-	<string>每个 Agent 的命令行工具在 %@ 上的位置。留空则使用该 Agent 的默认值。</string>
-	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
-	<string>决定你是否需要这些功能。每台设备在“设备”中为自己的 Agent 安装它们。</string>
+	<key>Whether you want these at all, and putting them on the selected device.</key>
+	<string>是否启用这些功能，以及把它们装到选中的设备上。</string>
 	<key>Window</key>
 	<string>窗口</string>
 	<key>Working Directory</key>
