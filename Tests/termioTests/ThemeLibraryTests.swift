@@ -1,5 +1,7 @@
 import XCTest
+import GhosttyTerminal
 import GhosttyTheme
+import SwiftUI
 import TermioShared
 @testable import termio
 
@@ -208,6 +210,85 @@ final class ThemeLibraryTests: XCTestCase {
         return GhosttyThemeCatalog.allThemes.first {
             $0.isDark == dark && !builtIn.contains($0.name) && !userOwned.contains($0.name)
         }
+    }
+
+    // MARK: - Light contrast
+
+    /// Issue #426: the light default inherited Alabaster's ANSI white and bright
+    /// white — #F7F7F7, the color Alabaster also uses for paper — so every line an
+    /// agent printed as "white" landed at 1.07:1 on the canvas and disappeared. Both
+    /// slots have to stay ink.
+    func testLightDefaultRendersAnsiWhiteAsInk() throws {
+        let config = TermioStore.lightDefaultTheme.rendered
+        let background = try XCTUnwrap(lastValue(of: "background", in: config))
+        for slot in [7, 15] {
+            let color = try XCTUnwrap(lastPaletteValue(slot, in: config))
+            let ratio = contrast(color, background)
+            XCTAssertGreaterThan(ratio, 3, "ANSI \(slot) reads at \(ratio):1 against \(background)")
+        }
+    }
+
+    /// The palette above only covers the default; the floor is what covers the other
+    /// light themes, the ones a user drops into the Themes folder, and a palette an
+    /// agent rewrites at runtime over OSC 4. It has to ride on every light theme and
+    /// on none of the dark ones — a dark theme's ANSI black sits on its background
+    /// on purpose.
+    func testTheContrastFloorFollowsThemeBrightness() throws {
+        for definition in ThemeLibrary.builtInThemes {
+            let rendered = try XCTUnwrap(TermioStore.themeConfiguration(named: definition.name)).rendered
+            let floor = lastValue(of: "minimum-contrast", in: rendered)
+            if definition.isDark {
+                XCTAssertNil(floor, definition.name)
+            } else {
+                XCTAssertEqual(floor.flatMap(Double.init), TermioStore.lightContrastFloor, definition.name)
+            }
+        }
+        XCTAssertEqual(
+            lastValue(of: "minimum-contrast", in: TermioStore.lightDefaultTheme.rendered)
+                .flatMap(Double.init),
+            TermioStore.lightContrastFloor
+        )
+    }
+
+    /// Both halves of the fix are keys libghostty has to accept: a rejected config
+    /// does not fall back to the previous colors, it leaves the whole theme
+    /// unapplied. So build the real thing and let ghostty parse it.
+    func testTheLightDefaultIsAConfigGhosttyAccepts() {
+        let state = TerminalViewState(
+            theme: TerminalTheme(light: TermioStore.lightDefaultTheme, dark: .afterglow))
+        XCTAssertNil(state.controller.lastConfigurationIssue)
+        // `effectiveColorScheme` starts light, so this is the slot under test.
+        XCTAssertTrue(state.renderedConfig.contains("palette = 7=#4D4D4D"), state.renderedConfig)
+        XCTAssertTrue(state.renderedConfig.contains("palette = 15=#262626"), state.renderedConfig)
+        XCTAssertTrue(state.renderedConfig.contains("minimum-contrast = 1.5"), state.renderedConfig)
+    }
+
+    /// A floor above 2 would be worse than the bug: libghostty snaps a failing
+    /// foreground to pure black or white rather than nudging it, and the bundled
+    /// light palettes put their legible-but-dim greys and yellows just above 2:1.
+    func testTheContrastFloorStaysBelowTheFlatteningPoint() {
+        XCTAssertGreaterThan(TermioStore.lightContrastFloor, 1)
+        XCTAssertLessThanOrEqual(TermioStore.lightContrastFloor, 1.75)
+    }
+
+    /// `rendered` is append-only, so an override lands as a second line for the same
+    /// key — the way Ghostty itself resolves a repeated key, last one wins.
+    private func lastValue(of key: String, in config: String) -> String? {
+        config.split(separator: "\n")
+            .last { $0.hasPrefix("\(key) = ") }
+            .map { String($0.dropFirst(key.count + 3)) }
+    }
+
+    private func lastPaletteValue(_ slot: Int, in config: String) -> String? {
+        let prefix = "palette = \(slot)="
+        return config.split(separator: "\n")
+            .last { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
+    }
+
+    private func contrast(_ first: String, _ second: String) -> Double {
+        guard let first = Color(hex: first), let second = Color(hex: second) else { return 1 }
+        return ChromeTheme.contrastRatio(first, second)
     }
 
     // MARK: - Distinctness metric

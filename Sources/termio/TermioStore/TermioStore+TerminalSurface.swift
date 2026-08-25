@@ -858,21 +858,57 @@ extension TermioStore {
     /// The light/dark theme pair libghostty switches between as the system
     /// appearance changes. Each slot resolves its own chosen Ghostty theme, falling
     /// back to termio's default when none is chosen (or the name no longer
-    /// resolves). The light default is a pure-white canvas rather than libghostty's
-    /// Alabaster (#F7F7F7): the agent UIs paint their own grey panels over it, so an
-    /// off-white background just reads as unstyled. The dark default is Afterglow.
+    /// resolves). The light default is `lightDefaultTheme` — a pure-white canvas
+    /// rather than libghostty's Alabaster (#F7F7F7), because the agent UIs paint
+    /// their own grey panels over it and an off-white background just reads as
+    /// unstyled. The dark default is Afterglow.
     private func makeTheme() -> TerminalTheme {
         TerminalTheme(
-            light: themeConfiguration(named: settings.lightThemeName) ?? .alabaster.background("FFFFFF"),
-            dark: themeConfiguration(named: settings.darkThemeName) ?? .afterglow
+            light: Self.themeConfiguration(named: settings.lightThemeName) ?? Self.lightDefaultTheme,
+            dark: Self.themeConfiguration(named: settings.darkThemeName) ?? .afterglow
         )
     }
 
+    /// termio's light default: Alabaster on a pure-white canvas, with ANSI white and
+    /// bright white moved from paper to ink.
+    ///
+    /// Alabaster names slots 7 and 15 by literal color (#F7F7F7 — its own original
+    /// background) rather than by role, so anything an agent prints as "white" lands
+    /// at 1.07:1 against the canvas and disappears. That is issue #426: Claude Code
+    /// draws its version, cwd and shortcut hints in ANSI white, which is legible on
+    /// the dark terminal it assumes and invisible here. Light themes that read well
+    /// (Xcode Light, Monokai Pro Light) map both slots to the foreground instead; 7
+    /// stays the softer of the two so a secondary line still reads as secondary.
+    static let lightDefaultTheme = TerminalConfiguration.alabaster
+        .background("FFFFFF")
+        .palette(7, color: "#4D4D4D")
+        .palette(15, color: "#262626")
+        .minimumContrast(lightContrastFloor)
+
+    /// The WCAG floor libghostty enforces per glyph, against that glyph's own
+    /// background, for light themes only.
+    ///
+    /// It is a floor rather than a remap because a theme's palette is not the only
+    /// way text arrives — an agent can set a color directly, or rewrite the palette
+    /// at runtime through OSC 4. 1.5 is the knee measured across the bundled
+    /// catalog: it rescues every entry that is invisible against its own background
+    /// while flattening none that a reader could already make out. Higher is worse,
+    /// not better — libghostty snaps a failing foreground to pure black or white
+    /// rather than nudging it, so a 3.0 floor turns legible yellows and greens
+    /// black. Dark themes get no floor: their one sub-floor slot is ANSI black on a
+    /// dark canvas, which every dark theme does on purpose.
+    static let lightContrastFloor = 1.5
+
     /// Resolves a chosen theme name to its terminal configuration, or `nil` when the
-    /// slot is left on the default or the name no longer resolves.
-    private func themeConfiguration(named name: String) -> TerminalConfiguration? {
+    /// slot is left on the default or the name no longer resolves. The contrast floor
+    /// follows the theme's own brightness rather than the slot it was chosen into, so
+    /// a light theme parked in the Dark slot keeps its protection and a dark one
+    /// parked in the Light slot keeps its intentional black-on-black.
+    static func themeConfiguration(named name: String) -> TerminalConfiguration? {
         guard !name.isEmpty, let definition = ThemeLibrary.theme(named: name) else { return nil }
-        return definition.toTerminalConfiguration()
+        let configuration = definition.toTerminalConfiguration()
+        guard !definition.isDark else { return configuration }
+        return configuration.minimumContrast(Self.lightContrastFloor)
     }
 
     /// Drives `ghostty_app_tick` at display rate for a short window so a config
