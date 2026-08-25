@@ -16,6 +16,65 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     private var socketDirectory: URL?
     private var socketPath = ""
     private var root = URL(fileURLWithPath: "/")
+    private var shimDirectory = URL(fileURLWithPath: "/")
+
+    // MARK: - A grep that takes a known amount of time
+
+    /// Where the shim reads how long to run, and records that it ran to the end.
+    private var shimSecondsFile: URL { shimDirectory.appendingPathComponent("seconds") }
+    private var shimStartedFile: URL { shimDirectory.appendingPathComponent("started") }
+    private var shimFinishedFile: URL { shimDirectory.appendingPathComponent("finished") }
+
+    /// Installs a `git` that stands in for a long grep over a big checkout.
+    ///
+    /// Everything except `grep` is handed to the real `git`, and so is `grep`
+    /// itself until a test arms the delay — so every search test that wants a
+    /// real answer still gets one. Once armed, a `grep` sleeps for the
+    /// configured time and only then writes `finished`, which makes "the host
+    /// stopped early" observable as the absence of that file rather than as the
+    /// client having returned.
+    private func installGrepShim() throws {
+        shimDirectory = try XCTUnwrap(socketDirectory)
+            .appendingPathComponent("shim")
+        try FileManager.default.createDirectory(
+            at: shimDirectory, withIntermediateDirectories: true)
+        let script = """
+        #!/bin/bash
+        for argument in "$@"; do
+          if [ "$argument" = "grep" ]; then
+            delay=$(cat "\(shimSecondsFile.path)" 2>/dev/null || echo 0)
+            if [ "$delay" != "0" ]; then
+              echo "$$" >> "\(shimStartedFile.path)"
+              sleep "$delay"
+              echo "$$" >> "\(shimFinishedFile.path)"
+              exit 1
+            fi
+            break
+          fi
+        done
+        exec /usr/bin/git "$@"
+        """
+        let shim = shimDirectory.appendingPathComponent("git")
+        try Data(script.utf8).write(to: shim)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: shim.path)
+        try Data("0\n".utf8).write(to: shimSecondsFile)
+    }
+
+    /// Arms the shim to run for `seconds`, and clears the previous run's marks.
+    private func makeSearchTake(seconds: Double) throws {
+        try? FileManager.default.removeItem(at: shimStartedFile)
+        try? FileManager.default.removeItem(at: shimFinishedFile)
+        try Data("\(seconds)\n".utf8).write(to: shimSecondsFile)
+    }
+
+    private var shimStarted: Bool {
+        FileManager.default.fileExists(atPath: shimStartedFile.path)
+    }
+
+    private var shimRanToCompletion: Bool {
+        FileManager.default.fileExists(atPath: shimFinishedFile.path)
+    }
 
     /// Starts a daemon on this test's socket and waits for it to answer. Split
     /// out because one test kills it mid-flight to make sure a pooled channel
@@ -29,8 +88,15 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         let serve = Process()
         serve.executableURL = URL(fileURLWithPath: binary)
         serve.arguments = ["serve"]
-        serve.environment = ProcessInfo.processInfo.environment.merging(
-            ["TERMIOD_SOCK": socketPath]) { _, new in new }
+        serve.environment = ProcessInfo.processInfo.environment.merging([
+            "TERMIOD_SOCK": socketPath,
+            // The daemon runs `git grep` by name, so putting a shim first on its
+            // PATH is how a search can be made to take a known amount of time.
+            // Real `git grep` is far too fast to abandon on purpose — 133 MB of
+            // text answers in 40 ms — so a fixture built out of file count would
+            // pin nothing.
+            "PATH": "\(shimDirectory.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")",
+        ]) { _, new in new }
         serve.standardOutput = FileHandle.nullDevice
         serve.standardError = FileHandle.nullDevice
         try serve.run()
@@ -58,6 +124,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertLessThan(socket.utf8.count, 104, "socket path must fit sun_path")
         setenv("TERMIOD_SOCK", socket, 1)
         socketPath = socket
+        try installGrepShim()
         daemon = try startDaemon()
 
         // A tree with one of everything the pane draws: a file, a directory, a
@@ -311,61 +378,194 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     }
 
     /// Requests are demultiplexed by `re`, so several may be outstanding at once
-    /// — the daemon `tokio::spawn`s each one and answers out of order. This is
-    /// the claim that would fail loudest if the routing were wrong: with replies
-    /// matched by arrival instead of by id, a listing would come back holding a
-    /// file's bytes.
-    func testConcurrentRequestsOnOneChannelGetTheirOwnAnswers() throws {
+    /// — the daemon `tokio::spawn`s each one and answers out of order.
+    ///
+    /// The discriminator is *when* the fast two finish, not that they finish. A
+    /// channel that took one request at a time would answer all three correctly
+    /// and simply make the listing wait out the grep, which is exactly the
+    /// behaviour worth ruling out: the pane must stay usable while a search runs.
+    /// So the search is made to take four seconds and the assertion is that the
+    /// listing and the read both landed while it was still going.
+    func testASlowSearchDoesNotHoldUpTheRestOfTheChannel() throws {
+        try makeSearchTake(seconds: 4)
         let done = expectation(description: "all requests answered")
         done.expectedFulfillmentCount = 3
         let listed = UncheckedBox<[Termiod.DirectoryListing]>([])
         let read = UncheckedBox<Data>(Data())
-        let found = UncheckedBox<Termiod.SearchResult?>(nil)
+        let clock = ContinuousClock()
+        let searchEnded = UncheckedBox<ContinuousClock.Instant?>(nil)
+        let listEnded = UncheckedBox<ContinuousClock.Instant?>(nil)
+        let readEnded = UncheckedBox<ContinuousClock.Instant?>(nil)
         let root = root
 
-        // The search is much the slowest of the three, so it is issued first: if
-        // anything serialised behind it, the other two would land after it
-        // rather than while it runs.
         DispatchQueue.global().async {
-            found.value = try? Termiod.searchContents(
-                route: .local, root: root.path, query: "nested", limit: 400)
+            _ = try? Termiod.searchContents(
+                route: .local, root: root.path, query: "anything", limit: 400)
+            searchEnded.value = clock.now
             done.fulfill()
         }
+        // Give the search time to be on the wire and the grep time to start, so
+        // "while it was still running" is a fact rather than a hope.
+        let armed = ContinuousClock.now.advanced(by: .seconds(10))
+        while !shimStarted, ContinuousClock.now < armed { usleep(20_000) }
+        XCTAssertTrue(shimStarted, "the slow grep is what this test measures against")
+
         DispatchQueue.global().async {
             listed.value = (try? Termiod.listDirectories(
                 route: .local, root: root.path, paths: [root.path])) ?? []
+            listEnded.value = clock.now
             done.fulfill()
         }
         DispatchQueue.global().async {
             read.value = (try? Termiod.readFile(
-                route: .local, path: root.appendingPathComponent("sub/b.txt").path))?.data ?? Data()
+                route: .local,
+                path: root.appendingPathComponent("sub/b.txt").path))?.data ?? Data()
+            readEnded.value = clock.now
             done.fulfill()
         }
         wait(for: [done], timeout: 30)
 
-        XCTAssertEqual(listed.value.first?.path, root.path)
         XCTAssertTrue(listed.value.first?.entries.contains { $0.name == "a.txt" } ?? false)
         XCTAssertEqual(read.value, Data(nestedContents.utf8), "the read got its own bytes")
-        XCTAssertEqual(found.value?.hits.count, 400)
+
+        let searchAt = try XCTUnwrap(searchEnded.value)
+        let listAt = try XCTUnwrap(listEnded.value)
+        let readAt = try XCTUnwrap(readEnded.value)
+        XCTAssertTrue(listAt < searchAt, "the listing answered while the grep was still running")
+        XCTAssertTrue(readAt < searchAt, "so did the read")
+        // And by a margin that could not be scheduling noise: both should land
+        // in well under the four seconds the grep is holding the channel for.
+        XCTAssertGreaterThan(listAt.duration(to: searchAt), .seconds(2))
+        XCTAssertGreaterThan(readAt.duration(to: searchAt), .seconds(2))
+    }
+
+    /// Abandoning a search has to stop the `git grep` on the device.
+    ///
+    /// This is the one thing pooling took away and had to give back. A channel
+    /// that lived for one request stopped a grep by hanging up — `run_search`
+    /// watches `out.closed()` for exactly that, and that arm is the whole reason
+    /// an abandoned query did not leave a process walking someone's checkout. A
+    /// pooled channel never hangs up, so the client now sends the protocol's own
+    /// `cancel { request: <seq> }` instead, which only a multiplexed channel
+    /// *can* send: a synchronous one is blocked reading the descriptor it would
+    /// have to write to.
+    ///
+    /// The assertion is on the host's own record. The shim writes `finished`
+    /// only if it runs its full ten seconds, so the client giving up cannot
+    /// produce a pass; the grep really has to have been killed.
+    func testAnAbandonedSearchStopsTheGrepOnTheDevice() throws {
+        try makeSearchTake(seconds: 10)
+
+        let started = ContinuousClock.now
+        XCTAssertThrowsError(
+            try Termiod.searchContents(
+                route: .local, root: root.path, query: "anything", limit: 400,
+                idleTimeoutSeconds: 1)
+        ) { error in
+            guard case TermiodClientError.timedOut = error else {
+                return XCTFail("expected the idle bound to fire, got \(error)")
+            }
+        }
+        XCTAssertTrue(shimStarted, "the grep did start, so there was something to stop")
+
+        // The cancel goes out as the request is retired. Allow a moment for the
+        // host to act on it, then check its record — well inside the ten seconds
+        // an uncancelled grep would still be running for.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        var greps = grepProcessCount()
+        while greps > 0, ContinuousClock.now < deadline {
+            usleep(100_000)
+            greps = grepProcessCount()
+        }
+        XCTAssertEqual(greps, 0, "the device's grep was killed, not left running")
+        XCTAssertFalse(
+            shimRanToCompletion, "and killed rather than allowed to finish on its own")
+        XCTAssertLessThan(
+            started.duration(to: .now), .seconds(8),
+            "which happened long before the grep would have ended by itself")
+    }
+
+    /// Shim processes still alive for this test's own fixture directory. Scoped
+    /// by that path — which is in the shim's own argv — so a developer's
+    /// unrelated `git grep` cannot fail the run.
+    private func grepProcessCount() -> Int {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", shimDirectory.appendingPathComponent("git").path]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return 0 }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n")
+            .filter { !$0.isEmpty }
+            .count
     }
 
     /// The cost of holding a connection: it can die between requests, and the
     /// first click after a laptop wakes must reconnect rather than show an error.
     /// Killing the daemon under a live pooled channel is exactly that.
-    func testAChannelThatDiedBetweenRequestsReconnects() throws {
+    func testTheNextRequestAfterADaemonRestartStillAnswers() throws {
         _ = try Termiod.listDirectories(route: .local, root: root.path, paths: [root.path])
 
         daemon?.terminate()
         daemon?.waitUntilExit()
         daemon = nil
-        // The client is not told; it finds out by writing into a dead pipe,
-        // which is the case this has to survive without raising SIGPIPE.
         let restarted = try startDaemon()
         daemon = restarted
 
         let listings = try Termiod.listDirectories(
             route: .local, root: root.path, paths: [root.path])
         XCTAssertTrue(listings.first?.entries.contains { $0.name == "a.txt" } ?? false)
+    }
+
+    /// The retry policy itself, which the restart above does *not* reach: killing
+    /// a daemon gives the reader a clean EOF, so by the time the next request
+    /// asks for a channel the dead one has already been replaced. The path worth
+    /// pinning is the narrower one — a channel that was still believed live when
+    /// the request went out and turned out not to be — and its three gates.
+    ///
+    /// Driven through the real `withPooledRequest` with a body that fails on
+    /// cue, because the operating-system race cannot be scheduled on demand.
+    func testAnInheritedChannelIsRetriedOnceAndOnlyWhenNothingWasHeard() throws {
+        // Open the channel, so everything after this inherits it.
+        _ = try Termiod.listDirectories(route: .local, root: root.path, paths: [root.path])
+
+        var attempts = 0
+        var reuse: [Bool] = []
+        _ = try? Termiod.withPooledRequest(route: .local, caps: ["files"]) { call, _ in
+            attempts += 1
+            reuse.append(call.wasReused)
+            throw TermiodClientError.connectionClosed
+        }
+        XCTAssertEqual(attempts, 2, "an inherited channel is worth one reconnect")
+        XCTAssertEqual(
+            reuse, [true, false],
+            "the first call inherited a channel; the retry got a freshly opened one — "
+                + "which is also what stops the retry from retrying")
+
+        // A refusal is not a broken pipe: the host would say the same thing again.
+        attempts = 0
+        _ = try? Termiod.withPooledRequest(route: .local, caps: ["files"]) { _, _ in
+            attempts += 1
+            throw TermiodClientError.requestFailed("no such file")
+        }
+        XCTAssertEqual(attempts, 1, "a refusal is answered, not retried")
+
+        // Once part of the answer has landed, replaying would splice two halves
+        // of different answers together.
+        attempts = 0
+        _ = try? Termiod.withPooledRequest(route: .local, caps: ["files"]) { call, _ in
+            attempts += 1
+            try call.send(payload: Termiod.encodeControl(
+                Termiod.FsListOperation(root: root.path, paths: [root.path], seq: call.seq)))
+            _ = try call.next(timeoutSeconds: 10, operation: "fs.list")
+            XCTAssertTrue(call.hasDelivered)
+            throw TermiodClientError.connectionClosed
+        }
+        XCTAssertEqual(attempts, 1, "a request that heard part of its answer is not replayed")
     }
 }
 

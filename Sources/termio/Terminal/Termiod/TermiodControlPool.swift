@@ -80,12 +80,19 @@ extension Termiod {
         /// host saying nothing *about this request*. Per-request rather than
         /// per-connection: on a shared channel another caller's traffic is not
         /// evidence that this one is being answered.
+        /// How long a single `wait` may sleep before the monotonic deadline is
+        /// re-tested. `NSCondition` can only be given a wall-clock `Date`, and a
+        /// wall clock steps — NTP, a laptop waking, the user changing the date.
+        /// A backward step makes that `Date` further away than it was, so a
+        /// single long wait would sleep past a deadline that has already passed.
+        /// Slicing bounds the overshoot to one slice no matter how far the clock
+        /// jumps, while the bound itself stays on `ContinuousClock`.
+        private static let waitSlice = 0.25
+
         func next(timeoutSeconds: Int, operation: String) throws
             -> (kind: FrameKind, payload: Data) {
             condition.lock()
             defer { condition.unlock() }
-            // Monotonic, for the reason `waitForReadable` is: a wall clock that
-            // steps would cut a live request short or stretch it past its bound.
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
             while true {
@@ -98,8 +105,10 @@ extension Termiod {
                 let components = remaining.components
                 let seconds = Double(components.seconds)
                     + Double(components.attoseconds) / 1e18
-                // A spurious wakeup just re-tests the loop above.
-                _ = condition.wait(until: Date().addingTimeInterval(seconds))
+                // A spurious wakeup, or a slice expiring early, just re-tests
+                // the loop above; only `deadline` decides when to give up.
+                _ = condition.wait(
+                    until: Date().addingTimeInterval(min(seconds, Self.waitSlice)))
             }
         }
     }
@@ -117,6 +126,11 @@ extension Termiod {
         let wasReused: Bool
         fileprivate let channel: PooledChannel
         fileprivate let inbox: RequestInbox
+        /// Whether abandoning this request obliges the client to tell the host to
+        /// stop. Its own lock because `finish()` may run on a different thread
+        /// from the one that armed it.
+        private let cancelLock = NSLock()
+        private var owesCancelLocked = false
 
         fileprivate init(
             seq: UInt64, wasReused: Bool, channel: PooledChannel, inbox: RequestInbox
@@ -125,6 +139,31 @@ extension Termiod {
             self.wasReused = wasReused
             self.channel = channel
             self.inbox = inbox
+        }
+
+        /// Declares this request cancellable, from the moment it is on the wire
+        /// until the host's terminal reply lands.
+        ///
+        /// Only streaming requests need it, and for a sharp reason. A `git grep`
+        /// keeps running on the device until something stops it, and until this
+        /// change the thing that stopped it was the connection closing — the
+        /// host's `run_search` watches `out.closed()` for exactly that. Pooling
+        /// removed that signal: the channel outlives the request now, so a search
+        /// the client gave up on would keep walking the checkout and streaming
+        /// frames into an inbox that no longer exists. The protocol's own
+        /// `cancel` is what replaces it.
+        func cancelIfAbandoned() {
+            cancelLock.lock()
+            owesCancelLocked = true
+            cancelLock.unlock()
+        }
+
+        /// The host said its last word on this request — a terminal reply, or a
+        /// refusal it has already cleaned up behind. Nothing left to cancel.
+        func completed() {
+            cancelLock.lock()
+            owesCancelLocked = false
+            cancelLock.unlock()
         }
 
         /// Whether this call ever heard anything back — what decides if a lost
@@ -140,9 +179,27 @@ extension Termiod {
             try inbox.next(timeoutSeconds: timeoutSeconds, operation: operation)
         }
 
-        /// Unregisters the inbox. Must be called however the request ends, or
-        /// the channel accumulates inboxes nothing will ever read.
+        /// Unregisters the inbox, and tells the host to stop first if this
+        /// request is being walked away from mid-stream. Must be called however
+        /// the request ends, or the channel accumulates inboxes nothing will
+        /// ever read — and, now, the device keeps working on questions nobody
+        /// is listening to.
+        ///
+        /// The cancel goes out before the inbox is dropped so the ordering reads
+        /// the way it happens: still a live request, then stopped, then gone. A
+        /// write that fails is ignored on purpose — the channel being dead is
+        /// the one case the host still notices on its own.
         func finish() {
+            cancelLock.lock()
+            let owed = owesCancelLocked
+            owesCancelLocked = false
+            cancelLock.unlock()
+            if owed {
+                try? channel.write(
+                    kind: .control,
+                    payload: encodeControl(CancelOperation(
+                        request: seq, seq: channel.nextRequestID())))
+            }
             channel.release(seq)
         }
     }
@@ -213,6 +270,17 @@ extension Termiod {
             let reused = used
             used = true
             return ChannelCall(seq: seq, wasReused: reused, channel: self, inbox: inbox)
+        }
+
+        /// An id for a frame that wants no answer — the `seq` on a `cancel`. Off
+        /// the same counter as a real request so nothing on the wire ever
+        /// collides; no inbox, so the host's `ok` is simply dropped.
+        fileprivate func nextRequestID() -> UInt64 {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            let seq = nextSeq
+            nextSeq &+= 1
+            return seq
         }
 
         fileprivate func release(_ seq: UInt64) {

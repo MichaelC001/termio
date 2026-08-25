@@ -384,6 +384,27 @@ public enum Termiod {
         }
     }
 
+    /// Stops an in-flight cancellable request on the same channel, naming it by
+    /// the `seq` it was sent with (§C.12 — `Control::Cancel` in
+    /// termiod/src/protocol.rs). Idempotent: cancelling something that already
+    /// finished is `ok`, not an error.
+    ///
+    /// Only a multiplexed channel can send this. On a channel carrying one
+    /// request at a time the caller is blocked reading the very descriptor it
+    /// would have to write to, so the only way to stop a search was to hang up —
+    /// which is what the host's `out.closed()` arm exists to notice. A pooled
+    /// channel does not hang up, so it has to say so out loud instead.
+    public struct CancelOperation: Encodable, Sendable {
+        public let op = "cancel"
+        public let request: UInt64
+        public let seq: UInt64
+
+        public init(request: UInt64, seq: UInt64) {
+            self.request = request
+            self.seq = seq
+        }
+    }
+
     /// `limit` is a total across all files, which is what bounds a one-letter
     /// query in a monorepo — the host stops streaming there and says so.
     public struct FsSearchOperation: Encodable, Sendable {

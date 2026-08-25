@@ -175,6 +175,11 @@ extension Termiod {
         return try withFilesChannel(route: route) { call in
             try call.send(payload: encodeControl(FsSearchOperation(
                 root: root, query: query, limit: UInt64(limit), seq: call.seq)))
+            // Armed the moment the request is on the wire: from here until the
+            // host's terminal reply, every way out of this closure — the idle
+            // bound, a lost pipe, a thrown decode — is a `git grep` still
+            // walking a checkout on someone else's machine.
+            call.cancelIfAbandoned()
             var hits: [SearchHit] = []
             while true {
                 let frame = try call.next(
@@ -189,8 +194,14 @@ extension Termiod {
                 case .control:
                     switch try decodeControl(frame.payload) {
                     case .fsSearched(let payload):
+                        // The host's last word, whether it finished, hit the cap
+                        // or was already stopped: nothing left to cancel.
+                        call.completed()
                         return SearchResult(hits: hits, limitHit: payload.limitHit)
                     case .error(let failure):
+                        // A refusal the host has already cleaned up behind — no
+                        // grep is running, so cancelling would name nothing.
+                        call.completed()
                         throw TermiodClientError.requestFailed(failure.message)
                     default:
                         continue
