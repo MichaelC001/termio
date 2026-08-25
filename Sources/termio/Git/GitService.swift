@@ -790,27 +790,118 @@ enum GitService {
         return URL(string: "\(repo.absoluteString)/\(path)")
     }
 
-    /// The `owner/repo` slug when the origin remote points at github.com — the
-    /// Issues pane's zero-config binding (docs/design/20260726-issue-tracker-integration.md).
-    /// `nil` for non-GitHub remotes or a repo with no origin.
-    static func gitHubRepoSlug(in dir: String) async -> String? {
+    /// A git remote that points at github.com, as the Issues pane addresses it.
+    struct GitHubRemote: Hashable, Sendable {
+        let name: String
+        /// `owner/repo`.
+        let slug: String
+    }
+
+    /// Every github.com remote of `dir`, ordered by how likely each is to own the
+    /// project's issue tracker. A fork clone leaves the real tracker on `upstream`
+    /// while `origin` is the user's own copy, so binding to `origin` alone shows an
+    /// empty pane. Two remotes pointing at the same repository collapse into one
+    /// entry under the higher-priority name. Empty for a repo with no GitHub remote
+    /// at all — the Issues pane's `.unbound` zero state.
+    static func gitHubRemotes(in dir: String) async -> [GitHubRemote] {
         await offMain {
-            guard let remote = run(["remote", "get-url", "origin"], in: dir)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                let parsed = parseRemote(remote)
+            guard let listed = run(["remote"], in: dir) else { return [] }
+            let names = orderedRemoteNames(
+                listed
+                    .split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty })
+            var remotes: [GitHubRemote] = []
+            var seenSlugs: Set<String> = []
+            for name in names {
+                guard let url = run(["remote", "get-url", name], in: dir)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    let slug = gitHubSlug(fromRemote: url),
+                    seenSlugs.insert(slug).inserted
+                else { continue }
+                remotes.append(GitHubRemote(name: name, slug: slug))
+            }
+            return remotes
+        }
+    }
+
+    /// Remote names in tracker-preference order. `upstream` then `origin` are the
+    /// two names git tooling has a convention for — `gh` and VS Code's GitHub
+    /// extension read the same pair — and everything else keeps a stable
+    /// alphabetical order, so the pane's repository menu can't reshuffle between
+    /// reads of an unchanged repo.
+    static func orderedRemoteNames(_ names: [String]) -> [String] {
+        func rank(_ name: String) -> Int {
+            switch name {
+            case "upstream": return 0
+            case "origin": return 1
+            default: return 2
+            }
+        }
+        return names.sorted { rank($0) == rank($1) ? $0 < $1 : rank($0) < rank($1) }
+    }
+
+    /// The `owner/repo` slug when `remote` points at github.com — the Issues pane's
+    /// binding (docs/design/20260726-issue-tracker-integration.md). `nil` for any
+    /// other host.
+    static func gitHubSlug(fromRemote remote: String) -> String? {
+        guard let parsed = parseRemote(remote), isWellFormedSlug(parsed.path) else { return nil }
+        // A literal github.com host binds directly, whatever the transport.
+        if isGitHubHostName(parsed.host) { return parsed.path }
+        // Otherwise it may be an SSH `~/.ssh/config` alias (`Host github-work`
+        // → `HostName github.com`, the standard trick for juggling accounts).
+        // `sshTarget` is non-nil only for SSH remotes, so an HTTPS host never
+        // triggers `ssh -G` — which would be pointless and could fire a
+        // `Match exec` or falsely bind an unrelated repo to public GitHub.
+        guard let target = parsed.sshTarget,
+              let resolved = resolveSSHHostName(target),
+              isGitHubHostName(resolved)
+        else { return nil }
+        return parsed.path
+    }
+
+    /// Whether `path` is a plain `owner/repo` GitHub accepts — two non-empty
+    /// components drawn from the character set GitHub allows in an account or
+    /// repository name. `parseRemote` is deliberately permissive about paths (it
+    /// serves the forge web links too), but a slug reaches the API as an
+    /// interpolated URL, and one carrying a stray `%` or a third component would
+    /// build a URL that is nil at the point of use. Rejecting it here keeps every
+    /// caller off that path.
+    private static func isWellFormedSlug(_ path: String) -> Bool {
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2 else { return false }
+        return components.allSatisfy {
+            !$0.isEmpty && CharacterSet(charactersIn: String($0)).isSubset(of: allowed)
+        }
+    }
+
+    /// The repository the user explicitly bound the Issues pane to for this
+    /// checkout, from `termio.issuesRepo` in the repo's git config. Read from
+    /// `--local` rather than `--worktree` config on purpose: linked worktrees share
+    /// it, so picking a tracker once holds for every worktree of the repo. `nil` —
+    /// the common case — leaves the pane on its own resolution ladder.
+    static func issuesRepository(in dir: String) async -> String? {
+        await offMain {
+            // `--get` exits non-zero when the key is unset, which `run` maps to nil.
+            guard let value = run(["config", "--local", "--get", "termio.issuesRepo"], in: dir)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty
             else { return nil }
-            // A literal github.com host binds directly, whatever the transport.
-            if isGitHubHostName(parsed.host) { return parsed.path }
-            // Otherwise it may be an SSH `~/.ssh/config` alias (`Host github-work`
-            // → `HostName github.com`, the standard trick for juggling accounts).
-            // `sshTarget` is non-nil only for SSH remotes, so an HTTPS host never
-            // triggers `ssh -G` — which would be pointless and could fire a
-            // `Match exec` or falsely bind an unrelated repo to public GitHub.
-            guard let target = parsed.sshTarget,
-                  let resolved = resolveSSHHostName(target),
-                  isGitHubHostName(resolved)
-            else { return nil }
-            return parsed.path
+            return value
+        }
+    }
+
+    /// Records the user's pick from the Issues pane's repository menu. The only
+    /// write termio makes to a repo's git config, and only ever from that explicit
+    /// choice — resolution is otherwise read-only, and never adds a remote the way
+    /// VS Code's GitHub extension does.
+    static func setIssuesRepository(_ slug: String, in dir: String) async {
+        await offMain {
+            if run(["config", "--local", "termio.issuesRepo", slug], in: dir) == nil {
+                Log.issues.error(
+                    "couldn’t record the issues repository in \(dir, privacy: .public)’s git config")
+            }
         }
     }
 

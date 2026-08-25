@@ -27,7 +27,7 @@ struct InspectorTabsToolbar: View {
     /// selected chip in light mode (the macOS 26 Finder segmented control), a faint light track
     /// with a brighter overlay chip in dark.
     @Environment(\.colorScheme) private var colorScheme
-    /// Whether the current project's origin remote points at github.com — probed
+    /// Whether any of the current project's remotes points at github.com — probed
     /// async per selection change; gates the Issues segment together with the
     /// General "GitHub" setting.
     @State private var hasGitHubRemote = false
@@ -83,7 +83,7 @@ struct InspectorTabsToolbar: View {
             // the check doesn't rerun on unrelated store churn.
             .task(id: "\(settings.githubIntegrationEnabled)|\(store.inspectorCheckout?.localRoot ?? "")") {
                 if let path = store.inspectorCheckout?.localRoot, settings.githubIntegrationEnabled {
-                    hasGitHubRemote = await GitService.gitHubRepoSlug(in: path) != nil
+                    hasGitHubRemote = await !GitService.gitHubRemotes(in: path).isEmpty
                 } else {
                     hasGitHubRemote = false
                 }

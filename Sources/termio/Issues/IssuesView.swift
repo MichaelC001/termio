@@ -79,6 +79,7 @@ struct IssuesView: View {
     private var topBar: some View {
         HStack(spacing: 2) {
             if model.capabilities?.pullRequests == true { kindSwitch }
+            if model.candidates.count > 1 { repositoryMenu }
             Spacer(minLength: 0)
             refreshButton
                 // Breathing room so refresh and filter don't read as one two-icon cluster.
@@ -99,6 +100,34 @@ struct IssuesView: View {
         TreeHeaderButton(codicon: .refresh, help: localized("Refresh")) {
             Task { await model.loadList(force: true) }
         }
+    }
+
+    /// Which repository the list is reading, shown only when the checkout offers a
+    /// choice — a fork, where the project's real tracker is on `upstream` and the
+    /// pane's identity stops being implied by the project. Truncates from the tail
+    /// so the owner, the part that differs between a fork and its parent, survives
+    /// a narrow inspector.
+    private var repositoryMenu: some View {
+        Menu {
+            Picker(localized("Repository"), selection: Binding(
+                get: { model.container?.id ?? "" },
+                set: { model.selectRepository(slug: $0) }
+            )) {
+                ForEach(model.candidates) { candidate in
+                    Text(candidate.slug).tag(candidate.slug)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text(model.container?.id ?? "")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .menuStyle(.borderlessButton)
+        .padding(.leading, 6)
+        .help(localized("Choose which repository’s issues to show"))
     }
 
     private var kindSwitch: some View {
@@ -215,7 +244,7 @@ struct IssuesView: View {
         case .unbound:
             zeroState(
                 title: localized("No GitHub Repository"),
-                message: localized("This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.")
+                message: localized("None of this project’s remotes point at github.com, so there is no issue tracker to show.")
             ) {
                 Button(localized("Disconnect GitHub")) { model.disconnect() }
                     .buttonStyle(.bordered)

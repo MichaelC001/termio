@@ -212,6 +212,8 @@
 	<string>Choose another branch to compare with.</string>
 	<key>Choose how projects are ordered</key>
 	<string>Choose how projects are ordered</string>
+	<key>Choose which repository’s issues to show</key>
+	<string>Choose which repository’s issues to show</string>
 	<key>Choose…</key>
 	<string>Choose…</string>
 	<key>Clear</key>
@@ -718,6 +720,8 @@
 	<string>No textual changes to show.</string>
 	<key>No theme matches “%@”</key>
 	<string>No theme matches “%@”</string>
+	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
+	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
 	<key>Not Now</key>
 	<string>Not Now</string>
 	<key>Not a valid regular expression</key>
@@ -892,6 +896,8 @@
 	<string>Rename “%@”</string>
 	<key>Rename…</key>
 	<string>Rename…</string>
+	<key>Repository</key>
+	<string>Repository</string>
 	<key>Request Permission</key>
 	<string>Request Permission</string>
 	<key>Reset Font Size</key>
@@ -1130,8 +1136,6 @@
 	<string>This machine’s termiod is too old to list folders.</string>
 	<key>This month</key>
 	<string>This month</string>
-	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>
-	<string>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</string>
 	<key>This pull request changes no files.</key>
 	<string>This pull request changes no files.</string>
 	<key>This session couldn’t be started.</key>

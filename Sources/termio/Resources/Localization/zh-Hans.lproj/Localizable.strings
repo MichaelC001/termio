@@ -212,6 +212,8 @@
 	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
 	<string>选取项目的排序方式</string>
+	<key>Choose which repository’s issues to show</key>
+	<string>选择显示哪个仓库的 issue</string>
 	<key>Choose…</key>
 	<string>选取…</string>
 	<key>Clear</key>
@@ -718,6 +720,8 @@
 	<string>没有可显示的文本更改。</string>
 	<key>No theme matches “%@”</key>
 	<string>没有主题与“%@”匹配</string>
+	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
+	<string>该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
 	<key>Not a valid regular expression</key>
@@ -892,6 +896,8 @@
 	<string>重命名“%@”</string>
 	<key>Rename…</key>
 	<string>重命名…</string>
+	<key>Repository</key>
+	<string>仓库</string>
 	<key>Request Permission</key>
 	<string>请求权限</string>
 	<key>Reset Font Size</key>
@@ -1130,8 +1136,6 @@
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
 	<key>This month</key>
 	<string>本月</string>
-	<key>This project’s origin remote doesn’t point at github.com, so there is no issue tracker to show.</key>
-	<string>该项目的 origin 远程仓库未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>This pull request changes no files.</key>
 	<string>此 PR 未更改任何文件。</string>
 	<key>This session couldn’t be started.</key>

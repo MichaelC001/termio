@@ -5,7 +5,7 @@ import AppKit
 
 /// State for the Issues pane, per repo root (recreated by `.id(repoRoot)` like
 /// `GitPanelModel`): the GitHub connection, the container binding resolved from
-/// the origin remote, the list, and the pushed-in detail.
+/// the checkout's remotes, the list, and the pushed-in detail.
 @MainActor
 final class IssuesPanelModel: ObservableObject {
     /// Where the pane is in the connect → bind → read ladder; each step has a
@@ -15,7 +15,7 @@ final class IssuesPanelModel: ObservableObject {
         case disconnected
         /// Device flow underway: show the code, wait for approval in the browser.
         case connecting(userCode: String)
-        /// Connected, but the project's origin remote isn't a github.com repo.
+        /// Connected, but none of the project's remotes is a github.com repo.
         case unbound
         case ready
     }
@@ -38,8 +38,16 @@ final class IssuesPanelModel: ObservableObject {
     @Published private(set) var detailError: String?
 
     @Published var query = IssueQuery() {
-        didSet { if query != oldValue { Task { await loadList() } } }
+        didSet {
+            // A rebind rewrites the query as part of clearing the old repository out;
+            // it issues its own load, so this must not queue a second one against a
+            // container that is still being settled.
+            guard query != oldValue, !isRebinding else { return }
+            Task { await loadList() }
+        }
     }
+
+    private var isRebinding = false
 
     let repoRoot: String
     private var provider: GitHubIssueProvider?
@@ -62,7 +70,7 @@ final class IssuesPanelModel: ObservableObject {
     private var didStart = false
 
     /// Entry point on appear: restore the Keychain token, resolve the binding
-    /// from the origin remote, and load.
+    /// from the checkout's remotes, and load.
     func start() async {
         await ensureReady()
         guard provider != nil else {
@@ -122,6 +130,7 @@ final class IssuesPanelModel: ObservableObject {
         GitHubIssueAuth.deleteToken()
         provider = nil
         items = []
+        candidates = []
         openItem = nil
         detail = nil
         // The token is gone, so a later reconnect (possibly a different account) must not read
@@ -155,15 +164,137 @@ final class IssuesPanelModel: ObservableObject {
 
     // MARK: Loading
 
+    /// Every repository this checkout could show a tracker for, in menu order. One
+    /// entry is the overwhelmingly common case and the pane stays silent about it;
+    /// more than one means a fork, and the top bar offers the choice.
+    @Published private(set) var candidates: [IssueRepositoryCandidate] = []
+
+    /// Fork parents already looked up this launch, keyed by the probed slug — a
+    /// `Set` of slugs probed plus the answers, so "not a fork" is remembered too.
+    /// The model is per-pane and short-lived (a session switch builds a new one),
+    /// so without this the probe would repeat on every remount.
+    private static var probedForForkParent: Set<String> = []
+    private static var forkParents: [String: String] = [:]
+
+    /// What the ladder chose, and the full menu it chose from.
+    struct Binding: Equatable {
+        let selected: IssueRepositoryCandidate
+        let candidates: [IssueRepositoryCandidate]
+    }
+
+    /// The ladder itself, from most to least authoritative: the user's own pick,
+    /// then an `upstream` remote, then the fork parent GitHub reports for the
+    /// leading remote, then that remote. Pure, so the precedence can be pinned
+    /// down in tests without a window, a checkout, or the network; the caller
+    /// gathers the inputs and only pays for `forkParent` when the rungs above it
+    /// miss. `nil` when there is nothing at all to bind to.
+    static func resolveBinding(
+        remotes: [IssueRepositoryCandidate],
+        pick: String?,
+        forkParent: (String) async -> String?
+    ) async -> Binding? {
+        var found = remotes
+
+        /// Binds `slug`, adding it to the menu when no remote already offers it —
+        /// which is how a repository the checkout never names (a fork parent, or a
+        /// pick whose remote is gone) still becomes switchable rather than a
+        /// one-entry menu the pane hides.
+        func bind(_ slug: String) -> Binding {
+            if let match = found.first(where: { $0.slug == slug }) {
+                return Binding(selected: match, candidates: found)
+            }
+            let added = IssueRepositoryCandidate(slug: slug, remoteName: nil)
+            found.append(added)
+            return Binding(selected: added, candidates: found)
+        }
+
+        // Before the empty check: an explicit pick outlives the remote it came from,
+        // so renaming or dropping a remote can't silently drag the pane back to a
+        // repository the user already rejected.
+        if let pick { return bind(pick) }
+        guard let leading = found.first else { return nil }
+        if let upstream = found.first(where: { $0.remoteName == "upstream" }) {
+            return Binding(selected: upstream, candidates: found)
+        }
+        if let parent = await forkParent(leading.slug) { return bind(parent) }
+        return Binding(selected: leading, candidates: found)
+    }
+
     private func resolveContainer() async {
-        if let slug = await GitService.gitHubRepoSlug(in: repoRoot) {
-            container = IssueContainer(provider: .github, id: slug)
+        let remotes = await GitService.gitHubRemotes(in: repoRoot).map {
+            IssueRepositoryCandidate(slug: $0.slug, remoteName: $0.name)
+        }
+        let pick = await GitService.issuesRepository(in: repoRoot)
+        let binding = await Self.resolveBinding(
+            remotes: remotes, pick: pick, forkParent: { await self.forkParent(of: $0) })
+        didResolveContainer = true
+        let previous = container
+        if let binding {
+            candidates = binding.candidates
+            container = IssueContainer(provider: .github, id: binding.selected.slug)
             phase = .ready
         } else {
+            candidates = []
             container = nil
             phase = .unbound
         }
-        didResolveContainer = true
+        // A re-resolve that lands somewhere else — Refresh after a fork-parent probe
+        // that failed on the first try — gets the same reset an explicit pick does, so
+        // the fork's issues can't sit under the parent's name while its list loads.
+        if previous != nil, previous != container { clearRepositoryScopedState() }
+    }
+
+    /// Drops everything belonging to the repository the pane was showing. Both ways
+    /// the binding can move — the user's own pick and a Refresh that re-resolves —
+    /// go through here, so neither can leave one repository's issues, labels, or open
+    /// detail under another's name.
+    private func clearRepositoryScopedState() {
+        items = []
+        openItem = nil
+        detail = nil
+        detailError = nil
+        errorMessage = nil
+        recovery = nil
+        // Labels belong to the repository that offered them, so both the filter menu's
+        // contents and any selection carried over from the previous one are wrong here.
+        availableLabels = []
+        isRebinding = true
+        query.labels = []
+        isRebinding = false
+    }
+
+    /// Whether the last fork-parent probe failed rather than answering — an offline
+    /// launch, a rate limit. The pane is then bound to the fork with a one-entry
+    /// menu it hides, which is the very dead end #427 is about, so an explicit
+    /// Refresh re-runs the whole resolve instead of only re-fetching the list.
+    private var forkParentUnknown = false
+
+    private func forkParent(of slug: String) async -> String? {
+        if Self.probedForForkParent.contains(slug) { return Self.forkParents[slug] }
+        guard let provider else { return nil }
+        do {
+            let parent = try await provider.forkParent(of: slug)
+            Self.probedForForkParent.insert(slug)
+            Self.forkParents[slug] = parent
+            forkParentUnknown = false
+            return parent
+        } catch {
+            // Unrecorded on purpose, so a later attempt can still succeed: one offline
+            // launch must not pin the pane to the fork for the rest of the session.
+            Log.issues.error("fork-parent probe failed for \(slug, privacy: .public): \(error, privacy: .public)")
+            forkParentUnknown = true
+            return nil
+        }
+    }
+
+    /// Rebinds the pane to another of this checkout's repositories and remembers it,
+    /// so the choice survives a relaunch and holds across the repo's worktrees.
+    func selectRepository(slug: String) {
+        guard slug != container?.id, candidates.contains(where: { $0.slug == slug }) else { return }
+        container = IssueContainer(provider: .github, id: slug)
+        clearRepositoryScopedState()
+        Task { await GitService.setIssuesRepository(slug, in: repoRoot) }
+        Task { await loadList() }
     }
 
     /// The repo's labels, for the filter menu — loaded once per pane.
@@ -179,17 +310,30 @@ final class IssuesPanelModel: ObservableObject {
 
     private func loadLabels() async {
         guard let provider, let container, availableLabels.isEmpty else { return }
-        availableLabels = (try? await provider.availableLabels(in: container)) ?? []
+        let loaded = (try? await provider.availableLabels(in: container)) ?? []
+        // Labels belong to the repository that served them; a switch mid-fetch must not
+        // fill the filter menu with the previous one's.
+        guard self.container == container else { return }
+        availableLabels = loaded
     }
 
     /// `force` bypasses the cache for an explicit user refresh (the toolbar button / Try Again),
     /// which must always re-fetch; automatic loads (appear, session switch, filter change) leave it
     /// `false` so they read the cache.
     func loadList(force: Bool = false) async {
+        // An explicit Refresh is also the way out of a binding that a failed fork-parent
+        // probe left on the fork — re-walk the ladder before re-fetching anything.
+        if force, forkParentUnknown {
+            didResolveContainer = false
+            await resolveContainer()
+        }
         guard let provider, let container, phase == .ready else { return }
         if availableLabels.isEmpty { Task { await loadLabels() } }
-        // Capture the query: a filter / kind change mid-fetch queues its own `loadList` (see the
-        // `query` didSet), so guard against publishing this fetch's result over that newer one.
+        // Capture the request's identity: a filter / kind change queues its own `loadList`
+        // (see the `query` didSet) and a repository switch rebinds `container`, either of
+        // which can land while this fetch is in flight. Both are checked before publishing,
+        // so a slow result can never overwrite a newer one — or show repository A's issues
+        // under repository B's name.
         let query = self.query
 
         // Warm: render the cached list instantly (no spinner), then revalidate past the dedupe
@@ -202,7 +346,8 @@ final class IssuesPanelModel: ObservableObject {
             guard Date().timeIntervalSince(cached.fetchedAt) >= Self.revalidateAfter else { return }
             do {
                 let fresh = try await provider.issues(in: container, query: query)
-                guard self.query == query else { return }  // a newer loadList owns the list now
+                // A newer loadList — or another repository — owns the list now.
+                guard self.query == query, self.container == container else { return }
                 cache?.storeList(fresh, container, query)
                 if fresh != items { items = fresh }  // republish only on a real change — no flicker
             } catch {
@@ -217,7 +362,7 @@ final class IssuesPanelModel: ObservableObject {
         recovery = nil
         do {
             let fetched = try await provider.issues(in: container, query: query)
-            guard self.query == query else { isLoading = false; return }
+            guard self.query == query, self.container == container else { isLoading = false; return }
             items = fetched
             cache?.storeList(fetched, container, query)
         } catch {
