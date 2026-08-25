@@ -1,22 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The Agents tab as a master–detail split: a left column listing the user's
-/// agents (drag to reorder, switch to enable) plus a pinned General row, and a
-/// right pane carrying the selected agent's configuration — replacing the old
-/// single-column list whose per-agent config hid behind disclosure drawers.
+/// The Agents tab as a drill-down, the shape System Settings ▸ Notifications has:
+/// one pane holding a grouped roster of agents, each row carrying its mark, its
+/// name and a status line, and each row pushing that agent's configuration onto the
+/// settings window's own navigation stack. The earlier master–detail split gave the
+/// window a third column no other tab had.
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
-
-    /// What the detail pane shows. `general` carries the tab's non-per-agent
-    /// settings (the default chat agent) so they keep a home in the split
-    /// without a second tab.
-    private enum Pane: Hashable {
-        case general
-        case agent(String)
-    }
-
-    @State private var selection: Pane = .general
 
     /// Bumped after every catalog reload. `AgentDefinition` equality is by id, so
     /// without this a rename would leave stale rows on screen; referencing the
@@ -35,12 +26,49 @@ struct AgentSettingsTab: View {
 
     var body: some View {
         let _ = catalogVersion
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: 230)
+        VStack(spacing: 0) {
+            // A `List`, not a `Form`: `onMove` is only honoured by an editable
+            // list, so the same rows in a grouped `Form` render fine and silently
+            // stop reordering — and agent order is what the New Chat menu reads.
+            // A roster the user reorders is a list in macOS anyway; `Form` is the
+            // idiom for the controls inside one agent's pane, which is where it
+            // still lives.
+            List {
+                Section {
+                    DefaultChatAgentRow(settings: settings)
+                } header: {
+                    SectionHeaderLabel(title: localized("New chat"))
+                }
+
+                Section {
+                    ForEach(listedAgents) { preset in
+                        NavigationLink(value: AgentRoute(id: preset.id)) {
+                            AgentListRow(settings: settings, preset: preset)
+                        }
+                        .contextMenu {
+                            Button(localized("Remove from List")) { remove(preset) }
+                        }
+                    }
+                    .onMove(perform: moveListed)
+                } header: {
+                    SectionHeaderLabel(title: localized("Agents"))
+                } footer: {
+                    Text(localized("Drag the list to change the order agents appear in."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.inset)
+
             Divider()
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            AddAgentBar(
+                addable: addableAgents,
+                onAdd: add,
+                onCustom: createCustomAgent
+            )
+        }
+        .navigationDestination(for: AgentRoute.self) { route in
+            detail(for: route.id)
         }
         // Custom agents are edited in their manifest, in another app. Re-reading
         // the catalog when termio comes back to the front is what makes that land.
@@ -51,93 +79,35 @@ struct AgentSettingsTab: View {
         }
     }
 
-    // MARK: Left column
-
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: $selection) {
-                Label {
-                    Text(localized("General"))
-                } icon: {
-                    IconBadge(.symbol("gearshape"))
-                }
-                .tag(Pane.general)
-
-                Section(localized("Agents")) {
-                    ForEach(listedAgents) { preset in
-                        AgentListRow(settings: settings, preset: preset)
-                            .tag(Pane.agent(preset.id))
-                            .contextMenu {
-                                Button(localized("Remove from List")) { remove(preset) }
-                            }
-                    }
-                    .onMove(perform: moveListed)
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-
-            Divider()
-            AddAgentBar(
-                addable: addableAgents,
-                onAdd: add,
-                onCustom: createCustomAgent
-            )
-        }
-    }
-
-    // MARK: Detail pane
+    // MARK: Pushed pane
 
     @ViewBuilder
-    private var detail: some View {
-        switch selection {
-        case .general:
-            generalPane
-        case .agent(let id):
-            if let preset = listedAgents.first(where: { $0.id == id }) {
-                AgentDetailPane(
-                    settings: settings,
-                    preset: preset,
-                    onRemove: { remove(preset) },
-                    // Editing and deletion exist only for agents backed by a user
-                    // manifest; bundled agents just leave the list.
-                    isUserDefined: AgentCatalog.shared.isUserDefined(preset.id),
-                    onDelete: AgentCatalog.shared.isUserDefined(preset.id)
-                        ? { deleteCustom(preset) } : nil
-                )
-                // Distinct identity per agent — and per catalog generation, so a
-                // rename rebuilds the pane (definitions compare equal by id).
-                .id("\(preset.id)#\(catalogVersion)")
-            } else {
-                // The selected agent was removed out from under us; fall back.
-                generalPane.onAppear { selection = .general }
-            }
+    private func detail(for id: String) -> some View {
+        if let preset = listedAgents.first(where: { $0.id == id }) {
+            AgentDetailPane(
+                settings: settings,
+                preset: preset,
+                onRemove: { remove(preset) },
+                // Editing and deletion exist only for agents backed by a user
+                // manifest; bundled agents just leave the list.
+                isUserDefined: AgentCatalog.shared.isUserDefined(preset.id),
+                onDelete: AgentCatalog.shared.isUserDefined(preset.id)
+                    ? { deleteCustom(preset) } : nil
+            )
+            // Distinct identity per agent — and per catalog generation, so a
+            // rename rebuilds the pane (definitions compare equal by id).
+            .id("\(preset.id)#\(catalogVersion)")
+        } else {
+            // The agent went away under us (a manifest deleted outside the app).
+            MissingAgentPane()
         }
     }
 
-    /// The tab's non-per-agent settings — just the default chat agent now that
-    /// agent integrations live on the General tab.
-    private var generalPane: some View {
-        Form {
-            Section {
-                DefaultChatAgentRow(settings: settings)
-            } header: {
-                SectionHeaderLabel(title: localized("New chat"))
-            } footer: {
-                Text(localized("Drag the list to change the order agents appear in."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    /// Adds the agent's row immediately and selects it, then lets the availability
-    /// probe decide the switch: an installed CLI turns it on; a missing one leaves
-    /// it off with the detail pane already showing the install link.
+    /// Adds the agent's row, then lets the availability probe decide the switch: an
+    /// installed CLI turns it on; a missing one leaves it off, with the row saying
+    /// so and its pane carrying the install link.
     private func add(_ preset: AgentPreset) {
         settings.addAgent(preset)
-        selection = .agent(preset.id)
         Task { @MainActor in
             if await AgentAvailability.isCommandAvailable(settings.command(for: preset) ?? "") {
                 settings.setAgent(preset, enabled: true)
@@ -146,13 +116,12 @@ struct AgentSettingsTab: View {
     }
 
     private func remove(_ preset: AgentPreset) {
-        if selection == .agent(preset.id) { selection = .general }
         settings.removeAgent(preset)
     }
 
     /// Seeds a starter manifest, puts it on the list, and opens the file — the
     /// manifest is the editor for a custom agent, so Settings' job ends at handing
-    /// over a valid one. The row lands with its switch off (the placeholder command
+    /// over a valid one. The row lands switched off (the placeholder command
     /// resolves to nothing) and turns on once the file names a real CLI.
     private func createCustomAgent() {
         let created: (id: String, file: URL)
@@ -166,12 +135,11 @@ struct AgentSettingsTab: View {
         AgentCatalog.reload()
         catalogVersion += 1
         settings.addAgent(AgentCatalog.shared.definition(for: created.id))
-        selection = .agent(created.id)
         NSWorkspace.shared.open(created.file)
     }
 
     /// Deletes a user agent's manifest file (its sessions survive via the id-only
-    /// fallback definition). Confirmation lives on the button in the detail pane.
+    /// fallback definition). Confirmation lives on the button in the pushed pane.
     private func deleteCustom(_ preset: AgentPreset) {
         do {
             try UserAgentStore.delete(id: preset.id)
@@ -193,10 +161,16 @@ struct AgentSettingsTab: View {
     }
 }
 
+/// What a row pushes. A named type rather than the bare id string so the settings
+/// window's shared navigation stack can't confuse an agent with some other pane's
+/// string destination.
+private struct AgentRoute: Hashable {
+    let id: String
+}
+
 /// The list's footer action, shaped like the sidebar bottom bars in Mail and
 /// Reminders: the whole bar is the pull-down's hit target, so the control reads as
-/// part of the column rather than a small floating button, and its hover highlight
-/// lines up with the list rows above it.
+/// part of the pane rather than a small floating button.
 private struct AddAgentBar: View {
     let addable: [AgentPreset]
     let onAdd: (AgentPreset) -> Void
@@ -239,14 +213,16 @@ private struct AddAgentBar: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .onHover { hovering = $0 }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 }
 
-/// A left-column agent row: brand mark, name, and the enable switch — kept to one
-/// line so the column stays a scannable roster. The heavier config lives in the
-/// detail pane.
+/// One agent on the roster: brand mark, name, and a second line — no controls, the
+/// way a Notifications row carries no switch. The second line is the command the
+/// agent actually launches with, bypass flag and all, so the roster answers "what
+/// will this run?" without opening every row; anything blocking that launch (the
+/// agent switched off, its CLI missing) leads the same line.
 private struct AgentListRow: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
@@ -255,10 +231,31 @@ private struct AgentListRow: View {
     /// premature warning); `false` once we've confirmed the command isn't resolvable.
     @State private var available: Bool?
 
+    /// Nothing to say about an enabled agent whose CLI is present — the common
+    /// case, where the line is the command alone.
+    private var status: String? {
+        if !settings.isAgentEnabled(preset) { return localized("Off") }
+        if available == false { return localized("Not installed") }
+        return nil
+    }
+
+    private var detail: String {
+        let command = settings.command(for: preset) ?? localized("Login shell")
+        guard let status else { return command }
+        return localized("\(status) · \(command)")
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             IconBadge(preset.icon)
-            Text(preset.displayName)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preset.displayName)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 4)
             if available == false {
                 Image(systemName: "exclamationmark.circle")
@@ -266,16 +263,6 @@ private struct AgentListRow: View {
                     .foregroundStyle(.tertiary)
                     .help(localized("\(preset.displayName) isn’t on your PATH"))
             }
-            Toggle("", isOn: Binding(
-                get: { settings.isAgentEnabled(preset) },
-                set: { settings.setAgent(preset, enabled: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            // A missing CLI can't be launched, so it can't be switched on — only
-            // off (an already-on agent stays revocable while the hint shows).
-            .disabled(available == false && !settings.isAgentEnabled(preset))
         }
         .task(id: settings.command(for: preset) ?? "") {
             available = await AgentAvailability.isCommandAvailable(
@@ -284,9 +271,9 @@ private struct AgentListRow: View {
     }
 }
 
-/// The selected agent's configuration: an identity header above a grouped form —
-/// command override, install link when the CLI is missing, the permission-bypass
-/// switch, and removal.
+/// The pushed pane for one agent: an identity header above a grouped form — the
+/// enable switch, command override, install link when the CLI is missing, the
+/// permission-bypass switch, and removal.
 private struct AgentDetailPane: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
@@ -300,6 +287,9 @@ private struct AgentDetailPane: View {
     /// Same probe semantics as the list row (see `AgentListRow.available`).
     @State private var available: Bool?
     @State private var confirmingDelete = false
+    /// Removing or deleting takes the row away, so the pane it opened has to go
+    /// back with it.
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Form {
@@ -326,6 +316,22 @@ private struct AgentDetailPane: View {
                     }
                 }
                 .padding(.vertical, 2)
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { settings.isAgentEnabled(preset) },
+                    set: { settings.setAgent(preset, enabled: $0) }
+                )) {
+                    SettingsLabel(
+                        title: localized("Enable \(preset.displayName)"),
+                        subtext: localized("Offers \(preset.displayName) in the new-session menus.")
+                    )
+                }
+                .toggleStyle(.switch)
+                // A missing CLI can't be launched, so it can't be switched on — only
+                // off (an already-on agent stays revocable while the hint shows).
+                .disabled(available == false && !settings.isAgentEnabled(preset))
             }
 
             Section {
@@ -373,7 +379,10 @@ private struct AgentDetailPane: View {
                 // into the "Add Agent" menu with its overrides intact, so no
                 // confirmation either.
                 LabeledContent {
-                    Button(localized("Remove")) { onRemove() }
+                    Button(localized("Remove")) {
+                        onRemove()
+                        dismiss()
+                    }
                 } label: {
                     SettingsLabel(
                         title: localized("Remove from List"),
@@ -389,7 +398,10 @@ private struct AgentDetailPane: View {
                                 localized("Delete \(preset.displayName)?"),
                                 isPresented: $confirmingDelete
                             ) {
-                                Button(localized("Delete"), role: .destructive) { onDelete() }
+                                Button(localized("Delete"), role: .destructive) {
+                                    onDelete()
+                                    dismiss()
+                                }
                             } message: {
                                 Text(localized("Removes this custom agent and its configuration file. Existing sessions keep running."))
                             }
@@ -403,6 +415,7 @@ private struct AgentDetailPane: View {
             }
         }
         .formStyle(.grouped)
+        .navigationTitle(preset.displayName)
         // Re-checks whenever the effective command changes, so typing a valid path
         // clears the install link. The PATH probe runs once (cached); each check is
         // an in-memory lookup. The leading sleep debounces per-keystroke edits into
@@ -415,6 +428,20 @@ private struct AgentDetailPane: View {
     }
 
     private var effectiveCommand: String { settings.command(for: preset) ?? "" }
+}
+
+/// Shown when the pushed agent stops existing while its pane is open — a custom
+/// agent's manifest deleted in Finder, say. Says so and leaves the back chevron to
+/// carry the user out; popping from here would fight the pop the deleting button
+/// already asked for.
+private struct MissingAgentPane: View {
+    var body: some View {
+        ContentUnavailableView {
+            Text(localized("Agent Unavailable"))
+        } description: {
+            Text(localized("This agent is no longer on your list."))
+        }
+    }
 }
 
 /// The "New chat" default-agent picker: which agent the single New Chat action

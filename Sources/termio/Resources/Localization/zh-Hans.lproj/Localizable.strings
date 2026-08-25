@@ -102,6 +102,8 @@
 	<string>在 ~/.ssh/config 中添加一个 Host 配置块。</string>
 	<key>Agent</key>
 	<string>Agent</string>
+	<key>Agent Unavailable</key>
+	<string>该助手不可用</string>
 	<key>Agent skill</key>
 	<string>Agent 技能</string>
 	<key>Agents</key>
@@ -726,6 +728,8 @@
 	<string>以后再说</string>
 	<key>Not a valid regular expression</key>
 	<string>不是有效的正则表达式</string>
+	<key>Not installed</key>
+	<string>未安装</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to Compare</key>
@@ -738,6 +742,8 @@
 	<string>Termio 的通知已在“系统设置”中关闭。</string>
 	<key>OK</key>
 	<string>好</string>
+	<key>Off</key>
+	<string>未开启</string>
 	<key>Off — LAN only</key>
 	<string>关闭 — 仅局域网</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
@@ -1110,6 +1116,8 @@
 	<string>本机</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
+	<key>This agent is no longer on your list.</key>
+	<string>该助手已不在你的列表中。</string>
 	<key>This branch and the base branch share no commits.</key>
 	<string>这个分支和基础分支没有共同的提交。</string>
 	<key>This branch has no commits yet.</key>

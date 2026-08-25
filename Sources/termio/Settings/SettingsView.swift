@@ -26,6 +26,11 @@ struct SettingsView: View {
     /// terminal launch rather than something this window can do.
     let onSetUpKey: (String, String) -> Void
     @State private var selection: SettingsTab
+    /// The detail column's push stack, which a tab drills into (Agents pushes one
+    /// agent's pane). Owned here so switching tabs can empty it: a pushed pane
+    /// whose `navigationDestination` left with its tab would otherwise sit on the
+    /// stack unresolvable.
+    @State private var path = NavigationPath()
 
     init(
         settings: AppSettings,
@@ -56,7 +61,7 @@ struct SettingsView: View {
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 184, ideal: 204, max: 240)
         } detail: {
-            NavigationStack {
+            NavigationStack(path: $path) {
                 detail
                     .navigationTitle(selection.title)
                     .navigationSubtitle(selection.subtitle)
@@ -78,6 +83,7 @@ struct SettingsView: View {
         // and it must also capture the initial deep-linked tab a user stays on.
         .onChange(of: selection, initial: true) { _, tab in
             UserDefaults.standard.set(tab.rawValue, forKey: SettingsTab.lastOpenKey)
+            path = NavigationPath()
         }
     }
 

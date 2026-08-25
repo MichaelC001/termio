@@ -102,6 +102,8 @@
 	<string>Adds a Host block to ~/.ssh/config.</string>
 	<key>Agent</key>
 	<string>Agent</string>
+	<key>Agent Unavailable</key>
+	<string>Agent Unavailable</string>
 	<key>Agent skill</key>
 	<string>Agent skill</string>
 	<key>Agents</key>
@@ -726,6 +728,8 @@
 	<string>Not Now</string>
 	<key>Not a valid regular expression</key>
 	<string>Not a valid regular expression</string>
+	<key>Not installed</key>
+	<string>Not installed</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to Compare</key>
@@ -738,6 +742,8 @@
 	<string>Notifications for Termio are turned off in System Settings.</string>
 	<key>OK</key>
 	<string>OK</string>
+	<key>Off</key>
+	<string>Off</string>
 	<key>Off — LAN only</key>
 	<string>Off — LAN only</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
@@ -1110,6 +1116,8 @@
 	<string>This Mac</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
+	<key>This agent is no longer on your list.</key>
+	<string>This agent is no longer on your list.</string>
 	<key>This branch and the base branch share no commits.</key>
 	<string>This branch and the base branch share no commits.</string>
 	<key>This branch has no commits yet.</key>
