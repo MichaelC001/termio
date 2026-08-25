@@ -15,7 +15,7 @@ import SwiftUI
 /// four rungs with independent states turn choosing a machine into infrastructure
 /// triage. So the pane promises one outcome — "Ready", or "Set up this device" —
 /// and the rungs are the disclosure underneath it.
-struct MachinePane: View {
+struct DevicePane: View {
     let machine: KnownDevice
     let host: SSHConfigHost?
     @ObservedObject var settings: AppSettings
@@ -26,7 +26,7 @@ struct MachinePane: View {
     let onSetUpKey: (String, String) -> Void
     let onEditConfig: () -> Void
 
-    @StateObject private var model: MachinePaneModel
+    @StateObject private var model: DevicePaneModel
     private enum ProbeState { case idle, running, result(SSHProbeResult) }
     @State private var probe: ProbeState = .idle
 
@@ -46,7 +46,7 @@ struct MachinePane: View {
         self.onConnect = onConnect
         self.onSetUpKey = onSetUpKey
         self.onEditConfig = onEditConfig
-        _model = StateObject(wrappedValue: MachinePaneModel(device: machine, settings: settings))
+        _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
     }
 
     var body: some View {
@@ -56,7 +56,6 @@ struct MachinePane: View {
                 SectionHeaderLabel(title: localized("Status"))
             }
             reachedBySection
-            runsSection
             integrationSection
         }
         .formStyle(.grouped)
@@ -67,7 +66,9 @@ struct MachinePane: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            IconBadge(.symbol(machine.isLocal ? "laptopcomputer" : "server.rack"))
+            SettingsSymbolBadge(
+                symbol: machine.isLocal ? "laptopcomputer" : "server.rack",
+                tint: machine.isLocal ? .secondary : .blue)
                 .scaleEffect(1.4)
                 .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 2) {
@@ -241,36 +242,6 @@ struct MachinePane: View {
         }
     }
 
-    // MARK: Runs — the identity half
-
-    private var runsSection: some View {
-        Section {
-            ForEach(listedAgents) { preset in
-                MachineAgentRow(
-                    preset: preset,
-                    machine: machine,
-                    settings: settings,
-                    readiness: model.readiness.isBusy ? nil : model.readiness(for: preset)
-                )
-            }
-            if listedAgents.isEmpty {
-                Text(localized("No agents on your list yet — add one in Settings ▸ Agents."))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            SectionHeaderLabel(title: localized("Runs"))
-        } footer: {
-            Text(localized("Where each agent’s CLI lives on \(machine.name). Leave a path empty to use the agent’s default."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var listedAgents: [AgentPreset] {
-        settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentListed))
-    }
-
     // MARK: The ladder, as disclosure
 
     /// The rungs behind the one line. Each is still individually runnable — a
@@ -293,82 +264,29 @@ struct MachinePane: View {
                 }
             }
             InstallButtonRow(title: localized("Reinstall hooks")) {
-                .summarizing(
-                    AgentStatusHooks.sync(
-                        enabled: settings.agentHooksEnabled, target: machine.integrationTarget),
-                    headline: localized("Hooks reinstalled"), unit: localized("agents"))
+                let wanted = settings.agentHooksEnabled
+                let target = machine.integrationTarget
+                return await Task.detached {
+                    .summarizing(
+                        AgentStatusHooks.sync(enabled: wanted, target: target),
+                        headline: localized("Hooks reinstalled"), unit: localized("agents"))
+                }.value
             }
             InstallButtonRow(title: localized("Reinstall skill")) {
-                .summarizing(
-                    SessionSkillInstaller.sync(
-                        enabled: settings.sessionControlEnabled, target: machine.integrationTarget),
-                    headline: localized("Skill reinstalled"), unit: localized("agents"))
+                let wanted = settings.sessionControlEnabled
+                let target = machine.integrationTarget
+                return await Task.detached {
+                    .summarizing(
+                        SessionSkillInstaller.sync(enabled: wanted, target: target),
+                        headline: localized("Skill reinstalled"), unit: localized("agents"))
+                }.value
             }
         } header: {
             SectionHeaderLabel(title: localized("Installed by Termio"))
         } footer: {
-            Text(localized("Live agent status and session control are switched on in Settings ▸ Agents; this installs them on \(machine.name)."))
+            Text(localized("What Termio puts on \(machine.name) so its agents can report. Which agents run there, and where each launches from, is Settings ▸ Agents with \(machine.name) selected."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-}
-
-/// One agent's presence on one machine, and the path it launches from there.
-///
-/// The readiness word is D4's three-state rule. `nil` means the probe has not
-/// answered yet and the row says nothing rather than guessing — the same
-/// don't-cry-wolf discipline `AgentAvailability` follows, extended to the case
-/// that only exists once a machine is reached over a network.
-private struct MachineAgentRow: View {
-    let preset: AgentPreset
-    let machine: KnownDevice
-    @ObservedObject var settings: AppSettings
-    let readiness: AgentReadiness?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 10) {
-                IconBadge(preset.icon)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(preset.displayName)
-                    if let status {
-                        Text(status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 8)
-                TextField(
-                    "",
-                    text: Binding(
-                        get: { settings.commandPath(for: preset, on: machine) ?? "" },
-                        set: { settings.setCommandPath($0, for: preset, on: machine) }
-                    ),
-                    prompt: Text(preset.command ?? localized("Login shell"))
-                )
-                .textFieldStyle(.plain)
-                .multilineTextAlignment(.trailing)
-                .labelsHidden()
-                .frame(minWidth: 140)
-                if readiness == .missing {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .help(localized("\(preset.displayName) isn’t installed on \(machine.name)"))
-                }
-            }
-        }
-    }
-
-    /// A present CLI says nothing — the path field beside it is already the whole
-    /// answer. The other two states are the ones worth a word.
-    private var status: String? {
-        switch readiness {
-        case .missing: return localized("Not installed on \(machine.name)")
-        case .unknown: return localized("Can’t check on \(machine.name)")
-        case .available, nil: return nil
         }
     }
 }
@@ -405,7 +323,7 @@ struct CommandLineToolRow: View {
         if isOn {
             // For re-linking after something else has touched /usr/local/bin;
             // install is idempotent. Reports through its own feedback line.
-            InstallButtonRow(title: buttonTitle) { withAnimation { runInstall() } }
+            InstallButtonRow(title: buttonTitle) { runInstall() }
         }
     }
 

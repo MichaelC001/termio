@@ -7,27 +7,29 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case terminal
-    /// Sits above Machines because that is the containment order the app itself
+    /// Sits above Devices because that is the containment order the app itself
     /// uses: a workspace belongs to a device, and everything filed in it lives on
     /// that machine.
     case workspaces
-    /// Every machine sessions can run on — this Mac and each device — as one row
-    /// apiece, drilling into a pane that holds both halves of what a machine is:
-    /// how it is reached, and what it runs.
+    /// The roster: this Mac and every device sessions can run on, one row apiece,
+    /// drilling into how that device is reached.
     ///
-    /// The name went back to **Machines** because the two things it had to name
-    /// were a *route* and an *identity*, and "Devices" was only ever spent on the
-    /// first: the shipped Devices tab was the renamed SSH tab, a `~/.ssh/config`
-    /// projection, leaving machine identity homeless. Rather than two tabs that
-    /// both list machines — which forces the user to learn that distinction to
-    /// find anything — one tab holds both, and the distinction becomes two
-    /// sections inside a pane (RFC §D2).
+    /// **Devices**, matching the word the whole codebase already uses —
+    /// `KnownDevice`, `DeviceRoster`, `DeviceClient`, `deviceInvite` — so the UI
+    /// and the model stop disagreeing. The earlier objection was that "Devices"
+    /// was spent on a `~/.ssh/config` projection; that tab is gone, and the name
+    /// with it.
+    ///
+    /// What this tab is *not* is anywhere a device's behaviour is configured.
+    /// A page that varies by device carries a device scope of its own (see
+    /// `DeviceScopePicker`), because "which machine is this about" is a scope,
+    /// not a place to navigate to.
     ///
     /// The raw value stays `ssh` because it is the value persisted under
     /// `lastOpenKey`; changing it would reopen Settings on another tab for
-    /// everyone who left this one showing. It has now survived three renamings,
+    /// everyone who left this one showing. It has now survived four renamings,
     /// which is the point of it.
-    case machines = "ssh"
+    case devices = "ssh"
     case keyboard
     case agents
     case usage
@@ -46,7 +48,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return localized("Appearance")
         case .terminal: return localized("Terminal")
         case .workspaces: return localized("Workspaces")
-        case .machines: return localized("Machines")
+        case .devices: return localized("Devices")
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
@@ -63,7 +65,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return .paintBoard
         case .terminal: return .terminal
         case .workspaces: return .copy
-        case .machines: return .serverStack
+        case .devices: return .serverStack
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
@@ -80,7 +82,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .appearance: return localized("Theme, fonts, cursor, and window")
         case .terminal: return localized("Scrollback history and text selection")
         case .workspaces: return localized("The workspaces your projects and sessions are filed under")
-        case .machines: return localized("This Mac and the machines you reach from it, and what each one runs")
+        case .devices: return localized("This Mac and the machines you reach from it")
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")

@@ -92,12 +92,12 @@
 	<string>添加并连接</string>
 	<key>Add Agent</key>
 	<string>添加 Agent</string>
+	<key>Add Device</key>
+	<string>添加设备</string>
 	<key>Add Host</key>
 	<string>添加主机</string>
 	<key>Add Host…</key>
 	<string>添加主机…</string>
-	<key>Add Machine</key>
-	<string>添加设备</string>
 	<key>Add SSH Host</key>
 	<string>添加 SSH 主机</string>
 	<key>Add to Chat</key>
@@ -418,6 +418,10 @@
 	<string>部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Device</key>
+	<string>设备</string>
+	<key>Device Unavailable</key>
+	<string>设备不可用</string>
 	<key>Devices</key>
 	<string>设备</string>
 	<key>Discard %lld Files…</key>
@@ -440,10 +444,10 @@
 	<string>不对比</string>
 	<key>Draft</key>
 	<string>草稿</string>
+	<key>Drag an agent onto another to reorder. Readiness is for the device above.</key>
+	<string>把一个 agent 拖到另一个上面即可调整顺序。就绪状态针对上方选中的设备。</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
-	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
-	<string>拖动列表可更改 Agent 的显示顺序。就绪状态针对 %@ — 在“设备”中打开它可安装缺少的内容。</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>复制到主题文件夹</string>
 	<key>Edit</key>
@@ -560,6 +564,8 @@
 	<string>安装 %@</string>
 	<key>Install Page</key>
 	<string>安装页面</string>
+	<key>Installed</key>
+	<string>已安装</string>
 	<key>Installed by Termio</key>
 	<string>Termio 安装的内容</string>
 	<key>Installed.</key>
@@ -628,8 +634,6 @@
 	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
 	<key>Live agent status</key>
 	<string>Agent 实时状态</string>
-	<key>Live agent status and session control are switched on in Settings ▸ Agents; this installs them on %@.</key>
-	<string>Agent 实时状态和会话控制在“设置 ▸ Agents”中开启；这里把它们安装到 %@ 上。</string>
 	<key>Live agent status is off</key>
 	<string>Agent 实时状态已关闭</string>
 	<key>Local</key>
@@ -640,8 +644,6 @@
 	<string>正在查找 Agent 命令行工具…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>与 %@ 的连接已断开。会话仍在那台机器上运行。</string>
-	<key>Machine Unavailable</key>
-	<string>设备不可用</string>
 	<key>Machines</key>
 	<string>设备</string>
 	<key>Match Case</key>
@@ -656,6 +658,10 @@
 	<string>移动设备</string>
 	<key>Mobile Access</key>
 	<string>移动访问</string>
+	<key>Move Down</key>
+	<string>下移</string>
+	<key>Move Up</key>
+	<string>上移</string>
 	<key>Move to Trash</key>
 	<string>移到废纸篓</string>
 	<key>Move to Workspace</key>
@@ -754,8 +760,6 @@
 	<string>在 %@ 上未找到任何 Agent 命令行工具。</string>
 	<key>No agent CLIs found.</key>
 	<string>未找到任何 Agent 命令行工具。</string>
-	<key>No agents on your list yet — add one in Settings ▸ Agents.</key>
-	<string>你的列表中还没有 Agent — 在“设置 ▸ Agents”中添加一个。</string>
 	<key>No bundled tool to install from.</key>
 	<string>应用包中没有可安装的工具。</string>
 	<key>No description provided.</key>
@@ -854,6 +858,8 @@
 	<string>在编辑器中打开</string>
 	<key>Open on GitHub</key>
 	<string>在 GitHub 上打开</string>
+	<key>Open one to see how it is reached and what it runs.</key>
+	<string>打开一台可查看它的连接方式和运行内容。</string>
 	<key>Open the invite on your iPhone to install it with TestFlight.</key>
 	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
@@ -870,6 +876,8 @@
 	<string>密码</string>
 	<key>Paste</key>
 	<string>粘贴</string>
+	<key>Path</key>
+	<string>路径</string>
 	<key>Permissions</key>
 	<string>权限</string>
 	<key>Pick a file on the left to see its changes.</key>
@@ -1064,8 +1072,6 @@
 	<string>设置密钥</string>
 	<key>Set Up Key…</key>
 	<string>设置密钥…</string>
-	<key>Set the path it launches from on each machine, under Machines.</key>
-	<string>在“设备”中为每台设备设置它的启动路径。</string>
 	<key>Set up this device</key>
 	<string>设置此设备</string>
 	<key>Settings</key>
@@ -1182,14 +1188,14 @@
 	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
+	<key>The install page — the same one whichever machine you are installing on.</key>
+	<string>安装页面 —— 无论装在哪台机器上都是同一个页面。</string>
 	<key>The listing failed.</key>
 	<string>读取目录失败。</string>
 	<key>The machine Termio is running on</key>
 	<string>Termio 正在运行的设备</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
-	<key>The machine you’re on</key>
-	<string>你正在使用的设备</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1222,10 +1228,8 @@
 	<string>加粗字形</string>
 	<key>This Mac</key>
 	<string>本机</string>
-	<key>This Mac and the machines you reach from it, and what each one runs</key>
-	<string>本机以及你能连接的设备，和每台设备上运行的内容</string>
-	<key>This Mac, and every machine you can reach from it. Open one to see what runs there.</key>
-	<string>本机，以及你能从这里连接的每台设备。打开一台可查看它上面运行的内容。</string>
+	<key>This Mac and the machines you reach from it</key>
+	<string>本机以及你能连接的设备</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
 	<key>This agent is no longer on your list.</key>
@@ -1240,6 +1244,8 @@
 	<string>这个检出没有其他分支可以对比。</string>
 	<key>This device didn’t answer. Its termiod may be too old to search.</key>
 	<string>该设备没有响应，其 termiod 版本可能过旧，不支持搜索。</string>
+	<key>This device is no longer in your configuration.</key>
+	<string>该设备已不在你的配置中。</string>
 	<key>This device sent a name the file tree can’t show.</key>
 	<string>该设备返回了文件树无法显示的名称。</string>
 	<key>This device’s termiod is too old to browse files.</key>
@@ -1254,8 +1260,6 @@
 	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。</string>
-	<key>This machine is no longer in your configuration.</key>
-	<string>该设备已不在你的配置中。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
 	<key>This month</key>
@@ -1326,10 +1330,8 @@
 	<string>微信群</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
-	<key>Where each agent’s CLI lives on %@. Leave a path empty to use the agent’s default.</key>
-	<string>每个 Agent 的命令行工具在 %@ 上的位置。留空则使用该 Agent 的默认值。</string>
-	<key>Whether you want these at all. Each machine installs them for its own agents, under Machines.</key>
-	<string>决定你是否需要这些功能。每台设备在“设备”中为自己的 Agent 安装它们。</string>
+	<key>Whether you want these at all, and putting them on the selected device.</key>
+	<string>是否启用这些功能，以及把它们装到选中的设备上。</string>
 	<key>Window</key>
 	<string>窗口</string>
 	<key>Working Directory</key>

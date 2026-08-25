@@ -16,14 +16,16 @@ import SwiftUI
 /// editable here.
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
-    /// The store the readiness line reads its machine from. Ambient, so it
-    /// follows a workspace switch — the one thing on this tab that re-targets
-    /// (RFC §Reliability: explicit selections do not, ambient indicators do).
+    /// The store the device roster and the readiness line read from.
     @ObservedObject var store: TermioStore
+    /// Which device this page is about. Shared with the other per-device pages
+    /// (`SettingsView`), so switching here is still in force there.
+    @Binding var deviceScope: String
 
-    /// The machine the readiness line describes: the one the current workspace
-    /// runs on.
-    private var device: KnownDevice { store.currentDevice }
+    /// The machine the readiness line describes. It used to be
+    /// `store.currentDevice` — ambient, invisible, and unchangeable, so the page
+    /// reported one machine's readiness with nothing on screen naming it.
+    private var device: KnownDevice { .onRoster(deviceScope, in: store) }
 
     /// Bumped after every catalog reload. `AgentDefinition` equality is by id, so
     /// without this a rename would leave stale rows on screen; referencing the
@@ -43,13 +45,16 @@ struct AgentSettingsTab: View {
     var body: some View {
         let _ = catalogVersion
         VStack(spacing: 0) {
-            // A `List`, not a `Form`: `onMove` is only honoured by an editable
-            // list, so the same rows in a grouped `Form` render fine and silently
-            // stop reordering — and agent order is what the New Chat menu reads.
-            // A roster the user reorders is a list in macOS anyway; `Form` is the
-            // idiom for the controls inside one agent's pane, which is where it
-            // still lives.
-            List {
+            DeviceScopeBar(store: store, selection: $deviceScope)
+            Divider()
+            // A grouped `Form`, like every other pane. It was a `List` because
+            // `onMove` is only honoured by an editable list — in a `Form` the same
+            // rows render and silently stop reordering, and agent order is what
+            // the New Chat menu reads. That is a real constraint, so reordering
+            // was rebuilt rather than dropped: rows are draggable onto each other,
+            // and the context menu carries Move Up / Move Down, which works
+            // whatever a drag does.
+            Form {
                 Section {
                     DefaultChatAgentRow(settings: settings)
                 } header: {
@@ -61,15 +66,31 @@ struct AgentSettingsTab: View {
                         NavigationLink(value: AgentRoute(id: preset.id)) {
                             AgentListRow(settings: settings, preset: preset, device: device)
                         }
+                        .draggable(preset.id)
+                        .dropDestination(for: String.self) { ids, _ in
+                            guard let dragged = ids.first else { return false }
+                            return move(dragged, onto: preset)
+                        }
                         .contextMenu {
+                            Button(localized("Move Up")) { move(preset, by: -1) }
+                                .disabled(listedAgents.first?.id == preset.id)
+                            Button(localized("Move Down")) { move(preset, by: 1) }
+                                .disabled(listedAgents.last?.id == preset.id)
+                            Divider()
                             Button(localized("Remove from List")) { remove(preset) }
                         }
                     }
-                    .onMove(perform: moveListed)
+                    AddAgentRow(
+                        addable: addableAgents,
+                        onAdd: add,
+                        onCustom: createCustomAgent
+                    )
                 } header: {
                     SectionHeaderLabel(title: localized("Agents"))
                 } footer: {
-                    Text(localized("Drag the list to change the order agents appear in. Readiness is for \(device.name) — open it under Machines to install anything missing."))
+                    // No longer names the device: the picker above does, and a
+                    // footnote repeating it goes stale the moment it is changed.
+                    Text(localized("Drag an agent onto another to reorder. Readiness is for the device above."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -91,24 +112,36 @@ struct AgentSettingsTab: View {
                         )
                     }
                     .toggleStyle(.switch)
+                    // The switch is the preference; putting the files on a
+                    // machine is a machine operation — but the machine is named
+                    // by the control at the top of this page, so it happens here
+                    // rather than sending you to another tab to finish the job.
+                    // A bare button under a toggle reads as attached to that
+                    // toggle. As a labelled row it reads as its own action, which
+                    // is what it is — both switches at once, on one machine.
+                    InstallButtonRow(title: localized("Install on \(device.name)")) {
+                        // Read the preferences here, on the main actor, and do the
+                        // writing off it — see `InstallButtonRow`.
+                        let hooksWanted = settings.agentHooksEnabled
+                        let controlWanted = settings.sessionControlEnabled
+                        let target = device.integrationTarget
+                        return await Task.detached {
+                            .summarizing(
+                                AgentStatusHooks.sync(enabled: hooksWanted, target: target)
+                                    .merged(with: SessionSkillInstaller.sync(
+                                        enabled: controlWanted, target: target)),
+                                headline: localized("Installed"), unit: localized("agents"))
+                        }.value
+                    }
                 } header: {
                     SectionHeaderLabel(title: localized("Integration"))
                 } footer: {
-                    // The switch is the preference; installing the files it needs
-                    // is a machine operation and stays on the machine's pane.
-                    Text(localized("Whether you want these at all. Each machine installs them for its own agents, under Machines."))
+                    Text(localized("Whether you want these at all, and putting them on the selected device."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            .listStyle(.inset)
-
-            Divider()
-            AddAgentBar(
-                addable: addableAgents,
-                onAdd: add,
-                onCustom: createCustomAgent
-            )
+            .formStyle(.grouped)
         }
         .navigationDestination(for: AgentRoute.self) { route in
             detail(for: route.id)
@@ -130,6 +163,7 @@ struct AgentSettingsTab: View {
             AgentDetailPane(
                 settings: settings,
                 preset: preset,
+                device: device,
                 onRemove: { remove(preset) },
                 // Editing and deletion exist only for agents backed by a user
                 // manifest; bundled agents just leave the list.
@@ -197,9 +231,29 @@ struct AgentSettingsTab: View {
 
     /// Persists a drag as the new arrangement; `setEnabledOrder` keeps every
     /// other id ranked behind it so the ordering stays total.
-    private func moveListed(from source: IndexSet, to destination: Int) {
+    /// Drops `draggedID` at `target`'s position. Returns false for a drag that
+    /// changes nothing, so a row dropped on itself is not recorded as an edit.
+    private func move(_ draggedID: String, onto target: AgentPreset) -> Bool {
         var ids = listedAgents.map(\.id)
-        ids.move(fromOffsets: source, toOffset: destination)
+        guard draggedID != target.id,
+              let from = ids.firstIndex(of: draggedID),
+              let to = ids.firstIndex(of: target.id)
+        else { return false }
+        ids.remove(at: from)
+        ids.insert(draggedID, at: to)
+        settings.setEnabledOrder(ids)
+        return true
+    }
+
+    /// The keyboard- and menu-reachable half of reordering. Drag is the nice way;
+    /// this is the way that cannot quietly stop working, which matters because
+    /// the last container change is exactly what broke `onMove`.
+    private func move(_ preset: AgentPreset, by offset: Int) {
+        var ids = listedAgents.map(\.id)
+        guard let from = ids.firstIndex(of: preset.id) else { return }
+        let to = from + offset
+        guard ids.indices.contains(to) else { return }
+        ids.swapAt(from, to)
         settings.setEnabledOrder(ids)
     }
 }
@@ -211,15 +265,17 @@ private struct AgentRoute: Hashable {
     let id: String
 }
 
-/// The list's footer action, shaped like the sidebar bottom bars in Mail and
-/// Reminders: the whole bar is the pull-down's hit target, so the control reads as
-/// part of the pane rather than a small floating button.
-private struct AddAgentBar: View {
+/// The roster's add action, as the last row of the roster.
+///
+/// A pull-down rather than a button: the agents worth adding are a known list,
+/// and a sheet to pick one from it would be a window for a menu's worth of
+/// choice. Styled as a row of the group — inside a grouped `Form` the card
+/// already draws the surface, so a second rounded rect on top of it is what made
+/// this read as bolted on to the window's bottom edge.
+private struct AddAgentRow: View {
     let addable: [AgentPreset]
     let onAdd: (AgentPreset) -> Void
     let onCustom: () -> Void
-
-    @State private var hovering = false
 
     var body: some View {
         Menu {
@@ -231,33 +287,20 @@ private struct AddAgentBar: View {
             if !addable.isEmpty { Divider() }
             Button(localized("Custom Agent…")) { onCustom() }
         } label: {
-            HStack(spacing: 8) {
-                // Same 22pt frame IconBadge uses, so the plus sits in the rows'
-                // icon column instead of starting its own margin.
+            HStack(spacing: 12) {
+                // The rows' icon column, so the label starts where agent names do.
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22)
+                    .frame(width: settingsRowIconWidth, height: 26)
                 Text(localized("Add Agent"))
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 28)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(hovering ? 0.07 : 0))
-            )
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .onHover { hovering = $0 }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
     }
 }
 
@@ -337,6 +380,10 @@ private struct AgentListRow: View {
 private struct AgentDetailPane: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
+    /// The device this pane configures, from the scope control on the roster.
+    /// Where an agent's CLI lives is a fact about a machine, but *which* machine
+    /// is now a control on this page rather than a different tab to go to.
+    let device: KnownDevice
     let onRemove: () -> Void
     /// True for agents backed by a manifest in the user's config folder — the only
     /// ones whose file can be opened or deleted from here.
@@ -361,7 +408,7 @@ private struct AgentDetailPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(preset.displayName)
                             .font(.title3.weight(.semibold))
-                        Text(settings.command(for: preset) ?? localized("Login shell"))
+                        Text(settings.command(for: preset, on: device) ?? localized("Login shell"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -395,11 +442,28 @@ private struct AgentDetailPane: View {
             }
 
             Section {
-                // Where this agent's CLI lives is a fact about a machine, and the
-                // field that sets it now lives on that machine's pane (RFC §D1).
-                // What is left here is the link that gets the CLI in the first
-                // place — an install page on the web, which is the same page
-                // whichever machine you are installing on.
+                // Where an agent's CLI lives is still a fact about a machine —
+                // it is the *machine* that is now named by a control on this page
+                // instead of being a different tab you had to go to.
+                LabeledContent {
+                    TextField(
+                        "",
+                        text: Binding(
+                            get: { settings.commandPath(for: preset, on: device) ?? "" },
+                            set: { settings.setCommandPath($0, for: preset, on: device) }
+                        ),
+                        prompt: Text(preset.command ?? localized("Login shell"))
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .labelsHidden()
+                    .frame(minWidth: 180)
+                } label: {
+                    SettingsLabel(
+                        title: localized("Path"),
+                        subtext: localized("Where \(preset.displayName) launches from on \(device.name). Leave empty to use its default."),
+                        titleFont: .headline
+                    )
+                }
                 LabeledContent {
                     if let url = preset.installURL {
                         Link(localized("Install Page"), destination: url)
@@ -409,7 +473,7 @@ private struct AgentDetailPane: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Get \(preset.displayName)"),
-                        subtext: localized("Set the path it launches from on each machine, under Machines."),
+                        subtext: localized("The install page — the same one whichever machine you are installing on."),
                         titleFont: .headline
                     )
                 }
@@ -487,7 +551,7 @@ private struct AgentDetailPane: View {
         }
     }
 
-    private var effectiveCommand: String { settings.command(for: preset) ?? "" }
+    private var effectiveCommand: String { settings.command(for: preset, on: device) ?? "" }
 }
 
 /// Shown when the pushed agent stops existing while its pane is open — a custom

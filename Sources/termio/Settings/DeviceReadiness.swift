@@ -24,7 +24,7 @@ enum AgentReadiness: String, Sendable {
 /// dependency chain, and four rungs with independent states turn choosing a
 /// machine into infrastructure triage. So the pane shows one outcome and the
 /// ladder becomes the disclosure behind it.
-enum MachineReadiness: Equatable {
+enum DeviceReadinessState: Equatable {
     /// Nothing asked yet, and no cache to draw on.
     case unasked
     case checking
@@ -40,7 +40,7 @@ enum MachineReadiness: Equatable {
 /// The steps behind the one line, in dependency order. Named so the pane can say
 /// what it is doing while it runs, and so a failure can name the rung it stopped
 /// on rather than reporting "setup failed".
-enum MachineSetupStep: Equatable {
+enum DeviceSetupStep: Equatable {
     /// This Mac: link the `termio` CLI onto `PATH`. A device: deploy `termiod`.
     /// Both are "the binary this machine needs before anything else works", which
     /// is why they are one rung rather than a local branch bolted onto a remote
@@ -92,7 +92,7 @@ extension AgentReadiness {
 
 /// Asks a machine what it is. Every method here runs off the main actor and
 /// returns a value; nothing renders, and nothing is cached as authority.
-enum MachineProbe {
+enum DeviceProbe {
     /// A read-only check: what is true on this machine right now.
     ///
     /// The one probe that matters is reachability, and it is asked **first and
@@ -165,7 +165,7 @@ extension DeviceDiscoveredState {
 /// window that fires ssh at every configured host on open is how a sleeping VPS
 /// makes opening preferences take twenty seconds.
 @MainActor
-final class MachinePaneModel: ObservableObject {
+final class DevicePaneModel: ObservableObject {
     let device: KnownDevice
     private let settings: AppSettings
 
@@ -173,10 +173,10 @@ final class MachinePaneModel: ObservableObject {
     /// pane draws something the moment it opens. Replaced by the first live probe
     /// — it is a cache, never the authority.
     @Published private(set) var discovered: DeviceDiscoveredState?
-    @Published private(set) var readiness: MachineReadiness = .unasked
+    @Published private(set) var readiness: DeviceReadinessState = .unasked
     /// The rung in progress, so a chain that takes ten seconds says which part is
     /// slow instead of spinning anonymously.
-    @Published private(set) var step: MachineSetupStep?
+    @Published private(set) var step: DeviceSetupStep?
     /// What the last completed setup left behind, shown once and dismissed.
     @Published var feedback: InstallFeedback?
 
@@ -214,7 +214,7 @@ final class MachinePaneModel: ObservableObject {
         guard !readiness.isBusy else { return }
         readiness = .checking
         step = .foundation
-        let state = await MachineProbe.inspect(device: device, commands: commandPairs)
+        let state = await DeviceProbe.inspect(device: device, commands: commandPairs)
         // Carry the integration stamp forward: a probe asks what is on the
         // machine, and does not un-install what a previous setup put there.
         var merged = state
@@ -239,7 +239,7 @@ final class MachinePaneModel: ObservableObject {
         }
 
         step = .probeAgents
-        var state = await MachineProbe.inspect(device: device, commands: commandPairs)
+        var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
         state.integrationVersion = discovered?.integrationVersion
         apply(state)
         // `resolve` already names the first thing in the way — unreachable, or
@@ -248,9 +248,15 @@ final class MachinePaneModel: ObservableObject {
 
         step = .installIntegration
         let target = device.integrationTarget
-        let hooks = AgentStatusHooks.sync(enabled: settings.agentHooksEnabled, target: target)
-        let skill = SessionSkillInstaller.sync(
-            enabled: settings.sessionControlEnabled, target: target)
+        // Off the main actor: this rung is one blocking `ssh` per config file, and
+        // there is one config file per agent. Left inline it freezes the window for
+        // the length of the whole install.
+        let hooksWanted = settings.agentHooksEnabled
+        let controlWanted = settings.sessionControlEnabled
+        let (hooks, skill) = await Task.detached {
+            (AgentStatusHooks.sync(enabled: hooksWanted, target: target),
+             SessionSkillInstaller.sync(enabled: controlWanted, target: target))
+        }.value
         // A rung that reached the machine but could not write every agent's config
         // is still a failure of *this* rung, and the one worth naming.
         let refused = hooks.failed + skill.failed
@@ -302,7 +308,7 @@ final class MachinePaneModel: ObservableObject {
     /// Order matters more than completeness. A box that does not answer also has
     /// no agent CLIs and no hooks, and saying all three would invite the user to
     /// go install an agent on a machine that is switched off.
-    private func resolve(_ state: DeviceDiscoveredState) -> MachineReadiness {
+    private func resolve(_ state: DeviceDiscoveredState) -> DeviceReadinessState {
         guard state.reachable else { return .blocked(localized("Can’t reach \(device.name).")) }
         guard state.agents.values.contains(AgentReadiness.available.rawValue) else {
             return .blocked(localized("No agent CLIs found on \(device.name)."))

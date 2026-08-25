@@ -11,7 +11,11 @@ struct IconBadge: View {
 
     var body: some View {
         glyph
-            .frame(width: 22, height: 22)
+            // The same column `SettingsSymbolBadge` occupies. An agent keeps its
+            // own brand mark rather than being forced into a tinted square — the
+            // mark *is* its identity — but it has to start where every other
+            // row's icon starts or the column stops lining up.
+            .frame(width: settingsRowIconWidth, height: settingsRowIconWidth)
     }
 
     @ViewBuilder
@@ -34,6 +38,39 @@ struct IconBadge: View {
         }
     }
 }
+
+/// A System Settings row icon: a filled, continuous-corner square with the glyph
+/// knocked out in white.
+///
+/// The shape is the cue, not the colour. A macOS list reads as a scannable column
+/// because every row opens with the same filled square at the same size and the
+/// titles line up off its trailing edge. A thin monochrome glyph sitting on the
+/// window background reads as decoration instead, and the column stops existing —
+/// which is most of why the Devices roster did not look like the rest of the
+/// system.
+///
+/// Tints stay semantic and few. This Mac is graphite because it is not somewhere
+/// you connect to; a device is blue because it is. Two colours carrying one
+/// distinction, rather than a palette carrying none.
+struct SettingsSymbolBadge: View {
+    let symbol: String
+    var tint: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(tint.gradient)
+            .frame(width: 26, height: 26)
+            .overlay {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+    }
+}
+
+/// The width every row's leading column occupies, badge or not, so a row without
+/// an icon still lines its title up with the ones that have one.
+let settingsRowIconWidth: CGFloat = 26
 
 /// A grouped-section header rendered as a badge plus title, replacing the default
 /// uppercased gray caption so each card reads as a labeled group (Dia style).
@@ -170,16 +207,40 @@ extension View {
 
 /// A settings action that writes outside the app, with its result shown next to
 /// the button: the action performs the install and hands back the line to display.
+///
+/// The action is `async` because on a device it is not a function call — it is
+/// dozens of blocking `ssh` round trips. The hook installers read and write one
+/// config per agent, the skill installer probes and writes one more, and every one
+/// of those is a `Process` with `waitUntilExit()`. Run in the button's handler that
+/// is not a slow button, it is a beachball: the main thread sits in `waitUntilExit`
+/// while the window stops drawing.
+///
+/// So the work is awaited, the button disables itself while it runs, and a spinner
+/// stands where the result will be. The caller is what moves the work off the main
+/// actor; this type's job is to not block on it.
 struct InstallButtonRow: View {
     let title: String
-    let action: () -> InstallFeedback
+    let action: () async -> InstallFeedback
 
     @State private var state = InstallFeedbackState()
+    @State private var running = false
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(title) { withAnimation { state.show(action()) } }
-            if let feedback = state.feedback {
+            Button(title) {
+                running = true
+                Task {
+                    let result = await action()
+                    running = false
+                    withAnimation { state.show(result) }
+                }
+            }
+            .disabled(running)
+            if running {
+                ProgressView()
+                    .controlSize(.small)
+                    .transition(.opacity)
+            } else if let feedback = state.feedback {
                 InstallFeedbackLabel(feedback: feedback)
             }
             Spacer(minLength: 0)
