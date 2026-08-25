@@ -244,8 +244,25 @@ struct SSHAgentConfigStore: AgentConfigStore {
     static func quote(_ value: String) -> String {
         if value == "~" { return "\"$HOME\"" }
         guard value.hasPrefix("~/") else { return singleQuoted(value) }
-        return "\"$HOME\"/" + singleQuoted(String(value.dropFirst(2)))
+        let rest = String(value.dropFirst(2))
+        // `~/.config` is not a directory name a manifest picked; it is the
+        // *default value* of `XDG_CONFIG_HOME`, and on Linux the agents that live
+        // there read the variable. OpenCode resolves its global config — plugins
+        // included — under `$XDG_CONFIG_HOME/opencode`, and Amp documents
+        // `$XDG_CONFIG_HOME/amp/plugins`. A Mac never sets the variable, so this
+        // is a no-op there and only ever changes where a device install lands:
+        // on a box whose owner moved their config, `~/.config` would write a
+        // plugin into a directory the agent does not read.
+        if rest == ".config" { return xdgConfigHome }
+        if rest.hasPrefix(".config/") {
+            return xdgConfigHome + "/" + singleQuoted(String(rest.dropFirst(".config/".count)))
+        }
+        return "\"$HOME\"/" + singleQuoted(rest)
     }
+
+    /// `$XDG_CONFIG_HOME` when the device sets it, and the spec's own default
+    /// otherwise. Double-quoted so a home directory with spaces survives.
+    private static let xdgConfigHome = "\"${XDG_CONFIG_HOME:-$HOME/.config}\""
 
     private static func singleQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -310,5 +327,34 @@ enum HookReporter: Hashable {
         case .termioCLI: CommandLineTool.supportCopyURL.path
         case .termiodDaemon: Termiod.remoteBinary()
         }
+    }
+
+    /// The binary as it must appear **inside a hook's shell command**.
+    ///
+    /// Single-quoting is right for this Mac — an absolute path that may contain
+    /// spaces — and wrong for a device: `Termiod.remoteBinary()` is a shell
+    /// *expression* (`$HOME/.local/bin/termiod`, the spelling `TermiodClient`
+    /// drops unquoted into its own `ssh` command), so quoting it whole emits a
+    /// literal `$HOME` directory that cannot exist. Every device hook then execs
+    /// a path that is not there and fails on every turn — silently, because the
+    /// command ends in `2>/dev/null || true`, which is exactly the failure this
+    /// form is shaped to hide.
+    var shellBinaryPath: String {
+        let path = binaryPath
+        guard path.hasPrefix("$HOME/") else { return AgentStatusHooks.shellQuote(path) }
+        return "\"$HOME\"/"
+            + AgentStatusHooks.shellQuote(String(path.dropFirst("$HOME/".count)))
+    }
+
+    /// The binary as a **JavaScript expression**, for the plugin dialects whose
+    /// hook is generated source rather than a shell command. A third spelling
+    /// because there is a third escaping context, not because the path differs:
+    /// Bun's `$` escapes each interpolation into one argv token, so handing it
+    /// `$HOME/...` would reach the kernel as a literal `$HOME` the same way the
+    /// over-quoted shell form does.
+    func javaScriptBinaryExpression(quotedAs jsString: (String) -> String) -> String {
+        let path = binaryPath
+        guard path.hasPrefix("$HOME/") else { return jsString(path) }
+        return "(process.env.HOME ?? \"\") + " + jsString(String(path.dropFirst("$HOME".count)))
     }
 }

@@ -358,14 +358,14 @@ enum AgentStatusHooks {
         // dropped rather than emitted as flags the remote binary would reject —
         // see `HookReporter.termiodDaemon`.
         guard reporter == .termioCLI else {
-            var command = "\(shellQuote(reporter.binaryPath)) set-status"
+            var command = "\(reporter.shellBinaryPath) set-status"
             command += " \"$TERMIOD_SESSION_ID\" \(state)"
             command += dialect == .cursorFlat
                 ? " 2>/dev/null; printf '{}'"
                 : " 2>/dev/null || true"
             return command + " \(hookVersionComment)"
         }
-        var command = "\(shellQuote(reporter.binaryPath)) agent report \(state)"
+        var command = "\(reporter.shellBinaryPath) agent report \(state)"
         // Claude feeds each hook a JSON blob on stdin carrying `transcript_path`; the
         // CLI mines it out (jq-free) so termio can address the raw Q&A log. Only enabled
         // for agents that reliably provide stdin, so the CLI's `cat` can't block.
@@ -766,10 +766,16 @@ private struct ScriptHookDirectory: AgentStatusInstaller {
 
 /// Installs agents whose integration is a single dropped-in plugin/extension file
 /// (no host config to merge): OpenCode loads a plugin from `~/.config/opencode/plugin/`,
-/// Pi an extension from `~/.pi/agent/extensions/`. Both run in-process in the PTY,
-/// so they read `TERMIO_SESSION` from the environment and emit the same normalized
-/// report into the socket — OpenCode via its session lifecycle events, Pi via
-/// `agent_start`/`agent_end`. Uninstall removes the file only if it's ours.
+/// Pi an extension from `~/.pi/agent/extensions/`, Amp one from `~/.config/amp/plugins/`.
+/// All three run in-process in the PTY and emit the same normalized report —
+/// OpenCode via its session lifecycle events, Pi via `agent_start`/`agent_end`,
+/// Amp via `agent.start`/`agent.end`. Uninstall removes the file only if it's ours.
+///
+/// Unlike every other dialect, the hook here is generated *source*, not a command
+/// string, so the machine reaches further into the template than a swapped binary
+/// path: this Mac reads `TERMIO_SESSION` and reports through the `termio` CLI to
+/// the app's socket, and a device reads `TERMIOD_SESSION_ID` and reports through
+/// `termiod set-status` to the daemon that owns its PTY.
 private struct PluginFile: AgentStatusInstaller {
     let path: String
     let store: AgentConfigStore
@@ -783,16 +789,13 @@ private struct PluginFile: AgentStatusInstaller {
             AgentStatusHooks.log("\(id): incomplete plugin hook manifest")
             return nil
         }
-        // Unlike every other dialect, a plugin's report path is baked into
-        // JavaScript that shells out to the `termio` CLI and reads
-        // `TERMIO_SESSION` — neither of which exists on a device. Porting the
-        // three templates to `termiod set-status` is real work with no shared
-        // code to lean on, so a device install declines here rather than
-        // dropping a plugin that would fail silently on every turn.
-        guard target.isLocal else {
-            AgentStatusHooks.log("\(id): plugin hooks are not installed on a device yet")
-            return nil
-        }
+        // `termiod set-status` carries a state and a title and nothing else, so a
+        // device build of any of these templates drops the conversation plumbing
+        // rather than tracking an id the daemon has no field for. Stated once
+        // here instead of three times, because it is one fact about the daemon
+        // rather than three facts about plugin APIs (`HookReporter`).
+        let conversation = target.isLocal ? spec.conversation : nil
+        let reporter = target.reporter
         let filename: String
         let legacyFilename: String
         let contents: String
@@ -800,15 +803,17 @@ private struct PluginFile: AgentStatusInstaller {
         case .openCodePlugin:
             filename = "termio.js"
             legacyFilename = "termio-status.js"
-            contents = openCodeSource(events: spec.events, conversationPath: spec.conversation)
+            contents = openCodeSource(
+                events: spec.events, conversationPath: conversation, reporter: reporter)
         case .piPlugin:
             filename = "termio.js"
             legacyFilename = "termio-status.js"
-            contents = piSource(events: spec.events, conversation: spec.conversation)
+            contents = piSource(
+                events: spec.events, conversation: conversation, reporter: reporter)
         case .ampPlugin:
             filename = "termio.ts"
             legacyFilename = "termio-status.ts"
-            contents = ampSource(events: spec.events)
+            contents = ampSource(events: spec.events, reporter: reporter)
         default:
             AgentStatusHooks.log("\(id): hook dialect is not a plugin template")
             return nil
@@ -858,6 +863,31 @@ private struct PluginFile: AgentStatusInstaller {
 
     private static var cliPath: String { AgentStatusHooks.cliPath }
 
+    /// `const cli = …` for a generated plugin: this Mac's channel-stable CLI copy
+    /// as a literal, or the device's `termiod` joined to the target's own `$HOME`
+    /// at load time.
+    private static func cliDeclaration(for reporter: HookReporter) -> String {
+        "const cli = \(reporter.javaScriptBinaryExpression(quotedAs: jsString));"
+    }
+
+    /// The body of a device plugin's `report`. The session id comes from the
+    /// environment the daemon owns (`session::daemon_owned_env` exports
+    /// `TERMIOD_SESSION_ID` after the client's `env`, so it cannot be spoofed),
+    /// and a plugin loaded outside a termiod session reports nothing rather than
+    /// invoking `set-status` with an empty id the daemon would reject.
+    private static func daemonReportBody(shell: String) -> String {
+        """
+            if (!session) return;
+            return \(shell)`${cli} set-status ${session} ${state}`.quiet().nothrow();
+        """
+    }
+
+    /// The `const session = …` line that body needs, or nothing on this Mac,
+    /// where the id rides in on `TERMIO_SESSION` and the CLI reads it itself.
+    private static func sessionDeclaration(for reporter: HookReporter) -> String {
+        reporter == .termioCLI ? "" : "\n  const session = process.env.TERMIOD_SESSION_ID;"
+    }
+
     /// OpenCode plugin: a session is `busy` while working and emits `session.idle`
     /// when the turn ends; `permission.updated` means it's waiting on the user. Each
     /// maps to the public report contract shelled out via Bun's `$`. The session id
@@ -870,7 +900,9 @@ private struct PluginFile: AgentStatusInstaller {
     /// child's id would mis-pin the tab, so the plugin learns which ids are
     /// top-level from `session.created`/`session.updated` (child sessions carry
     /// `parentID`) and forwards only those.
-    private static func openCodeSource(events: [AgentHookEvent], conversationPath: String?) -> String {
+    private static func openCodeSource(
+        events: [AgentHookEvent], conversationPath: String?, reporter: HookReporter
+    ) -> String {
         let conversationExpression = conversationPath.map { path in
             "event" + path.split(separator: ".").map { "?.\($0)" }.joined()
         }
@@ -896,7 +928,7 @@ private struct PluginFile: AgentStatusInstaller {
               if (event.type === "session.deleted") return roots.delete(event.properties?.info?.id);
 
         """
-        let reportBody = conversationExpression == nil ? """
+        let localReportBody = conversationExpression == nil ? """
             return $`${cli} agent report ${state}`.quiet().nothrow();
         """ : """
             if (conversation && roots.has(conversation)) {
@@ -904,12 +936,15 @@ private struct PluginFile: AgentStatusInstaller {
             }
             return $`${cli} agent report ${state}`.quiet().nothrow();
         """
+        let reportBody = reporter == .termioCLI
+            ? localReportBody
+            : daemonReportBody(shell: "$")
         let reportParameters = conversationExpression == nil ? "(state)" : "(state, conversation)"
         return """
         // termio agent status — reports OpenCode session lifecycle to termio.
         // Socket marker: \(AgentStatusHooks.marker)
         export const TermioStatus = async ({ $ }) => {
-          const cli = \(jsString(cliPath));\(identity)
+          \(cliDeclaration(for: reporter))\(sessionDeclaration(for: reporter))\(identity)
           const report = \(reportParameters) => {
         \(reportBody)
           };
@@ -932,10 +967,16 @@ private struct PluginFile: AgentStatusInstaller {
     /// rotation (Pi reloads extensions with a fresh context when it switches
     /// sessions). The id is embedded in a shell command, so it is forwarded only
     /// when it looks like a bare token — Pi's uuidv7 ids always do.
-    private static func piSource(events: [AgentHookEvent], conversation: String?) -> String {
+    private static func piSource(
+        events: [AgentHookEvent], conversation: String?, reporter: HookReporter
+    ) -> String {
+        // Pi is the one template that needs no device branch of its own: it
+        // already shells out through `pi.exec("sh", …)`, so the device form is
+        // whatever `reportCommand` emits for the daemon — the same string the
+        // JSON-manifest and script-directory dialects get.
         guard conversation != nil else {
             let listeners = events.map { event in
-                let command = AgentStatusHooks.reportCommand(state: event.state)
+                let command = AgentStatusHooks.reportCommand(state: event.state, reporter: reporter)
                 return "  pi.on(\(jsString(event.name)), () => pi.exec(\"sh\", [\"-c\", \(jsString(command))]));"
             }.joined(separator: "\n")
             return """
@@ -970,17 +1011,20 @@ private struct PluginFile: AgentStatusInstaller {
     /// API), runs on Bun, and exposes Bun's `$` shell as `amp.$`; the session id
     /// rides in on `TERMIO_SESSION` from the PTY. `.quiet().nothrow()` keeps it a
     /// silent no-op when termio isn't listening.
-    private static func ampSource(events: [AgentHookEvent]) -> String {
+    private static func ampSource(events: [AgentHookEvent], reporter: HookReporter) -> String {
         let listeners = events.map { event in
             "  amp.on(\(jsString(event.name)), () => report(\(jsString(event.state))));"
         }.joined(separator: "\n")
+        let reportBody = reporter == .termioCLI ? """
+            return amp.$`${cli} agent report ${state}`.quiet().nothrow();
+        """ : daemonReportBody(shell: "amp.$")
         return """
         // termio agent status — reports Amp turn lifecycle to termio.
         // Socket marker: \(AgentStatusHooks.marker)
         export default (amp) => {
-          const cli = \(jsString(cliPath));
+          \(cliDeclaration(for: reporter))\(sessionDeclaration(for: reporter))
           const report = (state) => {
-            return amp.$`${cli} agent report ${state}`.quiet().nothrow();
+        \(reportBody)
           };
         \(listeners)
         };

@@ -33,12 +33,26 @@ re-do it:
 | D6 — the v0 SSH arm | **Done.** `SSHAgentConfigStore`, riding `Termiod.sshArguments(host:)`. |
 | D3 — `home:` dest | Not built. |
 | D4 — `expect_sha256` | Not built. Until it is, the SSH arm's hook merge is read-modify-write with no precondition. |
-| — | **No caller passes a device target yet.** Every entry point defaults to `.thisMac`, so nothing installs remotely until §D6's surface exists. |
+| — | **Done.** A machine's pane calls both installers with `device.integrationTarget` (`MachinePaneModel.setUp`), so §D6's surface exists and a device target now reaches them. |
+| — | **Done.** The plugin dialects install on a device: the three templates take a `HookReporter` and generate the `termiod set-status` form. `DeviceHookInstallTests`. |
 
-Two behaviours worth knowing before reading further: the **plugin dialects**
-(OpenCode, Pi, Amp) decline on a device, because their templates bake the `termio`
-CLI and `TERMIO_SESSION` into JavaScript; and remote status carries **state and
-title only**.
+One behaviour worth knowing before reading further: remote status carries **state
+and title only**.
+
+Two things the device arm learned the hard way, both of which fail *silently*
+because every hook form ends in `2>/dev/null || true`:
+
+- `Termiod.remoteBinary()` is a shell **expression** (`$HOME/.local/bin/termiod`),
+  not a path. Quoting it whole emits a literal `$HOME` directory. There are three
+  escaping contexts for one binary — raw, shell, and JavaScript — and
+  `HookReporter` now spells all three.
+- `~/.config` is the **default value of `XDG_CONFIG_HOME`**, not a directory name.
+  OpenCode resolves its global config under `$XDG_CONFIG_HOME/opencode` and Amp
+  documents `$XDG_CONFIG_HOME/amp/plugins`, so a Linux box whose owner moved their
+  config would take a plugin into a directory the agent never reads.
+  `SSHAgentConfigStore.quote` emits `${XDG_CONFIG_HOME:-$HOME/.config}`.
+  Still open: `resume.discover.root` for OpenCode is `~/.local/share/opencode/…`,
+  which is `XDG_DATA_HOME` and has the same exposure on a device.
 
 ## The problem
 
