@@ -1,0 +1,36 @@
+{
+  "id": "fullHouse",
+  "order": 42,
+  "name": "Full House",
+  "wire": "full",
+  "command": "full-agent --flag",
+  "permissionBypassFlag": "--yolo",
+  "resume": {
+    "create": "--session-id {id}",
+    "resume": "--resume {id}",
+    "storeRoot": "~/.full/sessions",
+    "storeMatch": "dir:{id}",
+    "transcriptName": "chat.jsonl",
+    "seed": "session-file"
+  },
+  "install": "https://example.com/full",
+  "icon": { "symbol": "bolt.fill", "tint": "aabbcc" },
+  "titleStatus": { "working": ["^spin"], "attention": ["blocked"] },
+  "progressStatus": true,
+  "skills": { "dir": "~/.full/skills" },
+  "hooks": {
+    "type": "json",
+    "file": "~/.full/hooks/termio.json",
+    "dialect": "copilot",
+    "capturesTranscript": true,
+    "conversation": "session_id",
+    "tool": "tool_name",
+    "promptTitle": "prompt",
+    "events": [
+      { "on": "SessionStart", "state": "idle" },
+      { "on": "PreToolUse", "state": "working", "matcher": "*" },
+      { "on": "PermissionRequest", "state": "attention" },
+      { "on": "Stop", "state": "done" }
+    ]
+  }
+}

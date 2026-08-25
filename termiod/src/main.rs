@@ -7,6 +7,7 @@
 //!
 //! See `ARCHITECTURE.md` and `README.md`.
 
+mod agent;
 mod client;
 mod daemon;
 mod files;
