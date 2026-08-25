@@ -2043,6 +2043,16 @@
         }
       }
     },
+    "Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
+          }
+        }
+      }
+    },
     "Device Unavailable": {
       "localizations": {
         "zh-Hans": {
@@ -2173,12 +2183,12 @@
         }
       }
     },
-    "Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.": {
+    "Drag the list to change the order agents appear in. Readiness is for the device above.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "拖动列表可更改 Agent 的显示顺序。就绪状态针对 %@ — 在“设备”中打开它可安装缺少的内容。"
+            "value": "拖动列表可调整 agent 的显示顺序。就绪状态针对上方选中的设备。"
           }
         }
       }

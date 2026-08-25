@@ -416,6 +416,8 @@
 	<string>部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Device</key>
+	<string>设备</string>
 	<key>Device Unavailable</key>
 	<string>设备不可用</string>
 	<key>Devices</key>
@@ -442,8 +444,8 @@
 	<string>草稿</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
-	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
-	<string>拖动列表可更改 Agent 的显示顺序。就绪状态针对 %@ — 在“设备”中打开它可安装缺少的内容。</string>
+	<key>Drag the list to change the order agents appear in. Readiness is for the device above.</key>
+	<string>拖动列表可调整 agent 的显示顺序。就绪状态针对上方选中的设备。</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>复制到主题文件夹</string>
 	<key>Edit</key>

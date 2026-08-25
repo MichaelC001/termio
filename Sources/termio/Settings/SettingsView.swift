@@ -31,6 +31,12 @@ struct SettingsView: View {
     /// whose `navigationDestination` left with its tab would otherwise sit on the
     /// stack unresolvable.
     @State private var path = NavigationPath()
+    /// Which device the per-device pages are about, shared across them so a
+    /// switch on one is still in force on the next — the scope is a property of
+    /// what the user is doing, not of the page they are on. Seeded from the
+    /// current workspace's device, which is what those pages silently assumed
+    /// before the control existed.
+    @State private var deviceScope = KnownDevice.thisMac.settingsKey
 
     init(
         settings: AppSettings,
@@ -46,6 +52,7 @@ struct SettingsView: View {
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
+        _deviceScope = State(initialValue: store.currentDevice.settingsKey)
     }
 
     var body: some View {
@@ -100,7 +107,8 @@ struct SettingsView: View {
                 onConnect: onSSHConnect, onSetUpKey: onSetUpKey
             )
         case .keyboard: KeybindingsSettingsTab()
-        case .agents: AgentSettingsTab(settings: settings, store: store)
+        case .agents:
+            AgentSettingsTab(settings: settings, store: store, deviceScope: $deviceScope)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
         case .mobile: MobileSettingsTab()
         case .community: CommunitySettingsTab()

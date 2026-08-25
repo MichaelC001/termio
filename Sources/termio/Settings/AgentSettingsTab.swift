@@ -16,14 +16,16 @@ import SwiftUI
 /// editable here.
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
-    /// The store the readiness line reads its machine from. Ambient, so it
-    /// follows a workspace switch — the one thing on this tab that re-targets
-    /// (RFC §Reliability: explicit selections do not, ambient indicators do).
+    /// The store the device roster and the readiness line read from.
     @ObservedObject var store: TermioStore
+    /// Which device this page is about. Shared with the other per-device pages
+    /// (`SettingsView`), so switching here is still in force there.
+    @Binding var deviceScope: String
 
-    /// The machine the readiness line describes: the one the current workspace
-    /// runs on.
-    private var device: KnownDevice { store.currentDevice }
+    /// The machine the readiness line describes. It used to be
+    /// `store.currentDevice` — ambient, invisible, and unchangeable, so the page
+    /// reported one machine's readiness with nothing on screen naming it.
+    private var device: KnownDevice { .onRoster(deviceScope, in: store) }
 
     /// Bumped after every catalog reload. `AgentDefinition` equality is by id, so
     /// without this a rename would leave stale rows on screen; referencing the
@@ -69,7 +71,9 @@ struct AgentSettingsTab: View {
                 } header: {
                     SectionHeaderLabel(title: localized("Agents"))
                 } footer: {
-                    Text(localized("Drag the list to change the order agents appear in. Readiness is for \(device.name) — open it under Machines to install anything missing."))
+                    // No longer names the device: the picker above does, and a
+                    // footnote repeating it goes stale the moment it is changed.
+                    Text(localized("Drag the list to change the order agents appear in. Readiness is for the device above."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

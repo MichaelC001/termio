@@ -416,6 +416,8 @@
 	<string>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
+	<key>Device</key>
+	<string>Device</string>
 	<key>Device Unavailable</key>
 	<string>Device Unavailable</string>
 	<key>Devices</key>
@@ -442,8 +444,8 @@
 	<string>Draft</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
-	<key>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</key>
-	<string>Drag the list to change the order agents appear in. Readiness is for %@ — open it under Machines to install anything missing.</string>
+	<key>Drag the list to change the order agents appear in. Readiness is for the device above.</key>
+	<string>Drag the list to change the order agents appear in. Readiness is for the device above.</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>Duplicate to Themes Folder</string>
 	<key>Edit</key>
