@@ -453,7 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// termio is single-window, so terminating with the last window would make ⌘W a
     /// quit — and quitting kills every session's agent (see `applicationWillTerminate`).
     /// The app stays running with its sessions alive; the Dock icon brings the window
-    /// back (see `applicationShouldHandleReopen`). Only ⌘Q ends sessions.
+    /// back (see `applicationShouldHandleReopen`). ⌘W ends the session it is aimed
+    /// at; only ⌘Q ends all of them at once.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -492,17 +493,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.informativeText =
             "Quitting stops every session's agent and shell. "
             + "Closing the window leaves them running."
-        // Cancel goes first so it takes both the default (Return) and, being titled
-        // Cancel, the Escape key: no stray keypress on this sheet can end a running
-        // agent. Quitting is deliberate — a click, or ⌘Q a second time.
-        alert.addButton(withTitle: "Cancel")
+        // Return quits, Escape cancels — the same two keys every close confirmation
+        // answers to (see `applyConfirmationKeys`). This replaces a first cut where
+        // Cancel took Return and Quit took ⌘Q; the sheet answers a key the user
+        // pressed on purpose, so the answer belongs on the key they'll press next.
         alert.addButton(withTitle: "Quit")
-        if let quitButton = alert.buttons.last {
-            quitButton.hasDestructiveAction = true
-            quitButton.keyEquivalent = "q"
-            quitButton.keyEquivalentModifierMask = .command
-        }
-        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+        alert.addButton(withTitle: "Cancel")
+        TermioStore.applyConfirmationKeys(to: alert)
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 
     /// Closing the app closes its sessions' processes. Without this there is
@@ -1492,29 +1490,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.splitSelectedPane(.vertical, slot: .first)
     }
 
-    /// View ▸ Ungroup (⌘W) — collapses the focused pane out of the layout.
-    /// The session itself stays alive in the sidebar (killing it remains the
-    /// explicit "Close Session"). With no split on screen there is no pane to
-    /// peel off, so ⌘W falls through to closing the window, matching iTerm2
-    /// where the last pane's ⌘W closes its container. That close is just a
-    /// close: the app and every session keep running (issue #242).
+    /// View ▸ Ungroup — collapses the focused pane out of the layout. The session
+    /// itself stays alive in the sidebar; ending it is ⌘W. Ships unbound, so this
+    /// only runs from the menu or a key the user assigned.
     @objc func ungroupPane(_ sender: Any?) {
-        performClose(sender, ungroupingSplit: store.splitRoot != nil)
+        let frontmost = CloseCommand.frontmost(mainWindow: window, palettePanel: palettePanel)
+        guard CloseCommand.actsOnTerminal(frontmost) else { return }
+        store.ungroupSelectedPane()
     }
 
-    /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of
-    /// splits, so it dismisses Settings when Settings is what's in front.
+    /// File ▸ Close Session (⌘W) — Chrome's Close Tab: it ends the focused session,
+    /// collapsing its pane if it held one. With no session on screen it falls
+    /// through to closing the window, the way Chrome's last tab does; that close is
+    /// just a close, with the app and every remaining session still running (#242).
+    @objc func closeSelectedSession(_ sender: Any?) {
+        performClose(sender, closingSession: store.selectedSessionID != nil)
+    }
+
+    /// File ▸ Close Window (⌘⇧W) — closes the frontmost window regardless of what
+    /// is selected, so it dismisses Settings when Settings is what's in front.
     @objc func closeMainWindow(_ sender: Any?) {
-        performClose(sender, ungroupingSplit: false)
+        performClose(sender, closingSession: false)
     }
 
     /// Shared body of the two close keys. Menu actions hang off the app delegate
     /// rather than a window, so the target is resolved here (see `CloseCommand`):
-    /// without it, ⌘W pressed in Settings reaches past it and ungroups a pane in
+    /// without it, ⌘W pressed in Settings reaches past it and ends a session in
     /// the terminal behind.
-    private func performClose(_ sender: Any?, ungroupingSplit: Bool) {
+    private func performClose(_ sender: Any?, closingSession: Bool) {
         let frontmost = CloseCommand.frontmost(mainWindow: window, palettePanel: palettePanel)
-        switch CloseCommand.action(for: frontmost, ungroupingSplit: ungroupingSplit) {
+        switch CloseCommand.action(for: frontmost, closingSession: closingSession) {
         case .nothing:
             break
         case .dismissPalette:
@@ -1523,8 +1528,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             store.paletteMode = nil
         case .closeKeyWindow:
             NSApp.keyWindow?.performClose(sender)
-        case .ungroupPane:
-            store.ungroupSelectedPane()
+        case .closeSession:
+            guard let id = store.selectedSessionID else { break }
+            store.requestCloseSession(id)
         case .closeMainWindow:
             window?.performClose(sender)
         }
@@ -2857,7 +2863,15 @@ private func buildMainMenu() -> NSMenu {
         command: .newPullRequest
     )
     fileMenu.addItem(.separator())
-    // ⌘⇧W closes the whole window (⌘W is Ungroup, terminal-style — see View menu).
+    // Chrome's pair, on Chrome's keys: ⌘W closes the focused session (and the
+    // window once none is left), ⌘⇧W closes the whole window. Close Session stays
+    // enabled with no session selected so ⌘W still reaches the fallthrough
+    // instead of being swallowed by a dimmed menu item.
+    fileMenu.addItem(
+        withTitle: localized("Close Session"),
+        action: #selector(AppDelegate.closeSelectedSession(_:)),
+        command: .closeSession
+    )
     fileMenu.addItem(
         withTitle: localized("Close Window"),
         action: #selector(AppDelegate.closeMainWindow(_:)),
@@ -2930,8 +2944,8 @@ private func buildMainMenu() -> NSMenu {
         action: #selector(AppDelegate.toggleSplitZoom(_:)),
         command: .splitZoom
     )
-    // ⌘W ungroups the focused *pane* (the layout slot) — the session survives
-    // in the sidebar; the last pane's ⌘W falls through to the window. The
+    // Ungroup peels the focused *pane* out of the layout — the session survives
+    // in the sidebar. Ending the session is ⌘W (File ▸ Close Session), and the
     // whole window is ⌘⇧W (File ▸ Close Window).
     viewMenu.addItem(
         withTitle: localized("Ungroup"),

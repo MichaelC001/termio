@@ -53,6 +53,11 @@
           "id": "previousSession",
           "title": "Previous Session",
           "shortcut": "⇧⌘["
+        },
+        {
+          "id": "closeSession",
+          "title": "Close Session",
+          "shortcut": "⌘W"
         }
       ]
     },
@@ -102,7 +107,7 @@
         {
           "id": "ungroup",
           "title": "Ungroup",
-          "shortcut": "⌘W"
+          "shortcut": null
         },
         {
           "id": "focusPaneLeft",

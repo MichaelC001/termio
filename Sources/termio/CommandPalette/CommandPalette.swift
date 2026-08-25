@@ -302,6 +302,14 @@ struct CommandPaletteView: View {
                 })
             }
         }
+        // Close Session takes the selected row, so it is listed only when there is
+        // one — unlike ⌘W, which stays live so it can fall through to the window.
+        if let sid = store.selectedSessionID {
+            actions.append(.init(id: "close-session", title: localized("Close Session"),
+                                 icon: .close, shortcut: keys.display(for: .closeSession)) {
+                $0.requestCloseSession(sid)
+            })
+        }
         // The branch verbs (File menu), listed only when the selected session
         // lives in a real git project — the menu bar's own enablement rule.
         if let sid = store.selectedSessionID, let project = store.project(for: sid),
