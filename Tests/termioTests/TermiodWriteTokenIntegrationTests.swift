@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// Two attachments on one session, against a real daemon.

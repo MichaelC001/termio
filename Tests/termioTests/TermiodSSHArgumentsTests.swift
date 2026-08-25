@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// The `-o` list the app puts on its own `ssh`, and the `ssh -G` reading that

@@ -1519,7 +1519,8 @@ async fn run_search(
             return;
         }
     };
-    let spawned = tokio::process::Command::new("git")
+    let mut command = tokio::process::Command::new("git");
+    command
         .arg("-C")
         .arg(&root)
         .arg("grep")
@@ -1527,7 +1528,16 @@ async fn run_search(
         .arg("-I")
         .arg("--no-color")
         .arg("--untracked")
-        .arg("--fixed-strings")
+        .arg("--fixed-strings");
+    // Smart case, the fzf/ripgrep default every client already expects: an
+    // all-lowercase query matches insensitively, and one uppercase letter opts
+    // back into exactness. Decided from the query itself rather than a flag on
+    // the wire, so a client cannot ask two hosts for the same search and get two
+    // different answers.
+    if query == query.to_lowercase() {
+        command.arg("--ignore-case");
+    }
+    let spawned = command
         .arg("-e")
         .arg(&query)
         .stdout(std::process::Stdio::piped())
@@ -1569,6 +1579,17 @@ async fn run_search(
             // Err means the sender vanished without an explicit cancel — the
             // connection is gone; stop doing work nobody can receive.
             _ = &mut cancel_rx => {
+                canceled = true;
+                break;
+            }
+            // The connection itself going away. Not covered by `cancel_rx`: a
+            // search addressed by a request id parks its cancel sender in the
+            // shared map, and *this task* holds a reference to that map — so the
+            // sender outlives the connection that owned it and the receiver never
+            // resolves. Without this arm a client that hung up (a timeout, a
+            // keystroke abandoning the query) leaves its grep running to
+            // completion, writing into a channel nobody reads.
+            _ = out.closed() => {
                 canceled = true;
                 break;
             }

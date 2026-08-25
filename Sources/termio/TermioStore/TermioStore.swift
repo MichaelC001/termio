@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
+import TermioShared
 
 /// App-wide state: the project/session tree plus a cache of live terminal
 /// surfaces. The cache ("SurfaceCache" in unpeel's terms) keeps one
@@ -512,24 +513,33 @@ final class TermioStore: ObservableObject {
         let session = self[slot]
         let project: Project?
         let localRoot: String?
+        /// Whether this slot's root is wherever the shell wandered, rather than a
+        /// container's fixed path. The same question for both machines: a loose
+        /// terminal follows its `cd` here and on a device, and a project session
+        /// stays at its checkout on both.
+        let followsWorkingDirectory: Bool
         switch slot {
         case .project(let index, _):
             project = projects[index]
             localRoot = session.worktreePath ?? projects[index].path
+            followsWorkingDirectory = false
         case .terminals:
             project = nil
             localRoot = workingDirectory(for: id)
                 ?? session.lastWorkingDirectory
                 ?? Self.looseTerminalRoot
+            followsWorkingDirectory = true
         case .chats:
             project = nil
             localRoot = Self.looseChatRoot
+            followsWorkingDirectory = false
         }
         let alias = session.termiodRemoteHost ?? session.sshHost
         return Self.checkout(
             for: session,
             in: project,
             localRoot: localRoot,
+            liveWorkingDirectory: followsWorkingDirectory ? workingDirectory(for: id) : nil,
             // The route's device, for a session that has never attached and so
             // carries none of its own.
             routeDeviceID: alias.flatMap {
@@ -544,8 +554,14 @@ final class TermioStore: ObservableObject {
     /// `localRoot` is the candidate the tree would have used, and is dropped whole
     /// for a session on another box: a local path that merely shares a name with
     /// the remote one is worse than showing nothing.
+    ///
+    /// `liveWorkingDirectory` is the cwd the session last reported, passed only by
+    /// a slot whose root follows it. It is the same rung the local candidate takes
+    /// first, offered to the other machine too so a `cd` moves the panes wherever
+    /// the shell runs.
     static func checkout(for session: Session, in project: Project?,
-                         localRoot: String?, routeDeviceID: String?) -> Checkout {
+                         localRoot: String?, liveWorkingDirectory: String? = nil,
+                         routeDeviceID: String?) -> Checkout {
         guard let alias = session.termiodRemoteHost ?? session.sshHost else {
             return Checkout(device: .thisMac, root: localRoot)
         }
@@ -554,14 +570,25 @@ final class TermioStore: ObservableObject {
         let device = KnownDevice(alias: alias, deviceID: session.deviceID ?? routeDeviceID)
         return Checkout(
             device: device,
-            root: remoteRoot(for: session, in: project, on: device))
+            root: remoteRoot(for: session, in: project, on: device,
+                             liveWorkingDirectory: liveWorkingDirectory))
     }
 
-    /// Where a session on another device is rooted, as far as this viewer can tell
-    /// without asking the device: the directory the session was spawned in, else
-    /// the checkout recorded for that device when the session sits under a project.
+    /// Where a session on another device is rooted: the directory it is working in
+    /// now, else the one it was spawned in, else the checkout recorded for that
+    /// device when the session sits under a project.
+    ///
+    /// The live cwd is taken only for a **termiod** session, whose PTY runs on the
+    /// device — that report is a path on the machine the panes read. A plain `ssh`
+    /// terminal runs its PTY here, so what the host samples is this Mac's `ssh`
+    /// process sitting in some local directory; feeding that back as a path over
+    /// there is the wrong-machine mixup this whole type exists to prevent.
     private static func remoteRoot(for session: Session, in project: Project?,
-                                   on device: KnownDevice) -> String? {
+                                   on device: KnownDevice,
+                                   liveWorkingDirectory: String?) -> String? {
+        if session.termiodRemoteHost != nil, let cwd = liveWorkingDirectory, !cwd.isEmpty {
+            return cwd
+        }
         if let cwd = session.termiodRemoteCwd { return cwd }
         guard let alias = device.alias, let project else { return nil }
         return project.remoteCheckout(device: device.deviceID, alias: alias)
@@ -1695,10 +1722,15 @@ final class TermioStore: ObservableObject {
     /// Adopts a staged remote file only if no newer presentation won while its
     /// bytes were downloading. The lease owns cleanup and the remote display
     /// name stays separate from the randomized local leaf.
+    ///
+    /// `line` is the 1-based line to scroll to — a search hit's, since the pane
+    /// that opened it knows which line matched. `nil` for the tree, which opens a
+    /// file at its top.
     @discardableResult
     func presentRemoteFilePreview(
         _ lease: RemotePreviewLease,
-        expectedGeneration: UInt64
+        expectedGeneration: UInt64,
+        at line: Int? = nil
     ) -> Bool {
         guard expectedGeneration == filePresentationGeneration,
               FileManager.default.fileExists(atPath: lease.fileURL.path)
@@ -1709,7 +1741,7 @@ final class TermioStore: ObservableObject {
         openFileDisplayName = lease.displayName
         openFileReadOnly = true
         openFileAllowsActiveWebContent = false
-        openFileLine = nil
+        openFileLine = line
         openFileURL = lease.fileURL
         return true
     }

@@ -1,4 +1,5 @@
 import XCTest
+import TermioShared
 @testable import termio
 
 /// Which keyframes a termiod attachment is allowed to paint.

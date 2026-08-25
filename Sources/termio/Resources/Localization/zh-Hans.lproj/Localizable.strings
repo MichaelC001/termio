@@ -190,6 +190,8 @@
 	<string>内置</string>
 	<key>Cancel</key>
 	<string>取消</string>
+	<key>Can’t Search</key>
+	<string>无法搜索</string>
 	<key>Can’t browse %@</key>
 	<string>无法浏览 %@</string>
 	<key>Can’t check on %@</key>
@@ -904,6 +906,8 @@
 	<string>按下快捷键…</string>
 	<key>Preview</key>
 	<string>预览</string>
+	<key>Preview is capped at 1 MB.</key>
+	<string>预览上限为 1 MB。</string>
 	<key>Previous Match</key>
 	<string>上一个匹配项</string>
 	<key>Previous Session</key>
@@ -1034,6 +1038,8 @@
 	<string>回滚：%lld MB</string>
 	<key>Search</key>
 	<string>搜索</string>
+	<key>Search %@</key>
+	<string>搜索 %@</string>
 	<key>Search Files</key>
 	<string>搜索文件</string>
 	<key>Search Project</key>
@@ -1194,6 +1200,10 @@
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
+	<key>The read failed.</key>
+	<string>读取失败。</string>
+	<key>The search failed.</key>
+	<string>搜索失败。</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
 	<string>%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。</string>
 	<key>The session host went away</key>
@@ -1232,6 +1242,8 @@
 	<string>这个分支没有基础分支尚未包含的内容。</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>这个检出没有其他分支可以对比。</string>
+	<key>This device didn’t answer. Its termiod may be too old to search.</key>
+	<string>该设备没有响应，其 termiod 版本可能过旧，不支持搜索。</string>
 	<key>This device is no longer in your configuration.</key>
 	<string>该设备已不在你的配置中。</string>
 	<key>This device sent a name the file tree can’t show.</key>

@@ -1,0 +1,146 @@
+---
+title: Agent integration moves into termiod
+status: draft
+type: rfc
+created: 2026-08-25
+updated: 2026-08-25
+related:
+  - 20260824-agent-integration-on-a-device.md
+  - 20260819-unify-server-plane.md
+  - 20260817-one-path-local-through-termiod.md
+  - 20260824-ios-as-device-client.md
+  - 20260718-agent-abstraction-and-configuration.md
+---
+
+# Agent integration moves into termiod
+
+> The machine that owns the files decides what goes in them. `AgentCatalog` and
+> both installers move to Rust, and Swift asks for an install instead of
+> performing one — reversing §D5 of the device RFC, and settling which of two
+> active documents was right.
+
+## The contradiction this settles
+
+Two live documents disagree, and the disagreement is load-bearing:
+
+- [`20260824-agent-integration-on-a-device.md`](20260824-agent-integration-on-a-device.md)
+  **§D5** — "The daemon never learns what an agent is, where `.claude` lives, or
+  which agents are enabled. It answers *write these bytes under `$HOME`, safely*
+  and nothing more. `AgentCatalog` — including user-authored agents with their own
+  `skills` declaration — stays in Swift, one implementation."
+- [`20260819-unify-server-plane.md`](20260819-unify-server-plane.md) **Stage 10** —
+  the CLI moves verb by verb, ending with "`agent report` → `set-status` plus
+  **hook installation on the device**."
+
+D5 is the newer document and the narrower claim, so it has been the one in force.
+This RFC reverses it. Stage 10 was right.
+
+## Why D5 loses
+
+D5's argument was about **duplication**: four hook dialects, the conflict
+fingerprints and the refusal rules would have to exist in Rust as well as Swift,
+and the catalog they read is user-extensible — a user drops a JSON manifest in
+`AgentCatalog.userAgentsDirectory` and it becomes a real agent. That cost is real
+and this RFC pays it rather than denies it.
+
+What D5 did not price is the shape it forces. Policy in Swift and files on another
+machine means **the plan and the filesystem are on opposite ends of a network**,
+and every step of the plan is a question that has to cross it:
+
+| | |
+| --- | --- |
+| Hook install, per agent | `exists` + `read` + `write` |
+| Skill install, per agent | `isCommandInstalled` + `read` + `write` |
+| A twelve-agent box | **40–60 sequential `ssh` invocations** |
+
+Each is a `Process` with `waitUntilExit()`. Run from the button handler, that was
+a beachball — the window stopped drawing until the last write returned. That has
+been fixed by making the install `async`, which is the correct fix for *freezing*
+and does nothing for the round trips: the install is still one blocking
+conversation per file, and on a link with 200 ms of latency it is tens of seconds
+of spinner.
+
+Batching would cut it to two round trips — read everything, merge in Swift, write
+everything with `expect_sha256` preconditions — and it is a genuinely good
+intermediate step. But it is a workaround for the split, not a fix: it needs a
+batch read and a batch write on the transfer plane that do not exist
+(§D3's `home:` dest is unbuilt), it keeps two implementations of *reachability*
+(the SSH arm and the protocol arm), and it leaves the phone and the browser unable
+to install anything at all, because both lack the Swift that holds the policy.
+
+The deciding argument is the one Stage 10 already made: **the machine that owns
+the files is the machine that should decide what goes in them.** An install is a
+local operation that has been performed remotely by accident of where the code
+lives.
+
+## What moves
+
+| Swift today | Lines | Goes to Rust |
+| --- | --- | --- |
+| `AgentDefinition.swift` — manifest schema, `AgentCatalog`, bundled + user manifests | 1308 | The catalog and the schema. |
+| `HookListener.swift` — six dialect writers, conflict fingerprints, refusal rules | 1134 | The installers. **Not** the listener half — the socket that receives reports stays where the app is. |
+| `SessionControl.swift` — skill installer, skill payload selection | 1031 | The installer and both payloads. |
+| `AgentConfigStore.swift` — the local/SSH seam | 486 | **Deleted.** Its whole reason was that the writer was on the wrong machine. |
+| `InstallOutcome.swift` | 35 | Becomes a protocol reply. |
+
+The 15 bundled manifests under `Sources/termio/Resources/agents/` become a
+termiod resource. The user's own manifests stay exactly where they are, in the
+same format — that is the compatibility line this must not cross.
+
+## What Swift keeps
+
+Everything that is a **preference** rather than a fact about a machine:
+
+- which agents are on the user's list, and in what order
+- the default New Chat agent
+- whether live status and session control are wanted at all
+- the per-device command path override
+
+Swift's call becomes one message — *install the integration for this set of
+enabled agents* — and one reply. `AgentSettingsTab` and `DevicePane` lose their
+`Task.detached` wrappers because there is nothing left to detach.
+
+## The cost, stated plainly
+
+**A second parser for a user-extensible format.** Rust must read the same manifest
+JSON Swift reads, and a manifest the two disagree about is a bug the user sees as
+"my agent works in the list but gets no hooks". Mitigation: the schema is data,
+not behaviour — one set of fixture manifests, parsed by both, asserted equal. That
+test is the contract, and it belongs in CI from the first stage.
+
+**Swift does not stop parsing manifests.** It still renders the roster, so it
+still needs names, icons and commands. What it stops doing is *writing* from them.
+The duplication is therefore in the schema, not in the dialects — which is the
+smaller half, and the half that changes rarely.
+
+**A local install becomes an IPC call.** On this Mac the installers currently run
+in-process. After this they go through termiod like everything else, which is
+[`one-path-local-through-termiod`](20260817-one-path-local-through-termiod.md)'s
+whole thesis and not a new cost.
+
+## Stages
+
+Ordered so each one is shippable and none is a big-bang.
+
+| Stage | Deliverable | Gate |
+| --- | --- | --- |
+| **1** | Manifest schema in Rust, parsing the same 15 bundled files plus the user directory. Nothing installs yet. | A fixture test parses every manifest in both languages and asserts the same values. |
+| **2** | The two shell-command dialects (JSON manifest, script directory) and the skill installer, behind a new `install` control message. | Installing on `ukvps` through termiod produces byte-identical files to the SSH arm's output. |
+| **3** | The plugin dialects and the TOML block. | Same byte-identical gate, all six dialects. |
+| **4** | Swift calls it. `AgentConfigStore` and `SSHAgentConfigStore` are deleted; `DevicePaneModel.setUp` becomes one call. | A twelve-agent install is one round trip. The Settings surfaces are unchanged. |
+| **5** | The phone installs. | The iOS device client offers Set up on a directly-attached box, with the Mac quit. |
+
+Stages 1–4 depend on nothing in the iOS work. Stage 5 depends on
+[`ios-as-device-client`](20260824-ios-as-device-client.md) P4, which depends on
+P0.2 — `termiod serve --wss`, currently PR #344 with failing CI.
+
+## Non-goals
+
+- **The hook listener does not move.** `agent-status.sock` receives reports for an
+  app to render; the daemon already has `set-status` for the device case.
+- **No new transfer-plane work.** §D3's `home:` dest and §D4's `expect_sha256`
+  were the shape needed to write files *from* the client. With the writer on the
+  box, neither is required for this — D4's precondition remains correct for the
+  SSH arm until Stage 4 deletes it.
+- **The user manifest format does not change.** A format migration and a language
+  migration at once is how both fail.

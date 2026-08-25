@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import GhosttyTerminal
+import TermioShared
 
 /// The transfer plane: bytes crossing the viewer↔device boundary.
 ///
@@ -104,23 +105,6 @@ extension Termiod {
             return nil
         }
         return committed.path
-    }
-
-    /// `U` payload: id_len u8, upload id, offset u64 big-endian, then bytes —
-    /// termiod/src/protocol.rs `decode_upload_chunk`. Internal so a test can
-    /// hold it to that layout: the daemon rejects the whole frame on a byte of
-    /// drift, and there is no partial credit on a wire format.
-    static func uploadChunkPayload(
-        uploadID: String, offset: UInt64, data: Data
-    ) -> Data {
-        let id = Data(uploadID.utf8)
-        var payload = Data(capacity: 1 + id.count + 8 + data.count)
-        payload.append(UInt8(clamping: id.count))
-        payload.append(id)
-        var bigEndianOffset = offset.bigEndian
-        withUnsafeBytes(of: &bigEndianOffset) { payload.append(contentsOf: $0) }
-        payload.append(data)
-        return payload
     }
 
     /// Send one request and read frames until `match` claims one. A typed

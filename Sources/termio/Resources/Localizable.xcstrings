@@ -912,6 +912,16 @@
         }
       }
     },
+    "Can’t Search": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法搜索"
+          }
+        }
+      }
+    },
     "Can’t browse %@": {
       "localizations": {
         "zh-Hans": {
@@ -4487,6 +4497,16 @@
         }
       }
     },
+    "Preview is capped at 1 MB.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览上限为 1 MB。"
+          }
+        }
+      }
+    },
     "Previous Match": {
       "localizations": {
         "zh-Hans": {
@@ -5134,6 +5154,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "搜索"
+          }
+        }
+      }
+    },
+    "Search %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索 %@"
           }
         }
       }
@@ -5938,6 +5968,26 @@
         }
       }
     },
+    "The read failed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取失败。"
+          }
+        }
+      }
+    },
+    "The search failed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索失败。"
+          }
+        }
+      }
+    },
     "The session host on %@. Sessions keep running there after you disconnect.": {
       "localizations": {
         "zh-Hans": {
@@ -6124,6 +6174,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个检出没有其他分支可以对比。"
+          }
+        }
+      }
+    },
+    "This device didn’t answer. Its termiod may be too old to search.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备没有响应，其 termiod 版本可能过旧，不支持搜索。"
           }
         }
       }

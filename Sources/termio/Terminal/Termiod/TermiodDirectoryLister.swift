@@ -1,4 +1,5 @@
 import Foundation
+import TermioShared
 
 extension Termiod {
     /// One `fs_list` round trip for a single directory. Blocking; the lister

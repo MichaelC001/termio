@@ -1,4 +1,5 @@
 import Foundation
+import TermioShared
 
 /// The files plane: reading a device's directories and files through `fs.*`.
 ///
@@ -28,6 +29,33 @@ extension Termiod {
     /// without a range (`files.rs` `READ_SOFT_CAP`) and the companion's own
     /// preview budget. Asking for more would be answered `truncated` anyway.
     static let filePreviewByteLimit = 1_024 * 1_024
+
+    /// How long a search may go without the device saying anything before it is
+    /// treated as unanswered.
+    ///
+    /// Deliberately far past any search a person would wait for. Silence is
+    /// normal in the *middle* of a grep — the host streams a batch per fifty
+    /// hits, so a query matching nothing says nothing at all until it finishes —
+    /// and a cold, large, or network-backed checkout can spend a long time
+    /// there. This bound is not "the search is slow", it is "the host is not
+    /// coming back": the case it exists for answers in milliseconds or never.
+    static let searchIdleTimeoutSeconds = 90
+
+    /// One `fs.search` hit: a path relative to the searched root, the 1-based
+    /// line it was found on, and that line's text.
+    struct SearchHit: Sendable {
+        let path: String
+        let line: Int
+        let text: String
+    }
+
+    /// What one search answered. `limitHit` means the device stopped at the
+    /// requested cap and more hits exist — the pane says so rather than passing
+    /// off a truncated set as the whole answer.
+    struct SearchResult: Sendable {
+        let hits: [SearchHit]
+        let limitHit: Bool
+    }
 
     /// Lists directories under `root` on the device `route` leads to. Paths are
     /// absolute on that machine — the daemon confines them under `root` and
@@ -99,6 +127,65 @@ extension Termiod {
         }
     }
 
+    /// Searches file contents under `root` on the device `route` leads to: the
+    /// host runs `git grep` and streams `search_results` events, closing with one
+    /// `fs_searched` reply (§C.12).
+    ///
+    /// Unlike `fs.list` this is a stream, so the hits are collected here and
+    /// handed over whole — the pane renders one result set per query, and a
+    /// channel that lives only for this request cannot outlive it anyway.
+    ///
+    /// Bounded by an idle deadline rather than an overall one: a grep that walks
+    /// a large checkout for a rare string is slow *and* correct, so what is
+    /// waited on is the device saying nothing at all. That bound is what keeps a
+    /// daemon too old to know `fs_search` — which drops the op silently instead
+    /// of refusing it — from parking this thread and its connection forever.
+    ///
+    /// Blocking; call it off the main thread (`DeviceFileProvider` does).
+    ///
+    /// - Parameter idleTimeoutSeconds: the silence bound, a parameter only so a
+    ///   test can hold a stub host silent without waiting the real one out.
+    static func searchContents(
+        route: TermiodRoute, root: String, query: String, limit: Int,
+        idleTimeoutSeconds: Int = searchIdleTimeoutSeconds
+    ) throws -> SearchResult {
+        // Nothing to ask for, and the host would answer one hit anyway: it
+        // appends before it compares against the cap.
+        guard limit > 0 else { return SearchResult(hits: [], limitHit: false) }
+        return try withFilesChannel(route: route) { transport in
+            try writeFrame(
+                transport.writeDescriptor, kind: .control,
+                payload: encodeControl(FsSearchOperation(
+                    root: root, query: query, limit: UInt64(limit), seq: 1)))
+            var hits: [SearchHit] = []
+            while true {
+                try waitForReadable(
+                    transport.readDescriptor, seconds: idleTimeoutSeconds,
+                    operation: "fs.search")
+                let frame = try readFrame(transport.readDescriptor)
+                switch frame.kind {
+                case .event:
+                    guard case .searchResults(let payload) = try decodeEvent(frame.payload)
+                    else { continue }
+                    hits.append(contentsOf: payload.matches.map {
+                        SearchHit(path: $0.path, line: Int(clamping: $0.line), text: $0.text)
+                    })
+                case .control:
+                    switch try decodeControl(frame.payload) {
+                    case .fsSearched(let payload):
+                        return SearchResult(hits: hits, limitHit: payload.limitHit)
+                    case .error(let failure):
+                        throw TermiodClientError.requestFailed(failure.message)
+                    default:
+                        continue
+                    }
+                default:
+                    continue
+                }
+            }
+        }
+    }
+
     /// Opens a control channel that negotiated `files`, and refuses up front on a
     /// daemon that did not grant it — the pane then says the device cannot serve
     /// files rather than hanging on a reply that never comes.
@@ -128,61 +215,6 @@ extension Termiod {
             if case .error(let failure) = control {
                 throw TermiodClientError.requestFailed(failure.message)
             }
-        }
-    }
-
-    /// `F` payload: re u64be, offset u64be, last u8, then the bytes —
-    /// termiod/src/protocol.rs `encode_file_chunk`. Internal so a test can hold
-    /// it to that layout; there is no partial credit on a wire format.
-    static func decodeFileChunk(_ payload: Data) throws -> (offset: UInt64, last: Bool, data: Data) {
-        let headerSize = 17
-        guard payload.count >= headerSize else { throw TermiodClientError.malformedFrame }
-        let bytes = [UInt8](payload)
-        var offset: UInt64 = 0
-        for index in 8 ..< 16 { offset = offset << 8 | UInt64(bytes[index]) }
-        let last: Bool
-        switch bytes[16] {
-        case 0: last = false
-        case 1: last = true
-        default: throw TermiodClientError.malformedFrame
-        }
-        return (offset, last, payload.dropFirst(headerSize))
-    }
-
-    struct FsListOperation: Encodable {
-        let op = "fs_list"
-        let root: String
-        let paths: [String]
-        let seq: UInt64
-    }
-
-    /// No `offset`/`length`: an unranged read is what makes `size` and
-    /// `truncated` mean "the whole file" rather than "the window you asked for".
-    struct FsReadOperation: Encodable {
-        let op = "fs_read"
-        let path: String
-        let seq: UInt64
-    }
-
-    /// The reply header for `fs_read`: `length` bytes from `offset` follow as
-    /// `F` chunks, and `truncated` means the window stopped short of what was
-    /// asked.
-    struct FsFilePayload: Decodable {
-        let size: UInt64
-        let offset: UInt64
-        let length: UInt64
-        let truncated: Bool
-
-        private enum CodingKeys: String, CodingKey {
-            case size, offset, length, truncated
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            size = try container.decode(UInt64.self, forKey: .size)
-            offset = try container.decode(UInt64.self, forKey: .offset)
-            length = try container.decode(UInt64.self, forKey: .length)
-            truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
         }
     }
 }
@@ -240,6 +272,15 @@ struct DeviceFileProvider: Sendable {
             throw TermiodClientError.requestFailed(error)
         }
         return listing.entries
+    }
+
+    /// Content search under the pane's own root, on the device. Confined the same
+    /// way a listing is: the daemon canonicalises `root` and greps nothing above it.
+    func search(_ query: String, limit: Int) async throws -> Termiod.SearchResult {
+        try await run { [route, root] in
+            try Termiod.searchContents(
+                route: route, root: root, query: query, limit: limit)
+        }
     }
 
     func read(_ path: String, limit: Int) async throws -> Data {

@@ -228,13 +228,23 @@ struct FileBrowserView: View {
         case .files:
             EmptyView()
         case .search:
-            if let deviceCheckout {
+            if let deviceCheckout, let deviceRoot = deviceCheckout.root {
+                // The device's own `fs.search`, rooted where its tree is rooted.
+                FileSearchView(
+                    scope: .device(
+                        DeviceFileProvider(
+                            route: deviceCheckout.device.route, root: deviceRoot),
+                        host: deviceCheckout.device.name,
+                        root: deviceRoot),
+                    onDismiss: { store.inspectorTab = .files }
+                )
+                .id(deviceCheckout.deviceIdentity + "\u{1f}" + deviceRoot)
+            } else if let deviceCheckout {
                 unavailable(pane: localized("Search"), on: deviceCheckout)
             } else if let root {
                 FileSearchView(
-                    rootURL: root.url,
-                    onDismiss: { store.inspectorTab = .files },
-                    onOpen: { url, line in store.openFileInEditor(url, at: line) }
+                    scope: .thisMac(root.url),
+                    onDismiss: { store.inspectorTab = .files }
                 )
                 // Fresh identity per project, so a stale query/result set
                 // doesn't carry over when the root moves.
