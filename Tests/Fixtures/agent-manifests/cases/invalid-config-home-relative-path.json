@@ -1,0 +1,2 @@
+{ "id": "invalidConfigHomeRelative", "name": "Invalid Config Home Relative",
+  "configHome": { "env": "X_HOME", "path": "/etc/x" } }

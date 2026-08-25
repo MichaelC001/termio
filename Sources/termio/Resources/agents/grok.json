@@ -14,6 +14,7 @@
   },
   "icon": { "vector": "grok" },
   "install": "https://x.ai/cli",
+  "configHome": { "env": "GROK_HOME", "path": "~/.grok" },
   "skills": { "dir": "~/.grok/skills" },
   "titleStatus": {
     "attention": ["Action Required"]

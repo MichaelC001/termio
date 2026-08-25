@@ -7,6 +7,7 @@
   "permissionBypassFlag": "--allow-all-tools",
   "icon": { "asset": "copilot-favicon" },
   "install": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+  "configHome": { "env": "COPILOT_HOME", "path": "~/.copilot" },
   "skills": { "dir": "~/.copilot/skills" },
   "hooks": {
     "type": "json",

@@ -79,6 +79,24 @@ struct AgentDefinition: Identifiable {
     /// (`~/.claude/skills`), or `nil` when the agent has no skills ecosystem.
     /// `SessionSkillInstaller` installs the termio skill into `<dir>/termio/`.
     let skillDir: String?
+    /// The environment variable that moves this agent's config tree, and the
+    /// prefix it replaces. `nil` for an agent that documents none.
+    ///
+    /// Parsed here so the schema stays one schema, but not yet *applied*: the
+    /// installers move to the daemon in Stage 4 of
+    /// docs/design/20260825-agent-integration-moves-to-termiod.md, and honouring
+    /// a per-agent variable is one env lookup there against another round of
+    /// shell quoting and login-shell probing here. `termiod`'s
+    /// `agent::machine::resolve` is what reads it.
+    let configHome: ConfigHome?
+
+    /// A documented per-agent config-home override. See `ConfigHomeSpec`.
+    struct ConfigHome: Hashable, Sendable {
+        /// The variable the agent documents, e.g. `CLAUDE_CONFIG_DIR`.
+        var env: String
+        /// The path prefix it replaces, unexpanded, e.g. `~/.claude`.
+        var path: String
+    }
 
     /// All fields after `wireName` are optional so the built-in roster and the
     /// fallback don't each have to spell them out.
@@ -89,7 +107,8 @@ struct AgentDefinition: Identifiable {
         iconRef: TermioShared.IconRef, tint: Color, tintHex: String?, installURL: URL?, wireName: String,
         statusRules: AgentStatusRules? = nil, titleRules: AgentStatusRules? = nil,
         emitsProgressStatus: Bool = false,
-        hookSpec: AgentHookSpec? = nil, skillDir: String? = nil
+        hookSpec: AgentHookSpec? = nil, skillDir: String? = nil,
+        configHome: ConfigHome? = nil
     ) {
         self.id = id
         self.order = order
@@ -108,6 +127,7 @@ struct AgentDefinition: Identifiable {
         self.emitsProgressStatus = emitsProgressStatus
         self.hookSpec = hookSpec
         self.skillDir = skillDir
+        self.configHome = configHome
     }
 
     /// The default `order` for a manifest that declares none — high, so unspecified
@@ -887,11 +907,30 @@ struct AgentManifest: Decodable {
     /// the session-control skill there. Optional: agents with no skills ecosystem
     /// (or one termio hasn't confirmed) simply omit it and get no skill install.
     var skills: SkillsSpec?
+    /// Where this agent's config tree lives when its owner has moved it.
+    var configHome: ConfigHomeSpec?
 
     /// The manifest's `skills` — one directory, declared the way hooks declare
     /// theirs. `~` is expanded at install time.
     struct SkillsSpec: Decodable {
         var dir: String?
+    }
+
+    /// The manifest's `configHome`: the environment variable an agent documents
+    /// for moving its config tree, and the path prefix that variable replaces.
+    ///
+    /// Every other path a manifest declares names a fixed directory —
+    /// `~/.claude`, `~/.codex` — and an agent whose owner moved that directory
+    /// reads a variable to find it. Installing to the literal default there puts
+    /// the files where the agent never reads, and says nothing, because every
+    /// hook form ends in `2>/dev/null || true`.
+    ///
+    /// The prefix is stated rather than derived: it is usually the obvious one,
+    /// but Pi's variable names `~/.pi/agent` rather than `~/.pi`, and guessing
+    /// wrong moves an install somewhere nothing looks.
+    struct ConfigHomeSpec: Decodable {
+        var env: String?
+        var path: String?
     }
 
     struct IconSpec: Decodable {
@@ -1075,6 +1114,58 @@ struct AgentManifest: Decodable {
             throw ManifestError.invalid("\(id): skills require 'dir'")
         }
         return dir
+    }
+
+    /// Validates the `configHome` block, and checks that it actually is the home
+    /// the rest of the manifest hangs off.
+    ///
+    /// A prefix that does not cover the paths it claims to is the failure worth
+    /// catching: the install keeps working while the variable is unset and
+    /// silently moves to the wrong place the day somebody sets it, which is the
+    /// whole class of bug this field exists to close.
+    private func resolvedConfigHome(
+        hooks: AgentHookSpec?, skillDir: String?
+    ) throws -> AgentDefinition.ConfigHome? {
+        guard let configHome else { return nil }
+        guard let env = configHome.env?.trimmingCharacters(in: .whitespaces), !env.isEmpty else {
+            throw ManifestError.invalid("\(id): configHome requires 'env'")
+        }
+        guard let path = configHome.path?.trimmingCharacters(in: .whitespaces), !path.isEmpty else {
+            throw ManifestError.invalid("\(id): configHome requires 'path'")
+        }
+        let allowed = CharacterSet.uppercaseLetters
+            .union(CharacterSet(charactersIn: "0123456789_"))
+        guard env.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ManifestError.invalid(
+                "\(id): configHome env must name an environment variable, not '\(env)'")
+        }
+        guard path.hasPrefix("~/") else {
+            throw ManifestError.invalid(
+                "\(id): configHome path must start with '~/', not '\(path)'")
+        }
+        let declared = [hooks?.file, hooks?.directory, skillDir].compactMap { $0 }
+        for candidate in declared where !AgentManifest.isUnder(candidate, path) {
+            throw ManifestError.invalid(
+                "\(id): configHome path '\(path)' does not contain '\(candidate)'")
+        }
+        return AgentDefinition.ConfigHome(env: env, path: path)
+    }
+
+    /// Whether `candidate` sits at or under `prefix`, as path components rather
+    /// than as text — `~/.pi/agent` contains `~/.pi/agent/skills` but not
+    /// `~/.pi/agentic`.
+    static func isUnder(_ candidate: String, _ prefix: String) -> Bool {
+        let candidate = trimmingTrailingSlashes(candidate)
+        let prefix = trimmingTrailingSlashes(prefix)
+        if candidate == prefix { return true }
+        guard candidate.hasPrefix(prefix) else { return false }
+        return candidate.dropFirst(prefix.count).hasPrefix("/")
+    }
+
+    private static func trimmingTrailingSlashes(_ value: String) -> String {
+        var value = value
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
     }
 
     private func resolvedHookSpec() throws -> AgentHookSpec? {
@@ -1267,6 +1358,7 @@ struct AgentManifest: Decodable {
         }
         let hookSpec = try resolvedHookSpec()
         let skillDir = try resolvedSkillDir()
+        let resolvedConfigHome = try resolvedConfigHome(hooks: hookSpec, skillDir: skillDir)
         let statusRules = hookSpec == nil
             ? AgentStatusRules.from(working: status?.working, attention: status?.attention, label: id)
             : nil
@@ -1284,7 +1376,8 @@ struct AgentManifest: Decodable {
             tint: resolvedTint, tintHex: resolvedTintHex,
             installURL: (install ?? installURL).flatMap(URL.init(string:)), wireName: wire ?? id,
             statusRules: statusRules, titleRules: titleRules,
-            emitsProgressStatus: progressStatus ?? false, hookSpec: hookSpec, skillDir: skillDir)
+            emitsProgressStatus: progressStatus ?? false, hookSpec: hookSpec, skillDir: skillDir,
+            configHome: resolvedConfigHome)
     }
 
     private static func bundledAsset(named name: String, in bundle: Bundle) -> URL? {
