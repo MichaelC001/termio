@@ -7,9 +7,9 @@ import AppKit
 /// the list stays put in a narrow leading column and clicking an item only swaps the detail — no
 /// drill-in / back round-trip. Details used to cover the terminal; they live here now, so the
 /// terminal stays live while you read. Below `twoColumnMinWidth` the split would leave the detail
-/// too cramped, so it degrades to detail-only (the list one tab-switch away), Mail-style. When
-/// `store.inspectorMaximized` the detail is hoisted to the app delegate's full-window host, so
-/// `InspectorDetailContent` renders in exactly one place.
+/// too cramped, so it degrades to detail-only (the list one tab-switch away), Mail-style. The
+/// detail itself is not rendered here: `DockedDetailSlot` reserves its space and adopts the one
+/// shared `DetailHost`, which the app delegate borrows while `store.inspectorMaximized`.
 struct InspectorRoot: View {
     @EnvironmentObject var store: TermioStore
     let list: AnyView
@@ -33,7 +33,10 @@ struct InspectorRoot: View {
 
     var body: some View {
         GeometryReader { geo in
-            let showDetail = store.isDetailPresented && !store.inspectorMaximized
+            // Stays true while maximized: the slot keeps its place (empty, since the delegate is
+            // holding the shared host over the whole content area) so restoring is a single
+            // re-parent back into a view that is already laid out, with nothing to re-create.
+            let showDetail = store.isDetailPresented
             // Two-column when there's room AND the user hasn't collapsed the list to focus the detail.
             let twoColumn = showDetail && geo.size.width >= Self.twoColumnMinWidth && !store.inspectorListCollapsed
             // Never let the column eat the detail on a narrow inspector: cap it to leave the detail at
@@ -64,7 +67,7 @@ struct InspectorRoot: View {
                 // is opaque): beside the list in two-column, covering the whole panel — list still
                 // alive beneath — in the narrow or list-collapsed fallbacks.
                 if showDetail {
-                    InspectorDetailContent()
+                    DockedDetailSlot()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.leading, twoColumn ? width + 1 : 0)
                         .transition(.opacity)
@@ -82,10 +85,8 @@ struct InspectorRoot: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .coordinateSpace(.named(Self.dragSpace))
-            // Keyed to the *presentation*, not to `showDetail`: opening and closing a detail
-            // should cross-fade over the list, but maximizing only hands the same detail off to
-            // the full-window host. Fading there would spend 120ms dissolving the docked copy —
-            // uncovering the file tree it sits on — for a swap the user must not see at all.
+            // Opening and closing a detail cross-fades over the list. Maximizing does not touch
+            // this: the slot stays mounted through it, so there is nothing here to animate.
             .animation(.easeOut(duration: 0.12), value: store.isDetailPresented)
             .animation(.easeOut(duration: 0.12), value: twoColumn)
         }
@@ -114,34 +115,124 @@ struct InspectorRoot: View {
     }
 }
 
-/// The maximized detail's root view. It is the same content the inspector docks, run up under the
-/// titlebar: with the toolbar hidden for the duration (see `setDetailMaximized`) there is no band
-/// above it, so the detail's own header *is* the window's top bar rather than a second one beneath
-/// an empty strip. When the sidebar is collapsed the host reaches the window's leading edge and the
-/// traffic lights land on that header, so it takes an inset that clears them; with the sidebar open
-/// they sit over the sidebar and the header starts flush.
-struct MaximizedDetailContent: View {
+/// The one `NSHostingView` that renders whichever detail is open, moved between two parents rather
+/// than built twice: the inspector's `DockedDetailSlot` and the app delegate's full-window position
+/// while `store.inspectorMaximized`.
+///
+/// Two hosts would mean two SwiftUI trees, and maximizing would drop one and build the other from
+/// nothing — which is what made the transition flash: the file was re-read behind a blank frame,
+/// the Markdown reader built a fresh `WKWebView` and landed back at the top, the mode and find bar
+/// reset, and the copy being dropped fired its `onDisappear` save flush. Re-parenting one `NSView`
+/// inside one window keeps its view graph, so every `@State` and the live web view survive.
+@MainActor
+final class DetailHost {
+    static let shared = DetailHost()
+    private init() {}
+
+    private(set) var view: NSHostingView<AnyView>?
+
+    /// The inspector's slot, while one is mounted. The delegate hands the host back to it on
+    /// restore; a weak reference because SwiftUI, not this object, decides when it goes away.
+    weak var dockedSlot: NSView?
+
+    /// The host, built on first use. Both parents ask for it through here, so whichever one needs
+    /// it first creates it and the other finds the same instance.
+    func view(store: TermioStore, settings: AppSettings, window: NSWindow?) -> NSHostingView<AnyView> {
+        if let view { return view }
+        // Measure the traffic lights rather than assuming their layout: a maximized detail's header
+        // runs up into the titlebar, and where the buttons end is where its title may start.
+        let buttonsEnd = window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 70
+        let host = NSHostingView(rootView: AnyView(
+            DetailHostRoot(trafficLightsInset: buttonsEnd)
+                .environmentObject(store)
+                .environmentObject(settings)
+        ))
+        // No SwiftUI-derived sizing constraints: the host is sized by whichever parent holds it,
+        // and the default `.standardBounds` options let auto layout satisfy the root view's ideal
+        // size by resizing the *window* — which once crushed the whole window to a ~90pt strip.
+        host.sizingOptions = []
+        view = host
+        return host
+    }
+
+    /// Puts the host in the inspector's slot, filling it. Re-parenting from the maximized position
+    /// is this same single `addSubview`: the view is never left without a superview, so it never
+    /// leaves the window and nothing inside it is torn down.
+    func dock(in slot: NSView) {
+        guard let view, view.superview !== slot else { return }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        slot.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: slot.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: slot.trailingAnchor),
+            view.topAnchor.constraint(equalTo: slot.topAnchor),
+            view.bottomAnchor.constraint(equalTo: slot.bottomAnchor),
+        ])
+    }
+
+    /// Drops the host once no detail is open. The next open builds a fresh one, which is right —
+    /// there is no document left for it to hold.
+    func discard() {
+        view?.removeFromSuperview()
+        view = nil
+    }
+}
+
+/// The shared host's root view: the same content the inspector docks, plus the two things that
+/// differ once it fills the window. With the toolbar hidden for the duration (see
+/// `setDetailMaximized`) there is no band above it, so the detail's own header *is* the window's top
+/// bar rather than a second one beneath an empty strip; and when the sidebar is collapsed the host
+/// reaches the window's leading edge, so the header takes an inset that clears the traffic lights.
+/// Both read the store, so one long-lived view covers docked and maximized alike.
+struct DetailHostRoot: View {
     @EnvironmentObject var store: TermioStore
-    /// Leading room the traffic lights need, measured from the live window by the app delegate —
-    /// the buttons' geometry is the system's to change, so it is never hardcoded here.
+    /// Leading room the traffic lights need, measured from the live window — the buttons' geometry
+    /// is the system's to change, so it is never hardcoded here.
     let trafficLightsInset: CGFloat
 
     var body: some View {
         InspectorDetailContent()
             .environment(\.detailHeaderLeadingInset, needsTrafficLightsRoom ? trafficLightsInset : 0)
             // Up into the titlebar only when the toolbar has stepped aside for this detail, which
-            // is exactly when the sidebar is collapsed (see `syncMaximizedChrome`). With the
-            // sidebar up the toolbar keeps the sidebar's controls, so the header stays below it
-            // rather than sliding under a band that is still drawing.
-            .ignoresSafeArea(.container, edges: store.sidebarVisible ? [] : .top)
+            // is exactly when it is maximized with the sidebar collapsed (see `syncMaximizedChrome`).
+            // With the sidebar up the toolbar keeps the sidebar's controls, so the header stays
+            // below it rather than sliding under a band that is still drawing.
+            .ignoresSafeArea(.container, edges: ridesTitlebar ? .top : [])
     }
 
-    /// Only when the buttons are actually sitting on this header. With the sidebar open they land
-    /// on the sidebar, and in fullscreen they are hidden until the pointer summons the titlebar —
+    private var ridesTitlebar: Bool { store.inspectorMaximized && !store.sidebarVisible }
+
+    /// Only when the buttons are actually sitting on this header. Docked, or with the sidebar open,
+    /// they land elsewhere; in fullscreen they are hidden until the pointer summons the titlebar —
     /// which then slides in *over* the content, so holding a gap for them all along only pushes the
     /// title inward for nothing.
-    private var needsTrafficLightsRoom: Bool {
-        !store.sidebarVisible && !store.windowIsFullScreen
+    private var needsTrafficLightsRoom: Bool { ridesTitlebar && !store.windowIsFullScreen }
+}
+
+/// The inspector's slot for the shared detail host. It holds no content of its own — it adopts
+/// `DetailHost.shared` — and stands empty while the detail is maximized, keeping the place the host
+/// comes back to laid out and ready.
+struct DockedDetailSlot: NSViewRepresentable {
+    @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ slot: NSView, context: Context) {
+        DetailHost.shared.dockedSlot = slot
+        // While maximized the delegate is holding the host over the whole content area; taking it
+        // back here would yank it out from under the user mid-mode.
+        guard !store.inspectorMaximized else { return }
+        _ = DetailHost.shared.view(store: store, settings: settings, window: slot.window)
+        DetailHost.shared.dock(in: slot)
+    }
+
+    static func dismantleNSView(_ slot: NSView, coordinator: ()) {
+        MainActor.assumeIsolated {
+            if DetailHost.shared.dockedSlot === slot { DetailHost.shared.dockedSlot = nil }
+        }
     }
 }
 
