@@ -167,21 +167,24 @@ struct FileSearchView: View {
     }
 
     /// One flat row of the results list, with a globally unique, stable id.
-    /// The list is deliberately a single `ForEach` over these: the previous
-    /// shape — a per-file `ForEach` nesting a per-hit `ForEach` keyed by bare
-    /// line number — mis-diffed inside `LazyVStack` when typing replaced the
-    /// whole match set (line-number ids collide across files, so SwiftUI
-    /// stitched rows from different files under one header, or rendered them
-    /// empty). Flat rows keyed by `path` / `path:line` make the diff
-    /// unambiguous.
+    ///
+    /// Flat rather than nested `ForEach`es: a per-file loop nesting a per-hit
+    /// loop keyed by bare line number mis-diffed inside `LazyVStack` when typing
+    /// replaced the whole match set — line-number ids collide across files, so
+    /// SwiftUI stitched rows from different files under one header. Ids that
+    /// carry their file make the diff unambiguous.
     private enum ResultRow: Identifiable {
         case header(relative: String, url: URL, count: Int, isExpanded: Bool)
-        case match(ContentMatch)
+        case excerpt(relative: String, url: URL, excerpt: SearchExcerpt)
+        /// The break between two runs of lines from the same file.
+        case gap(id: String)
 
         var id: String {
             switch self {
-            case .header(let relative, _, _, _): return relative
-            case .match(let match): return "\(match.relative):\(match.line)"
+            case .header(let relative, _, _, _): return "h\u{1f}" + relative
+            case .excerpt(let relative, _, let excerpt):
+                return "e\u{1f}\(relative)\u{1f}\(excerpt.firstLine)"
+            case .gap(let id): return id
             }
         }
     }
@@ -191,9 +194,14 @@ struct FileSearchView: View {
         for group in groups {
             let isExpanded = !collapsedFiles.contains(group.relative)
             out.append(.header(relative: group.relative, url: group.url,
-                               count: group.items.count, isExpanded: isExpanded))
-            if isExpanded {
-                for match in group.items { out.append(.match(match)) }
+                               count: group.matchCount, isExpanded: isExpanded))
+            guard isExpanded else { continue }
+            let excerpts = SearchExcerpt.compose(group.items)
+            for (index, excerpt) in excerpts.enumerated() {
+                if index > 0 {
+                    out.append(.gap(id: "g\u{1f}\(group.relative)\u{1f}\(excerpt.firstLine)"))
+                }
+                out.append(.excerpt(relative: group.relative, url: group.url, excerpt: excerpt))
             }
         }
         return out
@@ -224,13 +232,17 @@ struct FileSearchView: View {
                             allowsDrag: allowsDrag,
                             open: { openFirstHit(inFile: relative) }
                         )
-                    case .match(let match):
-                        MatchRow(
-                            match: match,
-                            query: trimmedQuery,
+                    case .excerpt(_, let url, let excerpt):
+                        ExcerptView(
+                            excerpt: excerpt,
+                            url: url,
+                            settings: settings,
+                            colorScheme: colorScheme,
                             chrome: chrome,
-                            open: { open(match) }
+                            open: { line in openLine(line, inFile: url) }
                         )
+                    case .gap:
+                        ExcerptGap()
                     }
                 }
             }
@@ -259,7 +271,7 @@ struct FileSearchView: View {
 
     private func summary(fileCount: Int) -> String {
         let capped = matches.count >= Self.matchLimit
-        return localized("\(matches.count)\(capped ? "+" : "") matches in \(fileCount) files")
+        return localized("\(matchCount)\(capped ? "+" : "") matches in \(fileCount) files")
     }
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
@@ -270,16 +282,26 @@ struct FileSearchView: View {
 
     /// Hits folded under their file, in grep's own order (file-grouped already —
     /// consecutive runs are enough, no re-sort).
-    private var groups: [(relative: String, url: URL, items: [ContentMatch])] {
-        var out: [(relative: String, url: URL, items: [ContentMatch])] = []
+    private var groups: [(relative: String, url: URL, items: [ContentMatch], matchCount: Int)] {
+        var out: [(relative: String, url: URL, items: [ContentMatch], matchCount: Int)] = []
         for match in matches {
+            // The badge counts *matches*, not rows: one line holding the query
+            // three times is three hits, and a badge saying "1" beside three
+            // painted spans is the pane disagreeing with itself.
+            let hits = max(match.spans.count, 1)
             if out.last?.relative == match.relative {
                 out[out.count - 1].items.append(match)
+                out[out.count - 1].matchCount += hits
             } else {
-                out.append((match.relative, match.url, [match]))
+                out.append((match.relative, match.url, [match], hits))
             }
         }
         return out
+    }
+
+    /// Total hits across every file, for the summary line.
+    private var matchCount: Int {
+        matches.reduce(0) { $0 + max($1.spans.count, 1) }
     }
 
     // MARK: - Search
@@ -331,7 +353,15 @@ struct FileSearchView: View {
                         relative: hit.path,
                         url: base.appendingPathComponent(hit.path),
                         line: hit.line,
-                        text: hit.text)
+                        text: hit.text,
+                        // The host measured these in bytes of its own line; the
+                        // row paints characters. A range that does not land on a
+                        // character boundary is dropped rather than nudged —
+                        // a highlight one byte off is worse than none.
+                        spans: hit.spans.compactMap { ContentMatch.range(hit.text, bytes: $0) },
+                        isWindowed: hit.isWindowed,
+                        before: hit.before,
+                        after: hit.after)
                 }
             } catch {
                 guard !Task.isCancelled else { return [] }
@@ -375,18 +405,27 @@ struct FileSearchView: View {
         open(match)
     }
 
+    /// A click anywhere in an excerpt — a hit line or a context line — opens the
+    /// file there. Context is real text from the file, so it is as clickable as
+    /// the hit; treating it as decoration would make half the pane inert.
+    private func openLine(_ line: Int, inFile url: URL) {
+        guard let match = matches.first(where: { $0.url == url }) else { return }
+        open(match, at: line)
+    }
+
     /// Opens a hit at its line: the editor for a local file, and for a device the
     /// same read-only preview its file tree opens — the bytes are downloaded,
     /// never edited in place.
-    private func open(_ match: ContentMatch) {
+    private func open(_ match: ContentMatch, at line: Int? = nil) {
+        let target = line ?? match.line
         guard case .device(let provider, let host, _) = scope else {
-            store.openFileInEditor(match.url, at: match.line)
+            store.openFileInEditor(match.url, at: target)
             return
         }
         openTask?.cancel()
         let path = match.url.path
         let name = match.url.lastPathComponent
-        let line = match.line
+        let line = target
         let generation = store.filePresentationGeneration
         openTask = Task { @MainActor in
             do {
@@ -629,6 +668,208 @@ private struct FileHeaderRow: View {
     }
 }
 
+/// A run of consecutive lines from one file — what one excerpt draws.
+///
+/// Zed's project search shows results as real text with the lines around them
+/// rather than as a list of isolated strings, because a hit is only legible
+/// where it sits: `items` means nothing, `repeated Widget items;` means
+/// something. Two hits close together belong in one run, not two — reading the
+/// same context twice with a divider through it is worse than reading it once.
+struct SearchExcerpt: Identifiable {
+    let lines: [ExcerptLine]
+    var firstLine: Int { lines.first?.number ?? 0 }
+    var id: Int { firstLine }
+
+    /// Folds a file's matches into runs. Matches arrive in line order with their
+    /// own context, so runs that touch or overlap merge, and each line is kept
+    /// once — the trailing context of one hit is the leading context of the next.
+    static func compose(_ matches: [ContentMatch]) -> [SearchExcerpt] {
+        var runs: [[ExcerptLine]] = []
+        for match in matches {
+            for line in match.excerptLines() {
+                if var current = runs.last, let last = current.last {
+                    if line.number <= last.number {
+                        // Already drawn — but a context line seen again as a hit
+                        // has to *become* the hit, or the match goes unpainted.
+                        if line.isMatch, let index = current.firstIndex(where: {
+                            $0.number == line.number
+                        }), !current[index].isMatch {
+                            current[index] = line
+                            runs[runs.count - 1] = current
+                        }
+                        continue
+                    }
+                    if line.number == last.number + 1 {
+                        runs[runs.count - 1].append(line)
+                        continue
+                    }
+                }
+                runs.append([line])
+            }
+        }
+        return runs.map { SearchExcerpt(lines: $0) }
+    }
+}
+
+/// One line inside an excerpt: its number, its text, and — for a hit — where the
+/// query landed, as the matcher measured it.
+struct ExcerptLine: Identifiable {
+    let number: Int
+    let text: String
+    let spans: [Range<String.Index>]
+    let isMatch: Bool
+    /// Whether the text is a window cut out of a longer line, so the row can
+    /// say so instead of implying the line starts here.
+    let isWindowed: Bool
+
+    var id: Int { number }
+}
+
+extension ContentMatch {
+    /// The match as excerpt lines: its context above, the hit, its context below.
+    func excerptLines() -> [ExcerptLine] {
+        var lines: [ExcerptLine] = []
+        for (offset, text) in before.enumerated() {
+            lines.append(ExcerptLine(
+                number: firstLine + offset, text: text, spans: [],
+                isMatch: false, isWindowed: false))
+        }
+        lines.append(ExcerptLine(
+            number: line, text: text, spans: spans, isMatch: true,
+            isWindowed: isWindowed))
+        for (offset, text) in after.enumerated() {
+            lines.append(ExcerptLine(
+                number: line + 1 + offset, text: text, spans: [],
+                isMatch: false, isWindowed: false))
+        }
+        return lines
+    }
+}
+
+/// One excerpt: a gutter of line numbers beside the file's own text, syntax
+/// colored, with the matched ranges washed.
+///
+/// The wash is deliberately not the accent color. On macOS a blue fill means
+/// *selected*, and the row already has hover and selection layers of its own —
+/// painting matches in the same vocabulary made a hit read as "this row is
+/// picked". VS Code and Zed both keep find-highlight in a separate, warmer
+/// register for the same reason.
+private struct ExcerptView: View {
+    let excerpt: SearchExcerpt
+    let url: URL
+    @ObservedObject var settings: AppSettings
+    let colorScheme: ColorScheme
+    let chrome: ChromeTheme?
+    let open: (Int) -> Void
+
+    @State private var styled: [Int: NSAttributedString] = [:]
+    @State private var hoveredLine: Int?
+
+    private var font: NSFont { settings.resolvedTerminalFont() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(excerpt.lines) { line in
+                row(line)
+            }
+        }
+        .padding(.vertical, 3)
+        // Colored per excerpt, and lazily: `LazyVStack` only builds what is on
+        // screen, so a thousand-hit search highlights the dozen runs in view
+        // rather than all of them.
+        .task(id: taskKey) { await colorize() }
+    }
+
+    private func row(_ line: ExcerptLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(line.number)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 34, alignment: .trailing)
+            Text(attributed(line))
+                .font(.system(size: 11.5, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .background(
+            SidebarRowHighlight(isSelected: false, isHovering: hoveredLine == line.number,
+                                chrome: chrome)
+        )
+        .onHover { hoveredLine = $0 ? line.number : nil }
+        .onTapGesture { open(line.number) }
+    }
+
+    /// The line as it draws: syntax colors underneath, the match wash on top.
+    /// Built from the spans the matcher reported — this view never searches the
+    /// text itself, which is what keeps highlight and result the same answer.
+    private func attributed(_ line: ExcerptLine) -> AttributedString {
+        let base = styled[line.number]
+            ?? NSAttributedString(string: line.text, attributes: [
+                .foregroundColor: chrome.map { NSColor($0.foreground) } ?? NSColor.labelColor,
+            ])
+        let painted = NSMutableAttributedString(attributedString: base)
+        painted.addAttribute(.font, value: font,
+                             range: NSRange(location: 0, length: painted.length))
+        for span in line.spans {
+            let range = NSRange(span, in: line.text)
+            guard range.location != NSNotFound,
+                  range.location + range.length <= painted.length else { continue }
+            painted.addAttribute(.backgroundColor, value: Self.wash(colorScheme), range: range)
+            painted.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        }
+        var result = (try? AttributedString(painted, including: \.appKit)) ?? AttributedString(line.text)
+        if line.isWindowed {
+            // The line did not start here; say so rather than letting the window
+            // pass for the whole line.
+            result = AttributedString("…") + result
+        }
+        return result
+    }
+
+    /// The find-highlight, in both schemes. Warm rather than accent-blue so it
+    /// cannot be read as selection.
+    private static func wash(_ scheme: ColorScheme) -> NSColor {
+        scheme == .dark
+            ? NSColor(calibratedRed: 0.99, green: 0.76, blue: 0.29, alpha: 0.30)
+            : NSColor(calibratedRed: 0.98, green: 0.72, blue: 0.11, alpha: 0.42)
+    }
+
+    private var taskKey: String {
+        "\(url.path)\u{1f}\(excerpt.firstLine)\u{1f}\(colorScheme)"
+    }
+
+    private func colorize() async {
+        guard let language = FileEditorView.highlightLanguage(for: url) else { return }
+        let requests = excerpt.lines.map { StyledLineRequest(id: $0.number, text: $0.text) }
+        let result = await DiffHighlighter.shared.styledLines(
+            requests, language: language,
+            theme: colorScheme == .dark ? "xcode-dark" : "xcode", font: font)
+        guard !Task.isCancelled else { return }
+        styled = result.byRow
+    }
+}
+
+/// The break between two runs of lines from the same file — Zed's "there is
+/// more of this file between these" mark, quiet enough not to read as a divider
+/// between files.
+private struct ExcerptGap: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("⋯")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.quaternary)
+                .frame(width: 34, alignment: .trailing)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 12)
+    }
+}
+
 private extension View {
     /// Drags the row out as its file, but only when the file is on this Mac. A
     /// device's row carries a path on that box, and a drag promising the Finder
@@ -643,86 +884,3 @@ private extension View {
     }
 }
 
-/// One hit line, styled after Xcode's Find navigator: the line's text in the
-/// system font with the context dimmed and the matched substring lifted to
-/// full-strength semibold — the matches are what the eye lands on, not the
-/// context. No line-number gutter (neither Xcode nor VS Code shows one; the
-/// click jumps to the line anyway), so the text aligns under the file name.
-private struct MatchRow: View {
-    let match: ContentMatch
-    let query: String
-    let chrome: ChromeTheme?
-    let open: () -> Void
-
-    @State private var isHovering = false
-
-    /// Leading context kept before the first hit, cut at a word boundary — VS
-    /// Code's `lcut(…, 26)`: enough to identify the line, short enough that the
-    /// hit stays near the left edge.
-    private static let leadingContextMax = 26
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Text(highlightedText())
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-        }
-        // Aligns the text's leading edge with the header row's file name
-        // (10 padding + 12 chevron + 4 spacing + 16 icon + 5 spacing).
-        .padding(.leading, 47)
-        .padding(.trailing, 8)
-        // One flat row height for every hit (VS Code pins all search rows to
-        // 22px) — the list's rhythm stays even no matter what the text holds.
-        .frame(height: 22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .background(
-            SidebarRowHighlight(isSelected: false, isHovering: isHovering, chrome: chrome)
-                .animation(.easeInOut(duration: 0.12), value: isHovering)
-        )
-        .onHover { isHovering = $0 }
-        .onTapGesture(perform: open)
-    }
-
-    /// The line trimmed for display: leading context word-boundary-cut to
-    /// `leadingContextMax` chars (with an ellipsis) so the first hit sits near
-    /// the left edge, then every occurrence of the query marked with the
-    /// highlighter treatment — full-strength text on a soft accent wash. The
-    /// context stays `.secondary` (the row's base style), so hits carry the
-    /// row's visual weight even when the match is two characters inside a word.
-    private func highlightedText() -> AttributedString {
-        var display = Substring(match.text.trimmingCharacters(in: .whitespaces))
-        if let first = display.range(of: query, options: .caseInsensitive),
-           display.distance(from: display.startIndex, to: first.lowerBound) > Self.leadingContextMax {
-            var start = display.index(first.lowerBound, offsetBy: -Self.leadingContextMax)
-            // Land on the next word boundary so the cut doesn't open mid-word.
-            if let space = display[start..<first.lowerBound].firstIndex(of: " ") {
-                start = display.index(after: space)
-            }
-            display = display[start...]
-        } else {
-            return marked(display)
-        }
-        return AttributedString("…") + marked(display)
-    }
-
-    /// `display` with every case-insensitive occurrence of the query lifted to
-    /// `.primary` over an accent wash.
-    private func marked(_ display: Substring) -> AttributedString {
-        var attributed = AttributedString()
-        var rest = display
-        while let range = rest.range(of: query, options: .caseInsensitive) {
-            attributed += AttributedString(String(rest[..<range.lowerBound]))
-            var hit = AttributedString(String(rest[range]))
-            hit.foregroundColor = .primary
-            hit.backgroundColor = Color.accentColor.opacity(0.28)
-            attributed += hit
-            rest = rest[range.upperBound...]
-        }
-        attributed += AttributedString(String(rest))
-        return attributed
-    }
-}

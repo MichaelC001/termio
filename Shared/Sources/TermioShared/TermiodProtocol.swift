@@ -512,7 +512,32 @@ public enum Termiod {
     public struct SearchMatchPayload: Decodable, Sendable {
         public let path: String
         public let line: UInt64
+        /// The matching line, or a window of it when the line is long.
         public let text: String
+        /// Byte offset of `text` inside the real line — non-zero when the host
+        /// windowed a long line around its first hit.
+        public let textOffset: UInt64
+        /// Byte ranges inside `text` where the query hit, from the host's own
+        /// matcher. Empty from a host too old to report them, which a client
+        /// must read as "unknown", never as "no matches on this line".
+        public let spans: [[UInt32]]
+        public let before: [String]
+        public let after: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case path, line, text, textOffset, spans, before, after
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            path = try container.decode(String.self, forKey: .path)
+            line = try container.decode(UInt64.self, forKey: .line)
+            text = try container.decode(String.self, forKey: .text)
+            textOffset = try container.decodeIfPresent(UInt64.self, forKey: .textOffset) ?? 0
+            spans = try container.decodeIfPresent([[UInt32]].self, forKey: .spans) ?? []
+            before = try container.decodeIfPresent([String].self, forKey: .before) ?? []
+            after = try container.decodeIfPresent([String].self, forKey: .after) ?? []
+        }
     }
 
     /// The terminal reply to `fs_search`: how many hits streamed, and why the

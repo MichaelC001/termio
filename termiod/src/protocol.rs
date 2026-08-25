@@ -352,7 +352,31 @@ pub struct GitBranchEntry {
 pub struct SearchMatch {
     pub path: String,
     pub line: u64,
+    /// The matching line, or a window of it when the line is long. `text_offset`
+    /// says where the window starts, so a client can show that it was cut.
     pub text: String,
+    /// Byte offset of `text` within the real line. Non-zero only for a windowed
+    /// long line, and always chosen so the first match is inside the window —
+    /// truncating from the left would send a line with the match cut off it,
+    /// which no client can highlight.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_offset: u64,
+    /// Where the query matched inside `text`, as byte ranges. Produced by the
+    /// same case rule that decided the line matched at all, so a client paints
+    /// hits instead of re-deriving them with a second, differently-behaved
+    /// matcher. Empty from a host too old to report them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<[u32; 2]>,
+    /// The lines just before and after, for an excerpt. Capped by the host; a
+    /// client that wants only the matching line ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub after: Vec<String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -321,6 +321,53 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertEqual(result.hits.first?.text, "Widget lives here")
     }
 
+    /// The host reports where it hit and the lines around it, because the pane
+    /// paints those spans rather than re-finding the query itself.
+    func testSearchReportsSpansAndContext() throws {
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "Widget", limit: 400)
+
+        let hit = try XCTUnwrap(result.hits.first)
+        XCTAssertEqual(hit.path, "widget.txt")
+        let text = hit.text
+        let spans = hit.spans.compactMap { ContentMatch.range(text, bytes: $0) }
+        XCTAssertEqual(spans.map { String(text[$0]) }, ["Widget"],
+                       "the host says where it matched")
+        XCTAssertFalse(hit.isWindowed, "a short line is not a window")
+        XCTAssertTrue(hit.before.isEmpty, "the hit is the first line of its file")
+        XCTAssertEqual(hit.after, [], "and its last")
+    }
+
+    /// Context arrives on both sides when the file has lines to give.
+    func testSearchCarriesTheLinesAroundAHit() throws {
+        let path = root.appendingPathComponent("story.txt")
+        try Data("one\ntwo\nWidget\nfour\nfive\n".utf8).write(to: path)
+
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "Widget", limit: 400)
+        let hit = try XCTUnwrap(result.hits.first { $0.path == "story.txt" })
+
+        XCTAssertEqual(hit.line, 3)
+        XCTAssertEqual(hit.before, ["one", "two"])
+        XCTAssertEqual(hit.after, ["four", "five"])
+    }
+
+    /// The case the old row got wrong: a hit past the line cap. The host windows
+    /// the line around it, so there is always something to paint.
+    func testAMatchPastTheLineCapStillArrivesPaintable() throws {
+        let path = root.appendingPathComponent("minified.js")
+        let line = String(repeating: "x", count: 4000) + "needle" + String(repeating: "y", count: 4000)
+        try Data((line + "\n").utf8).write(to: path)
+
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "needle", limit: 400)
+        let hit = try XCTUnwrap(result.hits.first { $0.path == "minified.js" })
+
+        XCTAssertTrue(hit.isWindowed)
+        let spans = hit.spans.compactMap { ContentMatch.range(hit.text, bytes: $0) }
+        XCTAssertEqual(spans.map { String(hit.text[$0]) }, ["needle"])
+    }
+
     /// Smart case, matching what the local pane has always done: an all-lowercase
     /// query matches insensitively, and an uppercase letter opts into exactness.
     func testSearchIsSmartCase() throws {
