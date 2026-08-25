@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Split-pane actions. The groups themselves live on the store as `splitGroups`
@@ -232,6 +233,31 @@ extension TermioStore {
               anchorHome.sharesRoster(with: movedHome)
         else { return false }
         return session(moved)?.worktreePath == session(anchor)?.worktreePath
+    }
+
+    /// The session a drag is carrying, read off the drag pasteboard and cached in
+    /// `draggingSessionID` for the rest of the drag.
+    ///
+    /// `DropInfo`'s own item providers cannot answer this: SwiftUI rebuilds them on
+    /// the receiving side into `public.url` plus plain text, so a private type
+    /// registered at the source never survives the trip — and loading the text back
+    /// is async, while a drop delegate has to answer with the pointer still moving.
+    /// The drag pasteboard holds the same payload, synchronously.
+    ///
+    /// Called only from the drop delegates' per-entry hooks (`validateDrop`,
+    /// `dropEntered`, `performDrop`); `dropUpdated` fires at pointer rate and reads
+    /// `draggingSessionID` instead. `NSPasteboard(name:)` is a round trip to the
+    /// pasteboard server, and a drag cannot change what it carries between two
+    /// pointer moves.
+    @discardableResult
+    func resolveDraggedSession() -> Session.ID? {
+        let carried = NSPasteboard(name: .drag).string(forType: .string)
+            .flatMap { Self.sessionID(fromLink: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        // A drag that carries no session link clears the cue as much as one that
+        // does: dragging a file in after dragging a row out must not inherit the
+        // row's lift.
+        if draggingSessionID != carried { draggingSessionID = carried }
+        return carried
     }
 
     /// Lands a session dragged out of the sidebar on the `zone` half of a visible
