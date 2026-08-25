@@ -8,6 +8,8 @@
 …还有 %lld 个</string>
 	<key> Cost is estimated at API rates.</key>
 	<string>费用按 API 价格估算。</string>
+	<key>%1$@ changed on %2$@</key>
+	<string>%1$@ 在 %2$@ 上已被修改</string>
 	<key>%@ and %@</key>
 	<string>%1$@ 和 %2$@</string>
 	<key>%@ didn’t come up — check the network and retry</key>
@@ -866,6 +868,8 @@
 	<string>在这台设备上由 Termio 之外打开</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>打开定义该设备的 ~/.ssh/config 条目。</string>
+	<key>Overwrite</key>
+	<string>覆盖</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
 	<key>Pair your iPhone and remote access</key>
@@ -1030,6 +1034,8 @@
 	<string>存储</string>
 	<key>Save failed: %@</key>
 	<string>存储失败：%@</string>
+	<key>Saving to %@…</key>
+	<string>正在保存到 %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>用微信扫描二维码加入中文社区群。</string>
 	<key>Scrollback history and text selection</key>
@@ -1104,6 +1110,8 @@
 	<string>技能已重新安装</string>
 	<key>Skip permission prompts</key>
 	<string>跳过权限确认</string>
+	<key>Somebody else wrote this file after you opened it. Overwriting replaces their version.</key>
+	<string>在你打开之后，有人写入了这个文件。覆盖会替换掉对方的版本。</string>
 	<key>Something else already owns %@.</key>
 	<string>%@ 已被其他程序占用。</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
@@ -1302,6 +1310,8 @@
 	<string>取消编组</string>
 	<key>Unpin</key>
 	<string>取消固定</string>
+	<key>Unsaved changes — press ⌘S to save to %@</key>
+	<string>有未保存的更改 — 按 ⌘S 保存到 %@</string>
 	<key>Unsaved changes — saving…</key>
 	<string>未存储的更改 — 正在存储…</string>
 	<key>Update</key>

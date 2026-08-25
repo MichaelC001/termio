@@ -41,6 +41,17 @@ extension Termiod {
     /// coming back": the case it exists for answers in milliseconds or never.
     static let searchIdleTimeoutSeconds = 90
 
+    /// A file as it was on the device: its bytes, and the version they were read
+    /// at. The version travels with the bytes because a reader that may later
+    /// write them back has to be able to say *what it read* — asking again at
+    /// save time would answer about a file that may already have changed.
+    struct DeviceFile: Sendable {
+        let data: Data
+        /// Whole seconds since the epoch, and 0 when the host did not say — no
+        /// version, so a save carrying it can make no claim and asks for none.
+        let mtime: UInt64
+    }
+
     /// One `fs.search` hit: a path relative to the searched root, the 1-based
     /// line it was found on, and that line's text.
     struct SearchHit: Sendable {
@@ -94,7 +105,7 @@ extension Termiod {
     /// Blocking; call it off the main thread.
     static func readFile(
         route: TermiodRoute, path: String, limit: Int = filePreviewByteLimit
-    ) throws -> Data {
+    ) throws -> DeviceFile {
         try withFilesChannel(route: route) { transport in
             let header = try requestFiles(
                 transport, FsReadOperation(path: path, seq: 1)
@@ -114,7 +125,9 @@ extension Termiod {
                 case .file:
                     let chunk = try decodeFileChunk(frame.payload)
                     data.append(chunk.data)
-                    if chunk.last { return data }
+                    if chunk.last {
+                        return DeviceFile(data: data, mtime: header.mtime)
+                    }
                 case .control:
                     if case .error(let failure) = try decodeControl(frame.payload) {
                         throw TermiodClientError.requestFailed(failure.message)
@@ -123,7 +136,7 @@ extension Termiod {
                     continue
                 }
             }
-            return data
+            return DeviceFile(data: data, mtime: header.mtime)
         }
     }
 
@@ -232,6 +245,10 @@ enum DeviceFileError: Error, Equatable {
     /// A name the tree refuses to build a path from.
     case unsafeName
     case notRegularFile
+    /// The device refused the save because what it would replace changed after
+    /// this client read it. Carries the host's own sentence, which names both
+    /// versions. Not a failure so much as a question for the person typing.
+    case conflict(String)
 }
 
 extension FileEntry {
@@ -283,9 +300,26 @@ struct DeviceFileProvider: Sendable {
         }
     }
 
-    func read(_ path: String, limit: Int) async throws -> Data {
+    func read(_ path: String, limit: Int) async throws -> Termiod.DeviceFile {
         try await run { [route] in
             try Termiod.readFile(route: route, path: path, limit: limit)
+        }
+    }
+
+    /// Writes `data` back to `path` on the device, replacing what is there.
+    ///
+    /// `ifUnmodifiedSince` is the version the caller read; the host refuses the
+    /// commit if the file has moved on since, and that refusal arrives as
+    /// `DeviceFileError.conflict`. The write is confined to this provider's own
+    /// root, so a pane can only ever save inside the checkout it is showing.
+    /// - Returns: the version the write produced, for the next save to claim.
+    func write(
+        _ path: String, data: Data, ifUnmodifiedSince: UInt64?
+    ) async throws -> UInt64 {
+        try await run { [route, root] in
+            try Termiod.writeFile(
+                route: route, root: root, path: path, data: data,
+                ifUnmodifiedSince: ifUnmodifiedSince)
         }
     }
 

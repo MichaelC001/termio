@@ -39,30 +39,68 @@ extension Termiod {
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         do {
             return try performUpload(
-                route: route, session: session, name: name, data: data, sha256: digest)
+                route: route, session: session, dest: "temp:\(name)",
+                data: data, sha256: digest).path
         } catch TermiodClientError.connectionClosed {
             Log.termiod.info("""
             transfer to \(session, privacy: .public) lost its pipe; resuming
             """)
             return try performUpload(
-                route: route, session: session, name: name, data: data, sha256: digest)
+                route: route, session: session, dest: "temp:\(name)",
+                data: data, sha256: digest).path
         }
+    }
+
+    /// Writes `data` back to `path` on the device, replacing what is there.
+    ///
+    /// The same transfer as a paste — open, chunk, commit — pointed at a path
+    /// inside a checkout instead of a session's scratch directory. That is what
+    /// makes this *save*: the host lands the bytes in a dotfile beside the
+    /// destination and `rename`s them over it, so a reader on that machine sees
+    /// either the old file or the new one and never a half-written one.
+    ///
+    /// `ifUnmodifiedSince` is the version the caller read. The host refuses the
+    /// commit when the file has changed since, which arrives here as
+    /// `DeviceFileError.conflict` — the person is asked, rather than the other
+    /// writer's work being thrown away.
+    ///
+    /// Blocking; call it off the main thread.
+    /// - Returns: the version the write produced, which the next save of the
+    ///   same file must claim.
+    static func writeFile(
+        route: TermiodRoute,
+        root: String,
+        path: String,
+        data: Data,
+        ifUnmodifiedSince: UInt64?
+    ) throws -> UInt64 {
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        // Deliberately not retried on a lost pipe the way a paste is: a resumed
+        // open would re-check the version against a file the retry has already
+        // spent time not holding, and a save is small enough that starting over
+        // costs nothing. The caller sees the failure and can press save again.
+        return try performUpload(
+            route: route, session: nil, root: root, dest: path,
+            data: data, sha256: digest, ifUnmodifiedSince: ifUnmodifiedSince).mtime
     }
 
     private static func performUpload(
         route: TermiodRoute,
-        session: String,
-        name: String,
+        session: String?,
+        root: String? = nil,
+        dest: String,
         data: Data,
-        sha256: String
-    ) throws -> String {
+        sha256: String,
+        ifUnmodifiedSince: UInt64? = nil
+    ) throws -> (path: String, mtime: UInt64) {
         let transport = try Transport.open(route)
         defer { transport.close() }
         try performHello(transport, role: "control", caps: ["upload"])
 
         let opened = try request(transport, UploadOpenOperation(
-            dest: "temp:\(name)",
+            dest: dest,
             session: session,
+            root: root,
             size: UInt64(data.count),
             sha256: sha256,
             seq: 1
@@ -99,12 +137,16 @@ extension Termiod {
         }
 
         let committed = try request(
-            transport, UploadCommitOperation(uploadId: opened.uploadId, seq: 2)
+            transport,
+            UploadCommitOperation(
+                uploadId: opened.uploadId,
+                ifUnmodifiedSince: ifUnmodifiedSince,
+                seq: 2)
         ) { control in
             if case .uploadCommitted(let payload) = control { return payload }
             return nil
         }
-        return committed.path
+        return (committed.path, committed.mtime)
     }
 
     /// Send one request and read frames until `match` claims one. A typed
@@ -130,6 +172,13 @@ extension Termiod {
             let control = try decodeControl(frame.payload)
             if let reply = match(control) { return reply }
             if case .error(let failure) = control {
+                // A refused version is its own answer, not a failed request: the
+                // client asks the person whether to overwrite. The host says so
+                // in the code (`ErrorCode::Conflict`), which is why this reads
+                // the code rather than pattern-matching English.
+                if failure.code == "conflict" {
+                    throw DeviceFileError.conflict(failure.message)
+                }
                 throw TermiodClientError.requestFailed(failure.message)
             }
         }

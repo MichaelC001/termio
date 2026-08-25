@@ -25,6 +25,20 @@ pub const READ_SOFT_CAP: u64 = 1024 * 1024;
 /// Directory names the host never walks on its own. These are the watcher's
 /// ignore rules (`resource.rs::classify`) seen from the pull side: what the
 /// watcher drops, the lister stubs as `unloaded_dir`.
+/// A file's modification time in whole seconds, or 0 when the host cannot say.
+/// Whole seconds because that is what the listing has always reported and what
+/// every filesystem here agrees on; sub-second precision differs by filesystem
+/// and would make a version comparison fail for reasons that have nothing to do
+/// with the file changing.
+fn mtime_seconds(metadata: &std::fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 fn is_unloaded_dir_name(name: &str) -> bool {
     name == ".git" || name == ".hg" || name == ".svn"
 }
@@ -120,12 +134,7 @@ fn list_one(
         let Ok(metadata) = std::fs::symlink_metadata(item.path()) else {
             continue;
         };
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+        let mtime = mtime_seconds(&metadata);
         let (kind, symlink_target) = if metadata.file_type().is_symlink() {
             let target = std::fs::read_link(item.path())
                 .ok()
@@ -173,6 +182,12 @@ pub struct FileWindow {
     pub size: u64,
     pub offset: u64,
     pub truncated: bool,
+    /// Seconds since the epoch, as the host sees them. This is the *version* a
+    /// reader holds: an editor that means to write the file back sends it to
+    /// `commit` as `if_unmodified_since`, and that is the whole of the
+    /// lost-update check. Zero when the host could not read a timestamp, which
+    /// a writer must treat as "no version" rather than as "epoch".
+    pub mtime: u64,
     pub data: Vec<u8>,
 }
 
@@ -220,6 +235,7 @@ fn read_with_cap(
         size,
         offset: start,
         truncated: serve < asked,
+        mtime: mtime_seconds(&metadata),
         data,
     })
 }
@@ -724,7 +740,20 @@ impl Uploads {
     /// Verify and land the upload: size and sha256 must match what open
     /// declared, then the dotfile is renamed into place — readers only ever
     /// see nothing or the whole verified file.
-    pub fn commit(&self, upload_id: &str) -> Result<PathBuf> {
+    /// Lands a finished upload at its destination.
+    ///
+    /// `if_unmodified_since` is what makes this usable as *save*: the editor
+    /// read a file at a version, and a commit that names that version is
+    /// refused when the file on disk has moved on. Without it two writers —
+    /// and on this host the other writer is usually an agent with a shell in
+    /// the same checkout — silently overwrite each other, with the loser's work
+    /// gone and nothing on screen having said so. `None` keeps the old
+    /// behaviour, which is what a paste into a scratch directory wants.
+    pub fn commit(
+        &self,
+        upload_id: &str,
+        if_unmodified_since: Option<u64>,
+    ) -> Result<(PathBuf, u64)> {
         let mut inner = self.inner.lock().unwrap();
         let state = inner
             .by_id
@@ -747,17 +776,53 @@ impl Uploads {
                 bail!("sha256 mismatch: expected {}, got {actual}", state.sha256);
             }
             state.file.sync_all().context("syncing upload")?;
+            // Read once: the same stat answers both the version check and the
+            // mode to keep, and asking twice would leave a window between them.
+            let existing = std::fs::metadata(&state.dest).ok();
+            if let Some(expected) = if_unmodified_since {
+                let current = existing.as_ref().map(mtime_seconds);
+                match current {
+                    Some(current) if current == expected => {}
+                    Some(current) => bail!(
+                        "conflict: {} changed on this device (read at {expected}, now {current})",
+                        state.dest.display()
+                    ),
+                    None => bail!(
+                        "conflict: {} is no longer there",
+                        state.dest.display()
+                    ),
+                }
+            }
+            use std::os::unix::fs::PermissionsExt;
             let mode = if state.scratch {
                 0o600
             } else {
-                state.mode.unwrap_or(0o644)
+                // The file's own mode outlives the write: replacing an
+                // executable script with a 0644 file is a broken script, and
+                // the writer did not ask for that by saving.
+                state
+                    .mode
+                    .or_else(|| {
+                        existing
+                            .as_ref()
+                            .map(|metadata| metadata.permissions().mode() & 0o7777)
+                    })
+                    .unwrap_or(0o644)
             };
-            use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&state.dotfile, std::fs::Permissions::from_mode(mode))
                 .context("setting upload permissions")?;
             std::fs::rename(&state.dotfile, &state.dest)
                 .with_context(|| format!("renaming into {}", state.dest.display()))?;
-            Ok(state.dest.clone())
+            // The version this write produced. Answered here rather than left
+            // for the client to go and read, because a save that means to be
+            // followed by another save needs to know what it just created —
+            // and a second stat from over there could already be a third
+            // writer's file.
+            let mtime = std::fs::metadata(&state.dest)
+                .as_ref()
+                .map(mtime_seconds)
+                .unwrap_or(0);
+            Ok((state.dest.clone(), mtime))
         })();
         if finish.is_err() {
             let _ = std::fs::remove_file(&state.dotfile);
@@ -1064,7 +1129,7 @@ mod tests {
                 .any(|e| e.file_name() == "out.bin"),
             "nothing lands before commit"
         );
-        let landed = uploads.commit(&id).unwrap();
+        let (landed, _) = uploads.commit(&id, None).unwrap();
         assert_eq!(std::fs::read(&landed).unwrap(), body);
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&landed).unwrap().permissions().mode() & 0o777;
@@ -1074,7 +1139,85 @@ mod tests {
             1,
             "the dotfile is gone after the rename"
         );
-        assert!(uploads.commit(&id).is_err(), "an upload commits once");
+        assert!(uploads.commit(&id, None).is_err(), "an upload commits once");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Saving a file read at one version over a file that has since changed is
+    /// the lost update this check exists to prevent — and on this host the other
+    /// writer is usually an agent with a shell in the same checkout.
+    #[test]
+    fn upload_commit_refuses_a_destination_that_moved_since_it_was_read() {
+        let root = scratch("save-conflict");
+        let uploads = Uploads::new();
+        touch(&root.join("notes.md"), b"first\n");
+        let read = read(root.join("notes.md").to_str().unwrap(), None, None).unwrap();
+        assert!(read.mtime > 0, "the read reports the version it holds");
+
+        // Somebody else writes, moving the file's version on. The sleep is the
+        // resolution of the timestamp itself, not a race being papered over.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        touch(&root.join("notes.md"), b"theirs\n");
+
+        let body = b"mine\n".to_vec();
+        let dest = resolve_project_dest(root.to_str().unwrap(), "notes.md").unwrap();
+        let (id, _) = uploads
+            .open(dest, body.len() as u64, &hex_sha256(&body), None, None)
+            .unwrap();
+        uploads.chunk(&id, 0, &body).unwrap();
+        let refused = uploads.commit(&id, Some(read.mtime)).unwrap_err().to_string();
+        assert!(refused.starts_with("conflict: "), "got {refused}");
+        assert_eq!(
+            std::fs::read(root.join("notes.md")).unwrap(),
+            b"theirs\n",
+            "the other writer's file is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same save with the version the file actually carries goes through —
+    /// the check must not stand in the way of the ordinary case.
+    #[test]
+    fn upload_commit_lands_when_the_destination_is_unchanged() {
+        let root = scratch("save-clean");
+        let uploads = Uploads::new();
+        touch(&root.join("notes.md"), b"first\n");
+        let read = read(root.join("notes.md").to_str().unwrap(), None, None).unwrap();
+
+        let body = b"second\n".to_vec();
+        let dest = resolve_project_dest(root.to_str().unwrap(), "notes.md").unwrap();
+        let (id, _) = uploads
+            .open(dest, body.len() as u64, &hex_sha256(&body), None, None)
+            .unwrap();
+        uploads.chunk(&id, 0, &body).unwrap();
+        let (landed, _) = uploads.commit(&id, Some(read.mtime)).unwrap();
+        assert_eq!(std::fs::read(&landed).unwrap(), body);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A save must not quietly disarm an executable. The mode rides the file,
+    /// not the request, when the request names none.
+    #[test]
+    fn upload_commit_keeps_the_destination_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("save-mode");
+        let uploads = Uploads::new();
+        let script = root.join("run.sh");
+        touch(&script, b"#!/bin/sh\necho one\n");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let body = b"#!/bin/sh\necho two\n".to_vec();
+        let dest = resolve_project_dest(root.to_str().unwrap(), "run.sh").unwrap();
+        let (id, _) = uploads
+            .open(dest, body.len() as u64, &hex_sha256(&body), None, None)
+            .unwrap();
+        uploads.chunk(&id, 0, &body).unwrap();
+        let (landed, _) = uploads.commit(&id, None).unwrap();
+        assert_eq!(
+            std::fs::metadata(&landed).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "the script is still executable after being saved"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1087,7 +1230,7 @@ mod tests {
             .open(dest, 4, &hex_sha256(b"good"), None, None)
             .unwrap();
         uploads.chunk(&id, 0, b"evil").unwrap();
-        let error = uploads.commit(&id).unwrap_err().to_string();
+        let error = uploads.commit(&id, None).unwrap_err().to_string();
         assert!(error.contains("sha256 mismatch"), "got: {error}");
         assert_eq!(
             std::fs::read_dir(&root).unwrap().flatten().count(),
@@ -1102,7 +1245,7 @@ mod tests {
         uploads.chunk(&id, 0, b"0123").unwrap();
         assert!(
             uploads
-                .commit(&id)
+                .commit(&id, None)
                 .unwrap_err()
                 .to_string()
                 .contains("declared bytes"),
@@ -1133,7 +1276,7 @@ mod tests {
         assert_eq!(first, second, "same dest + hash + size = same upload");
         assert_eq!(offset, 5, "re-open resumes rather than restarting");
         uploads.chunk(&second, offset, &body[5..]).unwrap();
-        let landed = uploads.commit(&second).unwrap();
+        let (landed, _) = uploads.commit(&second, None).unwrap();
         assert_eq!(std::fs::read(&landed).unwrap(), body);
 
         // A client that ignores the offset restarts from zero, which still
@@ -1145,7 +1288,7 @@ mod tests {
         uploads.chunk(&third, 0, &body[..5]).unwrap();
         uploads.chunk(&third, 0, &body).unwrap();
         assert_eq!(
-            std::fs::read(uploads.commit(&third).unwrap()).unwrap(),
+            std::fs::read(uploads.commit(&third, None).unwrap().0).unwrap(),
             body
         );
 
@@ -1209,7 +1352,7 @@ mod tests {
             )
             .unwrap();
         uploads.chunk(&id, 0, &body).unwrap();
-        let landed = uploads.commit(&id).unwrap();
+        let (landed, _) = uploads.commit(&id, None).unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&landed).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "scratch files are 0600 whatever mode asked");

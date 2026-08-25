@@ -126,17 +126,17 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     }
 
     func testAFileComesBackByteForByte() throws {
-        let data = try Termiod.readFile(
+        let file = try Termiod.readFile(
             route: .local, path: root.appendingPathComponent("a.txt").path)
-        XCTAssertEqual(data, Data("hello\n".utf8))
+        XCTAssertEqual(file.data, Data("hello\n".utf8))
     }
 
     /// Several `F` frames' worth, so the chunk loop is genuinely exercised rather
     /// than short-circuited by a payload that fits in one frame.
     func testAMultiChunkFileReassembles() throws {
-        let data = try Termiod.readFile(
+        let file = try Termiod.readFile(
             route: .local, path: root.appendingPathComponent("sub/b.txt").path)
-        XCTAssertEqual(data, Data(nestedContents.utf8))
+        XCTAssertEqual(file.data, Data(nestedContents.utf8))
     }
 
     /// A preview that would be a prefix is refused, so the pane says the file is
@@ -154,6 +154,74 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     func testAMissingFileFailsWithTheDaemonsReason() {
         XCTAssertThrowsError(try Termiod.readFile(
             route: .local, path: root.appendingPathComponent("nope.txt").path))
+    }
+
+    /// Save, end to end: the bytes cross, the version claimed is the one that was
+    /// read, and the file on the device is the file that comes back.
+    func testSavingAFileLandsOnTheDeviceAndReVersionsIt() throws {
+        let path = root.appendingPathComponent("a.txt").path
+        let read = try Termiod.readFile(route: .local, path: path)
+        XCTAssertEqual(read.data, Data("hello\n".utf8))
+        XCTAssertGreaterThan(read.mtime, 0, "the read carries the version it holds")
+
+        let landed = try Termiod.writeFile(
+            route: .local, root: root.path, path: path,
+            data: Data("edited\n".utf8), ifUnmodifiedSince: read.mtime)
+
+        XCTAssertGreaterThan(landed, 0, "the write answers with the version it made")
+        let after = try Termiod.readFile(route: .local, path: path)
+        XCTAssertEqual(after.data, Data("edited\n".utf8))
+        XCTAssertEqual(after.mtime, landed, "the version the write reported is the file's")
+    }
+
+    /// The lost-update guard, over the wire: the agent in that checkout wrote
+    /// first, so this save is refused rather than silently replacing its work.
+    func testSavingIsRefusedWhenTheDeviceFileMovedOn() throws {
+        let path = root.appendingPathComponent("a.txt").path
+        let read = try Termiod.readFile(route: .local, path: path)
+
+        // The other writer. The wait is the resolution of the timestamp itself.
+        Thread.sleep(forTimeInterval: 1.1)
+        try Data("theirs\n".utf8).write(to: URL(fileURLWithPath: path))
+
+        XCTAssertThrowsError(try Termiod.writeFile(
+            route: .local, root: root.path, path: path,
+            data: Data("mine\n".utf8), ifUnmodifiedSince: read.mtime)
+        ) { error in
+            guard case DeviceFileError.conflict(let message) = error else {
+                return XCTFail("expected a conflict, got \(error)")
+            }
+            XCTAssertTrue(message.contains("changed"), message)
+        }
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: path)), Data("theirs\n".utf8),
+            "the other writer's file is untouched")
+    }
+
+    /// Claiming nothing is how "overwrite anyway" travels, and it must land even
+    /// though the file has moved on since it was read.
+    func testAnUnversionedSaveOverwritesWhatIsThere() throws {
+        let path = root.appendingPathComponent("a.txt").path
+        Thread.sleep(forTimeInterval: 1.1)
+        try Data("theirs\n".utf8).write(to: URL(fileURLWithPath: path))
+
+        _ = try Termiod.writeFile(
+            route: .local, root: root.path, path: path,
+            data: Data("mine\n".utf8), ifUnmodifiedSince: nil)
+
+        XCTAssertEqual(try Termiod.readFile(route: .local, path: path).data,
+                       Data("mine\n".utf8))
+    }
+
+    /// A save may not walk out of the checkout it is rooted at — the same
+    /// confinement the listing has, on the write side where it matters more.
+    func testASaveOutsideTheRootIsRefused() throws {
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("escaped.txt").path
+        XCTAssertThrowsError(try Termiod.writeFile(
+            route: .local, root: root.path, path: outside,
+            data: Data("nope\n".utf8), ifUnmodifiedSince: nil))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside))
     }
 
     /// The Search pane's whole contract in one call: hits stream as events and

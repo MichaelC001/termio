@@ -259,6 +259,16 @@ final class TermioStore: ObservableObject {
     /// content-search hit (see `FileSearchView`); `nil` for a plain open (top of file).
     @Published var openFileLine: Int?
 
+    /// Where the open file lives when it lives on another machine: the staged
+    /// copy on this Mac is what the editor reads and writes, and this is what a
+    /// save needs to put those bytes back. `nil` for a file on this Mac, which
+    /// is every case where the editor's own write *is* the save.
+    ///
+    /// Re-versioned after each successful save (`RemoteDocument.read(at:)`), so
+    /// a second save claims the version the first one produced rather than the
+    /// one the file was opened at.
+    @Published var openFileRemote: RemoteDocument?
+
     /// Whether the open file should be shown read-only (no editing, no auto-save). Set when the file
     /// was opened by cmd-clicking a link in the terminal — a peek at the source, not an invitation to
     /// edit it by mistake. The inspector's own file opens stay editable (`openFileInEditor`).
@@ -1672,6 +1682,7 @@ final class TermioStore: ObservableObject {
     func openFileInEditor(_ url: URL, at line: Int? = nil) {
         filePresentationGeneration &+= 1
         remotePreviewLease = nil
+        openFileRemote = nil
         openFileDisplayName = nil
         openFileReadOnly = false
         openFileAllowsActiveWebContent = true
@@ -1713,6 +1724,7 @@ final class TermioStore: ObservableObject {
               !isDirectory.boolValue else { return }
         filePresentationGeneration &+= 1
         remotePreviewLease = nil
+        openFileRemote = nil
         openFileDisplayName = nil
         openFileReadOnly = true
         openFileAllowsActiveWebContent = true
@@ -1730,7 +1742,8 @@ final class TermioStore: ObservableObject {
     func presentRemoteFilePreview(
         _ lease: RemotePreviewLease,
         expectedGeneration: UInt64,
-        at line: Int? = nil
+        at line: Int? = nil,
+        origin: RemoteDocument? = nil
     ) -> Bool {
         guard expectedGeneration == filePresentationGeneration,
               FileManager.default.fileExists(atPath: lease.fileURL.path)
@@ -1739,7 +1752,12 @@ final class TermioStore: ObservableObject {
         filePresentationGeneration &+= 1
         remotePreviewLease = lease
         openFileDisplayName = lease.displayName
-        openFileReadOnly = true
+        // Editable when the device said where these bytes came from: the editor
+        // writes the staged copy as always, and `openFileRemote` is what carries
+        // it the rest of the way back. Without an origin the bytes are just a
+        // copy on this Mac, and editing them would be a change that goes nowhere.
+        openFileRemote = origin
+        openFileReadOnly = origin == nil
         openFileAllowsActiveWebContent = false
         openFileLine = line
         openFileURL = lease.fileURL
