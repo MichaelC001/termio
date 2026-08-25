@@ -90,7 +90,8 @@ final class AppSettings: ObservableObject {
         Key.backgroundOpacity, Key.backgroundBlur,
         Key.scrollbackMegabytes, Key.copyOnSelect,
         Key.interfaceFontFamily, Key.interfaceFontSize, Key.interfaceRowPadding,
-        Key.agentCommands, Key.bypassPermissionAgents, Key.disabledAgents,
+        Key.agentCommands, Key.devices,
+        Key.bypassPermissionAgents, Key.disabledAgents,
         Key.addedAgents, Key.agentOrder, Key.agentHooksEnabled,
         Key.sessionControlEnabled, Key.githubIntegrationEnabled,
         Key.notifyTaskCompletion, Key.notificationSound,
@@ -122,7 +123,13 @@ final class AppSettings: ObservableObject {
         static let interfaceFontFamily = "interface.fontFamily"
         static let interfaceFontSize = "interface.fontSize"
         static let interfaceRowPadding = "interface.rowPadding"
+        /// Legacy per-app command overrides, read once to migrate an existing
+        /// install into `devices` — where a command path has the machine
+        /// dimension it always needed.
         static let agentCommands = "agents.commandOverrides"
+        /// The per-machine section. Nested rather than flat because its keys are
+        /// machine identities, which are discovered, not enumerable up front.
+        static let devices = "devices"
         static let bypassPermissionAgents = "agents.bypassPermissions"
         static let disabledAgents = "agents.disabled"
         static let addedAgents = "agents.added"
@@ -342,11 +349,15 @@ final class AppSettings: ObservableObject {
 
     // MARK: Agents
 
-    /// Per-agent command overrides keyed by `AgentPreset.rawValue`. An entry lets
-    /// the user run, say, `claude --dangerously-skip-permissions` instead of the
-    /// built-in default. An empty/whitespace value is treated as "no override".
-    @Published var agentCommandOverrides: [String: String] {
-        didSet { store.set(agentCommandOverrides, forKey: Key.agentCommands) }
+    /// Authored per-machine values, by machine (`KnownDevice.settingsKey`).
+    ///
+    /// A command path is a fact about one box — `/opt/homebrew/bin/claude` names
+    /// nothing on a Linux VPS — so it is keyed by machine rather than held once
+    /// for the app, which is what the flat `agents.commandOverrides` this replaces
+    /// got wrong. Edited only from a machine's pane (RFC D1: location in the UI is
+    /// the scope).
+    @Published var deviceSettings: DeviceSettingsSection {
+        didSet { store.set(deviceSettings.jsonObject, forKey: Key.devices) }
     }
 
     /// Agents whose permission/approval prompts should be bypassed, by `rawValue`.
@@ -589,7 +600,7 @@ final class AppSettings: ObservableObject {
         interfaceFontFamily = store.string(Key.interfaceFontFamily) ?? ""
         interfaceFontSize = store.double(Key.interfaceFontSize)
         interfaceRowPadding = store.double(Key.interfaceRowPadding)
-        agentCommandOverrides = store.stringDictionary(Key.agentCommands) ?? [:]
+        deviceSettings = DeviceSettingsSection(jsonObject: store.object(Key.devices))
         bypassPermissionAgents = Set(store.stringArray(Key.bypassPermissionAgents) ?? [])
         disabledAgents = Set(store.stringArray(Key.disabledAgents) ?? [])
         addedAgents = Set(store.stringArray(Key.addedAgents) ?? [])
@@ -610,20 +621,65 @@ final class AppSettings: ObservableObject {
         currentWorkspaceID = defaults.string(forKey: Key.currentWorkspace).flatMap(UUID.init)
 
         pruneRedundantThemeCopies()
+        migrateCommandOverridesToThisMac()
     }
 
-    /// Effective command for an agent: the user's override if it's non-empty,
-    /// otherwise the preset's built-in default (`nil` for a plain login shell),
-    /// with the permission-bypass flag appended when that switch is on. The flag
-    /// is only added if it isn't already present, so a user who typed it into the
-    /// override by hand doesn't get it twice.
-    func command(for agent: AgentPreset) -> String? {
-        let override = agentCommandOverrides[agent.rawValue]?.trimmingCharacters(in: .whitespaces)
-        let base = (override?.isEmpty == false ? override : agent.command)
+    /// Moves an existing install's per-app command overrides onto **this Mac**,
+    /// which is the only machine they could ever have described: they were typed
+    /// while Settings meant this one, and the paths in them (`/opt/homebrew/…`)
+    /// name this filesystem. Runs once — the legacy key is cleared as it is read,
+    /// so a later Mac-side edit is never re-migrated over.
+    private func migrateCommandOverridesToThisMac() {
+        guard let legacy = store.stringDictionary(Key.agentCommands), !legacy.isEmpty else { return }
+        var thisMac = deviceSettings[KnownDevice.thisMac.settingsKey]
+        // Anything already authored per-machine wins: the user set it in the new
+        // world, and a stale flat value must not overwrite it.
+        thisMac.agentCommands = legacy.merging(thisMac.agentCommands ?? [:]) { _, authored in authored }
+        deviceSettings[KnownDevice.thisMac.settingsKey] = thisMac
+        store.set(nil, forKey: Key.agentCommands)
+    }
+
+    /// Effective command for an agent **on a machine**: the path authored for that
+    /// machine if it's non-empty, otherwise the preset's built-in default (`nil`
+    /// for a plain login shell), with the permission-bypass flag appended when
+    /// that switch is on. The flag is only added if it isn't already present, so a
+    /// user who typed it into the path by hand doesn't get it twice.
+    ///
+    /// The path is per-machine and the bypass switch is not: where a CLI lives is
+    /// a fact about a box, while running an agent without its prompts is a
+    /// standing decision about that agent (RFC §The model).
+    func command(for agent: AgentPreset, on device: KnownDevice = .thisMac) -> String? {
+        let authored = commandPath(for: agent, on: device)
+        let base = (authored?.isEmpty == false ? authored : agent.command)
         guard let base else { return nil }
         guard bypassesPermissions(agent), let flag = agent.permissionBypassFlag,
               !base.contains(flag) else { return base }
         return "\(base) \(flag)"
+    }
+
+    /// The command path the user authored for this agent on this machine, before
+    /// any bypass flag — what the machine's pane edits. `nil` when they never set
+    /// one, which is how the field shows the built-in default as its placeholder
+    /// rather than pinning today's value as a choice.
+    func commandPath(for agent: AgentPreset, on device: KnownDevice) -> String? {
+        deviceSettings[device.settingsKey].agentCommands?[agent.rawValue]?
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    func setCommandPath(_ path: String?, for agent: AgentPreset, on device: KnownDevice) {
+        var machine = deviceSettings[device.settingsKey]
+        var commands = machine.agentCommands ?? [:]
+        let trimmed = path?.trimmingCharacters(in: .whitespaces)
+        // An emptied field hands the agent back to its built-in default instead of
+        // storing "" — the same rule `SettingsStore.set(nil:)` follows for a
+        // cleared preference.
+        if let trimmed, !trimmed.isEmpty {
+            commands[agent.rawValue] = trimmed
+        } else {
+            commands.removeValue(forKey: agent.rawValue)
+        }
+        machine.agentCommands = commands.isEmpty ? nil : commands
+        deviceSettings[device.settingsKey] = machine
     }
 
     func bypassesPermissions(_ agent: AgentPreset) -> Bool {

@@ -1,12 +1,15 @@
 import SwiftUI
 import UserNotifications
 
-/// App-level settings that aren't about a specific surface: the `termio`
-/// command-line tool, the machine-wide agent integrations (the session-control
-/// skill, status hooks), and task-completion notifications. The first three
-/// install termio's wiring outside the app — PATH, agent configs, instruction
-/// files — rather than configure a particular agent, so they live here rather
-/// than in the Agents tab.
+/// App-and-account settings: language, task-completion notifications, and the
+/// GitHub integration.
+///
+/// It used to also carry the `termio` command-line tool, the session-control
+/// skill and the status hooks. Every one of those installs a file **on a
+/// machine** — an agent's config directory, `/usr/local/bin` — so presented here
+/// they read as app-wide and silently meant this Mac, which is why a VPS agent
+/// had no hook status and nobody could see why. They now live on a machine's pane
+/// (RFC §D8), and this tab stops lying about its scope.
 struct GeneralSettingsTab: View {
     @ObservedObject var settings: AppSettings
 
@@ -16,49 +19,6 @@ struct GeneralSettingsTab: View {
                 LanguageRow()
             } header: {
                 SectionHeaderLabel(title: localized("Language"))
-            }
-            Section {
-                CommandLineToolRow()
-            } header: {
-                SectionHeaderLabel(title: localized("Command line"))
-            }
-            Section {
-                Toggle(isOn: $settings.sessionControlEnabled) {
-                    SettingsLabel(
-                        title: localized("Session control"),
-                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder."),
-                        titleFont: .headline
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.sessionControlEnabled {
-                    InstallButtonRow(title: localized("Reinstall skill")) {
-                        .summarizing(SessionSkillInstaller.sync(enabled: true),
-                                     headline: localized("Skill reinstalled"), unit: localized("agents"))
-                    }
-                }
-            } header: {
-                SectionHeaderLabel(title: localized("Agent skill"))
-            }
-            Section {
-                Toggle(isOn: $settings.agentHooksEnabled) {
-                    SettingsLabel(
-                        title: localized("Live agent status"),
-                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config."),
-                        titleFont: .headline
-                    )
-                }
-                .toggleStyle(.switch)
-                if settings.agentHooksEnabled {
-                    // For re-applying after the user (or another tool) has edited
-                    // ~/.claude/settings.json; install is idempotent.
-                    InstallButtonRow(title: localized("Reinstall hooks")) {
-                        .summarizing(AgentStatusHooks.sync(enabled: true),
-                                     headline: localized("Hooks reinstalled"), unit: localized("agents"))
-                    }
-                }
-            } header: {
-                SectionHeaderLabel(title: localized("Status"))
             }
             Section {
                 Toggle(isOn: $settings.notifyOnTaskCompletion) {
@@ -143,109 +103,5 @@ private struct NotificationPermissionRow: View {
         ) { _ in
             Task { status = await TaskNotificationCenter.authorizationStatus() }
         }
-    }
-}
-
-/// Installs and reports the `termio` command-line tool, as a switch like the other
-/// feature rows: on means the PATH symlink exists, off removes it. The switch is
-/// bound to the audit, not a stored preference, so it always reflects reality (a
-/// declined admin prompt snaps it back). It audits on appear (a moved app shows
-/// "Update") and re-audits after every action so the caption updates in place.
-private struct CommandLineToolRow: View {
-    @State private var status: CommandLineTool.Status = .notInstalled
-    @State private var state = InstallFeedbackState()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: Binding(get: { isOn }, set: { setEnabled($0) })) {
-                SettingsLabel(
-                    title: localized("Command-line tool"), subtext: description, titleFont: .headline)
-            }
-            .toggleStyle(.switch)
-            .disabled(!isSwitchable)
-            if let feedback = state.feedback {
-                InstallFeedbackLabel(feedback: feedback)
-            }
-        }
-        .onAppear { status = CommandLineTool.audit() }
-        .autoDismissing($state)
-        if isOn {
-            // For re-linking after something else has touched /usr/local/bin;
-            // install is idempotent. Reports through its own feedback line.
-            InstallButtonRow(title: buttonTitle) { withAnimation { runInstall() } }
-        }
-    }
-
-    private var isOn: Bool {
-        switch status {
-        case .installed, .stale: return true
-        case .notInstalled, .conflict, .unavailable: return false
-        }
-    }
-
-    /// A conflicting file isn't ours to remove and a bare binary has nothing to
-    /// link, so in both states the switch is disabled and the caption explains.
-    private var isSwitchable: Bool {
-        switch status {
-        case .installed, .stale, .notInstalled: return true
-        case .conflict, .unavailable: return false
-        }
-    }
-
-    private func setEnabled(_ enabled: Bool) {
-        withAnimation {
-            if enabled {
-                state.show(runInstall())
-            } else {
-                status = CommandLineTool.uninstall()
-                state.show(isOn
-                    ? .failure(localized("Couldn’t remove \(CommandLineTool.installURL.path)."))
-                    : .success(localized("Removed from PATH.")))
-            }
-        }
-    }
-
-    /// Installs, then reports the fresh audit. The caption alone can't carry this:
-    /// a declined admin prompt leaves the row reading exactly as it did before the
-    /// click, so success and cancellation would be indistinguishable. The
-    /// confirmation stays short — the caption above it already names the path — and
-    /// echoes the verb that was offered: an "Update" that lands says "Updated."
-    private func runInstall() -> InstallFeedback {
-        let wasStale: Bool
-        if case .stale = status { wasStale = true } else { wasStale = false }
-        let result = CommandLineTool.install()
-        status = result
-        switch result {
-        case .installed:
-            return .success(wasStale ? localized("Updated.") : localized("Installed."))
-        case .conflict:
-            return .failure(localized("Something else already owns \(CommandLineTool.installURL.path)."))
-        case .unavailable:
-            return .failure(localized("No bundled tool to install from."))
-        case .notInstalled, .stale:
-            let directory = CommandLineTool.installURL.deletingLastPathComponent().path
-            return .failure(localized("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
-        }
-    }
-
-    private var description: String {
-        let tool = CommandLineTool.toolName
-        switch status {
-        case .installed:
-            return localized("`\(tool)` is on your PATH. Run `\(tool) sessions …` to drive sibling sessions, or `\(tool) .` to open a folder.")
-        case .stale(let path):
-            return localized("An older install points at \(path). Update it to this version of Termio.")
-        case .notInstalled:
-            return localized("Links `\(tool)` into /usr/local/bin so you (and agents) can run `\(tool) sessions …` from any shell.")
-        case .conflict:
-            return localized("A different `\(tool)` already exists at \(CommandLineTool.installURL.path). Remove it first — Termio won’t overwrite a file it didn’t create.")
-        case .unavailable:
-            return localized("Available when Termio runs from the built app bundle.")
-        }
-    }
-
-    private var buttonTitle: String {
-        if case .stale = status { return localized("Update") }
-        return localized("Reinstall")
     }
 }

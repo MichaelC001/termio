@@ -94,12 +94,13 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .workspaces: WorkspaceSettingsTab(store: store)
-        case .devices:
-            DevicesSettingsTab(
-                settings: settings, onConnect: onSSHConnect, onSetUpKey: onSetUpKey
+        case .machines:
+            MachinesSettingsTab(
+                settings: settings, store: store,
+                onConnect: onSSHConnect, onSetUpKey: onSetUpKey
             )
         case .keyboard: KeybindingsSettingsTab()
-        case .agents: AgentSettingsTab(settings: settings)
+        case .agents: AgentSettingsTab(settings: settings, store: store)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
         case .mobile: MobileSettingsTab()
         case .community: CommunitySettingsTab()

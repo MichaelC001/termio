@@ -441,6 +441,16 @@
         }
       }
     },
+    "Add Machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加设备"
+          }
+        }
+      }
+    },
     "Add SSH Host": {
       "localizations": {
         "zh-Hans": {
@@ -952,6 +962,16 @@
         }
       }
     },
+    "Check Again": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查"
+          }
+        }
+      }
+    },
     "Check for Updates…": {
       "localizations": {
         "zh-Hans": {
@@ -968,6 +988,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "检出在 %@"
+          }
+        }
+      }
+    },
+    "Checking the machine…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查设备…"
+          }
+        }
+      }
+    },
+    "Checking…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查中…"
           }
         }
       }
@@ -1903,6 +1943,26 @@
         }
       }
     },
+    "Deploy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部署"
+          }
+        }
+      }
+    },
+    "Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。"
+          }
+        }
+      }
+    },
     "Detached at %@": {
       "localizations": {
         "zh-Hans": {
@@ -2324,6 +2384,16 @@
         }
       }
     },
+    "From your session history": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来自你的会话历史"
+          }
+        }
+      }
+    },
     "General": {
       "localizations": {
         "zh-Hans": {
@@ -2454,6 +2524,16 @@
         }
       }
     },
+    "Host block": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host 配置块"
+          }
+        }
+      }
+    },
     "Host not found": {
       "localizations": {
         "zh-Hans": {
@@ -2574,6 +2654,26 @@
         }
       }
     },
+    "Install Page": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装页面"
+          }
+        }
+      }
+    },
+    "Installed by Termio": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 安装的内容"
+          }
+        }
+      }
+    },
     "Installed.": {
       "localizations": {
         "zh-Hans": {
@@ -2590,6 +2690,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在安装 %@…"
+          }
+        }
+      }
+    },
+    "Installing hooks and skill…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在安装 hooks 和技能…"
+          }
+        }
+      }
+    },
+    "Integration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "集成"
           }
         }
       }
@@ -2724,6 +2844,16 @@
         }
       }
     },
+    "Language, notifications, and GitHub": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语言、通知和 GitHub"
+          }
+        }
+      }
+    },
     "Last 30 days": {
       "localizations": {
         "zh-Hans": {
@@ -2780,6 +2910,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "让你的 Agent 相互协作？"
+          }
+        }
+      }
+    },
+    "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 Agent 通过 `termio sessions` 命令查看并驱动本项目中的同级会话。"
           }
         }
       }
@@ -2884,12 +3024,42 @@
         }
       }
     },
+    "Looking for agent CLIs…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在查找 Agent 命令行工具…"
+          }
+        }
+      }
+    },
     "Lost the connection to %@. The session is still running there.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "与 %@ 的连接已断开。会话仍在那台机器上运行。"
+          }
+        }
+      }
+    },
+    "Machine Unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备不可用"
+          }
+        }
+      }
+    },
+    "Machines": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
           }
         }
       }
@@ -3424,6 +3594,26 @@
         }
       }
     },
+    "No agent CLIs found.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到任何 Agent 命令行工具。"
+          }
+        }
+      }
+    },
+    "No agents on your list yet — add one in Settings ▸ Agents.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的列表中还没有 Agent — 在“设置 ▸ Agents”中添加一个。"
+          }
+        }
+      }
+    },
     "No bundled tool to install from.": {
       "localizations": {
         "zh-Hans": {
@@ -3574,6 +3764,16 @@
         }
       }
     },
+    "None": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无"
+          }
+        }
+      }
+    },
     "None of this project’s remotes point at github.com, so there is no issue tracker to show.": {
       "localizations": {
         "zh-Hans": {
@@ -3641,6 +3841,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有可安装的内容。"
+          }
+        }
+      }
+    },
+    "Nothing to reach — this is the machine you’re on.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需连接 — 这就是你正在使用的设备。"
           }
         }
       }
@@ -3903,6 +4113,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "在这台设备上由 Termio 之外打开"
+          }
+        }
+      }
+    },
+    "Opens the ~/.ssh/config entry this machine is defined in.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开定义该设备的 ~/.ssh/config 条目。"
           }
         }
       }
@@ -4197,6 +4417,26 @@
         }
       }
     },
+    "Reached by": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接方式"
+          }
+        }
+      }
+    },
+    "Reached over SSH": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过 SSH 连接"
+          }
+        }
+      }
+    },
     "Reaching %@…": {
       "localizations": {
         "zh-Hans": {
@@ -4213,6 +4453,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "直接读取 ~/.ssh/config——Termio 不保留单独的主机列表。"
+          }
+        }
+      }
+    },
+    "Ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已就绪"
           }
         }
       }
@@ -4577,6 +4827,16 @@
         }
       }
     },
+    "Run Termio from the built app to install its command-line tool.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从打包后的 App 运行 Termio 才能安装其命令行工具。"
+          }
+        }
+      }
+    },
     "Run a command…": {
       "localizations": {
         "zh-Hans": {
@@ -4593,6 +4853,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在运行的终端会话将会结束。你也可以稍后再重新启动。"
+          }
+        }
+      }
+    },
+    "Runs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行"
           }
         }
       }
@@ -4848,6 +5118,26 @@
         }
       }
     },
+    "Set the path it launches from on each machine, under Machines.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在“设备”中为每台设备设置它的启动路径。"
+          }
+        }
+      }
+    },
+    "Set up this device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置此设备"
+          }
+        }
+      }
+    },
     "Settings": {
       "localizations": {
         "zh-Hans": {
@@ -4918,6 +5208,16 @@
         }
       }
     },
+    "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示 Agent 正在工作还是在等你 — 侧栏的转圈和菜单栏的脉冲。"
+          }
+        }
+      }
+    },
     "Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.": {
       "localizations": {
         "zh-Hans": {
@@ -4934,6 +5234,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "侧栏"
+          }
+        }
+      }
+    },
+    "Signs in with the keys ssh offers by default.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 ssh 默认提供的密钥登录。"
           }
         }
       }
@@ -5398,12 +5708,32 @@
         }
       }
     },
+    "The machine Termio is running on": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 正在运行的设备"
+          }
+        }
+      }
+    },
     "The machine answered with no listing for that folder.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "这台机器没有返回该文件夹的内容。"
+          }
+        }
+      }
+    },
+    "The machine you’re on": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你正在使用的设备"
           }
         }
       }
@@ -5538,6 +5868,26 @@
         }
       }
     },
+    "This Mac and the machines you reach from it, and what each one runs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机以及你能连接的设备，和每台设备上运行的内容"
+          }
+        }
+      }
+    },
+    "This Mac, and every machine you can reach from it. Open one to see what runs there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机，以及你能从这里连接的每台设备。打开一台可查看它上面运行的内容。"
+          }
+        }
+      }
+    },
     "This Mac…": {
       "localizations": {
         "zh-Hans": {
@@ -5664,6 +6014,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。"
+          }
+        }
+      }
+    },
+    "This machine is no longer in your configuration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备已不在你的配置中。"
           }
         }
       }
@@ -6015,6 +6375,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "开启后，选中文本会直接拷贝到剪贴板。"
+          }
+        }
+      }
+    },
+    "Whether you want these at all. Each machine installs them for its own agents, under Machines.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "决定你是否需要这些功能。每台设备在“设备”中为自己的 Agent 安装它们。"
           }
         }
       }

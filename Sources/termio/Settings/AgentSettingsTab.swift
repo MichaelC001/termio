@@ -6,8 +6,24 @@ import SwiftUI
 /// name and a status line, and each row pushing that agent's configuration onto the
 /// settings window's own navigation stack. The earlier master–detail split gave the
 /// window a third column no other tab had.
+///
+/// This tab is *what you use*, and nothing here is a fact about a machine (RFC
+/// §D1). The enabled set, the order, the default agent and the integration
+/// switches are preferences; where an agent's CLI lives and whether it is
+/// installed belong to the machine that would run it, and are edited on that
+/// machine's pane. What the roster carries of that is one **passive** readiness
+/// line per agent, reported for the current workspace's device and never
+/// editable here.
 struct AgentSettingsTab: View {
     @ObservedObject var settings: AppSettings
+    /// The store the readiness line reads its machine from. Ambient, so it
+    /// follows a workspace switch — the one thing on this tab that re-targets
+    /// (RFC §Reliability: explicit selections do not, ambient indicators do).
+    @ObservedObject var store: TermioStore
+
+    /// The machine the readiness line describes: the one the current workspace
+    /// runs on.
+    private var device: KnownDevice { store.currentDevice }
 
     /// Bumped after every catalog reload. `AgentDefinition` equality is by id, so
     /// without this a rename would leave stale rows on screen; referencing the
@@ -43,7 +59,7 @@ struct AgentSettingsTab: View {
                 Section {
                     ForEach(listedAgents) { preset in
                         NavigationLink(value: AgentRoute(id: preset.id)) {
-                            AgentListRow(settings: settings, preset: preset)
+                            AgentListRow(settings: settings, preset: preset, device: device)
                         }
                         .contextMenu {
                             Button(localized("Remove from List")) { remove(preset) }
@@ -53,7 +69,34 @@ struct AgentSettingsTab: View {
                 } header: {
                     SectionHeaderLabel(title: localized("Agents"))
                 } footer: {
-                    Text(localized("Drag the list to change the order agents appear in."))
+                    Text(localized("Drag the list to change the order agents appear in. Readiness is for \(device.name) — open it under Machines to install anything missing."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle(isOn: $settings.agentHooksEnabled) {
+                        SettingsLabel(
+                            title: localized("Live agent status"),
+                            subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse."),
+                            titleFont: .headline
+                        )
+                    }
+                    .toggleStyle(.switch)
+                    Toggle(isOn: $settings.sessionControlEnabled) {
+                        SettingsLabel(
+                            title: localized("Session control"),
+                            subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command."),
+                            titleFont: .headline
+                        )
+                    }
+                    .toggleStyle(.switch)
+                } header: {
+                    SectionHeaderLabel(title: localized("Integration"))
+                } footer: {
+                    // The switch is the preference; installing the files it needs
+                    // is a machine operation and stays on the machine's pane.
+                    Text(localized("Whether you want these at all. Each machine installs them for its own agents, under Machines."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -226,21 +269,32 @@ private struct AddAgentBar: View {
 private struct AgentListRow: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
+    /// The machine the readiness word describes — the current workspace's device,
+    /// not this Mac, which is the whole point of the line.
+    let device: KnownDevice
 
-    /// `nil` while the PATH probe is still running (show nothing rather than a
-    /// premature warning); `false` once we've confirmed the command isn't resolvable.
-    @State private var available: Bool?
+    /// `nil` while the probe is still running: show nothing rather than a
+    /// premature warning.
+    @State private var readiness: AgentReadiness?
 
     /// Nothing to say about an enabled agent whose CLI is present — the common
     /// case, where the line is the command alone.
+    ///
+    /// The `unknown` word is the one this row could not say before. A machine
+    /// reached over a network fails to answer for reasons that are nothing to do
+    /// with the agent, and a `(!)` reading "not installed" would send the user to
+    /// reinstall a CLI that is already there.
     private var status: String? {
         if !settings.isAgentEnabled(preset) { return localized("Off") }
-        if available == false { return localized("Not installed") }
-        return nil
+        switch readiness {
+        case .missing: return localized("Not installed")
+        case .unknown: return localized("Can’t check on \(device.name)")
+        case .available, nil: return nil
+        }
     }
 
     private var detail: String {
-        let command = settings.command(for: preset) ?? localized("Login shell")
+        let command = settings.command(for: preset, on: device) ?? localized("Login shell")
         guard let status else { return command }
         return localized("\(status) · \(command)")
     }
@@ -257,16 +311,22 @@ private struct AgentListRow: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 4)
-            if available == false {
+            // Only `missing` earns the badge. `unknown` says so in words instead:
+            // a warning glyph for "we could not ask" is the false alarm.
+            if readiness == .missing {
                 Image(systemName: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                    .help(localized("\(preset.displayName) isn’t on your PATH"))
+                    .help(localized("\(preset.displayName) isn’t installed on \(device.name)"))
             }
         }
-        .task(id: settings.command(for: preset) ?? "") {
-            available = await AgentAvailability.isCommandAvailable(
-                settings.command(for: preset) ?? "")
+        // Re-probed when the machine changes, so a workspace switch re-targets
+        // this line and nothing else on the tab redraws.
+        .task(id: "\(device.settingsKey)#\(settings.command(for: preset, on: device) ?? "")") {
+            readiness = await AgentReadiness.passive(
+                agent: preset,
+                command: settings.command(for: preset, on: device) ?? "",
+                on: device)
         }
     }
 }
@@ -335,23 +395,23 @@ private struct AgentDetailPane: View {
             }
 
             Section {
-                LabeledContent(localized("Command")) {
-                    TextField(
-                        "",
-                        text: Binding(
-                            get: { settings.agentCommandOverrides[preset.rawValue] ?? "" },
-                            set: { settings.agentCommandOverrides[preset.rawValue] = $0 }
-                        ),
-                        prompt: Text(preset.command ?? "")
-                    )
-                    .textFieldStyle(.plain)
-                    .multilineTextAlignment(.trailing)
-                    .labelsHidden()
-                }
-                if available == false, let url = preset.installURL {
-                    Link(destination: url) {
-                        Label(localized("Install \(preset.displayName)"), systemImage: "arrow.down.circle")
+                // Where this agent's CLI lives is a fact about a machine, and the
+                // field that sets it now lives on that machine's pane (RFC §D1).
+                // What is left here is the link that gets the CLI in the first
+                // place — an install page on the web, which is the same page
+                // whichever machine you are installing on.
+                LabeledContent {
+                    if let url = preset.installURL {
+                        Link(localized("Install Page"), destination: url)
+                    } else {
+                        Text(localized("None")).foregroundStyle(.secondary)
                     }
+                } label: {
+                    SettingsLabel(
+                        title: localized("Get \(preset.displayName)"),
+                        subtext: localized("Set the path it launches from on each machine, under Machines."),
+                        titleFont: .headline
+                    )
                 }
             } header: {
                 SectionHeaderLabel(title: localized("Launch"))

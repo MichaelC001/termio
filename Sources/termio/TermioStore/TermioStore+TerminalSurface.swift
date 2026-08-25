@@ -562,7 +562,12 @@ extension TermioStore {
     /// Pure — it reads session state but mutates nothing; `recordLaunch` does the write.
     private func resolveLaunch(for session: Session, spawnPath: String)
         -> (command: String?, resumeID: String?) {
-        guard let base = settings.command(for: session.agent) else {
+        // Resolved against the machine the session runs on: a command path typed
+        // for this Mac's Homebrew install names nothing on a VPS, so handing it to
+        // one is the "settings silently mean this Mac" bug at its most expensive —
+        // the agent dies at 0 ms with "not found".
+        let device = KnownDevice.running(session) ?? .thisMac
+        guard let base = settings.command(for: session.agent, on: device) else {
             return (nil, nil) // plain login shell — nothing to resume
         }
         let agent = session.agent
