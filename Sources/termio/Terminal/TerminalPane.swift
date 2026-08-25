@@ -807,11 +807,14 @@ private struct PaneDropDelegate: DropDelegate {
     /// one of our rows is a payload for the prompt, and always lands.
     func validateDrop(info: DropInfo) -> Bool {
         guard isVisible else { return false }
-        guard let moved = draggedSession else { return true }
+        guard let moved = store.resolveDraggedSession() else { return true }
         return store.canGroup(moved, with: pane)
     }
 
-    func dropEntered(info: DropInfo) { track(info) }
+    func dropEntered(info: DropInfo) {
+        store.resolveDraggedSession()
+        track(info)
+    }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         track(info)
@@ -823,10 +826,13 @@ private struct PaneDropDelegate: DropDelegate {
     /// exit, so this can wipe a cue that was just set — but the new pane's next
     /// `dropUpdated` puts it straight back, a frame later at worst. A cue that
     /// heals itself while the pointer moves beats one that can be left behind.
-    func dropExited(info: DropInfo) { store.sessionDropTarget = nil }
+    func dropExited(info: DropInfo) {
+        guard store.sessionDropTarget != nil else { return }
+        store.sessionDropTarget = nil
+    }
 
     func performDrop(info: DropInfo) -> Bool {
-        let moved = draggedSession
+        let moved = store.resolveDraggedSession()
         store.sessionDropTarget = nil
         store.draggingSessionID = nil
         guard let moved else { return insert(info) }
@@ -837,23 +843,19 @@ private struct PaneDropDelegate: DropDelegate {
 
     /// Lights what the release would commit: the half this pane would give up to a
     /// session being grouped in, or the whole pane for a payload being typed.
+    ///
+    /// Published only when it changes. `dropUpdated` fires at pointer rate, and a
+    /// write to any `@Published` on the store invalidates every view observing it —
+    /// the whole sidebar list and the pane tree — so republishing the zone the cue
+    /// is already showing redraws the app for nothing. Same rule, and the same
+    /// reason, as `PaneDragRearrange.setHover`.
     private func track(_ info: DropInfo) {
         guard isVisible else { return }
-        let zone = draggedSession == nil ? .center : PaneDropZone.edge(at: info.location, in: size)
-        store.sessionDropTarget = SessionDropTarget(pane: pane, zone: zone)
-    }
-
-    /// The session a dragged sidebar row is carrying, parsed back out of the drag
-    /// pasteboard.
-    ///
-    /// `DropInfo`'s own item providers cannot answer this. SwiftUI rebuilds them on
-    /// the receiving side into `public.url` plus plain text, so a private type
-    /// registered at the source never survives the trip — and loading the text back
-    /// is async, while `dropUpdated` has to answer with the pointer still moving.
-    /// The drag pasteboard holds the same payload, synchronously.
-    private var draggedSession: Session.ID? {
-        guard let link = NSPasteboard(name: .drag).string(forType: .string) else { return nil }
-        return TermioStore.sessionID(fromLink: link.trimmingCharacters(in: .whitespacesAndNewlines))
+        let zone = store.draggingSessionID == nil
+            ? .center : PaneDropZone.edge(at: info.location, in: size)
+        let target = SessionDropTarget(pane: pane, zone: zone)
+        guard store.sessionDropTarget != target else { return }
+        store.sessionDropTarget = target
     }
 
     /// Everything that ends up at the prompt: files and folders from the Finder or
