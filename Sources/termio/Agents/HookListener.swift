@@ -256,6 +256,30 @@ enum AgentStatusHooks {
     /// or the legacy `marker`, so upgrades cleanly replace old hooks with new ones.
     static let cliMarker = "agent report"
 
+    /// The same fragment for a hook installed on a **device**, which reports to the
+    /// daemon that owns its PTY instead of to an app socket. Spelled with the
+    /// environment variable rather than the bare verb so it cannot claim a user's
+    /// own tool that happens to have a `set-status` command.
+    ///
+    /// Byte-identical to `DAEMON_MARKER` in `termiod/src/agent/install.rs`; the two
+    /// halves of the migration have to recognise each other's work.
+    static let daemonMarker = "set-status \"$TERMIOD_SESSION_ID\""
+
+    /// Whether a hook command is one termio wrote — in any of its three report
+    /// forms, on either kind of machine.
+    ///
+    /// This is what makes an install *replace* rather than append. A device hook
+    /// invokes `termiod set-status` and carries neither ` agent report ` nor the
+    /// socket path, so while those were the only fingerprints, every reinstall on
+    /// a device added a second copy of every entry to a config the user also owns:
+    /// `ukvps` had accumulated 54 duplicate hook lines before this was caught. It
+    /// is silent, because a duplicated hook still works — it just fires twice.
+    static func isTermioCommand(_ command: String) -> Bool {
+        command.contains(cliMarker)
+            || command.contains(marker)
+            || command.contains(daemonMarker)
+    }
+
     /// Fingerprints of third-party status hooks that full-replace the shared `hooks`
     /// block (Claude's `settings.json`, Codex's `hooks.json`) instead of merging, wiping
     /// termio's entries. We strip these on install so a destructive writer can't out-merge
@@ -658,7 +682,7 @@ private struct JSONHookFile: AgentStatusInstaller {
         // strips the old before writing the new instead of doubling up. Cursor's flat
         // entry carries the command directly; Claude/Codex nest it.
         func isOurs(_ command: String) -> Bool {
-            command.contains(AgentStatusHooks.cliMarker) || command.contains(AgentStatusHooks.marker)
+            AgentStatusHooks.isTermioCommand(command)
         }
         if let command = group["command"] as? String { return isOurs(command) }
         guard let hooks = group["hooks"] as? [[String: Any]] else { return false }
@@ -767,7 +791,7 @@ private struct ScriptHookDirectory: AgentStatusInstaller {
     }
 
     private func isOwned(_ source: String) -> Bool {
-        source.contains(AgentStatusHooks.marker) || source.contains(AgentStatusHooks.cliMarker)
+        AgentStatusHooks.isTermioCommand(source)
     }
 }
 
@@ -864,8 +888,7 @@ private struct PluginFile: AgentStatusInstaller {
     }
 
     private func isOwned(_ source: String) -> Bool {
-        source.contains(AgentStatusHooks.marker)
-            || source.contains(AgentStatusHooks.cliMarker)
+        AgentStatusHooks.isTermioCommand(source)
     }
 
     private static var cliPath: String { AgentStatusHooks.cliPath }

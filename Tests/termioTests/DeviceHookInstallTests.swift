@@ -187,6 +187,50 @@ final class DeviceHookInstallTests: XCTestCase {
         XCTAssertTrue(source.contains("set-status"), source)
     }
 
+    /// A reinstall must **replace** what the last one wrote, and what makes that
+    /// work is recognising it. A device hook invokes `termiod set-status` and
+    /// carries neither ` agent report ` nor the socket path, so while those were
+    /// the only fingerprints every reinstall appended a second copy of every entry
+    /// to a config the user also owns — silently, since a duplicated hook still
+    /// fires, just twice.
+    func testReinstallingOnADeviceReplacesRatherThanAppends() throws {
+        let store = RecordingConfigStore()
+        let target = AgentIntegrationTarget(store: store, reporter: .termiodDaemon)
+        AgentStatusHooks.sync(enabled: true, target: target)
+        let afterFirst = try XCTUnwrap(store.text(endingIn: ".claude/settings.json"))
+        AgentStatusHooks.sync(enabled: true, target: target)
+        let afterSecond = try XCTUnwrap(store.text(endingIn: ".claude/settings.json"))
+
+        XCTAssertEqual(afterFirst, afterSecond, "a second install rewrote the config")
+        for (event, count) in try commandCounts(afterSecond) {
+            XCTAssertEqual(count, 1, "\(event) carries \(count) hooks after two installs")
+        }
+    }
+
+    /// Turning the switch off has to find the same entries the install wrote.
+    func testUninstallingOnADeviceRemovesWhatItInstalled() throws {
+        let store = RecordingConfigStore()
+        let target = AgentIntegrationTarget(store: store, reporter: .termiodDaemon)
+        AgentStatusHooks.sync(enabled: true, target: target)
+        AgentStatusHooks.sync(enabled: false, target: target)
+        let remaining = store.text(endingIn: ".claude/settings.json") ?? "{}"
+        XCTAssertFalse(remaining.contains(AgentStatusHooks.daemonMarker), remaining)
+    }
+
+    /// One hook command per event, keyed by event name.
+    private func commandCounts(_ json: String) throws -> [(String, Int)] {
+        let object = try JSONSerialization.jsonObject(with: Data(json.utf8))
+        let hooks = (object as? [String: Any])?["hooks"] as? [String: Any] ?? [:]
+        return hooks.map { event, groups in
+            let commands = (groups as? [[String: Any]] ?? []).flatMap { group -> [String] in
+                if let command = group["command"] as? String { return [command] }
+                let nested = group["hooks"] as? [[String: Any]] ?? []
+                return nested.compactMap { $0["command"] as? String }
+            }
+            return (event, commands.filter(AgentStatusHooks.isTermioCommand).count)
+        }
+    }
+
     /// Ownership is what lets uninstall remove our file and refuse a user's. The
     /// device form drops `agent report`, so it must still carry the socket marker.
     func testDevicePluginsStayRecognizablyOurs() {
