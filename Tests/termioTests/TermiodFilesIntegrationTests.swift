@@ -57,6 +57,22 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         try Data("hello\n".utf8).write(to: root.appendingPathComponent("a.txt"))
         try Data(nestedContents.utf8).write(
             to: root.appendingPathComponent("sub/b.txt"))
+        try Data("Widget lives here\n".utf8).write(
+            to: root.appendingPathComponent("widget.txt"))
+        // `fs.search` is `git grep`, so the workspace has to be a real checkout
+        // for it to run at all. The `.git` directory above is what the listing
+        // tests expect to see; this makes it a repository rather than a husk.
+        try gitInit()
+    }
+
+    private func gitInit() throws {
+        let git = Process()
+        git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        git.arguments = ["-C", root.path, "init", "--quiet"]
+        git.standardOutput = FileHandle.nullDevice
+        git.standardError = FileHandle.nullDevice
+        try git.run()
+        git.waitUntilExit()
     }
 
     override func tearDownWithError() throws {
@@ -138,5 +154,50 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     func testAMissingFileFailsWithTheDaemonsReason() {
         XCTAssertThrowsError(try Termiod.readFile(
             route: .local, path: root.appendingPathComponent("nope.txt").path))
+    }
+
+    /// The Search pane's whole contract in one call: hits stream as events and
+    /// the terminal reply closes them, paths come back relative to the searched
+    /// root, and the line numbers are the ones the pane jumps to.
+    func testSearchAnswersHitsWithRootRelativePaths() throws {
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "Widget", limit: 400)
+
+        XCTAssertFalse(result.limitHit)
+        XCTAssertEqual(result.hits.map(\.path), ["widget.txt"])
+        XCTAssertEqual(result.hits.first?.line, 1)
+        XCTAssertEqual(result.hits.first?.text, "Widget lives here")
+    }
+
+    /// Smart case, matching what the local pane has always done: an all-lowercase
+    /// query matches insensitively, and an uppercase letter opts into exactness.
+    func testSearchIsSmartCase() throws {
+        let loose = try Termiod.searchContents(
+            route: .local, root: root.path, query: "widget", limit: 400)
+        XCTAssertEqual(loose.hits.map(\.path), ["widget.txt"])
+
+        let exact = try Termiod.searchContents(
+            route: .local, root: root.path, query: "WIDGET", limit: 400)
+        XCTAssertTrue(exact.hits.isEmpty, "an uppercase query means what it says")
+    }
+
+    /// The cap is what keeps a one-letter query in a monorepo from flooding the
+    /// pane, and the pane says "more exist" only because the reply does.
+    func testSearchStopsAtTheLimitAndSaysSo() throws {
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "nested", limit: 5)
+
+        XCTAssertTrue(result.limitHit)
+        XCTAssertEqual(result.hits.count, 5)
+        XCTAssertTrue(result.hits.allSatisfy { $0.path == "sub/b.txt" })
+    }
+
+    /// A query nothing matches is an answer, not a failure — `git grep` exits 1
+    /// for it, and the pane must show "no matches" rather than an error.
+    func testSearchWithNoHitsSucceedsEmpty() throws {
+        let result = try Termiod.searchContents(
+            route: .local, root: root.path, query: "nothing-here-at-all", limit: 400)
+        XCTAssertTrue(result.hits.isEmpty)
+        XCTAssertFalse(result.limitHit)
     }
 }

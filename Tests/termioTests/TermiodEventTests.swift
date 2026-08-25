@@ -399,4 +399,66 @@ final class TermiodEventTests: XCTestCase {
         XCTAssertEqual(hello.clientId, "c_7")
         XCTAssertTrue(hello.caps.isEmpty)
     }
+
+    /// The Search pane's stream: hits arrive as events addressed to the request,
+    /// which is why this is the one event carrying no session.
+    func testSearchResultsCarryTheHits() throws {
+        guard case .searchResults(let payload) = try event("""
+        {"ev":"search_results","request":1,"matches":[
+          {"path":"src/main.rs","line":42,"text":"let widget = 1;"}]}
+        """) else { return XCTFail("expected search results") }
+        XCTAssertEqual(payload.matches.count, 1)
+        XCTAssertEqual(payload.matches.first?.path, "src/main.rs")
+        XCTAssertEqual(payload.matches.first?.line, 42)
+    }
+
+    /// The reply that closes the stream. `limit_hit` is the difference between
+    /// "that is everything" and "there is more" — the pane says so out loud.
+    func testSearchedReplyCarriesWhyTheStreamEnded() throws {
+        guard case .fsSearched(let payload) = try control(
+            #"{"op":"fs_searched","matches":400,"limit_hit":true,"re":1}"#)
+        else { return XCTFail("expected fs_searched") }
+        XCTAssertEqual(payload.matches, 400)
+        XCTAssertTrue(payload.limitHit)
+        XCTAssertFalse(payload.canceled)
+    }
+
+    /// The daemon omits both flags on a clean finish; absent is `false`, not a
+    /// decode failure.
+    func testSearchedReplyWithoutFlagsDecodes() throws {
+        guard case .fsSearched(let payload) = try control(#"{"op":"fs_searched","matches":0}"#)
+        else { return XCTFail("expected fs_searched") }
+        XCTAssertFalse(payload.limitHit)
+        XCTAssertFalse(payload.canceled)
+    }
+
+    /// A request must not wait forever on a host that owes it nothing: a daemon
+    /// too old for an op drops it silently instead of refusing it, so without a
+    /// bound the reader parks a thread and its connection for good.
+    func testAWaitingReadGivesUpOnSilence() throws {
+        var pair: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[0]); close(pair[1]) }
+
+        XCTAssertThrowsError(
+            try Termiod.waitForReadable(pair[0], seconds: 1, operation: "fs.search")
+        ) { error in
+            guard case TermiodClientError.timedOut = error else {
+                return XCTFail("expected a timeout, got \(error)")
+            }
+        }
+    }
+
+    /// And it returns the moment the device does answer — the bound above must
+    /// not cost a reply that arrived in time.
+    func testAWaitingReadReturnsWhenTheDeviceAnswers() throws {
+        var pair: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[0]); close(pair[1]) }
+
+        var byte: UInt8 = 0x43
+        XCTAssertEqual(write(pair[1], &byte, 1), 1)
+        XCTAssertNoThrow(
+            try Termiod.waitForReadable(pair[0], seconds: 5, operation: "fs.search"))
+    }
 }

@@ -1337,6 +1337,11 @@ final class TermiodSessionLink: @unchecked Sendable {
             // Snapshot-complete. No action: this reader is serial, so `S` has
             // already been rendered by the time this frame is read.
             break
+        case .searchResults:
+            // Addressed to a request, not to a session: the files channel that
+            // asked reads its own hits (`Termiod.searchContents`). Nothing on a
+            // session's channel can have asked, so there is nobody to give it to.
+            break
         case .unknown(let name):
             Log.termiod.debug("""
             ignoring \(name, privacy: .public) event on \(self.sessionName, privacy: .public)
