@@ -692,9 +692,12 @@ final class TermiodBackend: DeviceClient {
     private func failInFlight(_ message: String, responseID: UInt64?) {
         defer { onError?(message) }
         guard let responseID else {
-            // A rejected upload chunk has no control `seq`, but it does name the
-            // transfer already streaming at the queue head. Other unaddressed
-            // refusals close the connection and `forgetInFlight()` clears them.
+            // A rejected upload chunk names nothing — a `U` frame carries no
+            // `seq`, so the refusal carries neither a `re` nor an upload id.
+            // Charging it to the head is an inference, and it holds because
+            // every other unaddressed refusal this daemon sends closes the
+            // connection, where `forgetInFlight()` clears the queue anyway.
+            // Left parked, the head would stall every transfer behind it.
             if transfers.first?.uploadID != nil {
                 transfers.removeFirst()
                 openNextTransfer()
