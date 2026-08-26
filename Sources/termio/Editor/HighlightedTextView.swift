@@ -22,6 +22,9 @@ struct HighlightedTextView: NSViewRepresentable {
     /// The wash on every other occurrence of the word under the caret (`OccurrenceHighlighter`).
     /// `.clear` turns the behavior off.
     var occurrenceHighlightColor: NSColor = .clear
+    /// Ink for the rules at each indent level (`IndentGuideRenderer`), a step stronger than the
+    /// band above. `.clear` turns the behavior off.
+    var indentGuideColor: NSColor = .clear
     /// When false the text stays selectable (copyable) but cannot be typed into — the read-only
     /// preview path. Defaults to editable so the inspector's own opens are unchanged.
     var isEditable: Bool = true
@@ -314,6 +317,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
             saving.currentLineColor = currentLineColor
+            saving.indentGuideColor = indentGuideColor
             saving.caretIndicatorColor = caretColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
             saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
@@ -487,6 +491,12 @@ final class SavingTextView: NSTextView {
     }
     /// Background wash on a bracket pair when the caret sits against one of them.
     var bracketHighlightColor: NSColor = .clear
+    /// Ink for the indent guides; change-gated for the same reason `currentLineColor` is.
+    var indentGuideColor: NSColor = .clear {
+        didSet { if indentGuideColor != oldValue { needsDisplay = true } }
+    }
+    /// Holds the indent width it derived between draws; the geometry lives in the renderer.
+    private let indentGuides = IndentGuideRenderer()
 
     /// The system insertion indicator (macOS 14's `NSTextInsertionIndicator`) in place of the
     /// legacy hard-blink caret — the same soft fade-and-glide caret Xcode shows. TextKit 2 text
@@ -730,6 +740,7 @@ final class SavingTextView: NSTextView {
     /// highlight — and only while editable, since a read-only peek shows no caret.
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        indentGuides.draw(in: self, dirtyRect: rect, color: indentGuideColor)
         guard isEditable, currentLineColor.alphaComponent > 0,
               let layoutManager, let textContainer else { return }
         let selection = selectedRange()
