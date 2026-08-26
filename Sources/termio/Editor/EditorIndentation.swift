@@ -279,9 +279,14 @@ extension SavingTextView {
     /// indent. The replacement carries `typingAttributes` because the buffer's line metrics live
     /// in them: plain text would lay out at the font's natural height and the block would jump
     /// until the highlighter caught up.
-    func replaceAsOneEdit(_ range: NSRange, with replacement: String, selection: NSRange?) {
+    ///
+    /// Shared with `EditorLineCommands` and with the find bar's Replace, which both need exactly
+    /// this shape — hence the returned flag: a caller that steps the find focus forward must know
+    /// whether the edit actually landed, since `shouldChangeText` can refuse.
+    @discardableResult
+    func replaceAsOneEdit(_ range: NSRange, with replacement: String, selection: NSRange?) -> Bool {
         guard let textStorage, NSMaxRange(range) <= textStorage.length,
-              shouldChangeText(in: range, replacementString: replacement) else { return }
+              shouldChangeText(in: range, replacementString: replacement) else { return false }
         breakUndoCoalescing()
         textStorage.replaceCharacters(
             in: range, with: NSAttributedString(string: replacement, attributes: typingAttributes)
@@ -290,5 +295,6 @@ extension SavingTextView {
         let inserted = (replacement as NSString).length
         setSelectedRange(selection ?? NSRange(location: range.location + inserted, length: 0))
         breakUndoCoalescing()
+        return true
     }
 }

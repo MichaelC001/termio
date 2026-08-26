@@ -2423,6 +2423,26 @@
         }
       }
     },
+    "Find Next": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找下一个"
+          }
+        }
+      }
+    },
+    "Find Previous": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找上一个"
+          }
+        }
+      }
+    },
     "Find…": {
       "localizations": {
         "zh-Hans": {
@@ -2600,6 +2620,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Hide Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏替换"
           }
         }
       }
@@ -4937,6 +4967,26 @@
         }
       }
     },
+    "Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换"
+          }
+        }
+      }
+    },
+    "Replace All": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部替换"
+          }
+        }
+      }
+    },
     "Repository": {
       "localizations": {
         "zh-Hans": {
@@ -5424,6 +5474,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示项目文件"
+          }
+        }
+      }
+    },
+    "Show Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示替换"
           }
         }
       }
@@ -6575,6 +6635,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "使用正则表达式"
+          }
+        }
+      }
+    },
+    "Use Selection for Find": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用所选内容查找"
           }
         }
       }

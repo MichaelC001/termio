@@ -74,6 +74,17 @@ struct GitDiffView: View {
         .onReceive(NotificationCenter.default.publisher(for: .termioShowFindBar)) { _ in
             openFindBar()
         }
+        // ⌘G / ⇧⌘G reach the diff's find bar too — it is the same bar, over the same engine.
+        // ⌘E is not wired here: the buffer is read-only, and the verb belongs to the editor
+        // whose text view holds the keyboard.
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindNext)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindPrevious)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: -1)
+        }
     }
 
     // MARK: Find

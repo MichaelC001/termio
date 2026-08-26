@@ -20,36 +20,48 @@ final class TextFindEngine {
     /// Rebuild the match list for `query` over the text view's current string. Returns the count.
     @discardableResult
     func recompute(query: String, options: FindOptions, in textView: NSTextView) -> Int {
-        matches.removeAll()
-        guard !query.isEmpty else { return 0 }
-        let full = textView.string as NSString
-        let total = full.length
-        guard total > 0 else { return 0 }
+        matches = Self.matches(of: query, options: options, in: textView.string as NSString)
+        return matches.count
+    }
+
+    /// Every match of `query` in `text`, in document order. The scan itself, with no text view in
+    /// it — `FindReplace` asks the same question of the same buffer when it plans a replacement,
+    /// and a match list the two could disagree about is a wrong "n of m" waiting to happen.
+    nonisolated static func matches(of query: String, options: FindOptions, in text: NSString) -> [NSRange] {
+        guard !query.isEmpty, text.length > 0 else { return [] }
+        let total = text.length
 
         if options.regex {
-            var regexOptions: NSRegularExpression.Options = []
-            if !options.caseSensitive { regexOptions.insert(.caseInsensitive) }
-            guard let regex = try? NSRegularExpression(pattern: query, options: regexOptions) else { return 0 }
-            for match in regex.matches(in: textView.string, range: NSRange(location: 0, length: total))
-            where match.range.length > 0 {
-                if options.wholeWord, !Self.isWordBoundary(match.range, in: full) { continue }
-                matches.append(match.range)
-            }
-            return matches.count
+            guard let regex = regularExpression(for: query, options: options) else { return [] }
+            return regex.matches(in: text as String, range: NSRange(location: 0, length: total))
+                .map(\.range)
+                .filter { $0.length > 0 && (!options.wholeWord || isWordBoundary($0, in: text)) }
         }
 
+        var found: [NSRange] = []
         var searchOptions: NSString.CompareOptions = []
         if !options.caseSensitive { searchOptions.insert(.caseInsensitive) }
         var searchStart = 0
         while searchStart < total {
             let searchRange = NSRange(location: searchStart, length: total - searchStart)
-            let hit = full.range(of: query, options: searchOptions, range: searchRange)
+            let hit = text.range(of: query, options: searchOptions, range: searchRange)
             if hit.location == NSNotFound { break }
-            if !options.wholeWord || Self.isWordBoundary(hit, in: full) { matches.append(hit) }
+            if !options.wholeWord || isWordBoundary(hit, in: text) { found.append(hit) }
             // `hit.length` can be zero for a pathological pattern; step by 1 to guarantee termination.
             searchStart = hit.location + max(hit.length, 1)
         }
-        return matches.count
+        return found
+    }
+
+    /// The compiled pattern behind a `.*`-mode query, or nil while it is still half-typed and
+    /// doesn't parse. Shared with the replace planner, which needs the match *results* — not just
+    /// their ranges — to expand `$1` capture groups.
+    nonisolated static func regularExpression(
+        for query: String, options: FindOptions
+    ) -> NSRegularExpression? {
+        var regexOptions: NSRegularExpression.Options = []
+        if !options.caseSensitive { regexOptions.insert(.caseInsensitive) }
+        return try? NSRegularExpression(pattern: query, options: regexOptions)
     }
 
     /// Repaint every match, tinting `focused` brighter. `reveal` scrolls the focused match into
@@ -106,7 +118,7 @@ final class TextFindEngine {
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
     }
 
-    private static func isWordBoundary(_ range: NSRange, in string: NSString) -> Bool {
+    nonisolated static func isWordBoundary(_ range: NSRange, in string: NSString) -> Bool {
         let letters = wordCharacters
         if range.location > 0 {
             let prev = string.character(at: range.location - 1)

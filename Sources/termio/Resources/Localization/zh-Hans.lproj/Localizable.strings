@@ -492,6 +492,10 @@
 	<string>过滤</string>
 	<key>Find</key>
 	<string>查找</string>
+	<key>Find Next</key>
+	<string>查找下一个</string>
+	<key>Find Previous</key>
+	<string>查找上一个</string>
 	<key>Find…</key>
 	<string>查找…</string>
 	<key>Focus Pane Down</key>
@@ -528,6 +532,8 @@
 	<string>编组到</string>
 	<key>Hide</key>
 	<string>隐藏</string>
+	<key>Hide Replace</key>
+	<string>隐藏替换</string>
 	<key>Hide or show the inspector</key>
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
@@ -994,6 +1000,10 @@
 	<string>重命名“%@”</string>
 	<key>Rename…</key>
 	<string>重命名…</string>
+	<key>Replace</key>
+	<string>替换</string>
+	<key>Replace All</key>
+	<string>全部替换</string>
 	<key>Repository</key>
 	<string>仓库</string>
 	<key>Request Permission</key>
@@ -1092,6 +1102,8 @@
 	<string>显示原身</string>
 	<key>Show Project Files</key>
 	<string>显示项目文件</string>
+	<key>Show Replace</key>
+	<string>显示替换</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>为远程仓库位于 GitHub 的项目在检查器中显示 Issues 窗格。</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>
@@ -1322,6 +1334,8 @@
 	<string>用量</string>
 	<key>Use Regular Expression</key>
 	<string>使用正则表达式</string>
+	<key>Use Selection for Find</key>
+	<string>用所选内容查找</string>
 	<key>User</key>
 	<string>用户</string>
 	<key>Uses %@</key>

@@ -96,6 +96,11 @@ struct FileEditorView: View {
     @State private var findLastSubmittedQuery = ""
     /// Bumped on every ⌘F so the find bar re-focuses even when already on screen.
     @State private var findFocusTrigger = 0
+    /// What Replace puts in a match's place. Empty deletes the match, which is what an empty
+    /// replacement field means everywhere else too.
+    @State private var findReplacement = ""
+    /// Replace edits the text view, not the `text` binding — see `FindReplaceController`.
+    @State private var findReplace = FindReplaceController()
 
     /// Past this size the file renders as plain text: highlight.js parses off-main, but
     /// *applying* its result is thousands of main-thread `setAttributes` calls plus a
@@ -228,6 +233,17 @@ struct FileEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .termioShowFindBar)) { _ in
             openFindBar()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindNext)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindPrevious)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: -1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioUseSelectionForFind)) { _ in
+            useSelectionForFind()
+        }
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
         // peek never writes, so neither the debounce nor the exit flush is armed.
         .onChange(of: text) {
@@ -322,6 +338,7 @@ struct FileEditorView: View {
                     findMatchCount = count
                     if count > 0, findFocusedIndex >= count { findFocusedIndex = 0 }
                 },
+                findReplace: findReplace,
             showsCloseMenuItem: true,
             addToChat: addToChat,
             canAddToChat: canAddToChat,
@@ -341,7 +358,13 @@ struct FileEditorView: View {
                     onNext: { advanceFind(by: 1) },
                     onPrevious: { advanceFind(by: -1) },
                     onClose: closeFindBar,
-                    focusTrigger: findFocusTrigger
+                    focusTrigger: findFocusTrigger,
+                    // No replace row over a read-only peek — there is nothing to write back.
+                    replace: readOnly ? nil : .init(
+                        text: $findReplacement,
+                        current: replaceCurrentMatch,
+                        all: replaceAllMatches
+                    )
                 )
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
@@ -523,9 +546,44 @@ struct FileEditorView: View {
         withAnimation(.spring(response: 0.3, dampingFraction: 1)) { findBarVisible = false }
         findQuery = ""
         findLastSubmittedQuery = ""
+        findReplacement = ""
         findMatchCount = 0
         findFocusedIndex = 0
         findOptions = FindOptions()
+    }
+
+    /// ⌘E: the editor's selection becomes the find query. Only when this editor's own text view
+    /// holds the keyboard — the verb is broadcast the way ⌘F is, and a diff overlay mounted behind
+    /// this one must not take its query from a buffer the user isn't in. Read before the bar
+    /// opens, since opening it takes first responder away from the text view.
+    ///
+    /// The query counts as already submitted, so the very next Return — or ⌘G — advances to the
+    /// second match instead of re-running the search that just ran.
+    private func useSelectionForFind() {
+        guard mode == .edit, let selection = findReplace.focusedSelection() else { return }
+        openFindBar()
+        findQuery = selection
+        findLastSubmittedQuery = selection
+        findFocusedIndex = 0
+    }
+
+    /// Replace: the focused match becomes the replacement, and the focus steps to the next match
+    /// past it. The match list and the "n of m" counter refresh on their own — the edit fires
+    /// `textDidChange`, which is where the find engine already recomputes.
+    private func replaceCurrentMatch() {
+        guard !readOnly, findMatchCount > 0 else { return }
+        guard let next = findReplace.replaceCurrent(
+            at: findFocusedIndex, query: findQuery, options: findOptions, template: findReplacement)
+        else { return }
+        findFocusedIndex = next
+    }
+
+    /// Replace All: every match at once, as a single edit — so ⌘Z takes the whole document back
+    /// in one step rather than one step per match.
+    private func replaceAllMatches() {
+        guard !readOnly, findMatchCount > 0 else { return }
+        findReplace.replaceAll(query: findQuery, options: findOptions, template: findReplacement)
+        findFocusedIndex = 0
     }
 
     /// Return: fresh query → jump to match 1; same query → next match.

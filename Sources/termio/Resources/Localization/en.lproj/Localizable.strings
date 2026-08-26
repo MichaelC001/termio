@@ -492,6 +492,10 @@
 	<string>Filter</string>
 	<key>Find</key>
 	<string>Find</string>
+	<key>Find Next</key>
+	<string>Find Next</string>
+	<key>Find Previous</key>
+	<string>Find Previous</string>
 	<key>Find…</key>
 	<string>Find…</string>
 	<key>Focus Pane Down</key>
@@ -528,6 +532,8 @@
 	<string>Group with</string>
 	<key>Hide</key>
 	<string>Hide</string>
+	<key>Hide Replace</key>
+	<string>Hide Replace</string>
 	<key>Hide or show the inspector</key>
 	<string>Hide or show the inspector</string>
 	<key>Hide or show the navigator</key>
@@ -994,6 +1000,10 @@
 	<string>Rename “%@”</string>
 	<key>Rename…</key>
 	<string>Rename…</string>
+	<key>Replace</key>
+	<string>Replace</string>
+	<key>Replace All</key>
+	<string>Replace All</string>
 	<key>Repository</key>
 	<string>Repository</string>
 	<key>Request Permission</key>
@@ -1092,6 +1102,8 @@
 	<string>Show Original</string>
 	<key>Show Project Files</key>
 	<string>Show Project Files</string>
+	<key>Show Replace</key>
+	<string>Show Replace</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>
@@ -1322,6 +1334,8 @@
 	<string>Usage</string>
 	<key>Use Regular Expression</key>
 	<string>Use Regular Expression</string>
+	<key>Use Selection for Find</key>
+	<string>Use Selection for Find</string>
 	<key>User</key>
 	<string>User</string>
 	<key>Uses %@</key>

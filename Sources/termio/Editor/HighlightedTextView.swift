@@ -38,6 +38,10 @@ struct HighlightedTextView: NSViewRepresentable {
     var findFocusedIndex: Int = 0
     /// Fires with the total match count after any recompute (new query, options, or edit).
     var onMatchesChanged: ((Int) -> Void)? = nil
+    /// Attached so the find bar's Replace buttons can edit this buffer through the text view
+    /// rather than through the `text` binding, which would replace the whole document and drop
+    /// undo. Nil wherever replace isn't offered.
+    var findReplace: FindReplaceController? = nil
     /// Appends a "Close" item to the right-click menu — the editor closes terminal-style, alongside
     /// the toolbar button. Left off wherever the text view isn't the closable editor overlay.
     var showsCloseMenuItem: Bool = false
@@ -80,6 +84,7 @@ struct HighlightedTextView: NSViewRepresentable {
         layoutManager.addTextContainer(container)
 
         let textView = SavingTextView(frame: .zero, textContainer: container)
+        findReplace?.attach(textView)
         textView.onSave = onSave
         textView.showsCloseMenuItem = showsCloseMenuItem
         textView.addToChat = addToChat
@@ -169,6 +174,9 @@ struct HighlightedTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? SavingTextView else { return }
+        // Re-attached each pass: the representable is recreated on every render, and a controller
+        // still pointing at a torn-down view would replace text nobody can see.
+        findReplace?.attach(textView)
         if scrollView.isHidden == isActive { scrollView.isHidden = !isActive }
         // Focus follows the flip, not the mount (see `claimFocus`).
         if isActive, !context.coordinator.wasActive { Self.claimFocus(textView) }

@@ -1205,6 +1205,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.post(name: .termioShowFindBar, object: nil)
     }
 
+    /// ⌘G / ⇧⌘G: step the open find bar through its matches. Broadcast the way ⌘F is, so they
+    /// work with the keyboard in the find field or in the document.
+    @objc func findNextMatch(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioFindNext, object: nil)
+    }
+
+    @objc func findPreviousMatch(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioFindPrevious, object: nil)
+    }
+
+    /// ⌘E: the editor's selection becomes the find query.
+    @objc func useSelectionForFind(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioUseSelectionForFind, object: nil)
+    }
+
     /// Reveals the inspector for a freshly opened detail: un-collapses it if hidden, and otherwise
     /// leaves its width alone. It comes back at whatever the split last had (the user's own width,
     /// restored from the autosave), and the responsive `InspectorRoot` — two-column when there's
@@ -2899,11 +2914,36 @@ private func buildMainMenu() -> NSMenu {
     editMenu.addItem(withTitle: localized("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: localized("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editMenu.addItem(.separator())
-    // ⌘F opens the current file's in-editor find bar. Broadcast via notification so the
-    // shortcut works regardless of first-responder — the terminal receives no find behaviour.
-    let findItem = NSMenuItem(title: localized("Find…"),
-                              action: #selector(AppDelegate.showEditorFindBar(_:)),
-                              keyEquivalent: "f")
+    // Edit ▸ Find, where every Mac app keeps it, on the keys people already have in their
+    // fingers: ⌘F opens the current file's in-editor find bar, ⌘G / ⇧⌘G step through the
+    // matches, ⌘E makes the selection the query. All four broadcast via notification so they
+    // work regardless of first-responder — the terminal receives no find behaviour.
+    //
+    // They stay hardwired here rather than joining `KeyCommandCatalog`, which is the table of
+    // rebindable *app* verbs — window, session, pane — every one of which acts whatever is on
+    // screen. These four only mean anything while an editor overlay is open, they are macOS
+    // standard keys nobody rebinds, and ⌘F has always lived here; splitting the family so one
+    // of them is rebindable and three are not would be worse than either.
+    let findItem = NSMenuItem(title: localized("Find"), action: nil, keyEquivalent: "")
+    let findMenu = NSMenu(title: localized("Find"))
+    findMenu.addItem(withTitle: localized("Find…"),
+                     action: #selector(AppDelegate.showEditorFindBar(_:)),
+                     keyEquivalent: "f")
+    findMenu.addItem(withTitle: localized("Find Next"),
+                     action: #selector(AppDelegate.findNextMatch(_:)),
+                     keyEquivalent: "g")
+    let findPreviousItem = findMenu.addItem(
+        withTitle: localized("Find Previous"),
+        action: #selector(AppDelegate.findPreviousMatch(_:)),
+        keyEquivalent: "g")
+    findPreviousItem.keyEquivalentModifierMask = [.command, .shift]
+    findMenu.addItem(withTitle: localized("Use Selection for Find"),
+                     action: #selector(AppDelegate.useSelectionForFind(_:)),
+                     keyEquivalent: "e")
+    // Target left nil before the submenu is attached: AppKit installs its own `submenuAction:`
+    // and only adopts the submenu as the target when there isn't one already (see
+    // `SubmenuParentEnablementTests`).
+    findItem.submenu = findMenu
     editMenu.addItem(findItem)
     editItem.submenu = editMenu
 
