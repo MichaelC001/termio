@@ -27,6 +27,49 @@ enum EditorIndentation {
     /// Wider steps than this are continuation alignment (a wrapped argument list), not a level.
     private static let maximumDetectedWidth = 8
 
+    // MARK: Line scanning
+
+    /// The leading spaces and tabs of one line: how many characters they span, and how many of
+    /// those were tabs.
+    struct Leading: Equatable {
+        var length: Int
+        var tabs: Int
+    }
+
+    /// Scans the indentation `lineRange` opens with. The range may carry its line terminator —
+    /// the scan stops at the first character that is neither a space nor a tab, so a range taken
+    /// straight from `lineRange(for:)` can be passed in unchanged.
+    ///
+    /// Shared with `IndentGuideRenderer`, which asks the same question of the same buffer on every
+    /// draw. Character-by-character rather than through `substring`: detection runs on every Return
+    /// and Tab over up to `sampleLineLimit` lines, and a String per line is a real allocation on a
+    /// keypress path.
+    static func leading(of lineRange: NSRange, in text: NSString) -> Leading {
+        var length = 0
+        var tabs = 0
+        for index in lineRange.location..<NSMaxRange(lineRange) {
+            switch text.character(at: index) {
+            case 0x20: break
+            case 0x09: tabs += 1
+            default: return Leading(length: length, tabs: tabs)
+            }
+            length += 1
+        }
+        return Leading(length: length, tabs: tabs)
+    }
+
+    /// Whether `lineRange` holds nothing but whitespace. Line terminators count as blank, so a
+    /// range straight from `lineRange(for:)` needs no trimming first.
+    static func isBlank(_ lineRange: NSRange, in text: NSString) -> Bool {
+        for index in lineRange.location..<NSMaxRange(lineRange) {
+            switch text.character(at: index) {
+            case 0x20, 0x09, 0x0A, 0x0D: continue
+            default: return false
+            }
+        }
+        return true
+    }
+
     // MARK: Detection
 
     /// The indent unit `text` already uses. Spaces win ties, so a file with no indentation at
@@ -45,23 +88,13 @@ enum EditorIndentation {
             location = NSMaxRange(lineRange)
             scannedLines += 1
 
-            var index = lineRange.location
-            var tabs = 0
-            scan: while index < NSMaxRange(lineRange) {
-                switch text.character(at: index) {
-                case 0x20: break
-                case 0x09: tabs += 1
-                default: break scan
-                }
-                index += 1
-            }
-            let leading = index - lineRange.location
             // A blank or whitespace-only line says nothing about the file's style, and a run of
             // them must not look like a jump back to column zero either.
-            let content = text.substring(with: NSRange(location: index, length: NSMaxRange(lineRange) - index))
-            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            guard !isBlank(lineRange, in: text) else { continue }
+            let indent = leading(of: lineRange, in: text)
+            let leading = indent.length
 
-            if tabs > 0 {
+            if indent.tabs > 0 {
                 tabIndentedLines += 1
                 previousSpaces = nil
                 continue

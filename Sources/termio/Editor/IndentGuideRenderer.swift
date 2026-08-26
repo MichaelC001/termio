@@ -65,7 +65,7 @@ final class IndentGuideRenderer {
             in: scan,
             options: [.byParagraphs, .substringNotRequired]
         ) { _, lineRange, _, _ in
-            let indent = Self.leadingWhitespace(lineRange, in: content)
+            let indent = EditorIndentation.leading(of: lineRange, in: content).length
             let extent = self.rows(of: lineRange, layoutManager: layoutManager, in: container)
             // An all-whitespace line indents nothing of its own; it waits for the line below.
             guard indent < lineRange.length else {
@@ -177,7 +177,7 @@ final class IndentGuideRenderer {
         var start = content.lineRange(for: NSRange(location: visible.location, length: 0)).location
         var steps = 0
         while start > 0, steps < blankRunLimit,
-              isBlank(content.lineRange(for: NSRange(location: start, length: 0)), in: content) {
+              EditorIndentation.isBlank(content.lineRange(for: NSRange(location: start, length: 0)), in: content) {
             start = content.lineRange(for: NSRange(location: start - 1, length: 0)).location
             steps += 1
         }
@@ -186,34 +186,10 @@ final class IndentGuideRenderer {
         var end = NSMaxRange(content.lineRange(for: NSRange(location: last, length: 0)))
         steps = 0
         while end < content.length, steps < blankRunLimit,
-              isBlank(content.lineRange(for: NSRange(location: end - 1, length: 0)), in: content) {
+              EditorIndentation.isBlank(content.lineRange(for: NSRange(location: end - 1, length: 0)), in: content) {
             end = NSMaxRange(content.lineRange(for: NSRange(location: end, length: 0)))
             steps += 1
         }
         return NSRange(location: start, length: max(0, end - start))
-    }
-
-    /// Whether `lineRange` — a range that may still carry its line terminator — holds only
-    /// whitespace.
-    private static func isBlank(_ lineRange: NSRange, in content: NSString) -> Bool {
-        for index in lineRange.location..<NSMaxRange(lineRange) {
-            switch content.character(at: index) {
-            case 0x20, 0x09, 0x0A, 0x0D: continue
-            default: return false
-            }
-        }
-        return true
-    }
-
-    /// Leading spaces and tabs of `lineRange` (which excludes its line terminator). Equal to the
-    /// range's own length exactly when the line is blank.
-    private static func leadingWhitespace(_ lineRange: NSRange, in content: NSString) -> Int {
-        var count = 0
-        for index in lineRange.location..<NSMaxRange(lineRange) {
-            let character = content.character(at: index)
-            guard character == 0x20 || character == 0x09 else { break }
-            count += 1
-        }
-        return count
     }
 }
