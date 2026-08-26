@@ -62,20 +62,11 @@ struct OccurrenceTarget: Equatable {
 /// VS Code's `occurrencesHighlight` / `selectionHighlight`: the word under the caret — or a short
 /// selection — gets a faint wash everywhere else it appears, so reading what an agent just wrote
 /// shows where a name is used without typing it into find. This editor is read far more than it is
-/// typed in, and this is the cheapest reading aid it was missing.
+/// typed in, which is what earns a passive hint its cost.
 ///
 /// It rides the machinery the find bar already has: `TextFindEngine` finds the matches and paints
 /// them as temporary layout attributes. Only the trigger (a selection change instead of a query)
-/// and the colour (weaker, so a passive hint never reads as a search result) differ. Three rules
-/// keep it out of the way:
-///
-/// - **The find bar wins.** While a query is live its highlights own the layer and this stays dark;
-///   it comes back when the query clears.
-/// - **Only its own paint is lifted.** The wash goes on additively and comes off range by range, so
-///   it can share the highlight layer with the bracket match instead of wiping it.
-/// - **Caret moves stay cheap.** The scan is debounced, skipped on a document too big to syntax
-///   highlight, skipped again when the caret is still in the word already washed, and capped in how
-///   many matches it paints.
+/// and the color (weaker, so a passive hint never reads as a search result) differ.
 @MainActor
 final class OccurrenceHighlighter {
     /// Ranges currently washed, so the next pass lifts exactly its own paint.
@@ -101,7 +92,7 @@ final class OccurrenceHighlighter {
     private static let debounce: UInt64 = 150_000_000
 
     /// Re-derive the wash after a selection change. `findActive` hands the highlight layer to the
-    /// find bar; a clear `color` turns the behaviour off entirely.
+    /// find bar; a clear `color` turns the behavior off entirely.
     func update(in textView: NSTextView, color: NSColor, findActive: Bool) {
         pending?.cancel()
         pending = nil
