@@ -330,18 +330,15 @@ struct AgentSettingsTab: View {
     }
 
     /// Persists a drag as the new arrangement; `setEnabledOrder` keeps every
-    /// other id ranked behind it so the ordering stays total.
-    /// Drops `draggedID` at `target`'s position. Returns false for a drag that
-    /// changes nothing, so a row dropped on itself is not recorded as an edit.
+    /// other id ranked behind it so the ordering stays total. Returns false for a
+    /// drag that changes nothing, so a row dropped on itself is not an edit.
+    ///
+    /// The arithmetic lives in `AgentOrdering`, where it can be tested.
     private func move(_ draggedID: String, onto target: AgentPreset) -> Bool {
-        var ids = listedAgents.map(\.id)
-        guard draggedID != target.id,
-              let from = ids.firstIndex(of: draggedID),
-              let to = ids.firstIndex(of: target.id)
+        guard let moved = AgentOrdering.moving(
+            draggedID, onto: target.id, in: listedAgents.map(\.id))
         else { return false }
-        ids.remove(at: from)
-        ids.insert(draggedID, at: to)
-        settings.setEnabledOrder(ids)
+        settings.setEnabledOrder(moved)
         return true
     }
 
@@ -349,12 +346,10 @@ struct AgentSettingsTab: View {
     /// this is the way that cannot quietly stop working, which matters because
     /// the last container change is exactly what broke `onMove`.
     private func move(_ preset: AgentPreset, by offset: Int) {
-        var ids = listedAgents.map(\.id)
-        guard let from = ids.firstIndex(of: preset.id) else { return }
-        let to = from + offset
-        guard ids.indices.contains(to) else { return }
-        ids.swapAt(from, to)
-        settings.setEnabledOrder(ids)
+        guard let moved = AgentOrdering.moving(
+            preset.id, by: offset, in: listedAgents.map(\.id))
+        else { return }
+        settings.setEnabledOrder(moved)
     }
 }
 
