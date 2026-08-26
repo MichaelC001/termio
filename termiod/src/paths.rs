@@ -81,6 +81,131 @@ pub fn host_id_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("host.id"))
 }
 
+/// The pairing secret that authenticates a WebSocket pipe. Beside `host.id`
+/// for the same reason: two daemons on two sockets must not share a secret.
+///
+/// This is not the session write token. That one arbitrates who may type into
+/// a PTY and is handed out by the daemon; this one decides whether a socket is
+/// allowed to carry frames at all.
+pub fn pair_token_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("pair.token"))
+}
+
+/// The durable WSS bind, so a crash restart or a `spawn_daemon` child that
+/// execs bare `termiod serve` keeps listening.
+pub fn wss_bind_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("wss.bind"))
+}
+
+/// The durable allowed origin. Not in the web-client RFC's file table, but
+/// `pair --qr` runs in a different process from the daemon and the listener
+/// binds loopback by design, so without this the reachable name is knowable
+/// only to whoever typed the daemon's argv.
+pub fn wss_origin_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("wss.origin"))
+}
+
+/// 24 random bytes as base64url. No padding: 24 is a multiple of 3.
+fn encode_base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        let symbols = match chunk.len() {
+            1 => 2,
+            2 => 3,
+            _ => 4,
+        };
+        for index in 0..symbols {
+            let sextet = (triple >> (18 - 6 * index)) & 0x3f;
+            out.push(ALPHABET[sextet as usize] as char);
+        }
+    }
+    out
+}
+
+fn random_bytes(count: usize) -> Result<Vec<u8>> {
+    let mut buffer = vec![0u8; count];
+    std::fs::File::open("/dev/urandom")
+        .context("opening OS random source")?
+        .read_exact(&mut buffer)
+        .context("reading OS random source")?;
+    Ok(buffer)
+}
+
+/// Create a 0600 file that must not already exist.
+fn write_new_secret(path: &std::path::Path, value: &str) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.write_all(value.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", path.display()))?;
+    Ok(())
+}
+
+/// Replace a 0600 file through a rename, so a concurrent reader sees either the
+/// old value or the new one and never a truncated file.
+pub fn replace_secret(path: &std::path::Path, value: &str) -> Result<()> {
+    let staged = path.with_extension("staged");
+    let _ = std::fs::remove_file(&staged);
+    write_new_secret(&staged, value)?;
+    std::fs::rename(&staged, path)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
+/// The current pairing token, or `None` when the file is absent. Reading is
+/// separate from minting on purpose: `serve --wss` must never mint one, or an
+/// operator who forgot to pair gets a listener with a secret nobody has seen.
+pub fn read_pair_token() -> Result<Option<String>> {
+    let path = pair_token_path()?;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let token = contents.trim().to_string();
+            if token.is_empty() {
+                bail!("empty pairing token in {}", path.display());
+            }
+            Ok(Some(token))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Read the pairing token, minting one on first use. Only `termiod pair` calls
+/// this.
+pub fn load_or_create_pair_token() -> Result<String> {
+    if let Some(existing) = read_pair_token()? {
+        return Ok(existing);
+    }
+    let token = encode_base64url(&random_bytes(24)?);
+    let path = pair_token_path()?;
+    match write_new_secret(&path, &token) {
+        Ok(()) => Ok(token),
+        // Another `pair` won the race; its token is the one on disk.
+        Err(_) if path.exists() => read_pair_token()?
+            .ok_or_else(|| anyhow::anyhow!("pairing token vanished during minting")),
+        Err(error) => Err(error),
+    }
+}
+
+/// Replace the pairing token. The only revocation there is: a live daemon
+/// drops every spliced socket, and anything holding the old secret is out.
+pub fn rotate_pair_token() -> Result<String> {
+    let token = encode_base64url(&random_bytes(24)?);
+    replace_secret(&pair_token_path()?, &token)?;
+    Ok(token)
+}
+
 /// Root of the per-session upload scratch dirs (§C.12 `temp:` dests). Lives
 /// beside the socket for the same reason as the graveyard: two daemons on two
 /// sockets must not share scratch space.

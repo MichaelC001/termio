@@ -22,10 +22,12 @@ mod resource;
 mod service;
 mod session;
 mod tombstone;
+mod wss;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use protocol::CreateSpec;
+use std::net::SocketAddr;
 
 #[derive(Parser)]
 #[command(
@@ -45,7 +47,46 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the session host in the foreground (usually auto-started).
-    Serve,
+    Serve {
+        /// Also accept WebSocket clients on this address (default port 8790).
+        ///
+        /// Loopback only — 127.0.0.0/8 or ::1. `0.0.0.0`, `[::]`, a LAN
+        /// address and a hostname that resolves off loopback are all refused.
+        /// Put TLS in front with Tailscale Serve or Caddy; termiod never
+        /// terminates it. Needs a token from `termiod pair`.
+        #[arg(long, value_name = "ADDR", value_parser = wss::parse_bind)]
+        wss: Option<SocketAddr>,
+
+        /// Browser origin allowed on the WebSocket. Repeatable, or comma-separated.
+        ///
+        /// Required in front of a TLS terminator: the default same-origin check
+        /// compares the page's Origin against a loopback Host and refuses.
+        #[arg(long, value_name = "URL", value_parser = wss::parse_origin, value_delimiter = ',')]
+        wss_origin: Vec<wss::Origin>,
+    },
+
+    /// Print the pairing token that lets a phone or a browser attach.
+    ///
+    /// The token authenticates the WebSocket pipe. It is not the session write
+    /// token, and it never expires: `--rotate` is the only revocation.
+    Pair {
+        /// Emit the invite as JSON — url, token, host_id, proto.
+        #[arg(long)]
+        json: bool,
+        /// Print the invite as a QR code for a phone to scan off this terminal.
+        #[arg(long)]
+        qr: bool,
+        /// Replace the token. Attached clients detach; no session is killed.
+        #[arg(long)]
+        rotate: bool,
+        /// Stop listening for WebSocket clients on the next start.
+        #[arg(long)]
+        wss_off: bool,
+        /// The URL this box is reachable at, when it is not the daemon's own
+        /// `--wss-origin` — a tunnel, or a proxy mounted under a path.
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+    },
 
     /// Create a new session and print its id.
     Create {
@@ -287,7 +328,21 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Serve => daemon::serve().await,
+        Cmd::Serve { wss, wss_origin } => daemon::serve(wss, wss_origin).await,
+
+        Cmd::Pair {
+            json,
+            qr,
+            rotate,
+            wss_off,
+            url,
+        } => wss::run_pair(wss::PairOptions {
+            json,
+            qr,
+            rotate,
+            wss_off,
+            url,
+        }),
 
         Cmd::Create { name, cwd, argv } => {
             let (rows, cols) = client::term_size();
