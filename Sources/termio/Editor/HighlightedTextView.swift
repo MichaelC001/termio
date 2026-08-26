@@ -456,7 +456,7 @@ private final class NotificationObserverBag: @unchecked Sendable {
 /// then lets every other key equivalent fall through unchanged. The editor auto-saves on idle, so
 /// this only serves the reflex of pressing ⌘S — there is still no Save button. It also draws the
 /// Xcode-style current-line band and washes the bracket pair beside the caret.
-private final class SavingTextView: NSTextView {
+final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
     /// When set, the right-click menu carries a trailing "Close" — the editor's only close
     /// affordance now that it has no chrome button (terminal-style, matching how a session closes).
