@@ -389,6 +389,13 @@ struct CommandPaletteView: View {
                              icon: .settings, shortcut: "⌘,") { _ in
             NSApp.sendAction(#selector(AppDelegate.showSettings(_:)), to: nil, from: nil)
         })
+        // The pairing QR left the sidebar for this Mac's Serving section
+        // (RFC §D9). Pairing is an action, so this is where it is paid back —
+        // one search away instead of a duplicate settings entry.
+        actions.append(.init(id: "pair-phone", title: localized("Pair a Phone…"),
+                             icon: .smartPhoneWifi, shortcut: nil) { _ in
+            NSApp.sendAction(#selector(AppDelegate.pairPhone(_:)), to: nil, from: nil)
+        })
         actions.append(.init(id: "check-updates", title: localized("Check for Updates…"),
                              icon: .refresh, shortcut: nil) { _ in
             NSApp.sendAction(#selector(AppDelegate.checkForUpdates(_:)), to: nil, from: nil)

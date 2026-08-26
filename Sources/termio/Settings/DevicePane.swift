@@ -57,6 +57,11 @@ struct DevicePane: View {
             }
             reachedBySection
             integrationSection
+            // Only this Mac serves anything today: `termiod` has no `serve --wss`
+            // yet, so a Serving section on a remote pane would offer a switch
+            // that cannot turn anything on. It appears on a device's pane when
+            // the daemon can answer for it, not before.
+            if machine.isLocal { DeviceServingSection() }
         }
         .formStyle(.grouped)
         .navigationTitle(machine.name)
