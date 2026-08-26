@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
-        case companion(URL)
+        case device(DeviceEndpoint)
     }
 
     private let session: MockSession
@@ -96,8 +96,8 @@ final class TerminalViewController: UIViewController {
     private lazy var inspector: InspectorViewController = {
         let inspector = InspectorViewController(
             session: session,
-            companionURL: {
-                if case .companion(let url) = backend { url } else { nil }
+            endpoint: {
+                if case .device(let endpoint) = backend { endpoint } else { nil }
             }()
         )
         inspector.onSendToAgent = { [weak self] text in
@@ -120,15 +120,16 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
-    /// A companion terminal: bridges a real Mac session's PTY when `session`
-    /// carries a roster id, else streams whatever the server serves (PoC mode).
-    init(companionURL: URL, session: MockSession? = nil) {
+    /// A live terminal on a paired machine: bridges a real session's PTY when
+    /// `session` carries a roster id, else streams whatever the peer serves
+    /// (the companion proof of concept).
+    init(endpoint: DeviceEndpoint, session: MockSession? = nil) {
         self.session = session ?? MockSession(
-            title: companionURL.host ?? "companion",
+            title: endpoint.url.host ?? "companion",
             project: "companion", agent: RosterAgent.terminal, status: .idle,
             subtitle: "", time: ""
         )
-        backend = .companion(companionURL)
+        backend = .device(endpoint)
         super.init(nibName: nil, bundle: nil)
         hidesBottomBarWhenPushed = true
     }
@@ -187,10 +188,13 @@ final class TerminalViewController: UIViewController {
             switch backend {
             case .demoShell:
                 shellSession.start()
-            case .companion:
-                companion?.start()
+            case .device:
+                // nil only when there was no session to attach to, which
+                // `makeTerminalSession` already fell back to the sandbox shell
+                // for; starting nothing would leave that shell dead on screen.
+                if let companion { companion.start() } else { shellSession.start() }
             }
-        } else if case .companion = backend {
+        } else if case .device = backend {
             // Re-entering a parked session claims the PTY's winsize back —
             // the Mac may own it, and this view's size didn't change, so no
             // layout pass would re-send the grid.
@@ -250,11 +254,11 @@ final class TerminalViewController: UIViewController {
         statusLabel.textColor = .secondaryLabel
         statusLabel.text = switch backend {
         case .demoShell: "\(session.agent.name) · \(session.time)"
-        case .companion: localized("Connecting…")
+        case .device: localized("Connecting…")
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
-        case .companion: contextLabel.isHidden = true // until connected
+        case .device: contextLabel.isHidden = true // until connected
         case .demoShell: break
         }
 
@@ -339,7 +343,7 @@ final class TerminalViewController: UIViewController {
         // Re-entering a parked companion session claims the PTY's winsize back —
         // the Mac may own it, and this view's size didn't change while parked,
         // so no layout pass would re-send the grid.
-        if case .companion = backend { companion?.reassertGrid() }
+        if case .device = backend { companion?.reassertGrid() }
     }
 
     /// Back to the inbox: the screen parks in the container's keep-alive
@@ -451,7 +455,7 @@ final class TerminalViewController: UIViewController {
             keyBar.setStickyVisual(.ctrl, Self.stickyVisual(terminalView.stickyActivation(for: .ctrl)))
             keyBar.setStickyVisual(.alt, Self.stickyVisual(terminalView.stickyActivation(for: .alt)))
         }
-        if case .companion = backend, session.projectRosterID != nil {
+        if case .device = backend, session.projectRosterID != nil {
             keyBar.setAttachAvailable(true)
         }
 
@@ -571,13 +575,13 @@ final class TerminalViewController: UIViewController {
         present(picker, animated: true)
     }
 
-    /// Pushes picked bytes to the Mac one file at a time; each reply's
+    /// Pushes picked bytes to the paired machine one file at a time; each reply’s
     /// absolute path is typed into the TUI's own input line — the desktop
-    /// drag-a-file-into-terminal semantic, over the companion link instead
-    /// of SCP. Uploads run sequentially because .uploaded replies carry no
+    /// drag-a-file-into-terminal semantic, over the app's own link instead of
+    /// SCP. Uploads run sequentially because neither backend's reply carries a
     /// correlation id.
     private func enqueueUploads(_ items: [(name: String, data: Data)]) {
-        guard case .companion = backend, session.projectRosterID != nil else { return }
+        guard case .device = backend, session.projectRosterID != nil else { return }
         let oversized = items.filter { $0.data.count > Self.uploadByteCap }
         reportSkipped(oversized: oversized.map(\.name))
         let accepted = items.filter { $0.data.count <= Self.uploadByteCap }
@@ -595,13 +599,16 @@ final class TerminalViewController: UIViewController {
             terminalView.keyBar.setAttachBusy(false)
             return
         }
-        guard case .companion(let url) = backend,
+        guard case .device(let endpoint) = backend,
               let projectID = session.projectRosterID else { return }
         uploadQueue.removeFirst()
         uploadInFlight = true
         terminalView.keyBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
         if uploadClient == nil {
-            let client = CompanionBackend(url: url)
+            // Scoped to this session: a device files a transfer in the session's
+            // own scratch directory and reaps it when the session dies, so a
+            // pasted screenshot never outlives the conversation it belonged to.
+            let client = DeviceBackends.client(for: endpoint, sessionID: session.rosterID)
             client.onUploaded = { [weak self] path in
                 guard let self else { return }
                 self.typeUploadedPath(path)
@@ -663,24 +670,34 @@ final class TerminalViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    /// Demo sessions use ShellCraftKit's sandbox shell; companion sessions
-    /// bridge the surface to the Mac's PTY over the wire — keystrokes out,
-    /// remote bytes in, grid resize → window-change.
+    /// Demo sessions use ShellCraftKit's sandbox shell; a live session bridges
+    /// the surface to a PTY on the paired machine — keystrokes out, remote bytes
+    /// in, grid resize → window-change.
     private func makeTerminalSession() -> InMemoryTerminalSession {
         switch backend {
         case .demoShell:
             return shellSession.terminalSession
-        case .companion(let url):
-            let transport = CompanionDeviceSession(url: url, attachSessionID: session.rosterID)
-            // The phone mirrors the Mac's PTY through a live libghostty surface,
-            // which answers terminal queries (XTVERSION, DA, DSR) on its own. The
-            // Mac's authoritative surface already answered; the phone's duplicate
-            // arrives (late, from libghostty's IO thread) and, having missed the
-            // agent's parse window, leaks into its input line as literal text —
-            // e.g. Grok showing a stray ">|ghostty 1.3.2-main-+…". A mirror must
-            // never talk back to the host, so we drop any write that is a terminal
-            // device report. A real keystroke or key-bar sequence never looks like
-            // one, so genuine input passes through untouched.
+        case .device(let endpoint):
+            guard let transport = DeviceBackends.session(
+                for: endpoint, sessionID: session.rosterID
+            ) else {
+                // A device attaches to a session by name and this screen has
+                // none, so there is nothing to show. The sandbox shell is the
+                // honest fallback: it says what it is rather than sitting on a
+                // socket that will never carry anything.
+                Log.device.error("no session id to attach to; falling back to the sandbox shell")
+                return shellSession.terminalSession
+            }
+            // The phone mirrors a PTY through a live libghostty surface, which
+            // answers terminal queries (XTVERSION, DA, DSR) on its own. The
+            // authoritative surface on the other end already answered; the
+            // phone's duplicate arrives (late, from libghostty's IO thread) and,
+            // having missed the agent's parse window, leaks into its input line
+            // as literal text — e.g. Grok showing a stray ">|ghostty 1.3.2…".
+            // A mirror must never talk back to the host, and that matters *more*
+            // on a direct attach, where another client is driving the same PTY.
+            // A real keystroke or key-bar sequence never looks like a report, so
+            // genuine input passes through untouched.
             let terminalSession = InMemoryTerminalSession(
                 write: { [weak transport] data in
                     guard !MirrorReportFilter.isDeviceReport(data) else { return }
@@ -698,17 +715,17 @@ final class TerminalViewController: UIViewController {
                     self.altScreenSniffer.consume(data)
                     // A slow-starting full-screen agent (Grok) switches into its
                     // alt-screen TUI only after the phone's on-attach grid claim
-                    // has gone stale, and the Mac won't re-SIGWINCH an unchanged
+                    // has gone stale, and the host will not re-SIGWINCH an unchanged
                     // winsize — so the TUI first paints at the wrong grid and only
                     // a tap (which changes the keyboard geometry) forces a reflow.
-                    // Re-claim the grid the instant the TUI appears; the Mac
+                    // Re-claim the grid the instant the TUI appears; the host
                     // jiggles when the size is unchanged, so the agent reflows on
                     // its own. Twice, mirroring the on-connect reassert, in case
                     // the first lands before the agent finishes its opening paint.
-                    if !wasAlternate, self.altScreenSniffer.isAlternate, case .companion = self.backend {
+                    if !wasAlternate, self.altScreenSniffer.isAlternate, case .device = self.backend {
                         self.companion?.reassertGrid()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                            guard let self, case .companion = backend else { return }
+                            guard let self, case .device = backend else { return }
                             companion?.reassertGrid()
                         }
                     }
@@ -736,11 +753,13 @@ final class TerminalViewController: UIViewController {
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
-            // The Mac wipes this screen on attach and only repaints once our
-            // grid claim lands (it jiggles the PTY so the shell reprints its
-            // prompt). But libghostty dedupes the resize callback at two layers
-            // — the surface coordinator and the in-memory session both drop an
-            // unchanged size — so on a cold attach or a reconnect no fresh
+            // The host wipes this screen on attach and only repaints once our
+            // grid claim lands — a Mac jiggles the PTY so the shell reprints its
+            // prompt, a device answers the barrier with a fresh snapshot, and
+            // both need the claim. But libghostty dedupes the resize callback at
+            // two layers — the surface coordinator and the in-memory session
+            // both drop an unchanged size — so on a cold attach or a reconnect
+            // no fresh
             // resize fires, and the `sendGrid` at socket-open can race the very
             // first dispatch. The result is a blank grid under a correct title.
             // Re-assert the cached grid now that the socket is definitively up,
@@ -748,7 +767,7 @@ final class TerminalViewController: UIViewController {
             // on the wire is our repaint and never a stray wipe.
             companion?.reassertGrid()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self, case .companion = backend else { return }
+                guard let self, case .device = backend else { return }
                 companion?.reassertGrid()
             }
         case .failed(let reason):
@@ -1239,7 +1258,7 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         let existing: InMemoryTerminalSession?
         switch backend {
         case .demoShell: existing = shellSession.terminalSession
-        case .companion: existing = companionSession
+        case .device: existing = companionSession
         }
         guard surfaceConfigured, let session = existing else { return }
 
@@ -1255,8 +1274,8 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         terminalView.fitToSize()
         lastFittedSize = terminalView.bounds.size
         // A rebuilt surface starts blank; the stream won't repaint until the
-        // next byte. Reclaim the grid so the Mac re-sends current content.
-        if case .companion = backend { companion?.reassertGrid() }
+        // next byte. Reclaim the grid so the host re-sends current content.
+        if case .device = backend { companion?.reassertGrid() }
         // Reveal once the rebuilt surface has had a beat to repaint (companion
         // content arrives over the network) so we don't uncover a blank grid.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in

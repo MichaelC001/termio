@@ -71,7 +71,7 @@ final class ProjectDetailViewController: UIViewController {
             return
         }
         project = live
-        addButton.isHidden = store.companionURL == nil || project.rosterID == nil
+        addButton.isHidden = store.deviceEndpoint == nil || project.rosterID == nil
         tableView.reloadData()
         updateEmptyState()
     }
@@ -270,7 +270,7 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = project.sessions[indexPath.row].rosterID
         else { return nil }
         let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
@@ -286,7 +286,7 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = project.sessions[indexPath.row].rosterID
         else { return nil }
         let title = project.sessions[indexPath.row].title

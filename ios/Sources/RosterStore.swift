@@ -27,7 +27,10 @@ final class RosterStore {
     /// twin of Projects ＋ reopening a known folder). Empty until the Mac
     /// answers, or when the config has no hosts.
     private(set) var sshHosts: [DeviceSSHHost] = []
-    private(set) var companionURL: URL?
+    /// Where and how the app reaches the active peer — nil when unpaired. The
+    /// screens read it as "is this live"; only the backends care which protocol
+    /// it names.
+    private(set) var deviceEndpoint: DeviceEndpoint?
     /// `MockSession.key` of the session filling the screen — its row gets the
     /// current-chat pill wherever session rows render.
     var currentSessionKey: String?
@@ -36,9 +39,9 @@ final class RosterStore {
     /// which resolves it against the live roster.
     private var destinationWorkspaceID: String?
 
-    /// Open a session's terminal; `companionURL` is non-nil when it's live.
+    /// Open a session's terminal; the endpoint is non-nil when it's live.
     /// Fired for row taps (via `openSession`) and for `.started` replies.
-    var onOpenSession: ((MockSession, URL?) -> Void)?
+    var onOpenSession: ((MockSession, DeviceEndpoint?) -> Void)?
     /// A `start` failed on the Mac; the shell presents the alert.
     var onStartError: ((String) -> Void)?
 
@@ -105,19 +108,22 @@ final class RosterStore {
         workspaceGroups.filter { $0.deviceAlias == nil }
     }
 
-    /// The Mac's loose-agent-sessions container in the destination workspace —
-    /// the target a phone-started chat lands in. A workspace with no chats yet
-    /// gets a stand-in addressed by `Wire.looseSectionID`, so the phone can seed
-    /// the first chat there the way `.startTerminal` seeds the first terminal;
-    /// the Mac finds-or-creates the section behind that id. nil only when no
-    /// local workspace exists to land in.
+    /// The loose-agent-sessions container in the destination workspace — the
+    /// target a phone-started chat lands in. A workspace with no chats yet gets
+    /// a stand-in whose id the backend supplies, so the phone can seed the first
+    /// chat there the way `.startTerminal` seeds the first terminal. nil when no
+    /// local workspace exists to land in, or when the peer has no such container
+    /// to seed.
     var chatsProject: MockProject? {
         guard let workspace = destinationWorkspace else { return nil }
         if let existing = workspace.projects.first(where: { $0.kind == "chats" }) { return existing }
+        guard let containerID = client?.looseChatsContainerID(workspaceID: workspace.id) else {
+            return nil
+        }
         return MockProject(
             name: localized("Chats"),
             path: "",
-            rosterID: Wire.looseSectionID(workspaceID: workspace.id, chats: true),
+            rosterID: containerID,
             kind: "chats",
             workspaceID: workspace.id,
             workspaceName: workspace.name,
@@ -148,16 +154,16 @@ final class RosterStore {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if let url = CompanionLink.savedURL {
+                if let endpoint = CompanionLink.savedEndpoint {
                     self.client?.stop()
                     self.client = nil
-                    // Switching Macs must not leave the old Mac's projects on
+                    // Switching peers must not leave the old one's projects on
                     // screen while the new socket dials.
                     self.projects = []
                     self.enabledAgents = []
                     self.sshHosts = []
                     NotificationCenter.default.post(name: Self.didChange, object: nil)
-                    self.connect(to: url)
+                    self.connect(to: endpoint)
                 } else {
                     self.disconnect()
                 }
@@ -170,7 +176,7 @@ final class RosterStore {
     /// so the next ＋ starts alongside what the user was just looking at.
     func openSession(_ session: MockSession) {
         if let workspaceID = workspaceID(of: session) { destinationWorkspaceID = workspaceID }
-        onOpenSession?(session, companionURL)
+        onOpenSession?(session, deviceEndpoint)
     }
 
     /// Point the ＋ at another workspace (its "Start in" pick).
@@ -191,8 +197,8 @@ final class RosterStore {
     func reconnectNow() {
         if let client {
             client.reconnectNow()
-        } else if let url = CompanionLink.savedURL {
-            connect(to: url)
+        } else if let endpoint = CompanionLink.savedEndpoint {
+            connect(to: endpoint)
         }
     }
 
@@ -292,19 +298,23 @@ final class RosterStore {
                     ? ProcessInfo.processInfo.arguments[next] : nil
             }
         if let arg, let url = URL(string: arg) {
-            connect(to: url, persisted: false)
+            // The dev launch arg is a companion URL by construction: a device is
+            // paired from an invite, which carries a token a bare URL cannot.
+            connect(to: DeviceEndpoint(kind: .companion, url: url), persisted: false)
             return
         }
-        guard let url = CompanionLink.savedURL else { return }
-        connect(to: url)
+        guard let endpoint = CompanionLink.savedEndpoint else { return }
+        connect(to: endpoint)
     }
 
-    /// Open (or replace) the link to the active Mac: one socket, whole roster.
-    private func connect(to url: URL, persisted: Bool = true) {
+    /// Open (or replace) the link to the active peer: one socket, whole roster.
+    /// Which backend answers is the endpoint's to say — the store below this
+    /// line is the same either way.
+    private func connect(to endpoint: DeviceEndpoint, persisted: Bool = true) {
         connectionIsPersisted = persisted
-        companionURL = url
+        deviceEndpoint = endpoint
         CompanionLink.state = .connecting
-        let client = CompanionBackend(url: url)
+        let client = DeviceBackends.client(for: endpoint)
         client.onConnected = { [weak self] connected in
             CompanionLink.state = connected ? .connected : .connecting
             // Refresh the SSH host list on every (re)connect so New SSH reflects
@@ -368,7 +378,7 @@ final class RosterStore {
     private func disconnect() {
         client?.stop()
         client = nil
-        companionURL = nil
+        deviceEndpoint = nil
         CompanionLink.state = .unpaired
         projects = []
         enabledAgents = []
@@ -399,7 +409,7 @@ final class RosterStore {
             projectPath: pending.project.path,
             branch: pending.project.branch
         )
-        onOpenSession?(session, companionURL)
+        onOpenSession?(session, deviceEndpoint)
     }
 }
 

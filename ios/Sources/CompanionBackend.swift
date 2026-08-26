@@ -72,6 +72,10 @@ final class CompanionBackend: DeviceClient {
 
     func requestSSHHosts() { client.send(.sshConfigHosts) }
 
+    func looseChatsContainerID(workspaceID: String) -> String? {
+        Wire.looseSectionID(workspaceID: workspaceID, chats: true)
+    }
+
     func listFiles(projectID: String, path: String) {
         client.send(.listFiles(projectID: projectID, path: path))
     }

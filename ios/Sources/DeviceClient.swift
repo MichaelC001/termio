@@ -59,6 +59,12 @@ protocol DeviceClient: AnyObject {
     func startSSH(host: String, workspaceID: String?)
     func stopSession(id: String)
     func requestSSHHosts()
+    /// The id to address a workspace's loose agent-session container by before
+    /// it has one — how the phone seeds the very first chat there. Each backend
+    /// has its own convention (the companion wire's `Wire.looseSectionID`, a
+    /// device's home directory), so the caller does not carry one. nil when the
+    /// backend cannot seed a container it has not been told about.
+    func looseChatsContainerID(workspaceID: String) -> String?
 
     func listFiles(projectID: String, path: String)
     /// `darkAppearance` is for the device-rendered Markdown preview, so the
@@ -89,6 +95,33 @@ protocol DeviceSession: AnyObject {
     /// Re-claim the PTY's winsize for this device without a size change —
     /// what a reattach and a returning foreground both need.
     func reassertGrid()
+}
+
+/// Which backend a peer needs, decided in one place so no screen has to know
+/// there is more than one protocol behind the port.
+enum DeviceBackends {
+    /// `sessionID` scopes the client to one session, which only the upload plane
+    /// needs: a transfer to a device lands in that session's scratch directory.
+    static func client(for endpoint: DeviceEndpoint, sessionID: String? = nil) -> DeviceClient {
+        switch endpoint.kind {
+        case .companion: CompanionBackend(url: endpoint.url)
+        case .termiod: TermiodBackend(endpoint: endpoint, sessionID: sessionID)
+        }
+    }
+
+    /// `sessionID` is the session to attach to; nil connects to a peer that
+    /// streams without one (the standalone companion proof of concept).
+    static func session(for endpoint: DeviceEndpoint, sessionID: String?) -> DeviceSession? {
+        switch endpoint.kind {
+        case .companion:
+            return CompanionDeviceSession(url: endpoint.url, attachSessionID: sessionID)
+        case .termiod:
+            // A device attaches to a session by name, and there is no
+            // sessionless stream to fall back to.
+            guard let sessionID else { return nil }
+            return TermiodSession(endpoint: endpoint, sessionName: sessionID)
+        }
+    }
 }
 
 /// Where a session's link stands. `failed` and `closed` are terminal; the

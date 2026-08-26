@@ -18,6 +18,7 @@
 		C4B834BC028171A141441B55 /* TermioMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TermioMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F08AD2A884AB27376B01C2 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Shared; path = ../Shared; sourceTree = SOURCE_ROOT; };
 		AB10000000000000000000B1 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		AB20000000000000000000C7 /* TermioMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TermioMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -39,10 +40,26 @@
 			path = UITests;
 			sourceTree = "<group>";
 		};
+		AB20000000000000000000C6 /* UnitTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = UnitTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXContainerItemProxy section */
 		AA10000000000000000000A9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C17953834D3FE40E533C7AD5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8A9A92AA1208C58F576BFD9B;
+			remoteInfo = TermioMobile;
+		};
+		AB20000000000000000000C9 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = C17953834D3FE40E533C7AD5 /* Project object */;
 			proxyType = 1;
@@ -56,6 +73,11 @@
 			isa = PBXTargetDependency;
 			target = 8A9A92AA1208C58F576BFD9B /* TermioMobile */;
 			targetProxy = AA10000000000000000000A9 /* PBXContainerItemProxy */;
+		};
+		AB20000000000000000000C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8A9A92AA1208C58F576BFD9B /* TermioMobile */;
+			targetProxy = AB20000000000000000000C9 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -87,6 +109,7 @@
 			children = (
 				C4B834BC028171A141441B55 /* TermioMobile.app */,
 				AA10000000000000000000A7 /* TermioMobileUITests.xctest */,
+				AB20000000000000000000C7 /* TermioMobileTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,6 +121,7 @@
 				2D5422DC9B807C0631867802 /* Packages */,
 				566C062F615479EC27FA2BB4 /* Sources */,
 				AA10000000000000000000A6 /* UITests */,
+				AB20000000000000000000C6 /* UnitTests */,
 				2D68D702AE7E832D78AAB302 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -152,6 +176,27 @@
 			productReference = AA10000000000000000000A7 /* TermioMobileUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		AB20000000000000000000C1 /* TermioMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB20000000000000000000C2 /* Build configuration list for PBXNativeTarget "TermioMobileTests" */;
+			buildPhases = (
+				AB20000000000000000000C5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AB20000000000000000000C8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AB20000000000000000000C6 /* UnitTests */,
+			);
+			name = TermioMobileTests;
+			packageProductDependencies = (
+			);
+			productName = TermioMobileTests;
+			productReference = AB20000000000000000000C7 /* TermioMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -162,6 +207,9 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					AA10000000000000000000A1 = {
+						TestTargetID = 8A9A92AA1208C58F576BFD9B;
+					};
+					AB20000000000000000000C1 = {
 						TestTargetID = 8A9A92AA1208C58F576BFD9B;
 					};
 				};
@@ -187,6 +235,7 @@
 			targets = (
 				8A9A92AA1208C58F576BFD9B /* TermioMobile */,
 				AA10000000000000000000A1 /* TermioMobileUITests */,
+				AB20000000000000000000C1 /* TermioMobileTests */,
 			);
 		};
 /* End PBXProject section */
@@ -210,6 +259,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA10000000000000000000A5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB20000000000000000000C5 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -425,6 +481,42 @@
 			name = Release;
 		};
 
+		AB20000000000000000000C3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 285;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TermioMobile.app/TermioMobile";
+			};
+			name = Debug;
+		};
+		AB20000000000000000000C4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 285;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TermioMobile.app/TermioMobile";
+			};
+			name = Release;
+		};
 /* Begin XCConfigurationList section */
 		0813B3B4997A57A3BD1092E8 /* Build configuration list for PBXProject "TermioMobile" */ = {
 			isa = XCConfigurationList;
@@ -449,6 +541,15 @@
 			buildConfigurations = (
 				FFC439A1AF9041EFDEC0BF0A /* Debug */,
 				1ABE7AC739BD585F71585F88 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AB20000000000000000000C2 /* Build configuration list for PBXNativeTarget "TermioMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB20000000000000000000C3 /* Debug */,
+				AB20000000000000000000C4 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

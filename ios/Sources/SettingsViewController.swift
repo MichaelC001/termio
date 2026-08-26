@@ -637,7 +637,7 @@ final class DevicesSettingsViewController: UITableViewController {
         case .macs:
             localized("One device is connected at a time — tap another to switch to it. Switching closes the terminals open on this phone; the sessions keep running on the Mac.")
         case .add:
-            localized("Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address.")
+            localized("Scan the QR code in Settings ▸ Mobile on a Mac, or the one `termiod pair --qr` prints on a machine running the server. Re-scanning a paired device updates its address.")
         }
     }
 
@@ -717,8 +717,8 @@ final class DevicesSettingsViewController: UITableViewController {
 
     private func presentEnterAddress() {
         let alert = UIAlertController(
-            title: localized("Connect to Mac"),
-            message: localized("The address Termio on your Mac is serving."),
+            title: localized("Connect to a Device"),
+            message: localized("The address your Mac is serving, or the link `termiod pair` prints."),
             preferredStyle: .alert
         )
         alert.addTextField { field in
@@ -727,22 +727,38 @@ final class DevicesSettingsViewController: UITableViewController {
             field.autocorrectionType = .no
             field.keyboardType = .URL
         }
-        alert.addAction(UIAlertAction(title: localized("Connect"), style: .default) { [weak alert] _ in
+        alert.addAction(UIAlertAction(title: localized("Connect"), style: .default) { [weak self, weak alert] _ in
             guard let raw = alert?.textFields?.first?.text else { return }
-            CompanionLink.pair(rawAddress: raw)
+            CompanionLink.pair(rawAddress: raw) { [weak self] result in
+                self?.report(result)
+            }
         })
         alert.addAction(UIAlertAction(title: localized("Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 
-    /// Camera pairing — same path as typing the address, minus the typing.
-    /// The QR lives on the Mac's Settings ▸ Mobile tab.
+    /// Camera pairing — same path as typing the address, minus the typing. The
+    /// QR is either the Mac's Settings ▸ Mobile tab or `termiod pair --qr` in a
+    /// terminal on the box; the scanner reads a string and this one funnel
+    /// decides which it is.
     private func presentScanner() {
         let scanner = QRScannerViewController()
-        scanner.onCode = { code in
-            CompanionLink.pair(rawAddress: code)
+        scanner.onCode = { [weak self] code in
+            CompanionLink.pair(rawAddress: code) { [weak self] result in
+                self?.report(result)
+            }
         }
         present(UINavigationController(rootViewController: scanner), animated: true)
+    }
+
+    /// A pairing that did not take says why. Verifying a device before saving it
+    /// is only worth doing if the refusal reaches the person who scanned.
+    private func report(_ result: Result<Void, CompanionLink.PairingFailure>) {
+        guard case .failure(let failure) = result else { return }
+        let alert = UIAlertController(
+            title: localized("Couldn't pair"), message: failure.message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
+        present(alert, animated: true)
     }
 }
 
