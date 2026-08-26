@@ -809,16 +809,14 @@ extension TermioStore {
         }
     }
 
-    /// The raw `ghostty_surface_t` behind a session's surface. `TerminalSurface`
-    /// exposes only `sendText` publicly and keeps the C handle in a private stored
-    /// property, so reach it by reflection — the only way to call `ghostty_surface_key`
-    /// (the key-event C entry point, whose Swift wrapper the package marks `internal`).
+    /// The raw `ghostty_surface_t` behind a session's surface — the C entry point
+    /// for `ghostty_surface_key`, whose Swift wrapper the package marks `internal`.
+    /// `rawValue` is the package's documented escape hatch for exactly this; it
+    /// replaced an earlier reflection read of the private stored property, which
+    /// would have started returning nil silently the first time the field was
+    /// renamed upstream.
     private static func rawSurface(from state: TerminalViewState) -> ghostty_surface_t? {
-        guard let terminalSurface = state.surface else { return nil }
-        for child in Mirror(reflecting: terminalSurface).children where child.label == "surface" {
-            if let handle = child.value as? ghostty_surface_t { return handle }
-        }
-        return nil
+        state.surface?.rawValue
     }
 
     /// Sends a Return key press (and release) to the surface — the submit a user makes
