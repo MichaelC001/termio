@@ -192,7 +192,7 @@ $$
 
 Relative image paths resolve against the file's own folder:
 
-![The Termio app icon](packaging/AppIcon.png)
+![Termio in dark mode: a live Claude Code session next to the project sidebar](web/landing/public/screenshots/hero1.png)
 
 ## Collapsed detail
 
