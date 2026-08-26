@@ -310,6 +310,12 @@ final class RootContainerViewController: UIViewController {
     /// closed rail from intercepting a single touch.
     private let railContainer = UIView()
     private let railDim = UIControl()
+    /// Carries the panel's shadow. The rounding has to clip, and a clipping layer
+    /// clips its own shadow away, so the two live one level apart.
+    private let railPanel = UIView()
+    /// Slack's drawer: only the edge that stands over the page is rounded; the
+    /// three the panel shares with the screen stay square.
+    private let railCornerRadius: CGFloat = 24
     /// 0 closed, 1 open. The *model* position: during a settle it already holds
     /// the target, which is why an interrupt reads the layer instead.
     private var railProgress: CGFloat = 0
@@ -372,19 +378,25 @@ final class RootContainerViewController: UIViewController {
         }, for: .touchUpInside)
         railContainer.addSubview(railDim)
 
+        railPanel.layer.shadowColor = UIColor.black.cgColor
+        railPanel.layer.shadowOpacity = 0.3
+        railPanel.layer.shadowRadius = 12
+        railPanel.layer.shadowOffset = CGSize(width: 4, height: 0)
+        railContainer.addSubview(railPanel)
+
         addChild(workspaceRail)
-        railContainer.addSubview(workspaceRail.view)
+        railPanel.addSubview(workspaceRail.view)
         workspaceRail.didMove(toParent: self)
-        workspaceRail.view.layer.shadowColor = UIColor.black.cgColor
-        workspaceRail.view.layer.shadowOpacity = 0.3
-        workspaceRail.view.layer.shadowRadius = 12
-        workspaceRail.view.layer.shadowOffset = CGSize(width: 4, height: 0)
+        workspaceRail.view.layer.cornerRadius = railCornerRadius
+        workspaceRail.view.layer.cornerCurve = .continuous
+        workspaceRail.view.layer.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        workspaceRail.view.clipsToBounds = true
 
         // Swiping the open rail leftwards puts it away — the terminal drawer's
         // close pan, mirrored.
         let closePan = UIPanGestureRecognizer(target: self, action: #selector(handleRailClosePan(_:)))
         closePan.delegate = self
-        workspaceRail.view.addGestureRecognizer(closePan)
+        railPanel.addGestureRecognizer(closePan)
 
         layoutRail(progress: 0)
     }
@@ -404,10 +416,21 @@ final class RootContainerViewController: UIViewController {
     private func layoutRail(progress: CGFloat) {
         railProgress = progress
         let width = railWidth
-        workspaceRail.view.frame = CGRect(
-            x: -width + width * progress, y: 0, width: width, height: view.bounds.height
-        )
-        railDim.alpha = 0.15 * progress
+        let size = CGSize(width: width, height: view.bounds.height)
+        // Only when the panel is resized, never per drag frame: an implicit
+        // shadowPath animation inside the settle would lag the panel's own edge.
+        if railPanel.bounds.size != size {
+            railPanel.layer.shadowPath = UIBezierPath(
+                roundedRect: CGRect(origin: .zero, size: size),
+                byRoundingCorners: [.topRight, .bottomRight],
+                cornerRadii: CGSize(width: railCornerRadius, height: railCornerRadius)
+            ).cgPath
+        }
+        railPanel.frame = CGRect(origin: CGPoint(x: -width + width * progress, y: 0), size: size)
+        workspaceRail.view.frame = railPanel.bounds
+        // Enough grey that the page reads as a layer parked underneath, not as
+        // content still in play beside the panel.
+        railDim.alpha = 0.3 * progress
     }
 
     /// Take an in-flight settle back at exactly where it is on screen. Reading
@@ -417,7 +440,7 @@ final class RootContainerViewController: UIViewController {
         guard let animator = railAnimator else { return }
         railAnimator = nil
         guard animator.isRunning else { return }
-        let presented = workspaceRail.view.layer.presentation()?.frame.origin.x
+        let presented = railPanel.layer.presentation()?.frame.origin.x
         animator.stopAnimation(true)
         guard let presented else { return }
         layoutRail(progress: max(0, min(1, (presented + railWidth) / railWidth)))
