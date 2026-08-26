@@ -4014,6 +4014,16 @@
         }
       }
     },
+    "Not a Git Repository": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不是 Git 仓库"
+          }
+        }
+      }
+    },
     "Not a valid regular expression": {
       "comment": "Inline warning shown beneath the URL Pattern field when what the user typed does not compile as a regular expression.",
       "localizations": {
@@ -6424,6 +6434,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这个文件夹没有 git “origin” 远程，无法克隆。"
+          }
+        }
+      }
+    },
+    "This folder isn’t tracked by Git.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个文件夹没有被 Git 跟踪。"
           }
         }
       }

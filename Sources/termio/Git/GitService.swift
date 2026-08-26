@@ -41,6 +41,17 @@ enum GitService {
         await offMain { loadChanges(repoRoot, onUntrackedScan: onUntrackedScan) }
     }
 
+    /// Whether the folder is inside a git work tree at all. `changes(in:)` returns an
+    /// empty list both for a clean repo and for a folder git knows nothing about, and
+    /// the pane must not report the second as the first — a home directory has no
+    /// working tree to call clean.
+    static func isWorkTree(at path: String) async -> Bool {
+        await offMain {
+            run(["rev-parse", "--is-inside-work-tree"], in: path)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        }
+    }
+
     /// The unified-diff rows for one changed file (staged + unstaged vs `HEAD`, or the
     /// whole file for an untracked one). With `commit` set, the file's diff *at that
     /// commit* instead — the History tab's per-file view.

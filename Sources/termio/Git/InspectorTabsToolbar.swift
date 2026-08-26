@@ -31,6 +31,10 @@ struct InspectorTabsToolbar: View {
     /// async per selection change; gates the Issues segment together with the
     /// General "GitHub" setting.
     @State private var hasGitHubRemote = false
+    /// Whether the selected session's root is a git work tree — probed per selection
+    /// change, gating the Changes segment. Starts `true`: most roots are repos, so
+    /// assuming otherwise would blink the segment out and back on every switch.
+    @State private var isRepository = true
     /// Slides the selection pill from the old segment to the new one.
     @Namespace private var pillNamespace
     /// Drives the fade-in that syncs the cluster with the inspector pane's slide. The toolbar item
@@ -60,11 +64,20 @@ struct InspectorTabsToolbar: View {
         (.info, .infoCircle, "Info"),
     ]
 
-    /// Issues only exists for a project that actually lives on GitHub (and with the
-    /// integration left on in General) — for anything else the segment disappears
-    /// rather than leading to a dead pane.
+    /// Two segments exist only where they have something to show, rather than leading
+    /// to a dead pane: Issues for a project that actually lives on GitHub (and with the
+    /// integration left on in General), Changes for a root git tracks at all. A loose
+    /// terminal follows its shell, so `cd` in and out of a repo does move the Changes
+    /// segment in and out with it — the pane switch reflows there, which is the cost of
+    /// never offering a git pane for a folder that has no git.
     private var visibleSegments: [(tab: InspectorTab, icon: HugeIcon, help: String)] {
-        segments.filter { $0.tab != .issues || (settings.githubIntegrationEnabled && hasGitHubRemote) }
+        segments.filter { segment in
+            switch segment.tab {
+            case .issues: settings.githubIntegrationEnabled && hasGitHubRemote
+            case .changes: isRepository
+            default: true
+            }
+        }
     }
 
     var body: some View {
@@ -91,6 +104,18 @@ struct InspectorTabsToolbar: View {
                 // turned off, selection moved to a non-GitHub project) — land on Files.
                 if store.inspectorTab == .issues,
                    !(settings.githubIntegrationEnabled && hasGitHubRemote) {
+                    store.inspectorTab = .files
+                }
+            }
+            // Same shape for Changes, keyed on the root alone — a `cd` in a loose
+            // terminal moves this, so it re-runs there and not on GitHub's switch.
+            .task(id: store.inspectorCheckout?.localRoot ?? "") {
+                guard let path = store.inspectorCheckout?.localRoot else {
+                    isRepository = true
+                    return
+                }
+                isRepository = await GitService.isWorkTree(at: path)
+                if store.inspectorTab == .changes, !isRepository {
                     store.inspectorTab = .files
                 }
             }

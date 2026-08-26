@@ -19,6 +19,13 @@ final class GitPanelModel: ObservableObject {
     @Published var changes: [GitChange] = []
     @Published var isLoading = true
 
+    /// Whether `repoRoot` is a git work tree. A loose terminal's cwd follows the shell,
+    /// so the pane is regularly pointed at a folder git knows nothing about; without
+    /// this the empty change list would render as "the working tree is clean". Starts
+    /// `true` so the first pass shows the spinner rather than flashing the non-repo
+    /// state, and is only ever lowered by a completed probe.
+    @Published private(set) var isRepository = true
+
     /// The commit history, loaded lazily the first time the History tab is shown.
     @Published var commits: [GitCommit] = []
     @Published var isLoadingHistory = false
@@ -127,8 +134,12 @@ final class GitPanelModel: ObservableObject {
             loadGeneration += 1
             let generation = loadGeneration
             let loaded = await GitService.changes(in: repoRoot)
+            // A non-empty list is itself proof of a work tree, so the extra `rev-parse`
+            // only runs for the ambiguous case — a clean repo or a plain folder.
+            let repository = loaded.isEmpty ? await GitService.isWorkTree(at: repoRoot) : true
             if generation == loadGeneration || attempt == 1 {
                 changes = loaded
+                isRepository = repository
                 isLoading = false
             }
             if watcher == nil { await armWatcher() }

@@ -165,4 +165,24 @@ final class GitServiceScaleTests: XCTestCase {
         let changes = await GitService.changes(in: repo.path)
         XCTAssertEqual(changes.map(\.path), [".gitignore"])
     }
+
+    /// A clean repo and a folder git knows nothing about both yield an empty change
+    /// list, so the pane can only tell them apart through this probe — without it a
+    /// loose terminal sitting in `$HOME` claimed its working tree was clean.
+    func testWorkTreeProbeSeparatesACleanRepoFromAPlainFolder() async throws {
+        let plain = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termio-git-plain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: plain) }
+
+        let repoChanges = await GitService.changes(in: repo.path)
+        let plainChanges = await GitService.changes(in: plain.path)
+        XCTAssertTrue(repoChanges.isEmpty)
+        XCTAssertTrue(plainChanges.isEmpty, "an empty list is what makes the two ambiguous")
+
+        let isRepo = await GitService.isWorkTree(at: repo.path)
+        let isPlain = await GitService.isWorkTree(at: plain.path)
+        XCTAssertTrue(isRepo)
+        XCTAssertFalse(isPlain)
+    }
 }

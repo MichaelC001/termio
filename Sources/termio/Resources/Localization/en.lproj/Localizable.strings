@@ -810,6 +810,8 @@
 	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
 	<key>Not Now</key>
 	<string>Not Now</string>
+	<key>Not a Git Repository</key>
+	<string>Not a Git Repository</string>
 	<key>Not a valid regular expression</key>
 	<string>Not a valid regular expression</string>
 	<key>Not installed</key>
@@ -1292,6 +1294,8 @@
 	<string>This file is binary — open it on GitHub to view.</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>This folder has no git “origin” remote to clone.</string>
+	<key>This folder isn’t tracked by Git.</key>
+	<string>This folder isn’t tracked by Git.</string>
 	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
 	<string>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
