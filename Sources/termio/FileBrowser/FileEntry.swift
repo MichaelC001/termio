@@ -19,17 +19,6 @@ struct FileEntry: Sendable {
     let kind: Kind
     var isDirectory: Bool { kind == .directory }
     var isPreviewable: Bool { kind == .file }
-    /// Byte size, when a provider reports one. The tree does not draw it yet.
-    let size: Int64?
-    /// Modification time, when a provider reports one.
-    let modified: Date?
-
-    init(name: String, kind: Kind, size: Int64? = nil, modified: Date? = nil) {
-        self.name = name
-        self.kind = kind
-        self.size = size
-        self.modified = modified
-    }
 }
 
 extension [FileEntry] {

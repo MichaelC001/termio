@@ -113,14 +113,10 @@ struct SidebarView: View {
     // fold and omit the collapsed project's rows.
     @State private var collapsedProjects: Set<Project.ID> = []
     @State private var collapsedWorktrees: Set<Worktree.ID> = []
-    /// Whether the top "Pinned" working-set section is folded shut.
     @State private var pinnedCollapsed = false
-    /// Whether the "Projects" section is folded shut.
     @State private var projectsCollapsed = false
-    /// Whether the workspace's loose Terminals and Chats sections are folded shut.
     @State private var terminalsCollapsed = false
     @State private var chatsCollapsed = false
-    /// Whether the current device's own roster section is folded shut.
     @State private var alsoRunningCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the

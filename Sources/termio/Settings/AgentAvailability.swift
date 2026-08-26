@@ -54,30 +54,6 @@ enum AgentAvailability {
         }
     }
 
-    /// A non-blocking, synchronous check for call sites that can't await (the skill
-    /// installer's per-launch sync). Absolute/`~` commands are checked directly;
-    /// relative binaries resolve against the login-shell PATH once the async probe
-    /// has populated the cache, and the process PATH before that — so a very early
-    /// call may under-report an installed agent, but never blocks on the shell, and
-    /// the next launch's sync re-checks and picks it up.
-    static func isCommandInstalled(_ command: String) -> Bool {
-        let trimmed = command.trimmingCharacters(in: .whitespaces)
-        guard let binary = trimmed.split(separator: " ").first.map(String.init), !binary.isEmpty
-        else { return true }
-        if binary.hasPrefix("/") || binary.hasPrefix("~") {
-            return FileManager.default.isExecutableFile(atPath: (binary as NSString).expandingTildeInPath)
-        }
-        var directories: [String] = []
-        pathLock.withLock { directories = pathCache ?? [] }
-        if directories.isEmpty {
-            directories = ProcessInfo.processInfo.environment["PATH"]?
-                .split(separator: ":").map(String.init) ?? []
-        }
-        return directories.contains {
-            FileManager.default.isExecutableFile(atPath: $0 + "/" + binary)
-        }
-    }
-
     /// One login-shell spawn answers for everything a GUI-launched app cannot see
     /// about its user's environment. `PATH` is why this exists; the XDG bases ride
     /// along because they have the same problem and asking twice would mean paying

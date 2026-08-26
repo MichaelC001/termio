@@ -1,6 +1,5 @@
 import TermioShared
 import XCTest
-@testable import termio
 
 /// The word-level intraline pass, pinned on the cases that motivated it: two edits in one
 /// line must produce two spans (prefix/suffix stripping could only produce one, swallowing
