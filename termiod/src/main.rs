@@ -211,7 +211,7 @@ enum AgentCmd {
 }
 
 async fn run_agent(cmd: AgentCmd) -> Result<()> {
-    use agent::install::{InstallRequest, InstallStatus, Reporter};
+    use agent::install::{HalfAction, InstallRequest, InstallStatus, Reporter};
 
     let (request, json) = match cmd {
         AgentCmd::Install {
@@ -223,10 +223,9 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
             json,
         } => (
             InstallRequest::new(
-                true,
                 (!agent.is_empty()).then_some(agent),
-                !no_hooks,
-                !no_skills,
+                if no_hooks { HalfAction::Leave } else { HalfAction::Install },
+                if no_skills { HalfAction::Leave } else { HalfAction::Install },
                 match termio_cli {
                     Some(path) => Reporter::TermioCli { path },
                     None => Reporter::TermiodDaemon,
@@ -237,10 +236,9 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
         ),
         AgentCmd::Uninstall { json } => (
             InstallRequest::new(
-                false,
                 None,
-                true,
-                true,
+                HalfAction::Remove,
+                HalfAction::Remove,
                 Reporter::TermiodDaemon,
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
@@ -248,7 +246,7 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
         ),
     };
 
-    let removing = !request.enabled;
+    let removing = request.hooks == HalfAction::Remove && request.skills == HalfAction::Remove;
     let results = client::install_agents(request).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);

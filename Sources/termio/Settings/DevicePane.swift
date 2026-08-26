@@ -269,22 +269,20 @@ struct DevicePane: View {
                 }
             }
             InstallButtonRow(title: localized("Reinstall hooks")) {
-                let wanted = settings.agentHooksEnabled
-                let target = machine.integrationTarget
-                return await Task.detached {
-                    .summarizing(
-                        AgentStatusHooks.sync(enabled: wanted, target: target),
-                        headline: localized("Hooks reinstalled"), unit: localized("agents"))
-                }.value
+                .summarizing(
+                    await AgentIntegrationInstaller.sync(
+                        hooks: settings.agentHooksEnabled ? .install : .remove,
+                        skills: .leave,
+                        target: machine.integrationTarget),
+                    headline: localized("Hooks reinstalled"), unit: localized("agents"))
             }
             InstallButtonRow(title: localized("Reinstall skill")) {
-                let wanted = settings.sessionControlEnabled
-                let target = machine.integrationTarget
-                return await Task.detached {
-                    .summarizing(
-                        SessionSkillInstaller.sync(enabled: wanted, target: target),
-                        headline: localized("Skill reinstalled"), unit: localized("agents"))
-                }.value
+                .summarizing(
+                    await AgentIntegrationInstaller.sync(
+                        hooks: .leave,
+                        skills: settings.sessionControlEnabled ? .install : .remove,
+                        target: machine.integrationTarget),
+                    headline: localized("Skill reinstalled"), unit: localized("agents"))
             }
         } header: {
             SectionHeaderLabel(title: localized("Installed by Termio"))

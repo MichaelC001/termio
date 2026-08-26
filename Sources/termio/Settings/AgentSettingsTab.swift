@@ -185,43 +185,49 @@ struct AgentSettingsTab: View {
     /// it gets fixed. This button exists for the other case, the common one: a new
     /// box that should carry what all the others do.
     private func installIntegration() async -> InstallFeedback {
-        // Read the preferences here, on the main actor, and do the writing off it
-        // — see `InstallButtonRow`.
+        // Read the preferences here, on the main actor — see `InstallButtonRow`.
+        // The writing is the installer's own business: it keeps its file work and
+        // its daemon calls off this thread rather than being wrapped in a
+        // `Task.detached` that could only wait for them.
         let hooksWanted = settings.agentHooksEnabled
         let controlWanted = settings.sessionControlEnabled
         let stamp = AppInfo.buildStamp
         let roster = devices.map {
             (key: $0.settingsKey, name: $0.name, target: $0.integrationTarget)
         }
-        let feedback = await Task.detached { () -> InstallFeedback in
-            var perDevice: [(name: String, outcome: InstallOutcome)] = []
-            for machine in roster {
-                let outcome = AgentStatusHooks.sync(enabled: hooksWanted, target: machine.target)
-                    .merged(with: SessionSkillInstaller.sync(
-                        enabled: controlWanted, target: machine.target))
-                if outcome.failed.isEmpty && !outcome.isEmpty {
-                    DeviceStateCache.stampIntegration(stamp, for: machine.key)
-                }
-                perDevice.append((machine.name, outcome))
+        var perDevice: [(name: String, outcome: InstallOutcome)] = []
+        for machine in roster {
+            // One message for both switches: the daemon on that machine writes
+            // the hooks and the skill in one pass.
+            let outcome = await AgentIntegrationInstaller.sync(
+                hooks: hooksWanted ? .install : .remove,
+                skills: controlWanted ? .install : .remove,
+                target: machine.target)
+            if outcome.failed.isEmpty && !outcome.isEmpty {
+                DeviceStateCache.stampIntegration(stamp, for: machine.key)
             }
-            // One machine: report which agents took it, exactly as before. Naming
-            // the only machine there is says nothing; the agents are the news.
-            if perDevice.count == 1, let only = perDevice.first {
-                return .summarizing(
-                    only.outcome, headline: localized("Installed"), unit: localized("agents"))
-            }
+            perDevice.append((machine.name, outcome))
+        }
+        let feedback: InstallFeedback
+        // One machine: report which agents took it, exactly as before. Naming
+        // the only machine there is says nothing; the agents are the news.
+        if perDevice.count == 1, let only = perDevice.first {
+            feedback = .summarizing(
+                only.outcome, headline: localized("Installed"), unit: localized("agents"))
+        } else if perDevice.allSatisfy({ $0.outcome.isEmpty }) {
+            // Nothing was asked for anywhere: both switches off leaves every
+            // machine with an empty outcome.
+            feedback = .failure(localized("Nothing to install."))
+        } else {
             // Several: the machine is the news, and a per-agent list across four
-            // boxes is a paragraph. Merged only to answer "was there anything to
-            // do at all" — both switches off leaves every outcome empty.
-            let combined = perDevice.reduce(InstallOutcome()) { $0.merged(with: $1.outcome) }
-            guard !combined.isEmpty else { return .failure(localized("Nothing to install.")) }
+            // boxes is a paragraph.
             var fleet = InstallOutcome()
             for machine in perDevice {
                 fleet.record(machine.name, installed: machine.outcome.failed.isEmpty)
             }
-            return .summarizing(
+            feedback = .summarizing(
                 fleet, headline: localized("Installed"), unit: localized("devices"))
-        }.value
+        }
         await refreshIntegrationGap()
         return feedback
     }

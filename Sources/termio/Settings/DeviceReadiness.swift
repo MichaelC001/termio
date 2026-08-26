@@ -190,18 +190,32 @@ enum DeviceProbe {
         guard case .reachable = probe else {
             return DeviceDiscoveredState(checkedAt: now, reachable: false)
         }
-        let store = SSHAgentConfigStore(host: alias)
-        return await Task.detached(priority: .userInitiated) {
+        // One question for the whole roster. This was one blocking `ssh` per
+        // agent — a dozen round trips to learn something the box knows about
+        // itself in microseconds.
+        do {
+            let presence = try await AgentIntegrationInstaller.probe(
+                host: alias, agents: commands.map(\.id))
             var agents: [String: String] = [:]
-            for entry in commands {
-                agents[entry.id] = store.isCommandInstalled(entry.command)
+            for entry in presence {
+                agents[entry.id] = entry.present
                     ? AgentReadiness.available.rawValue
                     : AgentReadiness.missing.rawValue
             }
             return DeviceDiscoveredState(
                 checkedAt: now, reachable: true,
                 termiodVersion: nil, agents: agents)
-        }.value
+        } catch {
+            // Reached over ssh, but the daemon could not answer — an old
+            // termiod, or one that will not start. Reported as reachable with
+            // nothing known rather than as a machine with no agents, because
+            // "No agent CLIs found" sends the user looking in the wrong place.
+            Log.termiod.error("""
+                agent probe on \(alias, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return DeviceDiscoveredState(checkedAt: now, reachable: true)
+        }
     }
 }
 
@@ -318,19 +332,16 @@ final class DevicePaneModel: ObservableObject {
         if case .blocked = readiness { return }
 
         step = .installIntegration
-        let target = device.integrationTarget
-        // Off the main actor: this rung is one blocking `ssh` per config file, and
-        // there is one config file per agent. Left inline it freezes the window for
-        // the length of the whole install.
-        let hooksWanted = settings.agentHooksEnabled
-        let controlWanted = settings.sessionControlEnabled
-        let (hooks, skill) = await Task.detached {
-            (AgentStatusHooks.sync(enabled: hooksWanted, target: target),
-             SessionSkillInstaller.sync(enabled: controlWanted, target: target))
-        }.value
+        // One message for the whole roster. There is no `Task.detached` wrapper
+        // any more because there is no blocking work left to detach from — the
+        // daemon on that machine does the writing, and this awaits one reply.
+        let outcome = await AgentIntegrationInstaller.sync(
+            hooks: settings.agentHooksEnabled ? .install : .remove,
+            skills: settings.sessionControlEnabled ? .install : .remove,
+            target: device.integrationTarget)
         // A rung that reached the machine but could not write every agent's config
         // is still a failure of *this* rung, and the one worth naming.
-        let refused = hooks.failed + skill.failed
+        let refused = outcome.failed
         guard refused.isEmpty else {
             apply(state)
             readiness = .blocked(localized(
@@ -391,11 +402,10 @@ final class DevicePaneModel: ObservableObject {
 }
 
 extension KnownDevice {
-    /// Where this machine's agent integration is written, and what a hook there
-    /// runs to report status. The seam `AgentConfigStore` exists for; a machine's
-    /// pane is its first caller.
-    var integrationTarget: AgentIntegrationTarget {
-        alias.map { .device(host: $0) } ?? .thisMac
+    /// Which machine's daemon is asked to install, and what a hook there runs
+    /// to report status.
+    var integrationTarget: AgentIntegrationInstaller.Target {
+        alias.map { AgentIntegrationInstaller.Target.device(host: $0) } ?? .thisMac
     }
 }
 

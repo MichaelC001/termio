@@ -1,4 +1,5 @@
 import Foundation
+import TermioShared
 import os
 
 extension TermioStore {
@@ -49,7 +50,7 @@ extension TermioStore {
     }
 
     private func syncHooksInstallation() {
-        AgentStatusHooks.sync(enabled: settings.agentHooksEnabled)
+        syncAgentIntegration()
     }
 
     /// Brings up the control socket and aligns the agents' awareness note with the
@@ -76,7 +77,24 @@ extension TermioStore {
     }
 
     private func syncSessionControlInstallation() {
-        SessionSkillInstaller.sync(enabled: settings.sessionControlEnabled)
+        syncAgentIntegration()
+    }
+
+    /// Asks the local daemon to align this Mac's agent config with the two
+    /// Integration switches.
+    ///
+    /// Both switches go in one message: the daemon writes hooks and the skill in
+    /// one pass, and sending two would install twice for no reason. Fire and
+    /// forget — this runs on launch, on a preference change, and on refocus, and
+    /// none of those has a place to show a failure, so a failure is logged (by
+    /// `AgentIntegrationInstaller`) and the previous state is left alone. The
+    /// place that *does* report is Settings, where the user asked.
+    func syncAgentIntegration() {
+        let hooks: Termiod.AgentHalfAction =
+            settings.agentHooksEnabled ? .install : .remove
+        let skills: Termiod.AgentHalfAction =
+            settings.sessionControlEnabled ? .install : .remove
+        Task { _ = await AgentIntegrationInstaller.sync(hooks: hooks, skills: skills) }
     }
 
     /// Maps a normalized agent status report onto the session's status. This is the

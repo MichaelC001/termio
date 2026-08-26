@@ -1435,7 +1435,6 @@ async fn process_control(
             send_response(out, response_cache, seq, response);
         }
         Control::InstallAgents {
-            enabled,
             agents,
             hooks,
             skills,
@@ -1453,7 +1452,6 @@ async fn process_control(
                 send_response(out, response_cache, seq, response);
             } else {
                 let request = crate::agent::install::InstallRequest::new(
-                    enabled,
                     agents,
                     hooks,
                     skills,
@@ -1470,6 +1468,32 @@ async fn process_control(
                             .await;
                     let response = match installed {
                         Ok(results) => Control::AgentsInstalled { results, re: seq },
+                        Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::ProbeAgents { agents, seq } => {
+            if !connection.capabilities.contains("agents") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the agents capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                // The login-shell probe behind this can spawn a shell whose rc
+                // takes seconds; it must not sit on the runtime carrying
+                // keystrokes.
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let probed =
+                        tokio::task::spawn_blocking(move || crate::agent::install::probe(agents))
+                            .await;
+                    let response = match probed {
+                        Ok(agents) => Control::AgentsProbed { agents, re: seq },
                         Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
                     };
                     let _ = out.send(Outbound::Control(response));
@@ -1529,6 +1553,7 @@ async fn process_control(
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
         | Control::AgentsInstalled { .. }
+        | Control::AgentsProbed { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)

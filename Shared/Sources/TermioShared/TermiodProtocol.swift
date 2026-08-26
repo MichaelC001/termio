@@ -979,6 +979,78 @@ public enum Termiod {
         }
     }
 
+    // MARK: - The agent plane
+
+    /// One row of an install: what was attempted, where it landed, and whether
+    /// it took. Every agent the request selected appears, refusals included —
+    /// a silent no-op is what "no hooks on the VPS" looked like.
+    public struct AgentInstallResult: Decodable, Sendable, Hashable {
+        /// The agent's id, so a client can key its own roster off the reply.
+        public let id: String
+        /// The agent's display name, for the sentence a Settings row shows.
+        public let name: String
+        /// `hooks` or `skill`.
+        public let kind: String
+        /// Where it landed on the daemon's box, resolved — the answer the client
+        /// could not work out for itself.
+        public let path: String
+        /// `installed`, `failed`, or `skipped`.
+        public let status: String
+        /// Why, when it is not `installed`.
+        public let detail: String?
+
+        public var isInstalled: Bool { status == "installed" }
+
+        public init(id: String, name: String, kind: String, path: String,
+                    status: String, detail: String?) {
+            self.id = id
+            self.name = name
+            self.kind = kind
+            self.path = path
+            self.status = status
+            self.detail = detail
+        }
+    }
+
+    public struct AgentsInstalledPayload: Decodable, Sendable {
+        public let results: [AgentInstallResult]
+    }
+
+    /// Whether one agent's CLI is on the daemon's box.
+    public struct AgentPresence: Decodable, Sendable, Hashable {
+        public let id: String
+        public let command: String?
+        /// `true` also when the probe could not look — a machine that cannot
+        /// answer must not read as a machine with nothing installed.
+        public let present: Bool
+    }
+
+    public struct AgentsProbedPayload: Decodable, Sendable {
+        public let agents: [AgentPresence]
+    }
+
+    /// What to do with one half of the integration — hooks, or the skill.
+    ///
+    /// Per half, not one flag for both, because the two Integration switches are
+    /// independent, and the device pane's "Reinstall hooks" must not touch the
+    /// skill. One message still covers the whole roster when they disagree.
+    public enum AgentHalfAction: String, Encodable, Sendable {
+        case install
+        case remove
+        /// Not this caller's business; leave whatever is there.
+        case leave
+    }
+
+    /// What an installed hook runs to report status. Only the client knows
+    /// whether an app is listening and where its CLI copy is, so it says.
+    public enum AgentHookReporter: Sendable {
+        /// `termio agent report <state>` into this app's control socket.
+        case termioCommandLineTool(path: String)
+        /// `termiod set-status "$TERMIOD_SESSION_ID" <state>` into the daemon
+        /// that owns the PTY. A box has no `termio` and no app to report to.
+        case termiodDaemon
+    }
+
     /// Decoded control frames the client reacts to. Anything else — unknown
     /// ops, responses this slice doesn't consume — becomes `.unknown` and is
     /// ignored, matching the protocol's additive-evolution rule.
@@ -1005,6 +1077,10 @@ public enum Termiod {
         /// handler — a client that only listened to the broadcast would still be
         /// correct, and one that only listened to this would not.
         case resizeClaim(WriterChangedPayload)
+        /// The agent plane's two replies. The daemon owns the agent config files
+        /// on its own box, so the client asks and renders rather than writing.
+        case agentsInstalled(AgentsInstalledPayload)
+        case agentsProbed(AgentsProbedPayload)
         case error(ErrorPayload)
         case unknown(String)
     }
@@ -1044,6 +1120,10 @@ public enum Termiod {
             return .fsSearched(try decoder.decode(FsSearchedPayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
+        case "agents_installed":
+            return .agentsInstalled(try decoder.decode(AgentsInstalledPayload.self, from: payload))
+        case "agents_probed":
+            return .agentsProbed(try decoder.decode(AgentsProbedPayload.self, from: payload))
         case "error":
             return .error(try decoder.decode(ErrorPayload.self, from: payload))
         default:
@@ -1090,6 +1170,67 @@ public enum Termiod {
             caps: caps,
             client: client
         ))
+    }
+
+    /// Install (or remove) termio's agent integration on the daemon's box.
+    ///
+    /// One message for the whole roster. The client states preferences — which
+    /// agents are on the user's list, whether each switch is on, what a hook
+    /// should invoke — and the daemon works out where every agent keeps its
+    /// config, whether its CLI is even there, and what to merge.
+    public static func installAgentsPayload(
+        agents: [String]?,
+        hooks: AgentHalfAction,
+        skills: AgentHalfAction,
+        reporter: AgentHookReporter,
+        hookVersion: String
+    ) throws -> Data {
+        try encodeControl(InstallAgentsOperation(
+            op: "install_agents",
+            agents: agents,
+            hooks: hooks,
+            skills: skills,
+            reporter: InstallAgentsOperation.Reporter(reporter),
+            hookVersion: hookVersion,
+            seq: 1
+        ))
+    }
+
+    public static func probeAgentsPayload(agents: [String]?) throws -> Data {
+        try encodeControl(ProbeAgentsOperation(op: "probe_agents", agents: agents, seq: 1))
+    }
+
+    private struct InstallAgentsOperation: Encodable {
+        let op: String
+        let agents: [String]?
+        let hooks: AgentHalfAction
+        let skills: AgentHalfAction
+        let reporter: Reporter
+        let hookVersion: String
+        let seq: Int
+
+        /// Externally tagged the way the daemon spells it: `{kind, …}`.
+        struct Reporter: Encodable {
+            let kind: String
+            let path: String?
+
+            init(_ reporter: AgentHookReporter) {
+                switch reporter {
+                case .termioCommandLineTool(let path):
+                    kind = "termio_cli"
+                    self.path = path
+                case .termiodDaemon:
+                    kind = "termiod_daemon"
+                    path = nil
+                }
+            }
+        }
+    }
+
+    private struct ProbeAgentsOperation: Encodable {
+        let op: String
+        let agents: [String]?
+        let seq: Int
     }
 
     public static func attachPayload(
