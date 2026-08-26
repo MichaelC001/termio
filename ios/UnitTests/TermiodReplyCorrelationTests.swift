@@ -14,11 +14,12 @@ import XCTest
 final class TermiodReplyCorrelationTests: XCTestCase {
     /// A backend dials nothing until `start()`, so this opens no socket and its
     /// sends land on a nil task.
-    private func makeBackend() -> TermiodBackend {
+    private func makeBackend(sessionID: String? = nil) -> TermiodBackend {
         guard let url = URL(string: "ws://127.0.0.1:9/ws") else {
             fatalError("a literal URL that does not parse")
         }
-        return TermiodBackend(endpoint: DeviceEndpoint(kind: .termiod, url: url))
+        return TermiodBackend(
+            endpoint: DeviceEndpoint(kind: .termiod, url: url), sessionID: sessionID)
     }
 
     private let project = TermiodRoster.projectID(forRoot: "/srv/repo")
@@ -182,6 +183,29 @@ final class TermiodReplyCorrelationTests: XCTestCase {
             fileChunk(request: firstRequest, offset: 0, last: true, text: "ONE"))
 
         XCTAssertEqual(files, ["one.txt"])
+    }
+
+    func testAnUnattributedUploadChunkRefusalAdvancesTheTransferQueue() throws {
+        let backend = makeBackend(sessionID: "session")
+        var uploaded: [String] = []
+        backend.onUploaded = { uploaded.append($0) }
+
+        backend.upload(projectID: project, name: "first.txt", data: Data("one".utf8))
+        backend.upload(projectID: project, name: "second.txt", data: Data("two".utf8))
+
+        try backend.receive(reply(
+            #"{"op":"upload_opened","upload_id":"first","offset":0,"re":\#(firstRequest)}"#))
+        try backend.receive(reply(
+            #"{"op":"error","code":"denied","message":"upload expired"}"#))
+
+        try backend.receive(reply(
+            #"{"op":"upload_opened","upload_id":"second","offset":0,"re":\#(secondRequest)}"#))
+        try backend.receive(reply(
+            #"{"op":"upload_ack","upload_id":"second","offset":3}"#))
+        try backend.receive(reply(
+            #"{"op":"upload_committed","path":"/tmp/second.txt","mtime":1,"re":4}"#))
+
+        XCTAssertEqual(uploaded, ["/tmp/second.txt"])
     }
 
     // MARK: - Degrades

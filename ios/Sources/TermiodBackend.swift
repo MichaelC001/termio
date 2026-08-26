@@ -692,10 +692,13 @@ final class TermiodBackend: DeviceClient {
     private func failInFlight(_ message: String, responseID: UInt64?) {
         defer { onError?(message) }
         guard let responseID else {
-            // `re` is absent on the connection-level refusals (a protocol error,
-            // a denied capability). Those belong to no one request, so nothing
-            // is retired — but the reason still has to reach the screen, which
-            // is what the `defer` above guarantees on every path here.
+            // A rejected upload chunk has no control `seq`, but it does name the
+            // transfer already streaming at the queue head. Other unaddressed
+            // refusals close the connection and `forgetInFlight()` clears them.
+            if transfers.first?.uploadID != nil {
+                transfers.removeFirst()
+                openNextTransfer()
+            }
             return
         }
         if pendingReads.removeValue(forKey: responseID) != nil { return }
