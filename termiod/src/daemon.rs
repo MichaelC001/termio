@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, oneshot, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Notify};
 
 const EVENT_BUFFER: usize = 1024;
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -363,7 +363,10 @@ impl Manager {
 }
 
 /// Run the daemon: bind the socket and accept forever.
-pub async fn serve() -> Result<()> {
+pub async fn serve(
+    wss_bind: Option<std::net::SocketAddr>,
+    wss_origins: Vec<crate::wss::Origin>,
+) -> Result<()> {
     paths::ensure_runtime_dir()?;
     let sock_path = paths::socket_path()?;
 
@@ -382,6 +385,11 @@ pub async fn serve() -> Result<()> {
         .with_context(|| format!("binding {}", sock_path.display()))?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
+
+    // Resolved before anything else starts, because an explicit `--wss` with
+    // no pairing token refuses the whole start: the operator asked for a
+    // listener that cannot authenticate.
+    let wss = crate::wss::resolve(wss_bind, &wss_origins)?;
 
     let host_id = paths::load_or_create_host_id()?;
     // Scratch dirs are session-scoped and every session died with the
@@ -428,6 +436,14 @@ pub async fn serve() -> Result<()> {
 
     eprintln!("termiod listening on {}", sock_path.display());
 
+    // The WSS listener stops accepting and drops its splices on the same signal
+    // that ends the accept loop, so nothing attaches into a daemon that is
+    // already burying its sessions.
+    let (wss_shutdown, wss_shutdown_rx) = watch::channel(false);
+    if let Some(config) = wss {
+        crate::wss::start(config, wss_shutdown_rx).await?;
+    }
+
     let mut terminate =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .context("installing SIGTERM handler")?;
@@ -458,6 +474,7 @@ pub async fn serve() -> Result<()> {
         }
     }
 
+    let _ = wss_shutdown.send(true);
     manager.begin_draining(EndReason::DaemonStopped);
     let drained = manager.finish_draining(EndReason::DaemonStopped).await;
     // Keeping the bound listener through the drain prevents an autostarting

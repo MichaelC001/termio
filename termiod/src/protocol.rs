@@ -1270,6 +1270,11 @@ pub struct SessionInfo {
     pub status: String,
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// The workstream's project root. A client attached straight to this host
+    /// has no other source for it, and without it the roster is a flat list of
+    /// sessions with nothing to group them under.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -2137,6 +2142,7 @@ mod tests {
             alive: false,
             status: "done".to_string(),
             agent_id: Some("claude".to_string()),
+            project: Some("/work".to_string()),
             title: None,
             attached_clients: 0,
             writer_client_id: None,

@@ -2,8 +2,13 @@
 
 termiod runs remotely with **no custom network stack**: the transport is your
 own OpenSSH, and SSH is also the access-control boundary. The remote daemon
-listens on a **Unix socket only** — never a TCP port, never `0.0.0.0`. This
-covers issues **#171** (deploy + remote attach) and **#172** (`remote open`).
+listens on a **Unix socket only** — never `0.0.0.0`. This covers issues
+**#171** (deploy + remote attach) and **#172** (`remote open`).
+
+Clients that cannot speak SSH — a phone, a browser — reach the box through an
+opt-in **loopback** WebSocket instead, described under
+["Serving a phone or a browser"](#serving-a-phone-or-a-browser-opt-in). It is
+off unless you turn it on, and it never binds a public address.
 
 ## Hands-on: test the remote terminal from a Mac, step by step
 
@@ -160,6 +165,103 @@ ssh my-vps systemctl --user enable --now termiod
 
 This is strictly optional; on-demand start is the supported default.
 
+## Serving a phone or a browser (opt-in)
+
+A phone cannot open a Unix socket and a browser cannot run SSH, so `termiod`
+has one opt-in TCP listener: a WebSocket that carries the same framed protocol,
+onto the same socket, with a pairing token in front. Nothing about the SSH path
+changes, and a daemon with no WSS bind behaves exactly as it does above.
+
+```sh
+ssh my-vps ~/.local/bin/termiod pair              # mint the token; prints it
+ssh my-vps ~/.local/bin/termiod serve --wss 127.0.0.1:8790 \
+      --wss-origin https://box.tailnet.ts.net
+```
+
+**The bind is loopback only.** `--wss` parses its value as an IP address and
+refuses anything for which `is_loopback()` is false — `0.0.0.0`, `[::]`,
+`192.168.1.10`, and a hostname that resolves off loopback are all rejected when
+the flag is parsed, before the daemon starts. Put TLS in front of it:
+
+```sh
+tailscale serve --bg --https=443 --set-path=/termio http://127.0.0.1:8790
+```
+
+termiod never terminates TLS, ships a CA, or pins a certificate. Tailscale
+Serve and Caddy are the security team we didn't hire. Serve does not strip its
+mount path, so requests arrive as `/termio/ws`; termiod accepts both `/ws` and
+`/termio/ws` as the same Upgrade, which is why no rewrite rule is needed. Caddy
+users who prefer `handle_path /termio/*` (which does strip) need no flag change
+either.
+
+The default port is **8790** — not the Mac companion's 8787 / 8788, so a Mac
+running both does not have them fight.
+
+### The token
+
+`termiod pair` mints 24 random bytes as base64url and stores them `0600` at
+`pair.token`, beside `host.id`. `--wss` never mints one: a listener that cannot
+authenticate is not something to start by accident.
+
+| Command | What it does |
+| --- | --- |
+| `termiod pair` | Print the token, minting it on first run. |
+| `termiod pair --json` | The invite as JSON: `url`, `token`, `host_id`, `proto`. |
+| `termiod pair --qr` | The invite as a QR code, drawn in this terminal. |
+| `termiod pair --rotate` | Replace the token. Attached clients detach; no session dies. |
+| `termiod pair --wss-off` | Delete `wss.bind`. The next start is Unix-only. |
+
+`--json` and `--qr` need a reachable URL, and the daemon cannot derive one: the
+listener binds loopback on purpose, so the public name lives in `--wss-origin`
+or in the tunnel. Both refuse and say so when it is unset rather than print an
+invite that points nowhere. Pass `--url https://box.tailnet.ts.net/termio/` for
+a proxy mounted under a path.
+
+**What the QR costs you: whoever photographs it has full access to the daemon
+until you rotate the token.** It is the long-lived pairing secret, not a
+short-lived enrollment code, and `termiod pair --rotate` is the only revocation
+there is. Do not screenshare or record a terminal you have just printed one in;
+if you do, rotate.
+
+### The durable unit
+
+A flag that lives only on one foreground argv dies on the next crash restart —
+the daemon auto-starts as bare `termiod serve`. So an explicit `--wss` with a
+token in place writes `wss.bind` (`0600`) beside the socket, and the unit sets
+`TERMIOD_WSS` as well. Either one alone is enough; the pair is what survives
+both a restart and a client-triggered autostart.
+
+```ini
+# ~/.config/systemd/user/termiod.service
+[Unit]
+Description=termiod session host
+[Service]
+ExecStart=%h/.local/bin/termiod serve --wss 127.0.0.1:8790 --wss-origin https://box.tailnet.ts.net
+Environment=TERMIOD_WSS=127.0.0.1:8790
+Environment=TERMIOD_WSS_ORIGIN=https://box.tailnet.ts.net
+Restart=on-failure
+[Install]
+WantedBy=default.target
+```
+
+```sh
+ssh my-vps loginctl enable-linger $USER
+ssh my-vps systemctl --user enable --now termiod
+```
+
+The bind is resolved in this order, first valid loopback address winning:
+`--wss`, then `TERMIOD_WSS`, then `wss.bind`. With none of the three there is no
+TCP listener at all.
+
+Missing `pair.token` splits by where the bind came from:
+
+- **`--wss` on this process's argv** — refuse the whole start, write nothing,
+  and say `run termiod pair`. The operator asked for a listener that cannot
+  authenticate.
+- **Inherited from `TERMIOD_WSS` or `wss.bind`** — bind the Unix socket, skip
+  TCP, log `wss skipped: no pair.token`. A restart must never take the daemon's
+  own socket down.
+
 ## Reconnect workflow
 
 ```sh
@@ -175,11 +277,13 @@ Session survives: SSH disconnects, laptop sleep, network drops. It ends only on
 
 | Concern | Position |
 | --- | --- |
-| Listener | Unix socket under `$XDG_RUNTIME_DIR/termiod/` (or uid-tmp), mode 0600. **No TCP, no public port.** |
-| Auth / ACL | **SSH.** Whoever can `ssh my-vps` as your user can reach your daemon — same trust as a shell. |
-| Credentials | Your ssh-agent / `~/.ssh` keys. termiod stores and transmits none. |
-| Multi-user | Socket is per-uid and 0600; another user on the box can't connect. |
-| Transport crypto | Entirely SSH's. termiod adds no crypto and no bespoke protocol on the wire beyond the framed session stream inside the SSH channel. |
+| Listener | Unix socket under `$XDG_RUNTIME_DIR/termiod/` (or uid-tmp), mode 0600. **No public port.** The opt-in WebSocket binds loopback and nothing else; TLS and reachability are the proxy's job. |
+| Auth / ACL | **SSH.** Whoever can `ssh my-vps` as your user can reach your daemon — same trust as a shell. Over the WebSocket it is the `pair.token`, and anyone holding it has the same access. |
+| Credentials | Your ssh-agent / `~/.ssh` keys. termiod stores and transmits none. `pair.token` is the one secret it writes, `0600`, and it never leaves the box except in an invite you hand out. |
+| Multi-user | Socket is per-uid and 0600; another user on the box can't connect. A user who can read `pair.token` can, which is why it is `0600` beside the socket. |
+| Transport crypto | Entirely SSH's, or entirely the front proxy's. termiod adds no crypto and no bespoke protocol on the wire beyond the framed session stream inside the channel. |
+| Browser CSRF | An `Origin` allowlist (`--wss-origin`), defaulting to same-origin. It constrains pages; the token is what authenticates the pipe. There is no exemption for clients that "look native". |
+| Revocation | `termiod pair --rotate`. It drops every attached WebSocket and refuses the old secret from then on. Sessions keep running — a rotation is a detach, not a kill. |
 
 Do **not** expose the Unix socket over TCP (e.g. `socat`) without adding your
 own authentication — the daemon assumes socket access already means "trusted

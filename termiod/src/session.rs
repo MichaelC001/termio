@@ -360,6 +360,7 @@ impl Session {
             alive: true,
             status: self.status.clone(),
             agent_id: self.workstream.as_ref().map(|w| w.agent_id.clone()),
+            project: self.workstream.as_ref().map(|w| w.project.clone()),
             title: self.title.clone(),
             attached_clients: self.clients.len(),
             writer_client_id: self.writer.as_ref().map(ClientId::to_string),
@@ -2495,6 +2496,47 @@ mod tests {
             identified,
             "no roster event ever carried the resolved foreground pid"
         );
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// The roster carries the whole workstream, not just its agent. A client
+    /// attached straight to this host has no other source for the project, and
+    /// without it every session is a flat row with nothing to group it under.
+    #[tokio::test]
+    async fn the_roster_carries_the_workstream_project() {
+        let cat = ["/bin/cat", "/usr/bin/cat"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no cat binary on this host");
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(64);
+        let handle = super::spawn(
+            SessionId::new("workstream-session"),
+            "test".to_string(),
+            "/".to_string(),
+            cat.to_string(),
+            vec![cat.to_string()],
+            Vec::new(),
+            24,
+            80,
+            Some(crate::protocol::WorkstreamSpec {
+                agent_id: "claude".to_string(),
+                project: "/Users/someone/code/termio".to_string(),
+                worktree: None,
+            }),
+            on_exit,
+            events,
+        )
+        .expect("spawning a real session");
+
+        let (tx, rx) = oneshot::channel();
+        assert!(handle.send(SessionMsg::Info { reply: tx }));
+        let info = rx.await.expect("session info");
+        assert_eq!(info.agent_id.as_deref(), Some("claude"));
+        assert_eq!(info.project.as_deref(), Some("/Users/someone/code/termio"));
 
         handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,

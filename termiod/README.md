@@ -34,6 +34,16 @@ termiod serve          # foreground host (usually auto-started)
 Socket: `$XDG_RUNTIME_DIR/termiod/termiod.sock`, else `/tmp/termiod-<uid>/termiod.sock`  
 (`0700` dir, `0600` socket). Override: `TERMIOD_SOCK`.
 
+For clients that cannot open a Unix socket — a phone, a browser — `serve` takes
+an opt-in **loopback** WebSocket carrying the same framed protocol. Off by
+default; off-loopback binds are refused at flag parse, and TLS belongs to
+Tailscale Serve or Caddy in front. See [DEPLOY.md](DEPLOY.md).
+
+```sh
+termiod pair                                       # mint and print the token
+termiod serve --wss 127.0.0.1:8790 --wss-origin https://box.tailnet.ts.net
+```
+
 ## Clients (local)
 
 ```sh
