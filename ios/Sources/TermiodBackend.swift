@@ -642,6 +642,9 @@ final class TermiodBackend: DeviceClient {
     }
 
     private func commit(_ transfer: Transfer, uploadID: String) {
+        // Only ever reached with the head transfer, but the subscript below is
+        // what would trap if that ever stopped being true.
+        guard !transfers.isEmpty else { return }
         let base: UInt64?
         switch transfer.destination {
         case .file(_, _, let baseModifiedSeconds): base = baseModifiedSeconds
