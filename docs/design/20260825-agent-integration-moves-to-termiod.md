@@ -1,9 +1,9 @@
 ---
 title: Agent integration moves into termiod
-status: draft
+status: active
 type: rfc
 created: 2026-08-25
-updated: 2026-08-25
+updated: 2026-08-26
 related:
   - 20260824-agent-integration-on-a-device.md
   - 20260819-unify-server-plane.md
@@ -122,13 +122,51 @@ whole thesis and not a new cost.
 
 Ordered so each one is shippable and none is a big-bang.
 
-| Stage | Deliverable | Gate |
+Stages 1 through 4 are delivered; what each one actually cost and caught is
+recorded below the table, because a stage list that only says *done* is how the
+device RFC's own table came to mislead a reader into re-deciding something that
+had already shipped.
+
+| Stage | Deliverable | Gate | State |
+| --- | --- | --- | --- |
+| **1** | Manifest schema in Rust, parsing the same 15 bundled files plus the user directory. Nothing installs yet. | A fixture test parses every manifest in both languages and asserts the same values. | **Done** #461 |
+| **2** | The two shell-command dialects (JSON manifest, script directory) and the skill installer, behind a new `install` control message. | Installing on `ukvps` through termiod produces byte-identical files to the SSH arm's output. | **Done** #461 |
+| **3** | The plugin dialects and the TOML block. | Same byte-identical gate, all six dialects. | **Done** #465 |
+| **4** | Swift calls it. `AgentConfigStore` and `SSHAgentConfigStore` are deleted; `DevicePaneModel.setUp` becomes one call. | A twelve-agent install is one round trip. The Settings surfaces are unchanged. | **Done** #472 |
+| **3.5** | A per-agent config-home variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …), inserted before Stage 4 so the schema changed once rather than twice. | Six of fifteen agents have a documented one; OpenCode does **not** — `OPENCODE_CONFIG_DIR` adds a search directory rather than moving the config home, so installing under XDG is still always read. | **Done** #467 |
+| **5** | The phone installs. | The iOS device client offers Set up on a directly-attached box, with the Mac quit. | Blocked on P0.2 — PR #344 |
+
+### What the stages actually cost, and what they caught
+
+The round trips were worse than the estimate this RFC was written on. Measured by
+counting `ssh` invocations against a twelve-agent box:
+
+| | before | after |
 | --- | --- | --- |
-| **1** | Manifest schema in Rust, parsing the same 15 bundled files plus the user directory. Nothing installs yet. | A fixture test parses every manifest in both languages and asserts the same values. |
-| **2** | The two shell-command dialects (JSON manifest, script directory) and the skill installer, behind a new `install` control message. | Installing on `ukvps` through termiod produces byte-identical files to the SSH arm's output. |
-| **3** | The plugin dialects and the TOML block. | Same byte-identical gate, all six dialects. |
-| **4** | Swift calls it. `AgentConfigStore` and `SSHAgentConfigStore` are deleted; `DevicePaneModel.setUp` becomes one call. | A twelve-agent install is one round trip. The Settings surfaces are unchanged. |
-| **5** | The phone installs. | The iOS device client offers Set up on a directly-attached box, with the Mac quit. |
+| install | **98** | 1 |
+| probe | **45** | 1 |
+
+Three defects surfaced that no amount of reading would have found, each of them
+silent because every hook form ends in `2>/dev/null || true`:
+
+- **The SSH arm could not recognise its own device hooks.** ` agent report ` and
+  `agent-status.sock` were the only ownership fingerprints, and a device hook
+  invokes `termiod set-status`. Every reinstall appended a second copy of every
+  entry; `ukvps` had accumulated 54 duplicate hook lines. Fixed in #463, and the
+  daemon spells the fingerprint identically (`DAEMON_MARKER`).
+- **`report_command` read `capturesTranscript` off any manifest**, so a scripts or
+  TOML agent would have been handed `--transcript` and blocked waiting on stdin
+  that never arrives. Every *bundled* manifest happened to produce the right bytes,
+  so the byte-identical gate could not have caught it — only a user manifest would
+  have. This is the user-extensible-format risk this RFC accepted, arriving for
+  the first time.
+- **The daemon binary was a guess.** `$HOME/.local/bin/termiod` is where the Mac
+  assumed a deploy put it; a box keeping it elsewhere got a plugin that exec'd a
+  file that was not there. The daemon resolves `current_exe()` instead.
+
+Stage 4 added one decision worth keeping visible: a device whose daemon is too old
+to have the install message is **refused by name, and not redeployed**. Redeploying
+restarts the daemon, which kills its running sessions — `ukvps` had 15.
 
 Stages 1–4 depend on nothing in the iOS work. Stage 5 depends on
 [`ios-as-device-client`](20260824-ios-as-device-client.md) P4, which depends on

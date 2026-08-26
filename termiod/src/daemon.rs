@@ -1452,7 +1452,6 @@ async fn process_control(
             send_response(out, response_cache, seq, response);
         }
         Control::InstallAgents {
-            enabled,
             agents,
             hooks,
             skills,
@@ -1470,7 +1469,6 @@ async fn process_control(
                 send_response(out, response_cache, seq, response);
             } else {
                 let request = crate::agent::install::InstallRequest::new(
-                    enabled,
                     agents,
                     hooks,
                     skills,
@@ -1487,6 +1485,32 @@ async fn process_control(
                             .await;
                     let response = match installed {
                         Ok(results) => Control::AgentsInstalled { results, re: seq },
+                        Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
+                    };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
+        Control::ProbeAgents { agents, seq } => {
+            if !connection.capabilities.contains("agents") {
+                let response = error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the agents capability was not negotiated",
+                    false,
+                );
+                send_response(out, response_cache, seq, response);
+            } else {
+                // The login-shell probe behind this can spawn a shell whose rc
+                // takes seconds; it must not sit on the runtime carrying
+                // keystrokes.
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let probed =
+                        tokio::task::spawn_blocking(move || crate::agent::install::probe(agents))
+                            .await;
+                    let response = match probed {
+                        Ok(agents) => Control::AgentsProbed { agents, re: seq },
                         Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
                     };
                     let _ = out.send(Outbound::Control(response));
@@ -1546,6 +1570,7 @@ async fn process_control(
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
         | Control::AgentsInstalled { .. }
+        | Control::AgentsProbed { .. }
         | Control::Error { .. } => {}
     }
     Ok(ControlFlow::Continue)
@@ -1554,6 +1579,10 @@ async fn process_control(
 /// Matches per `search_results` event — small enough to render as they
 /// arrive, large enough that a big result set is not one event per line.
 const SEARCH_BATCH: usize = 50;
+
+/// Lines of context on each side of a hit. Two is what reads as an excerpt
+/// without the results pane turning into the file.
+const SEARCH_CONTEXT_LINES: usize = 2;
 
 /// Stream one `fs.search` (§C.12): `git grep` under the workspace root,
 /// batched result events, one terminal `fs_searched` reply. Ends on
@@ -1606,9 +1635,13 @@ async fn run_search(
     // back into exactness. Decided from the query itself rather than a flag on
     // the wire, so a client cannot ask two hosts for the same search and get two
     // different answers.
-    if query == query.to_lowercase() {
+    let insensitive = query == query.to_lowercase();
+    if insensitive {
         command.arg("--ignore-case");
     }
+    // Context, so a client can draw an excerpt instead of a naked line. The
+    // separator between runs is what makes the output parseable back into runs.
+    command.arg(format!("-C{SEARCH_CONTEXT_LINES}"));
     let spawned = command
         .arg("-e")
         .arg(&query)
@@ -1643,6 +1676,11 @@ async fn run_search(
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
     let mut pending: Vec<crate::protocol::SearchMatch> = Vec::new();
+    // Context lines seen since the last match, and the match still collecting
+    // the lines after it. Both are indexes into `pending`, so a batch flush has
+    // to retire them — a match that has left is no longer collecting anything.
+    let mut before: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut trailing: Option<usize> = None;
     let mut streamed = 0u64;
     let mut limit_hit = false;
     let mut canceled = false;
@@ -1668,16 +1706,57 @@ async fn run_search(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        let Some(found) = crate::files::parse_grep_line(&line) else {
+                        let Some(parsed) = crate::files::parse_grep_output_line(&line) else {
                             continue;
                         };
-                        pending.push(found);
+                        use crate::files::GrepLine;
+                        match parsed {
+                            // A run ended: whatever context was banked belongs to
+                            // nothing that follows it.
+                            GrepLine::Separator => {
+                                before.clear();
+                                trailing = None;
+                                continue;
+                            }
+                            GrepLine::Context { line: number, text, .. } => {
+                                // Context after a match, and context before the
+                                // next one, are the same lines — bank them once
+                                // and let both sides read them.
+                                if let Some(index) = trailing {
+                                    let match_at: &mut crate::protocol::SearchMatch =
+                                        &mut pending[index];
+                                    if match_at.after.len() < SEARCH_CONTEXT_LINES {
+                                        match_at.after.push(text.clone());
+                                    } else {
+                                        trailing = None;
+                                    }
+                                }
+                                before.push_back(text);
+                                if before.len() > SEARCH_CONTEXT_LINES {
+                                    before.pop_front();
+                                }
+                                let _ = number;
+                                continue;
+                            }
+                            GrepLine::Match { path, line: number, text } => {
+                                let mut found = crate::files::match_from_line(
+                                    path, number, &text, &query, insensitive,
+                                );
+                                found.before = before.iter().cloned().collect();
+                                before.clear();
+                                trailing = Some(pending.len());
+                                pending.push(found);
+                            }
+                        }
                         if streamed + pending.len() as u64 >= limit {
                             limit_hit = true;
                             break;
                         }
                         if pending.len() >= SEARCH_BATCH {
                             streamed += pending.len() as u64;
+                            // The batch leaves, so nothing in it can still be
+                            // collecting its trailing context.
+                            trailing = None;
                             let _ = out.send(Outbound::Event(Event::SearchResults {
                                 request,
                                 matches: std::mem::take(&mut pending),

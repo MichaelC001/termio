@@ -39,6 +39,13 @@
       "skillPath": "skills/improve-animations/SKILL.md",
       "computedHash": "eeb219a407e325b687af88db25771cc3018e3148245604112f5ac6990b6fd79c"
     },
+    "native-app-profiling": {
+      "source": "patrickserrano/skills",
+      "sourceType": "github",
+      "pinnedCommit": "e90c8321d80b04dd613fba65f5e9076d1c274140",
+      "skillPath": "skills/native-app-profiling/SKILL.md",
+      "computedHash": "35e52c4f40a72c41de889d18919f1e25395495e1b034ef2249aecd2785047014"
+    },
     "pick-ui-library": {
       "source": "emilkowalski/skill",
       "sourceType": "github",
@@ -56,6 +63,21 @@
       "sourceType": "github",
       "skillPath": "skills/review-animations/SKILL.md",
       "computedHash": "b9f669af5ae280c19a592a94611520335a81de25c88f225bf60ae4b2d66c8c7c"
+    },
+    "swift-performance-optimization-skill": {
+      "source": "fal3/claude-skills-collection",
+      "sourceType": "github",
+      "pinnedCommit": "a9c26d7ae6c1127e86baad2dc76e86b5b1e8f06d",
+      "skillPath": "skills/swift-performance-optimization-skill/SKILL.md",
+      "vendoredPath": "skills/swift-performance-optimization-skill/examples",
+      "computedHash": "f6e43a81a1612db94b5f7031466a3b048babb80762c354dbae41d3c8df9e1a7b"
+    },
+    "swiftui-performance-audit": {
+      "source": "patrickserrano/skills",
+      "sourceType": "github",
+      "pinnedCommit": "e90c8321d80b04dd613fba65f5e9076d1c274140",
+      "skillPath": "skills/swiftui-performance-audit/SKILL.md",
+      "computedHash": "0e72f534f959a22803ab673596ac5a2427c121dc380ace28e5427c3cef9e3430"
     }
   }
 }

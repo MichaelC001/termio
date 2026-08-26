@@ -7,9 +7,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case terminal
-    /// Sits above Devices because that is the containment order the app itself
-    /// uses: a workspace belongs to a device, and everything filed in it lives on
-    /// that machine.
+    case keyboard
+    /// Sits directly above Devices because that is the containment order the app
+    /// itself uses: a workspace belongs to a device, and everything filed in it
+    /// lives on that machine.
     case workspaces
     /// The roster: this Mac and every device sessions can run on, one row apiece,
     /// drilling into how that device is reached.
@@ -30,13 +31,32 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// everyone who left this one showing. It has now survived four renamings,
     /// which is the point of it.
     case devices = "ssh"
-    case keyboard
     case agents
     case usage
-    case mobile
     case community
 
     var id: String { rawValue }
+
+    /// Opens a new sidebar group. Workspaces starts the run about the machines
+    /// this Mac reaches and what runs on them — a workspace, the device holding
+    /// it, the agents, their usage, the phone watching them — where the group
+    /// above is how the app itself behaves; Community stands alone because it
+    /// leaves the app entirely.
+    var startsGroup: Bool { self == .workspaces || self == .community }
+
+    /// `allCases` cut into the sidebar's groups, which System Settings separates
+    /// with a gap rather than a header. Derived from `startsGroup` so a new tab
+    /// can never fall out of the sidebar by being left off a hand-kept list.
+    /// The gap itself is row inset, not a `Section` — see `SettingsView`.
+    static var groups: [[SettingsTab]] {
+        allCases.reduce(into: [[SettingsTab]]()) { groups, tab in
+            if tab.startsGroup || groups.isEmpty {
+                groups.append([tab])
+            } else {
+                groups[groups.count - 1].append(tab)
+            }
+        }
+    }
 
     /// UserDefaults key remembering the last tab the user had open, so ⌘,
     /// reopens where they left off (see `AppDelegate.showSettings`).
@@ -52,7 +72,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
-        case .mobile: return localized("Mobile")
         case .community: return localized("Community")
         }
     }
@@ -69,7 +88,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
-        case .mobile: return .smartPhoneWifi
         case .community: return .bubbleChat
         }
     }
@@ -86,7 +104,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")
-        case .mobile: return localized("Pair your iPhone and remote access")
         case .community: return localized("Discord, GitHub, and the WeChat group")
         }
     }

@@ -18,6 +18,77 @@ enum AgentReadiness: String, Sendable {
     case unknown
 }
 
+/// One agent's presence across every machine on the roster, reduced to what a
+/// single line can say.
+///
+/// The Agents tab asks about a *subject* — an agent — so pinning its rows to one
+/// machine answers the wrong question, and hides the interesting half: an agent
+/// installed here and missing on `devbox` reads as fine until you happen to be
+/// looking at `devbox`. A machine picker cannot say this at all, because it shows
+/// one machine at a time; that is why the picker it replaced was the wrong shape
+/// and not merely an ugly one.
+struct AgentFleetReadiness: Equatable {
+    /// Machines that answered and do not have the CLI.
+    var missing: [String] = []
+    /// Machines we could not ask. Never a defect in the agent (§D4), so these
+    /// never earn the warning badge.
+    var unknown: [String] = []
+    /// How many machines were asked. A roster of one names no machine: with
+    /// nothing to distinguish it from, "on This Mac" is a label carrying no
+    /// information, and the line reads exactly as it did before there was ever
+    /// more than one machine to mean.
+    var asked = 0
+
+    /// The word the line leads with, or `nil` when every machine that answered
+    /// has the agent — the common case, where the line is the command alone.
+    ///
+    /// Named up to one machine and counted beyond: three names in a caption is a
+    /// list nobody reads, and the count is enough to send someone to the roster.
+    var summary: String? {
+        if !missing.isEmpty {
+            if asked <= 1 { return localized("Not installed") }
+            if missing.count == 1 { return localized("Not installed on \(missing[0])") }
+            return localized("Missing on \(missing.count) devices")
+        }
+        // "We could not ask `vps`" is a fact about **`vps`**, not about this
+        // agent, so a roster that repeated it would print the same sentence on
+        // every agent row — burying the command, which is what the line is for.
+        // An unreached machine is reported once, where it belongs: on the
+        // Machines list and on its own pane. The exception is having reached
+        // nothing at all, where silence would read as "all fine".
+        guard !unknown.isEmpty, unknown.count == asked else { return nil }
+        if unknown.count == 1 { return localized("Can’t check on \(unknown[0])") }
+        return localized("Can’t check on \(unknown.count) devices")
+    }
+
+    /// Only a machine that *answered* earns the badge. "We could not ask" says so
+    /// in words instead — a warning glyph for it is the false alarm §D4 exists to
+    /// prevent.
+    var hasMissing: Bool { !missing.isEmpty }
+}
+
+extension AgentReadiness {
+    /// `passive`, asked of every machine on the roster at once.
+    ///
+    /// Affordable for exactly the reason `passive` is: this Mac is one cached
+    /// `PATH` probe and every other machine is a file read, so summarising N
+    /// machines costs N file reads rather than N `ssh` round trips. The moment any
+    /// of this reaches the network it has to go back to naming one machine.
+    static func acrossFleet(
+        agent: AgentPreset, on devices: [(device: KnownDevice, command: String)]
+    ) async -> AgentFleetReadiness {
+        var fleet = AgentFleetReadiness(asked: devices.count)
+        for entry in devices {
+            switch await passive(agent: agent, command: entry.command, on: entry.device) {
+            case .available: continue
+            case .missing: fleet.missing.append(entry.device.name)
+            case .unknown: fleet.unknown.append(entry.device.name)
+            }
+        }
+        return fleet
+    }
+}
+
 /// One machine's whole answer, as one line (RFC §D6).
 ///
 /// Deploy `termiod` → probe the agent CLIs → install hooks and skill is a real
@@ -119,18 +190,32 @@ enum DeviceProbe {
         guard case .reachable = probe else {
             return DeviceDiscoveredState(checkedAt: now, reachable: false)
         }
-        let store = SSHAgentConfigStore(host: alias)
-        return await Task.detached(priority: .userInitiated) {
+        // One question for the whole roster. This was one blocking `ssh` per
+        // agent — a dozen round trips to learn something the box knows about
+        // itself in microseconds.
+        do {
+            let presence = try await AgentIntegrationInstaller.probe(
+                host: alias, agents: commands.map(\.id))
             var agents: [String: String] = [:]
-            for entry in commands {
-                agents[entry.id] = store.isCommandInstalled(entry.command)
+            for entry in presence {
+                agents[entry.id] = entry.present
                     ? AgentReadiness.available.rawValue
                     : AgentReadiness.missing.rawValue
             }
             return DeviceDiscoveredState(
                 checkedAt: now, reachable: true,
                 termiodVersion: nil, agents: agents)
-        }.value
+        } catch {
+            // Reached over ssh, but the daemon could not answer — an old
+            // termiod, or one that will not start. Reported as reachable with
+            // nothing known rather than as a machine with no agents, because
+            // "No agent CLIs found" sends the user looking in the wrong place.
+            Log.termiod.error("""
+                agent probe on \(alias, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return DeviceDiscoveredState(checkedAt: now, reachable: true)
+        }
     }
 }
 
@@ -247,19 +332,16 @@ final class DevicePaneModel: ObservableObject {
         if case .blocked = readiness { return }
 
         step = .installIntegration
-        let target = device.integrationTarget
-        // Off the main actor: this rung is one blocking `ssh` per config file, and
-        // there is one config file per agent. Left inline it freezes the window for
-        // the length of the whole install.
-        let hooksWanted = settings.agentHooksEnabled
-        let controlWanted = settings.sessionControlEnabled
-        let (hooks, skill) = await Task.detached {
-            (AgentStatusHooks.sync(enabled: hooksWanted, target: target),
-             SessionSkillInstaller.sync(enabled: controlWanted, target: target))
-        }.value
+        // One message for the whole roster. There is no `Task.detached` wrapper
+        // any more because there is no blocking work left to detach from — the
+        // daemon on that machine does the writing, and this awaits one reply.
+        let outcome = await AgentIntegrationInstaller.sync(
+            hooks: settings.agentHooksEnabled ? .install : .remove,
+            skills: settings.sessionControlEnabled ? .install : .remove,
+            target: device.integrationTarget)
         // A rung that reached the machine but could not write every agent's config
         // is still a failure of *this* rung, and the one worth naming.
-        let refused = hooks.failed + skill.failed
+        let refused = outcome.failed
         guard refused.isEmpty else {
             apply(state)
             readiness = .blocked(localized(
@@ -320,11 +402,10 @@ final class DevicePaneModel: ObservableObject {
 }
 
 extension KnownDevice {
-    /// Where this machine's agent integration is written, and what a hook there
-    /// runs to report status. The seam `AgentConfigStore` exists for; a machine's
-    /// pane is its first caller.
-    var integrationTarget: AgentIntegrationTarget {
-        alias.map { .device(host: $0) } ?? .thisMac
+    /// Which machine's daemon is asked to install, and what a hook there runs
+    /// to report status.
+    var integrationTarget: AgentIntegrationInstaller.Target {
+        alias.map { AgentIntegrationInstaller.Target.device(host: $0) } ?? .thisMac
     }
 }
 

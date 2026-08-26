@@ -186,7 +186,10 @@ struct DevicesSettingsTab: View {
 /// What a machine row pushes. A named type rather than the bare key so the
 /// settings window's shared navigation stack can't confuse a machine with the
 /// Agents tab's string destination.
-private struct DeviceRoute: Hashable {
+///
+/// Not `private`: `SettingsView` seeds the stack with one of these for the deep
+/// links that mean a pane rather than a tab (RFC §D9's "Pair a phone…").
+struct DeviceRoute: Hashable {
     let key: String
 }
 

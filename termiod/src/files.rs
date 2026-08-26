@@ -495,25 +495,144 @@ const BASENAME_BAND: i64 = 1_000_000;
 /// findable from far less.
 const SEARCH_TEXT_CAP: usize = 512;
 
-/// Parse one `git grep -n` line: `path:lineno:text`. Colons inside the text
-/// are safe — only the first two split.
-pub fn parse_grep_line(line: &str) -> Option<crate::protocol::SearchMatch> {
-    let (path, rest) = line.split_once(':')?;
-    let (line_number, text) = rest.split_once(':')?;
-    let line_number: u64 = line_number.parse().ok()?;
-    let mut text = text.to_string();
-    if text.len() > SEARCH_TEXT_CAP {
-        let mut cut = SEARCH_TEXT_CAP;
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        text.truncate(cut);
+/// How much of a long line to keep before the first match, so the hit does not
+/// sit flush against the left edge of the window.
+const SEARCH_WINDOW_LEAD: usize = 64;
+
+/// One line of `git grep -n -C` output: a match (`path:lineno:text`), a context
+/// line (`path-lineno-text`), or the `--` that separates runs. Colons and
+/// hyphens inside the text are safe — only the first two separators split, and
+/// which separator it is decides the kind.
+pub enum GrepLine {
+    Match { path: String, line: u64, text: String },
+    Context { path: String, line: u64, text: String },
+    Separator,
+}
+
+/// Parses one output line, whichever kind it is.
+///
+/// `git grep` marks a matching line with colons and a context line with
+/// hyphens, which is the only thing that tells them apart — the line number
+/// alone cannot, and getting it wrong would paint context as a hit.
+pub fn parse_grep_output_line(line: &str) -> Option<GrepLine> {
+    if line == "--" {
+        return Some(GrepLine::Separator);
     }
-    Some(crate::protocol::SearchMatch {
+    // A match first: a path containing a hyphen is ordinary, and trying the
+    // hyphen split first would tear one apart.
+    if let Some((path, rest)) = line.split_once(':') {
+        if let Some((number, text)) = rest.split_once(':') {
+            if let Ok(number) = number.parse::<u64>() {
+                return Some(GrepLine::Match {
+                    path: path.to_string(),
+                    line: number,
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+    let (path, rest) = line.split_once('-')?;
+    let (number, text) = rest.split_once('-')?;
+    Some(GrepLine::Context {
         path: path.to_string(),
-        line: line_number,
-        text,
+        line: number.parse().ok()?,
+        text: text.to_string(),
     })
+}
+
+/// Kept for the shape its tests pin: one `-n` line into a match, with the
+/// window and spans a client needs to paint it.
+pub fn parse_grep_line(line: &str, query: &str, insensitive: bool) -> Option<crate::protocol::SearchMatch> {
+    match parse_grep_output_line(line)? {
+        GrepLine::Match { path, line, text } => {
+            Some(match_from_line(path, line, &text, query, insensitive))
+        }
+        _ => None,
+    }
+}
+
+/// Builds the match a client draws: where the query hit inside the line, and a
+/// window of the line that contains the first hit.
+///
+/// The spans come from the same case rule that decided the line matched, which
+/// is the whole point — a client that re-finds the query itself is running a
+/// second matcher, and two matchers eventually disagree (an uppercase query
+/// painting lowercase text, a canonically-equal-but-different byte sequence).
+pub fn match_from_line(
+    path: String,
+    line: u64,
+    text: &str,
+    query: &str,
+    insensitive: bool,
+) -> crate::protocol::SearchMatch {
+    let spans = spans_in(text, query, insensitive);
+    // Window a long line around its first hit rather than truncating the head
+    // off it: a line cut at a fixed 512 bytes with its match at column 900
+    // arrives with nothing to highlight, which is exactly how a result row ends
+    // up looking wrong.
+    let first = spans.first().map(|span| span.0).unwrap_or(0);
+    let (offset, windowed) = window(text, first);
+    let spans = spans
+        .into_iter()
+        .filter(|span| span.0 >= offset && span.1 <= offset + windowed.len())
+        .map(|span| [(span.0 - offset) as u32, (span.1 - offset) as u32])
+        .collect();
+    crate::protocol::SearchMatch {
+        path,
+        line,
+        text: windowed,
+        text_offset: offset as u64,
+        spans,
+        before: Vec::new(),
+        after: Vec::new(),
+    }
+}
+
+/// Byte ranges of every occurrence of `query` in `text`, under the case rule the
+/// search itself used. Non-overlapping and left to right, like `git grep`.
+fn spans_in(text: &str, query: &str, insensitive: bool) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    // Lowercasing can change byte length (İ, ẞ), which would make an index into
+    // the lowered copy meaningless against the original. Only ASCII is folded
+    // for that reason — and an ASCII fold is what `--ignore-case` on a
+    // fixed-string grep does for the queries this search sees.
+    let (hay, needle) = if insensitive {
+        (text.to_ascii_lowercase(), query.to_ascii_lowercase())
+    } else {
+        (text.to_string(), query.to_string())
+    };
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(at) = hay[from..].find(&needle) {
+        let start = from + at;
+        let end = start + needle.len();
+        // Never split a character: a fold that lands mid-sequence would produce
+        // a span the client cannot turn into a range.
+        if text.is_char_boundary(start) && text.is_char_boundary(end) {
+            spans.push((start, end));
+        }
+        from = end.max(start + 1);
+    }
+    spans
+}
+
+/// A cap-sized window of `text` containing `around`, snapped to character
+/// boundaries. Returns where the window starts and the window itself.
+fn window(text: &str, around: usize) -> (usize, String) {
+    if text.len() <= SEARCH_TEXT_CAP {
+        return (0, text.to_string());
+    }
+    let mut start = around.saturating_sub(SEARCH_WINDOW_LEAD);
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (start + SEARCH_TEXT_CAP).min(text.len());
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (start, text[start..end].to_string())
 }
 
 /// Where an upload lands, after confinement has been decided by the caller
@@ -997,18 +1116,86 @@ mod tests {
 
     #[test]
     fn grep_lines_parse_with_colons_in_the_text_and_cap_long_lines() {
-        let hit = parse_grep_line("src/main.rs:42:let url = \"http://x:8080\";").unwrap();
+        let hit = parse_grep_line("src/main.rs:42:let url = \"http://x:8080\";", "url", true)
+            .unwrap();
         assert_eq!(hit.path, "src/main.rs");
         assert_eq!(hit.line, 42);
         assert_eq!(hit.text, "let url = \"http://x:8080\";");
 
         let long = format!("a.txt:1:{}", "é".repeat(SEARCH_TEXT_CAP));
-        let capped = parse_grep_line(&long).unwrap();
+        let capped = parse_grep_line(&long, "é", false).unwrap();
         assert!(capped.text.len() <= SEARCH_TEXT_CAP);
         assert!(capped.text.chars().all(|c| c == 'é'), "cut on a boundary");
 
-        assert!(parse_grep_line("no line number here").is_none());
-        assert!(parse_grep_line("path:notanumber:text").is_none());
+        assert!(parse_grep_line("no line number here", "x", true).is_none());
+        assert!(parse_grep_line("path:notanumber:text", "x", true).is_none());
+    }
+
+    /// The whole point of reporting spans: they come from the rule that decided
+    /// the line matched, so an uppercase query cannot paint lowercase text.
+    #[test]
+    fn spans_follow_the_search_case_rule() {
+        let line = "let Widget = widget();";
+        let exact = match_from_line("a.rs".into(), 1, line, "Widget", false);
+        assert_eq!(exact.spans, vec![[4, 10]], "case-sensitive marks one hit");
+
+        let loose = match_from_line("a.rs".into(), 1, line, "widget", true);
+        assert_eq!(loose.spans, vec![[4, 10], [13, 19]], "insensitive marks both");
+        for span in &loose.spans {
+            let start = span[0] as usize;
+            let end = span[1] as usize;
+            assert_eq!(line[start..end].to_lowercase(), "widget");
+        }
+    }
+
+    /// A hit far down a long line used to arrive with the line truncated in
+    /// front of it — a result row with nothing highlighted. The window follows
+    /// the match instead.
+    #[test]
+    fn a_long_line_is_windowed_around_its_first_hit() {
+        let mut line = "x".repeat(900);
+        line.push_str("needle");
+        line.push_str(&"y".repeat(900));
+
+        let found = match_from_line("a.js".into(), 1, &line, "needle", false);
+
+        assert!(found.text.len() <= SEARCH_TEXT_CAP);
+        assert!(!found.spans.is_empty(), "the hit survives the window");
+        let span = found.spans[0];
+        assert_eq!(&found.text[span[0] as usize..span[1] as usize], "needle");
+        assert_eq!(
+            found.text_offset as usize + span[0] as usize,
+            900,
+            "the window says where it starts, so columns still resolve"
+        );
+    }
+
+    /// Context lines are told apart from matches by their separator, not by
+    /// their line number — painting context as a hit is the failure this
+    /// prevents.
+    #[test]
+    fn context_lines_are_not_matches() {
+        match parse_grep_output_line("src/a.rs-41-// above").unwrap() {
+            GrepLine::Context { path, line, text } => {
+                assert_eq!(path, "src/a.rs");
+                assert_eq!(line, 41);
+                assert_eq!(text, "// above");
+            }
+            _ => panic!("a hyphen line is context"),
+        }
+        assert!(matches!(
+            parse_grep_output_line("src/a.rs:42:hit").unwrap(),
+            GrepLine::Match { .. }
+        ));
+        assert!(matches!(
+            parse_grep_output_line("--").unwrap(),
+            GrepLine::Separator
+        ));
+        // A path with a hyphen in it is ordinary and must not be torn apart.
+        match parse_grep_output_line("my-crate/src/a.rs:7:hit").unwrap() {
+            GrepLine::Match { path, .. } => assert_eq!(path, "my-crate/src/a.rs"),
+            _ => panic!("still a match"),
+        }
     }
 
     /// The picker's ranking contract, asserted through the public entry point

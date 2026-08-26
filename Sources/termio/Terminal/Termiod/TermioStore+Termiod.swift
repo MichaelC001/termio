@@ -796,8 +796,12 @@ extension TermioStore {
     }
 
     /// Creates the remote `.terminal` session under the machine it runs on — that
-    /// machine's fallback workspace, same as `addSSHSession` — tagging it with the
-    /// per-session remote host + cwd that `makeTermiodLink` threads through.
+    /// machine's fallback workspace — tagging it with the per-session remote host +
+    /// cwd that `makeTermiodLink` threads through.
+    ///
+    /// Filed by machine, unlike the plain `ssh` shell `addSSHSession` opens: this
+    /// process really does live on the box and outlive the connection to it, so the
+    /// workspace holding it is telling the truth about where its work is.
     private func createRemoteTerminalSession(
         host: String,
         device deviceID: String,
@@ -937,11 +941,25 @@ extension TermioStore {
             return .failure(RemoteSetupError(
                 message: "Couldn't reach \(host) over SSH.\n\(detail)"))
         }
+        /// Whether the daemon answering on this host can install agent
+        /// integration. Since the installers moved onto the box, a daemon that
+        /// predates the `agents` capability writes nothing — where before the
+        /// move the same box still got its hooks, because the Mac did the
+        /// writing over ssh. That regression must not be silent.
+        func canInstallAgents() -> Bool {
+            (try? Termiod.supportsAgentInstall(route: .ssh(host))) ?? false
+        }
+
+        var upgrading = false
         if probe.standardOutput.contains("yes") {
             // Already deployed — the common case after first use.
             switch identify() {
             case .success(let device):
-                return .success(device)
+                if canInstallAgents() { return .success(device) }
+                // Present is not the same as current. Put the new binary in
+                // place; whether the *running* daemon picks it up is the next
+                // question, and it is not ours to force.
+                upgrading = true
             case .failure(let error):
                 // The binary is there but will not shake hands: a stale daemon, a
                 // protocol mismatch, a half-written deploy. Say so rather than
@@ -955,9 +973,11 @@ extension TermioStore {
         // cross-compiles the aarch64-musl daemon and scps it (termiod/DEPLOY.md).
         let localBinary = Termiod.daemonBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: localBinary) else {
+            let what = upgrading
+                ? "termiod on \(host) is too old to install agent integration, and the local"
+                : "termiod isn't deployed on \(host), and the local"
             return .failure(RemoteSetupError(
-                message: "termiod isn't deployed on \(host), and the local termiod "
-                    + "binary to deploy it wasn't found at \(localBinary)."))
+                message: "\(what) termiod binary to deploy it wasn't found at \(localBinary)."))
         }
         let deploy = runProcess(localBinary, ["remote", "deploy", host])
         guard let deploy, deploy.exitCode == 0 else {
@@ -971,7 +991,17 @@ extension TermioStore {
         }
         switch identify() {
         case .success(let device):
-            return .success(device)
+            guard upgrading, !canInstallAgents() else { return .success(device) }
+            // The new binary is in place and the *running* daemon is still the
+            // old one: `mv` over a running executable leaves the process holding
+            // the old inode, which is the whole reason the deploy is safe. It is
+            // not restarted from here on purpose — a termiod restart kills every
+            // session it owns, and detach-≠-kill is the promise the daemon
+            // exists for. So this names the state and the cost, and stops.
+            return .failure(RemoteSetupError(
+                message: "Updated termiod on \(host), but the daemon still running there is "
+                    + "the older one and can't install agent integration. It takes over once "
+                    + "that daemon exits — close the sessions on \(host) and set it up again."))
         case .failure(let error):
             return .failure(RemoteSetupError(
                 message: "Deployed termiod to \(host), but it didn't answer.\n"

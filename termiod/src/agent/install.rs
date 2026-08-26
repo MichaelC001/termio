@@ -122,19 +122,34 @@ impl Reporter {
     }
 }
 
+/// What to do with one half of the integration.
+///
+/// Per half, not one flag for both, because the two Integration switches are
+/// independent: a user can want live status without session control. One
+/// message still covers the whole roster — this is what keeps that true when
+/// the switches disagree, instead of costing a second round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HalfAction {
+    Install,
+    /// Sweep every directory termio has ever written this half into.
+    Remove,
+    /// Not this caller's business — the device pane's "Reinstall hooks" must not
+    /// touch the skill.
+    #[default]
+    Leave,
+}
+
 /// What the client asked for, plus the one thing about this box it needed
 /// resolving against.
 #[derive(Debug, Clone)]
 pub struct InstallRequest {
-    /// Install (true) or remove every integration termio has ever installed
-    /// (false).
-    pub enabled: bool,
     /// The ids the user has on their list, or `None` for the whole catalog.
     /// Which agents are enabled is a preference, so it stays the client's to
     /// state; where their files live is a fact about this box, so it does not.
     pub agents: Option<Vec<String>>,
-    pub hooks: bool,
-    pub skills: bool,
+    pub hooks: HalfAction,
+    pub skills: HalfAction,
     pub reporter: Reporter,
     /// The version stamped into each hook command as a trailing shell comment.
     /// The command string changes between releases, so the stamp is what makes
@@ -149,16 +164,14 @@ pub struct InstallRequest {
 
 impl InstallRequest {
     pub fn new(
-        enabled: bool,
         agents: Option<Vec<String>>,
-        hooks: bool,
-        skills: bool,
+        hooks: HalfAction,
+        skills: HalfAction,
         reporter: Reporter,
         hook_version: String,
     ) -> InstallRequest {
         let binary = reporter.binary_path();
         InstallRequest {
-            enabled,
             agents,
             hooks,
             skills,
@@ -226,14 +239,52 @@ impl InstallResult {
     }
 }
 
+/// Whether one agent's CLI is on this box.
+///
+/// The Mac used to answer this with one `ssh host 'command -v …'` *per agent*,
+/// which is a dozen round trips to learn something the box knows about itself in
+/// microseconds. It is the same login-shell probe the install already runs
+/// before writing a skill, exposed so a client can ask without writing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPresence {
+    pub id: String,
+    /// The command that was looked for, so a client can show what was asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// `true` also when the probe could not look — never cry wolf, the same rule
+    /// the install follows.
+    pub present: bool,
+}
+
+/// Answer for the named agents, or for the whole catalog.
+pub fn probe(agents: Option<Vec<String>>) -> Vec<AgentPresence> {
+    let catalog = AgentCatalog::load();
+    let wanted: Option<HashSet<&str>> = agents
+        .as_ref()
+        .map(|ids| ids.iter().map(String::as_str).collect());
+    catalog
+        .all
+        .iter()
+        .filter(|agent| wanted.as_ref().map(|w| w.contains(agent.id.as_str())).unwrap_or(true))
+        .map(|agent| AgentPresence {
+            id: agent.id.clone(),
+            command: agent.command.clone(),
+            present: match agent.command.as_deref() {
+                Some(command) => machine::is_command_installed(command),
+                None => true,
+            },
+        })
+        .collect()
+}
+
 /// Apply `request` against this box's filesystem.
 pub fn run(request: &InstallRequest) -> Vec<InstallResult> {
     let catalog = AgentCatalog::load();
     let mut results = Vec::new();
-    if request.hooks {
+    if request.hooks != HalfAction::Leave {
         results.extend(sync_hooks(&catalog, request));
     }
-    if request.skills {
+    if request.skills != HalfAction::Leave {
         results.extend(sync_skills(&catalog, request));
     }
     results
@@ -256,7 +307,7 @@ fn selected<'a>(catalog: &'a AgentCatalog, request: &InstallRequest) -> Vec<&'a 
 // MARK: - Hooks
 
 fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallResult> {
-    if !request.enabled {
+    if request.hooks != HalfAction::Install {
         // Sweep everything termio has ever installed, bundled declarations
         // included, so a shipped hook a user override removed or redirected is
         // cleaned too.
@@ -1138,7 +1189,7 @@ fn trim_newlines(text: &str) -> String {
 // MARK: - Skills
 
 fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallResult> {
-    if !request.enabled {
+    if request.skills != HalfAction::Install {
         // Every skills directory termio has ever installed into — bundled
         // declarations plus the live catalog — so a shipped dir a user override
         // removed or redirected is swept too.
@@ -1247,6 +1298,16 @@ fn remove(path: &str) {
 /// guarantee; re-merging in a loop is not, and a loop that keeps rewriting a
 /// file somebody is typing in is its own hazard. So a lost race reports the
 /// agent as not installed, and the setup button is the retry.
+///
+/// **The precondition stays now that the writer is on the box.** What went with
+/// the SSH arm is `expect_sha256` — shipping a digest across a network so a
+/// *remote* check-and-swap could be atomic. That existed because the merge and
+/// the file were on opposite ends of a link, and it is gone with the link. The
+/// thing it was protecting is not: the user's own editor is on this machine, and
+/// `~/.claude/settings.json` is a file people keep open. The window is now
+/// microseconds inside one process instead of two round trips, which makes the
+/// check nearly free rather than unnecessary — one extra `read` per file against
+/// silently discarding somebody's edit is not a trade worth taking.
 fn write_if_unchanged(path: &str, data: &[u8], expected: Option<&[u8]>) -> Result<(), String> {
     let current = read_bytes(path);
     if current.as_deref() != expected {
@@ -1305,10 +1366,9 @@ pub(super) mod tests {
     /// test binary happens to sit.
     fn request(reporter: Reporter, binary: &str) -> InstallRequest {
         let mut request = InstallRequest::new(
-            true,
             None,
-            true,
-            true,
+            HalfAction::Install,
+            HalfAction::Install,
             reporter,
             "9.9.9".into(),
         );
