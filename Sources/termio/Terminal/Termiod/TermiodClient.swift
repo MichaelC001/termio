@@ -379,6 +379,28 @@ extension Termiod {
             self.writeDescriptor = writeDescriptor
             self.route = route
             self.sshPid = sshPid
+            Transport.suppressSignalOnBrokenPipe(writeDescriptor)
+        }
+
+        /// Makes a write to a hung-up peer return `EPIPE` instead of raising
+        /// `SIGPIPE`, whose default disposition kills the process.
+        ///
+        /// A channel opened for one request could barely hit this — the pipe was
+        /// seconds old. A pooled one is held across a laptop sleeping, a VPS
+        /// rebooting and `ControlPersist` reaping the master, so discovering the
+        /// far end is gone *on the way out* is an ordinary Tuesday. The control
+        /// socket in `SessionControl.swift` already learned this; the transport
+        /// had not needed to.
+        ///
+        /// Two calls because the two roads produce different objects: `.local` is
+        /// a socket, where `SO_NOSIGPIPE` is the switch, and `.ssh` is a pipe,
+        /// where it is the `F_SETNOSIGPIPE` descriptor flag. Each is a no-op on
+        /// the other, so both go on unconditionally.
+        private static func suppressSignalOnBrokenPipe(_ descriptor: Int32) {
+            var on: Int32 = 1
+            _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on,
+                           socklen_t(MemoryLayout<Int32>.size))
+            _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
         }
 
         /// Local Unix socket; the same fd serves both directions.

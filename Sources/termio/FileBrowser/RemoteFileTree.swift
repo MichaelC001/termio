@@ -175,10 +175,11 @@ final class RemoteFileNode: Identifiable {
 /// `fs.list`/`fs.read` (`TermiodFiles.swift`).
 ///
 /// No watching yet: the tree reloads on pane/app focus and the explicit refresh
-/// button, by dropping the cached nodes — expansion state survives (node
-/// identity is the path) and still-expanded folders re-fetch lazily. Live
-/// updates are the `fs:` resource, which needs a channel that outlives one
-/// request and is deliberately not here.
+/// button. A reload re-lists every directory it is currently showing in one
+/// request and grafts the answers onto the nodes already there, so expansion
+/// survives and nothing re-fetches itself a round trip at a time. Live updates
+/// are the `fs:` resource, which needs a tree that applies deltas and is
+/// deliberately not here.
 @MainActor
 final class RemoteFileBrowserModel: ObservableObject {
     enum Phase {
@@ -214,23 +215,91 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     func node(at path: String) -> RemoteFileNode? { nodesByPath[path] }
 
-    /// Re-roots the tree from the device. Existing rows stay up while the
+    /// Re-lists the tree from the device. Existing rows stay up while the
     /// listing is in flight (no flash to a spinner on an app-focus reconcile);
     /// only the never-loaded state shows `connecting`.
+    ///
+    /// Every directory the tree is currently showing goes out in **one**
+    /// `fs.list`, which is what the `paths` array is for. This used to drop
+    /// `nodesByPath` and rebuild from the root alone, leaving each still-expanded
+    /// folder to re-fetch itself from the `children` getter — so a tree with
+    /// eight folders open cost nine sequential round trips, on every app focus.
+    /// Asking for all nine together costs one.
+    ///
+    /// Directories that answer are replaced in place; ones the reply does not
+    /// mention keep the rows they had, so a folder that failed does not blank
+    /// itself while the rest of the tree refreshes around it.
     func refresh() {
         guard !refreshing else { return }
         refreshing = true
         Task {
             defer { refreshing = false }
+            // Root first: the reply is applied in the order asked, and the root's
+            // children have to exist before a descendant's can be attached.
+            let wanted = [root] + loadedDirectories()
             do {
-                let entries = try await provider.list(root)
-                nodesByPath = [:]
-                rootNodes = nodes(for: entries, under: root)
+                let listings = try await provider.list(wanted)
+                apply(listings)
                 phase = .ready
             } catch {
                 report(error, context: "list \(host):\(root)")
             }
         }
+    }
+
+    /// The directories whose contents the tree is holding, deepest last, so a
+    /// re-list rebuilds parents before the children hanging off them.
+    ///
+    /// Reachable from a test: what a refresh asks for, and the order it applies
+    /// the answers in, is the whole of this change and needs no window to check.
+    func loadedDirectories() -> [String] {
+        nodesByPath.values
+            .filter { $0.isDirectory && $0.loadedChildren != nil }
+            .map(\.path)
+            .sorted {
+                let left = $0.count(where: { $0 == "/" })
+                let right = $1.count(where: { $0 == "/" })
+                return left == right ? $0 < $1 : left < right
+            }
+    }
+
+    /// Grafts a batch of listings onto the tree, keeping expansion state: a
+    /// directory that is still there and still has children keeps them, so the
+    /// outline does not collapse under a refresh.
+    func apply(_ listings: [Termiod.DirectoryListing]) {
+        for listing in listings {
+            // The device's per-path error — a folder deleted since it was
+            // expanded. Leave the rows it had; the parent's own listing is what
+            // removes the row, and that is the answer the tree should follow.
+            guard listing.error == nil else { continue }
+            let previous = listing.path == root
+                ? Dictionary(uniqueKeysWithValues: rootNodes.map { ($0.path, $0) })
+                : Dictionary(
+                    uniqueKeysWithValues: (nodesByPath[listing.path]?.loadedChildren ?? [])
+                        .map { ($0.path, $0) })
+            let rebuilt = nodes(for: listing.entries, under: listing.path, reusing: previous)
+            if listing.path == root {
+                rootNodes = rebuilt
+            } else {
+                nodesByPath[listing.path]?.loadedChildren = rebuilt
+            }
+        }
+        // Nodes that no longer hang off anything would otherwise keep this
+        // dictionary — and the paths `loadedDirectories` asks for — growing for
+        // the life of the pane.
+        pruneUnreachableNodes()
+        objectWillChange.send()
+    }
+
+    /// Drops every node the tree can no longer reach from its roots.
+    private func pruneUnreachableNodes() {
+        var reachable: [String: RemoteFileNode] = [:]
+        var frontier = rootNodes
+        while let node = frontier.popLast() {
+            reachable[node.path] = node
+            frontier.append(contentsOf: node.loadedChildren ?? [])
+        }
+        nodesByPath = reachable
     }
 
     /// Fetches one folder's entries — called from the `children` getter on first
@@ -282,15 +351,32 @@ final class RemoteFileBrowserModel: ObservableObject {
         }
     }
 
-    private func nodes(for entries: [FileEntry], under parent: String) -> [RemoteFileNode] {
+    /// Builds one directory's rows.
+    ///
+    /// `reusing` keeps the node object for a path that survived the re-list.
+    /// Node identity is the path, so the outline would keep its expansion either
+    /// way — but the children hang off the *object*, and minting a fresh one
+    /// would throw away every loaded subtree under it and make the tree fetch
+    /// them all again, one at a time, which is the cost this refresh exists to
+    /// remove.
+    private func nodes(
+        for entries: [FileEntry], under parent: String,
+        reusing existing: [String: RemoteFileNode] = [:]
+    ) -> [RemoteFileNode] {
         let base = parent.hasSuffix("/") ? parent : parent + "/"
         return entries.map { entry in
-            let node = RemoteFileNode(
-                path: base + entry.name, name: entry.name,
-                isDirectory: entry.isDirectory,
-                canPreview: entry.isPreviewable,
-                model: self)
-            nodesByPath[node.path] = node
+            let path = base + entry.name
+            let node: RemoteFileNode
+            if let kept = existing[path], kept.isDirectory == entry.isDirectory {
+                node = kept
+            } else {
+                node = RemoteFileNode(
+                    path: path, name: entry.name,
+                    isDirectory: entry.isDirectory,
+                    canPreview: entry.isPreviewable,
+                    model: self)
+            }
+            nodesByPath[path] = node
             return node
         }
     }

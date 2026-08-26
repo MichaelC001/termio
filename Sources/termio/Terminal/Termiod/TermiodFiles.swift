@@ -9,12 +9,18 @@ import TermioShared
 /// SFTP tree, which spoke a second protocol to a second server for the same
 /// question.
 ///
-/// Both verbs are **request/response on one channel**: `fs.list` canonicalises
-/// the root and confines every path under it (`termiod/src/files.rs`), and
-/// `fs.read` answers one `fs_file` header followed by `F` chunks. Neither is a
-/// subscription, so neither needs a connection that outlives the request — which
-/// is why the tree can land before `withControlChannel` becomes durable. Live
-/// change notification (the `fs:` resource) does need that, and is not here.
+/// Every verb here rides the **pooled** control channel for the device
+/// (`TermiodControlPool.swift`): one connection per machine, many requests
+/// multiplexed over it by `re`. Correctness does not depend on that — `fs.list`
+/// canonicalises the root and confines every path under it
+/// (`termiod/src/files.rs`), `fs.read` answers one `fs_file` header followed by
+/// `F` chunks, and neither is a subscription — but latency does. A channel per
+/// request meant `ssh <host> termiod stdio` per folder expand, which measured at
+/// 32 ms median and 260 ms at p90 on a link whose round trip is 8 ms.
+///
+/// Live change notification (the `fs:` resource) is still not here. It needs a
+/// connection that outlives one request, which now exists; what it also needs is
+/// a tree that applies deltas, which does not.
 extension Termiod {
     /// What one directory answered. `error` is the device's own message for a
     /// path that vanished or escaped the root; a batched request fails one path
@@ -77,10 +83,10 @@ extension Termiod {
     static func listDirectories(
         route: TermiodRoute, root: String, paths: [String]
     ) throws -> [DirectoryListing] {
-        try withFilesChannel(route: route) { transport in
-            let listed = try requestFiles(
-                transport, FsListOperation(root: root, paths: paths, seq: 1)
-            ) { control in
+        try withFilesChannel(route: route) { call in
+            let listed = try requestFiles(call, operation: "fs.list") { seq in
+                FsListOperation(root: root, paths: paths, seq: seq)
+            } match: { control in
                 if case .fsListed(let payload) = control { return payload }
                 return nil
             }
@@ -106,10 +112,10 @@ extension Termiod {
     static func readFile(
         route: TermiodRoute, path: String, limit: Int = filePreviewByteLimit
     ) throws -> DeviceFile {
-        try withFilesChannel(route: route) { transport in
-            let header = try requestFiles(
-                transport, FsReadOperation(path: path, seq: 1)
-            ) { control in
+        try withFilesChannel(route: route) { call in
+            let header = try requestFiles(call, operation: "fs.read") { seq in
+                FsReadOperation(path: path, seq: seq)
+            } match: { control in
                 if case .fsFile(let payload) = control { return payload }
                 return nil
             }
@@ -120,7 +126,8 @@ extension Termiod {
             // `length` is the served window; a zero-length file sends no `F`
             // frame at all, so the loop must be able to run zero times.
             while UInt64(data.count) < header.length {
-                let frame = try readFrame(transport.readDescriptor)
+                let frame = try call.next(
+                    timeoutSeconds: requestIdleTimeoutSeconds, operation: "fs.read")
                 switch frame.kind {
                 case .file:
                     let chunk = try decodeFileChunk(frame.payload)
@@ -165,17 +172,18 @@ extension Termiod {
         // Nothing to ask for, and the host would answer one hit anyway: it
         // appends before it compares against the cap.
         guard limit > 0 else { return SearchResult(hits: [], limitHit: false) }
-        return try withFilesChannel(route: route) { transport in
-            try writeFrame(
-                transport.writeDescriptor, kind: .control,
-                payload: encodeControl(FsSearchOperation(
-                    root: root, query: query, limit: UInt64(limit), seq: 1)))
+        return try withFilesChannel(route: route) { call in
+            try call.send(payload: encodeControl(FsSearchOperation(
+                root: root, query: query, limit: UInt64(limit), seq: call.seq)))
+            // Armed the moment the request is on the wire: from here until the
+            // host's terminal reply, every way out of this closure — the idle
+            // bound, a lost pipe, a thrown decode — is a `git grep` still
+            // walking a checkout on someone else's machine.
+            call.cancelIfAbandoned()
             var hits: [SearchHit] = []
             while true {
-                try waitForReadable(
-                    transport.readDescriptor, seconds: idleTimeoutSeconds,
-                    operation: "fs.search")
-                let frame = try readFrame(transport.readDescriptor)
+                let frame = try call.next(
+                    timeoutSeconds: idleTimeoutSeconds, operation: "fs.search")
                 switch frame.kind {
                 case .event:
                     guard case .searchResults(let payload) = try decodeEvent(frame.payload)
@@ -186,8 +194,14 @@ extension Termiod {
                 case .control:
                     switch try decodeControl(frame.payload) {
                     case .fsSearched(let payload):
+                        // The host's last word, whether it finished, hit the cap
+                        // or was already stopped: nothing left to cancel.
+                        call.completed()
                         return SearchResult(hits: hits, limitHit: payload.limitHit)
                     case .error(let failure):
+                        // A refusal the host has already cleaned up behind — no
+                        // grep is running, so cancelling would name nothing.
+                        call.completed()
                         throw TermiodClientError.requestFailed(failure.message)
                     default:
                         continue
@@ -199,29 +213,47 @@ extension Termiod {
         }
     }
 
-    /// Opens a control channel that negotiated `files`, and refuses up front on a
-    /// daemon that did not grant it — the pane then says the device cannot serve
-    /// files rather than hanging on a reply that never comes.
+    /// How long a listing or a read may go without the device saying anything
+    /// before the request is treated as unanswered.
+    ///
+    /// A one-shot channel needed no such bound: the process it hung off died and
+    /// took the wait with it. A pooled one outlives its requests, so a request
+    /// that would once have ended with the connection now has to end on its own
+    /// clock — and a pipe that stops answering must not park the thread that
+    /// asked. Generous, because a cold directory on a slow disk is slow and
+    /// correct; this bounds silence, not work. `fs.search` keeps its own, much
+    /// longer bound: a grep is *expected* to say nothing for a long time.
+    static let requestIdleTimeoutSeconds = 30
+
+    /// Runs `body` against the device's pooled `files` channel, refusing up front
+    /// on a daemon that did not grant the capability — the pane then says the
+    /// device cannot serve files rather than hanging on a reply that never comes.
     private static func withFilesChannel<Result>(
-        route: TermiodRoute, _ body: (Transport) throws -> Result
+        route: TermiodRoute, _ body: (ChannelCall) throws -> Result
     ) throws -> Result {
-        try withControlChannel(route: route, caps: ["files"]) { transport, handshake in
-            guard handshake.capabilities.contains("files") else {
+        try withPooledRequest(route: route, caps: ["files"]) { call, channel in
+            guard channel.capabilities.contains("files") else {
                 throw DeviceFileError.unsupported
             }
-            return try body(transport)
+            return try body(call)
         }
     }
 
+    /// Sends one request and waits for the reply that matches, skipping frames
+    /// that do not. `build` takes the call's own `seq` rather than a fixed 1:
+    /// that id is what the daemon stamps every answering frame with, and on a
+    /// shared channel it is the only thing that tells this reply from the one
+    /// belonging to the expand happening alongside it.
     private static func requestFiles<Operation: Encodable, Reply>(
-        _ transport: Transport,
-        _ operation: Operation,
-        _ match: (IncomingControl) -> Reply?
+        _ call: ChannelCall,
+        operation name: String,
+        build: (UInt64) -> Operation,
+        match: (IncomingControl) -> Reply?
     ) throws -> Reply {
-        try writeFrame(transport.writeDescriptor, kind: .control,
-                       payload: encodeControl(operation))
+        try call.send(payload: encodeControl(build(call.seq)))
         while true {
-            let frame = try readFrame(transport.readDescriptor)
+            let frame = try call.next(
+                timeoutSeconds: requestIdleTimeoutSeconds, operation: name)
             guard frame.kind == .control else { continue }
             let control = try decodeControl(frame.payload)
             if let reply = match(control) { return reply }
@@ -267,12 +299,12 @@ extension FileEntry {
     }
 }
 
-/// The tree's async seam onto the two blocking verbs above. One per pane, so a
+/// The tree's async seam onto the blocking verbs above. One per pane, so a
 /// device that stops answering blocks only its own pane.
 ///
-/// The work runs on a global queue rather than in an actor: each call opens,
-/// hellos, asks and closes on one file descriptor, and blocking a cooperative
-/// pool thread for a network round trip is exactly what that pool is not for.
+/// The work runs on a global queue rather than in an actor: a request blocks on
+/// a network round trip, and blocking a cooperative pool thread for one is
+/// exactly what that pool is not for.
 struct DeviceFileProvider: Sendable {
     let route: TermiodRoute
     /// The checkout root every request is confined under, so a listing can never
@@ -281,14 +313,31 @@ struct DeviceFileProvider: Sendable {
     let root: String
 
     func list(_ path: String) async throws -> [FileEntry] {
-        let listings = try await run { [route, root] in
-            try Termiod.listDirectories(route: route, root: root, paths: [path])
-        }
+        let listings = try await list([path])
         guard let listing = listings.first else { return [] }
         if let error = listing.error {
             throw TermiodClientError.requestFailed(error)
         }
         return listing.entries
+    }
+
+    /// Several directories in **one** request, which is the shape `fs.list` was
+    /// given a `paths` array for: the protocol asks a client to name a rendered
+    /// directory together with the visible directories under it, rather than
+    /// walking the tree a round trip at a time.
+    ///
+    /// It is the difference between one round trip and N. Measured against a VPS
+    /// with a nine-directory checkout open: 339 ms one directory at a time,
+    /// 44 ms asked together — and on the pooled channel, 12 ms.
+    ///
+    /// Failures are per path, not per request: a directory that vanished carries
+    /// its own `error` and the rest of the listings still land. Callers key the
+    /// result by `path`, which the daemon echoes back exactly as asked.
+    func list(_ paths: [String]) async throws -> [Termiod.DirectoryListing] {
+        guard !paths.isEmpty else { return [] }
+        return try await run { [route, root] in
+            try Termiod.listDirectories(route: route, root: root, paths: paths)
+        }
     }
 
     /// Content search under the pane's own root, on the device. Confined the same
