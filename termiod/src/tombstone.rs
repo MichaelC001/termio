@@ -413,6 +413,7 @@ mod tests {
             alive: true,
             status: "working".to_string(),
             agent_id: Some("claude".to_string()),
+            project: Some("/work".to_string()),
             title: Some("fixing the parser".to_string()),
             attached_clients: 0,
             writer_client_id: None,
