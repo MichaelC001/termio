@@ -412,23 +412,27 @@ extension TermioStore {
     }
 
     /// Opens an **SSH terminal** to `host` — a terminal that launches `ssh <host>`
-    /// in a local PTY instead of a local shell (see `Session.sshHost`). It lands in
-    /// that machine's fallback workspace, so an `ssh` shell and a durable termiod
-    /// session on the same box sit together rather than scattering among loose
-    /// local terminals. `host` is a `~/.ssh/config` alias or a bare `user@host`.
+    /// in a local PTY instead of a local shell (see `Session.sshHost`). It lands
+    /// where the user is (see `sshShellWorkspace`). `host` is a `~/.ssh/config`
+    /// alias or a bare `user@host`.
     ///
-    /// `preferring` settles which of that box's workspaces when a caller knows —
-    /// the phone names the workspace on its screen, and a box can hold more than
-    /// one. It is only ever a preference: a caller that names a workspace on
-    /// another machine gets the fallback, because the machine rule above is what
-    /// keeps a workspace from claiming a box it isn't on.
+    /// `preferring` names the workspace the caller is showing, for a caller whose
+    /// scope isn't the sidebar's — the phone names the workspace on its screen.
     func addSSHSession(host: String, preferring preferred: Workspace.ID? = nil) {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
-        // Named for what it is, not for the box — the workspace already says which
-        // machine. The distinction matters beside the numbered rows: an "SSH Shell"
-        // dies with the connection, while a durable termiod session survives a detach.
-        var session = Session(title: "SSH Shell", agent: .terminal)
+        let workspaceID = sshShellWorkspace(for: host, preferring: preferred)
+        // Named for the box, unless the band above the column already names it —
+        // which is exactly when the row drops its device mark too (see
+        // `bandNamesTheMachine`). Filed among a workspace's own work, `SSH Shell`
+        // three rows running says nothing about which three machines; under a
+        // workspace Termio named after one, the host would be `ukvps ▸ ukvps`, and
+        // what the row has left to say is what kind of session it is — an `ssh`
+        // shell dies with the connection, a durable termiod row survives a detach.
+        let landing = workspaces.first { $0.id == workspaceID }
+        let bandNamesTheMachine =
+            landing?.isAutoCreated == true && landing?.isOn(alias: host, device: nil) == true
+        var session = Session(title: bandNamesTheMachine ? "SSH Shell" : host, agent: .terminal)
         // A name, not a placeholder: it is what makes an `ssh` shell legible next to
         // the durable rows, and nothing better is waiting behind it — the cwd a
         // loose terminal falls back to reports a directory on the far box, which is
@@ -436,12 +440,37 @@ extension TermioStore {
         session.givenTitle = session.title
         session.sshHost = host
 
-        let workspaceID = preferred.flatMap { id in
-            workspaces.first { $0.id == id && $0.isOn(alias: host, device: nil) }?.id
-        } ?? deviceWorkspace(for: host)
         guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         workspaces[index].terminals.append(session)
         selectedSessionID = session.id
+    }
+
+    /// Where a plain `ssh` shell is filed: the workspace already on screen — the
+    /// sidebar's scope, or the one `preferred` names for a caller with a scope of
+    /// its own.
+    ///
+    /// Not the machine's own workspace, and nothing is created here. An `ssh`
+    /// shell is a *local* PTY running `ssh <host>`; the far box owes it no
+    /// workspace, and minting one moved the sidebar out from under someone who
+    /// only asked for a terminal — a scope switch as the side effect of opening a
+    /// shell, into a workspace they had never seen. The row wears its own machine
+    /// mark wherever it is filed, which is what says where it runs; a durable
+    /// termiod session is the one that really lives on the box, and it still files
+    /// by machine (`createRemoteTerminalSession`).
+    ///
+    /// The exception is a workspace Termio named after a *different* box: the band
+    /// above that column names the machine and its rows drop their marks in
+    /// exchange (see `bandNamesTheMachine`), so a shell to another host filed there
+    /// would read as one on that one.
+    private func sshShellWorkspace(
+        for host: String, preferring preferred: Workspace.ID? = nil
+    ) -> Workspace.ID {
+        let target = preferred.flatMap { id in workspaces.first { $0.id == id } } ?? currentWorkspace
+        guard target.isAutoCreated == true,
+              !target.device.isThisMac,
+              !target.isOn(alias: host, device: nil)
+        else { return target.id }
+        return deviceWorkspace(for: host)
     }
 
     /// Opens a terminal running `ssh-copy-id` against `host`, installing
@@ -457,7 +486,10 @@ extension TermioStore {
         session.sshHost = host
         session.sshKeyToInstall = publicKey
 
-        let workspaceID = deviceWorkspace(for: host)
+        // Filed like the `ssh` shell it is: this one runs `ssh-copy-id` here and
+        // is gone as soon as the key is in place, so it has even less business
+        // conjuring a workspace for the machine it is reaching.
+        let workspaceID = sshShellWorkspace(for: host)
         guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
         workspaces[index].terminals.append(session)
         selectedSessionID = session.id

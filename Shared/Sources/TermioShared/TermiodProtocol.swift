@@ -30,9 +30,9 @@ public enum Termiod {
     /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
     /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
     /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
-    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates, which need a channel that outlives one request |
+    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates. The channel that outlives a request now exists (`TermiodControlPool.swift`); what is still missing is a tree that applies deltas rather than re-listing |
     /// | `fs_watch`   | no      | ditto |
-    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on its own control channel (`TermiodFiles.swift`), never an attachment |
+    /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on the device's pooled control channel (`TermiodFiles.swift`), never an attachment |
     /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
     /// | `git`        | no      | ditto |
     ///
@@ -260,10 +260,12 @@ public enum Termiod {
     /// it to that layout; there is no partial credit on a wire format.
     public static func decodeFileChunk(
         _ payload: Data
-    ) throws -> (offset: UInt64, last: Bool, data: Data) {
+    ) throws -> (request: UInt64, offset: UInt64, last: Bool, data: Data) {
         let headerSize = 17
         guard payload.count >= headerSize else { throw TermiodClientError.malformedFrame }
         let bytes = [UInt8](payload)
+        var request: UInt64 = 0
+        for index in 0 ..< 8 { request = request << 8 | UInt64(bytes[index]) }
         var offset: UInt64 = 0
         for index in 8 ..< 16 { offset = offset << 8 | UInt64(bytes[index]) }
         let last: Bool
@@ -272,7 +274,24 @@ public enum Termiod {
         case 1: last = true
         default: throw TermiodClientError.malformedFrame
         }
-        return (offset, last, payload.dropFirst(headerSize))
+        return (request, offset, last, payload.dropFirst(headerSize))
+    }
+
+    /// The `re` a reply is addressed to, read without decoding the reply itself.
+    ///
+    /// Every response the daemon sends echoes the `seq` of the request that
+    /// caused it (termiod/src/protocol.rs — `re` on `FsListed`, `FsFile`,
+    /// `FsSearched`, `error`, and the rest). On a channel carrying one request
+    /// at a time that field is redundant, which is why nothing read it until
+    /// now; on a channel carrying several it is the only thing that says whose
+    /// answer just arrived. Split out from `decodeControl` so demultiplexing
+    /// costs one small decode and no call site has to change shape.
+    ///
+    /// `nil` for a frame that answers nobody — `hello_ok`, a broadcast event,
+    /// or a daemon too old to stamp its replies.
+    public static func responseID(of payload: Data) -> UInt64? {
+        struct ResponseTag: Decodable { let re: UInt64? }
+        return try? JSONDecoder().decode(ResponseTag.self, from: payload).re
     }
 
     /// `U` payload: id_len u8, upload id, offset u64 big-endian, then bytes —
@@ -457,6 +476,27 @@ public enum Termiod {
         }
     }
 
+    /// Stops an in-flight cancellable request on the same channel, naming it by
+    /// the `seq` it was sent with (§C.12 — `Control::Cancel` in
+    /// termiod/src/protocol.rs). Idempotent: cancelling something that already
+    /// finished is `ok`, not an error.
+    ///
+    /// Only a multiplexed channel can send this. On a channel carrying one
+    /// request at a time the caller is blocked reading the very descriptor it
+    /// would have to write to, so the only way to stop a search was to hang up —
+    /// which is what the host's `out.closed()` arm exists to notice. A pooled
+    /// channel does not hang up, so it has to say so out loud instead.
+    public struct CancelOperation: Encodable, Sendable {
+        public let op = "cancel"
+        public let request: UInt64
+        public let seq: UInt64
+
+        public init(request: UInt64, seq: UInt64) {
+            self.request = request
+            self.seq = seq
+        }
+    }
+
     /// `limit` is a total across all files, which is what bounds a one-letter
     /// query in a monorepo — the host stops streaming there and says so.
     public struct FsSearchOperation: Encodable, Sendable {
@@ -597,16 +637,43 @@ public enum Termiod {
     }
 
     /// One batch of `fs.search` hits, addressed to the connection that asked.
-    /// `request` echoes the `fs_search` seq; a channel carrying a single search
-    /// can ignore it, and this client's does.
+    /// `request` echoes the `fs_search` seq — the only routing a streamed reply
+    /// has, since a batch of hits names no session and a pooled channel may be
+    /// carrying a listing and a read alongside the grep.
     public struct SearchResultsPayload: Decodable, Sendable {
+        public let request: UInt64
         public let matches: [SearchMatchPayload]
     }
 
     public struct SearchMatchPayload: Decodable, Sendable {
         public let path: String
         public let line: UInt64
+        /// The matching line, or a window of it when the line is long.
         public let text: String
+        /// Byte offset of `text` inside the real line — non-zero when the host
+        /// windowed a long line around its first hit.
+        public let textOffset: UInt64
+        /// Byte ranges inside `text` where the query hit, from the host's own
+        /// matcher. Empty from a host too old to report them, which a client
+        /// must read as "unknown", never as "no matches on this line".
+        public let spans: [[UInt32]]
+        public let before: [String]
+        public let after: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case path, line, text, textOffset, spans, before, after
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            path = try container.decode(String.self, forKey: .path)
+            line = try container.decode(UInt64.self, forKey: .line)
+            text = try container.decode(String.self, forKey: .text)
+            textOffset = try container.decodeIfPresent(UInt64.self, forKey: .textOffset) ?? 0
+            spans = try container.decodeIfPresent([[UInt32]].self, forKey: .spans) ?? []
+            before = try container.decodeIfPresent([String].self, forKey: .before) ?? []
+            after = try container.decodeIfPresent([String].self, forKey: .after) ?? []
+        }
     }
 
     /// The terminal reply to `fs_search`: how many hits streamed, and why the
@@ -1054,6 +1121,78 @@ public enum Termiod {
         }
     }
 
+    // MARK: - The agent plane
+
+    /// One row of an install: what was attempted, where it landed, and whether
+    /// it took. Every agent the request selected appears, refusals included —
+    /// a silent no-op is what "no hooks on the VPS" looked like.
+    public struct AgentInstallResult: Decodable, Sendable, Hashable {
+        /// The agent's id, so a client can key its own roster off the reply.
+        public let id: String
+        /// The agent's display name, for the sentence a Settings row shows.
+        public let name: String
+        /// `hooks` or `skill`.
+        public let kind: String
+        /// Where it landed on the daemon's box, resolved — the answer the client
+        /// could not work out for itself.
+        public let path: String
+        /// `installed`, `failed`, or `skipped`.
+        public let status: String
+        /// Why, when it is not `installed`.
+        public let detail: String?
+
+        public var isInstalled: Bool { status == "installed" }
+
+        public init(id: String, name: String, kind: String, path: String,
+                    status: String, detail: String?) {
+            self.id = id
+            self.name = name
+            self.kind = kind
+            self.path = path
+            self.status = status
+            self.detail = detail
+        }
+    }
+
+    public struct AgentsInstalledPayload: Decodable, Sendable {
+        public let results: [AgentInstallResult]
+    }
+
+    /// Whether one agent's CLI is on the daemon's box.
+    public struct AgentPresence: Decodable, Sendable, Hashable {
+        public let id: String
+        public let command: String?
+        /// `true` also when the probe could not look — a machine that cannot
+        /// answer must not read as a machine with nothing installed.
+        public let present: Bool
+    }
+
+    public struct AgentsProbedPayload: Decodable, Sendable {
+        public let agents: [AgentPresence]
+    }
+
+    /// What to do with one half of the integration — hooks, or the skill.
+    ///
+    /// Per half, not one flag for both, because the two Integration switches are
+    /// independent, and the device pane's "Reinstall hooks" must not touch the
+    /// skill. One message still covers the whole roster when they disagree.
+    public enum AgentHalfAction: String, Encodable, Sendable {
+        case install
+        case remove
+        /// Not this caller's business; leave whatever is there.
+        case leave
+    }
+
+    /// What an installed hook runs to report status. Only the client knows
+    /// whether an app is listening and where its CLI copy is, so it says.
+    public enum AgentHookReporter: Sendable {
+        /// `termio agent report <state>` into this app's control socket.
+        case termioCommandLineTool(path: String)
+        /// `termiod set-status "$TERMIOD_SESSION_ID" <state>` into the daemon
+        /// that owns the PTY. A box has no `termio` and no app to report to.
+        case termiodDaemon
+    }
+
     /// Decoded control frames the client reacts to. Anything else — unknown
     /// ops, responses this slice doesn't consume — becomes `.unknown` and is
     /// ignored, matching the protocol's additive-evolution rule.
@@ -1082,6 +1221,10 @@ public enum Termiod {
         /// handler — a client that only listened to the broadcast would still be
         /// correct, and one that only listened to this would not.
         case resizeClaim(WriterChangedPayload)
+        /// The agent plane's two replies. The daemon owns the agent config files
+        /// on its own box, so the client asks and renders rather than writing.
+        case agentsInstalled(AgentsInstalledPayload)
+        case agentsProbed(AgentsProbedPayload)
         case error(ErrorPayload)
         case unknown(String)
     }
@@ -1123,6 +1266,10 @@ public enum Termiod {
             return .fsMatched(try decoder.decode(FsMatchedPayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
+        case "agents_installed":
+            return .agentsInstalled(try decoder.decode(AgentsInstalledPayload.self, from: payload))
+        case "agents_probed":
+            return .agentsProbed(try decoder.decode(AgentsProbedPayload.self, from: payload))
         case "error":
             return .error(try decoder.decode(ErrorPayload.self, from: payload))
         default:
@@ -1169,6 +1316,67 @@ public enum Termiod {
             caps: caps,
             client: client
         ))
+    }
+
+    /// Install (or remove) termio's agent integration on the daemon's box.
+    ///
+    /// One message for the whole roster. The client states preferences — which
+    /// agents are on the user's list, whether each switch is on, what a hook
+    /// should invoke — and the daemon works out where every agent keeps its
+    /// config, whether its CLI is even there, and what to merge.
+    public static func installAgentsPayload(
+        agents: [String]?,
+        hooks: AgentHalfAction,
+        skills: AgentHalfAction,
+        reporter: AgentHookReporter,
+        hookVersion: String
+    ) throws -> Data {
+        try encodeControl(InstallAgentsOperation(
+            op: "install_agents",
+            agents: agents,
+            hooks: hooks,
+            skills: skills,
+            reporter: InstallAgentsOperation.Reporter(reporter),
+            hookVersion: hookVersion,
+            seq: 1
+        ))
+    }
+
+    public static func probeAgentsPayload(agents: [String]?) throws -> Data {
+        try encodeControl(ProbeAgentsOperation(op: "probe_agents", agents: agents, seq: 1))
+    }
+
+    private struct InstallAgentsOperation: Encodable {
+        let op: String
+        let agents: [String]?
+        let hooks: AgentHalfAction
+        let skills: AgentHalfAction
+        let reporter: Reporter
+        let hookVersion: String
+        let seq: Int
+
+        /// Externally tagged the way the daemon spells it: `{kind, …}`.
+        struct Reporter: Encodable {
+            let kind: String
+            let path: String?
+
+            init(_ reporter: AgentHookReporter) {
+                switch reporter {
+                case .termioCommandLineTool(let path):
+                    kind = "termio_cli"
+                    self.path = path
+                case .termiodDaemon:
+                    kind = "termiod_daemon"
+                    path = nil
+                }
+            }
+        }
+    }
+
+    private struct ProbeAgentsOperation: Encodable {
+        let op: String
+        let agents: [String]?
+        let seq: Int
     }
 
     public static func attachPayload(

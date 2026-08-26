@@ -9,6 +9,12 @@ import XCTest
 /// manifest the two read differently is a bug that shows up as "my agent is in
 /// the list but never gets hooks", with nothing on screen to say why.
 ///
+/// **This is a permanent contract, not migration scaffolding.** Swift did not
+/// stop parsing manifests when the installers moved into the daemon — it
+/// stopped *writing* from them. This side still renders the roster, so it still
+/// needs every name, icon and command; the daemon needs every path, dialect and
+/// event. Two live parsers, one format, for as long as both exist.
+///
 /// Both parsers read the same manifests and both are asserted against one golden
 /// record, `Tests/Fixtures/agent-manifests/expected.json`. Only the Rust side
 /// regenerates it (`UPDATE_AGENT_MANIFEST_FIXTURE=1 cargo test agent_manifest_fixture`);

@@ -2,49 +2,36 @@ import Foundation
 import TermioShared
 
 extension Termiod {
-    /// One `fs_list` round trip for a single directory. Blocking; the lister
-    /// serialises the calls so a reply always belongs to the request in flight.
+    /// The account's home directory on the device, from the handshake the pooled
+    /// channel already performed. Free once a channel to that machine is open,
+    /// and one connection's worth otherwise — which is what a picker needs
+    /// before it can show the user anywhere at all.
     ///
-    /// Frames that are not this reply are skipped rather than treated as an
-    /// error: a control channel may carry anything the daemon chooses to say,
-    /// and a listing must not fail because something else arrived first.
-    static func requestListing(_ transport: Transport, root: String) throws -> PathListingPayload {
-        let operation = FsListOperation(root: root, paths: [root], seq: 1)
-        try writeFrame(
-            transport.writeDescriptor, kind: .control, payload: encodeControl(operation))
-        while true {
-            let frame = try readFrame(transport.readDescriptor)
-            guard frame.kind == .control else { continue }
-            switch try decodeControl(frame.payload) {
-            case .fsListed(let payload):
-                guard let listing = payload.listings.first else {
-                    throw TermiodClientError.requestFailed(
-                        localized("The machine answered with no listing for that folder."))
-                }
-                return listing
-            case .error(let failure):
-                throw TermiodClientError.requestFailed(failure.message)
-            default:
-                continue
-            }
+    /// Blocking; call it off the main thread.
+    static func deviceHome(route: TermiodRoute, caps: [String] = ["files"]) throws -> String {
+        let channel = try ControlPool.channel(route: route, caps: caps)
+        guard channel.capabilities.contains("files") else {
+            throw DeviceFileError.unsupported
         }
+        return channel.home
     }
 }
 
-/// Lists directories on another machine, one directory at a time, over a
-/// control channel it holds open for as long as a picker needs it.
+/// Lists directories on another machine for a path field — the project picker's
+/// half of the files plane (§C.12, capability `files`).
 ///
-/// This is the request plane's read half (§C.12, capability `files`) and it is
-/// deliberately *not* a file browser: a path field asks for the directory the
+/// Deliberately *not* a file browser: a path field asks for the directory the
 /// user is currently typing inside, and the answer is one `fs.list`. Nothing
 /// walks a tree, so a machine with a huge checkout costs the same as an empty
 /// one.
 ///
-/// The channel is held rather than reopened per keystroke because opening one
-/// means `ssh <host> termiod stdio` — a whole SSH round trip, which would land
-/// on every `/` the user types. It rides its own channel and never a session's
-/// attachment, for the same reason transfers do: byte delivery must not queue
-/// behind a directory listing (anti-100× invariant).
+/// This used to hold a private control channel open, because opening one per
+/// keystroke means `ssh <host> termiod stdio` and a whole SSH round trip on
+/// every `/` the user types. That reasoning was right and is now general:
+/// `ControlPool` holds one channel per device for the tree, the file reader, the
+/// search and this, so a picker opened over a checkout that is already on screen
+/// pays nothing at all. What is left here is the part that was ever specific to
+/// a picker — which entries it keeps and the order it reads them in.
 final class TermiodDirectoryLister: @unchecked Sendable {
     /// A directory that can be descended into, which is all a project picker
     /// offers — a file is never a project root.
@@ -59,37 +46,30 @@ final class TermiodDirectoryLister: @unchecked Sendable {
     }
 
     private let route: TermiodRoute
-    /// Serialises the blocking frame reads: one request is in flight at a time,
-    /// so a reply can never be claimed by the wrong caller.
+    /// Serialises the requests. The channel underneath multiplexes happily, but
+    /// a path field has exactly one question outstanding — the directory the
+    /// caret is in — so overlapping them would only race answers onto the same
+    /// field.
     private let queue = DispatchQueue(label: "sh.termio.termiod.directory-lister")
-    private var transport: Termiod.Transport?
-    private var handshake: Termiod.Handshake?
 
     init(route: TermiodRoute) {
         self.route = route
     }
 
-    /// Connects and reports the home directory to start from. Called once, off
-    /// the main thread; every later `list` reuses the channel it opened.
+    /// Reports the home directory to start from, opening the device's channel if
+    /// this is the first thing to reach it. Called once, off the main thread.
     func connect(completion: @escaping @Sendable (Result<String, Error>) -> Void) {
-        queue.async { [self] in
-            do {
-                let transport = try Termiod.Transport.open(route)
-                let handshake = try Termiod.performHello(
-                    transport, role: "control", caps: ["files"])
-                guard handshake.capabilities.contains("files") else {
-                    transport.close()
+        queue.async { [route] in
+            completion(Result {
+                do {
+                    return try Termiod.deviceHome(route: route)
+                } catch DeviceFileError.unsupported {
                     // An older daemon that never learned the file plane. The
                     // picker still opens; it just cannot complete a path.
                     throw Failure.refused(
                         localized("This machine’s termiod is too old to list folders."))
                 }
-                self.transport = transport
-                self.handshake = handshake
-                completion(.success(handshake.home))
-            } catch {
-                completion(.failure(error))
-            }
+            })
         }
     }
 
@@ -102,18 +82,16 @@ final class TermiodDirectoryLister: @unchecked Sendable {
     /// the user retype the whole path at any moment — anchoring anywhere else
     /// would refuse a sibling directory the user can plainly `cd` to.
     func list(_ path: String, completion: @escaping @Sendable (Result<[Entry], Error>) -> Void) {
-        queue.async { [self] in
-            guard let transport else {
-                completion(.failure(TermiodClientError.connectionClosed))
-                return
-            }
-            do {
-                let listing = try Termiod.requestListing(transport, root: path)
-                if let message = listing.error {
-                    completion(.failure(Failure.refused(message)))
-                    return
+        queue.async { [route] in
+            completion(Result {
+                let listings = try Termiod.listDirectories(
+                    route: route, root: path, paths: [path])
+                guard let listing = listings.first else {
+                    throw Failure.refused(
+                        localized("The machine answered with no listing for that folder."))
                 }
-                let directories = listing.entries
+                if let message = listing.error { throw Failure.refused(message) }
+                return listing.entries
                     .filter(\.isDirectory)
                     .map { Entry(name: $0.name) }
                     .sorted { left, right in
@@ -122,22 +100,7 @@ final class TermiodDirectoryLister: @unchecked Sendable {
                         if leftHidden != rightHidden { return rightHidden }
                         return left.name.localizedStandardCompare(right.name) == .orderedAscending
                     }
-                completion(.success(directories))
-            } catch {
-                // A lost pipe must not leave a dead transport behind answering
-                // every later keystroke with the same corpse.
-                if case TermiodClientError.connectionClosed = error { close() }
-                completion(.failure(error))
-            }
-        }
-    }
-
-    /// Drops the channel. Safe to call more than once, and from any thread.
-    func close() {
-        queue.async { [self] in
-            transport?.close()
-            transport = nil
-            handshake = nil
+            })
         }
     }
 }

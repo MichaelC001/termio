@@ -272,7 +272,6 @@ final class RemoteFolderPicker: NSObject {
         // Re-entrant by design: closing the window is one of the ways this is
         // reached, and closing it again from in here would be the second.
         guard completion != nil else { return }
-        lister.close()
         if let window {
             if let parent = window.sheetParent {
                 parent.endSheet(window)

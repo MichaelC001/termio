@@ -461,4 +461,56 @@ final class TermiodEventTests: XCTestCase {
         XCTAssertNoThrow(
             try Termiod.waitForReadable(pair[0], seconds: 5, operation: "fs.search"))
     }
+
+    // MARK: - Routing replies on a shared channel
+
+    /// `re` is what a pooled channel demultiplexes on. It was always on the wire
+    /// and nothing read it, so this is the field most likely to be quietly
+    /// dropped by a codec change — and dropping it does not fail a build, it
+    /// hands one caller another caller's answer.
+    func testAReplyNamesTheRequestItAnswers() throws {
+        guard case .fsListed = try control(#"{"op":"fs_listed","seq":0,"listings":[],"re":7}"#)
+        else { return XCTFail("expected fs_listed") }
+        XCTAssertEqual(
+            Termiod.responseID(of: Data(#"{"op":"fs_listed","seq":0,"listings":[],"re":7}"#.utf8)),
+            7)
+        XCTAssertEqual(
+            Termiod.responseID(of: Data(#"{"op":"error","code":"denied","message":"x","re":9}"#.utf8)),
+            9)
+    }
+
+    /// A reply that answers nobody must route nowhere rather than to request 0.
+    /// `hello_ok` is the real case: it precedes every id there is.
+    func testAReplyThatAnswersNobodyHasNoRequestID() {
+        XCTAssertNil(Termiod.responseID(of: Data(
+            #"{"op":"hello_ok","proto":1,"caps":[],"host_id":"h","host":"t","client_id":"c"}"#.utf8)))
+        XCTAssertNil(Termiod.responseID(of: Data(#"{"ev":"ready","session":"s"}"#.utf8)))
+    }
+
+    /// An `F` chunk carries its request id in the binary header, not in JSON, so
+    /// it is routed by a different reader than every other frame — and a file
+    /// delivered to the wrong request is a corrupted preview, not an error.
+    func testAFileChunkCarriesTheRequestItBelongsTo() throws {
+        var payload = Data()
+        payload.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 42]) // re
+        payload.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 8]) // offset
+        payload.append(1) // last
+        payload.append(contentsOf: Array("hello".utf8))
+
+        let chunk = try Termiod.decodeFileChunk(payload)
+        XCTAssertEqual(chunk.request, 42)
+        XCTAssertEqual(chunk.offset, 8)
+        XCTAssertTrue(chunk.last)
+        XCTAssertEqual(chunk.data, Data("hello".utf8))
+    }
+
+    /// A batch of search hits names no session, so `request` is its only route.
+    /// A grep sharing a channel with a folder expand depends on it entirely.
+    func testASearchBatchNamesTheSearchItBelongsTo() throws {
+        guard case .searchResults(let payload) = try event(
+            #"{"ev":"search_results","request":3,"matches":[{"path":"a.txt","line":1,"text":"hi"}]}"#)
+        else { return XCTFail("expected search_results") }
+        XCTAssertEqual(payload.request, 3)
+        XCTAssertEqual(payload.matches.map(\.path), ["a.txt"])
+    }
 }

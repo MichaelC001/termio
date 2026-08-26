@@ -8,6 +8,13 @@
 //! user experiences as "my agent shows up in the list but never gets hooks",
 //! and it is silent — so it has to fail a build instead.
 //!
+//! **This is a permanent contract, not migration scaffolding.** Swift did not
+//! stop parsing manifests when the installers moved to the daemon in Stage 4 —
+//! it stopped *writing* from them. The app still renders the agent roster, so it
+//! still needs every name, icon and command in these files, and the daemon needs
+//! every path, dialect and event. Two live parsers, one format, for as long as
+//! both exist. Do not delete this when the migration is forgotten.
+//!
 //! Regenerate the golden from **this** side:
 //!
 //! ```sh

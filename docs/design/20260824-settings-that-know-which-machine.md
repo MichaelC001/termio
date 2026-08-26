@@ -3,7 +3,7 @@ title: Settings that know which machine they mean
 status: draft
 type: rfc
 created: 2026-08-24
-updated: 2026-08-25
+updated: 2026-08-26
 related:
   - 20260814-remote-to-device.md
   - 20260814-remote-to-device.decisions.md
@@ -105,9 +105,12 @@ scoped action names its machine.**
 
 **Note the shape the code is now in.** `AgentDetailPane` is a pushed per-agent
 pane holding the enable switch, command override, install link and bypass switch.
-The obvious wrong turn is to add a device picker *there*; D1 says the command
-override is a machine value and moves to the machine's pane, leaving the agent
-pane purely preferences.
+The obvious wrong turn is to add a device *picker* there — and it was taken, and
+undone. **D10 supersedes this paragraph's original answer**: the command override
+does not move to the machine's pane. It stays on the agent's pane as one row per
+machine, because the task it serves — get this agent running everywhere — walks the
+machines while holding the agent fixed, and a picker is the one shape that cannot
+show all of them at once.
 
 ### D2 — Resolve the tab-name collision first
 
@@ -254,6 +257,47 @@ already treats them so. The discoverability cost is paid elsewhere, not by a
 duplicate entry: **pairing is an action, and actions live in the command palette
 and the menu bar.** Settings holds the server's state.
 
+### D10 — Machines are rows, not a mode
+
+D1 says location in the UI is the scope, and left one gap: a page that reports a
+machine fact without naming the machine has a scope you cannot see. A picker was
+shipped for that gap (`DeviceScopeBar`, `43b56ca`) and is retired here. It answered
+the visibility complaint by introducing a worse problem — a **mode**.
+
+A picker changes what the rest of the page means, so the machine has to be
+remembered rather than read, a mis-remembered one quietly configures the wrong box,
+and every page touching a machine needs its own copy of the control (the phone
+included). Worst of all it hides the fleet: a picker shows one machine at a time, so
+an agent installed here and missing on `devbox` reads as fine until you happen to
+switch to `devbox` — the exact question a tool for managing several machines exists
+to answer.
+
+> **Exactly one surface selects a machine — the Machines list. Everywhere else,
+> machines are rows.**
+
+Which page holds which axis follows from its subject:
+
+| Page | Subject | Machine is |
+| --- | --- | --- |
+| A machine's pane | one machine | the page (chosen by navigation) |
+| Agents ▸ an agent | one agent | a row per machine, each with its own path |
+| Agents roster | the agent list | a summary — `Not installed on devbox` |
+| Agents ▸ Integration | a preference | not chosen at all: it installs on **all** |
+
+The property that lets this be the default rather than an advanced mode: **a roster
+of one renders exactly as the page did before there was more than one machine** — no
+list, no labels, no bar. That is what a picker cannot do; a picker with one option
+still costs a row and still asks a question with one answer.
+
+Two consequences worth stating:
+
+- **`AgentReadiness.passive` becomes load-bearing.** The roster now asks N machines
+  instead of one, which is only affordable because passive means a cached `PATH`
+  probe locally and a device-file read remotely. If any of it ever reaches the
+  network, this has to go back to naming one machine.
+- **The iOS companion gets no picker.** It does not author machine configuration;
+  if it surfaces readiness at all it shows the same list, read-only.
+
 ### Reliability, failure modes and corner cases
 
 - **Unreachable machine.** Renders "can't check", never "not installed" (D4). A
@@ -311,10 +355,12 @@ and nothing else here rests on it.
 1. D2 settled; a Machines surface exists.
 2. `SettingsStore` resolves a device section; `~/.termio/devices/<host_id>.json`
    is written, read as a cache, and safe to delete.
-3. Agents shows readiness for the current workspace's device in all **three**
-   states, and holds no editable machine value.
+3. Agents shows readiness in all **three** states, summarised across the roster,
+   and every machine value it holds is a row naming its machine (D10). No control
+   anywhere selects a machine except the Machines list.
 4. A machine's pane installs hooks and skill on **that** machine — the first
-   caller to pass a target to `AgentConfigStore`.
+   caller to pass a target to `AgentConfigStore` — and Agents ▸ Integration
+   installs on every machine without asking which.
 5. General no longer contains a machine operation.
 6. Mobile's contents render as This Mac's Serving section; "Pair a phone…" is
    reachable from the command palette.

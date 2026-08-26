@@ -299,7 +299,6 @@ pub async fn install_agents(
     request: crate::agent::install::InstallRequest,
 ) -> Result<Vec<crate::agent::install::InstallResult>> {
     let control = Control::InstallAgents {
-        enabled: request.enabled,
         agents: request.agents,
         hooks: request.hooks,
         skills: request.skills,

@@ -196,8 +196,12 @@
 	<string>Can’t Search</string>
 	<key>Can’t browse %@</key>
 	<string>Can’t browse %@</string>
+	<key>Can’t check</key>
+	<string>Can’t check</string>
 	<key>Can’t check on %@</key>
 	<string>Can’t check on %@</string>
+	<key>Can’t check on %lld devices</key>
+	<string>Can’t check on %lld devices</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
@@ -310,8 +314,6 @@
 	<string>Connect</string>
 	<key>Connect GitHub</key>
 	<string>Connect GitHub</string>
-	<key>Connect iPhone</key>
-	<string>Connect iPhone</string>
 	<key>Connect to…</key>
 	<string>Connect to…</string>
 	<key>Connect your GitHub account to read this project’s issues and pull requests here.</key>
@@ -420,8 +422,6 @@
 	<string>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
-	<key>Device</key>
-	<string>Device</string>
 	<key>Device Unavailable</key>
 	<string>Device Unavailable</string>
 	<key>Devices</key>
@@ -446,8 +446,10 @@
 	<string>Don’t Compare</string>
 	<key>Draft</key>
 	<string>Draft</string>
-	<key>Drag an agent onto another to reorder. Readiness is for the device above.</key>
-	<string>Drag an agent onto another to reorder. Readiness is for the device above.</string>
+	<key>Drag an agent onto another to reorder.</key>
+	<string>Drag an agent onto another to reorder.</string>
+	<key>Drag an agent onto another to reorder. Readiness covers every device you work on.</key>
+	<string>Drag an agent onto another to reorder. Readiness covers every device you work on.</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
 	<key>Duplicate to Themes Folder</key>
@@ -572,6 +574,10 @@
 	<string>Install %@</string>
 	<key>Install Page</key>
 	<string>Install Page</string>
+	<key>Install on %@</key>
+	<string>Install on %@</string>
+	<key>Install on All Devices</key>
+	<string>Install on All Devices</string>
 	<key>Installed</key>
 	<string>Installed</string>
 	<key>Installed by Termio</key>
@@ -662,8 +668,8 @@
 	<string>Merged</string>
 	<key>Minimize</key>
 	<string>Minimize</string>
-	<key>Mobile</key>
-	<string>Mobile</string>
+	<key>Missing on %lld devices</key>
+	<string>Missing on %lld devices</string>
 	<key>Mobile Access</key>
 	<string>Mobile Access</string>
 	<key>Move Down</key>
@@ -782,8 +788,8 @@
 	<string>No local usage yet — run `%@` once, then Refresh.</string>
 	<key>No matches</key>
 	<string>No matches</string>
-	<key>No network address found. Join a network, then reopen this tab.</key>
-	<string>No network address found. Join a network, then reopen this tab.</string>
+	<key>No network address found. Join a network, then reopen this pane.</key>
+	<string>No network address found. Join a network, then reopen this pane.</string>
 	<key>No open issues right now.</key>
 	<string>No open issues right now.</string>
 	<key>No open pull requests right now.</key>
@@ -810,6 +816,8 @@
 	<string>Not installed</string>
 	<key>Not installed on %@</key>
 	<string>Not installed on %@</string>
+	<key>Not installed on %@.</key>
+	<string>Not installed on %@.</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
 	<key>Nothing to Compare</key>
@@ -878,8 +886,10 @@
 	<string>Overwrite</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
-	<key>Pair your iPhone and remote access</key>
-	<string>Pair your iPhone and remote access</string>
+	<key>Pair a Phone…</key>
+	<string>Pair a Phone…</string>
+	<key>Pairing Token</key>
+	<string>Pairing Token</string>
 	<key>Panes</key>
 	<string>Panes</string>
 	<key>Password</key>
@@ -1016,10 +1026,10 @@
 	<string>Reveal in Finder</string>
 	<key>Revoke Access</key>
 	<string>Revoke Access</string>
-	<key>Rotate Pairing Token…</key>
-	<string>Rotate Pairing Token…</string>
 	<key>Rotate Token</key>
 	<string>Rotate Token</string>
+	<key>Rotate Token…</key>
+	<string>Rotate Token…</string>
 	<key>Rotate the pairing token?</key>
 	<string>Rotate the pairing token?</string>
 	<key>Row padding</key>
@@ -1076,6 +1086,8 @@
 	<string>Select a session to see its info.</string>
 	<key>Selection</key>
 	<string>Selection</string>
+	<key>Serving</key>
+	<string>Serving</string>
 	<key>Session</key>
 	<string>Session</string>
 	<key>Session control</key>
@@ -1270,6 +1282,10 @@
 	<string>This device sent a name the file tree can’t show.</string>
 	<key>This device’s termiod is too old to browse files.</key>
 	<string>This device’s termiod is too old to browse files.</string>
+	<key>This device’s termiod is too old to install agent integration.</key>
+	<string>This device’s termiod is too old to install agent integration.</string>
+	<key>This device’s termiod is too old to report its agents.</key>
+	<string>This device’s termiod is too old to report its agents.</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
 	<string>This diff is too large to show here — open the file on GitHub.</string>
 	<key>This file is binary — open it on GitHub to view.</key>
@@ -1354,8 +1370,12 @@
 	<string>WeChat group</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
-	<key>Whether you want these at all, and putting them on the selected device.</key>
-	<string>Whether you want these at all, and putting them on the selected device.</string>
+	<key>Where each device launches %@ from. Leave empty to use its default.</key>
+	<string>Where each device launches %@ from. Leave empty to use its default.</string>
+	<key>Whether you want these at all, and putting them on every device.</key>
+	<string>Whether you want these at all, and putting them on every device.</string>
+	<key>Whether you want these at all, and putting them on this Mac.</key>
+	<string>Whether you want these at all, and putting them on this Mac.</string>
 	<key>Window</key>
 	<string>Window</string>
 	<key>Working Directory</key>
@@ -1396,6 +1416,8 @@
 	<string>couldn’t launch %@: %@</string>
 	<key>current</key>
 	<string>current</string>
+	<key>devices</key>
+	<string>devices</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>e.g. JetBrains Mono</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>

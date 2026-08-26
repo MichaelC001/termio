@@ -1,12 +1,25 @@
 import CoreImage
 import SwiftUI
 
-/// Pairing page for the iPhone companion app: a QR code of the address the
-/// companion server is serving on this Mac. The phone scans it once (session
-/// list ▸ Mac pill ▸ Scan QR Code, or Settings ▸ Connectivity) and every
-/// project and session rides that one link — no typing ws:// URLs on a phone
-/// keyboard.
-struct MobileSettingsTab: View {
+/// What a machine serves to phones: the companion port, the pairing token, the
+/// QR carrying both, and the tunnel fronting them (RFC §D9).
+///
+/// This was a top-level **Mobile** tab, and every line of it was already a fact
+/// about *one machine* — this Mac's port, this Mac's token, the phones paired to
+/// this Mac. It only read as app-wide because this Mac is currently the only
+/// machine that serves anything, which `termiod serve --wss` ends. A tab whose
+/// scope is a single machine is the same lie the Agents tab told, so it moves to
+/// the place that already answers for one machine.
+///
+/// Unlike a command path, serving config is **not** comparable across machines —
+/// every box has its own port, its own token, its own QR — so this is the case
+/// where a drill-down is right and rows would be nonsense. It is the other half
+/// of the same rule: the machine's pane owns what is true of exactly one machine.
+///
+/// The QR being one level deeper is a real cost, paid the way §D9 says: pairing
+/// is an *action*, and it lives in the command palette ("Pair a phone…"), not as
+/// a duplicate settings entry.
+struct DeviceServingSection: View {
     /// The reachable addresses, refreshed on open: Wi-Fi/Ethernet IPv4s
     /// first (the proven path), the Bonjour `.local` name as a fallback that
     /// survives DHCP lease changes.
@@ -44,72 +57,61 @@ struct MobileSettingsTab: View {
         return false
     }
 
+    /// One section, matching the machine pane's other three. The four cards this
+    /// was as a tab do not survive the move: on a pane that already carries
+    /// Status, Reached by and Installed by Termio, a fifth and sixth card for one
+    /// switch apiece would read as four unrelated subjects rather than one. So
+    /// the two lone-control cards fold into rows with their sentence as subtext,
+    /// which is the shape every other row on this pane already has.
     var body: some View {
-        Form {
-            Section {
-                Toggle(localized("Mobile Access"), isOn: $mobile.isEnabled)
-            } footer: {
-                footnote(localized("Turn off to disconnect your iPhone; pairing is kept."))
+        Section {
+            Toggle(isOn: $mobile.isEnabled) {
+                SettingsLabel(
+                    title: localized("Mobile Access"),
+                    subtext: localized("Turn off to disconnect your iPhone; pairing is kept."),
+                    titleFont: .headline
+                )
             }
+            .toggleStyle(.switch)
 
             // Everything below only means anything while we're serving, so the
             // master switch reveals it — a dimmed, unscannable QR (and an
             // address nothing is listening on) is more misleading than absent.
             if mobile.isEnabled {
-                // One section, one job: connect a phone. The QR is the hero, so
-                // it leads; the controls that rewrite it (Tunnel, LAN address)
-                // sit as its immediate neighbours below — adjacent enough that
-                // there's no "the QR above…" indirection to hold in your head.
-                Section {
-                    if hosts.isEmpty, !tunnelRunning {
-                        footnote(localized("No network address found. Join a network, then reopen this tab."))
-                    } else {
-                        // QR + its URL are one unit ("scan this, or copy the same
-                        // thing") — kept in a single row so no divider splits them.
-                        scanBlock
-                    }
-
-                    // One precise control: where the companion is reachable —
-                    // LAN only, or fronted by a named tunnel.
-                    Picker(localized("Tunnel"), selection: Binding(
-                        get: { tunnel.provider },
-                        set: { tunnel.setProvider($0) }
-                    )) {
-                        ForEach(TunnelManager.Provider.allCases) { provider in
-                            Text(Self.pickerLabel(provider)).tag(provider)
-                        }
-                    }
-                    // The custom-relay editor: shown only when Custom is picked,
-                    // so the common third-party path stays uncluttered.
-                    if tunnel.provider == .custom { customTunnelEditor }
-                    if !onTunnel, hosts.count > 1 {
-                        Picker(localized("Address"), selection: $selectedHost) {
-                            ForEach(hosts, id: \.self) { host in
-                                Text(host).tag(host)
-                            }
-                        }
-                    }
-                    if onTunnel { statusRow }
-                } header: {
-                    SectionHeaderLabel(title: localized("Connect iPhone"))
-                } footer: {
-                    // Say plainly whose server the phone's traffic crosses, so
-                    // the "can I self-host the relay?" question is answered in
-                    // the app: the bundled providers all terminate on a third
-                    // party, Custom is one the user runs themselves.
-                    footnote(tunnelFootnote)
+                if hosts.isEmpty, !tunnelRunning {
+                    footnote(localized("No network address found. Join a network, then reopen this pane."))
+                } else {
+                    // QR + its URL are one unit ("scan this, or copy the same
+                    // thing") — kept in a single row so no divider splits them.
+                    scanBlock
                 }
 
-                // The QR is unscannable without the companion installed, so the
-                // one step that happens off this Mac gets its own card. The
-                // TestFlight icon does the explaining a sentence would: this
-                // link leaves for Apple's beta installer.
-                Section { betaRow }
+                // One precise control: where the companion is reachable —
+                // LAN only, or fronted by a named tunnel.
+                Picker(localized("Tunnel"), selection: Binding(
+                    get: { tunnel.provider },
+                    set: { tunnel.setProvider($0) }
+                )) {
+                    ForEach(TunnelManager.Provider.allCases) { provider in
+                        Text(Self.pickerLabel(provider)).tag(provider)
+                    }
+                }
+                // The custom-relay editor: shown only when Custom is picked,
+                // so the common third-party path stays uncluttered.
+                if tunnel.provider == .custom { customTunnelEditor }
+                if !onTunnel, hosts.count > 1 {
+                    Picker(localized("Address"), selection: $selectedHost) {
+                        ForEach(hosts, id: \.self) { host in
+                            Text(host).tag(host)
+                        }
+                    }
+                }
+                if onTunnel { statusRow }
 
-                Section {
+                LabeledContent {
                     // A rare, destructive maintenance action: it rests as a plain
                     // button and lets the confirmation dialog carry the red.
-                    Button(localized("Rotate Pairing Token…")) { confirmRotate = true }
+                    Button(localized("Rotate Token…")) { confirmRotate = true }
                         .confirmationDialog(
                             localized("Rotate the pairing token?"),
                             isPresented: $confirmRotate,
@@ -122,12 +124,29 @@ struct MobileSettingsTab: View {
                         } message: {
                             Text(localized("Every paired iPhone is signed out and must re-scan the new QR to reconnect."))
                         }
-                } footer: {
-                    footnote(localized("Issues a new token and revokes every paired iPhone."))
+                } label: {
+                    SettingsLabel(
+                        title: localized("Pairing Token"),
+                        subtext: localized("Issues a new token and revokes every paired iPhone."),
+                        titleFont: .headline
+                    )
                 }
+
+                // The QR is unscannable without the companion installed, so the
+                // one step that happens off this Mac stays on the pane. The
+                // TestFlight icon does the explaining a sentence would: this
+                // link leaves for Apple's beta installer.
+                betaRow
             }
+        } header: {
+            SectionHeaderLabel(title: localized("Serving"))
+        } footer: {
+            // Say plainly whose server the phone's traffic crosses, so the
+            // "can I self-host the relay?" question is answered in the app: the
+            // bundled providers all terminate on a third party, Custom is one
+            // the user runs themselves.
+            if mobile.isEnabled { footnote(tunnelFootnote) }
         }
-        .formStyle(.grouped)
         .onAppear {
             refreshHosts()
             let custom = CustomTunnel.current
