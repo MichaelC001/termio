@@ -1242,18 +1242,16 @@ extension TermioStore {
     /// uses. It lands in the `.terminals` funnel too, so it needs no project.
     /// Returns the new session's wire id and the `"terminal"` echo.
     ///
-    /// `workspaceID` is a preference here rather than a destination: an `ssh`
-    /// shell has to be filed under a workspace on the box it reaches, or that
-    /// workspace claims a machine it isn't on. It settles which of that box's
-    /// workspaces when there is more than one, and is ignored otherwise.
+    /// `workspaceID` is the workspace the phone is showing, and an `ssh` shell is
+    /// filed where the person asking for it already is (see `sshShellWorkspace`) —
+    /// so the row appears in the list they started from rather than in a workspace
+    /// they would have to go and find.
     func companionStartSSHSession(
         host: String, workspaceID: String?
     ) -> (sessionID: String, agentID: String)? {
         let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return nil }
-        let preferred = companionWorkspace(workspaceID)
-            .flatMap { $0.isOn(alias: host, device: nil) ? $0.id : nil }
-        addSSHSession(host: host, preferring: preferred)
+        addSSHSession(host: host, preferring: companionWorkspace(workspaceID)?.id)
         guard let sessionID = selectedSessionID?.uuidString else { return nil }
         return (sessionID, AgentPreset.terminal.wireName)
     }

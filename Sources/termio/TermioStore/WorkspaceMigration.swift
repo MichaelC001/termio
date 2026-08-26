@@ -223,15 +223,24 @@ enum WorkspaceMigration {
         //
         // A device the workspace already names counts as a claim in its own right:
         // its loose sessions were filed there because they run there, and nothing
-        // else records that. A loose shell records its own machine and nothing else
-        // does, so it is a claim exactly like a checkout's. Leaving it out let a
-        // workspace holding local shells and one remote checkout adopt the remote
-        // box — and on a one-workspace tree that left nowhere on this Mac for local
-        // work to go, which is the violation this pass exists to prevent.
+        // else records that. A durable loose session records its own machine and
+        // nothing else does, so it is a claim exactly like a checkout's. Leaving it
+        // out let a workspace holding local shells and one remote checkout adopt the
+        // remote box — and on a one-workspace tree that left nowhere on this Mac for
+        // local work to go, which is the violation this pass exists to prevent.
+        //
+        // A plain `ssh` shell (`sshHost`) claims nothing at all — neither the box
+        // it reaches nor the Mac its PTY runs on. It is filed wherever the user
+        // opened it (`sshShellWorkspace`), so counting it for the far box split the
+        // scope it was opened in on the next launch, and a workspace holding only
+        // those was adopted outright — renaming a local scope after a machine.
+        // Counting it for this Mac would be the same mistake from the other side:
+        // a box's workspace holding one would split off a phantom local half.
         func devices(of workspace: Workspace, claims: [WorkspaceDevice]) -> Set<WorkspaceDevice> {
             var devices = Set(claims)
             for session in workspace.looseSessions {
-                devices.insert(WorkspaceDevice(alias: session.termiodRemoteHost ?? session.sshHost))
+                guard session.termiodRemoteHost != nil || session.sshHost == nil else { continue }
+                devices.insert(WorkspaceDevice(alias: session.termiodRemoteHost))
             }
             if !workspace.device.isThisMac { devices.insert(workspace.device) }
             return devices
