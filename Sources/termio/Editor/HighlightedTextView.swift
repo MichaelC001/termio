@@ -316,6 +316,7 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.typingAttributes[.paragraphStyle] = style
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
+            saving.language = language
             saving.currentLineColor = currentLineColor
             saving.indentGuideColor = indentGuideColor
             saving.caretIndicatorColor = caretColor
@@ -482,6 +483,9 @@ final class SavingTextView: NSTextView {
     /// inserts its path). The gate is read at menu-open time; a plain shell shows no item.
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
+    /// The document's highlight grammar, mirrored from the representable — `EditorLineCommands`
+    /// keys ⌘/'s comment marker off it, and a grammar it has no marker for gets no ⌘/.
+    var language: String?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     /// Reassigned from every representable update, so only a genuine change may invalidate —
     /// an unconditional `didSet` forced a full-view repaint per keystroke, defeating the

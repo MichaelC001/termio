@@ -178,15 +178,23 @@ enum EditorIndentation {
         }
     }
 
-    private static func rewrite(
+    /// The full lines `selection` touches. A selection ending exactly at a line start belongs to
+    /// the line above it — without the step back, selecting whole lines would take in the
+    /// untouched line below them too.
+    static func lineBlock(for selection: NSRange, in text: NSString) -> NSRange {
+        let start = min(max(selection.location, 0), text.length)
+        let end = min(max(NSMaxRange(selection), start), text.length)
+        return text.lineRange(for: NSRange(location: start, length: end > start ? end - start - 1 : 0))
+    }
+
+    /// Every line the selection touches, rewritten by `transform` (which receives the line with
+    /// its terminator), as one replacement with the selection carried through it.
+    static func rewrite(
         _ selection: NSRange, in text: NSString, transform: (String) -> String
     ) -> BlockEdit {
         let start = min(max(selection.location, 0), text.length)
         let end = min(max(NSMaxRange(selection), start), text.length)
-        // A selection ending exactly at a line start belongs to the line above it — without the
-        // step back, selecting whole lines would indent the untouched line below them too.
-        let probe = NSRange(location: start, length: end > start ? end - start - 1 : 0)
-        let block = text.lineRange(for: probe)
+        let block = lineBlock(for: selection, in: text)
 
         var lines: [(range: NSRange, delta: Int)] = []
         var replacement = ""
@@ -271,7 +279,7 @@ extension SavingTextView {
     /// indent. The replacement carries `typingAttributes` because the buffer's line metrics live
     /// in them: plain text would lay out at the font's natural height and the block would jump
     /// until the highlighter caught up.
-    private func replaceAsOneEdit(_ range: NSRange, with replacement: String, selection: NSRange?) {
+    func replaceAsOneEdit(_ range: NSRange, with replacement: String, selection: NSRange?) {
         guard let textStorage, NSMaxRange(range) <= textStorage.length,
               shouldChangeText(in: range, replacementString: replacement) else { return }
         breakUndoCoalescing()
