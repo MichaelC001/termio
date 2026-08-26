@@ -71,6 +71,10 @@ struct WorkspaceSwitcherToolbarView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.controlActiveState) private var controlActive
 
+    /// Whether the pointer is over the name, or its menu is open. Reported by the
+    /// AppKit overlay below, which is the view the pointer actually lands on.
+    @State private var isHighlighted = false
+
     /// One fixed box, wide enough for an ordinary name and narrow enough to leave the
     /// sort and `+` buttons clear of NSToolbar's `»` overflow at the navigator's 240pt
     /// minimum (the toggle, this box and those two buttons come to roughly 220).
@@ -87,7 +91,21 @@ struct WorkspaceSwitcherToolbarView: View {
     /// Measuring the widest name and sizing to that keeps the box honest but needs
     /// text metrics, a font bridge and a re-measure on every rename — machinery in
     /// exchange for slack the flexible space beside it already absorbs.
-    private static let nameWidth: CGFloat = 104
+    ///
+    /// Ten points of it are the hover chip's inset now (`chipInset` below), so the
+    /// item as a whole is exactly as wide as it was and the `»` budget is untouched.
+    private static let nameWidth: CGFloat = 94
+
+    /// What the hover chip puts around the name. Real padding, not a background
+    /// drawn outside the label's bounds: the toolbar item is only as large as this
+    /// view asks to be, so anything painted past that edge is at the mercy of the
+    /// hosting view's clip — and a chip clipped on one side looks like a bug rather
+    /// than a control.
+    ///
+    /// The leading half is given back as negative padding on the whole box (see
+    /// `body`), so the name still starts at the x the toggle beside it was spaced
+    /// for. Only the trailing half is new width, and it comes out of `nameWidth`.
+    private static let chipInset: CGFloat = 5
 
     var body: some View {
         // The single-workspace collapse. Not "hidden but present": with one scope
@@ -115,11 +133,18 @@ struct WorkspaceSwitcherToolbarView: View {
                 // sit in the middle of the box and the label's left edge would move on each
                 // switch — the same shift by a different route.
                 .frame(width: Self.nameWidth, alignment: .leading)
-                // The overlay owns the press, the tooltip, and the accessibility of
-                // this control — it is the view under the pointer, so a `.help()` here
-                // would be shadowed by it and a SwiftUI accessibility element here would
-                // hide it. See `WorkspaceMenuHost`.
-                .overlay(WorkspaceMenuPopper(store: store))
+                .padding(.horizontal, Self.chipInset)
+                .padding(.vertical, 3)
+                .background(highlight)
+                // The inset given back, so the name keeps the x it had before there
+                // was a chip: the toggle's 6pt of spacing now holds 5pt of chip and
+                // 1pt of gap, and the two controls still read as one band.
+                .padding(.leading, -Self.chipInset)
+                // The overlay owns the press, the hover, the tooltip, and the
+                // accessibility of this control — it is the view under the pointer, so a
+                // `.help()` here would be shadowed by it and a SwiftUI accessibility
+                // element here would hide it. See `WorkspaceMenuHost`.
+                .overlay(WorkspaceMenuPopper(store: store, highlighted: $isHighlighted))
                 .accessibilityHidden(true)
         }
     }
@@ -130,6 +155,26 @@ struct WorkspaceSwitcherToolbarView: View {
     // one control band with them rather than a dimmer `.secondary` label.
     private var color: Color {
         controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
+    }
+
+    /// The chip under the name while the pointer is on it — the one thing that says
+    /// this word is a control. Without it the switcher was a label, and it was read
+    /// as one: people ran a whole session without finding out the workspace could be
+    /// changed from here.
+    ///
+    /// Present at every size, not conditional: it is the fill that changes, so the
+    /// box never resizes on hover and no name can be re-truncated by the pointer
+    /// arriving.
+    ///
+    /// A neutral fill of the foreground, the same rounded lift the sidebar's own hover
+    /// controls use, not an accent wash — this is a pointer cue, not a selection.
+    private var highlight: some View {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .fill(Color.primary.opacity(isHighlighted ? 0.10 : 0))
+            // Hover cues snap: they paint on the next frame and clear on the next
+            // frame. A fade here would still be arriving after the pointer had moved
+            // on, which is what reads as lag.
+            .animation(nil, value: isHighlighted)
     }
 }
 
@@ -144,6 +189,11 @@ struct WorkspaceSwitcherToolbarView: View {
 /// File ▸ Workspace for the same keystroke.
 private struct WorkspaceMenuPopper: NSViewRepresentable {
     let store: TermioStore
+    /// Driven by the host below: the pointer entering or leaving, and the menu
+    /// being up. Hover is answered here rather than by a SwiftUI `.onHover` on the
+    /// label, for the same reason the tooltip is — this view is the one the pointer
+    /// hits, so the label underneath never learns the pointer arrived.
+    @Binding var highlighted: Bool
 
     /// The name as well as the sentence, because the label above draws in a fixed box and
     /// a name too long for it is middle-truncated with nowhere else to be read in place.
@@ -154,12 +204,16 @@ private struct WorkspaceMenuPopper: NSViewRepresentable {
     func makeNSView(context: Context) -> WorkspaceMenuHost {
         let view = WorkspaceMenuHost()
         view.store = store
+        view.onHighlight = { highlighted = $0 }
         view.toolTip = Self.toolTip(for: store)
         return view
     }
 
     func updateNSView(_ nsView: WorkspaceMenuHost, context: Context) {
         nsView.store = store
+        // Rebound every update: the closure captures this struct's binding, and a
+        // stale one writes to a view tree that has been replaced.
+        nsView.onHighlight = { highlighted = $0 }
         // Set here too: the scope changes far more often than this view is made.
         nsView.toolTip = Self.toolTip(for: store)
     }
@@ -171,6 +225,11 @@ private struct WorkspaceMenuPopper: NSViewRepresentable {
 private final class WorkspaceMenuHost: NSView {
     weak var store: TermioStore?
 
+    /// Reports the pointer cue back to the view drawing it. See `highlight`.
+    var onHighlight: ((Bool) -> Void)?
+
+    private var hoverTracking: NSTrackingArea?
+
     /// Flipped so the anchor below reads in the direction the menu opens, rather
     /// than depending on whichever convention the hosting view happens to use.
     override var isFlipped: Bool { true }
@@ -181,6 +240,34 @@ private final class WorkspaceMenuHost: NSView {
 
     override func mouseDown(with event: NSEvent) {
         showMenu()
+    }
+
+    // MARK: - Hover
+    //
+    // Only while the app is active: hovering a background window highlights
+    // nothing on macOS, and the name is drawn in the disabled colour there anyway.
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHighlight?(true) }
+
+    override func mouseExited(with event: NSEvent) { onHighlight?(false) }
+
+    /// Whether the pointer is over this view right now, asked rather than
+    /// remembered — the tracking area is silent while a menu holds the event loop,
+    /// so this is how the cue is settled once the menu has gone.
+    private var isUnderPointer: Bool {
+        guard let location = window?.mouseLocationOutsideOfEventStream else { return false }
+        return bounds.contains(convert(location, from: nil))
     }
 
     // MARK: - Accessibility
@@ -224,9 +311,16 @@ private final class WorkspaceMenuHost: NSView {
         // put — New Terminal on it, Clone to it, File ▸ Connect to… for a box
         // never reached — never a place the window travels to.
 
+        // Held highlighted for as long as the menu is up, the way a pull-down stays
+        // pressed under its own menu. `popUp` runs a nested event loop and returns
+        // once the menu closes, so the cue is settled on the line after it — from
+        // where the pointer actually is, since no exit was delivered while the menu
+        // had the loop.
+        onHighlight?(true)
         // Anchored under the label the way a pull-down opens, rather than at the
         // pointer the way a context menu does.
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        onHighlight?(isUnderPointer)
     }
 
     private func addAction(_ title: String, to menu: NSMenu, _ action: Selector) {

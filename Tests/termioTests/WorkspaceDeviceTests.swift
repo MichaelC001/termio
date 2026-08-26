@@ -98,6 +98,69 @@ final class WorkspaceDeviceTests: XCTestCase {
         XCTAssertEqual(store.deviceWorkspace(for: "ukvps"), named.id)
         XCTAssertEqual(store.workspaces.count, 2)
     }
+
+    // MARK: - Where a plain `ssh` shell is filed
+
+    /// The bug this rule exists to remove: opening an `ssh` shell minted a
+    /// workspace for the box and moved the sidebar into it, so a user who asked
+    /// for a terminal got a scope they had never seen — and had to find the
+    /// switcher to get back.
+    func testAnSSHShellStaysInTheWorkspaceOnScreen() {
+        let home = Workspace(name: "Sessions", isAutoCreated: false)
+        let store = makeStore(workspaces: [home], current: home)
+
+        store.addSSHSession(host: "oracal")
+
+        XCTAssertEqual(store.workspaces.count, 1, "nothing is minted for the box it reaches")
+        XCTAssertEqual(store.currentWorkspaceID, home.id, "and the scope does not move")
+        XCTAssertEqual(store.workspaces[0].terminals.first?.sshHost, "oracal")
+        XCTAssertEqual(store.workspaces[0].terminals.first?.title, "oracal",
+                       "the row names the machine, since the band above it no longer does")
+    }
+
+    /// A workspace Termio named after a box speaks for that box — its band names
+    /// the machine and its rows drop their device marks in exchange — so a shell to
+    /// a *different* host cannot be filed there without reading as one on this one.
+    func testAnSSHShellToAnotherBoxAvoidsAMachinesOwnWorkspace() {
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps", isAutoCreated: true)
+        let store = makeStore(workspaces: [ukvps], current: ukvps)
+
+        store.addSSHSession(host: "oracal")
+
+        XCTAssertEqual(store.workspaces.count, 2)
+        XCTAssertTrue(ukvps.looseSessions.isEmpty)
+        let oracal = store.workspaces.first { $0.deviceAlias == "oracal" }
+        XCTAssertEqual(oracal?.terminals.first?.sshHost, "oracal")
+        XCTAssertEqual(oracal?.terminals.first?.title, "SSH Shell",
+                       "under a band that names the machine, the row says what kind it is")
+    }
+
+    /// The same machine's own workspace still takes its own shell, so `ssh` and a
+    /// durable termiod session on one box sit together when that is where the user
+    /// already is.
+    func testAMachinesOwnWorkspaceKeepsItsOwnSSHShell() {
+        let ukvps = Workspace(name: "ukvps", deviceAlias: "ukvps", isAutoCreated: true)
+        let store = makeStore(workspaces: [ukvps], current: ukvps)
+
+        store.addSSHSession(host: "ukvps")
+
+        XCTAssertEqual(store.workspaces.count, 1)
+        XCTAssertEqual(store.workspaces[0].terminals.first?.sshHost, "ukvps")
+    }
+
+    /// The phone names the workspace it is showing, and the shell lands there for
+    /// the same reason it lands in the sidebar's scope on the Mac.
+    func testTheWorkspaceACallerNamesTakesTheShell() {
+        let home = Workspace(name: "Sessions", isAutoCreated: false)
+        let side = Workspace(name: "Side", isAutoCreated: false)
+        let store = makeStore(workspaces: [home, side], current: home)
+
+        store.addSSHSession(host: "oracal", preferring: side.id)
+
+        XCTAssertEqual(store.workspaces.count, 2)
+        XCTAssertEqual(store.workspaces[1].terminals.first?.sshHost, "oracal")
+        XCTAssertTrue(store.workspaces[0].terminals.isEmpty)
+    }
 }
 
 /// Which workspaces Termio may sweep when they empty out.
@@ -216,5 +279,32 @@ final class WorkspaceDeviceRegressionTests: XCTestCase {
 
         let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: [scope], projects: [])
         XCTAssertEqual(workspaces.first { $0.id == scope.id }?.device, .ssh(alias: "ukvps"))
+    }
+
+    /// A plain `ssh` shell claims neither end. It is a local PTY holding a
+    /// connection open, filed wherever the user opened it, so counting it for the
+    /// far box handed the user's own scope to that machine on the next launch.
+    func testAPlainSSHShellLeavesItsWorkspaceWhereItIs() {
+        var shell = Session(title: "oracal")
+        shell.sshHost = "oracal"
+        let scope = Workspace(name: "Sessions", terminals: [shell], isAutoCreated: false)
+
+        let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: [scope], projects: [])
+        XCTAssertEqual(workspaces.count, 1, "and no half splits off for the box")
+        XCTAssertEqual(workspaces[0].device, .thisMac, "the scope the user named stays theirs")
+        XCTAssertEqual(workspaces[0].terminals.count, 1)
+    }
+
+    /// And the mirror: one filed under a box's own workspace must not split a
+    /// phantom local half off it either.
+    func testAPlainSSHShellLeavesAMachinesWorkspaceWhereItIs() {
+        var shell = Session(title: "SSH Shell")
+        shell.sshHost = "ukvps"
+        let scope = Workspace(
+            name: "ukvps", terminals: [shell], deviceAlias: "ukvps", isAutoCreated: true)
+
+        let (workspaces, _) = WorkspaceMigration.reconcile(workspaces: [scope], projects: [])
+        XCTAssertEqual(workspaces.count, 1)
+        XCTAssertEqual(workspaces[0].device, .ssh(alias: "ukvps"))
     }
 }

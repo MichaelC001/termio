@@ -796,8 +796,12 @@ extension TermioStore {
     }
 
     /// Creates the remote `.terminal` session under the machine it runs on — that
-    /// machine's fallback workspace, same as `addSSHSession` — tagging it with the
-    /// per-session remote host + cwd that `makeTermiodLink` threads through.
+    /// machine's fallback workspace — tagging it with the per-session remote host +
+    /// cwd that `makeTermiodLink` threads through.
+    ///
+    /// Filed by machine, unlike the plain `ssh` shell `addSSHSession` opens: this
+    /// process really does live on the box and outlive the connection to it, so the
+    /// workspace holding it is telling the truth about where its work is.
     private func createRemoteTerminalSession(
         host: String,
         device deviceID: String,
