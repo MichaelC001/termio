@@ -16,12 +16,28 @@ import TermioShared
 /// foreground retry — belongs to `WebSocketLink`. What lives here is the
 /// protocol: the `hello` that must be frame #1, the reassembly, and the decode.
 final class TermiodChannel {
+    /// One control frame, and the request it is an answer to.
+    ///
+    /// The two travel together because the `re` lives on the payload rather than
+    /// on any decoded case: `decodeControl` throws it away, so reading it after
+    /// the decode is impossible and reading it before is the only option. A pair
+    /// rather than a second closure argument because both halves need naming —
+    /// an unlabelled `UInt64?` at a call site says nothing about which direction
+    /// it points.
+    struct Reply {
+        /// The `seq` the answered request was sent with. `nil` for a frame that
+        /// answers nobody, and for a daemon too old to stamp its replies.
+        let responseID: UInt64?
+        let control: Termiod.IncomingControl
+    }
+
     /// The daemon answered the handshake. Fired on the link's delegate queue,
     /// which is where the frames behind it arrive too, so an owner replying from
     /// here keeps its reply ahead of everything else it sends.
     var onReady: ((Termiod.HelloOkPayload) -> Void)?
-    /// A decoded control frame, on the delegate queue.
-    var onControl: ((Termiod.IncomingControl) -> Void)?
+    /// A decoded control frame and the request it answers, on the delegate
+    /// queue.
+    var onControl: ((Reply) -> Void)?
     /// A decoded `E` frame, on the delegate queue.
     var onEvent: ((Termiod.IncomingEvent) -> Void)?
     /// Raw PTY bytes (`D`), on the delegate queue.
@@ -186,7 +202,8 @@ final class TermiodChannel {
         case .helloError(let reason):
             fail(reason)
         default:
-            onControl?(control)
+            onControl?(Reply(
+                responseID: Termiod.responseID(of: payload), control: control))
         }
     }
 

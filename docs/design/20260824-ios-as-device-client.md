@@ -247,15 +247,23 @@ makes a 100 ms link *feel* local.
 
 ### P4 follow-ups
 
-Three things the landed backend does the weaker way, each because the stronger
-one arrived on `main` while P4 was in flight. None is a defect today; all three
-are a correct answer that a better one now exists for.
+Things the landed backend does the weaker way, each because the stronger one
+arrived on `main` while P4 was in flight.
 
-- **Reply correlation.** `TermiodBackend` matches a reply to the oldest
-  outstanding request *of that verb*, which holds only because it issues one of
-  each at a time. `Termiod.responseID(of:)` reads the `re` every reply already
-  carries; rewiring onto it is what makes a second concurrent request of the
-  same verb safe.
+**Done — reply correlation.** `TermiodBackend` now keys every in-flight request
+by the `re` it was sent with, read back through `Termiod.responseID(of:)` and,
+for the bytes behind an `fs_read`, through `decodeFileChunk`'s `request`. It
+matched the oldest outstanding request *of that verb* before, which held only
+while one of each was ever in flight.
+
+That turned out to be hiding a live defect rather than only a latent one: a
+refusal carries the `re` of the request that caused it, but was attributed to
+whatever was outstanding — so a refused search cancelled a read that was still
+perfectly alive, and the read then hung until the socket dropped. Both are
+covered by `TermiodReplyCorrelationTests`.
+
+The remaining two:
+
 - **The ＋ menu offers agents the box may not have.** Rows resolve their agent
   from `foreground_argv`, which is right, but the new-session menu falls back to
   the built-in list. `agents_probed` / `AgentPresence` answers which CLIs are
