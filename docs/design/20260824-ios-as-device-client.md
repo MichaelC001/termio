@@ -3,7 +3,7 @@ title: iOS as a device client
 status: draft
 type: rfc
 created: 2026-08-24
-updated: 2026-08-24
+updated: 2026-08-26
 related:
   - 20260814-remote-to-device.md
   - 20260824-settings-that-know-which-machine.md
@@ -244,6 +244,29 @@ start them while P0 is in flight.
 Predictive echo is the highest-value item in the whole plan and the only one no
 transport choice can deliver — protocol doc §C.6 is explicit that it is what
 makes a 100 ms link *feel* local.
+
+### P4 follow-ups
+
+Three things the landed backend does the weaker way, each because the stronger
+one arrived on `main` while P4 was in flight. None is a defect today; all three
+are a correct answer that a better one now exists for.
+
+- **Reply correlation.** `TermiodBackend` matches a reply to the oldest
+  outstanding request *of that verb*, which holds only because it issues one of
+  each at a time. `Termiod.responseID(of:)` reads the `re` every reply already
+  carries; rewiring onto it is what makes a second concurrent request of the
+  same verb safe.
+- **The ＋ menu offers agents the box may not have.** Rows resolve their agent
+  from `foreground_argv`, which is right, but the new-session menu falls back to
+  the built-in list. `agents_probed` / `AgentPresence` answers which CLIs are
+  actually installed over there — and `present` is `true` when the probe could
+  not look, so a machine that cannot answer must not read as one with nothing.
+- **Content search, and cancelling it.** The phone's file search is filename-only
+  (`fs_match`, one reply off the host's index), so nothing is left running when a
+  query is abandoned. The day this pane gains content search it inherits the
+  problem `Termiod.CancelOperation` exists for: only `fs_search` registers a
+  cancellable request, and an abandoned one leaves `git grep` running until the
+  connection drops.
 
 ## Non-goals
 

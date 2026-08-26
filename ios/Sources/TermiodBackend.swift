@@ -51,11 +51,16 @@ final class TermiodBackend: DeviceClient {
     /// would lose which is which the moment a fresh row arrives.
     private var statusOverrides: [String: StatusDelta] = [:]
     private var hostID: String?
-    /// Requests in flight, oldest first. The protocol correlates replies by
-    /// `seq`, but this app's own port has no request ids in either direction
-    /// (the companion wire has none either — see `InspectorViewController`'s
-    /// error attribution), so a per-verb queue is what a reply is matched
-    /// against. One channel issues one of each at a time in practice.
+    /// Requests in flight, oldest first: a reply is matched to the oldest
+    /// request of its verb, which is correct because this backend issues one of
+    /// each at a time and the connection preserves order.
+    ///
+    /// It is not the strongest answer available. Every reply carries the `re`
+    /// the request was sent with, and `Termiod.responseID(of:)` reads it — which
+    /// is what a channel carrying several requests at once has to use, and what
+    /// this should be rewired onto (see the RFC's P4 follow-ups). Until then a
+    /// second request of the same verb overtaking the first would mis-attribute
+    /// its reply, and nothing here would notice.
     private var pendingReads: [String] = []
     private var pendingSearches: [String] = []
     /// A file read in progress: the `fs_file` header, and the `F` chunks landing
@@ -334,6 +339,13 @@ final class TermiodBackend: DeviceClient {
         // `fs_match` and not `fs_search`: this field searches *names*, and
         // `fs_search` is the device's content search (`git grep`). Wiring one to
         // the other would answer a different question than the one asked.
+        //
+        // Nothing is cancelled when a query is abandoned, and nothing needs to
+        // be: `fs_match` is one reply off an index the host already holds, and
+        // only `fs_search` registers a cancellable request (`daemon.rs`, the
+        // `Control::Cancel` arm). That changes the day this pane gains content
+        // search — an abandoned `fs_search` leaves `git grep` running until the
+        // connection drops, and `Termiod.CancelOperation` is what stops it.
         pendingSearches.append(query)
         do {
             try channel.send(control: Termiod.FsMatchOperation(
@@ -484,7 +496,12 @@ final class TermiodBackend: DeviceClient {
 
     private func receiveFileChunk(_ payload: Data) {
         guard var pending = readInProgress else { return }
-        let chunk: (offset: UInt64, last: Bool, data: Data)
+        // `chunk.request` is the `re` this read was asked with, and is what a
+        // backend running several reads at once would demultiplex on. This one
+        // runs a single read at a time, so the chunks behind one header are the
+        // only chunks in flight — the same reason the per-verb queues above are
+        // enough, and the same follow-up retires both.
+        let chunk: (request: UInt64, offset: UInt64, last: Bool, data: Data)
         do {
             chunk = try Termiod.decodeFileChunk(payload)
         } catch {
@@ -727,9 +744,11 @@ private extension DeviceRoster {
     /// - **The name.** Device architecture §4 is explicit that the host never
     ///   supplies one, so nothing is reported and `PairedMac.name` — the name
     ///   the phone gave the box when it paired — stands.
-    /// - **The agents.** There is no catalog on the wire, so the menus offer the
-    ///   built-in list and each row's agent is read off `foregroundArgv`, which
-    ///   exists precisely so the client decides.
+    /// - **The agents.** Each row's agent is read off `foregroundArgv`, which
+    ///   exists precisely so the client decides. The ＋ menu is the weaker half:
+    ///   it offers the built-in list as a fallback, so it can offer an agent the
+    ///   box does not have. `agents_probed` / `AgentPresence` is the answer to
+    ///   that and is not wired up yet (see the RFC's P4 follow-ups).
     /// - **The workspace.** One device is one workspace, and it carries no
     ///   `deviceAlias`: the box *is* the paired peer, which is what makes
     ///   `RosterStore.localWorkspaces` offer it as a place to start a session.
