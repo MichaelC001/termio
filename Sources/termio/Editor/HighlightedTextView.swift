@@ -19,6 +19,9 @@ struct HighlightedTextView: NSViewRepresentable {
     /// terminal background. Only drawn while the buffer is editable — a read-only peek has no
     /// caret, so a highlighted line would just be a mystery stripe.
     let currentLineColor: NSColor
+    /// The wash on every other occurrence of the word under the caret (`OccurrenceHighlighter`).
+    /// `.clear` turns the behavior off.
+    var occurrenceHighlightColor: NSColor = .clear
     /// When false the text stays selectable (copyable) but cannot be typed into — the read-only
     /// preview path. Defaults to editable so the inspector's own opens are unchanged.
     var isEditable: Bool = true
@@ -249,6 +252,7 @@ struct HighlightedTextView: NSViewRepresentable {
         }
 
         coordinator.onMatchesChanged = onMatchesChanged
+        coordinator.occurrenceHighlightColor = occurrenceHighlightColor
         coordinator.updateFind(query: findQuery, options: findOptions, focusedIndex: findFocusedIndex, in: textView)
     }
 
@@ -345,8 +349,11 @@ struct HighlightedTextView: NSViewRepresentable {
         var wasActive = false
         weak var ruler: LineNumberRulerView?
         var onMatchesChanged: ((Int) -> Void)?
+        /// Refreshed from each update pass; the next repaint is what picks up a theme change.
+        var occurrenceHighlightColor: NSColor = .clear
         private let text: Binding<String>
         private let find = TextFindEngine()
+        private let occurrences = OccurrenceHighlighter()
         private var appliedFindQuery: String = ""
         private var appliedFindOptions: FindOptions = FindOptions()
         private var appliedFocusedIndex: Int = -1
@@ -397,6 +404,8 @@ struct HighlightedTextView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             (textView as? SavingTextView)?.caretDidMove()
+            occurrences.update(in: textView, color: occurrenceHighlightColor,
+                               findActive: !appliedFindQuery.isEmpty)
         }
 
         /// Recompute + repaint after a new query, option change, or focus move. Same query
@@ -406,6 +415,10 @@ struct HighlightedTextView: NSViewRepresentable {
             if queryChanged {
                 appliedFindQuery = query
                 appliedFindOptions = options
+                // A live query owns the highlight layer, so the occurrence wash steps aside; it
+                // comes back on its own once the query clears.
+                occurrences.update(in: textView, color: occurrenceHighlightColor,
+                                   findActive: !query.isEmpty)
                 find.recompute(query: query, options: options, in: textView)
                 notifyMatchCount()
                 appliedFocusedIndex = -1

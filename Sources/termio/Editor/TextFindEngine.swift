@@ -13,6 +13,10 @@ final class TextFindEngine {
     private static let matchColor = NSColor.systemYellow.withAlphaComponent(0.35)
     private static let focusedColor = NSColor.systemYellow.withAlphaComponent(0.7)
 
+    /// What counts as "inside a word" for whole-word find. Shared with `OccurrenceTarget` so the
+    /// word the occurrence wash picks up and the boundary this engine matches on can't disagree.
+    nonisolated static let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
     /// Rebuild the match list for `query` over the text view's current string. Returns the count.
     @discardableResult
     func recompute(query: String, options: FindOptions, in textView: NSTextView) -> Int {
@@ -66,6 +70,36 @@ final class TextFindEngine {
         }
     }
 
+    /// Wash `ranges` in `color` without disturbing anything else already painted — the additive
+    /// counterpart to `paint(focused:reveal:)`, which owns the whole document. The occurrence
+    /// highlight goes through here so it shares the layer with the bracket wash instead of wiping
+    /// it, and `removeHighlight` lifts exactly what this laid down.
+    static func addHighlight(_ ranges: [NSRange], color: NSColor, in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager else { return }
+        let length = (textView.string as NSString).length
+        for range in ranges {
+            guard let clamped = clamp(range, to: length) else { continue }
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: clamped)
+        }
+    }
+
+    static func removeHighlight(_ ranges: [NSRange], in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager else { return }
+        let length = (textView.string as NSString).length
+        for range in ranges {
+            guard let clamped = clamp(range, to: length) else { continue }
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: clamped)
+        }
+    }
+
+    /// `range` cut down to fit a text of `length`, or `nil` when it starts past the end — an edit
+    /// can shrink the document between painting and lifting, and touching an attribute past the
+    /// end raises.
+    private static func clamp(_ range: NSRange, to length: Int) -> NSRange? {
+        guard range.location < length else { return nil }
+        return NSRange(location: range.location, length: min(range.length, length - range.location))
+    }
+
     private func clearHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager else { return }
         let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
@@ -73,7 +107,7 @@ final class TextFindEngine {
     }
 
     private static func isWordBoundary(_ range: NSRange, in string: NSString) -> Bool {
-        let letters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+        let letters = wordCharacters
         if range.location > 0 {
             let prev = string.character(at: range.location - 1)
             if let scalar = Unicode.Scalar(prev), letters.contains(scalar) { return false }
