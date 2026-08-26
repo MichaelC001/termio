@@ -775,7 +775,7 @@ extension TermiodBackend {
             guard !answered else { return }
             answered = true
             retire(channel)
-            completion(.failure(DeviceUnreachable(message: localized("That device didn’t answer."))))
+            completion(.failure(DeviceUnreachable(message: localized("That device didn't answer."))))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: deadline)
         channel.onReady = { handshake in

@@ -110,7 +110,6 @@ final class TerminalListViewController: UIViewController {
     /// Terminal names the workspace it will land in.
     private func configureNewTerminalButton() {
         newTerminalButton.applyGlassIcon(.add, boxSize: 24)
-        newTerminalButton.tintColor = .label
         newTerminalButton.accessibilityLabel = localized("New Terminal")
         newTerminalButton.showsMenuAsPrimaryAction = true
         newTerminalButton.menu = UIMenu(children: [

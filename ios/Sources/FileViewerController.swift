@@ -108,7 +108,7 @@ final class FileViewerController: UIViewController {
 
     private func configureHeader() -> UIView {
         let close = UIButton(type: .system)
-        close.applyGlassSymbol("xmark")
+        close.applyGlassSymbol("xmark", themed: false)
         close.tintColor = .label
         close.addAction(UIAction { [weak self] _ in
             self?.flushAndClose()
@@ -131,7 +131,7 @@ final class FileViewerController: UIViewController {
         titles.axis = .vertical
         titles.alignment = .center
 
-        editButton.applyGlassSymbol("pencil")
+        editButton.applyGlassSymbol("pencil", themed: false)
         editButton.tintColor = .label
         editButton.isHidden = !canEdit
         editButton.addAction(UIAction { [weak self] _ in
@@ -281,12 +281,12 @@ final class FileViewerController: UIViewController {
             editMode = false
             textView.isEditable = false
             textView.resignFirstResponder()
-            editButton.applyGlassSymbol("pencil")
+            editButton.applyGlassSymbol("pencil", themed: false)
         } else {
             editMode = true
             textView.isEditable = true
             textView.becomeFirstResponder()
-            editButton.applyGlassSymbol("checkmark")
+            editButton.applyGlassSymbol("checkmark", themed: false)
             updateFooter(state: "editing")
         }
     }

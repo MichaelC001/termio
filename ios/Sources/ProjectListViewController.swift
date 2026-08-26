@@ -44,9 +44,12 @@ final class ProjectListViewController: UIViewController {
     private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
 
     private let filterButton = UIButton(type: .system)
-    /// Opens the workspace rail. Absent whenever the rail is (one workspace, or
-    /// none yet), so the common case keeps exactly the title bar it had.
-    private let workspaceButton = UIButton(type: .system)
+    /// Opens the workspace rail: the title itself is the control, Slack's shape.
+    /// Disabled whenever the rail is absent (one workspace, or none yet), so the
+    /// common case keeps exactly the title bar it had.
+    private let workspaceButton = UIButton(type: .custom)
+    /// The mark that says the title opens something. Absent with the rail.
+    private let workspaceChevron = UIImageView()
     /// The workspace in scope, and the machine it is on when that needs saying.
     private let pageTitle = UILabel()
     private let machineLabel = UILabel()
@@ -121,8 +124,6 @@ final class ProjectListViewController: UIViewController {
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
         pageTitle.lineBreakMode = .byTruncatingTail
-        // The name is the identity; the sort button never gives way for it.
-        pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // Which machine the workspace is on, under its name. It used to ride the
         // section header; with the header gone the claim belongs to the thing it
@@ -133,7 +134,51 @@ final class ProjectListViewController: UIViewController {
         machineLabel.lineBreakMode = .byTruncatingTail
         machineLabel.isHidden = true
 
-        let titleStack = UIStackView(arrangedSubviews: [pageTitle, machineLabel])
+        // Slack's workspace switcher: a chevron on the name, not a control beside
+        // it. The name is what changes, so the name is what you press — and the
+        // title bar keeps one object instead of a glass circle competing with it.
+        // Hidden by default: a hidden arranged subview contributes neither width
+        // nor spacing, so a one-workspace title bar is untouched.
+        workspaceChevron.image = UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)
+        )
+        workspaceChevron.tintColor = .label
+        workspaceChevron.contentMode = .center
+        workspaceChevron.setContentHuggingPriority(.required, for: .horizontal)
+        workspaceChevron.setContentCompressionResistancePriority(.required, for: .horizontal)
+        workspaceChevron.isHidden = true
+
+        let titleRow = UIStackView(arrangedSubviews: [pageTitle, workspaceChevron])
+        titleRow.axis = .horizontal
+        titleRow.alignment = .center
+        titleRow.spacing = 8
+        titleRow.isUserInteractionEnabled = false
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+        workspaceButton.addSubview(titleRow)
+        workspaceButton.accessibilityIdentifier = "home.workspaceRail"
+        // The name is the identity; the sort button never gives way for it. The
+        // whole title unit yields, so the chevron stays glued to the truncation.
+        workspaceButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        workspaceButton.addAction(UIAction { [weak self] _ in
+            self?.onOpenWorkspaceRail?()
+        }, for: .touchUpInside)
+        // The press cue a title-as-button needs, since it has no fill to shade.
+        let pressStates: [(UIControl.Event, CGFloat)] = [
+            (.touchDown, 0.4), (.touchUpInside, 1), (.touchUpOutside, 1),
+            (.touchCancel, 1), (.touchDragExit, 1),
+        ]
+        for (event, alpha) in pressStates {
+            workspaceButton.addAction(UIAction { _ in titleRow.alpha = alpha }, for: event)
+        }
+        NSLayoutConstraint.activate([
+            titleRow.leadingAnchor.constraint(equalTo: workspaceButton.leadingAnchor),
+            titleRow.trailingAnchor.constraint(equalTo: workspaceButton.trailingAnchor),
+            titleRow.topAnchor.constraint(equalTo: workspaceButton.topAnchor),
+            titleRow.bottomAnchor.constraint(equalTo: workspaceButton.bottomAnchor),
+        ])
+
+        let titleStack = UIStackView(arrangedSubviews: [workspaceButton, machineLabel])
         titleStack.axis = .vertical
         titleStack.alignment = .leading
         titleStack.spacing = 0
@@ -141,7 +186,6 @@ final class ProjectListViewController: UIViewController {
         // The Mac sidebar's sort pull-down, translated to iMessage chrome:
         // a glass circle riding the large title, menu as primary action.
         filterButton.applyGlassSymbol("line.3.horizontal.decrease")
-        filterButton.tintColor = .label
         filterButton.accessibilityLabel = localized("Sort")
         filterButton.showsMenuAsPrimaryAction = true
         filterButton.menu = UIMenu(children: [
@@ -150,20 +194,8 @@ final class ProjectListViewController: UIViewController {
             },
         ])
 
-        // Leading, where Slack and every sidebar toggle put it: the rail comes
-        // from that edge, so the control that opens it should too. Hidden by
-        // default — a hidden arranged subview contributes neither width nor
-        // spacing, so a one-workspace title bar is untouched.
-        workspaceButton.applyGlassIcon(.sidebarLeft, boxSize: 22)
-        workspaceButton.tintColor = .label
-        workspaceButton.accessibilityIdentifier = "home.workspaceRail"
-        workspaceButton.isHidden = true
-        workspaceButton.addAction(UIAction { [weak self] _ in
-            self?.onOpenWorkspaceRail?()
-        }, for: .touchUpInside)
-
         let spacer = UIView()
-        let bar = UIStackView(arrangedSubviews: [workspaceButton, titleStack, spacer, filterButton])
+        let bar = UIStackView(arrangedSubviews: [titleStack, spacer, filterButton])
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
@@ -176,8 +208,6 @@ final class ProjectListViewController: UIViewController {
             // Telegram's nav-bar glass buttons are 40pt circles.
             filterButton.widthAnchor.constraint(equalToConstant: 40),
             filterButton.heightAnchor.constraint(equalToConstant: 40),
-            workspaceButton.widthAnchor.constraint(equalToConstant: 40),
-            workspaceButton.heightAnchor.constraint(equalToConstant: 40),
         ])
         return bar
     }
@@ -283,7 +313,12 @@ final class ProjectListViewController: UIViewController {
         pageTitle.text = name.isEmpty ? localized("Projects") : name
         machineLabel.text = workspace?.machineLabel
         machineLabel.isHidden = workspace?.machineLabel == nil
-        workspaceButton.isHidden = machines.workspaceCount < 2
+        let hasOtherWorkspaces = machines.workspaceCount > 1
+        workspaceChevron.isHidden = !hasOtherWorkspaces
+        workspaceButton.isEnabled = hasOtherWorkspaces
+        // With nowhere to switch to, the title is a title again: the button stops
+        // being an element of its own so VoiceOver reads the name underneath.
+        workspaceButton.isAccessibilityElement = hasOtherWorkspaces
         workspaceButton.accessibilityLabel = localized("Workspaces")
         workspaceButton.accessibilityValue = pageTitle.text
     }

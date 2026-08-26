@@ -286,7 +286,6 @@ final class TerminalViewController: UIViewController {
         // 15pt default that reads like a caption glyph.
         back.applyGlassSymbol("chevron.left", pointSize: 18)
         back.accessibilityIdentifier = "terminal.back"
-        back.tintColor = .label
         back.addAction(UIAction { [weak self] _ in
             self?.goBack()
         }, for: .touchUpInside)
@@ -297,7 +296,7 @@ final class TerminalViewController: UIViewController {
         let overflow = UIButton(type: .system)
         overflow.applyGlassSymbol("ellipsis", pointSize: 16)
         overflow.accessibilityIdentifier = "terminal.overflow"
-        overflow.tintColor = .secondaryLabel
+        overflow.tintColor = ThemeChrome.secondaryInk
         overflow.showsMenuAsPrimaryAction = true
         let menu = makeOverflowMenu()
         overflow.menu = menu
@@ -797,8 +796,8 @@ final class TerminalViewController: UIViewController {
     /// The canvas behind the transparent surface — the theme background, shared
     /// with the app chrome so the terminal and its surrounding pages read as one
     /// continuous color (covers the unpainted band under the keyboard guide and
-    /// the safe areas too). See `ThemeBackdrop`.
-    private static func backdropColor() -> UIColor { ThemeBackdrop.color }
+    /// the safe areas too). See `ThemeChrome`.
+    private static func backdropColor() -> UIColor { ThemeChrome.background }
 
     /// The settings-driven half of the surface config — the single place the
     /// appearance keys are named, so creation and the live re-style path

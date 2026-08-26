@@ -107,7 +107,6 @@ final class ChatListViewController: UIViewController {
     /// will land in, so the destination is stated where the choice is made.
     private func configureNewChatButton() {
         newChatButton.applyGlassIcon(.add, boxSize: 24)
-        newChatButton.tintColor = .label
         newChatButton.accessibilityLabel = localized("New Chat")
         newChatButton.showsMenuAsPrimaryAction = true
         newChatButton.menu = UIMenu(children: [

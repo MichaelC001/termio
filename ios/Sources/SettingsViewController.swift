@@ -8,7 +8,7 @@ import UIKit
 /// Devices leads (the Mac link is the app's lifeline — its row carries
 /// the live link status inline, the only at-a-glance copy of it since the
 /// session list dropped its device pill); Appearance carries the terminal look.
-final class SettingsViewController: UITableViewController {
+final class SettingsViewController: ThemedTableViewController {
     private enum Section: Int, CaseIterable {
         case pages, about
     }
@@ -54,7 +54,6 @@ final class SettingsViewController: UITableViewController {
     private static let privacyURL = URL(string: "https://termio.sh/privacy")!
 
     private var stateObserver: NSObjectProtocol?
-    private var themeObserver: NSObjectProtocol?
 
     init() {
         super.init(style: .insetGrouped)
@@ -67,9 +66,6 @@ final class SettingsViewController: UITableViewController {
         if let stateObserver {
             NotificationCenter.default.removeObserver(stateObserver)
         }
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
     }
 
     /// False when the page lives as the home's Settings tab — nothing to
@@ -80,10 +76,6 @@ final class SettingsViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = localized("Settings")
-        // Tint the backdrop behind the inset cards to the terminal theme, so
-        // Settings matches every other page when the theme changes (the cards
-        // stay standard grouped-cells for legibility).
-        themeObserver = installThemeBackdrop()
         if showsCloseButton {
             // A real glass ✕ at a Telegram-scale target, not the slim system
             // Done text item.
@@ -147,7 +139,7 @@ final class SettingsViewController: UITableViewController {
         dot.bounds = CGRect(x: 0, y: (font.capHeight - diameter) / 2, width: diameter, height: diameter)
         let status = NSMutableAttributedString(attachment: dot)
         status.append(NSAttributedString(string: " \(text)", attributes: [
-            .foregroundColor: UIColor.secondaryLabel,
+            .foregroundColor: ThemeChrome.secondaryInk,
             .font: font,
         ]))
         return status
@@ -167,12 +159,12 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        applyTheme(to: cell)
         switch Section(rawValue: indexPath.section) {
         case .pages:
             let row = Row.allCases[indexPath.row]
             cell.textLabel?.text = row.title
             cell.imageView?.image = row.icon.strokeImage(boxSize: 22)
-            cell.imageView?.tintColor = .label
             cell.accessoryType = .disclosureIndicator
             if row == .devices {
                 cell.detailTextLabel?.attributedText = Self.linkStatus()
@@ -215,14 +207,12 @@ final class SettingsViewController: UITableViewController {
 /// Settings window: appearance mode, the light/dark theme pair, and font
 /// size. Every change lands in `MobileSettings` and applies to open
 /// terminals live.
-final class AppearanceSettingsViewController: UITableViewController {
+final class AppearanceSettingsViewController: ThemedTableViewController {
     private let settings = MobileSettings.shared
 
     private enum Row: Int, CaseIterable {
         case appearance, lightTheme, darkTheme, fontSize
     }
-
-    private var themeObserver: NSObjectProtocol?
 
     init() {
         super.init(style: .insetGrouped)
@@ -231,16 +221,9 @@ final class AppearanceSettingsViewController: UITableViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         title = localized("Appearance")
-        themeObserver = installThemeBackdrop()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -264,6 +247,7 @@ final class AppearanceSettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         // A static four-row form; building cells directly beats reuse plumbing.
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        applyTheme(to: cell)
         switch Row(rawValue: indexPath.row) {
         case .appearance:
             cell.textLabel?.text = localized("Appearance")
@@ -327,10 +311,8 @@ final class AppearanceSettingsViewController: UITableViewController {
 /// entry (curated Claude Code shortcuts), not a free-form binding editor.
 /// The bar itself observes `MobileSettings.didChange` and rebuilds, so a flip
 /// here is live on its next appearance.
-final class TerminalKeyboardSettingsViewController: UITableViewController {
+final class TerminalKeyboardSettingsViewController: ThemedTableViewController {
     private let settings = MobileSettings.shared
-
-    private var themeObserver: NSObjectProtocol?
 
     init() {
         super.init(style: .insetGrouped)
@@ -339,16 +321,9 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         title = localized("Terminal Keyboard")
-        themeObserver = installThemeBackdrop()
     }
 
     // MARK: - Table
@@ -369,12 +344,12 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        applyTheme(to: cell)
         let key = TerminalKeyCatalog.all[indexPath.row]
         cell.selectionStyle = .none
         cell.textLabel?.text = key.title
         cell.textLabel?.font = .monospacedSystemFont(ofSize: 16, weight: .regular)
         cell.detailTextLabel?.text = key.detail
-        cell.detailTextLabel?.textColor = .secondaryLabel
 
         let toggle = UISwitch()
         toggle.isOn = settings.terminalKeyIDs.contains(key.id)
@@ -396,7 +371,7 @@ final class TerminalKeyboardSettingsViewController: UITableViewController {
 /// that provider's API key. With voice on, holding the terminal keyboard's mic
 /// key dictates a prompt. Each provider keeps its own key in the Keychain (via
 /// `VoiceDictation`), so switching providers never loses the other's key.
-final class VoiceSettingsViewController: UITableViewController {
+final class VoiceSettingsViewController: ThemedTableViewController {
     private let settings = MobileSettings.shared
 
     private enum Section: Int, CaseIterable {
@@ -410,8 +385,6 @@ final class VoiceSettingsViewController: UITableViewController {
     /// The provider whose key the Key section is showing — the current choice.
     private var provider: TranscriptionProvider { settings.transcriptionProvider }
 
-    private var themeObserver: NSObjectProtocol?
-
     init() {
         super.init(style: .insetGrouped)
     }
@@ -419,16 +392,9 @@ final class VoiceSettingsViewController: UITableViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit {
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         title = localized("Voice")
-        themeObserver = installThemeBackdrop()
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
@@ -468,6 +434,7 @@ final class VoiceSettingsViewController: UITableViewController {
         switch Section(rawValue: indexPath.section) {
         case .voice, nil:
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+            applyTheme(to: cell)
             cell.textLabel?.text = localized("Voice Input")
             cell.selectionStyle = .none
             let toggle = UISwitch()
@@ -480,6 +447,7 @@ final class VoiceSettingsViewController: UITableViewController {
             return cell
         case .provider:
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+            applyTheme(to: cell)
             cell.textLabel?.text = localized("Provider")
             cell.selectionStyle = .none
             let providers = TranscriptionProvider.allCases
@@ -496,6 +464,7 @@ final class VoiceSettingsViewController: UITableViewController {
             return cell
         case .key:
             let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+            applyTheme(to: cell)
             let isSet = VoiceDictation.hasAPIKey(for: provider)
             switch KeyRow(rawValue: indexPath.row) {
             case .apiKey, nil:
@@ -554,7 +523,7 @@ final class VoiceSettingsViewController: UITableViewController {
 /// Forget. Adding a Mac scans its QR or takes a typed address. The sidebar owns
 /// the socket; this page edits `CompanionLink` and the socket's owner follows
 /// `pairingDidChange`.
-final class DevicesSettingsViewController: UITableViewController {
+final class DevicesSettingsViewController: ThemedTableViewController {
     private enum Section {
         case macs, add
     }
@@ -568,7 +537,6 @@ final class DevicesSettingsViewController: UITableViewController {
 
     private var stateObserver: NSObjectProtocol?
     private var macsObserver: NSObjectProtocol?
-    private var themeObserver: NSObjectProtocol?
 
     init() {
         super.init(style: .insetGrouped)
@@ -584,15 +552,11 @@ final class DevicesSettingsViewController: UITableViewController {
         if let macsObserver {
             NotificationCenter.default.removeObserver(macsObserver)
         }
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         title = localized("Devices")
-        themeObserver = installThemeBackdrop()
         stateObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.stateDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -647,6 +611,7 @@ final class DevicesSettingsViewController: UITableViewController {
             let mac = macs[indexPath.row]
             let isActive = mac.id == CompanionLink.activeMac?.id
             let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+            applyTheme(to: cell)
             cell.textLabel?.text = mac.name
             // Wi-Fi's selection mark: the checkmark leads the row, leaving the
             // trailing side to the state and the ⓘ. The unselected rows carry
@@ -660,7 +625,7 @@ final class DevicesSettingsViewController: UITableViewController {
             cell.imageView?.image = isActive
                 ? checkmark
                 : checkmark?.withTintColor(.clear, renderingMode: .alwaysOriginal)
-            cell.imageView?.tintColor = cell.tintColor
+            cell.imageView?.tintColor = ThemeChrome.accent
             // The connection state is the row's value, Bluetooth-style, so the
             // selected Mac also says whether the link to it is actually up.
             if isActive {
@@ -676,7 +641,7 @@ final class DevicesSettingsViewController: UITableViewController {
             return cell
         case .add:
             let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
-            cell.imageView?.tintColor = .label
+            applyTheme(to: cell)
             switch AddRow(rawValue: indexPath.row) {
             case .scan, nil:
                 cell.textLabel?.text = localized("Scan QR Code")
@@ -766,7 +731,7 @@ final class DevicesSettingsViewController: UITableViewController {
 /// Wi-Fi's network details, translated: the live state, the address the socket
 /// dials, and Forget. Read-only: an address changes by re-scanning that Mac's
 /// QR, which folds into this entry rather than adding a second one.
-final class MacDetailViewController: UITableViewController {
+final class MacDetailViewController: ThemedTableViewController {
     private enum Row: Int, CaseIterable {
         case status, address
     }
@@ -776,7 +741,6 @@ final class MacDetailViewController: UITableViewController {
 
     private var stateObserver: NSObjectProtocol?
     private var macsObserver: NSObjectProtocol?
-    private var themeObserver: NSObjectProtocol?
 
     init(macID: String) {
         self.macID = macID
@@ -793,14 +757,10 @@ final class MacDetailViewController: UITableViewController {
         if let macsObserver {
             NotificationCenter.default.removeObserver(macsObserver)
         }
-        if let themeObserver {
-            NotificationCenter.default.removeObserver(themeObserver)
-        }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        themeObserver = installThemeBackdrop()
         stateObserver = NotificationCenter.default.addObserver(
             forName: CompanionLink.stateDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -837,11 +797,13 @@ final class MacDetailViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         guard indexPath.section == 0 else {
             let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+            applyTheme(to: cell)
             cell.textLabel?.text = localized("Forget This Mac")
             cell.textLabel?.textColor = .systemRed
             return cell
         }
         let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
+        applyTheme(to: cell)
         cell.selectionStyle = .none
         switch Row(rawValue: indexPath.row) {
         case .status, nil:
@@ -895,7 +857,7 @@ final class MacDetailViewController: UITableViewController {
 /// The phone has no theme store: it resolves these names out of the compiled
 /// catalog to render them and never writes a file. Themes the user installed on
 /// the Mac stay on the Mac.
-final class ThemePickerViewController: UITableViewController {
+final class ThemePickerViewController: ThemedTableViewController {
     enum Slot {
         case light, dark
     }
@@ -966,6 +928,7 @@ final class ThemePickerViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "theme", for: indexPath)
+        applyTheme(to: cell)
         let theme = rows[indexPath.row]
         cell.contentConfiguration = UIHostingConfiguration {
             ThemeRow(theme: theme, isSelected: theme.name == selectedName)
@@ -1012,12 +975,13 @@ private struct ThemeRow: View {
             )
             Text(theme.name)
                 .font(.subheadline)
+                .foregroundStyle(Color(uiColor: ThemeChrome.ink))
                 .lineLimit(1)
             Spacer(minLength: 4)
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(Color(uiColor: ThemeChrome.accent))
             }
         }
     }

@@ -81,7 +81,7 @@ final class DiffViewController: UIViewController {
 
     private func configureHeader() -> UIView {
         let close = UIButton(type: .system)
-        close.applyGlassSymbol("xmark")
+        close.applyGlassSymbol("xmark", themed: false)
         close.tintColor = .label
         close.addAction(UIAction { [weak self] _ in
             self?.dismiss(animated: true)
@@ -186,7 +186,7 @@ final class DiffViewController: UIViewController {
     /// Jump to the next change in a long diff — the one navigation a scrolling reader
     /// actually needs. Floats over the code, out of the text's way.
     private func configureHunkButton(above walker: UIView) {
-        hunkButton.applyGlassSymbol("chevron.down")
+        hunkButton.applyGlassSymbol("chevron.down", themed: false)
         hunkButton.tintColor = .label
         hunkButton.isHidden = true
         hunkButton.addAction(UIAction { [weak self] _ in self?.scrollToNextChange() }, for: .touchUpInside)

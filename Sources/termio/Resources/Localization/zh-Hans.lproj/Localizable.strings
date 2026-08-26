@@ -810,6 +810,8 @@
 	<string>该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
+	<key>Not a Git Repository</key>
+	<string>不是 Git 仓库</string>
 	<key>Not a valid regular expression</key>
 	<string>不是有效的正则表达式</string>
 	<key>Not installed</key>
@@ -1292,6 +1294,8 @@
 	<string>此文件为二进制文件，请在 GitHub 上打开查看。</string>
 	<key>This folder has no git “origin” remote to clone.</key>
 	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
+	<key>This folder isn’t tracked by Git.</key>
+	<string>这个文件夹没有被 Git 跟踪。</string>
 	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>

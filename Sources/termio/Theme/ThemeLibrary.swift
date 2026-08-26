@@ -131,17 +131,6 @@ enum ThemeLibrary {
 
     // MARK: - Files
 
-    /// The file a user theme was parsed from, or `nil` when no file in the folder
-    /// parses to that name. Resolved by re-parsing rather than by guessing the file
-    /// name, because a theme's name comes from its file's stem and the user may
-    /// have named the file anything.
-    static func fileURL(forUserTheme name: String) -> URL? {
-        sortedFiles().first { url in
-            parse(name: url.deletingPathExtension().lastPathComponent,
-                  contents: (try? String(contentsOf: url, encoding: .utf8)) ?? "")?.name == name
-        }
-    }
-
     /// Writes a theme's definition into the `Themes` folder so the user has a file
     /// of their own to edit — this is how you fork a built-in. The first copy
     /// takes the theme's own name and so shadows it; a second becomes `Nord 2` and
