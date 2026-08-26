@@ -17,6 +17,34 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.43.0",
+    date: "2026-08-27",
+    title: "Every machine, set up like this one",
+    changes: {
+      new: [
+        "Settings now says which machine it means. Agents, Workspace and the rest carry a machine scope, every device you've added is a row rather than something behind a picker, and each one gets its own pages. What you change on a device is what that device gets.",
+        "Agent integration installs onto another machine, not just this one. termio reads the same agent manifests it uses here and writes the hooks, the plugin dialects, the config block and the skill onto the box over the daemon — so an agent on a VPS reports working, waiting and done the way a local one does.",
+        "The file tree reaches the other machine. Search a checkout on a device and follow its `cd`, open what the search found, and save the file back to the device it was read from.",
+        "Your phone can attach straight to a device over the session protocol, instead of only reaching it through this Mac.",
+        "The code editor learned real editing: find and replace with the Mac find keys, comment lines, move and copy lines, indent on Return, Tab to indent a block, indentation guides, and a wash on other occurrences of the word under the caret.",
+        "⌘W closes the focused session. It never quits termio.",
+      ],
+      improved: [
+        "Panes you can't see stop rendering. A window full of sessions used to keep a live renderer behind every hidden pane; now only what's on screen draws.",
+        "Search results read as excerpts painted where the matcher hit, rather than a list of paths you have to open to understand.",
+        "Add Host leads with the address, and a host password can be saved to the Keychain and handed to ssh when it asks.",
+        "The editor lays the buffer out at its final line height from the first frame, and the Markdown Edit/Preview flip no longer rebuilds a face it already had.",
+      ],
+      fixed: [
+        "A folder git doesn't track is no longer described as a clean working tree.",
+        "ANSI white is readable on the light default theme.",
+        "termio finds a device's agents where that device actually keeps them, honours the XDG bases on this Mac too, and never merges over a config you edited by hand. A reinstall replaces the device's own hooks instead of stacking beside them.",
+        "Installing onto a device no longer freezes the Settings window while it works.",
+        "Clicking a file tree row that's already selected reopens the file, and an ended session row drags and drops like a live one.",
+      ],
+    },
+  },
+  {
     version: "0.42.0",
     date: "2026-08-24",
     title: "Drag a session where you want it",
