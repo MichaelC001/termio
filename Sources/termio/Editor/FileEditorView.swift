@@ -184,6 +184,12 @@ struct FileEditorView: View {
     private var occurrenceHighlightColor: NSColor {
         ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.14 : 0.11)
     }
+    /// The rules at each indent level, from the same overlay ink at the same weight as the
+    /// occurrence wash: a one-point rule has a fraction of either wash's area to read from, so at
+    /// the current-line band's alpha it would disappear into the background entirely.
+    private var indentGuideColor: NSColor {
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.14 : 0.11)
+    }
 
     var body: some View {
         // The editor's chrome (header, gutter) already sits in the safe content area below the
@@ -306,6 +312,7 @@ struct FileEditorView: View {
                 lineNumberColor: lineNumberColor,
                 currentLineColor: currentLineColor,
                 occurrenceHighlightColor: occurrenceHighlightColor,
+                indentGuideColor: indentGuideColor,
                 isEditable: !readOnly,
                 jumpToLine: jumpLine,
                 findQuery: findBarVisible ? findQuery : "",
