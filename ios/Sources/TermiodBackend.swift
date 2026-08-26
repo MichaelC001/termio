@@ -51,21 +51,22 @@ final class TermiodBackend: DeviceClient {
     /// would lose which is which the moment a fresh row arrives.
     private var statusOverrides: [String: StatusDelta] = [:]
     private var hostID: String?
-    /// Requests in flight, oldest first: a reply is matched to the oldest
-    /// request of its verb, which is correct because this backend issues one of
-    /// each at a time and the connection preserves order.
+    /// Requests in flight, keyed by the `re` each was sent with.
     ///
-    /// It is not the strongest answer available. Every reply carries the `re`
-    /// the request was sent with, and `Termiod.responseID(of:)` reads it — which
-    /// is what a channel carrying several requests at once has to use, and what
-    /// this should be rewired onto (see the RFC's P4 follow-ups). Until then a
-    /// second request of the same verb overtaking the first would mis-attribute
-    /// its reply, and nothing here would notice.
-    private var pendingReads: [String] = []
-    private var pendingSearches: [String] = []
-    /// A file read in progress: the `fs_file` header, and the `F` chunks landing
-    /// behind it.
-    private var readInProgress: (path: String, header: Termiod.FsFilePayload, data: Data)?
+    /// Every reply the daemon sends echoes that id — `Termiod.responseID(of:)`
+    /// reads it off a control payload, and `decodeFileChunk` carries it on the
+    /// bytes behind an `fs_read` — so a reply reaches the caller that asked
+    /// rather than the one that asked first. Order used to be the only thing
+    /// matching them, which held solely because this backend issued one request
+    /// per verb at a time; two in flight and the second reply landed on the
+    /// first caller.
+    private var pendingReads: [UInt64: String] = [:]
+    private var pendingSearches: [UInt64: String] = [:]
+    /// Reads past their header, keyed the same way: the `fs_file` header and the
+    /// `F` chunks landing behind it. Several can stream at once without their
+    /// bytes interleaving into each other's file.
+    private var readsInProgress:
+        [UInt64: (path: String, header: Termiod.FsFilePayload, data: Data)] = [:]
     /// Transfers waiting on the daemon's credit-of-one acks, keyed by upload id
     /// once `upload_opened` names one. The first entry is the one being opened.
     private var transfers: [Transfer] = []
@@ -86,6 +87,13 @@ final class TermiodBackend: DeviceClient {
         let data: Data
         var uploadID: String?
         var offset: UInt64 = 0
+        /// The `re` this transfer's `upload_open` and `upload_commit` went out
+        /// with. Transfers stay strictly sequential — that is the credit-of-one
+        /// design, not an accident — so these do not multiplex anything; they
+        /// are what stops a late reply from a transfer already abandoned from
+        /// shifting the queue under the one now at its head.
+        var openRequest: UInt64?
+        var commitRequest: UInt64?
     }
 
     init(endpoint: DeviceEndpoint, sessionID: String? = nil) {
@@ -96,7 +104,7 @@ final class TermiodBackend: DeviceClient {
             capabilities: Termiod.deviceCapabilities, delegateQueue: .main
         )
         channel.onReady = { [weak self] handshake in self?.handshakeLanded(handshake) }
-        channel.onControl = { [weak self] control in self?.receive(control) }
+        channel.onControl = { [weak self] reply in self?.receive(reply) }
         channel.onEvent = { [weak self] event in self?.receive(event) }
         channel.onFileChunk = { [weak self] payload in self?.receiveFileChunk(payload) }
         channel.onLinkState = { [weak self] up in
@@ -238,9 +246,9 @@ final class TermiodBackend: DeviceClient {
                 report(error, doing: localized("Couldn't start that session."))
             }
         }
-        starter.onControl = { [weak self] control in
+        starter.onControl = { [weak self] reply in
             guard let self else { return }
-            switch control {
+            switch reply.control {
             case .attached:
                 deadline.cancel()
                 // Leave the stream without killing what was just created; the
@@ -300,14 +308,15 @@ final class TermiodBackend: DeviceClient {
         // showing the source, which is what it does for every other file type.
         //
         // The device is addressed absolutely and answered relatively: the reply
-        // is matched against the path the caller asked for, and a save sends
-        // that same path straight back.
-        pendingReads.append(path)
+        // carries back the path the caller asked for, and a save sends that same
+        // path straight back.
+        let request = nextSeq()
+        pendingReads[request] = path
         do {
             try channel.send(control: Termiod.FsReadOperation(
-                path: Self.absolutePath(root: root, path: path), seq: nextSeq()))
+                path: Self.absolutePath(root: root, path: path), seq: request))
         } catch {
-            pendingReads.removeLast()
+            pendingReads[request] = nil
             report(error, doing: localized("Couldn't open that file."))
         }
     }
@@ -346,12 +355,13 @@ final class TermiodBackend: DeviceClient {
         // `Control::Cancel` arm). That changes the day this pane gains content
         // search — an abandoned `fs_search` leaves `git grep` running until the
         // connection drops, and `Termiod.CancelOperation` is what stops it.
-        pendingSearches.append(query)
+        let request = nextSeq()
+        pendingSearches[request] = query
         do {
             try channel.send(control: Termiod.FsMatchOperation(
-                root: root, query: query, limit: Self.searchLimit, seq: nextSeq()))
+                root: root, query: query, limit: Self.searchLimit, seq: request))
         } catch {
-            pendingSearches.removeLast()
+            pendingSearches[request] = nil
             report(error, doing: localized("Couldn't search this project."))
         }
     }
@@ -399,8 +409,13 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    private func receive(_ control: Termiod.IncomingControl) {
-        switch control {
+    /// Routes one reply to the request that caused it.
+    ///
+    /// Not private so the routing can be driven with real replies: which of
+    /// several in-flight requests an arriving frame lands on is the kind of
+    /// thing that goes wrong silently, and a socket is not needed to prove it.
+    func receive(_ reply: TermiodChannel.Reply) {
+        switch reply.control {
         case .sessions(let payload):
             sessionOrder = payload.sessions.map(\.id)
             sessionsByID = Dictionary(
@@ -410,20 +425,32 @@ final class TermiodBackend: DeviceClient {
         case .fsListed(let payload):
             receiveListings(payload)
         case .fsFile(let header):
-            receiveFileHeader(header)
+            receiveFileHeader(header, responseID: reply.responseID)
         case .fsMatched(let payload):
-            receiveMatches(payload)
+            receiveMatches(payload, responseID: reply.responseID)
         case .uploadOpened(let opened):
-            receiveUploadOpened(opened)
+            receiveUploadOpened(opened, responseID: reply.responseID)
         case .uploadAck(let ack):
             receiveUploadAck(ack)
         case .uploadCommitted(let committed):
-            receiveUploadCommitted(committed)
+            receiveUploadCommitted(committed, responseID: reply.responseID)
         case .error(let failure):
-            failInFlight(failure.message)
+            failInFlight(failure.message, responseID: reply.responseID)
         default:
             break
         }
+    }
+
+    /// Which outstanding request a reply belongs to.
+    ///
+    /// The `re` names it outright. A reply that carries none — a daemon too old
+    /// to stamp them — can still be placed when exactly one request of that verb
+    /// is waiting, because then there is nothing to confuse it with. Two waiting
+    /// and no `re` is genuinely ambiguous, and guessing there is the behaviour
+    /// this correlation exists to end.
+    private func request<Value>(for responseID: UInt64?, in waiting: [UInt64: Value]) -> UInt64? {
+        if let responseID { return waiting[responseID] != nil ? responseID : nil }
+        return waiting.count == 1 ? waiting.keys.first : nil
     }
 
     private func receive(_ event: Termiod.IncomingEvent) {
@@ -484,35 +511,39 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    private func receiveFileHeader(_ header: Termiod.FsFilePayload) {
-        guard !pendingReads.isEmpty else { return }
-        let path = pendingReads.removeFirst()
+    private func receiveFileHeader(_ header: Termiod.FsFilePayload, responseID: UInt64?) {
+        guard let request = request(for: responseID, in: pendingReads),
+              let path = pendingReads.removeValue(forKey: request)
+        else { return }
         guard header.length > 0 else {
             deliver(path: path, header: header, data: Data())
             return
         }
-        readInProgress = (path, header, Data())
+        readsInProgress[request] = (path, header, Data())
     }
 
-    private func receiveFileChunk(_ payload: Data) {
-        guard var pending = readInProgress else { return }
-        // `chunk.request` is the `re` this read was asked with, and is what a
-        // backend running several reads at once would demultiplex on. This one
-        // runs a single read at a time, so the chunks behind one header are the
-        // only chunks in flight — the same reason the per-verb queues above are
-        // enough, and the same follow-up retires both.
+    /// Not private for the same reason `receive(_:)` is not: the bytes behind
+    /// one read landing in another read's file is silent when it happens.
+    func receiveFileChunk(_ payload: Data) {
         let chunk: (request: UInt64, offset: UInt64, last: Bool, data: Data)
         do {
             chunk = try Termiod.decodeFileChunk(payload)
         } catch {
-            readInProgress = nil
+            // The header is what says which read a chunk belongs to, so an
+            // unreadable one cannot be attributed. Every read in flight is
+            // abandoned rather than left waiting on a stream that has stopped
+            // making sense.
+            readsInProgress.removeAll()
             report(error, doing: localized("Couldn't read that file."))
             return
         }
+        // A chunk names its read, so the bytes of two files streaming at once
+        // never interleave into one.
+        guard var pending = readsInProgress[chunk.request] else { return }
         pending.data.append(chunk.data)
-        readInProgress = pending
+        readsInProgress[chunk.request] = pending
         guard chunk.last || UInt64(pending.data.count) >= pending.header.length else { return }
-        readInProgress = nil
+        readsInProgress[chunk.request] = nil
         deliver(path: pending.path, header: pending.header, data: pending.data)
     }
 
@@ -530,9 +561,10 @@ final class TermiodBackend: DeviceClient {
         ))
     }
 
-    private func receiveMatches(_ payload: Termiod.FsMatchedPayload) {
-        guard !pendingSearches.isEmpty else { return }
-        let query = pendingSearches.removeFirst()
+    private func receiveMatches(_ payload: Termiod.FsMatchedPayload, responseID: UInt64?) {
+        guard let request = request(for: responseID, in: pendingSearches),
+              let query = pendingSearches.removeValue(forKey: request)
+        else { return }
         guard !payload.indexIsMissing else {
             // Zero hits at zero coverage means the device never indexed this
             // checkout — reporting that as "no matches" would be a lie about
@@ -555,16 +587,18 @@ final class TermiodBackend: DeviceClient {
         guard let transfer = transfers.first else { return }
         let digest = SHA256.hash(data: transfer.data)
             .map { String(format: "%02x", $0) }.joined()
+        let request = nextSeq()
+        transfers[0].openRequest = request
         let operation: Termiod.UploadOpenOperation
         switch transfer.destination {
         case .file(let path, let root, _):
             operation = Termiod.UploadOpenOperation(
                 dest: path, root: root,
-                size: UInt64(transfer.data.count), sha256: digest, seq: nextSeq())
+                size: UInt64(transfer.data.count), sha256: digest, seq: request)
         case .scratch(let name):
             operation = Termiod.UploadOpenOperation(
                 dest: "temp:\(name)", session: sessionID,
-                size: UInt64(transfer.data.count), sha256: digest, seq: nextSeq())
+                size: UInt64(transfer.data.count), sha256: digest, seq: request)
         }
         do {
             try channel.send(control: operation)
@@ -575,8 +609,12 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    private func receiveUploadOpened(_ opened: Termiod.UploadOpenedPayload) {
+    private func receiveUploadOpened(_ opened: Termiod.UploadOpenedPayload, responseID: UInt64?) {
         guard !transfers.isEmpty else { return }
+        // A reply naming an open this queue has moved past belongs to a transfer
+        // already abandoned; honouring it would hand the head transfer someone
+        // else's upload id and send its bytes to the wrong file.
+        guard responseID == nil || responseID == transfers[0].openRequest else { return }
         transfers[0].uploadID = opened.uploadId
         transfers[0].offset = opened.offset
         sendNextChunk()
@@ -604,14 +642,19 @@ final class TermiodBackend: DeviceClient {
     }
 
     private func commit(_ transfer: Transfer, uploadID: String) {
+        // Only ever reached with the head transfer, but the subscript below is
+        // what would trap if that ever stopped being true.
+        guard !transfers.isEmpty else { return }
         let base: UInt64?
         switch transfer.destination {
         case .file(_, _, let baseModifiedSeconds): base = baseModifiedSeconds
         case .scratch: base = nil
         }
+        let request = nextSeq()
+        transfers[0].commitRequest = request
         do {
             try channel.send(control: Termiod.UploadCommitOperation(
-                uploadId: uploadID, ifUnmodifiedSince: base, seq: nextSeq()))
+                uploadId: uploadID, ifUnmodifiedSince: base, seq: request))
         } catch {
             transfers.removeFirst()
             report(error, doing: localized("Couldn't save that file on the device."))
@@ -619,8 +662,14 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    private func receiveUploadCommitted(_ committed: Termiod.UploadCommittedPayload) {
+    private func receiveUploadCommitted(
+        _ committed: Termiod.UploadCommittedPayload, responseID: UInt64?
+    ) {
         guard !transfers.isEmpty else { return }
+        // Same reason as `upload_opened`: a commit this queue has moved past
+        // would otherwise pop the transfer now at its head and report the wrong
+        // file as saved.
+        guard responseID == nil || responseID == transfers[0].commitRequest else { return }
         let transfer = transfers.removeFirst()
         switch transfer.destination {
         case .file(let path, _, _):
@@ -633,27 +682,47 @@ final class TermiodBackend: DeviceClient {
 
     // MARK: - Failure
 
-    /// A device refusal carries no request id, so it is attributed the way the
-    /// companion wire's is: to whatever this connection has outstanding.
-    private func failInFlight(_ message: String) {
-        if !transfers.isEmpty {
-            transfers.removeFirst()
-            onError?(message)
-            openNextTransfer()
+    /// A device refusal names the request it answers, so it fails that caller
+    /// and leaves everything else in flight alone.
+    ///
+    /// It used to be attributed to whatever this connection had outstanding,
+    /// newest concern first — which meant a refused search could cancel a read
+    /// that was still perfectly alive, and the read would then hang until the
+    /// socket dropped.
+    private func failInFlight(_ message: String, responseID: UInt64?) {
+        defer { onError?(message) }
+        guard let responseID else {
+            // A rejected upload chunk names nothing — a `U` frame carries no
+            // `seq`, so the refusal carries neither a `re` nor an upload id.
+            // Charging it to the head is an inference, and it holds because
+            // every other unaddressed refusal this daemon sends closes the
+            // connection, where `forgetInFlight()` clears the queue anyway.
+            // Left parked, the head would stall every transfer behind it.
+            if transfers.first?.uploadID != nil {
+                transfers.removeFirst()
+                openNextTransfer()
+            }
             return
         }
-        if !pendingReads.isEmpty { pendingReads.removeFirst() }
-        if !pendingSearches.isEmpty { pendingSearches.removeFirst() }
-        onError?(message)
+        if pendingReads.removeValue(forKey: responseID) != nil { return }
+        if readsInProgress.removeValue(forKey: responseID) != nil { return }
+        if pendingSearches.removeValue(forKey: responseID) != nil { return }
+        guard let index = transfers.firstIndex(where: {
+            $0.openRequest == responseID || $0.commitRequest == responseID
+        }) else { return }
+        transfers.remove(at: index)
+        // Only the head transfer is ever on the wire, so a refused one has to
+        // hand the queue on or everything behind it stalls.
+        if index == 0 { openNextTransfer() }
     }
 
     /// A dropped socket takes every in-flight request with it. Left in place,
-    /// the next connection's first reply would be matched to a request nobody is
-    /// waiting on any more.
+    /// a reply on the next connection could carry an id this one had already
+    /// handed out, and land on a request nobody is waiting for any more.
     private func forgetInFlight() {
         pendingReads.removeAll()
         pendingSearches.removeAll()
-        readInProgress = nil
+        readsInProgress.removeAll()
         transfers.removeAll()
     }
 
@@ -748,7 +817,8 @@ private extension DeviceRoster {
     ///   exists precisely so the client decides. The ＋ menu is the weaker half:
     ///   it offers the built-in list as a fallback, so it can offer an agent the
     ///   box does not have. `agents_probed` / `AgentPresence` is the answer to
-    ///   that and is not wired up yet (see the RFC's P4 follow-ups).
+    ///   that and is not wired up yet (see the RFC's P4 follow-ups) — a separate
+    ///   change from this one, which only fixed how replies find their caller.
     /// - **The workspace.** One device is one workspace, and it carries no
     ///   `deviceAlias`: the box *is* the paired peer, which is what makes
     ///   `RosterStore.localWorkspaces` offer it as a place to start a session.

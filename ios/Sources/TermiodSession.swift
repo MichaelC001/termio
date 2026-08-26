@@ -60,7 +60,10 @@ final class TermiodSession: DeviceSession {
             delegateQueue: queue, pingRunLoopMode: .common
         )
         channel.onReady = { [weak self] _ in self?.sendAttach() }
-        channel.onControl = { [weak self] control in self?.receive(control) }
+        // An attach channel carries one attachment and nothing else, so there is
+        // never a second request for a reply to be confused with — the `re` is
+        // real but has nothing to demultiplex.
+        channel.onControl = { [weak self] reply in self?.receive(reply.control) }
         channel.onEvent = { [weak self] event in self?.receive(event) }
         channel.onData = { [weak self] data in self?.onOutput?(data) }
         channel.onSnapshot = { [weak self] payload in self?.repaint(payload) }
