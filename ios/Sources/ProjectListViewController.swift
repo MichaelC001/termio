@@ -512,7 +512,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         guard case .needsYou = sections[indexPath.section],
-              store.companionURL != nil,
+              store.deviceEndpoint != nil,
               let sessionID = attention[indexPath.row].rosterID
         else { return nil }
         let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
@@ -532,7 +532,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
     ) -> UIContextMenuConfiguration? {
         guard case .projects = sections[indexPath.section] else { return nil }
         let project = projects[indexPath.row]
-        guard store.companionURL != nil, project.rosterID != nil else { return nil }
+        guard store.deviceEndpoint != nil, project.rosterID != nil else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(title: project.name, children: self?.store.newSessionActions(in: project) ?? [])
         }

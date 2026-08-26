@@ -14,7 +14,7 @@ final class InspectorViewController: UIViewController {
     private enum Pane: Int { case changes = 0, files = 1 }
 
     private let session: MockSession
-    private let companionURL: URL?
+    private let endpoint: DeviceEndpoint?
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let segment = UISegmentedControl(items: [localized("Changes"), localized("Files")])
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -55,11 +55,11 @@ final class InspectorViewController: UIViewController {
     private var searchDebounce: DispatchWorkItem?
 
     /// The file and changes planes need a companion link and a project to scope to.
-    private var isLive: Bool { companionURL != nil && session.projectRosterID != nil }
+    private var isLive: Bool { endpoint != nil && session.projectRosterID != nil }
 
-    init(session: MockSession, companionURL: URL? = nil) {
+    init(session: MockSession, endpoint: DeviceEndpoint? = nil) {
         self.session = session
-        self.companionURL = companionURL
+        self.endpoint = endpoint
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -226,9 +226,9 @@ final class InspectorViewController: UIViewController {
     /// A dedicated control connection for browsing — the terminal's own socket is a raw
     /// PTY byte stream once attached, so it can't carry these.
     private func connectFilePlane() {
-        guard let companionURL, let projectID = session.projectRosterID else { return }
+        guard let endpoint, let projectID = session.projectRosterID else { return }
         setLoading(true)
-        let client = CompanionBackend(url: companionURL)
+        let client = DeviceBackends.client(for: endpoint)
         client.onConnected = { [weak self] connected in
             guard let self, connected else { return }
             client.listChanges(projectID: projectID)

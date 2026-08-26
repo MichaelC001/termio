@@ -35,6 +35,18 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // capture states that gestures can't reach from the CLI.
         let args = ProcessInfo.processInfo.arguments
 
+        // `-pair-device termio://device?…` pairs with a box the way a scanned
+        // QR does, through the same funnel and the same verify-before-save. It
+        // exists because a simulator has no camera and cannot be tapped, and it
+        // authors nothing the invite does not already carry.
+        if let invite = Self.argument("-pair-device", in: args) {
+            CompanionLink.pair(rawAddress: invite) { result in
+                if case .failure(let failure) = result {
+                    Log.device.error("pairing refused: \(failure.message, privacy: .public)")
+                }
+            }
+        }
+
         // Automated companion test drive: `-companion-url ws://localhost:8787`
         // streams the PoC server; add `-companion-session <roster-id>` to
         // attach straight to a real Mac session's PTY.
@@ -53,7 +65,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 )
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                let terminal = TerminalViewController(companionURL: url, session: session)
+                let terminal = TerminalViewController(
+                    endpoint: DeviceEndpoint(kind: .companion, url: url), session: session)
                 root.open(terminal, sessionKey: session?.key, animated: false)
                 // `-open-inspector` slides the file drawer out once attached,
                 // so simctl runs can screenshot the live tree.
@@ -76,6 +89,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 MainActor.assumeIsolated {
                     ticks += 1
                     if root.openProjectPage(named: name) || ticks > 20 { timer.invalidate() }
+                }
+            }
+        }
+
+        // `-open-session <title>`: the session twin of `-open-project`, opening
+        // a live session's terminal once the roster carries it. A simulator has
+        // no way to be tapped, and a terminal is the one screen that cannot be
+        // reached any other way.
+        if let title = Self.argument("-open-session", in: args) {
+            var ticks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    ticks += 1
+                    if root.openSessionScreen(titled: title) || ticks > 30 { timer.invalidate() }
                 }
             }
         }

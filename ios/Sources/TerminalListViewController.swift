@@ -196,7 +196,7 @@ final class TerminalListViewController: UIViewController {
         groups = store.terminalGroups
         // Shown whenever paired: New Terminal is project-less, so it no longer
         // needs an existing terminals container to land in (it seeds the first).
-        newTerminalButton.isHidden = store.companionURL == nil
+        newTerminalButton.isHidden = store.deviceEndpoint == nil
         tableView.reloadData()
         updateEmptyState()
     }
@@ -225,7 +225,7 @@ final class TerminalListViewController: UIViewController {
     private func updateEmptyState() {
         emptyState.isHidden = !visible.isEmpty
         guard !emptyState.isHidden else { return }
-        let canStart = store.companionURL != nil
+        let canStart = store.deviceEndpoint != nil
         emptyState.configure(
             icon: .terminal,
             title: localized("No terminals yet"),
@@ -303,7 +303,7 @@ extension TerminalListViewController: UITableViewDataSource, UITableViewDelegate
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = groups[indexPath.section].sessions[indexPath.row].rosterID
         else { return nil }
         let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in

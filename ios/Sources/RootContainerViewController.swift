@@ -142,7 +142,7 @@ final class RootContainerViewController: UIViewController {
         view.addSubview(homeTabs.view)
         homeTabs.didMove(toParent: self)
 
-        store.onOpenSession = { [weak self] session, companionURL in
+        store.onOpenSession = { [weak self] session, endpoint in
             guard let self else { return }
             // Coming back to a parked session reuses its screen: same surface,
             // scrollback and connection intact — no surface teardown/rebuild.
@@ -151,8 +151,8 @@ final class RootContainerViewController: UIViewController {
             let screen: UIViewController
             if let parked = recentTerminals[session.key] {
                 screen = parked
-            } else if let companionURL, session.rosterID != nil {
-                screen = TerminalViewController(companionURL: companionURL, session: session)
+            } else if let endpoint, session.rosterID != nil {
+                screen = TerminalViewController(endpoint: endpoint, session: session)
             } else {
                 screen = TerminalViewController(session: session)
             }
@@ -596,6 +596,17 @@ final class RootContainerViewController: UIViewController {
             ProjectDetailViewController(store: store, project: project),
             animated: false
         )
+        return true
+    }
+
+    /// `-open-session <title>`: open a live session's terminal once the roster
+    /// carries it, through the same call a row tap makes. Returns false while
+    /// the session isn't in the roster yet.
+    func openSessionScreen(titled title: String) -> Bool {
+        loadViewIfNeeded()
+        guard let session = store.projects.flatMap(\.sessions).first(where: { $0.title == title })
+        else { return false }
+        store.openSession(session)
         return true
     }
 

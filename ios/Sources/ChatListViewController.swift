@@ -273,7 +273,7 @@ extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = groups[indexPath.section].sessions[indexPath.row].rosterID
         else { return nil }
         let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in

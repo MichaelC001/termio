@@ -43,6 +43,16 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB20000000000000000000C1"
+               BuildableName = "TermioMobileTests.xctest"
+               BlueprintName = "TermioMobileTests"
+               ReferencedContainer = "container:TermioMobile.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "AA10000000000000000000A1"
                BuildableName = "TermioMobileUITests.xctest"
                BlueprintName = "TermioMobileUITests"

@@ -146,12 +146,15 @@ extension IconRef {
 }
 
 extension SessionStatus {
-    /// Map a wire status string (`RosterSession.status`) to a status.
+    /// Map a wire status string to a status. Both spellings are here because
+    /// both are on a wire this app speaks: the companion roster says
+    /// `needsAttention`, and termiod's §4 workstream vocabulary says
+    /// `needs_you` for the same state.
     init(wire: String) {
         switch wire {
         case "working": self = .working
         case "done": self = .done
-        case "needsAttention": self = .needsAttention
+        case "needsAttention", "needs_you": self = .needsAttention
         default: self = .idle
         }
     }
@@ -352,29 +355,74 @@ extension Notification.Name {
 
 // MARK: - Companion link state
 
-/// One Mac this phone has paired with — the Slack-workspace model: several
-/// stay paired, one is active at a time. `id` is the Mac's stable `macID`
-/// from the roster; until the first roster names it (a fresh pairing, or an
-/// older Mac that never will) it holds a locally minted placeholder that
-/// `CompanionLink.adoptIdentity` replaces in place.
+/// Which protocol reaches a paired peer. The app speaks two and the UI speaks
+/// neither — see `docs/design/20260824-ios-as-device-client.md` D1.
+enum DeviceKind: String, Codable {
+    /// The Mac companion wire: JSON controls and raw PTY bytes on one socket,
+    /// with the token on the query string.
+    case companion
+    /// The termiod Session Protocol, straight to the box the session runs on.
+    case termiod
+}
+
+/// Everything a backend needs to dial one peer. Passed around in place of the
+/// bare URL the app used when there was only one protocol to speak.
+struct DeviceEndpoint: Equatable {
+    let kind: DeviceKind
+    /// The URL the socket dials, ready to use.
+    let url: URL
+    /// The pairing token, for a transport that does not carry it in `url`.
+    let token: String?
+    /// The `Origin` this peer's listener expects, when it checks one.
+    let origin: String?
+
+    init(kind: DeviceKind, url: URL, token: String? = nil, origin: String? = nil) {
+        self.kind = kind
+        self.url = url
+        self.token = token
+        self.origin = origin
+    }
+}
+
+/// One machine this phone has paired with — the Slack-workspace model: several
+/// stay paired, one is active at a time. `id` is the peer's stable identity
+/// (the Mac's `macID`, a box's `host_id`); until the first roster names it (a
+/// fresh companion pairing, or an older Mac that never will) it holds a locally
+/// minted placeholder that `CompanionLink.adoptIdentity` replaces in place.
 struct PairedMac: Codable, Equatable {
     var id: String
     var name: String
-    /// ws(s)://host:port, with the pairing token held separately in `token`.
+    /// ws(s)://host:port — for the companion wire the pairing token is held
+    /// separately in `token`; for termiod the path (`/ws`) is part of it.
     var address: String
     var token: String?
+    /// Which protocol reaches this peer. Defaulted rather than required: the
+    /// stored list decodes with `try?` and returns `[]` on failure, so a new
+    /// mandatory field would silently unpair every device already saved.
+    var kind: DeviceKind = .companion
+    /// The `Origin` a termiod listener expects, learned at pairing time from
+    /// the invite's `url`. nil for the companion wire, which checks none.
+    var origin: String?
 
-    /// The URL the socket dials: the address with the token riding the `t`
-    /// query param — the shape the Mac's QR encodes and `CompanionClient`
-    /// reads the token back out of.
+    /// The URL the socket dials. The companion wire carries its token as the
+    /// `t` query param — the shape the Mac's QR encodes and `CompanionClient`
+    /// reads the token back out of; termiod carries it as a subprotocol, so its
+    /// address dials as stored.
     var connectURL: URL? {
         guard var components = URLComponents(string: address) else { return nil }
-        if let token {
+        if kind == .companion, let token {
             var items = components.queryItems ?? []
             items.append(URLQueryItem(name: "t", value: token))
             components.queryItems = items
         }
         return components.url
+    }
+
+    /// Where and how to reach this peer — nil when the stored address no longer
+    /// parses.
+    var endpoint: DeviceEndpoint? {
+        guard let url = connectURL else { return nil }
+        return DeviceEndpoint(kind: kind, url: url, token: token, origin: origin)
     }
 
     /// "studio.local:8787" — the row caption; scheme is noise and the token
@@ -383,6 +431,21 @@ struct PairedMac: Codable, Equatable {
         guard let url = URL(string: address), let host = url.host else { return address }
         let port = url.port.map { ":\($0)" } ?? ""
         return host + port
+    }
+}
+
+extension PairedMac {
+    /// Written by hand so a blob saved before `kind` existed still decodes as
+    /// the companion Mac it is. Declared in an extension so the memberwise
+    /// initialiser survives.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        address = try container.decode(String.self, forKey: .address)
+        token = try container.decodeIfPresent(String.self, forKey: .token)
+        kind = try container.decodeIfPresent(DeviceKind.self, forKey: .kind) ?? .companion
+        origin = try container.decodeIfPresent(String.self, forKey: .origin)
     }
 }
 
@@ -411,8 +474,8 @@ enum CompanionLink {
 
     static let stateDidChange = Notification.Name("CompanionLinkStateDidChange")
     /// Posted when the active pairing changes (a new pairing, a switch, a
-    /// forget); the socket's owner reacts by reconnecting to `savedURL` or
-    /// tearing the link down.
+    /// forget); the socket's owner reacts by reconnecting to `savedEndpoint`
+    /// or tearing the link down.
     static let pairingDidChange = Notification.Name("CompanionPairingDidChange")
     /// Posted when the paired-Mac list or the active choice changes for any
     /// reason (including an identity adoption that only renames an entry) —
@@ -448,23 +511,39 @@ enum CompanionLink {
         return match
     }
 
-    /// The active Mac's dial URL — nil when nothing is paired.
-    static var savedURL: URL? { activeMac?.connectURL }
+    /// Where and how to reach the active peer — nil when nothing is paired.
+    static var savedEndpoint: DeviceEndpoint? { activeMac?.endpoint }
 
-    /// A scanned QR or typed address. When the exact address+token is already
-    /// on the list this just switches to that entry; otherwise it adds a
-    /// placeholder entry the first roster will name — and if that roster
-    /// reveals an already-known Mac (a re-scan after a tunnel restart),
-    /// `adoptIdentity` folds the fresh address into the known entry instead
-    /// of keeping a duplicate. Returns false for an unparseable address.
+    /// A scanned QR or typed address, whichever screen it came from — the
+    /// scanner hands back a raw string and parses nothing, so this is the one
+    /// place a pairing is understood.
+    ///
+    /// A companion address pairs the moment it parses, which is the shipped
+    /// behaviour. A `termio://device` invite does not: per D4 it dials once and
+    /// waits for `hello_ok` before anything is written, because saving an
+    /// unverified address is what produced the companion's worst failure mode —
+    /// paired, silently unreachable, and indistinguishable from a bug.
+    ///
+    /// Returns false for an address that does not parse; `completion` (main
+    /// queue) carries the real outcome, which for an invite arrives later.
     @discardableResult
-    static func pair(rawAddress: String) -> Bool {
-        guard let url = normalize(rawAddress) else { return false }
+    static func pair(
+        rawAddress: String, completion: ((Result<Void, PairingFailure>) -> Void)? = nil
+    ) -> Bool {
+        if let invite = parseDeviceInvite(rawAddress) {
+            pair(invite: invite, completion: completion)
+            return true
+        }
+        guard let url = normalize(rawAddress) else {
+            completion?(.failure(.unreadableAddress))
+            return false
+        }
         let token = token(of: url)
         let address = strippedAddress(of: url)
         var macs = pairedMacs
         if let existing = macs.first(where: { $0.address == address && $0.token == token }) {
             setActive(existing.id)
+            completion?(.success(()))
             return true
         }
         let mac = PairedMac(
@@ -476,7 +555,151 @@ enum CompanionLink {
         macs.append(mac)
         save(macs)
         setActive(mac.id)
+        completion?(.success(()))
         return true
+    }
+
+    /// Why a pairing did not take. Each case is a sentence the Devices page can
+    /// show as-is: a refused pairing that says nothing is the failure mode this
+    /// whole verify-first flow exists to end.
+    enum PairingFailure: Error, Equatable {
+        case unreadableAddress
+        /// The invite named a protocol version this build does not speak.
+        case protocolTooNew
+        /// The device never answered, or answered by refusing.
+        case unreachable(String)
+
+        var message: String {
+            switch self {
+            case .unreadableAddress:
+                return localized("That isn't an address Termio can pair with.")
+            case .protocolTooNew:
+                return localized("This device speaks a newer protocol. Update Termio on this phone.")
+            case .unreachable(let reason):
+                return reason
+            }
+        }
+    }
+
+    /// The four fields `termiod pair` puts in a `termio://device` link. No
+    /// display name: device architecture §4 leaves that to the client, exactly
+    /// as `PairedMac.name` does for a Mac.
+    struct DeviceInvite: Equatable {
+        /// The dial URL, already resolved to `ws(s)://…/ws`.
+        let url: URL
+        let token: String
+        let hostID: String
+        let proto: UInt32
+        /// The listener's allowed origin, derived from the invite's own `url` —
+        /// it is the operator's `--wss-origin` rendered back as a base URL, so
+        /// the two agree by construction.
+        let origin: String
+
+        var address: String { url.absoluteString }
+    }
+
+    /// Reads a `termio://device?url=…&token=…&host_id=…&proto=…` link, from the
+    /// scanner or from a paste. nil for anything else, including a link missing
+    /// a field — a half-read QR must not pair against a guess.
+    static func parseDeviceInvite(_ raw: String) -> DeviceInvite? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              components.scheme?.lowercased() == "termio",
+              components.host?.lowercased() == "device"
+        else { return nil }
+        let items = components.queryItems ?? []
+        func value(_ name: String) -> String? {
+            items.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        guard let rawURL = value("url"), let token = value("token"),
+              let hostID = value("host_id"),
+              let base = URLComponents(string: rawURL),
+              let dial = websocketURL(from: base), let origin = originValue(of: base)
+        else { return nil }
+        return DeviceInvite(
+            url: dial,
+            token: token,
+            hostID: hostID,
+            proto: value("proto").flatMap { UInt32($0) } ?? Termiod.protocolVersion,
+            origin: origin
+        )
+    }
+
+    /// The invite's reachable base rendered as the socket URL: same host and
+    /// port, the ws(s) twin of its scheme, and the listener's `/ws` mount under
+    /// whatever path the operator published (Tailscale Serve's `/termio`).
+    private static func websocketURL(from base: URLComponents) -> URL? {
+        var dial = base
+        switch base.scheme?.lowercased() {
+        case "https", "wss": dial.scheme = "wss"
+        case "http", "ws": dial.scheme = "ws"
+        default: return nil
+        }
+        dial.query = nil
+        dial.fragment = nil
+        let prefix = base.path.hasSuffix("/") ? String(base.path.dropLast()) : base.path
+        dial.path = prefix + "/ws"
+        return dial.url
+    }
+
+    /// `scheme://host[:port]` — an origin has no path, and the daemon compares
+    /// it that way.
+    private static func originValue(of base: URLComponents) -> String? {
+        guard let scheme = base.scheme?.lowercased(), let host = base.host else { return nil }
+        let webScheme = scheme == "wss" ? "https" : (scheme == "ws" ? "http" : scheme)
+        let port = base.port.map { ":\($0)" } ?? ""
+        return "\(webScheme)://\(host)\(port)"
+    }
+
+    /// D4's verify-before-save: dial the box, wait for `hello_ok`, and only then
+    /// write it to the paired list — keyed by the identity the daemon answered
+    /// with rather than the one the QR claimed, so a box already known through
+    /// another route is updated instead of duplicated.
+    private static func pair(
+        invite: DeviceInvite, completion: ((Result<Void, PairingFailure>) -> Void)?
+    ) {
+        guard invite.proto <= Termiod.protocolVersion else {
+            completion?(.failure(.protocolTooNew))
+            return
+        }
+        let endpoint = DeviceEndpoint(
+            kind: .termiod, url: invite.url, token: invite.token, origin: invite.origin)
+        TermiodBackend.verify(endpoint: endpoint) { result in
+            switch result {
+            case .failure(let refusal):
+                completion?(.failure(.unreachable(refusal.message)))
+            case .success(let hostID):
+                adopt(invite: invite, hostID: hostID)
+                completion?(.success(()))
+            }
+        }
+    }
+
+    /// Files a verified invite. The daemon's own `host_id` wins over the QR's:
+    /// re-scanning a box already paired updates that entry's address and token
+    /// rather than leaving two rows for one machine.
+    private static func adopt(invite: DeviceInvite, hostID: String) {
+        var macs = pairedMacs
+        let identity = hostID.isEmpty ? invite.hostID : hostID
+        if let index = macs.firstIndex(where: { $0.id == identity }) {
+            macs[index].address = invite.address
+            macs[index].token = invite.token
+            macs[index].kind = .termiod
+            macs[index].origin = invite.origin
+            save(macs)
+            setActive(identity)
+            return
+        }
+        macs.append(PairedMac(
+            id: identity,
+            name: invite.url.host ?? localized("Device"),
+            address: invite.address,
+            token: invite.token,
+            kind: .termiod,
+            origin: invite.origin
+        ))
+        save(macs)
+        setActive(identity)
     }
 
     /// The active connection's roster named its Mac. Adopt the identity into

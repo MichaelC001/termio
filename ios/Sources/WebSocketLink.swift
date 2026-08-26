@@ -31,6 +31,15 @@ final class WebSocketLink: NSObject {
         /// what the terminal needs, since scrolling the scrollback would
         /// otherwise hold the probe off for the length of the drag.
         var pingRunLoopMode: RunLoop.Mode = .default
+        /// Subprotocols to offer on the Upgrade. termiod's listener carries the
+        /// pairing token here rather than in the query string, so it never
+        /// reaches a proxy's request log.
+        var subprotocols: [String] = []
+        /// Extra request headers. termiod's listener runs a browser CSRF check
+        /// on `Origin` and a native client sends none, so the phone states the
+        /// operator's allowed origin — a value it chose, which is why the token
+        /// stays the only thing authenticating the pipe.
+        var headers: [String: String] = [:]
     }
 
     /// About to dial. Main queue — reset whatever per-connection state the
@@ -150,13 +159,34 @@ final class WebSocketLink: NSObject {
         guard !stopped else { return }
         currentTaskDidDie = false
         task?.cancel(with: .goingAway, reason: nil)
-        let task = session.webSocketTask(with: configuration.url)
+        let task = makeTask()
         task.maximumMessageSize = configuration.maximumMessageSize
         setOpen(false)
         self.task = task
         onConnecting?()
         task.resume()
         receive(on: task)
+    }
+
+    /// A link that asks for no headers dials exactly the way it always has —
+    /// the request-building path exists for termiod's `Origin` and must not
+    /// become the companion wire's path too.
+    private func makeTask() -> URLSessionWebSocketTask {
+        guard !configuration.headers.isEmpty else {
+            return session.webSocketTask(
+                with: configuration.url, protocols: configuration.subprotocols)
+        }
+        var request = URLRequest(url: configuration.url)
+        for (name, value) in configuration.headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        if !configuration.subprotocols.isEmpty {
+            request.setValue(
+                configuration.subprotocols.joined(separator: ", "),
+                forHTTPHeaderField: "Sec-WebSocket-Protocol"
+            )
+        }
+        return session.webSocketTask(with: request)
     }
 
     private func scheduleReconnect() {
