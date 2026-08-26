@@ -1040,10 +1040,6 @@ final class TermioStore: ObservableObject {
     private let stateFile = StateFile()
     /// Coalesces the ratio-drag flood of `splitGroups` writes into one save.
     private var persistDebounce: DispatchWorkItem?
-
-    /// The socket Claude Code's hooks report into. Runs for the app's lifetime; the
-    /// `~/.claude/settings.json` side is what the setting toggles on and off.
-    var hookListener: HookListener?
     /// The hooks-enabled value last written to disk, so a settings change only
     /// rewrites the hooks file when this specific setting flips — not on every
     /// unrelated appearance change that also fires `objectWillChange`.
@@ -1052,7 +1048,7 @@ final class TermioStore: ObservableObject {
     /// The control socket the `termio sessions` CLI drives sibling sessions through.
     /// Runs for the app's lifetime (harmless when the feature is off — the handler
     /// refuses with "disabled"); only the awareness note installed into the agent
-    /// instruction files is toggled, mirroring how `hookListener` works.
+    /// instruction files is toggled.
     var sessionControl: SessionControlListener?
     var installedSessionControlEnabled: Bool?
 

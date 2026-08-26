@@ -26,8 +26,47 @@ final class TermiodStatusTests: XCTestCase {
                            settings: AppSettings(defaults: defaults ?? .standard))
     }
 
-    private func status(_ state: String, title: String? = nil) -> Termiod.StatusPayload {
-        Termiod.StatusPayload(session: "s_1", status: state, title: title)
+    private func status(
+        _ state: String, title: String? = nil,
+        transcriptPath: String? = nil, conversationID: String? = nil,
+        tool: String? = nil, promptTitle: String? = nil
+    ) -> Termiod.StatusPayload {
+        Termiod.StatusPayload(
+            session: "s_1", status: state, title: title,
+            transcriptPath: transcriptPath, conversationID: conversationID,
+            tool: tool, promptTitle: promptTitle)
+    }
+
+    /// The four fields this path could not carry before Stage 6, and the whole
+    /// reason `SetStatus` was grown before the Mac was switched onto it: a
+    /// report that reached a device but arrived stripped of the transcript, the
+    /// tool and the prompt title would have been a downgrade, not a move.
+    func testAReportCarriesWhatOnlyTheLocalSocketUsedTo() {
+        let session = Session(title: "agent", agent: .claudeCode)
+        let store = makeStore(with: session)
+
+        store.applyTermiodStatus(
+            status("working", tool: "Bash", promptTitle: "Refactor the installer"),
+            for: session.id)
+        XCTAssertEqual(store.runtime(for: session.id).currentTool, "Bash")
+        XCTAssertEqual(store.session(session.id)?.promptTitle, "Refactor the installer")
+
+        store.applyTermiodStatus(
+            status("done", transcriptPath: "/tmp/conv.jsonl"), for: session.id)
+        XCTAssertEqual(store.transcriptPaths[session.id], "/tmp/conv.jsonl")
+    }
+
+    /// `attention` is the hook vocabulary and `needs_you` is the protocol's, and
+    /// nothing translated between them — so a device agent stopped at a
+    /// permission prompt reported a state no client recognised and sat there
+    /// looking idle. The daemon normalizes now; this pins the state it produces.
+    func testABlockedAgentRaisesTheFlag() {
+        let session = Session(title: "agent", agent: .claudeCode)
+        let store = makeStore(with: session)
+
+        store.applyTermiodStatus(status("needs_you"), for: session.id)
+
+        XCTAssertEqual(store.status(for: session.id), .needsAttention)
     }
 
     /// A remote terminal is a plain `.terminal` row — the agent runs on the far

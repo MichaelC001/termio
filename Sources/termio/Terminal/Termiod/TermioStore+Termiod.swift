@@ -168,10 +168,65 @@ extension TermioStore {
     /// reports, which is the entire reason this path exists.
     func applyTermiodStatus(_ report: Termiod.StatusPayload, for id: Session.ID) {
         guard session(id) != nil else { return }
+
+        // Everything from here to the state switch used to live behind the app's
+        // own hook socket and applied only to agents on this Mac. One report path
+        // means a device agent gets it too — the Info pane's transcript address,
+        // the `/new` rotation signal, and the running tool are no longer things
+        // only a local agent could say.
+        if let candidate = report.promptTitle {
+            recordPromptTitle(candidate, for: id)
+        }
         // The workstream title is the agent's own label for what it is doing.
         // It shares `liveTitle` with the OSC 0/2 channel — same field, last
         // writer wins — because both answer the same question about the row.
         if let title = report.title, !title.isEmpty { setLiveTitle(title, for: id) }
+
+        // Remember the session's transcript address whenever a report carries it,
+        // so `sessions send` can hand it back as the place to read the response.
+        let carriedTranscript = report.transcriptPath.flatMap { $0.isEmpty ? nil : $0 }
+        if let path = carriedTranscript {
+            transcriptPaths[id] = path
+        }
+        // Conversation identity moves only at a turn boundary: a working-state
+        // payload embeds prompt and tool content on stdin, where a colliding
+        // field name could be mined as the id by mistake, while SessionStart and
+        // Stop payloads are the agent's own minimal envelope.
+        //
+        // What is *no longer* checked here is whether the report named this
+        // session exactly. It used to have to be: hook files are global, every
+        // same-agent process on the machine reported into one socket, and a
+        // cwd-guessed match must never re-pin a tab to an outside run's
+        // conversation. A report now arrives addressed by the daemon that owns
+        // the PTY, so there is nothing to guess and nothing to guard against.
+        if report.status != "working" {
+            if let path = carriedTranscript {
+                // A carried path can name a *new* conversation id in its filename
+                // (after `/clear`), so advance the resume pin to match — a no-op
+                // unless it actually rotated.
+                reconcileResumeID(id, transcriptPath: path)
+            }
+            if let conversation = conversationToken(report.conversationID) {
+                // An identity-bearing report names the live conversation outright.
+                // On a rotation without a carried transcript, drop the stale path
+                // that described the discarded conversation; the resolve below
+                // re-learns it against the new pin.
+                if adoptConversationID(conversation, for: id), carriedTranscript == nil {
+                    transcriptPaths[id] = nil
+                }
+            } else if report.status == "done" {
+                // Identity-blind turn end: for a discovered-id agent, re-scan its
+                // store in case the conversation rotated in-process (`/new`).
+                rediscoverConversation(for: id)
+            }
+        }
+        if transcriptPaths[id] == nil, let path = resolveTranscriptPath(for: id) {
+            // No report carried a path (a pre-hook Claude session never will), so
+            // learn it from the agent's own on-disk transcript instead — same
+            // result, just discovered.
+            transcriptPaths[id] = path
+        }
+
         // A host that is speaking for this session is exactly the condition the
         // screen-driven promotion stands down for (`hookQuietWindow`): the
         // precise signal outranks the heuristic that exists in its absence.
@@ -180,12 +235,31 @@ extension TermioStore {
         }
         switch report.status {
         case "working":
+            // No "is this really an agent row?" guard here, and deliberately.
+            // The local hook path had one, because its reports arrived at a
+            // global socket and could be matched to a session by *cwd* — a
+            // sibling's report could spin an unrelated pane, so it only spun
+            // rows already known to be agents. A report now arrives addressed by
+            // the daemon that owns the PTY, so its arrival is itself the proof
+            // an agent is running in that session. Keeping the guard would
+            // discard every status a remote agent sends (a remote row is a plain
+            // `.terminal` — the agent runs on the far machine), and would drop a
+            // local one whenever the foreground poll had not caught up yet.
             setStatus(.working, for: id)
+            setCurrentTool(report.tool, for: id)
+            // Remember when work was last seen, so a turn that ends abnormally
+            // (the agent crashed and never sent `done`) can be swept back to calm
+            // instead of spinning forever.
             lastWorkingAt[id] = Date()
         case "needs_you":
+            // The agent is blocked waiting on the user. This is an observable
+            // blocking condition, so its dot survives a click.
             clearWorking(id)
             flagBlockingAttention(for: id)
         case "done":
+            // Always leave a "ready for you" green dot, even on the session the
+            // user is looking at, so a finished agent stays on the menu-bar
+            // roster instead of blinking off the instant it stops.
             clearWorking(id)
             setStatus(.done, for: id)
         case "idle":

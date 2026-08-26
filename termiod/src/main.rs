@@ -92,6 +92,16 @@ enum Cmd {
     },
 
     /// Set agent/workstream status metadata for a session.
+    ///
+    /// This is what every installed hook runs, on every machine. The mining
+    /// flags exist because a hook's host hands it a JSON blob on stdin and the
+    /// hook is the only thing that ever sees it — mining here is what lets a
+    /// device agent carry the transcript path, the conversation id, the running
+    /// tool and a first-prompt label, which before this it could not say at all.
+    ///
+    /// Flag names match `termio agent report`'s deliberately: that is the public
+    /// hook contract, it now forwards here, and two spellings of one vocabulary
+    /// is how the two report forms drifted apart in the first place.
     SetStatus {
         /// Session id or name.
         target: String,
@@ -100,6 +110,29 @@ enum Cmd {
         /// Optional display title.
         #[arg(long)]
         title: Option<String>,
+        /// Read stdin as the host's JSON payload and forward its
+        /// `transcript_path`, so a client can address the raw Q&A log.
+        #[arg(long)]
+        transcript: bool,
+        /// Forward this conversation id verbatim, for an in-process plugin that
+        /// already holds the live id.
+        #[arg(long, value_name = "ID")]
+        conversation: Option<String>,
+        /// Mine the conversation id from this stdin field. Agents disagree on
+        /// the name: Codex `session_id`, Grok `sessionId`.
+        #[arg(long, value_name = "FIELD")]
+        conversation_from: Option<String>,
+        /// Mine the running tool's name from this stdin field (Claude
+        /// `tool_name`). Events without the field simply omit it.
+        #[arg(long, value_name = "FIELD")]
+        tool_from: Option<String>,
+        /// Mine a first-prompt title candidate from this stdin field.
+        #[arg(long, value_name = "FIELD")]
+        prompt_title_from: Option<String>,
+        /// Stay silent on stdout and print `{}` at the end, for agents (Cursor)
+        /// that read a hook's stdout as its JSON reply.
+        #[arg(long)]
+        reply: bool,
     },
 
     /// Install termio's agent integration into this box's agent configs.
@@ -191,10 +224,11 @@ enum AgentCmd {
         /// Install the hooks but not the skill.
         #[arg(long)]
         no_skills: bool,
-        /// Point the installed hooks at a termio app's CLI copy instead of this
-        /// daemon. Used when the app on this same machine is what is listening.
-        #[arg(long, value_name = "PATH")]
-        termio_cli: Option<String>,
+        /// Install this Mac's skill payload (which teaches the `termio` CLI)
+        /// instead of a box's. Hooks are identical either way — they all report
+        /// to this daemon now.
+        #[arg(long)]
+        this_mac: bool,
         /// Version stamped into each hook command. Defaults to this daemon's.
         #[arg(long, value_name = "VERSION")]
         hook_version: Option<String>,
@@ -218,7 +252,7 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
             agent,
             no_hooks,
             no_skills,
-            termio_cli,
+            this_mac,
             hook_version,
             json,
         } => (
@@ -226,10 +260,7 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
                 (!agent.is_empty()).then_some(agent),
                 if no_hooks { HalfAction::Leave } else { HalfAction::Install },
                 if no_skills { HalfAction::Leave } else { HalfAction::Install },
-                match termio_cli {
-                    Some(path) => Reporter::TermioCli { path },
-                    None => Reporter::TermiodDaemon,
-                },
+                if this_mac { Reporter::ThisMac } else { Reporter::Device },
                 hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             ),
             json,
@@ -239,7 +270,7 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
                 None,
                 HalfAction::Remove,
                 HalfAction::Remove,
-                Reporter::TermiodDaemon,
+                Reporter::Device,
                 env!("CARGO_PKG_VERSION").to_string(),
             ),
             json,
@@ -279,6 +310,35 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The host's JSON payload on stdin, or `None`.
+///
+/// Never read from a tty. A hook invoked without its payload piped in would
+/// otherwise leave this waiting on the terminal forever, while a closed or
+/// absent stdin reads instantly as empty — and a hook that hangs is worse than
+/// one that reports nothing, because it hangs the agent's turn with it.
+fn read_hook_payload() -> Option<serde_json::Value> {
+    use std::io::Read;
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        return None;
+    }
+    let mut raw = String::new();
+    std::io::stdin().read_to_string(&mut raw).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// One top-level string field of the hook payload.
+///
+/// Only a string, and only at the top level: the shell CLI this replaces mined
+/// exactly that much, and a hook contract that quietly started accepting nested
+/// paths would be a second dialect to keep in step.
+fn mine_field(payload: &serde_json::Value, field: &str) -> Option<String> {
+    payload
+        .get(field)?
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 #[tokio::main]
@@ -418,9 +478,37 @@ async fn main() -> Result<()> {
             target,
             status,
             title,
+            transcript,
+            conversation,
+            conversation_from,
+            tool_from,
+            prompt_title_from,
+            reply,
         } => {
-            client::set_status(&target, &status, title).await?;
-            Ok(())
+            let wants_stdin = transcript
+                || conversation_from.is_some()
+                || tool_from.is_some()
+                || prompt_title_from.is_some();
+            let payload = if wants_stdin { read_hook_payload() } else { None };
+            let mined = |field: &Option<String>| -> Option<String> {
+                let field = field.as_deref()?;
+                mine_field(payload.as_ref()?, field)
+            };
+            let details = protocol::StatusDetails {
+                transcript_path: transcript
+                    .then(|| payload.as_ref().and_then(|p| mine_field(p, "transcript_path")))
+                    .flatten(),
+                conversation_id: conversation.clone().or_else(|| mined(&conversation_from)),
+                tool: mined(&tool_from),
+                prompt_title: mined(&prompt_title_from),
+            };
+            let outcome = client::set_status(&target, &status, title, details).await;
+            // Cursor reads a hook's stdout as its JSON reply, so the contract is
+            // an empty object even when the report itself could not be delivered.
+            if reply {
+                print!("{{}}");
+            }
+            outcome
         }
 
         Cmd::Attach {

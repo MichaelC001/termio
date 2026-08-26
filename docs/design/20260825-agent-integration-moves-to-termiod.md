@@ -135,6 +135,7 @@ had already shipped.
 | **4** | Swift calls it. `AgentConfigStore` and `SSHAgentConfigStore` are deleted; `DevicePaneModel.setUp` becomes one call. | A twelve-agent install is one round trip. The Settings surfaces are unchanged. | **Done** #472 |
 | **3.5** | A per-agent config-home variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …), inserted before Stage 4 so the schema changed once rather than twice. | Six of fifteen agents have a documented one; OpenCode does **not** — `OPENCODE_CONFIG_DIR` adds a search directory rather than moving the config home, so installing under XDG is still always read. | **Done** #467 |
 | **5** | The phone installs. | The iOS device client offers Set up on a directly-attached box, with the Mac quit. | Blocked on P0.2 — PR #344 |
+| **6** | One report path. `SetStatus` grows the four fields only the local socket carried, then every hook reports to the daemon that owns its PTY and the app becomes a viewer of status rather than its receiver. `HookReporter` and the app's `agent-status.sock` are deleted. | A Mac-local agent still carries transcript, conversation, tool and prompt title — *and a device agent on `ukvps` now carries them too*. | 
 
 ### What the stages actually cost, and what they caught
 
@@ -167,6 +168,21 @@ silent because every hook form ends in `2>/dev/null || true`:
 Stage 4 added one decision worth keeping visible: a device whose daemon is too old
 to have the install message is **refused by name, and not redeployed**. Redeploying
 restarts the daemon, which kills its running sessions — `ukvps` had 15.
+
+Stage 6 comes after 4 for a reason that is not sequencing convenience. Stage 4
+moved who *writes* a hook; Stage 6 moves who the hook *reports to*, and doing
+the second before growing `SetStatus` would be a downgrade: the Info pane would
+lose the transcript path, a `/new` rotation would stop being followed, and the
+sidebar would stop knowing which tool is running. Grown first and switched
+second, the asymmetry between a local agent and a device one dies from the poor
+end rising.
+
+What Stage 6 does **not** move is the screen-derived half — the stale-working
+streak promotion and the `OSC 0/2` title classification. Those read a VT, and
+the VT for a device is the daemon's while the VT for this Mac is the app's own
+surface. They are the only status signal an agent with no hook system has, and
+they stay until [`unify-server-plane`](20260819-unify-server-plane.md) moves the
+VT itself.
 
 Stages 1–4 depend on nothing in the iOS work. Stage 5 depends on
 [`ios-as-device-client`](20260824-ios-as-device-client.md) P4, which depends on

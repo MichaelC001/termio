@@ -71,57 +71,6 @@ const MAC_SKILL: &str = include_str!("../../../Sources/termio/Resources/skills/t
 const DEVICE_SKILL: &str =
     include_str!("../../../Sources/termio/Resources/skills/termio-device/SKILL.md");
 
-/// How a hook reports, once it is running on this box.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Reporter {
-    /// `termio agent report <state>` against the app's control socket. Reads the
-    /// session from `$TERMIO_SESSION` and can mine the agent's stdin blob for a
-    /// transcript path, a conversation id, a tool name and a prompt title.
-    ///
-    /// `path` is the app's channel-stable CLI copy under Application Support.
-    /// The client supplies it because only the client knows it: it is a fact
-    /// about the app that is listening, not about the box.
-    TermioCli { path: String },
-    /// `termiod set-status "$TERMIOD_SESSION_ID" <state>` against this daemon's
-    /// own socket.
-    ///
-    /// **It carries state and title only.** `SetStatus` has no transcript,
-    /// conversation, tool or prompt-title field, so the four stdin-mining
-    /// options are dropped rather than emitted as flags the binary would reject.
-    TermiodDaemon,
-}
-
-impl Reporter {
-    fn is_local(&self) -> bool {
-        matches!(self, Reporter::TermioCli { .. })
-    }
-
-    /// The binary a hook invokes, absolute.
-    ///
-    /// The SSH arm had to emit `$HOME/.local/bin/termiod` — a shell *expression*
-    /// needing one escaping for `sh`, another for a Bun template literal, and a
-    /// third for a JavaScript string — because the writer could not see the box.
-    /// Worse, it was a *guess*: that path is where the Mac assumes a deploy put
-    /// the daemon, and a box that keeps it elsewhere got hooks that exec'd
-    /// nothing and said nothing. The daemon knows where it lives.
-    fn binary_path(&self) -> String {
-        match self {
-            Reporter::TermioCli { path } => path.clone(),
-            Reporter::TermiodDaemon => machine::daemon_binary(),
-        }
-    }
-
-    /// Which bundled skill this machine gets.
-    fn skill(&self) -> &'static str {
-        if self.is_local() {
-            MAC_SKILL
-        } else {
-            DEVICE_SKILL
-        }
-    }
-}
-
 /// What to do with one half of the integration.
 ///
 /// Per half, not one flag for both, because the two Integration switches are
@@ -140,6 +89,37 @@ pub enum HalfAction {
     Leave,
 }
 
+/// Which machine this is, for the one thing that still differs between them.
+///
+/// It used to be *how a hook reports* — the Mac's hooks called the app's `termio`
+/// CLI into a socket the app owned, a device's called `termiod`. That split is
+/// gone: every hook now reports to the daemon that owns its PTY, so there is one
+/// command, one set of flags, and one ownership fingerprint. What survives is the
+/// skill payload, because a Mac has a `termio` binary to teach and a box does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Reporter {
+    /// This Mac, where the app is running.
+    ThisMac,
+    /// A box reached over the protocol.
+    Device,
+}
+
+impl Reporter {
+    fn is_local(&self) -> bool {
+        matches!(self, Reporter::ThisMac)
+    }
+
+    /// Which bundled skill this machine gets.
+    fn skill(&self) -> &'static str {
+        if self.is_local() {
+            MAC_SKILL
+        } else {
+            DEVICE_SKILL
+        }
+    }
+}
+
 /// What the client asked for, plus the one thing about this box it needed
 /// resolving against.
 #[derive(Debug, Clone)]
@@ -156,8 +136,8 @@ pub struct InstallRequest {
     /// the idempotent write re-install the hook on the first launch after an
     /// upgrade.
     pub hook_version: String,
-    /// The absolute binary every generated hook invokes, resolved once here
-    /// rather than per command — six dialects embed it, in four different
+    /// The absolute binary every generated hook invokes: this daemon's own,
+    /// resolved once here rather than per command. Six dialects embed it, in two
     /// escaping contexts, and they must all name the same file.
     binary: String,
 }
@@ -170,7 +150,7 @@ impl InstallRequest {
         reporter: Reporter,
         hook_version: String,
     ) -> InstallRequest {
-        let binary = reporter.binary_path();
+        let binary = machine::daemon_binary();
         InstallRequest {
             agents,
             hooks,
@@ -539,39 +519,31 @@ pub fn report_command(
     dialect: HookDialect,
     request: &InstallRequest,
 ) -> String {
-    let binary = shell_quote_path(request.binary());
-    let mut command = match &request.reporter {
-        Reporter::TermiodDaemon => {
-            format!("{binary} set-status \"$TERMIOD_SESSION_ID\" {state}")
-        }
-        Reporter::TermioCli { .. } => {
-            let mut command = format!("{binary} agent report {state}");
-            // The agent's stdin blob is mined by the CLI (jq-free). Each field
-            // name was validated at manifest load to be a bare identifier, so it
-            // embeds safely.
-            if mining.captures_transcript {
-                command.push_str(" --transcript");
-            }
-            if let Some(field) = mining.conversation {
-                command.push_str(&format!(" --conversation-from {field}"));
-            }
-            if let Some(field) = mining.tool {
-                command.push_str(&format!(" --tool-from {field}"));
-            }
-            if let Some(field) = mining.prompt_title {
-                command.push_str(&format!(" --prompt-title-from {field}"));
-            }
-            command
-        }
-    };
+    let mut command = format!(
+        "{} set-status \"$TERMIOD_SESSION_ID\" {state}",
+        shell_quote_path(request.binary())
+    );
+    // The agent's stdin blob is mined by the binary the hook invokes, which is
+    // the only thing that ever sees it. Each field name was validated at
+    // manifest load to be a bare identifier, so it embeds safely.
+    if mining.captures_transcript {
+        command.push_str(" --transcript");
+    }
+    if let Some(field) = mining.conversation {
+        command.push_str(&format!(" --conversation-from {field}"));
+    }
+    if let Some(field) = mining.tool {
+        command.push_str(&format!(" --tool-from {field}"));
+    }
+    if let Some(field) = mining.prompt_title {
+        command.push_str(&format!(" --prompt-title-from {field}"));
+    }
     // Cursor reads the hook's stdout as its JSON reply, so the command must stay
-    // silent and print a benign `{}`. The fallback keeps that contract even when
-    // the binary itself could not run. Claude and Codex ignore hook stdout.
-    command.push_str(match (&request.reporter, dialect) {
-        (Reporter::TermioCli { .. }, HookDialect::CursorFlat) => {
-            " --reply 2>/dev/null || printf '{}'"
-        }
-        (Reporter::TermiodDaemon, HookDialect::CursorFlat) => " 2>/dev/null; printf '{}'",
+    // silent and print a benign `{}`. `--reply` prints it even when the report
+    // itself could not be delivered; the `||` fallback covers the binary not
+    // being there to print anything. Claude and Codex ignore hook stdout.
+    command.push_str(match dialect {
+        HookDialect::CursorFlat => " --reply 2>/dev/null || printf '{}'",
         _ => " 2>/dev/null || true",
     });
     command.push_str(&format!(
@@ -991,16 +963,11 @@ impl PluginFile {
             return None;
         }
         let (filename, legacy) = super::plugin::filenames(spec.dialect)?;
-        // A device drops the conversation plumbing rather than tracking an id
-        // the daemon has no field for. One fact about `SetStatus`, applied here
-        // once, rather than three facts about three plugin APIs.
-        let conversation = if request.is_local() {
-            spec.conversation.as_deref()
-        } else {
-            None
-        };
+        // A device used to drop the conversation plumbing here, because
+        // `SetStatus` had no field for an id. It has one now, so both machines
+        // get it — this is the line where the asymmetry actually died.
         let contents =
-            super::plugin::source(spec.dialect, &spec.events, conversation, request)?;
+            super::plugin::source(spec.dialect, &spec.events, spec.conversation.as_deref(), request)?;
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents,
@@ -1393,11 +1360,11 @@ pub(super) mod tests {
     }
 
     pub(crate) fn local_request(cli: &str) -> InstallRequest {
-        request(Reporter::TermioCli { path: cli.into() }, cli)
+        request(Reporter::ThisMac, cli)
     }
 
     pub(crate) fn device_request(daemon: &str) -> InstallRequest {
-        request(Reporter::TermiodDaemon, daemon)
+        request(Reporter::Device, daemon)
     }
 
     fn claude_spec() -> HookSpec {
@@ -1410,28 +1377,62 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_local_command_invokes_the_public_report_contract() {
-        let request = local_request("/Users/x/Application Support/termio/bin/termio");
+    fn every_hook_reports_to_the_daemon_that_owns_its_pty() {
         let spec = claude_spec();
-        let command = report_command("done", &StdinMining::of(&spec), HookDialect::ClaudeNested, &request);
+        let mac = report_command(
+            "done",
+            &StdinMining::of(&spec),
+            HookDialect::ClaudeNested,
+            &local_request("/opt/termiod"),
+        );
         assert_eq!(
-            command,
-            "'/Users/x/Application Support/termio/bin/termio' agent report done --transcript \
+            mac,
+            "'/opt/termiod' set-status \"$TERMIOD_SESSION_ID\" done --transcript \
              --tool-from tool_name 2>/dev/null || true # termio-hooks v9.9.9"
         );
-        assert!(is_ours(&command));
+        // And a device's is the same string. One form is the point: the two that
+        // existed before drifted apart, and the fingerprint divergence that let a
+        // reinstall double every device hook could only exist because of it.
+        let device = report_command(
+            "done",
+            &StdinMining::of(&spec),
+            HookDialect::ClaudeNested,
+            &device_request("/opt/termiod"),
+        );
+        assert_eq!(mac, device);
+        assert!(is_ours(&mac));
     }
 
     /// The daemon's `SetStatus` carries state and title only, so the four
     /// stdin-mining flags are dropped rather than emitted for a binary that
     /// would reject them.
     #[test]
-    fn the_device_command_drops_the_flags_the_daemon_has_no_field_for() {
-        let request = device_request("/home/u/.local/bin/termiod");
-        let spec = claude_spec();
-        let command = report_command("working", &StdinMining::of(&spec), HookDialect::ClaudeNested, &request);
-        for flag in ["--transcript", "--conversation-from", "--tool-from", "--prompt-title-from"] {
-            assert!(!command.contains(flag), "{flag} has no counterpart in set-status");
+    /// This test used to assert the opposite — that a device hook *drops* these
+    /// flags, because `SetStatus` had no field for any of them. Growing it first
+    /// and switching second is what made one report path an upgrade: a device
+    /// agent now carries the transcript, the conversation id, the running tool
+    /// and a prompt title, which it could not say at all before.
+    #[test]
+    fn a_device_hook_now_carries_what_only_the_local_socket_used_to() {
+        let spec = spec_of(
+            r#"{"id":"codex","name":"Codex","hooks":{"type":"json","file":"~/.codex/hooks.json",
+                "dialect":"codex","capturesTranscript":true,"conversation":"session_id",
+                "tool":"tool_name","promptTitle":"prompt",
+                "events":[{"on":"Stop","state":"done"}]}}"#,
+        );
+        let command = report_command(
+            "working",
+            &StdinMining::of(&spec),
+            HookDialect::ClaudeNested,
+            &device_request("/home/u/.local/bin/termiod"),
+        );
+        for flag in [
+            "--transcript",
+            "--conversation-from session_id",
+            "--tool-from tool_name",
+            "--prompt-title-from prompt",
+        ] {
+            assert!(command.contains(flag), "a device hook must carry {flag}: {command}");
         }
         assert!(command.contains("set-status \"$TERMIOD_SESSION_ID\" working"));
         // And it is recognizable as ours, so a reinstall replaces it instead of
@@ -1442,21 +1443,22 @@ pub(super) mod tests {
     /// Cursor reads hook stdout as its JSON reply, so the command must print a
     /// benign empty object even when the binary could not run.
     #[test]
+    /// Cursor reads a hook's stdout as its JSON reply, so the command prints a
+    /// benign empty object — from the binary when it ran, from the shell when it
+    /// could not. One spelling now, on both machines.
     fn cursor_keeps_its_reply_contract() {
-        let local = report_command(
-            "working",
-            &StdinMining::of(&claude_spec()),
-            HookDialect::CursorFlat,
-            &local_request("/x/termio"),
-        );
-        assert!(local.ends_with("--reply 2>/dev/null || printf '{}' # termio-hooks v9.9.9"));
-        let device = report_command(
-            "working",
-            &StdinMining::of(&claude_spec()),
-            HookDialect::CursorFlat,
-            &device_request("/x/termiod"),
-        );
-        assert!(device.contains("2>/dev/null; printf '{}'"));
+        for request in [local_request("/x/termiod"), device_request("/x/termiod")] {
+            let command = report_command(
+                "working",
+                &StdinMining::of(&claude_spec()),
+                HookDialect::CursorFlat,
+                &request,
+            );
+            assert!(
+                command.ends_with("--reply 2>/dev/null || printf '{}' # termio-hooks v9.9.9"),
+                "{command}"
+            );
+        }
     }
 
     #[test]
@@ -1508,6 +1510,44 @@ pub(super) mod tests {
         .expect("fixture");
         strip_groups(&mut hooks, &is_ours);
         assert!(hooks.is_empty());
+    }
+
+    /// The mining flags reach the daemon binary as the hook writes them. Pinned
+    /// because the flag names are a contract in three places at once — this
+    /// generator, `termiod set-status`'s parser, and the public
+    /// `termio agent report` that forwards to it — and a rename in one is a
+    /// silent no-op in the others.
+    #[test]
+    fn the_mining_flags_survive_the_round_trip_to_the_parser() {
+        let spec = spec_of(
+            r#"{"id":"codex","name":"Codex","hooks":{"type":"json","file":"~/.codex/hooks.json",
+                "dialect":"codex","capturesTranscript":true,"conversation":"session_id",
+                "tool":"tool_name","promptTitle":"prompt",
+                "events":[{"on":"Stop","state":"done"}]}}"#,
+        );
+        let command = report_command(
+            "done",
+            &StdinMining::of(&spec),
+            HookDialect::ClaudeNested,
+            &device_request("/opt/termiod"),
+        );
+        // Parsed by the very argument parser the hook will hand this to.
+        let argv: Vec<&str> = command
+            .split(' ')
+            .take_while(|token| *token != "2>/dev/null")
+            .collect();
+        assert_eq!(argv[1], "set-status");
+        for pair in [
+            ["--conversation-from", "session_id"],
+            ["--tool-from", "tool_name"],
+            ["--prompt-title-from", "prompt"],
+        ] {
+            let at = argv.iter().position(|t| *t == pair[0]).unwrap_or_else(|| {
+                panic!("{} missing from {command}", pair[0])
+            });
+            assert_eq!(argv[at + 1], pair[1], "{command}");
+        }
+        assert!(argv.contains(&"--transcript"), "{command}");
     }
 
     // MARK: - Stage 3

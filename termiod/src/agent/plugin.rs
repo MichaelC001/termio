@@ -22,14 +22,14 @@
 //!    cannot spoof it. A plugin loaded *outside* a termiod session has no id, and
 //!    must report nothing rather than call `set-status` with an empty one the
 //!    daemon would reject.
-//! 3. **A device drops the conversation plumbing.** `SetStatus` carries a state
-//!    and a title and nothing else. That is one fact about the daemon, not three
-//!    facts about three plugin APIs, so it is applied once, in
-//!    [`super::install`], where the reporter is chosen.
+//! 3. **A device used to drop the conversation plumbing**, because `SetStatus`
+//!    carried a state and a title and nothing else. It carries four more fields
+//!    now, so it does not — and with that gone there is no machine branch left in
+//!    this file at all. One template per dialect, not two.
 //!
-//! Pi needs no device branch of its own: it already shells out through
-//! `pi.exec("sh", …)`, so its device form is whatever the shared report command
-//! emits — the same string the JSON-manifest and script-directory dialects get.
+//! Pi needs no branch of its own either: it already shells out through
+//! `pi.exec("sh", …)`, so it emits the same command the JSON-manifest and
+//! script-directory dialects get.
 
 use super::apple_json;
 use super::install::{InstallRequest, StdinMining, SOCKET_MARKER};
@@ -86,22 +86,36 @@ fn cli_declaration(request: &InstallRequest) -> String {
     format!("const cli = {};", js(request.binary()))
 }
 
-/// The `const session = …` line a device plugin needs, or nothing on this Mac,
-/// where the id rides in on `TERMIO_SESSION` and the CLI reads it itself.
-fn session_declaration(request: &InstallRequest) -> &'static str {
-    if request.is_local() {
-        ""
-    } else {
-        "\n  const session = process.env.TERMIOD_SESSION_ID;"
-    }
+/// The `const session = …` line every plugin needs.
+///
+/// Not a machine branch any more. Both used to exist: a Mac plugin left this out
+/// and let the `termio` CLI read `TERMIO_SESSION` for itself, a device plugin
+/// read `TERMIOD_SESSION_ID`. One report path means one id, and it is the
+/// daemon's — exported by `session::daemon_owned_env` after the client's `env`,
+/// so a client cannot spoof it.
+fn session_declaration() -> &'static str {
+    "\n  const session = process.env.TERMIOD_SESSION_ID;"
 }
 
-/// The body of a device plugin's `report`. A plugin loaded outside a termiod
-/// session reports nothing rather than invoking `set-status` with an empty id.
-fn daemon_report_body(shell: &str) -> String {
-    format!(
-        "    if (!session) return;\n    return {shell}`${{cli}} set-status ${{session}} ${{state}}`.quiet().nothrow();"
-    )
+/// The body of a plugin's `report`. A plugin loaded outside a termiod session
+/// reports nothing rather than invoking `set-status` with an empty id the daemon
+/// would reject.
+///
+/// `conversation`, when the manifest declared a locator, rides along — on both
+/// machines now. Bun's `$` escapes each interpolation into one argv token, so
+/// the id needs no quoting of its own.
+fn daemon_report_body(shell: &str, carries_conversation: bool) -> String {
+    let mut body = String::from("    if (!session) return;\n");
+    if carries_conversation {
+        body.push_str(&format!(
+            "    if (conversation && roots.has(conversation)) {{\n      \
+             return {shell}`${{cli}} set-status ${{session}} ${{state}} --conversation ${{conversation}}`.quiet().nothrow();\n    }}\n"
+        ));
+    }
+    body.push_str(&format!(
+        "    return {shell}`${{cli}} set-status ${{session}} ${{state}}`.quiet().nothrow();"
+    ));
+    body
 }
 
 /// OpenCode plugin: a session is `busy` while working and emits `session.idle`
@@ -165,18 +179,7 @@ fn open_code_source(
             .to_string()
     };
 
-    let report_body = if request.is_local() {
-        if conversation_expression.is_none() {
-            "    return $`${cli} agent report ${state}`.quiet().nothrow();".to_string()
-        } else {
-            "    if (conversation && roots.has(conversation)) {\n      \
-             return $`${cli} agent report ${state} --conversation ${conversation}`.quiet().nothrow();\n    }\n    \
-             return $`${cli} agent report ${state}`.quiet().nothrow();"
-                .to_string()
-        }
-    } else {
-        daemon_report_body("$")
-    };
+    let report_body = daemon_report_body("$", conversation_expression.is_some());
     let report_parameters = if conversation_expression.is_none() {
         "(state)"
     } else {
@@ -198,7 +201,7 @@ fn open_code_source(
          }};\n\
          }};",
         cli_declaration(request),
-        session_declaration(request)
+        session_declaration()
     )
 }
 
@@ -251,10 +254,12 @@ fn pi_source(events: &[HookEvent], conversation: Option<&str>, request: &Install
         .join("\n");
     format!(
         "{header}  const cli = {};\n  \
+         const session = process.env.TERMIOD_SESSION_ID;\n  \
          const report = (state, context) => {{\n    \
+         if (!session) return;\n    \
          const id = context?.sessionManager?.getSessionId?.();\n    \
          const conversation = id && /^[A-Za-z0-9._-]+$/.test(id) ? ` --conversation ${{id}}` : \"\";\n    \
-         pi.exec(\"sh\", [\"-c\", `${{cli}} agent report ${{state}}${{conversation}} 2>/dev/null || true`]);\n  \
+         pi.exec(\"sh\", [\"-c\", `${{cli}} set-status \"$TERMIOD_SESSION_ID\" ${{state}}${{conversation}} 2>/dev/null || true`]);\n  \
          }};\n{listeners}\n}};",
         js(&super::install::shell_quote_path(request.binary()))
     )
@@ -275,11 +280,7 @@ fn amp_source(events: &[HookEvent], request: &InstallRequest) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let report_body = if request.is_local() {
-        "    return amp.$`${cli} agent report ${state}`.quiet().nothrow();".to_string()
-    } else {
-        daemon_report_body("amp.$")
-    };
+    let report_body = daemon_report_body("amp.$", false);
     format!(
         "// termio agent status — reports Amp turn lifecycle to termio.\n\
          // Socket marker: {SOCKET_MARKER}\n\
@@ -291,7 +292,7 @@ fn amp_source(events: &[HookEvent], request: &InstallRequest) -> String {
          {listeners}\n\
          }};",
         cli_declaration(request),
-        session_declaration(request)
+        session_declaration()
     )
 }
 
@@ -300,85 +301,102 @@ mod tests {
     use super::*;
     use crate::agent::install::tests::{device_request, local_request, spec_of};
 
-    fn opencode() -> (Vec<HookEvent>, Option<String>) {
-        let spec = spec_of(
+    fn opencode_spec() -> crate::agent::manifest::HookSpec {
+        spec_of(
             r#"{"id":"opencode","name":"OpenCode","hooks":{"type":"plugin",
                 "dir":"~/.config/opencode/plugin","dialect":"opencode",
                 "conversation":"properties.sessionID","events":[
                   {"on":"session.status","state":"working","matcher":"busy"},
                   {"on":"session.idle","state":"done"},
                   {"on":"permission.updated","state":"attention"}]}}"#,
-        );
-        (spec.events.clone(), spec.conversation.clone())
+        )
     }
 
-    /// The exact bytes the Swift SSH arm wrote to `ukvps`, with only the binary
-    /// resolved — the deliberate correction, recorded in the module docs. If
-    /// this drifts, so does every OpenCode plugin already on a user's box.
-    #[test]
-    fn the_opencode_device_plugin_matches_the_swift_arm() {
-        let (events, _) = opencode();
-        // A device drops the conversation plumbing: `set-status` has no field
-        // for it.
-        let source = source(
-            HookDialect::OpenCodePlugin,
-            &events,
-            None,
-            &device_request("/home/ubuntu/.local/bin/termiod"),
+    fn pi_spec() -> crate::agent::manifest::HookSpec {
+        spec_of(
+            r#"{"id":"pi","name":"Pi","hooks":{"type":"plugin","dir":"~/.pi/agent/extensions",
+                "dialect":"pi","conversation":"context","events":[
+                  {"on":"session_start","state":"idle"},
+                  {"on":"agent_start","state":"working"},
+                  {"on":"agent_end","state":"done"}]}}"#,
         )
-        .expect("a plugin dialect");
+    }
+
+    fn amp_spec() -> crate::agent::manifest::HookSpec {
+        spec_of(
+            r#"{"id":"amp","name":"Amp","hooks":{"type":"plugin","dir":"~/.config/amp/plugins",
+                "dialect":"amp","events":[{"on":"agent.start","state":"working"},
+                {"on":"agent.end","state":"done"}]}}"#,
+        )
+    }
+
+    fn rendered(
+        dialect: HookDialect,
+        spec: &crate::agent::manifest::HookSpec,
+        request: &InstallRequest,
+    ) -> String {
+        source(dialect, &spec.events, spec.conversation.as_deref(), request)
+            .expect("a plugin dialect")
+    }
+
+    /// **The property this stage exists for.** There used to be two templates per
+    /// dialect — a Mac one reporting through the app's CLI, a device one through
+    /// the daemon — and every divergence between them was a bug waiting: the
+    /// ownership fingerprint drifted exactly that way, and a reinstall doubled
+    /// every device hook for it. One template each now, and this is what says so.
+    #[test]
+    fn one_template_serves_both_machines() {
+        for (dialect, spec) in [
+            (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::PiPlugin, pi_spec()),
+            (HookDialect::AmpPlugin, amp_spec()),
+        ] {
+            assert_eq!(
+                rendered(dialect, &spec, &local_request("/opt/termiod")),
+                rendered(dialect, &spec, &device_request("/opt/termiod")),
+                "{dialect:?} still renders differently per machine"
+            );
+        }
+    }
+
+    /// The conversation plumbing used to be dropped on a device, because
+    /// `SetStatus` had no field for an id. It has one now, so a device agent
+    /// follows an in-process `/new` rotation exactly as a local one does.
+    #[test]
+    fn a_device_plugin_now_carries_the_conversation_too() {
+        let device = rendered(
+            HookDialect::OpenCodePlugin,
+            &opencode_spec(),
+            &device_request("/opt/termiod"),
+        );
+        assert!(device.contains("--conversation ${conversation}"), "{device}");
+        assert!(device.contains("roots.has(conversation)"), "{device}");
+    }
+
+    #[test]
+    fn the_opencode_plugin_renders_exactly() {
         assert_eq!(
-            source,
+            rendered(
+                HookDialect::OpenCodePlugin,
+                &opencode_spec(),
+                &device_request("/opt/termiod")
+            ),
             r#"// termio agent status — reports OpenCode session lifecycle to termio.
 // Socket marker: agent-status.sock
 export const TermioStatus = async ({ $ }) => {
-  const cli = "\/home\/ubuntu\/.local\/bin\/termiod";
+  const cli = "\/opt\/termiod";
   const session = process.env.TERMIOD_SESSION_ID;
-  const report = (state) => {
-    if (!session) return;
-    return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
-  };
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.status" && event.properties?.status?.type === "busy") return report("working");
-      if (event.type === "session.idle") return report("done");
-      if (event.type === "permission.updated") return report("attention");
-    },
-  };
-};"#
-        );
-    }
-
-    /// Captured the same way as the device form: by pointing the Swift SSH arm
-    /// at a box with the *local* reporter. Hand-deriving this one is what put a
-    /// stray blank line in the first cut of the generator, with a test that
-    /// agreed with it.
-    #[test]
-    fn the_opencode_mac_plugin_keeps_the_conversation_plumbing() {
-        let (events, conversation) = opencode();
-        let source = source(
-            HookDialect::OpenCodePlugin,
-            &events,
-            conversation.as_deref(),
-            &local_request("/Users/x/termio"),
-        )
-        .expect("a plugin dialect");
-        assert_eq!(
-            source,
-            r#"// termio agent status — reports OpenCode session lifecycle to termio.
-// Socket marker: agent-status.sock
-export const TermioStatus = async ({ $ }) => {
-  const cli = "\/Users\/x\/termio";
   const roots = new Set();
   const note = (info) => {
     if (!info?.id) return;
     if (info.parentID) roots.delete(info.id); else roots.add(info.id);
   };
   const report = (state, conversation) => {
+    if (!session) return;
     if (conversation && roots.has(conversation)) {
-      return $`${cli} agent report ${state} --conversation ${conversation}`.quiet().nothrow();
+      return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
     }
-    return $`${cli} agent report ${state}`.quiet().nothrow();
+    return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
   };
   return {
     event: async ({ event }) => {
@@ -393,40 +411,36 @@ export const TermioStatus = async ({ $ }) => {
         );
     }
 
-    /// A plugin loaded outside a termiod session has no id, and reporting an
-    /// empty one is a call the daemon rejects — silently, because the whole form
-    /// is `.quiet().nothrow()`.
     #[test]
-    fn a_device_plugin_outside_a_session_reports_nothing() {
-        for dialect in [HookDialect::OpenCodePlugin, HookDialect::AmpPlugin] {
-            let (events, _) = opencode();
-            let source = source(dialect, &events, None, &device_request("/x/termiod"))
-                .expect("a plugin dialect");
-            assert!(source.contains("const session = process.env.TERMIOD_SESSION_ID;"));
-            assert!(source.contains("if (!session) return;"));
-        }
+    fn the_pi_plugin_renders_exactly() {
+        assert_eq!(
+            rendered(HookDialect::PiPlugin, &pi_spec(), &device_request("/opt/termiod")),
+            r#"// termio agent status — reports Pi turn lifecycle to termio.
+// Socket marker: agent-status.sock
+export default (pi) => {
+  const cli = "'\/opt\/termiod'";
+  const session = process.env.TERMIOD_SESSION_ID;
+  const report = (state, context) => {
+    if (!session) return;
+    const id = context?.sessionManager?.getSessionId?.();
+    const conversation = id && /^[A-Za-z0-9._-]+$/.test(id) ? ` --conversation ${id}` : "";
+    pi.exec("sh", ["-c", `${cli} set-status "$TERMIOD_SESSION_ID" ${state}${conversation} 2>/dev/null || true`]);
+  };
+  pi.on("session_start", (_event, context) => report("idle", context));
+  pi.on("agent_start", (_event, context) => report("working", context));
+  pi.on("agent_end", (_event, context) => report("done", context));
+};"#
+        );
     }
 
     #[test]
-    fn the_amp_device_plugin_matches_the_swift_arm() {
-        let spec = spec_of(
-            r#"{"id":"amp","name":"Amp","hooks":{"type":"plugin","dir":"~/.config/amp/plugins",
-                "dialect":"amp","events":[{"on":"agent.start","state":"working"},
-                {"on":"agent.end","state":"done"}]}}"#,
-        );
-        let source = source(
-            HookDialect::AmpPlugin,
-            &spec.events,
-            None,
-            &device_request("/home/ubuntu/.local/bin/termiod"),
-        )
-        .expect("a plugin dialect");
+    fn the_amp_plugin_renders_exactly() {
         assert_eq!(
-            source,
+            rendered(HookDialect::AmpPlugin, &amp_spec(), &device_request("/opt/termiod")),
             r#"// termio agent status — reports Amp turn lifecycle to termio.
 // Socket marker: agent-status.sock
 export default (amp) => {
-  const cli = "\/home\/ubuntu\/.local\/bin\/termiod";
+  const cli = "\/opt\/termiod";
   const session = process.env.TERMIOD_SESSION_ID;
   const report = (state) => {
     if (!session) return;
@@ -438,91 +452,20 @@ export default (amp) => {
         );
     }
 
+    /// A plugin loaded outside a termiod session has no id, and reporting an
+    /// empty one is a call the daemon rejects — silently, because the whole form
+    /// is `.quiet().nothrow()`.
     #[test]
-    fn the_amp_mac_plugin_reports_through_the_cli() {
-        let spec = spec_of(
-            r#"{"id":"amp","name":"Amp","hooks":{"type":"plugin","dir":"~/.config/amp/plugins",
-                "dialect":"amp","events":[{"on":"agent.start","state":"working"},
-                {"on":"agent.end","state":"done"}]}}"#,
-        );
-        let source = source(
-            HookDialect::AmpPlugin,
-            &spec.events,
-            None,
-            &local_request("/Users/x/termio"),
-        )
-        .expect("a plugin dialect");
-        assert_eq!(
-            source,
-            r#"// termio agent status — reports Amp turn lifecycle to termio.
-// Socket marker: agent-status.sock
-export default (amp) => {
-  const cli = "\/Users\/x\/termio";
-  const report = (state) => {
-    return amp.$`${cli} agent report ${state}`.quiet().nothrow();
-  };
-  amp.on("agent.start", () => report("working"));
-  amp.on("agent.end", () => report("done"));
-};"#
-        );
-    }
-
-    fn pi_spec() -> crate::agent::manifest::HookSpec {
-        spec_of(
-            r#"{"id":"pi","name":"Pi","hooks":{"type":"plugin","dir":"~/.pi/agent/extensions",
-                "dialect":"pi","conversation":"context","events":[
-                  {"on":"session_start","state":"idle"},
-                  {"on":"agent_start","state":"working"},
-                  {"on":"agent_end","state":"done"}]}}"#,
-        )
-    }
-
-    /// Pi takes the shared command string on a device, so its device form has no
-    /// template of its own to keep in step.
-    #[test]
-    fn the_pi_device_plugin_matches_the_swift_arm() {
-        let mut request = device_request("/home/ubuntu/.local/bin/termiod");
-        request.hook_version = "16.0".into();
-        let source = source(HookDialect::PiPlugin, &pi_spec().events, None, &request)
-            .expect("a plugin dialect");
-        assert_eq!(
-            source,
-            r#"// termio agent status — reports Pi turn lifecycle to termio.
-// Socket marker: agent-status.sock
-export default (pi) => {
-  pi.on("session_start", () => pi.exec("sh", ["-c", "'\/home\/ubuntu\/.local\/bin\/termiod' set-status \"$TERMIOD_SESSION_ID\" idle 2>\/dev\/null || true # termio-hooks v16.0"]));
-  pi.on("agent_start", () => pi.exec("sh", ["-c", "'\/home\/ubuntu\/.local\/bin\/termiod' set-status \"$TERMIOD_SESSION_ID\" working 2>\/dev\/null || true # termio-hooks v16.0"]));
-  pi.on("agent_end", () => pi.exec("sh", ["-c", "'\/home\/ubuntu\/.local\/bin\/termiod' set-status \"$TERMIOD_SESSION_ID\" done 2>\/dev\/null || true # termio-hooks v16.0"]));
-};"#
-        );
-    }
-
-    #[test]
-    fn the_pi_mac_plugin_reads_its_id_from_the_extension_context() {
-        let spec = pi_spec();
-        let source = source(
-            HookDialect::PiPlugin,
-            &spec.events,
-            spec.conversation.as_deref(),
-            &local_request("/Users/x/termio"),
-        )
-        .expect("a plugin dialect");
-        assert_eq!(
-            source,
-            r#"// termio agent status — reports Pi turn lifecycle to termio.
-// Socket marker: agent-status.sock
-export default (pi) => {
-  const cli = "'\/Users\/x\/termio'";
-  const report = (state, context) => {
-    const id = context?.sessionManager?.getSessionId?.();
-    const conversation = id && /^[A-Za-z0-9._-]+$/.test(id) ? ` --conversation ${id}` : "";
-    pi.exec("sh", ["-c", `${cli} agent report ${state}${conversation} 2>/dev/null || true`]);
-  };
-  pi.on("session_start", (_event, context) => report("idle", context));
-  pi.on("agent_start", (_event, context) => report("working", context));
-  pi.on("agent_end", (_event, context) => report("done", context));
-};"#
-        );
+    fn a_plugin_outside_a_session_reports_nothing() {
+        for (dialect, spec) in [
+            (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::PiPlugin, pi_spec()),
+            (HookDialect::AmpPlugin, amp_spec()),
+        ] {
+            let source = rendered(dialect, &spec, &device_request("/opt/termiod"));
+            assert!(source.contains("const session = process.env.TERMIOD_SESSION_ID;"), "{dialect:?}");
+            assert!(source.contains("if (!session) return;"), "{dialect:?}");
+        }
     }
 
     /// Every generated plugin carries the comment the installer recognizes it
@@ -530,20 +473,16 @@ export default (pi) => {
     /// would either refuse to replace its own work or claim someone else's.
     #[test]
     fn every_generated_plugin_is_recognizable_as_ours() {
-        let (events, conversation) = opencode();
-        for dialect in [
-            HookDialect::OpenCodePlugin,
-            HookDialect::PiPlugin,
-            HookDialect::AmpPlugin,
+        for (dialect, spec) in [
+            (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::PiPlugin, pi_spec()),
+            (HookDialect::AmpPlugin, amp_spec()),
         ] {
-            for request in [local_request("/x/termio"), device_request("/x/termiod")] {
-                let source = source(dialect, &events, conversation.as_deref(), &request)
-                    .expect("a plugin dialect");
-                assert!(
-                    source.contains(&format!("// Socket marker: {SOCKET_MARKER}")),
-                    "{dialect:?} lost its ownership marker"
-                );
-            }
+            let source = rendered(dialect, &spec, &device_request("/opt/termiod"));
+            assert!(
+                source.contains(&format!("// Socket marker: {SOCKET_MARKER}")),
+                "{dialect:?} lost its ownership marker"
+            );
         }
     }
 }
