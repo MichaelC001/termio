@@ -658,15 +658,6 @@ final class AgentCatalog {
         find(id: id) ?? AgentDefinition.fallback(id: id)
     }
 
-    /// Bundled hook specs removed or redirected by full user overrides.
-    var staleBundledHookSpecs: [AgentHookSpec] {
-        bundled.compactMap { definition in
-            guard let bundledSpec = definition.hookSpec,
-                  find(id: definition.id)?.hookSpec != bundledSpec else { return nil }
-            return bundledSpec
-        }
-    }
-
     private static var legacyAgentsDirectory: URL {
         AppChannel.homeConfigDirectory.appendingPathComponent("agents", isDirectory: true)
     }

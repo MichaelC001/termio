@@ -983,16 +983,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addSSHSession(host: alias)
     }
 
-    /// A device row of the New Terminal submenu (File menu and the toolbar `+`
-    /// share it). No project context here, so the session starts at that machine's
-    /// `$HOME` and is grouped under its own block like any loose shell. Unlike
-    /// `newSSHHost`, the session lives in that device's `termiod` and survives
-    /// both the connection and this app quitting.
-    @objc func newRemoteTerminalHost(_ sender: NSMenuItem) {
-        guard let alias = sender.representedObject as? String else { return }
-        store.addRemoteTerminal(host: alias)
-    }
-
     /// A row of the Workspace submenu — the scope the sidebar shows and the panes
     /// follow.
     @objc func switchToWorkspace(_ sender: NSMenuItem) {
@@ -1776,9 +1766,9 @@ extension AppDelegate: NSMenuDelegate {
         for item in menu.items {
             switch item.tag {
             case DeviceMenuTag.newTerminal:
-                refreshNewTerminalItem(item, known: known, atHome: false, command: .newTerminal)
+                refreshNewTerminalItem(item, atHome: false, command: .newTerminal)
             case DeviceMenuTag.newTerminalAtHome:
-                refreshNewTerminalItem(item, known: known, atHome: true, command: nil)
+                refreshNewTerminalItem(item, atHome: true, command: nil)
             case DeviceMenuTag.connectTo:
                 item.isHidden = DeviceRoster.unusedAliases(known: known).isEmpty
             case DeviceMenuTag.newWorkspace:
@@ -1789,31 +1779,16 @@ extension AppDelegate: NSMenuDelegate {
         }
     }
 
-    /// The single-device collapse, applied to one "new terminal" item: a plain
-    /// verb while this Mac is the only machine, a device submenu once there is
-    /// more than one. Someone who never leaves their laptop never sees a device
-    /// anywhere, which is the whole point of doing this in the menu rather than
-    /// with a permanent picker.
-    ///
-    /// The shortcut travels with the shape — on one device it sits on the item
-    /// itself, on several it moves to the current device's row — so ⌘T keeps
-    /// opening a terminal on the machine the switcher says you are working on.
-    /// (AppKit's key-equivalent sweep descends submenus, which is what makes the
-    /// second form work at all; the New Chat menu leans on the same behaviour.)
-    ///
-    /// A remote row always starts at that machine's `$HOME`: "here" names a
-    /// directory on this Mac, and it does not exist over there.
+    /// Points one "new terminal" item at the current device. Always a plain verb,
+    /// however many machines are known: New Terminal opens on the device you are
+    /// looking at — the switcher already made that choice, and asking again turns
+    /// one decision into two. It also kept the count of known machines visible in a
+    /// menu that is about starting a shell, not about picking a computer.
     private func refreshNewTerminalItem(
         _ item: NSMenuItem,
-        known: [KnownDevice],
         atHome: Bool,
         command: KeyCommandID?
     ) {
-        // Always a plain verb, however many machines are known. New Terminal
-        // opens on the device you are looking at — the switcher already made
-        // that choice, and asking again turns one decision into two. It also
-        // kept the count of known machines visible in a menu that is about
-        // starting a shell, not about picking a computer.
         item.submenu = nil
         item.action = atHome
             ? #selector(newScratchTerminal(_:))
@@ -2309,15 +2284,12 @@ private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDele
     // terminal background. (CodeEdit also adds a second hand-built tracking separator over the
     // inspector divider; termio's inspector is a simple summoned file tree, and that item renders
     // as a filled block in this window setup, so it's left out — the toggle alone is enough.)
-    // Collapsed default: just the navigator toggle, branch title, and inspector toggle. The pane
-    // switch AND its tracking separator are inserted by the app delegate only while the inspector is
-    // open (see `setInspectorSwitchVisible`) — keeping the separator in the default set would draw a
-    // stray divider line in the toolbar while the panel is collapsed.
-    // Sidebar-collapsed baseline: just the navigator toggle, the branch title, and the inspector
-    // toggle. The sidebar's own actions (`sortProjects` + `newTerminal`) and their right-aligning
-    // flexible space are inserted by the app delegate only while the navigator is open (see
-    // `setNavigatorItemsVisible`) — keeping them in the default set is what over-packed the row and
-    // forced NSToolbar's `»` overflow when the sidebar was collapsed.
+    // The baseline is everything-collapsed: navigator toggle, branch title, inspector toggle. Each
+    // panel's own items are inserted by the app delegate only while that panel is open, because
+    // carrying them in the default set has a visible cost either way — the inspector's pane switch
+    // and tracking separator (`setInspectorSwitchVisible`) would draw a stray divider line over a
+    // collapsed panel, and the sidebar's actions plus their flexible space
+    // (`setNavigatorItemsVisible`) over-packed the row into NSToolbar's `»` overflow.
     private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
         .toggleNavigator, .sidebarTrackingSeparator, .branchPicker, .flexibleSpace, .toggleInspector,
     ]
