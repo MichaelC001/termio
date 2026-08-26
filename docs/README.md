@@ -47,6 +47,7 @@ from the real front matter).
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
 | active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
+| active | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](design/20260704-push-to-talk-voice-dictation.md) |
 | active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](design/20260819-unify-server-plane.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/20260628-session-history-search-resume.md) |
@@ -106,7 +107,6 @@ from the real front matter).
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | draft | rfc | [A project carries its machine — delete the host container](design/20260818-one-workspace-source.md) |
 | draft | rfc | [Adversarial review — Retire "remote", every machine is a device](design/20260814-remote-to-device.review-claude.md) |
-| draft | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
 | draft | rfc | [Automation — scheduled agent runs](design/20260702-automation-scheduled-agent-runs.md) |
 | draft | rfc | [Companion Wire Protocol](design/20260810-companion-wire-protocol.md) |
 | draft | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
