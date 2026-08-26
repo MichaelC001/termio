@@ -256,34 +256,25 @@ final class BracketMatcherTests: XCTestCase {
 final class OccurrenceTargetTests: XCTestCase {
     private let source = "let total = count + total\nlet other = total" as NSString
 
-    private func target(_ selection: NSRange, editable: Bool = true) -> OccurrenceTarget? {
-        OccurrenceTarget.resolve(selection: selection, in: source, allowsCaretWord: editable)
+    private func target(_ selection: NSRange) -> OccurrenceTarget? {
+        OccurrenceTarget.resolve(selection: selection, in: source)
     }
 
-    func testCaretInsideAWordTakesTheWholeWord() {
-        let inside = target(NSRange(location: 6, length: 0)) // "to|tal"
-        XCTAssertEqual(inside?.text, "total")
-        XCTAssertEqual(inside?.range, NSRange(location: 4, length: 5))
-        XCTAssertEqual(inside?.wholeWord, true)
+    /// A double-click selects the word, and the whole word is what gets chased.
+    func testSelectedWordIsChasedWholeWord() {
+        let selected = target(NSRange(location: 4, length: 5)) // "total"
+        XCTAssertEqual(selected?.text, "total")
+        XCTAssertEqual(selected?.range, NSRange(location: 4, length: 5))
+        XCTAssertEqual(selected?.wholeWord, true)
     }
 
-    /// A caret parked at either edge still belongs to the word — the trailing edge is where you
-    /// land after double-clicking or arrowing to the end of a name.
-    func testCaretAtWordEdges() {
-        XCTAssertEqual(target(NSRange(location: 4, length: 0))?.text, "total")
-        XCTAssertEqual(target(NSRange(location: 9, length: 0))?.text, "total")
-    }
-
-    func testCaretAwayFromAnyWordHasNoTarget() {
+    /// Placing the caret is not asking a question. Without a language service there is nothing that
+    /// knows the symbol under it, and washing the document on a click was noise.
+    func testBareCaretHasNoTarget() {
+        XCTAssertNil(target(NSRange(location: 6, length: 0))) // inside "total"
+        XCTAssertNil(target(NSRange(location: 4, length: 0))) // at its leading edge
+        XCTAssertNil(target(NSRange(location: 9, length: 0))) // at its trailing edge
         XCTAssertNil(target(NSRange(location: 10, length: 0))) // on "="
-        XCTAssertNil(target(NSRange(location: 11, length: 0))) // in the gap after it
-    }
-
-    /// A read-only peek shows no caret, so an empty selection there is a click, not a place.
-    func testReadOnlyBufferIgnoresTheCaret() {
-        XCTAssertNil(target(NSRange(location: 6, length: 0), editable: false))
-        // A real selection still counts — that's the reading gesture the peek has.
-        XCTAssertEqual(target(NSRange(location: 4, length: 5), editable: false)?.text, "total")
     }
 
     func testSelectionSpanningLinesIsSkipped() {
@@ -297,7 +288,7 @@ final class OccurrenceTargetTests: XCTestCase {
     func testOversizedSelectionIsSkipped() {
         let long = String(repeating: "a", count: OccurrenceTarget.maximumSelectionLength + 1) as NSString
         XCTAssertNil(OccurrenceTarget.resolve(
-            selection: NSRange(location: 0, length: long.length), in: long, allowsCaretWord: true))
+            selection: NSRange(location: 0, length: long.length), in: long))
     }
 
     /// A partial selection matches literally: selecting `tot` must not light up every `total`.
