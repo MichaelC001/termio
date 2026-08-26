@@ -180,6 +180,20 @@ enum DeviceStateCache {
     static func forget(_ key: String) {
         try? FileManager.default.removeItem(at: url(for: key))
     }
+
+    /// Records that this build's hooks and skill landed on a machine, leaving the
+    /// probe results already cached beside them alone.
+    ///
+    /// An installer that reaches a machine has learned one thing about it for
+    /// free — that it answered — which is why a machine with no file yet gets one
+    /// saying so rather than nothing. It learned nothing about which agent CLIs
+    /// are there, so `agents` stays empty and every row on that machine keeps
+    /// reading `unknown` until something actually asks.
+    static func stampIntegration(_ version: String?, for key: String) {
+        var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
+        state.integrationVersion = version
+        save(state, for: key)
+    }
 }
 
 private extension Character {
