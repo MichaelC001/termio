@@ -45,6 +45,23 @@ public enum Termiod {
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
     public static let controlCapabilities: [String] = []
 
+    /// What a client that *renders a whole device* asks for on its control
+    /// channel — the phone's roster socket and its inspector's.
+    ///
+    /// Wider than `controlCapabilities` because every one of these has a
+    /// consumer here, which is the same rule the attach table follows:
+    ///
+    /// | Capability | Consumer |
+    /// | ---------- | -------- |
+    /// | `events`   | `subscribe` on `roster` + `status`, so the session list is pushed rather than polled |
+    /// | `files`    | `fs_list` / `fs_read` / `fs_match` — the Files pane |
+    /// | `upload`   | `upload_open` / `U` / `upload_commit` — saving an edit, and a photo crossing to the device |
+    ///
+    /// `git` is deliberately absent: nothing on this side decodes its replies
+    /// yet, and offering a capability with nothing behind it is worse than not
+    /// offering it.
+    public static let deviceCapabilities = ["events", "files", "upload"]
+
     public static let protocolVersion: UInt32 = 1
 
     // MARK: - Framing
@@ -83,13 +100,19 @@ public enum Termiod {
         }
     }
 
-    public static func writeFrame(_ descriptor: Int32, kind: FrameKind, payload: Data) throws {
+    /// One framed message, ready for whatever carries it — a pipe, or a
+    /// WebSocket that has no file descriptor to write to.
+    public static func frame(kind: FrameKind, payload: Data) -> Data {
         var frame = Data(capacity: 5 + payload.count)
         frame.append(kind.rawValue)
         var length = UInt32(payload.count).bigEndian
         withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
         frame.append(payload)
-        try writeFully(descriptor, frame)
+        return frame
+    }
+
+    public static func writeFrame(_ descriptor: Int32, kind: FrameKind, payload: Data) throws {
+        try writeFully(descriptor, frame(kind: kind, payload: payload))
     }
 
     private static func readExactly(_ descriptor: Int32, count: Int) throws -> Data {
@@ -125,6 +148,57 @@ public enum Termiod {
         }
         let payload = length == 0 ? Data() : try readExactly(descriptor, count: Int(length))
         return (kind, payload)
+    }
+
+    /// Reassembles frames from a transport whose own message boundaries mean
+    /// nothing to this protocol.
+    ///
+    /// `readFrame` above pulls exactly as many bytes as a header says it needs,
+    /// which a blocking descriptor can do and a WebSocket cannot: the daemon's
+    /// listener splices raw stream bytes into binary messages of whatever size
+    /// the copy loop happened to read, so one message may carry three frames, or
+    /// a third of one. Bytes are accumulated here and cut by the 5-byte header
+    /// instead — the same rule, driven by arrival rather than by demand.
+    ///
+    /// Not thread-safe: its owner feeds it from one queue.
+    public struct FrameReader {
+        private var buffer = Data()
+
+        public init() {}
+
+        /// Every frame that `chunk` completed, in order. A partial frame stays
+        /// buffered for the next chunk.
+        ///
+        /// Throws on a length past `maximumFrameSize` or a kind byte this
+        /// protocol does not define: both mean the stream has lost alignment,
+        /// and every later frame would be garbage read at a garbage offset.
+        public mutating func append(
+            _ chunk: Data
+        ) throws -> [(kind: FrameKind, payload: Data)] {
+            buffer.append(chunk)
+            var frames: [(kind: FrameKind, payload: Data)] = []
+            while buffer.count >= 5 {
+                let header = buffer.prefix(5)
+                let length = Int(header.dropFirst().withUnsafeBytes { raw in
+                    UInt32(bigEndian: raw.loadUnaligned(as: UInt32.self))
+                })
+                guard let kind = FrameKind(rawValue: header[header.startIndex]),
+                      length <= maximumFrameSize
+                else { throw TermiodClientError.malformedFrame }
+                guard buffer.count >= 5 + length else { break }
+                let start = buffer.index(buffer.startIndex, offsetBy: 5)
+                let end = buffer.index(start, offsetBy: length)
+                frames.append((kind, Data(buffer[start ..< end])))
+                buffer = Data(buffer[end...])
+            }
+            return frames
+        }
+
+        /// Drop whatever a dead socket left half-written, so the next connect
+        /// starts on a frame boundary.
+        public mutating func reset() {
+            buffer = Data()
+        }
     }
 
     /// Blocks until `descriptor` has a frame's first byte to read, or `seconds`
@@ -220,6 +294,21 @@ public enum Termiod {
 
     // MARK: - Control payloads
 
+    /// What a session is *for*, recorded on the device so every client that
+    /// lists it — including one that never opened it — can say which agent is
+    /// running and which checkout it belongs to.
+    public struct WorkstreamSpecification: Encodable, Sendable {
+        public let agentId: String
+        public let project: String
+        public let worktree: String?
+
+        public init(agentId: String, project: String, worktree: String? = nil) {
+            self.agentId = agentId
+            self.project = project
+            self.worktree = worktree
+        }
+    }
+
     /// Spawn parameters for `attach` with `create_if_missing`. The daemon
     /// fills `name` from the attach target, so it is not repeated here.
     public struct CreateSpecification: Encodable, Sendable {
@@ -229,13 +318,16 @@ public enum Termiod {
         public let env: [[String]]
         public let rows: UInt16
         public let cols: UInt16
+        public let workstream: WorkstreamSpecification?
 
-        public init(cwd: String, argv: [String], env: [[String]], rows: UInt16, cols: UInt16) {
+        public init(cwd: String, argv: [String], env: [[String]], rows: UInt16, cols: UInt16,
+                    workstream: WorkstreamSpecification? = nil) {
             self.cwd = cwd
             self.argv = argv
             self.env = env
             self.rows = rows
             self.cols = cols
+            self.workstream = workstream
         }
     }
 
@@ -380,6 +472,50 @@ public enum Termiod {
             self.limit = limit
             self.seq = seq
         }
+    }
+
+    /// Filename search, which is a different question from `fs_search`'s
+    /// content search: this one matches the *names* in the host's index, and is
+    /// what a "jump to file" field asks. Answered from an index the host keeps
+    /// rather than by walking, so the reply carries how much of the tree that
+    /// index has covered.
+    public struct FsMatchOperation: Encodable, Sendable {
+        public let op = "fs_match"
+        public let root: String
+        public let query: String
+        public let limit: UInt64
+        public let seq: UInt64
+
+        public init(root: String, query: String, limit: UInt64, seq: UInt64) {
+            self.root = root
+            self.query = query
+            self.limit = limit
+            self.seq = seq
+        }
+    }
+
+    /// Reply to `fs_match`: root-relative paths, best first. `coverage` is the
+    /// fraction of the tree the index has walked (0–1), and it is load-bearing
+    /// rather than decoration — a host with no index for this root answers with
+    /// no paths at coverage 0, which means *not indexed* and must never be shown
+    /// as "no matches".
+    public struct FsMatchedPayload: Decodable, Sendable {
+        public let paths: [String]
+        public let coverage: Double
+
+        private enum CodingKeys: String, CodingKey {
+            case paths, coverage
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            paths = try container.decodeIfPresent([String].self, forKey: .paths) ?? []
+            coverage = try container.decodeIfPresent(Double.self, forKey: .coverage) ?? 0
+        }
+
+        /// The host has nothing indexed for this root, so it answered without
+        /// looking. Distinct from a genuine miss, which has full coverage.
+        public var indexIsMissing: Bool { paths.isEmpty && coverage <= 0 }
     }
 
     /// Only the `op` tag — the second decode pass picks the payload shape.
@@ -537,7 +673,7 @@ public enum Termiod {
     }
 
     public struct SessionsPayload: Decodable, Sendable {
-        public let sessions: [SessionInformation]
+        public let sessions: [Termiod.SessionInformation]
         /// Sessions that have died, newest first. Absent on a daemon too old to
         /// bury them, which is why it decodes to an empty list rather than
         /// failing the reply.
@@ -578,6 +714,11 @@ public enum Termiod {
         /// which dot it becomes is the client's call.
         public let status: String
         public let agentID: String?
+        /// The workstream's project root, **on the device**. A client attached
+        /// straight to the host has no second source for it, so this is the only
+        /// thing that groups a flat session list into projects. `nil` for a
+        /// session with no workstream, and from a daemon too old to report one.
+        public let project: String?
         /// The title the agent reported, when it reported one.
         public let title: String?
         public let createdUnix: UInt64
@@ -620,7 +761,7 @@ public enum Termiod {
         public let childExecutableReplaced: Bool?
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, pid, alive, cwd, command, status, title, createdUnix
+            case id, name, pid, alive, cwd, command, status, project, title, createdUnix
             case agentID = "agentId"
             case attachedClients
             case foregroundPid, foregroundArgv, foregroundJob
@@ -637,6 +778,7 @@ public enum Termiod {
             command = try container.decodeIfPresent(String.self, forKey: .command) ?? ""
             status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
             agentID = try container.decodeIfPresent(String.self, forKey: .agentID)
+            project = try container.decodeIfPresent(String.self, forKey: .project)
             title = try container.decodeIfPresent(String.self, forKey: .title)
             createdUnix = try container.decodeIfPresent(UInt64.self, forKey: .createdUnix) ?? 0
             attachedClients = try container.decodeIfPresent(Int.self, forKey: .attachedClients) ?? 0
@@ -933,6 +1075,8 @@ public enum Termiod {
         /// The terminal reply to `fs_search`, closing a stream whose hits
         /// arrived as `search_results` events.
         case fsSearched(FsSearchedPayload)
+        /// The reply to `fs_match` — filename hits, whole, in one frame.
+        case fsMatched(FsMatchedPayload)
         /// The addressed half of `writer_changed`: sent to one client to tell it
         /// who owns size now (§C.5). Same payload shape, so it feeds the same
         /// handler — a client that only listened to the broadcast would still be
@@ -975,6 +1119,8 @@ public enum Termiod {
             return .fsFile(try decoder.decode(FsFilePayload.self, from: payload))
         case "fs_searched":
             return .fsSearched(try decoder.decode(FsSearchedPayload.self, from: payload))
+        case "fs_matched":
+            return .fsMatched(try decoder.decode(FsMatchedPayload.self, from: payload))
         case "resize_claim":
             return .resizeClaim(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "error":
@@ -1058,6 +1204,169 @@ public enum Termiod {
 
     public static func requestSnapshotPayload() throws -> Data {
         try encodeControl(RequestSnapshotOperation())
+    }
+
+    private struct SubscribeOperation: Encodable {
+        let op = "subscribe"
+        let events: [String]
+        let seq: UInt64
+    }
+
+    /// Asks for the session-scoped events a roster is kept current by. Requires
+    /// the `events` capability; `roster` also carries `writer_changed` and
+    /// `session_exited`, which is why one name covers three.
+    public static func subscribePayload(events: [String], seq: UInt64 = 1) throws -> Data {
+        try encodeControl(SubscribeOperation(events: events, seq: seq))
+    }
+}
+
+/// Turns `list`'s flat `[SessionInformation]` into the Workspace → container →
+/// Session tree a viewer draws.
+///
+/// The daemon has no notion of a project: it holds sessions, and a session
+/// carries at most the workstream it was started for. So the grouping is the
+/// client's to do — and it belongs here rather than in one client, because a
+/// phone and a browser looking at the same box must not draw two different
+/// trees out of the same list.
+///
+/// The classification mirrors the desktop's `Workspace` exactly
+/// (`Sources/termio/App/Models.swift`), and turns on two fields and no others:
+///
+/// | Condition | Container |
+/// | --- | --- |
+/// | `project` is set | that folder project — agent or not |
+/// | no project, an agent | the workspace's **Chats** |
+/// | no project, no agent | the workspace's **Terminals** |
+///
+/// **`cwd` is never consulted.** A loose shell spawns at `$HOME` and then
+/// carries its own cwd wherever the user walks it, so filing by `cwd` would
+/// invent a folder project named after wherever they happened to `cd` — and
+/// both loose containers would starve while folders appeared that nobody
+/// opened. The cwd of a loose session is incidental; the workstream is identity.
+/// See `docs/design/20260713-loose-terminal-entity.md`.
+public enum TermiodRoster {
+    /// What a container is, in the companion wire's own `kind` vocabulary so the
+    /// screens that switch on it need no second spelling.
+    public enum Kind: String, Sendable {
+        case folder
+        case terminals
+        case chats
+    }
+
+    /// One container's worth of sessions. `id` is stable across pushes — it is
+    /// derived from what the container *is*, never from a position in a list, so
+    /// a row keeps its identity while the roster churns underneath it.
+    public struct Project: Equatable, Sendable {
+        public let id: String
+        /// The absolute path on the device: a checkout for a folder, and the
+        /// spawn root for a loose container.
+        public let path: String
+        public let name: String
+        public let kind: Kind
+        public let sessions: [Termiod.SessionInformation]
+    }
+
+    /// The two loose containers' ids. Named rather than derived so a client can
+    /// also *address* one when starting a session into it, the way the companion
+    /// wire addresses a workspace's funnels by `Wire.looseSectionID`.
+    public static let terminalsProjectID = "termiod:terminals"
+    public static let chatsProjectID = "termiod:chats"
+
+    /// Where a loose **shell** spawns on the device: the account's home
+    /// directory, the way launching a new terminal window drops you at `~`.
+    public static func looseTerminalRoot(homeDirectory: String) -> String { homeDirectory }
+
+    /// Where a loose **agent** session spawns: a scoped scratch directory, never
+    /// `$HOME` — an autonomous agent turned loose in a home directory can read
+    /// and write `~/.ssh` and everything beside it. The desktop's
+    /// `TermioStore.looseChatRoot`, resolved against the device's own home.
+    public static func looseChatRoot(homeDirectory: String) -> String {
+        (homeDirectory as NSString).appendingPathComponent(".termio/chats")
+    }
+
+    /// A project id for a checkout on the device. Prefixed so it can never
+    /// collide with a container id, and so the path can be read back out.
+    public static func projectID(forRoot root: String) -> String { "termiod:root:\(root)" }
+
+    /// The checkout a project id addresses, or nil for the loose containers —
+    /// whose roots depend on the device's home directory and so are resolved by
+    /// the client that knows it.
+    public static func root(ofProjectID id: String) -> String? {
+        let prefix = "termiod:root:"
+        guard id.hasPrefix(prefix) else { return nil }
+        return String(id.dropFirst(prefix.count))
+    }
+
+    /// Group `sessions` into the containers above.
+    ///
+    /// Terminals, then Chats, then the folder projects — the desktop's own
+    /// emission order (`CompanionServer.companionRoster`), and each loose
+    /// container appears only when it holds something, so a box with no loose
+    /// sessions shows no empty funnels.
+    ///
+    /// Folders are ordered by path rather than by arrival: the daemon walks a
+    /// hash map to answer `list`, so the same set of sessions comes back in a
+    /// different order every time, and a list that reshuffles under the reader
+    /// between two identical pushes is worse than one merely sorted oddly.
+    public static func projects(
+        from sessions: [Termiod.SessionInformation], homeDirectory: String
+    ) -> [Project] {
+        var terminals: [Termiod.SessionInformation] = []
+        var chats: [Termiod.SessionInformation] = []
+        var byRoot: [String: [Termiod.SessionInformation]] = [:]
+        for session in sessions {
+            // An empty string is how the wire spells "no project" for a
+            // workstream that has to carry one, so it means loose too.
+            if let root = session.project, !root.isEmpty {
+                byRoot[root, default: []].append(session)
+            } else if let agent = session.agentID, !agent.isEmpty {
+                chats.append(session)
+            } else {
+                terminals.append(session)
+            }
+        }
+
+        var containers: [Project] = []
+        if !terminals.isEmpty {
+            containers.append(Project(
+                id: terminalsProjectID,
+                path: looseTerminalRoot(homeDirectory: homeDirectory),
+                name: "Terminals",
+                kind: .terminals,
+                sessions: ordered(terminals)
+            ))
+        }
+        if !chats.isEmpty {
+            containers.append(Project(
+                id: chatsProjectID,
+                path: looseChatRoot(homeDirectory: homeDirectory),
+                name: "Chats",
+                kind: .chats,
+                sessions: ordered(chats)
+            ))
+        }
+        return containers + byRoot.keys.sorted().map { root in
+            Project(
+                id: projectID(forRoot: root),
+                path: root,
+                name: URL(fileURLWithPath: root).lastPathComponent,
+                kind: .folder,
+                sessions: ordered(byRoot[root] ?? [])
+            )
+        }
+    }
+
+    /// Oldest first — a fact about the sessions rather than about the hash map
+    /// they came out of, and the tie-break keeps two sessions created in the
+    /// same second from swapping between pushes.
+    private static func ordered(
+        _ sessions: [Termiod.SessionInformation]
+    ) -> [Termiod.SessionInformation] {
+        sessions.sorted { left, right in
+            left.createdUnix == right.createdUnix
+                ? left.id < right.id
+                : left.createdUnix < right.createdUnix
+        }
     }
 }
 

@@ -19,16 +19,16 @@ import Foundation
 /// synthesiser re-emits the slot rather than a colour, so libghostty applies
 /// this viewer's theme. That is the whole point: a payload rendered by a
 /// light-theme surface and a dark-theme surface must not look the same.
-enum TermiodSnapshot {
+public enum TermiodSnapshot {
     /// Mirrors `WireColor` in `termiod/src/protocol.rs`.
-    enum Color: Equatable {
+    public enum Color: Equatable {
         case `default`
         case palette(UInt8)
         case rgb(UInt8, UInt8, UInt8)
 
         /// SGR parameters selecting this colour, given the base code for the
         /// layer (30 foreground / 40 background).
-        func sgr(base: Int) -> String {
+        public func sgr(base: Int) -> String {
             switch self {
             // 39 / 49 hand the choice back to the terminal's own default.
             case .default: return "\(base + 9)"
@@ -38,23 +38,23 @@ enum TermiodSnapshot {
         }
     }
 
-    struct Cell: Equatable {
-        var codepoint: UInt32
-        var foreground: Color
-        var background: Color
+    public struct Cell: Equatable {
+        public var codepoint: UInt32
+        public var foreground: Color
+        public var background: Color
     }
 
-    struct Frame {
-        var rows: Int
-        var cols: Int
-        var cursorX: Int
-        var cursorY: Int
-        var alternateScreen: Bool
-        var title: String
-        var cells: [Cell]
+    public struct Frame {
+        public var rows: Int
+        public var cols: Int
+        public var cursorX: Int
+        public var cursorY: Int
+        public var alternateScreen: Bool
+        public var title: String
+        public var cells: [Cell]
         /// Set for payload v2 — the repaint, already in the terminal's own
         /// language. When present, `cells` is empty and `render` is a pass-through.
-        var vt: Data?
+        public var vt: Data?
     }
 
     /// Snapshot payload v3 (see `encode_snapshot_payload` in `protocol.rs`):
@@ -66,18 +66,18 @@ enum TermiodSnapshot {
     /// v1 carried host-resolved RGB and is not accepted: it could not say
     /// "the client's default" or "palette index N", so it overrode the viewer's
     /// theme by construction.
-    static let formatVersion: UInt8 = 3
+    public static let formatVersion: UInt8 = 3
     /// Payload v2 carries VT sequences instead of packed cells. Preferred: the
     /// host describes screen *content* and this client's libghostty decides how
     /// it looks, so the local theme, the ANSI palette, and bold/underline/OSC 8
     /// all survive. Packed cells remain the fallback when the host's formatter
     /// fails, and the seed for a grid-diff client.
-    static let vtFormatVersion: UInt8 = 2
-    static let cellSize = 16
-    static let colorTagPalette: UInt8 = 1
-    static let colorTagRGB: UInt8 = 2
+    public static let vtFormatVersion: UInt8 = 2
+    public static let cellSize = 16
+    public static let colorTagPalette: UInt8 = 1
+    public static let colorTagRGB: UInt8 = 2
 
-    static func decode(_ payload: Data) -> Frame? {
+    public static func decode(_ payload: Data) -> Frame? {
         let bytes = [UInt8](payload)
         guard bytes.count >= 12,
               bytes[0] == formatVersion || bytes[0] == vtFormatVersion
@@ -150,7 +150,7 @@ enum TermiodSnapshot {
     /// into one SGR + text run to keep the stream small. The result is
     /// idempotent — feeding it again repaints the same frame — so a mid-session
     /// keyframe (the resize barrier's fresh `S`) can reuse it verbatim.
-    static func render(_ frame: Frame) -> Data {
+    public static func render(_ frame: Frame) -> Data {
         // v2: the host already produced the repaint, prologue included. Replay it
         // verbatim — deciding anything about colour here is exactly the bug this
         // format exists to fix, and a client-side prelude is what the host-owned
