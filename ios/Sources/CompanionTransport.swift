@@ -31,8 +31,6 @@ final class CompanionTransport {
     /// (the standalone companion PoC).
     private let attachSessionID: String?
     private let link: WebSocketLink
-    /// Only touched on the link's delegate queue (see `sendPreamble`).
-    private var everConnected = false
     /// Last grid the terminal reported, re-sent on every (re)connect and on
     /// foreground: the first resize often fires before the socket exists and
     /// would be silently lost, a reconnect never re-fires it (the view's size
@@ -133,18 +131,22 @@ final class CompanionTransport {
         link.stop()
     }
 
-    /// The preamble every (re)connect puts on the wire, in this order: the
-    /// screen reset, auth, the attach it gates, and the grid claim the Mac's
-    /// repaint is driven by.
+    /// The preamble every (re)connect puts on the wire, in this order: auth,
+    /// the attach it gates, and the grid claim the Mac's repaint is driven by.
+    ///
+    /// Nothing resets the screen first. A reconnect used to emit RIS ahead of
+    /// the server's ring-buffer replay, back when the replay was raw scrollback
+    /// this end had to make sense of; the phone now attaches through the daemon,
+    /// which answers with a snapshot rendered at this client's grid. That
+    /// snapshot carries its own prologue (`SNAPSHOT_PROLOGUE` in
+    /// `termiod/vt/src/lib.rs`), built so it lands identically on a client in
+    /// any prior state — and deliberately stopping short of RIS, because the
+    /// palette, title and scrollback it would clear are the client's, not the
+    /// host's. So RIS bought nothing and cost a visible flash: it wiped the
+    /// screen the moment the socket opened, leaving it blank until the snapshot
+    /// arrived, on every transient reconnect the phone's foreground and network
+    /// churn produces.
     private func sendPreamble() {
-        // On a REconnect the terminal still shows the dead link's screen; a
-        // full reset (RIS) ahead of the server's ring-buffer replay keeps the
-        // two byte streams from interleaving into garbage. Emitted here on the
-        // serial delegate queue so it precedes the replayed bytes.
-        if everConnected {
-            onOutput?(Data("\u{1B}c".utf8))
-        }
-        everConnected = true
         // Auth precedes the attach on the same socket — the server refuses
         // the bridge (and everything else) until the token lands.
         if let token = CompanionLink.token(of: url) {
