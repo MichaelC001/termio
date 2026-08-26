@@ -442,9 +442,17 @@ extension Termiod {
             return opened
         }
 
-        /// Hangs up every channel to `route`. The teardown verb for a device that
-        /// went away, so the next request opens fresh rather than waiting on a
-        /// pipe whose far end is gone.
+        /// Hangs up every channel to `route`, or the whole pool when `route` is
+        /// nil, so the next request opens fresh rather than waiting on a pipe
+        /// whose far end is gone.
+        ///
+        /// Nothing in the app calls this, and the comment should say so rather
+        /// than imply a caller: machines come from `~/.ssh/config` and are never
+        /// forgotten, so there is no moment where a device goes away for good. A
+        /// channel to one that stopped answering dies on its own read and is
+        /// reaped. What does need this is a test, which must not hand the next
+        /// test a channel pointed at a daemon it is about to kill — a
+        /// process-wide pool with no way to empty it can only be tested once.
         static func closeAll(route: TermiodRoute? = nil) {
             lock.lock()
             let closing = channels.filter { route == nil || $0.key.route == route }
