@@ -63,7 +63,15 @@ extension Termiod {
     struct SearchHit: Sendable {
         let path: String
         let line: Int
+        /// The matching line, or the host's window of a long one.
         let text: String
+        /// Where the query hit inside `text`, as byte ranges the host measured
+        /// with the rule it searched by. Empty from a host too old to say.
+        let spans: [Range<Int>]
+        /// Whether `text` is a window cut out of a longer line.
+        let isWindowed: Bool
+        let before: [String]
+        let after: [String]
     }
 
     /// What one search answered. `limitHit` means the device stopped at the
@@ -188,8 +196,21 @@ extension Termiod {
                 case .event:
                     guard case .searchResults(let payload) = try decodeEvent(frame.payload)
                     else { continue }
-                    hits.append(contentsOf: payload.matches.map {
-                        SearchHit(path: $0.path, line: Int(clamping: $0.line), text: $0.text)
+                    hits.append(contentsOf: payload.matches.map { match in
+                        SearchHit(
+                            path: match.path,
+                            line: Int(clamping: match.line),
+                            text: match.text,
+                            // Pairs, as the host sends them; anything else is a
+                            // host disagreeing with the protocol and is dropped
+                            // rather than turned into a wrong highlight.
+                            spans: match.spans.compactMap { span in
+                                guard span.count == 2, span[0] <= span[1] else { return nil }
+                                return Int(span[0]) ..< Int(span[1])
+                            },
+                            isWindowed: match.textOffset > 0,
+                            before: match.before,
+                            after: match.after)
                     })
                 case .control:
                     switch try decodeControl(frame.payload) {
