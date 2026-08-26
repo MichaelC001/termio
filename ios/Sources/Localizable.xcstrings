@@ -101,6 +101,16 @@
         }
       }
     },
+    "Attaching a file needs an open session on this device.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "附加文件需要该设备上有一个打开的会话。"
+          }
+        }
+      }
+    },
     "Autocomplete, accept a suggestion": {
       "localizations": {
         "zh-Hans": {
@@ -261,12 +271,12 @@
         }
       }
     },
-    "Connect to Mac": {
+    "Connect to a Device": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "连接到 Mac"
+            "value": "连接到设备"
           }
         }
       }
@@ -307,6 +317,116 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接失败"
+          }
+        }
+      }
+    },
+    "Couldn't close that session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法关闭该会话。"
+          }
+        }
+      }
+    },
+    "Couldn't list that folder.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法列出该文件夹。"
+          }
+        }
+      }
+    },
+    "Couldn't open that file.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开该文件。"
+          }
+        }
+      }
+    },
+    "Couldn't pair": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法配对"
+          }
+        }
+      }
+    },
+    "Couldn't read that file.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取该文件。"
+          }
+        }
+      }
+    },
+    "Couldn't read this device's sessions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取该设备上的会话。"
+          }
+        }
+      }
+    },
+    "Couldn't save that file on the device.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将该文件存储到该设备上。"
+          }
+        }
+      }
+    },
+    "Couldn't search this project.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法搜索此项目。"
+          }
+        }
+      }
+    },
+    "Couldn't send that file to the device.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将该文件发送到该设备。"
+          }
+        }
+      }
+    },
+    "Couldn't start that session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法启动该会话。"
+          }
+        }
+      }
+    },
+    "Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
           }
         }
       }
@@ -821,6 +941,16 @@
         }
       }
     },
+    "on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位于 %@"
+          }
+        }
+      }
+    },
     "On-device transcription isn't available": {
       "localizations": {
         "zh-Hans": {
@@ -1101,6 +1231,16 @@
         }
       }
     },
+    "Scan the QR code in Settings ▸ Mobile on a Mac, or the one `termiod pair --qr` prints on a machine running the server. Re-scanning a paired device updates its address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上打开“设置 ▸ 移动设备”扫描其二维码，或扫描运行服务器的机器上 `termiod pair --qr` 打印出的二维码。对已配对的设备重新扫描会更新其地址。"
+          }
+        }
+      }
+    },
     "Scroll to bottom": {
       "localizations": {
         "zh-Hans": {
@@ -1301,12 +1441,62 @@
         }
       }
     },
-    "The address Termio on your Mac is serving.": {
+    "Termio can't open an SSH session on %@ from a device connection.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac 上 Termio 正在提供的地址。"
+            "value": "Termio 无法通过设备连接在 %@ 上打开 SSH 会话。"
+          }
+        }
+      }
+    },
+    "Termio couldn't attach to that session.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 无法接入该会话。"
+          }
+        }
+      }
+    },
+    "That device didn't answer.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备没有响应。"
+          }
+        }
+      }
+    },
+    "That isn't an address Termio can pair with.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这不是 Termio 可以配对的地址。"
+          }
+        }
+      }
+    },
+    "That project isn't on this device.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该项目不在这台设备上。"
+          }
+        }
+      }
+    },
+    "The address your Mac is serving, or the link `termiod pair` prints.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的 Mac 正在提供服务的地址，或 `termiod pair` 打印出的链接。"
           }
         }
       }
@@ -1317,6 +1507,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前语言不支持设备端转写"
+          }
+        }
+      }
+    },
+    "The device sent something Termio could not read.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备发送了 Termio 无法读取的内容。"
+          }
+        }
+      }
+    },
+    "This device doesn't report its SSH hosts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备不提供其 SSH 主机列表。"
+          }
+        }
+      }
+    },
+    "This device hasn't indexed this project's filenames.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备尚未索引此项目的文件名。"
+          }
+        }
+      }
+    },
+    "This device speaks a newer protocol. Update Termio on this phone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备使用的协议版本较新。请在这台 iPhone 上更新 Termio。"
           }
         }
       }
@@ -1487,6 +1717,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "由哪个服务转写你的语音。每个服务各自保存自己的密钥。"
+          }
+        }
+      }
+    },
+    "Working-tree changes aren't available over a device connection yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过设备连接暂时无法查看工作区更改。"
           }
         }
       }
@@ -1667,16 +1907,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "未连接"
-          }
-        }
-      }
-    },
-    "Scan the QR code in Settings ▸ Mobile on the Mac you want to pair. Re-scanning a paired Mac updates its address.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在想要配对的 Mac 上打开“设置 ▸ 移动设备”并扫描其二维码。对已配对的 Mac 重新扫描会更新其地址。"
           }
         }
       }
