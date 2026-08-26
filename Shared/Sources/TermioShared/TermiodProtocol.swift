@@ -871,15 +871,52 @@ public enum Termiod {
     /// A workstream status delta — `working · idle · needs_you · done · failed ·
     /// unknown` (§4). The host reports the *state*; which dot, which words, and
     /// whether it fires a notification are entirely the client's call.
+    /// A session's agent status, as its own daemon reports it.
+    ///
+    /// Everything past `title` used to exist only on this Mac, carried by a hook
+    /// writing the app's own socket, and a device could not say any of it. One
+    /// report path made them the same message — see the `set_status` op.
+    ///
+    /// **Ordering.** This rides the session's own channel, the same FIFO its
+    /// output goes through, so it cannot overtake bytes the daemon has already
+    /// read and a client is right to apply it on arrival.
     public struct StatusPayload: Decodable, Sendable {
         public let session: String
         public let status: String
         public let title: String?
+        /// The agent's own conversation log for this session, so the Info pane
+        /// can address the raw Q&A instead of scraping the screen.
+        public let transcriptPath: String?
+        /// The agent's own id for the conversation it is writing now — the
+        /// signal that follows an in-process `/new` rotation.
+        public let conversationID: String?
+        /// The tool a tool-scoped event fired for, which is how real work is
+        /// told from a prose-only turn.
+        public let tool: String?
+        /// A raw first-prompt title candidate, normalized and bounded here.
+        public let promptTitle: String?
 
-        public init(session: String, status: String, title: String?) {
+        // The decoder converts from snake_case, so these are the *converted*
+        // names. Only `conversationID` needs spelling out: `conversation_id`
+        // converts to `conversationId`, and Swift's own capitalisation of an
+        // initialism does not match it.
+        private enum CodingKeys: String, CodingKey {
+            case session, status, title, transcriptPath, tool, promptTitle
+            case conversationID = "conversationId"
+        }
+
+        public init(
+            session: String, status: String, title: String?,
+            transcriptPath: String? = nil, conversationID: String? = nil,
+            tool: String? = nil, promptTitle: String? = nil
+        ) {
             self.session = session
             self.status = status
             self.title = title
+            self.transcriptPath = transcriptPath
+            self.conversationID = conversationID
+            self.tool = tool
+            self.promptTitle = promptTitle
         }
     }
 

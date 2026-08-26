@@ -98,6 +98,11 @@ pub enum SessionMsg {
     SetStatus {
         status: String,
         title: Option<String>,
+        /// The four per-report facts. Deliberately *not* stored on the session:
+        /// they describe one report, not the session's state, and a stale
+        /// transcript path surviving in `SessionInfo` would be a fact nobody
+        /// re-checked. They ride the event and are gone.
+        details: crate::protocol::StatusDetails,
         reply: oneshot::Sender<()>,
     },
     Info {
@@ -1647,6 +1652,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::SetStatus {
             status,
             title,
+            details,
             reply,
         } => {
             session.status = status;
@@ -1657,6 +1663,10 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session: session.id.to_string(),
                 status: session.status.clone(),
                 title: session.title.clone(),
+                transcript_path: details.transcript_path,
+                conversation_id: details.conversation_id,
+                tool: details.tool,
+                prompt_title: details.prompt_title,
             });
             let _ = reply.send(());
         }

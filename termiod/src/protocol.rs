@@ -467,6 +467,56 @@ impl Default for CreateSpec {
     }
 }
 
+/// The protocol's workstream vocabulary, from whatever a hook said.
+///
+/// A manifest declares its events in the hook vocabulary — `working`,
+/// `attention`, `done`, `idle` — and the protocol speaks `working`, `idle`,
+/// `needs_you`, `done`, `failed`, `unknown`. `attention` and `needs_you` are the
+/// same state under two names, and nothing translated between them: a device
+/// agent stopped at a permission prompt reported `attention`, which no client
+/// recognised, so it sat there looking idle. Local hooks never hit it because
+/// they reported to a socket that spoke the hook vocabulary.
+///
+/// One report path means one vocabulary, and this is where the two meet.
+/// Anything else is passed through untouched — the daemon is not the judge of
+/// what a status may be.
+pub fn normalize_status(status: &str) -> &str {
+    match status {
+        "attention" => "needs_you",
+        other => other,
+    }
+}
+
+/// The four per-report facts a status carries beyond its state and title.
+///
+/// Bundled so the daemon can hand them from `set_status` to the event without
+/// four parameters threading through the session actor, and so growing a fifth
+/// is one edit rather than five.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatusDetails {
+    pub transcript_path: Option<String>,
+    pub conversation_id: Option<String>,
+    pub tool: Option<String>,
+    pub prompt_title: Option<String>,
+}
+
+impl StatusDetails {
+    /// Empty strings are how a shell hook says "nothing here" — `--tool-from` on
+    /// an event whose payload has no such field mines to `""`. Treated as
+    /// absent, so a client never has to distinguish the two.
+    pub fn sanitized(self) -> StatusDetails {
+        fn some(value: Option<String>) -> Option<String> {
+            value.filter(|text| !text.is_empty())
+        }
+        StatusDetails {
+            transcript_path: some(self.transcript_path),
+            conversation_id: some(self.conversation_id),
+            tool: some(self.tool),
+            prompt_title: some(self.prompt_title),
+        }
+    }
+}
+
 /// Control-plane messages. `op` tags the variant on the wire.
 ///
 /// Optional `seq`/`re` fields are omitted when absent, preserving the exact v0
@@ -736,11 +786,40 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Report a session's agent status.
+    ///
+    /// Everything past `title` is what a hook on *this Mac* used to carry to the
+    /// app's own socket and a hook on a device could not say at all. Growing it
+    /// here is what made one report path an upgrade rather than a reshuffle: the
+    /// Info pane's transcript address, the `/new` rotation signal, the running
+    /// tool, and a first-prompt label are now available wherever the agent runs.
+    ///
+    /// All optional and all additive: an older client ignores what it does not
+    /// know, and a hook that has nothing to say omits the field rather than
+    /// sending an empty one.
     SetStatus {
         id: String,
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The agent's own conversation log for this session (Claude Code's
+        /// `transcript_path`), so a caller can be handed the address of the raw
+        /// Q&A instead of scraping the screen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+        /// The agent's own id for the conversation it is writing now. Lets a
+        /// client follow an in-process `/new` rotation without the id having to
+        /// be encoded in a transcript filename.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        /// The tool a tool-scoped event fired for, so real work can be told from
+        /// a prose-only turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        /// A raw first-prompt title candidate. The client normalizes and bounds
+        /// it; the daemon passes it through untouched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -1053,11 +1132,30 @@ pub enum Event {
     Ready {
         session: String,
     },
+    /// A session's agent status changed.
+    ///
+    /// **Ordering.** This is queued into the session's own per-client channel,
+    /// the same FIFO its `D` data goes through, so it cannot overtake output the
+    /// daemon has already read — a client is right to apply it on arrival and
+    /// needs no sequence number to do so. (`SetStatus.seq` is a request id for
+    /// reply de-duplication, not an ordering token; every hook sends 1.) What no
+    /// token could fix is upstream of here: an agent writes to its PTY and runs
+    /// its hook, and the daemon may process the hook before it has read those
+    /// bytes. That race is bounded by one read, and it is the reason `working`
+    /// arriving a few milliseconds early is not worth a buffering client.
     Status {
         session: String,
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_title: Option<String>,
     },
     WriterChanged {
         session: String,

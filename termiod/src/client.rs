@@ -279,11 +279,21 @@ pub async fn send(id: &str, data: Vec<u8>) -> Result<()> {
     }
 }
 
-pub async fn set_status(id: &str, status: &str, title: Option<String>) -> Result<()> {
+pub async fn set_status(
+    id: &str,
+    status: &str,
+    title: Option<String>,
+    details: crate::protocol::StatusDetails,
+) -> Result<()> {
+    let details = details.sanitized();
     match request(&Control::SetStatus {
         id: id.to_string(),
         status: status.to_string(),
         title,
+        transcript_path: details.transcript_path,
+        conversation_id: details.conversation_id,
+        tool: details.tool,
+        prompt_title: details.prompt_title,
         seq: Some(1),
     })
     .await?

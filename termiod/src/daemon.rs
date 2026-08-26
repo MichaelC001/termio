@@ -1404,14 +1404,26 @@ async fn process_control(
             id,
             status,
             title,
+            transcript_path,
+            conversation_id,
+            tool,
+            prompt_title,
             seq,
         } => {
+            let details = crate::protocol::StatusDetails {
+                transcript_path,
+                conversation_id,
+                tool,
+                prompt_title,
+            }
+            .sanitized();
             let response = match manager.resolve(&id).await {
                 Some(handle) => {
                     let (tx, rx) = oneshot::channel();
                     if handle.send(SessionMsg::SetStatus {
-                        status,
+                        status: crate::protocol::normalize_status(&status).to_string(),
                         title,
+                        details,
                         reply: tx,
                     }) && rx.await.is_ok()
                     {

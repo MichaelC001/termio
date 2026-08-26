@@ -14,12 +14,21 @@ extension TermioStore {
     /// Brings up the hook socket and aligns `~/.claude/settings.json` with the
     /// current setting. The listener always runs (it is harmless when no hooks are
     /// installed); only the settings-file side is toggled.
+    /// Starts the status upkeep this app still owns.
+    ///
+    /// It no longer *receives* status. Every hook reports to the daemon that
+    /// owns its PTY, and the app reads `E status` off the session's own channel
+    /// (`applyTermiodStatus`) — one path, whichever machine the agent runs on.
+    ///
+    /// What stays here is the half that reads a **screen**, because that is the
+    /// half a daemon cannot do for a local session: the stale-working sweep
+    /// below, the streak promotion, and the `OSC 0/2` title classification. For
+    /// a device the authoritative VT is the daemon's; for this Mac it is the
+    /// app's own surface. They are the only status signal an agent with no hook
+    /// system has, so they are not leftovers to tidy away — they stay until the
+    /// VT itself moves (docs/design/20260819-unify-server-plane.md). Deleting
+    /// them would silently take that fallback with them.
     func startHookMonitoring() {
-        let listener = HookListener { [weak self] report in
-            self?.applyStatusReport(report)
-        }
-        listener.start()
-        hookListener = listener
         installedHooksEnabled = settings.agentHooksEnabled
         syncHooksInstallation()
 
@@ -97,111 +106,11 @@ extension TermioStore {
         Task { _ = await AgentIntegrationInstaller.sync(hooks: hooks, skills: skills) }
     }
 
-    /// Maps a normalized agent status report onto the session's status. This is the
-    /// only path that drives `.working`: an agent's hooks expose when a turn (or a
-    /// tool) *starts*, which the surface bell/OSC signals never could. The two
-    /// layers coexist by writing the same per-session status — hooks add precision when
-    /// installed, the zero-config signals remain the fallback when they are not.
-    private func applyStatusReport(_ report: StatusReport) {
-        guard let id = sessionID(for: report) else { return }
-        if let candidate = report.promptTitle {
-            recordPromptTitle(candidate, for: id)
-        }
-        // Remember the session's transcript address whenever a hook carries it, so
-        // `sessions send` can hand it back as the place to read the response.
-        let carriedTranscript = report.transcriptPath.flatMap { $0.isEmpty ? nil : $0 }
-        if let path = carriedTranscript {
-            transcriptPaths[id] = path
-        }
-        // Conversation identity may only move on an *exactly-stamped* report — the
-        // hook files are global, so every same-agent process on the machine reports
-        // here, and a cwd-guessed match must never re-pin this tab to an outside
-        // run's conversation. And only at a turn boundary: a working-state payload
-        // embeds prompt/tool content on stdin, where a colliding field name could be
-        // mined as the id by mistake; SessionStart/Stop payloads are the agent's own
-        // minimal envelope. (`sessionID(for:)` already validated the stamp maps to a
-        // session this app owns.)
-        let stamped = report.termioSession.map { !$0.isEmpty } ?? false
-        if stamped, report.state != "working" {
-            if let path = carriedTranscript {
-                // A hook-carried path can name a *new* conversation id in its filename
-                // (after `/clear`), so advance the resume pin to match — a no-op unless
-                // it actually rotated. See docs/design/20260716-agent-resume-identity.md.
-                reconcileResumeID(id, transcriptPath: path)
-            }
-            if let conversation = conversationToken(report.conversationID) {
-                // An identity-bearing report names the live conversation outright — the
-                // rotation signal for agents whose hook host exposes the id (the
-                // manifest's `hooks.conversation`). On a rotation without a hook-carried
-                // transcript, drop the stale path that described the discarded
-                // conversation; the shared resolve below re-learns it against the new pin.
-                if adoptConversationID(conversation, for: id), carriedTranscript == nil {
-                    transcriptPaths[id] = nil
-                }
-            } else if report.state == "done" {
-                // Identity-blind turn end: for a discovered-id agent, re-scan its store
-                // in case the conversation rotated in-process (`/new`) since discovery.
-                rediscoverConversation(for: id)
-            }
-        }
-        if transcriptPaths[id] == nil, let path = resolveTranscriptPath(for: id) {
-            // The hook didn't carry a path (a pre-hook Claude session never will), so
-            // learn it from the agent's own on-disk transcript instead — same result
-            // as Claude's hook-carried path, just discovered.
-            transcriptPaths[id] = path
-        }
-        // Any recognized report proves this session's hooks are alive and speaking,
-        // which tells the screen-driven promotion to stand down (`hookQuietWindow`).
-        if ["working", "done", "attention", "idle"].contains(report.state) {
-            lastHookReportAt[id] = Date()
-        }
-        switch report.state {
-        case "working":
-            // Spin a row only when it's genuinely an agent: a declared agent session,
-            // or a plain terminal we've detected a hand-started agent running in (its
-            // hook carries `TERMIO_SESSION`, so it routes here correctly). A bare
-            // terminal with nothing detected — or a cwd-matched report from a sibling —
-            // stays calm, so only real agent rows show the thinking spinner.
-            guard let session = session(id), effectiveAgent(for: session) != .terminal
-            else { break }
-            setStatus(.working, for: id)
-            setCurrentTool(report.tool, for: id)
-            // Remember when work was last seen, so a turn that ends abnormally
-            // (the agent crashed and never sent `done`) can be swept back to calm
-            // instead of spinning forever — the failure mode cmux's own tracker
-            // suffers from (issue #3749). (Floating the project up the Recent-Activity
-            // sort is handled by `setStatus`'s working transition.)
-            lastWorkingAt[id] = Date()
-        case "done":
-            // The turn finished — always leave a "ready for you" green dot, even on
-            // the session the user is currently looking at, so a finished agent stays
-            // on the menu-bar roster instead of blinking off the instant it stops.
-            // The dot is cleared by engaging with the row (`markSeen`, wired to the
-            // sidebar/tray click) or by the next turn starting. Distinct from
-            // `needsAttention`, which is reserved for the agent being blocked on you.
-            clearWorking(id)
-            setStatus(.done, for: id)
-        case "attention":
-            // The agent is blocked waiting on the user (a permission prompt or a
-            // free-text answer). Mirror the bell path: only flag a session the user
-            // isn't actually watching — with termio backgrounded, even the selected
-            // session needs the cue (it's what fires the desktop notification). This
-            // is an observable blocking condition, so its dot survives a click.
-            clearWorking(id)
-            flagBlockingAttention(for: id)
-        case "idle":
-            clearWorking(id)
-            setStatus(.idle, for: id)
-        default:
-            break
-        }
-    }
-
     /// Records only the first usable prompt label in a conversation. It stays a
     /// fallback: `displayTitle` gives an explicit Termio name and a meaningful native
     /// OSC title higher priority. Persisting it on `Session` keeps resumed tabs named
     /// before the agent emits any fresh terminal title.
-    private func recordPromptTitle(_ raw: String, for id: Session.ID) {
+    func recordPromptTitle(_ raw: String, for id: Session.ID) {
         guard let session = session(id),
               session.promptTitle == nil,
               session.agent != .terminal,
@@ -215,7 +124,7 @@ extension TermioStore {
     /// every agent mints (UUIDs, `ses_…`) always are. The shell-hook path mines the
     /// value out of an arbitrary stdin blob, so anything else (pasted JSON, a path,
     /// whitespace) is treated as no identity rather than adopted into the pin.
-    private func conversationToken(_ raw: String?) -> String? {
+    func conversationToken(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty, raw.count <= 128,
               raw.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) })
         else { return nil }
@@ -764,48 +673,6 @@ extension TermioStore {
             cwd: runtimes[id]?.workingDirectory ?? "")
         event.evidence = "working \(minutes)m, no repo change, \(growth)"
         SessionWatchHub.shared.broadcast(event)
-    }
-
-    /// Resolves a status report back to its session. The exact key is the
-    /// `TERMIO_SESSION` id termio stamped into the PTY and the agent echoed back, so
-    /// this is unambiguous even when several sessions share one project directory.
-    /// A report that *carries* an id this app didn't stamp is another channel's
-    /// session (the CLI broadcasts each report to both the release and dev app's
-    /// sockets) and must be dropped, not cwd-guessed — that guess is exactly how a
-    /// prod session's activity would light up a dev session sharing its directory.
-    /// `cwd` is only a fallback for an agent whose environment didn't carry the id
-    /// through to the hook at all (an agent hand-started outside termio).
-    private func sessionID(for report: StatusReport) -> Session.ID? {
-        if let token = report.termioSession, !token.isEmpty {
-            guard let id = UUID(uuidString: token), session(id) != nil else { return nil }
-            return id
-        }
-        return sessionID(forCwd: report.cwd)
-    }
-
-    /// Fallback correlation by working directory, for a report that arrived without
-    /// a usable session id. A session's worktree directory is unique, so a single
-    /// match is exact; in a shared directory we don't guess and leave status alone.
-    private func sessionID(forCwd cwd: String?) -> Session.ID? {
-        guard let cwd else { return nil }
-        let target = URL(fileURLWithPath: cwd).standardizedFileURL.path
-        let matches = projects.flatMap { project in
-            project.sessions.filter { session in
-                let directory = session.worktreePath ?? project.path
-                return URL(fileURLWithPath: directory).standardizedFileURL.path == target
-            }
-        } + workspaces.flatMap { workspace in
-            // A loose chat runs in the shared scratch directory, so a cwd match
-            // there names every one of them at once — ambiguous by construction,
-            // and the guard below leaves status alone. Only a loose *terminal*,
-            // which owns its own cwd, can be identified this way.
-            workspace.terminals.filter { session in
-                guard let directory = session.lastWorkingDirectory else { return false }
-                return URL(fileURLWithPath: directory).standardizedFileURL.path == target
-            }
-        }
-        guard matches.count == 1 else { return nil }
-        return matches.first?.id
     }
 
     /// A short description of a session's current agent activity, for the sidebar
