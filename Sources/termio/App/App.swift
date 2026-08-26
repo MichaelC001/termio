@@ -1291,6 +1291,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             syncMaximizedChrome()
         } else {
+            // Retire them here rather than trusting the re-parent to reap them: `removeFromSuperview`
+            // only drops constraints the old ancestor held, and the host does not always leave
+            // through that door — a detail closed while maximized is discarded where it stands. A
+            // set left active outlives the cycle that made it, and the next maximize activates a
+            // second one against the same host: auto layout then breaks whichever it likes, and a
+            // broken trailing edge is a detail that stops at the terminal instead of filling the
+            // window.
+            NSLayoutConstraint.deactivate(maximizedDetailConstraints)
             maximizedDetailConstraints = []
             // Straight back into the inspector's slot, which stayed mounted for exactly this.
             // Without one — the detail closed while maximized — there is nowhere to go and the
