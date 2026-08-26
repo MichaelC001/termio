@@ -177,6 +177,13 @@ struct FileEditorView: View {
     private var currentLineColor: NSColor {
         ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.06 : 0.05)
     }
+    /// The wash on other occurrences of the word under the caret. A step above the current-line
+    /// band so it reads as a mark, well below the find bar's yellow so a passive hint never looks
+    /// like a result you searched for. Neutral ink rather than a tint, for the same reason the
+    /// gutter is: a themed color sinks into some backgrounds at any alpha.
+    private var occurrenceHighlightColor: NSColor {
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.14 : 0.11)
+    }
 
     var body: some View {
         // The editor's chrome (header, gutter) already sits in the safe content area below the
@@ -298,6 +305,7 @@ struct FileEditorView: View {
                 caretColor: caretColor,
                 lineNumberColor: lineNumberColor,
                 currentLineColor: currentLineColor,
+                occurrenceHighlightColor: occurrenceHighlightColor,
                 isEditable: !readOnly,
                 jumpToLine: jumpLine,
                 findQuery: findBarVisible ? findQuery : "",
