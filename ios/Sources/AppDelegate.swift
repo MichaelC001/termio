@@ -118,6 +118,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                     root.openFirstProjectPage()
                     return
                 }
+                // "settings" opens the settings sheet, the same way the
+                // unpaired zero state's "Connect a Mac" does — the page whose
+                // every color is theme-derived, and the one a simctl run has no
+                // other way to reach.
+                if mode == "settings" {
+                    root.present(
+                        UINavigationController(rootViewController: SettingsViewController()),
+                        animated: false
+                    )
+                    return
+                }
                 let session = MockProject.samples[0].sessions[0]
                 let terminal = TerminalViewController(session: session)
                 root.open(terminal, sessionKey: session.key, animated: false)

@@ -18,32 +18,54 @@ extension UIButton {
     /// content — back, compose, close); earlier it stays the flat symbol.
     /// Only for free-floating buttons — controls inside pills, rows, or
     /// keyboards keep their plain style, matching Messages.
-    func applyGlassSymbol(_ symbol: String, pointSize: CGFloat = 15) {
+    ///
+    /// `themed` tints the glass with the terminal theme's own surface, which is
+    /// what keeps a floating puck from reading as system white over a tinted
+    /// page. Pass `false` on the code surfaces (file viewer, diff), whose page
+    /// is system-colored to match their xcode/xcode-dark highlight themes.
+    func applyGlassSymbol(_ symbol: String, pointSize: CGFloat = 15, themed: Bool = true) {
         if #available(iOS 26.0, *) {
             var config = UIButton.Configuration.glass()
             config.image = UIImage(systemName: symbol)
             config.cornerStyle = .capsule
             config.preferredSymbolConfigurationForImage = .init(pointSize: pointSize, weight: .semibold)
-            configuration = config
+            configuration = themed ? config.themeTinted : config
         } else {
             setImage(UIImage(systemName: symbol), for: .normal)
         }
+        if themed { tintColor = ThemeChrome.ink }
     }
 
     /// The Hugeicons twin of `applyGlassSymbol`, for floating buttons whose glyph
     /// should read from the same stroke family as the native tab bar and sidebar
     /// rows. `boxSize` is the glyph's drawn size in points; the stroke is the
     /// shared 1.5px-on-24 recipe.
-    func applyGlassIcon(_ icon: HugeIcon, boxSize: CGFloat) {
+    func applyGlassIcon(_ icon: HugeIcon, boxSize: CGFloat, themed: Bool = true) {
         let image = icon.strokeImage(boxSize: boxSize)
         if #available(iOS 26.0, *) {
             var config = UIButton.Configuration.glass()
             config.image = image
             config.cornerStyle = .capsule
-            configuration = config
+            configuration = themed ? config.themeTinted : config
         } else {
             setImage(image, for: .normal)
         }
+        if themed { tintColor = ThemeChrome.ink }
+    }
+}
+
+@available(iOS 26.0, *)
+private extension UIButton.Configuration {
+    /// The same glass, poured in the theme's surface color. The material ignores
+    /// `baseBackgroundColor`, so the tint has to go on the background
+    /// configuration itself. The glyph is not ours to color on iOS 26 — glass
+    /// picks its own contrasting ink and ignores both `baseForegroundColor` and
+    /// `tintColor` (measured: #291F00 over a cream theme either way), so
+    /// `tintColor` only steers the pre-26 flat-symbol path.
+    var themeTinted: UIButton.Configuration {
+        var tinted = self
+        tinted.background.backgroundColor = ThemeChrome.card
+        return tinted
     }
 }
 

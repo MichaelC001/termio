@@ -141,7 +141,6 @@ final class ProjectListViewController: UIViewController {
         // The Mac sidebar's sort pull-down, translated to iMessage chrome:
         // a glass circle riding the large title, menu as primary action.
         filterButton.applyGlassSymbol("line.3.horizontal.decrease")
-        filterButton.tintColor = .label
         filterButton.accessibilityLabel = localized("Sort")
         filterButton.showsMenuAsPrimaryAction = true
         filterButton.menu = UIMenu(children: [

@@ -81,7 +81,6 @@ final class ProjectDetailViewController: UIViewController {
     private func configureTopBar() -> UIView {
         let back = UIButton(type: .system)
         back.applyGlassSymbol("chevron.backward")
-        back.tintColor = .label
         back.accessibilityLabel = localized("Back")
         back.accessibilityIdentifier = "project.back"
         back.addAction(UIAction { [weak self] _ in
@@ -164,7 +163,6 @@ final class ProjectDetailViewController: UIViewController {
     /// bundled mock cannot start anything.
     private func configureAddButton() {
         addButton.applyGlassIcon(.add, boxSize: 24)
-        addButton.tintColor = .label
         addButton.accessibilityLabel = localized("New session in \(project.name)")
         addButton.showsMenuAsPrimaryAction = true
         addButton.menu = UIMenu(children: [
