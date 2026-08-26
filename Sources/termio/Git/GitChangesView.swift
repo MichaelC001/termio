@@ -60,15 +60,19 @@ struct GitChangesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
-            switch mode {
-            case .changes: changesBody
-            case .compare: GitCompareView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
-            case .history: GitHistoryView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
+            if model.isRepository {
+                topBar
+                switch mode {
+                case .changes: changesBody
+                case .compare: GitCompareView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
+                case .history: GitHistoryView(model: model, repoRoot: repoRoot, chrome: chrome, font: settings.interfaceFont)
+                }
+                // Only Changes has a real total to report ("N files +A −D"). History's
+                // count would just echo the fetch limit — meaningless, so no bar.
+                if mode == .changes { bottomBar }
+            } else {
+                notARepository
             }
-            // Only Changes has a real total to report ("N files +A −D"). History's
-            // count would just echo the fetch limit — meaningless, so no bar.
-            if mode == .changes { bottomBar }
         }
         .task(id: repoRoot) {
             // Resume the remembered inner mode, then let an open overlay override it:
@@ -154,6 +158,19 @@ struct GitChangesView: View {
         } message: {
             Text(gitignoreErrorMessage ?? localized("The ignore rule couldn’t be added."))
         }
+    }
+
+    /// Shown instead of the whole pane — mode switch and all — when the root isn't a
+    /// git work tree. Changes, Compare, and History are all equally empty there, so one
+    /// honest state replaces three that would each read as "nothing to review". The
+    /// pane offers no `git init`: the git pane reads, the terminal writes.
+    private var notARepository: some View {
+        PaneEmptyState(
+            localized("Not a Git Repository"),
+            icon: .gitBranch,
+            message: localized("This folder isn’t tracked by Git.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: Chrome
