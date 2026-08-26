@@ -196,8 +196,12 @@
 	<string>无法搜索</string>
 	<key>Can’t browse %@</key>
 	<string>无法浏览 %@</string>
+	<key>Can’t check</key>
+	<string>无法检查</string>
 	<key>Can’t check on %@</key>
 	<string>无法在 %@ 上检查</string>
+	<key>Can’t check on %lld devices</key>
+	<string>无法在 %lld 台设备上检查</string>
 	<key>Can’t open as text</key>
 	<string>无法以文本打开</string>
 	<key>Can’t preview</key>
@@ -310,8 +314,6 @@
 	<string>连接</string>
 	<key>Connect GitHub</key>
 	<string>连接 GitHub</string>
-	<key>Connect iPhone</key>
-	<string>连接 iPhone</string>
 	<key>Connect to…</key>
 	<string>连接到…</string>
 	<key>Connect your GitHub account to read this project’s issues and pull requests here.</key>
@@ -420,8 +422,6 @@
 	<string>部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
-	<key>Device</key>
-	<string>设备</string>
 	<key>Device Unavailable</key>
 	<string>设备不可用</string>
 	<key>Devices</key>
@@ -446,8 +446,10 @@
 	<string>不对比</string>
 	<key>Draft</key>
 	<string>草稿</string>
-	<key>Drag an agent onto another to reorder. Readiness is for the device above.</key>
-	<string>把一个 agent 拖到另一个上面即可调整顺序。就绪状态针对上方选中的设备。</string>
+	<key>Drag an agent onto another to reorder.</key>
+	<string>把一个 agent 拖到另一个上面即可调整顺序。</string>
+	<key>Drag an agent onto another to reorder. Readiness covers every device you work on.</key>
+	<string>把一个 agent 拖到另一个上面即可调整顺序。就绪状态覆盖你用到的每台设备。</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
 	<key>Duplicate to Themes Folder</key>
@@ -492,6 +494,10 @@
 	<string>过滤</string>
 	<key>Find</key>
 	<string>查找</string>
+	<key>Find Next</key>
+	<string>查找下一个</string>
+	<key>Find Previous</key>
+	<string>查找上一个</string>
 	<key>Find…</key>
 	<string>查找…</string>
 	<key>Focus Pane Down</key>
@@ -528,6 +534,8 @@
 	<string>编组到</string>
 	<key>Hide</key>
 	<string>隐藏</string>
+	<key>Hide Replace</key>
+	<string>隐藏替换</string>
 	<key>Hide or show the inspector</key>
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
@@ -566,6 +574,10 @@
 	<string>安装 %@</string>
 	<key>Install Page</key>
 	<string>安装页面</string>
+	<key>Install on %@</key>
+	<string>安装到 %@</string>
+	<key>Install on All Devices</key>
+	<string>安装到所有设备</string>
 	<key>Installed</key>
 	<string>已安装</string>
 	<key>Installed by Termio</key>
@@ -656,8 +668,8 @@
 	<string>已合并</string>
 	<key>Minimize</key>
 	<string>最小化</string>
-	<key>Mobile</key>
-	<string>移动设备</string>
+	<key>Missing on %lld devices</key>
+	<string>%lld 台设备上缺失</string>
 	<key>Mobile Access</key>
 	<string>移动访问</string>
 	<key>Move Down</key>
@@ -776,8 +788,8 @@
 	<string>暂无本地用量——运行一次 `%@`，然后点按“刷新”。</string>
 	<key>No matches</key>
 	<string>无匹配结果</string>
-	<key>No network address found. Join a network, then reopen this tab.</key>
-	<string>未找到网络地址。请加入网络后重新打开此标签页。</string>
+	<key>No network address found. Join a network, then reopen this pane.</key>
+	<string>未找到网络地址。接入网络后重新打开此面板。</string>
 	<key>No open issues right now.</key>
 	<string>目前没有开放的 issues。</string>
 	<key>No open pull requests right now.</key>
@@ -804,6 +816,8 @@
 	<string>未安装</string>
 	<key>Not installed on %@</key>
 	<string>未安装在 %@ 上</string>
+	<key>Not installed on %@.</key>
+	<string>未安装在 %@ 上。</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
 	<key>Nothing to Compare</key>
@@ -872,8 +886,10 @@
 	<string>覆盖</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
-	<key>Pair your iPhone and remote access</key>
-	<string>配对 iPhone 与远程访问</string>
+	<key>Pair a Phone…</key>
+	<string>配对手机…</string>
+	<key>Pairing Token</key>
+	<string>配对 Token</string>
 	<key>Panes</key>
 	<string>窗格</string>
 	<key>Password</key>
@@ -994,6 +1010,10 @@
 	<string>重命名“%@”</string>
 	<key>Rename…</key>
 	<string>重命名…</string>
+	<key>Replace</key>
+	<string>替换</string>
+	<key>Replace All</key>
+	<string>全部替换</string>
 	<key>Repository</key>
 	<string>仓库</string>
 	<key>Request Permission</key>
@@ -1006,10 +1026,10 @@
 	<string>在“访达”中显示</string>
 	<key>Revoke Access</key>
 	<string>撤销访问</string>
-	<key>Rotate Pairing Token…</key>
-	<string>更换配对 Token…</string>
 	<key>Rotate Token</key>
 	<string>更换 Token</string>
+	<key>Rotate Token…</key>
+	<string>更换 Token…</string>
 	<key>Rotate the pairing token?</key>
 	<string>要更换配对 Token 吗？</string>
 	<key>Row padding</key>
@@ -1066,6 +1086,8 @@
 	<string>选择一个会话以查看其信息。</string>
 	<key>Selection</key>
 	<string>选择</string>
+	<key>Serving</key>
+	<string>对外服务</string>
 	<key>Session</key>
 	<string>会话</string>
 	<key>Session control</key>
@@ -1092,6 +1114,8 @@
 	<string>显示原身</string>
 	<key>Show Project Files</key>
 	<string>显示项目文件</string>
+	<key>Show Replace</key>
+	<string>显示替换</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>为远程仓库位于 GitHub 的项目在检查器中显示 Issues 窗格。</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>
@@ -1326,6 +1350,8 @@
 	<string>用量</string>
 	<key>Use Regular Expression</key>
 	<string>使用正则表达式</string>
+	<key>Use Selection for Find</key>
+	<string>用所选内容查找</string>
 	<key>User</key>
 	<string>用户</string>
 	<key>Uses %@</key>
@@ -1344,8 +1370,12 @@
 	<string>微信群</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
-	<key>Whether you want these at all, and putting them on the selected device.</key>
-	<string>是否启用这些功能，以及把它们装到选中的设备上。</string>
+	<key>Where each device launches %@ from. Leave empty to use its default.</key>
+	<string>每台设备从哪里启动 %@。留空则使用其默认值。</string>
+	<key>Whether you want these at all, and putting them on every device.</key>
+	<string>是否启用这些功能，以及把它们装到每台设备上。</string>
+	<key>Whether you want these at all, and putting them on this Mac.</key>
+	<string>是否启用这些功能，以及把它们装到这台 Mac 上。</string>
 	<key>Window</key>
 	<string>窗口</string>
 	<key>Working Directory</key>
@@ -1386,6 +1416,8 @@
 	<string>无法启动 %1$@：%2$@</string>
 	<key>current</key>
 	<string>当前</string>
+	<key>devices</key>
+	<string>台设备</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>例如 JetBrains Mono</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>

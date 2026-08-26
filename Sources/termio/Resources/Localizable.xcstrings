@@ -942,12 +942,32 @@
         }
       }
     },
+    "Can’t check": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法检查"
+          }
+        }
+      }
+    },
     "Can’t check on %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "无法在 %@ 上检查"
+          }
+        }
+      }
+    },
+    "Can’t check on %lld devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %lld 台设备上检查"
           }
         }
       }
@@ -1512,16 +1532,6 @@
         }
       }
     },
-    "Connect iPhone": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "连接 iPhone"
-          }
-        }
-      }
-    },
     "Connect to…": {
       "localizations": {
         "zh-Hans": {
@@ -2063,16 +2073,6 @@
         }
       }
     },
-    "Device": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备"
-          }
-        }
-      }
-    },
     "Device Unavailable": {
       "localizations": {
         "zh-Hans": {
@@ -2193,12 +2193,22 @@
         }
       }
     },
-    "Drag an agent onto another to reorder. Readiness is for the device above.": {
+    "Drag an agent onto another to reorder.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "把一个 agent 拖到另一个上面即可调整顺序。就绪状态针对上方选中的设备。"
+            "value": "把一个 agent 拖到另一个上面即可调整顺序。"
+          }
+        }
+      }
+    },
+    "Drag an agent onto another to reorder. Readiness covers every device you work on.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把一个 agent 拖到另一个上面即可调整顺序。就绪状态覆盖你用到的每台设备。"
           }
         }
       }
@@ -2423,6 +2433,26 @@
         }
       }
     },
+    "Find Next": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找下一个"
+          }
+        }
+      }
+    },
+    "Find Previous": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找上一个"
+          }
+        }
+      }
+    },
     "Find…": {
       "localizations": {
         "zh-Hans": {
@@ -2600,6 +2630,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏"
+          }
+        }
+      }
+    },
+    "Hide Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏替换"
           }
         }
       }
@@ -2790,6 +2830,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "安装页面"
+          }
+        }
+      }
+    },
+    "Install on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装到 %@"
+          }
+        }
+      }
+    },
+    "Install on All Devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装到所有设备"
           }
         }
       }
@@ -3244,12 +3304,12 @@
         }
       }
     },
-    "Mobile": {
+    "Missing on %lld devices": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "移动设备"
+            "value": "%lld 台设备上缺失"
           }
         }
       }
@@ -3844,12 +3904,12 @@
         }
       }
     },
-    "No network address found. Join a network, then reopen this tab.": {
+    "No network address found. Join a network, then reopen this pane.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未找到网络地址。请加入网络后重新打开此标签页。"
+            "value": "未找到网络地址。接入网络后重新打开此面板。"
           }
         }
       }
@@ -3981,6 +4041,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未安装在 %@ 上"
+          }
+        }
+      }
+    },
+    "Not installed on %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未安装在 %@ 上。"
           }
         }
       }
@@ -4327,12 +4397,22 @@
         }
       }
     },
-    "Pair your iPhone and remote access": {
+    "Pair a Phone…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "配对 iPhone 与远程访问"
+            "value": "配对手机…"
+          }
+        }
+      }
+    },
+    "Pairing Token": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对 Token"
           }
         }
       }
@@ -4937,6 +5017,26 @@
         }
       }
     },
+    "Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换"
+          }
+        }
+      }
+    },
+    "Replace All": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部替换"
+          }
+        }
+      }
+    },
     "Repository": {
       "localizations": {
         "zh-Hans": {
@@ -4997,22 +5097,22 @@
         }
       }
     },
-    "Rotate Pairing Token…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更换配对 Token…"
-          }
-        }
-      }
-    },
     "Rotate Token": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "更换 Token"
+          }
+        }
+      }
+    },
+    "Rotate Token…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更换 Token…"
           }
         }
       }
@@ -5298,6 +5398,16 @@
         }
       }
     },
+    "Serving": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对外服务"
+          }
+        }
+      }
+    },
     "Session": {
       "localizations": {
         "zh-Hans": {
@@ -5424,6 +5534,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示项目文件"
+          }
+        }
+      }
+    },
+    "Show Replace": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示替换"
           }
         }
       }
@@ -6599,6 +6719,16 @@
         }
       }
     },
+    "Use Selection for Find": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用所选内容查找"
+          }
+        }
+      }
+    },
     "User": {
       "localizations": {
         "zh-Hans": {
@@ -6689,12 +6819,32 @@
         }
       }
     },
-    "Whether you want these at all, and putting them on the selected device.": {
+    "Where each device launches %@ from. Leave empty to use its default.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "是否启用这些功能，以及把它们装到选中的设备上。"
+            "value": "每台设备从哪里启动 %@。留空则使用其默认值。"
+          }
+        }
+      }
+    },
+    "Whether you want these at all, and putting them on every device.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "是否启用这些功能，以及把它们装到每台设备上。"
+          }
+        }
+      }
+    },
+    "Whether you want these at all, and putting them on this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "是否启用这些功能，以及把它们装到这台 Mac 上。"
           }
         }
       }
@@ -6895,6 +7045,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前"
+          }
+        }
+      }
+    },
+    "devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "台设备"
           }
         }
       }

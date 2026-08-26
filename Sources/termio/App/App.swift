@@ -97,16 +97,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var overlayObserver: AnyCancellable?
     // Drives the same host straight off the maximize flag, synchronously (see
     // `store.inspectorMaximizedDidChange`), so the handoff to and from the full-window
-    // host lands in the frame the docked detail leaves in.
+    // position lands in the frame the flag flips in.
     private var maximizeObserver: AnyCancellable?
     // Un-collapses the inspector when the user opens a detail (see `store.detailDidOpen`).
     private var detailOpenObserver: AnyCancellable?
     // Previous maximize state, so the observer re-binds the tracking separator on the restore
-    // transition (tearing down the full-window host relayouts the inspector) and not every tick.
+    // transition (handing the host back relayouts the inspector) and not every tick.
     private var detailWasMaximized = false
-    // The full-window host that shows the active inspector detail blown up to cover everything
-    // while `store.inspectorMaximized`; nil when the detail is docked in the inspector.
-    private var maximizedDetailHost: NSHostingView<AnyView>?
+    // Whether `DetailHost.shared` is currently parented here, covering the content area, rather
+    // than docked in the inspector's slot.
+    private var detailMaximized = false
+    // The full-window pins, held so they can be dropped when the host goes back to the inspector.
+    private var maximizedDetailConstraints: [NSLayoutConstraint] = []
     // Whether maximizing is what collapsed the navigator, so restoring re-opens only a sidebar
     // this mode closed — never one the user had already put away.
     private var sidebarCollapsedForMaximize = false
@@ -305,9 +307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // A detail (file editor, diff, PR/issue) opens in the right inspector, beside the
         // terminal. Its own window controls (hide list / maximize / close) live *in* the detail's
         // header now (see `InspectorDetailChromeButtons`), not the toolbar — so this observer only
-        // mounts and tears down the full-window maximize host. It catches the presentation half of
-        // the state (a detail closing out from under a maximized host); the flag's own half is the
-        // synchronous observer above.
+        // moves the shared host and drops it once nothing is open. It catches the presentation half
+        // of the state (a detail closing out from under a maximized host); the flag's own half is
+        // the synchronous observer above.
         // `objectWillChange` fires before the value lands, so read the settled state next runloop.
         overlayObserver = store.objectWillChange
             .receive(on: RunLoop.main)
@@ -315,6 +317,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.applyDetailMaximized(self.store.inspectorMaximized && self.store.isDetailPresented)
+                    // Nothing left to render: let the host go rather than keep a document's editor
+                    // (and its web view) alive behind a closed inspector.
+                    if !self.store.isDetailPresented { DetailHost.shared.discard() }
                 }
             }
 
@@ -862,11 +867,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         openSettings(initialTab: remembered ?? .general)
     }
 
+    /// Opens this Mac's Serving section, where the pairing QR lives (RFC §D9).
+    ///
+    /// The QR moved off a top-level tab and onto the machine that serves it,
+    /// which is correct and two clicks deeper. §D9 says the discoverability is
+    /// paid back here rather than by a duplicate settings entry: **pairing is an
+    /// action**, so it belongs in the command palette, not in the sidebar.
+    @objc func pairPhone(_ sender: Any?) {
+        openSettings(initialTab: .devices, initialDevice: KnownDevice.thisMac.settingsKey)
+    }
+
     /// Opens (or refocuses) the preferences window on a specific tab. The content
     /// view is rebuilt each call so the requested tab takes effect even when the
     /// window is reused — harmless because every control binds straight to
     /// `AppSettings`, so there is no transient UI state to preserve.
-    func openSettings(initialTab: SettingsTab) {
+    func openSettings(initialTab: SettingsTab, initialDevice: String? = nil) {
         if settingsWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
@@ -906,6 +921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             usage: usageMonitor,
             store: store,
             initialTab: initialTab,
+            initialDevice: initialDevice,
             onSSHConnect: { [weak self] host in
                 guard let self else { return }
                 self.store.addSSHSession(host: host)
@@ -1200,6 +1216,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.post(name: .termioShowFindBar, object: nil)
     }
 
+    /// ⌘G / ⇧⌘G: step the open find bar through its matches. Broadcast the way ⌘F is, so they
+    /// work with the keyboard in the find field or in the document.
+    @objc func findNextMatch(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioFindNext, object: nil)
+    }
+
+    @objc func findPreviousMatch(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioFindPrevious, object: nil)
+    }
+
+    /// ⌘E: the editor's selection becomes the find query.
+    @objc func useSelectionForFind(_ sender: Any?) {
+        NotificationCenter.default.post(name: .termioUseSelectionForFind, object: nil)
+    }
+
     /// Reveals the inspector for a freshly opened detail: un-collapses it if hidden, and otherwise
     /// leaves its width alone. It comes back at whatever the split last had (the user's own width,
     /// restored from the autosave), and the responsive `InspectorRoot` — two-column when there's
@@ -1239,34 +1270,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// Mounts (or removes) the full-window host that shows the active inspector detail blown up to
-    /// cover the content area — an in-window maximize, *not* native macOS fullscreen: the window
-    /// stays put in its Space and the menu bar stays visible. The navigator collapses with it, so
-    /// "fill the window" means the window rather than the window minus a column of chrome; re-open
-    /// it (View menu) and the host slides with it, since its leading edge tracks the split.
-    /// `InspectorDetailContent` is the same view the inspector docks; while it is up the inspector
-    /// hides its own copy (see `InspectorRoot`), so the detail renders once. The toolbar goes with
-    /// the sidebar (see `syncMaximizedChrome`); restore and close ride the detail's own header, and
-    /// Esc still closes.
+    /// Moves the shared detail host between the inspector's slot and the whole content area — an
+    /// in-window maximize, *not* native macOS fullscreen: the window stays put in its Space and the
+    /// menu bar stays visible. The navigator collapses with it, so "fill the window" means the
+    /// window rather than the window minus a column of chrome; re-open it (View menu) and the host
+    /// slides with it, since its leading edge tracks the split. The toolbar goes with the sidebar
+    /// (see `syncMaximizedChrome`); restore and close ride the detail's own header, and Esc still
+    /// closes.
+    ///
+    /// The host is *moved*, never rebuilt (see `DetailHost`): each direction is one `addSubview`
+    /// that re-parents it inside the same window, so the open document crosses the transition
+    /// untouched. No geometry animation, deliberately — the terminal cannot be resized to make
+    /// room (a maximized detail covers it so the panes never take a SIGWINCH, see `TerminalPane`),
+    /// so this is the same rect change that reads as a zoom for a split pane.
     private func setDetailMaximized(_ on: Bool) {
-        guard let container = splitViewController?.view else { return }
+        guard let container = splitViewController?.view, on != detailMaximized else { return }
+        detailMaximized = on
         if on {
-            guard maximizedDetailHost == nil else { return }
-            // Measure the traffic lights rather than assuming their layout: the header runs up into
-            // the titlebar, and where the buttons end (plus a gap) is where its title may start.
-            let buttonsEnd = window?.standardWindowButton(.zoomButton)?.frame.maxX ?? 70
-            let host = NSHostingView(rootView: AnyView(
-                // The header's own leading padding supplies the gap after the buttons.
-                MaximizedDetailContent(trafficLightsInset: buttonsEnd)
-                    .environmentObject(store)
-                    .environmentObject(settings)
-            ))
-            // No SwiftUI-derived sizing constraints: the host is pinned to the content area
-            // below, and the default `.standardBounds` options let auto layout satisfy the
-            // root view's ideal size by resizing the *window* — the just-closed detail is an
-            // EmptyView (ideal height 0) for the one runloop before this host is torn down,
-            // which crushed the whole window to a ~90pt strip.
-            host.sizingOptions = []
+            let host = DetailHost.shared.view(store: store, settings: settings, window: window)
+            NSLayoutConstraint.deactivate(maximizedDetailConstraints)
             host.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(host, positioned: .above, relativeTo: nil)
             // Pin the leading edge to the *content* area (the terminal/inspector region), not the
@@ -1278,13 +1300,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let contentLeading = items.count > 1
                 ? items[1].viewController.view.leadingAnchor
                 : container.leadingAnchor
-            NSLayoutConstraint.activate([
+            maximizedDetailConstraints = [
                 host.leadingAnchor.constraint(equalTo: contentLeading),
                 host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
                 host.topAnchor.constraint(equalTo: container.topAnchor),
                 host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-            maximizedDetailHost = host
+            ]
+            NSLayoutConstraint.activate(maximizedDetailConstraints)
             // "Fill the window" means the whole window: the navigator steps aside with the toolbar
             // and comes back on restore. Leaving it up would keep a column of chrome beside a
             // detail the user just asked to blow up — and its own controls (workspace, sort, `+`)
@@ -1295,8 +1317,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             syncMaximizedChrome()
         } else {
-            maximizedDetailHost?.removeFromSuperview()
-            maximizedDetailHost = nil
+            // Retire them here rather than trusting the re-parent to reap them: `removeFromSuperview`
+            // only drops constraints the old ancestor held, and the host does not always leave
+            // through that door — a detail closed while maximized is discarded where it stands. A
+            // set left active outlives the cycle that made it, and the next maximize activates a
+            // second one against the same host: auto layout then breaks whichever it likes, and a
+            // broken trailing edge is a detail that stops at the terminal instead of filling the
+            // window.
+            NSLayoutConstraint.deactivate(maximizedDetailConstraints)
+            maximizedDetailConstraints = []
+            // Straight back into the inspector's slot, which stayed mounted for exactly this.
+            // Without one — the detail closed while maximized — there is nowhere to go and the
+            // host is on its way out anyway (see the `isDetailPresented` half of the observer).
+            if let slot = DetailHost.shared.dockedSlot {
+                DetailHost.shared.dock(in: slot)
+            } else {
+                DetailHost.shared.view?.removeFromSuperview()
+            }
             // Only re-open what maximizing closed. A sidebar the user collapsed themselves — before
             // maximizing, or while the detail was up — stays collapsed.
             if sidebarCollapsedForMaximize {
@@ -1304,8 +1341,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 sidebarSplitItem?.isCollapsed = false
             }
             syncMaximizedChrome()
-            // Removing the host re-exposes the terminal, but a tickless surface won't repaint
-            // itself — nudge it so a switch out of a maximized detail can't leave a blank.
+            // Uncovering the content area re-exposes the terminal, but a tickless surface won't
+            // repaint itself — nudge it so a switch out of a maximized detail can't leave a blank.
             store.repaintSelectedSurface()
         }
     }
@@ -1324,7 +1361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// already matches, because re-asserting visibility churns the tracking separators.
     private func syncMaximizedChrome() {
         guard let window, let toolbar = window.toolbar else { return }
-        let hidesToolbar = maximizedDetailHost != nil && sidebarSplitItem?.isCollapsed == true
+        let hidesToolbar = detailMaximized && sidebarSplitItem?.isCollapsed == true
         guard toolbar.isVisible == hidesToolbar else { return }
         toolbar.isVisible = !hidesToolbar
         // A hidden toolbar stops laying out, so its custom views come back measured against stale
@@ -2888,11 +2925,36 @@ private func buildMainMenu() -> NSMenu {
     editMenu.addItem(withTitle: localized("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: localized("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editMenu.addItem(.separator())
-    // ⌘F opens the current file's in-editor find bar. Broadcast via notification so the
-    // shortcut works regardless of first-responder — the terminal receives no find behaviour.
-    let findItem = NSMenuItem(title: localized("Find…"),
-                              action: #selector(AppDelegate.showEditorFindBar(_:)),
-                              keyEquivalent: "f")
+    // Edit ▸ Find, where every Mac app keeps it, on the keys people already have in their
+    // fingers: ⌘F opens the current file's in-editor find bar, ⌘G / ⇧⌘G step through the
+    // matches, ⌘E makes the selection the query. All four broadcast via notification so they
+    // work regardless of first-responder — the terminal receives no find behaviour.
+    //
+    // They stay hardwired here rather than joining `KeyCommandCatalog`, which is the table of
+    // rebindable *app* verbs — window, session, pane — every one of which acts whatever is on
+    // screen. These four only mean anything while an editor overlay is open, they are macOS
+    // standard keys nobody rebinds, and ⌘F has always lived here; splitting the family so one
+    // of them is rebindable and three are not would be worse than either.
+    let findItem = NSMenuItem(title: localized("Find"), action: nil, keyEquivalent: "")
+    let findMenu = NSMenu(title: localized("Find"))
+    findMenu.addItem(withTitle: localized("Find…"),
+                     action: #selector(AppDelegate.showEditorFindBar(_:)),
+                     keyEquivalent: "f")
+    findMenu.addItem(withTitle: localized("Find Next"),
+                     action: #selector(AppDelegate.findNextMatch(_:)),
+                     keyEquivalent: "g")
+    let findPreviousItem = findMenu.addItem(
+        withTitle: localized("Find Previous"),
+        action: #selector(AppDelegate.findPreviousMatch(_:)),
+        keyEquivalent: "g")
+    findPreviousItem.keyEquivalentModifierMask = [.command, .shift]
+    findMenu.addItem(withTitle: localized("Use Selection for Find"),
+                     action: #selector(AppDelegate.useSelectionForFind(_:)),
+                     keyEquivalent: "e")
+    // Target left nil before the submenu is attached: AppKit installs its own `submenuAction:`
+    // and only adopts the submenu as the target when there isn't one already (see
+    // `SubmenuParentEnablementTests`).
+    findItem.submenu = findMenu
     editMenu.addItem(findItem)
     editItem.submenu = editMenu
 

@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// The preferences window, opened from the app menu (⌘,). The groups mirror the
-/// settings model: appearance, terminal behaviour, the agent presets, usage, and
-/// mobile pairing. Controls bind straight
-/// to `AppSettings`, which persists on change, so there is no separate save step.
+/// settings model: how the app behaves, then the machines it reaches and what
+/// runs on them. Controls bind straight to `AppSettings`, which persists on
+/// change, so there is no separate save step.
 ///
 /// The layout follows macOS System Settings: a left sidebar of groups and a detail
 /// pane that carries the group's title + subtitle in the toolbar with a grouped
@@ -31,18 +31,16 @@ struct SettingsView: View {
     /// whose `navigationDestination` left with its tab would otherwise sit on the
     /// stack unresolvable.
     @State private var path = NavigationPath()
-    /// Which device the per-device pages are about, shared across them so a
-    /// switch on one is still in force on the next — the scope is a property of
-    /// what the user is doing, not of the page they are on. Seeded from the
-    /// current workspace's device, which is what those pages silently assumed
-    /// before the control existed.
-    @State private var deviceScope = KnownDevice.thisMac.settingsKey
 
     init(
         settings: AppSettings,
         usage: UsageMonitor,
         store: TermioStore,
         initialTab: SettingsTab = .general,
+        /// A machine's `settingsKey` to open straight onto, for the deep links
+        /// that mean a *pane* rather than a tab — "Pair a phone…" lands on this
+        /// Mac's Serving section (RFC §D9), which is two clicks in otherwise.
+        initialDevice: String? = nil,
         onSSHConnect: @escaping (String) -> Void,
         onSetUpKey: @escaping (String, String) -> Void
     ) {
@@ -52,18 +50,32 @@ struct SettingsView: View {
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
-        _deviceScope = State(initialValue: store.currentDevice.settingsKey)
+        _path = State(initialValue: initialDevice.map {
+            NavigationPath([DeviceRoute(key: $0)])
+        } ?? NavigationPath())
     }
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsTab.allCases, selection: $selection) { tab in
-                Label {
-                    Text(tab.title)
-                } icon: {
-                    HugeIconView(icon: tab.icon, size: 15, color: .primary)
+            List(selection: $selection) {
+                ForEach(Array(SettingsTab.groups.enumerated()), id: \.offset) { index, group in
+                    ForEach(Array(group.enumerated()), id: \.element) { position, tab in
+                        row(for: tab)
+                            // The gap System Settings leaves between groups, kept
+                            // inside the row: a sidebar list floors every row at
+                            // 32pt, so a blank row can only ever be that tall, and
+                            // `Section` — which does leave the right gap — squares
+                            // off the top corners of its first row's pill.
+                            .padding(.top, index > 0 && position == 0 ? 13 : 0)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10))
+                            .tag(tab)
+                            // Strips the source list's own selection fill, which
+                            // would otherwise draw the full row height behind the
+                            // pill. Mounted in a row: that is where the walk-up
+                            // reaches the table (see `OutlineViewFixups`).
+                            .background(OutlineViewFixups())
+                    }
                 }
-                .tag(tab)
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 184, ideal: 204, max: 240)
@@ -88,10 +100,33 @@ struct SettingsView: View {
         // Remember where the user is, so the next ⌘, reopens the same tab
         // (see `AppDelegate.showSettings`). Written on every switch — cheap,
         // and it must also capture the initial deep-linked tab a user stays on.
-        .onChange(of: selection, initial: true) { _, tab in
+        .onChange(of: selection, initial: true) { previous, tab in
             UserDefaults.standard.set(tab.rawValue, forKey: SettingsTab.lastOpenKey)
-            path = NavigationPath()
+            // Only a real switch empties the stack. The `initial: true` fire is
+            // what writes the deep-linked tab to `lastOpenKey`, and clearing on
+            // it too would pop the pane `initialDevice` just pushed — the window
+            // would open on the Devices roster instead of the machine asked for.
+            if previous != tab { path = NavigationPath() }
         }
+    }
+
+    /// One sidebar row, painting its own selection pill because the source list's
+    /// fill covers the whole row — including the group gap the first row of a
+    /// group carries.
+    private func row(for tab: SettingsTab) -> some View {
+        let isSelected = selection == tab
+        return Label {
+            Text(tab.title)
+        } icon: {
+            HugeIconView(icon: tab.icon, size: 15, color: isSelected ? .white : .primary)
+        }
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? Color.accentColor : Color.clear)
+        )
     }
 
     @ViewBuilder
@@ -108,9 +143,8 @@ struct SettingsView: View {
             )
         case .keyboard: KeybindingsSettingsTab()
         case .agents:
-            AgentSettingsTab(settings: settings, store: store, deviceScope: $deviceScope)
+            AgentSettingsTab(settings: settings, store: store)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
-        case .mobile: MobileSettingsTab()
         case .community: CommunitySettingsTab()
         }
     }

@@ -13,39 +13,55 @@ final class TextFindEngine {
     private static let matchColor = NSColor.systemYellow.withAlphaComponent(0.35)
     private static let focusedColor = NSColor.systemYellow.withAlphaComponent(0.7)
 
+    /// What counts as "inside a word" for whole-word find. Shared with `OccurrenceTarget` so the
+    /// word the occurrence wash picks up and the boundary this engine matches on can't disagree.
+    nonisolated static let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
     /// Rebuild the match list for `query` over the text view's current string. Returns the count.
     @discardableResult
     func recompute(query: String, options: FindOptions, in textView: NSTextView) -> Int {
-        matches.removeAll()
-        guard !query.isEmpty else { return 0 }
-        let full = textView.string as NSString
-        let total = full.length
-        guard total > 0 else { return 0 }
+        matches = Self.matches(of: query, options: options, in: textView.string as NSString)
+        return matches.count
+    }
+
+    /// Every match of `query` in `text`, in document order. The scan itself, with no text view in
+    /// it — `FindReplace` asks the same question of the same buffer when it plans a replacement,
+    /// and a match list the two could disagree about is a wrong "n of m" waiting to happen.
+    nonisolated static func matches(of query: String, options: FindOptions, in text: NSString) -> [NSRange] {
+        guard !query.isEmpty, text.length > 0 else { return [] }
+        let total = text.length
 
         if options.regex {
-            var regexOptions: NSRegularExpression.Options = []
-            if !options.caseSensitive { regexOptions.insert(.caseInsensitive) }
-            guard let regex = try? NSRegularExpression(pattern: query, options: regexOptions) else { return 0 }
-            for match in regex.matches(in: textView.string, range: NSRange(location: 0, length: total))
-            where match.range.length > 0 {
-                if options.wholeWord, !Self.isWordBoundary(match.range, in: full) { continue }
-                matches.append(match.range)
-            }
-            return matches.count
+            guard let regex = regularExpression(for: query, options: options) else { return [] }
+            return regex.matches(in: text as String, range: NSRange(location: 0, length: total))
+                .map(\.range)
+                .filter { $0.length > 0 && (!options.wholeWord || isWordBoundary($0, in: text)) }
         }
 
+        var found: [NSRange] = []
         var searchOptions: NSString.CompareOptions = []
         if !options.caseSensitive { searchOptions.insert(.caseInsensitive) }
         var searchStart = 0
         while searchStart < total {
             let searchRange = NSRange(location: searchStart, length: total - searchStart)
-            let hit = full.range(of: query, options: searchOptions, range: searchRange)
+            let hit = text.range(of: query, options: searchOptions, range: searchRange)
             if hit.location == NSNotFound { break }
-            if !options.wholeWord || Self.isWordBoundary(hit, in: full) { matches.append(hit) }
+            if !options.wholeWord || isWordBoundary(hit, in: text) { found.append(hit) }
             // `hit.length` can be zero for a pathological pattern; step by 1 to guarantee termination.
             searchStart = hit.location + max(hit.length, 1)
         }
-        return matches.count
+        return found
+    }
+
+    /// The compiled pattern behind a `.*`-mode query, or nil while it is still half-typed and
+    /// doesn't parse. Shared with the replace planner, which needs the match *results* — not just
+    /// their ranges — to expand `$1` capture groups.
+    nonisolated static func regularExpression(
+        for query: String, options: FindOptions
+    ) -> NSRegularExpression? {
+        var regexOptions: NSRegularExpression.Options = []
+        if !options.caseSensitive { regexOptions.insert(.caseInsensitive) }
+        return try? NSRegularExpression(pattern: query, options: regexOptions)
     }
 
     /// Repaint every match, tinting `focused` brighter. `reveal` scrolls the focused match into
@@ -66,14 +82,44 @@ final class TextFindEngine {
         }
     }
 
+    /// Wash `ranges` in `color` without disturbing anything else already painted — the additive
+    /// counterpart to `paint(focused:reveal:)`, which owns the whole document. The occurrence
+    /// highlight goes through here so it shares the layer with the bracket wash instead of wiping
+    /// it, and `removeHighlight` lifts exactly what this laid down.
+    static func addHighlight(_ ranges: [NSRange], color: NSColor, in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager else { return }
+        let length = (textView.string as NSString).length
+        for range in ranges {
+            guard let clamped = clamp(range, to: length) else { continue }
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: clamped)
+        }
+    }
+
+    static func removeHighlight(_ ranges: [NSRange], in textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager else { return }
+        let length = (textView.string as NSString).length
+        for range in ranges {
+            guard let clamped = clamp(range, to: length) else { continue }
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: clamped)
+        }
+    }
+
+    /// `range` cut down to fit a text of `length`, or `nil` when it starts past the end — an edit
+    /// can shrink the document between painting and lifting, and touching an attribute past the
+    /// end raises.
+    private static func clamp(_ range: NSRange, to length: Int) -> NSRange? {
+        guard range.location < length else { return nil }
+        return NSRange(location: range.location, length: min(range.length, length - range.location))
+    }
+
     private func clearHighlights(in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager else { return }
         let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
         layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
     }
 
-    private static func isWordBoundary(_ range: NSRange, in string: NSString) -> Bool {
-        let letters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+    nonisolated static func isWordBoundary(_ range: NSRange, in string: NSString) -> Bool {
+        let letters = wordCharacters
         if range.location > 0 {
             let prev = string.character(at: range.location - 1)
             if let scalar = Unicode.Scalar(prev), letters.contains(scalar) { return false }

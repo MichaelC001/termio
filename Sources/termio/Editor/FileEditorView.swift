@@ -68,6 +68,12 @@ struct FileEditorView: View {
     /// empty placeholder.
     @State private var loaded = false
     @State private var loadFailed = false
+    /// Which faces have been visited. Both stay mounted afterwards (see `editorContent`), but
+    /// neither is built before it is first asked for.
+    @State private var mountedEditor = false
+    @State private var mountedReader = false
+    /// What Preview renders — the buffer as of the last flip into Preview, not the live one.
+    @State private var previewSource = ""
     /// Set when the file is too large for syntax highlighting (see `highlightByteLimit`).
     @State private var highlightDisabled = false
     @State private var saveError: String?
@@ -90,6 +96,11 @@ struct FileEditorView: View {
     @State private var findLastSubmittedQuery = ""
     /// Bumped on every ⌘F so the find bar re-focuses even when already on screen.
     @State private var findFocusTrigger = 0
+    /// What Replace puts in a match's place. Empty deletes the match, which is what an empty
+    /// replacement field means everywhere else too.
+    @State private var findReplacement = ""
+    /// Replace edits the text view, not the `text` binding — see `FindReplaceController`.
+    @State private var findReplace = FindReplaceController()
 
     /// Past this size the file renders as plain text: highlight.js parses off-main, but
     /// *applying* its result is thousands of main-thread `setAttributes` calls plus a
@@ -171,6 +182,19 @@ struct FileEditorView: View {
     private var currentLineColor: NSColor {
         ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.06 : 0.05)
     }
+    /// The wash on other occurrences of the word under the caret. A step above the current-line
+    /// band so it reads as a mark, well below the find bar's yellow so a passive hint never looks
+    /// like a result you searched for. Neutral ink rather than a tint, for the same reason the
+    /// gutter is: a themed color sinks into some backgrounds at any alpha.
+    private var occurrenceHighlightColor: NSColor {
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.14 : 0.11)
+    }
+    /// The rules at each indent level, from the same overlay ink at the same weight as the
+    /// occurrence wash: a one-point rule has a fraction of either wash's area to read from, so at
+    /// the current-line band's alpha it would disappear into the background entirely.
+    private var indentGuideColor: NSColor {
+        ChromeTheme.overlayInk(onDark: onDarkBackground, alpha: onDarkBackground ? 0.14 : 0.11)
+    }
 
     var body: some View {
         // The editor's chrome (header, gutter) already sits in the safe content area below the
@@ -202,8 +226,23 @@ struct FileEditorView: View {
         // titlebar — no outer `.frame`, which was reserving an empty band above the header.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
         .task { await load() }
+        // Keyed to the load as well as the mode, because the mode is chosen in `init` — before
+        // there is any text to render.
+        .onChange(of: mode, initial: true) { activateMode() }
+        .onChange(of: loaded) { activateMode() }
         .onReceive(NotificationCenter.default.publisher(for: .termioShowFindBar)) { _ in
             openFindBar()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindNext)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioFindPrevious)) { _ in
+            guard findBarVisible else { return }
+            advanceFind(by: -1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .termioUseSelectionForFind)) { _ in
+            useSelectionForFind()
         }
         // Auto-save: debounce a write after each edit; Escape closes (flushing first). A read-only
         // peek never writes, so neither the debounce nor the exit flush is armed.
@@ -234,21 +273,51 @@ struct FileEditorView: View {
 
     /// The scrolling body — the Markdown reader in Preview, else the Highlightr source editor. It
     /// scrolls below the fixed header; the source editor also carries the right-click "Close".
+    ///
+    /// Both faces stay mounted once visited; the flip only changes which one shows. An `if`/`else`
+    /// here is a structural branch, so SwiftUI rebuilt one side on every flip — a fresh `WKWebView`
+    /// and page load one way, a whole-document re-highlight and TextKit re-layout the other.
     @ViewBuilder private var editorContent: some View {
+        let showsReader = isMarkdown && mode == .preview
+        ZStack {
+            if mountedReader {
+                // `previewSource`, not `text`: a reader that outlives its own visibility would
+                // re-render the whole document into a hidden web view on every keystroke.
+                MarkdownReaderView(
+                    source: previewSource,
+                    fileURL: url,
+                    settings: settings,
+                    colorScheme: colorScheme,
+                    addToChat: addToChat,
+                    canAddToChat: canAddToChat,
+                    isActive: showsReader
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(showsReader)
+            }
+            if mountedEditor {
+                sourceEditor(isActive: !showsReader)
+                    .allowsHitTesting(!showsReader)
+            }
+        }
+    }
+
+    /// Mounts the face the mode names and hands Preview the current buffer. Only the flip refreshes
+    /// it, so typing in Edit never renders a document nobody is looking at.
+    private func activateMode() {
+        guard loaded else { return }
         if isMarkdown && mode == .preview {
-            // Render the *live* buffer, so flipping over from Edit shows unsaved keystrokes
-            // without a round-trip through disk.
-            MarkdownReaderView(
-                source: text,
-                fileURL: url,
-                settings: settings,
-                colorScheme: colorScheme,
-                addToChat: addToChat,
-                canAddToChat: canAddToChat
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            previewSource = text
+            mountedReader = true
         } else {
-            HighlightedTextView(
+            mountedEditor = true
+        }
+    }
+
+    /// The Highlightr source editor with its find bar. Split out so `editorContent` reads as the
+    /// two faces it switches between.
+    private func sourceEditor(isActive: Bool) -> some View {
+        HighlightedTextView(
                 text: $text,
                 language: highlightDisabled ? nil : language,
                 theme: colorScheme == .dark ? "xcode-dark" : "xcode",
@@ -258,6 +327,8 @@ struct FileEditorView: View {
                 caretColor: caretColor,
                 lineNumberColor: lineNumberColor,
                 currentLineColor: currentLineColor,
+                occurrenceHighlightColor: occurrenceHighlightColor,
+                indentGuideColor: indentGuideColor,
                 isEditable: !readOnly,
                 jumpToLine: jumpLine,
                 findQuery: findBarVisible ? findQuery : "",
@@ -267,27 +338,35 @@ struct FileEditorView: View {
                     findMatchCount = count
                     if count > 0, findFocusedIndex >= count { findFocusedIndex = 0 }
                 },
-                showsCloseMenuItem: true,
-                addToChat: addToChat,
-                canAddToChat: canAddToChat,
-                onSave: saveNow
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if findBarVisible {
-                    FileFindBar(
-                        query: $findQuery,
-                        options: $findOptions,
-                        currentMatch: findMatchCount == 0 ? 0 : findFocusedIndex + 1,
-                        totalMatches: findMatchCount,
-                        onSubmit: submitFind,
-                        onNext: { advanceFind(by: 1) },
-                        onPrevious: { advanceFind(by: -1) },
-                        onClose: closeFindBar,
-                        focusTrigger: findFocusTrigger
+                findReplace: findReplace,
+            showsCloseMenuItem: true,
+            addToChat: addToChat,
+            canAddToChat: canAddToChat,
+            isActive: isActive,
+            onSave: saveNow
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            // Gated on `isActive` too: a dormant editor must not leave a bar floating over Preview.
+            if findBarVisible, isActive {
+                FileFindBar(
+                    query: $findQuery,
+                    options: $findOptions,
+                    currentMatch: findMatchCount == 0 ? 0 : findFocusedIndex + 1,
+                    totalMatches: findMatchCount,
+                    onSubmit: submitFind,
+                    onNext: { advanceFind(by: 1) },
+                    onPrevious: { advanceFind(by: -1) },
+                    onClose: closeFindBar,
+                    focusTrigger: findFocusTrigger,
+                    // No replace row over a read-only peek — there is nothing to write back.
+                    replace: readOnly ? nil : .init(
+                        text: $findReplacement,
+                        current: replaceCurrentMatch,
+                        all: replaceAllMatches
                     )
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
@@ -467,9 +546,44 @@ struct FileEditorView: View {
         withAnimation(.spring(response: 0.3, dampingFraction: 1)) { findBarVisible = false }
         findQuery = ""
         findLastSubmittedQuery = ""
+        findReplacement = ""
         findMatchCount = 0
         findFocusedIndex = 0
         findOptions = FindOptions()
+    }
+
+    /// ⌘E: the editor's selection becomes the find query. Only when this editor's own text view
+    /// holds the keyboard — the verb is broadcast the way ⌘F is, and a diff overlay mounted behind
+    /// this one must not take its query from a buffer the user isn't in. Read before the bar
+    /// opens, since opening it takes first responder away from the text view.
+    ///
+    /// The query counts as already submitted, so the very next Return — or ⌘G — advances to the
+    /// second match instead of re-running the search that just ran.
+    private func useSelectionForFind() {
+        guard mode == .edit, let selection = findReplace.focusedSelection() else { return }
+        openFindBar()
+        findQuery = selection
+        findLastSubmittedQuery = selection
+        findFocusedIndex = 0
+    }
+
+    /// Replace: the focused match becomes the replacement, and the focus steps to the next match
+    /// past it. The match list and the "n of m" counter refresh on their own — the edit fires
+    /// `textDidChange`, which is where the find engine already recomputes.
+    private func replaceCurrentMatch() {
+        guard !readOnly, findMatchCount > 0 else { return }
+        guard let next = findReplace.replaceCurrent(
+            at: findFocusedIndex, query: findQuery, options: findOptions, template: findReplacement)
+        else { return }
+        findFocusedIndex = next
+    }
+
+    /// Replace All: every match at once, as a single edit — so ⌘Z takes the whole document back
+    /// in one step rather than one step per match.
+    private func replaceAllMatches() {
+        guard !readOnly, findMatchCount > 0 else { return }
+        findReplace.replaceAll(query: findQuery, options: findOptions, template: findReplacement)
+        findFocusedIndex = 0
     }
 
     /// Return: fresh query → jump to match 1; same query → next match.

@@ -77,9 +77,18 @@ final class LineNumberRulerView: NSRulerView {
             let size = string.size(withAttributes: attributes)
             let x = self.ruleThickness - size.width - 6
             let y = fragMinY + inset + yOffset + self.baselineShift
+            // `yOffset` carries the live scroll position, and a trackpad reports it in fractional
+            // pixels, so an unsnapped origin rasterizes the digits at a different subpixel phase
+            // every frame — the gutter shimmers. Landing the origin on a device pixel holds the
+            // glyphs still. The code text is immune because its glyphs sit at fixed positions in
+            // the text view's own coordinate space.
+            let origin = self.backingAlignedRect(
+                NSRect(x: x, y: y, width: size.width, height: size.height),
+                options: .alignAllEdgesNearest
+            ).origin
             let topClipInset = self.window.map { 1 / $0.backingScaleFactor } ?? 0
-            guard y > self.bounds.minY + topClipInset else { return }
-            string.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
+            guard origin.y > self.bounds.minY + topClipInset else { return }
+            string.draw(at: origin, withAttributes: attributes)
         }
 
         let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: textView.visibleRect, in: container)

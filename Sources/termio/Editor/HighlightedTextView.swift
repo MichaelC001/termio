@@ -19,6 +19,12 @@ struct HighlightedTextView: NSViewRepresentable {
     /// terminal background. Only drawn while the buffer is editable — a read-only peek has no
     /// caret, so a highlighted line would just be a mystery stripe.
     let currentLineColor: NSColor
+    /// The wash on every other occurrence of the word under the caret (`OccurrenceHighlighter`).
+    /// `.clear` turns the behavior off.
+    var occurrenceHighlightColor: NSColor = .clear
+    /// Ink for the rules at each indent level (`IndentGuideRenderer`), a step stronger than the
+    /// band above. `.clear` turns the behavior off.
+    var indentGuideColor: NSColor = .clear
     /// When false the text stays selectable (copyable) but cannot be typed into — the read-only
     /// preview path. Defaults to editable so the inspector's own opens are unchanged.
     var isEditable: Bool = true
@@ -32,6 +38,10 @@ struct HighlightedTextView: NSViewRepresentable {
     var findFocusedIndex: Int = 0
     /// Fires with the total match count after any recompute (new query, options, or edit).
     var onMatchesChanged: ((Int) -> Void)? = nil
+    /// Attached so the find bar's Replace buttons can edit this buffer through the text view
+    /// rather than through the `text` binding, which would replace the whole document and drop
+    /// undo. Nil wherever replace isn't offered.
+    var findReplace: FindReplaceController? = nil
     /// Appends a "Close" item to the right-click menu — the editor closes terminal-style, alongside
     /// the toolbar button. Left off wherever the text view isn't the closable editor overlay.
     var showsCloseMenuItem: Bool = false
@@ -42,6 +52,10 @@ struct HighlightedTextView: NSViewRepresentable {
     /// is read at menu-open time, so a plain-shell session shows no item.
     var addToChat: ((String?) -> Void)? = nil
     var canAddToChat: (() -> Bool)? = nil
+    /// Whether this is the face on screen. Markdown keeps the editor mounted behind Preview
+    /// (rebuilding it re-highlights the whole document), so a dormant editor hides itself and
+    /// never claims focus. Non-Markdown files only ever have this face, hence the default.
+    var isActive: Bool = true
     /// Invoked when the user presses ⌘S — flushes the buffer to disk immediately.
     let onSave: () -> Void
 
@@ -70,6 +84,7 @@ struct HighlightedTextView: NSViewRepresentable {
         layoutManager.addTextContainer(container)
 
         let textView = SavingTextView(frame: .zero, textContainer: container)
+        findReplace?.attach(textView)
         textView.onSave = onSave
         textView.showsCloseMenuItem = showsCloseMenuItem
         textView.addToChat = addToChat
@@ -90,8 +105,11 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.string = text
+        // Metrics before content, and the content carrying them: `string =` inserts unstyled text,
+        // which TextKit lays out at the font's *natural* line height — the configured leading then
+        // arrived with the async highlight and every line grew at once, the jolt on opening a file.
         apply(to: textView)
+        storage.setAttributedString(NSAttributedString(string: text, attributes: baseAttributes))
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -125,14 +143,9 @@ struct HighlightedTextView: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observeScroll(of: scrollView)
 
-        // Claim first responder once the editor is in a window, so the Edit menu's Cut/Copy/Paste
-        // (and typing) act on this buffer instead of the terminal surface that held focus beneath
-        // the overlay. The terminal focus driver won't fight back — its `canFocus` bails while a
-        // file is open (see `requestTerminalFocus`).
-        DispatchQueue.main.async { [weak textView] in
-            guard let textView, let window = textView.window else { return }
-            window.makeFirstResponder(textView)
-        }
+        scrollView.isHidden = !isActive
+        context.coordinator.wasActive = isActive
+        if isActive { Self.claimFocus(textView) }
 
         // Reveal the requested line once the view has a real frame — at make time it hasn't been
         // laid out, so scrolling now would land nowhere.
@@ -147,8 +160,27 @@ struct HighlightedTextView: NSViewRepresentable {
         return scrollView
     }
 
+    /// Claims first responder so the Edit menu's Cut/Copy/Paste (and typing) act on this buffer
+    /// instead of the terminal surface beneath the overlay. Deferred because a view being made is
+    /// not yet in a window, and re-checked on arrival: by then Preview may have taken the screen,
+    /// and a hidden text view must not hold focus.
+    private static func claimFocus(_ textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, !textView.isHiddenOrHasHiddenAncestor,
+                  let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+        }
+    }
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? SavingTextView else { return }
+        // Re-attached each pass: the representable is recreated on every render, and a controller
+        // still pointing at a torn-down view would replace text nobody can see.
+        findReplace?.attach(textView)
+        if scrollView.isHidden == isActive { scrollView.isHidden = !isActive }
+        // Focus follows the flip, not the mount (see `claimFocus`).
+        if isActive, !context.coordinator.wasActive { Self.claimFocus(textView) }
+        context.coordinator.wasActive = isActive
         // Refresh the save closure each update so ⌘S always flushes the latest buffer (the closure
         // captures the view's current state, which SwiftUI re-creates on every change).
         textView.onSave = onSave
@@ -187,6 +219,12 @@ struct HighlightedTextView: NSViewRepresentable {
                 highlightr.theme.codeParagraphStyle = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
                 highlightr.theme.codeBaselineOffset = Self.baselineOffset(lineSpacing: lineSpacing)
             }
+            // Re-lay out on the new metrics now rather than when the async pass returns, so a font
+            // or line-height change moves the text once instead of twice. `addAttributes` merges,
+            // leaving the colors already on screen alone until the re-highlight replaces them.
+            if storage.length > 0 {
+                storage.addAttributes(baseAttributes, range: NSRange(location: 0, length: storage.length))
+            }
             storage.language = language
         }
 
@@ -197,7 +235,10 @@ struct HighlightedTextView: NSViewRepresentable {
         // throws the caret to the end of the document on any unrelated SwiftUI re-render.
         if textView.string != text, !textView.hasMarkedText() {
             let selection = textView.selectedRange()
-            textView.string = text
+            // Carrying the metrics for the same reason `makeNSView` does: a bare `string =` drops
+            // to the natural line height until the async highlight returns, so an external change
+            // would make the document jump.
+            storage.setAttributedString(NSAttributedString(string: text, attributes: baseAttributes))
             let length = (text as NSString).length
             let location = min(selection.location, length)
             textView.setSelectedRange(
@@ -222,6 +263,7 @@ struct HighlightedTextView: NSViewRepresentable {
         }
 
         coordinator.onMatchesChanged = onMatchesChanged
+        coordinator.occurrenceHighlightColor = occurrenceHighlightColor
         coordinator.updateFind(query: findQuery, options: findOptions, focusedIndex: findFocusedIndex, in: textView)
     }
 
@@ -256,6 +298,19 @@ struct HighlightedTextView: NSViewRepresentable {
         return leading + baselineOffset(lineSpacing: lineSpacing)
     }
 
+    /// The layout metrics every glyph carries from its first frame: the code face, the fixed line
+    /// box, and the centering lift. Highlightr's theme is configured with exactly these, so its
+    /// pass swaps colors onto text that already sits where it belongs and nothing reflows. They
+    /// also stand alone — a file past `highlightByteLimit`, or in a language hljs doesn't know,
+    /// never gets a highlight pass at all.
+    private var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: font,
+            .paragraphStyle: Self.paragraphStyle(font: font, lineSpacing: lineSpacing),
+            .baselineOffset: Self.baselineOffset(lineSpacing: lineSpacing),
+        ]
+    }
+
     private func apply(to textView: NSTextView) {
         // `NSText.font` is a whole-document setter — assigning it stamps the plain face over
         // every glyph, wiping the bold/italic variants the markdown highlight applied (invisible
@@ -269,7 +324,9 @@ struct HighlightedTextView: NSViewRepresentable {
         textView.typingAttributes[.paragraphStyle] = style
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
         if let saving = textView as? SavingTextView {
+            saving.language = language
             saving.currentLineColor = currentLineColor
+            saving.indentGuideColor = indentGuideColor
             saving.caretIndicatorColor = caretColor
             // The matched pair glows in the caret's own accent, dimmed to a wash.
             saving.bracketHighlightColor = caretColor.withAlphaComponent(0.28)
@@ -300,10 +357,16 @@ struct HighlightedTextView: NSViewRepresentable {
         var appliedLanguage: String?
         /// The last jump target acted on, so `updateNSView` only re-scrolls on a genuine new hit.
         var appliedJumpLine: Int?
+        /// Previous `isActive`, so focus is claimed on the flip back to Edit rather than on every
+        /// update pass — re-asserting it would fight the find bar.
+        var wasActive = false
         weak var ruler: LineNumberRulerView?
         var onMatchesChanged: ((Int) -> Void)?
+        /// Refreshed from each update pass; the next repaint is what picks up a theme change.
+        var occurrenceHighlightColor: NSColor = .clear
         private let text: Binding<String>
         private let find = TextFindEngine()
+        private let occurrences = OccurrenceHighlighter()
         private var appliedFindQuery: String = ""
         private var appliedFindOptions: FindOptions = FindOptions()
         private var appliedFocusedIndex: Int = -1
@@ -354,6 +417,8 @@ struct HighlightedTextView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             (textView as? SavingTextView)?.caretDidMove()
+            occurrences.update(in: textView, color: occurrenceHighlightColor,
+                               findActive: !appliedFindQuery.isEmpty)
         }
 
         /// Recompute + repaint after a new query, option change, or focus move. Same query
@@ -363,6 +428,10 @@ struct HighlightedTextView: NSViewRepresentable {
             if queryChanged {
                 appliedFindQuery = query
                 appliedFindOptions = options
+                // A live query owns the highlight layer, so the occurrence wash steps aside; it
+                // comes back on its own once the query clears.
+                occurrences.update(in: textView, color: occurrenceHighlightColor,
+                                   findActive: !query.isEmpty)
                 find.recompute(query: query, options: options, in: textView)
                 notifyMatchCount()
                 appliedFocusedIndex = -1
@@ -413,7 +482,7 @@ private final class NotificationObserverBag: @unchecked Sendable {
 /// then lets every other key equivalent fall through unchanged. The editor auto-saves on idle, so
 /// this only serves the reflex of pressing ⌘S — there is still no Save button. It also draws the
 /// Xcode-style current-line band and washes the bracket pair beside the caret.
-private final class SavingTextView: NSTextView {
+final class SavingTextView: NSTextView {
     var onSave: (() -> Void)?
     /// When set, the right-click menu carries a trailing "Close" — the editor's only close
     /// affordance now that it has no chrome button (terminal-style, matching how a session closes).
@@ -422,6 +491,9 @@ private final class SavingTextView: NSTextView {
     /// inserts its path). The gate is read at menu-open time; a plain shell shows no item.
     var addToChat: ((String?) -> Void)?
     var canAddToChat: (() -> Bool)?
+    /// The document's highlight grammar, mirrored from the representable — `EditorLineCommands`
+    /// keys ⌘/'s comment marker off it, and a grammar it has no marker for gets no ⌘/.
+    var language: String?
     /// Full-width wash under the caret's line; `.clear` (or a read-only buffer) draws nothing.
     /// Reassigned from every representable update, so only a genuine change may invalidate —
     /// an unconditional `didSet` forced a full-view repaint per keystroke, defeating the
@@ -431,6 +503,12 @@ private final class SavingTextView: NSTextView {
     }
     /// Background wash on a bracket pair when the caret sits against one of them.
     var bracketHighlightColor: NSColor = .clear
+    /// Ink for the indent guides; change-gated for the same reason `currentLineColor` is.
+    var indentGuideColor: NSColor = .clear {
+        didSet { if indentGuideColor != oldValue { needsDisplay = true } }
+    }
+    /// Holds the indent width it derived between draws; the geometry lives in the renderer.
+    private let indentGuides = IndentGuideRenderer()
 
     /// The system insertion indicator (macOS 14's `NSTextInsertionIndicator`) in place of the
     /// legacy hard-blink caret — the same soft fade-and-glide caret Xcode shows. TextKit 2 text
@@ -674,6 +752,7 @@ private final class SavingTextView: NSTextView {
     /// highlight — and only while editable, since a read-only peek shows no caret.
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        indentGuides.draw(in: self, dirtyRect: rect, color: indentGuideColor)
         guard isEditable, currentLineColor.alphaComponent > 0,
               let layoutManager, let textContainer else { return }
         let selection = selectedRange()

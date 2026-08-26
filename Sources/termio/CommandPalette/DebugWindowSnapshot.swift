@@ -31,9 +31,7 @@ enum DebugWindowSnapshot {
 
     @MainActor
     static func capture() {
-        guard let window = NSApp.windows.first(where: {
-            $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName
-        }) ?? NSApp.mainWindow else { return }
+        guard let window = target() else { return }
         // The frame view (contentView's superview) includes the titlebar/toolbar chrome.
         let root = window.contentView?.superview ?? window.contentView
         guard let view = root else { return }
@@ -49,6 +47,22 @@ enum DebugWindowSnapshot {
                 try? png.write(to: URL(fileURLWithPath: "/tmp/termio-dev-window.png"))
             }
         }
+    }
+
+    /// Which window a capture means: the frontmost ordinary window.
+    ///
+    /// It used to be the main window specifically, which made Settings —
+    /// a second window, and the one most layout questions are about —
+    /// unreachable: a capture driven while it was open returned the terminal
+    /// behind it. Panels are skipped because the command palette is one, and it
+    /// is *always* frontmost at the moment a palette action runs.
+    @MainActor
+    private static func target() -> NSWindow? {
+        NSApp.orderedWindows.first {
+            $0.isVisible && !($0 is NSPanel) && $0.contentView != nil
+        }
+        ?? NSApp.windows.first { $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName }
+        ?? NSApp.mainWindow
     }
 
     @MainActor
