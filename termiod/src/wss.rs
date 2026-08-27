@@ -3,19 +3,16 @@
 //! A phone or a browser cannot open a Unix socket, so this is the one place
 //! `termiod` accepts TCP. Three rules keep it from becoming a second product:
 //!
-//! - **Loopback only.** TLS lives in Tailscale Serve or Caddy in front. termiod
-//!   never grows a TLS stack, never ships a CA, and never pins a certificate.
-//! - **It is a splice, not a second protocol.** Once the Upgrade is done, this
-//!   copies bytes onto a connected `UnixStream` exactly the way `termiod stdio`
-//!   does. Binary messages are chunks of the same framed stream and are
-//!   concatenated on both ends; one WebSocket message is *not* one protocol
-//!   frame, or a recorded Unix-socket transcript would no longer replay.
-//! - **The pairing token authenticates the pipe.** It is not the session write
-//!   token — that one arbitrates who may type into a PTY and is handed out by
-//!   the daemon, and the two must never be confused.
+//! - **Loopback only.** TLS lives in Tailscale Serve or Caddy in front; termiod
+//!   never grows a TLS stack, ships a CA, or pins a certificate.
+//! - **It is a splice, not a second protocol.** After the Upgrade this copies
+//!   bytes onto a connected `UnixStream` the way `termiod stdio` does. One
+//!   WebSocket message is *not* one protocol frame, or a recorded Unix-socket
+//!   transcript would no longer replay.
+//! - **The pairing token authenticates the pipe**, and is never the session
+//!   write token that arbitrates who may type into a PTY.
 //!
-//! Specified by `docs/design/20260818-termiod-web-client-ghostty-wasm.md`
-//! §"Where WSS lives" and §"Auth".
+//! Specified by `docs/design/20260818-termiod-web-client-ghostty-wasm.md`.
 
 use crate::paths;
 use anyhow::{bail, Context, Result};
@@ -261,11 +258,9 @@ fn env_value(name: &str) -> Option<String> {
 }
 
 /// Resolve the bind, the origins and the token into a listener, or `None` for
-/// "Unix socket only" — the unchanged DEPLOY.md contract.
-///
-/// The seven rules of §"Where WSS lives" land here, because a flag that only
-/// lives on one foreground argv dies on the next crash restart: `spawn_daemon`
-/// execs bare `termiod serve`, and so does the systemd unit.
+/// "Unix socket only". Config outranks the flag because a flag that lives only
+/// on one foreground argv dies on the next crash restart: `spawn_daemon` execs
+/// bare `termiod serve`, and so does the systemd unit.
 pub fn resolve(
     explicit_bind: Option<SocketAddr>,
     explicit_origins: &[Origin],

@@ -687,16 +687,12 @@ final class TerminalViewController: UIViewController {
                 Log.device.error("no session id to attach to; falling back to the sandbox shell")
                 return shellSession.terminalSession
             }
-            // The phone mirrors a PTY through a live libghostty surface, which
-            // answers terminal queries (XTVERSION, DA, DSR) on its own. The
-            // authoritative surface on the other end already answered; the
-            // phone's duplicate arrives (late, from libghostty's IO thread) and,
-            // having missed the agent's parse window, leaks into its input line
-            // as literal text — e.g. Grok showing a stray ">|ghostty 1.3.2…".
-            // A mirror must never talk back to the host, and that matters *more*
-            // on a direct attach, where another client is driving the same PTY.
-            // A real keystroke or key-bar sequence never looks like a report, so
-            // genuine input passes through untouched.
+            // The phone's mirror surface answers terminal queries (XTVERSION,
+            // DA, DSR) on its own, but the authoritative surface already
+            // answered. The duplicate arrives late, misses the agent's parse
+            // window, and leaks into its input line as literal text — a stray
+            // ">|ghostty 1.3.2…". A mirror must never talk back to the host.
+            // Genuine input never looks like a report, so it passes untouched.
             let terminalSession = InMemoryTerminalSession(
                 write: { [weak transport] data in
                     guard !MirrorReportFilter.isDeviceReport(data) else { return }
@@ -752,18 +748,13 @@ final class TerminalViewController: UIViewController {
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
-            // The host wipes this screen on attach and only repaints once our
-            // grid claim lands — a Mac jiggles the PTY so the shell reprints its
-            // prompt, a device answers the barrier with a fresh snapshot, and
-            // both need the claim. But libghostty dedupes the resize callback at
-            // two layers — the surface coordinator and the in-memory session
-            // both drop an unchanged size — so on a cold attach or a reconnect
-            // no fresh
-            // resize fires, and the `sendGrid` at socket-open can race the very
-            // first dispatch. The result is a blank grid under a correct title.
-            // Re-assert the cached grid now that the socket is definitively up,
-            // and once more after the attach wipe has drained, so the last frame
-            // on the wire is our repaint and never a stray wipe.
+            // The host wipes this screen on attach and repaints only once the
+            // grid claim lands — a Mac jiggles the PTY, a device answers the
+            // barrier with a snapshot, and both need the claim. libghostty
+            // dedupes an unchanged size at two layers, so on a cold attach none
+            // fires and the screen stays blank under a correct title. Re-assert
+            // now, and again once the wipe has drained, so the last frame on the
+            // wire is the repaint.
             companion?.reassertGrid()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 guard let self, case .device = backend else { return }

@@ -13,14 +13,11 @@ use std::path::PathBuf;
 /// `"-dev"` for a side-by-side dev build, `""` for a release one.
 ///
 /// Mirrors `AppChannel.suffix` in the app, and must keep mirroring it: the two
-/// sides derive this separately and a disagreement puts them on different
-/// sockets. Only a plain name becomes a path component, so a typo in
-/// `TERMIO_CHANNEL` can never open a stray directory beside the real ones — it
-/// falls back to the release channel instead.
-///
-/// The daemon cannot read this the way the app does. The app's channel comes
-/// off its bundle identifier, which a spawned binary has no way to see, so
-/// whoever starts the daemon has to say which channel it serves.
+/// derive it separately and a disagreement puts them on different sockets. Only
+/// a plain name becomes a path component, so a typo in `TERMIO_CHANNEL` falls
+/// back to the release channel instead of opening a stray directory. The app
+/// reads its channel off its bundle identifier, which a spawned binary cannot
+/// see, so whoever starts the daemon has to say which channel it serves.
 pub fn channel_suffix() -> String {
     let requested = std::env::var("TERMIO_CHANNEL")
         .unwrap_or_default()
@@ -81,12 +78,9 @@ pub fn host_id_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("host.id"))
 }
 
-/// The pairing secret that authenticates a WebSocket pipe. Beside `host.id`
-/// for the same reason: two daemons on two sockets must not share a secret.
-///
-/// This is not the session write token. That one arbitrates who may type into
-/// a PTY and is handed out by the daemon; this one decides whether a socket is
-/// allowed to carry frames at all.
+/// The pairing secret that authenticates a WebSocket pipe — never the session
+/// write token, which arbitrates who may type into a PTY. Beside `host.id`
+/// because two daemons on two sockets must not share a secret.
 pub fn pair_token_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("pair.token"))
 }

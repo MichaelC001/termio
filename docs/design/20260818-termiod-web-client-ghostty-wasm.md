@@ -3,7 +3,7 @@ title: Termiod web client on official Ghostty WASM (Linux first)
 status: draft
 type: rfc
 created: 2026-08-18
-updated: 2026-08-24
+updated: 2026-08-26
 related:
   - 20260730-termiod-session-protocol.md
   - 20260805-termiod-hot-path-and-client-classes.md
@@ -795,8 +795,26 @@ None on disk for sessions. New files beside `host.id`:
 | --- | --- | --- |
 | `pair.token` | `0600` | `termiod pair` / `pair --rotate` |
 | `wss.bind` | `0600` | `serve --wss` |
+| `wss.origin` | `0600` | `serve --wss-origin` |
 
 Rotating the token does not touch the roster, the graveyard, or any PTY. A running WSS task watching the file drops live splices; a stopped daemon just gets a new file.
+
+**`wss.origin` exists because `pair` is a different process from `serve`.**
+[20260824-ios-as-device-client.md](20260824-ios-as-device-client.md) §D4 says the
+invite's reachable `url` "lives in `--wss-origin`" — but that flag is on the
+*daemon's* argv, and on a headless box (D4 rung 2, the case the whole ladder
+exists for) `pair` has nothing to read. So an explicit `serve --wss-origin`
+persists it exactly as `--wss` persists the bind. Without this file `pair --qr`
+on a VPS always refuses and the ladder has no working rung.
+
+**An Origin is an authority; an invite URL is a base URL.** They are not the same
+value and must not share one. `Origin: https://box.tailnet.ts.net` is
+scheme+host+port by definition — a path in it is invalid — so `--wss-origin`
+cannot express the `/termio/` mount that Tailscale Serve's `--set-path` creates
+(a mount, not a strip; see §"Where WSS lives"). `wss.origin` therefore feeds the
+CSRF check, the invite URL defaults to `<origin>/`, and an operator behind a
+prefix passes `pair --url https://box/termio/`. Do not teach `--wss-origin` to
+accept a path.
 
 Web assets live in a **versioned** directory, e.g. `~/.local/share/termiod/web/<termiod-version>-<ghostty-56e1f3a>/`, with `current` flipped atomically. This layout is **new in PR 5**. Today's `remote deploy` only installs `~/.local/bin/termiod` (device arch §6 specified content-addressed binaries; that install path is not shipped). The unit and the deploy contract point `--web-root` at `%h/.local/share/termiod/web/current`. Missing `current` → log, serve no files, WSS can still bind. We do not bake `ghostty-vt.wasm` into the musl binary, and we do not base64 it into the JS bundle.
 

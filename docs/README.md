@@ -102,6 +102,7 @@ from the real front matter).
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
+| draft | rfc | [零前置远程访问：把 dev tunnels 的形状搬到 termio](design/20260827-remote-access-dev-tunnels-model.md) |
 | draft | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](design/20260818-one-workspace-source.review-codex.md) |
 | draft | rfc | ["Adversarial review: Retire remote — every machine is a device"](design/20260814-remote-to-device.review-codex.md) |
 | draft | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |

@@ -5,15 +5,10 @@ import TermioShared
 /// `DeviceClient` over the termiod Session Protocol: the phone talking straight
 /// to the box a session runs on, with no Mac in the path.
 ///
-/// The screens above this are the same ones the companion wire feeds — that is
-/// the point of the port (`docs/design/20260824-ios-as-device-client.md` D1).
-/// What differs is everything below: one control channel carrying `list`,
-/// `attach`, `kill` and the `fs.*` plane, and a roster the client *builds*,
-/// because the daemon holds sessions and has never heard of a project.
-///
-/// Where a plane does not exist over here it says so. Nothing in this file
-/// answers a question with an empty list: `onChanges?([])` would read as "no
-/// changes", which is a different sentence from "this device has no git plane".
+/// The roster is built here rather than read off the wire, because the daemon
+/// holds sessions and has never heard of a project. Where a plane does not exist
+/// over here it refuses instead of answering with an empty list — `onChanges?([])`
+/// reads as "no changes", not "this device has no git plane".
 final class TermiodBackend: DeviceClient {
     var onRoster: ((DeviceRoster) -> Void)?
     var onConnected: ((Bool) -> Void)?
@@ -29,26 +24,19 @@ final class TermiodBackend: DeviceClient {
     var onDiff: ((DeviceDiff) -> Void)?
     var onSSHHosts: (([DeviceSSHHost]) -> Void)?
 
-    /// How many filename hits one search asks for. The host stops there and the
-    /// caller is told the batch was capped, rather than the field quietly
-    /// showing a slice of a monorepo as if it were everything.
+    /// The host stops here and the caller is told the batch was capped, rather
+    /// than a slice of a monorepo showing as if it were everything.
     private static let searchLimit: UInt64 = 200
 
     private let endpoint: DeviceEndpoint
-    /// The session this backend serves, when it serves one. Only the upload
-    /// plane needs it: a transfer into a session's scratch directory is reaped
-    /// with that session, so there is nowhere to put a paste without one.
+    /// Only the upload plane needs it: a paste lands in the session's scratch
+    /// directory, so there is nowhere to put one without a session.
     private let sessionID: String?
     private let channel: TermiodChannel
-    /// Every live session the device has reported, keyed by its id. Seeded by
-    /// `list` and kept current by `roster` / `status` events — pushed, never
-    /// polled, which is the same contract the companion roster has.
     private var sessionsByID: [String: Termiod.SessionInformation] = [:]
     private var sessionOrder: [String] = []
-    /// Status the device revised since the row it belongs to was last delivered
-    /// whole. Held beside the rows rather than merged into them because a row is
-    /// what the device said, and a delta is what it said after — folding the two
-    /// would lose which is which the moment a fresh row arrives.
+    /// Status the device revised since its row was last delivered whole. Held
+    /// beside the rows so a fresh row can retire the delta standing in for it.
     private var statusOverrides: [String: StatusDelta] = [:]
     private var hostID: String?
     /// Requests in flight, keyed by the `re` each was sent with.
@@ -72,12 +60,9 @@ final class TermiodBackend: DeviceClient {
     private var transfers: [Transfer] = []
     private var seq: UInt64 = 1
 
-    /// One file crossing to the device — an edit being saved, or a photo being
-    /// pasted into a prompt.
     private struct Transfer {
         enum Destination {
-            /// A save into the checkout, conflict-checked against the version
-            /// the editor read.
+            /// Conflict-checked against the version the editor read.
             case file(path: String, root: String, baseModifiedSeconds: UInt64?)
             /// The session's scratch directory, reaped when the session dies.
             case scratch(name: String)
@@ -128,16 +113,14 @@ final class TermiodBackend: DeviceClient {
             onError?(localized("That project isn't on this device."))
             return
         }
-        // A loose chat belongs to no checkout, so its workstream carries no
-        // project — that empty project is exactly what files it under Chats
-        // rather than inventing a folder named after its scratch directory.
+        // A loose chat belongs to no checkout, and the empty project below is
+        // what files it under Chats rather than under a folder named after its
+        // scratch directory.
         let isLooseChat = projectID == TermiodRoster.chatsProjectID
         create(
-            // The scratch root will not exist on a box nobody has started a chat
-            // on, and a spawn into a missing directory is refused. Creating it
-            // is what `TermioStore.ensureLooseChatRoot` does on the desktop,
-            // and it has to happen over there, so the shell does it on the way
-            // in rather than the cwd asking for a directory nobody made.
+            // A spawn into a missing directory is refused, and the scratch root
+            // will not exist on a box nobody has started a chat on, so the
+            // shell creates it on the way in instead.
             cwd: isLooseChat ? channel.homeDirectory : root,
             argv: isLooseChat
                 ? TermiodAgentLaunch.looseChatArgv(forAgent: agentID, root: root)
@@ -149,9 +132,8 @@ final class TermiodBackend: DeviceClient {
     }
 
     func startTerminal(workspaceID _: String?) {
-        // One device is one workspace here, so there is nothing to route by. No
-        // workstream and no agent is what makes this a loose shell, and it
-        // spawns at `$HOME` the way opening a new terminal window does.
+        // One device is one workspace, so there is nothing to route by. No
+        // workstream and no agent is what makes this a loose shell.
         create(
             cwd: TermiodRoster.looseTerminalRoot(homeDirectory: channel.homeDirectory),
             argv: [], workstream: nil, agentID: nil
@@ -159,9 +141,8 @@ final class TermiodBackend: DeviceClient {
     }
 
     func startSSH(host: String, workspaceID _: String?) {
-        // The Mac reads `~/.ssh/config` and offers what it finds; the Session
-        // Protocol has no verb for that, so there is no list to have picked from
-        // and nothing here can honour a choice made against one.
+        // The Session Protocol has no verb for the host list the Mac reads out
+        // of `~/.ssh/config`, so there is no choice here to honour.
         onError?(localized("Termio can't open an SSH session on \(host) from a device connection."))
     }
 
@@ -178,16 +159,14 @@ final class TermiodBackend: DeviceClient {
         onError?(localized("This device doesn't report its SSH hosts."))
     }
 
-    /// The device's Chats container, which needs no finding-or-creating: it is
-    /// one per box and `startSession` resolves this id to the scratch directory
-    /// a loose agent belongs in.
+    /// One per box, so there is nothing to find or create.
     func looseChatsContainerID(workspaceID _: String) -> String? {
         TermiodRoster.chatsProjectID
     }
 
     /// The device path a container id addresses. A folder carries its own; the
-    /// two loose containers spawn at roots that depend on the account's home
-    /// directory, which only the handshake knows.
+    /// two loose containers hang off the account's home directory, which only
+    /// the handshake knows.
     private func root(ofProjectID id: String) -> String? {
         if let root = TermiodRoster.root(ofProjectID: id) { return root }
         let home = channel.homeDirectory
@@ -201,10 +180,9 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    /// `attach` with `create_if_missing` is the only spawn verb the protocol
-    /// has, so starting a session means attaching to a name that does not exist
-    /// yet and then stepping back off it — the terminal screen opens its own
-    /// attachment a moment later.
+    /// `attach` with `create_if_missing` is the protocol's only spawn verb, so
+    /// starting a session means attaching to a name that does not exist yet and
+    /// then stepping back off it; the terminal screen attaches for real after.
     private func create(
         cwd: String,
         argv: [String],
@@ -216,17 +194,15 @@ final class TermiodBackend: DeviceClient {
             endpoint: endpoint, name: "start", role: "attach",
             capabilities: Termiod.attachCapabilities, delegateQueue: .main
         )
-        // A link self-heals rather than giving up, which is right for a session
-        // and wrong for a request someone is waiting on: a device that never
-        // answers has to become a refusal instead of a channel dialling forever
-        // behind a ＋ that looks like it did nothing.
+        // A link self-heals rather than giving up, which is wrong for a request
+        // someone is waiting on: a device that never answers has to become a
+        // refusal instead of a channel dialling forever behind a ＋.
         let deadline = DispatchWorkItem { [weak self] in
             Self.retire(starter)
             self?.onError?(localized("That device didn't answer."))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: deadline)
-        // Held by its own callbacks until the attach is answered; the closures
-        // are the only owner, so clearing them is what frees it.
+        // These closures are the starter's only owner, so clearing them frees it.
         starter.onReady = { [weak self] _ in
             guard let self else { return }
             do {
@@ -251,8 +227,7 @@ final class TermiodBackend: DeviceClient {
             switch reply.control {
             case .attached:
                 deadline.cancel()
-                // Leave the stream without killing what was just created; the
-                // screen that opens next attaches for real.
+                // Detach, not kill: what was just created has to outlive this.
                 if let payload = try? Termiod.detachPayload() {
                     starter.send(kind: .control, payload: payload)
                 }
@@ -303,9 +278,8 @@ final class TermiodBackend: DeviceClient {
             onError?(localized("That project isn't on this device."))
             return
         }
-        // No rendered preview: `fs_read` answers with the file's bytes and the
-        // device has no Markdown renderer to ask. The viewer falls back to
-        // showing the source, which is what it does for every other file type.
+        // No rendered preview: `fs_read` answers with bytes and the device has
+        // no Markdown renderer to ask, so the viewer shows the source.
         //
         // The device is addressed absolutely and answered relatively: the reply
         // carries back the path the caller asked for, and a save sends that same
@@ -346,8 +320,7 @@ final class TermiodBackend: DeviceClient {
             return
         }
         // `fs_match` and not `fs_search`: this field searches *names*, and
-        // `fs_search` is the device's content search (`git grep`). Wiring one to
-        // the other would answer a different question than the one asked.
+        // `fs_search` is the device's content search (`git grep`).
         //
         // Nothing is cancelled when a query is abandoned, and nothing needs to
         // be: `fs_match` is one reply off an index the host already holds, and
@@ -368,9 +341,8 @@ final class TermiodBackend: DeviceClient {
 
     func upload(projectID _: String, name: String, data: Data) {
         // A paste lands in the session's scratch directory, which the device
-        // reaps when that session dies — so a screenshot never outlives the
-        // conversation it belonged to. Without a session there is nowhere for it
-        // to go that would be cleaned up.
+        // reaps when that session dies. Without a session there is nowhere for
+        // it to go that anything would clean up.
         guard sessionID != nil else {
             onError?(localized("Attaching a file needs an open session on this device."))
             return
@@ -395,12 +367,12 @@ final class TermiodBackend: DeviceClient {
     // MARK: - Roster
 
     private func handshakeLanded(_ handshake: Termiod.HelloOkPayload) {
-        // The device's own identity, and the only one the roster is keyed by:
-        // `client_id` names this connection and changes on every reconnect.
+        // The roster is keyed by this and never by `client_id`, which names the
+        // connection and changes on every reconnect.
         hostID = handshake.hostId
         do {
-            // `roster` also carries `writer_changed` and `session_exited`, which
-            // is why two names cover everything the list needs.
+            // `roster` also carries `writer_changed` and `session_exited`, so
+            // two names cover everything the list needs.
             channel.send(kind: .control, payload: try Termiod.subscribePayload(
                 events: ["roster", "status"], seq: nextSeq()))
             channel.send(kind: .control, payload: try Termiod.listPayload(seq: nextSeq()))
@@ -459,14 +431,14 @@ final class TermiodBackend: DeviceClient {
             if let information = update.info {
                 if sessionsByID[information.id] == nil { sessionOrder.append(information.id) }
                 sessionsByID[information.id] = information
-                // A whole row is the device's current word on this session, so
-                // it retires the delta that was standing in for one.
+                // A whole row is the device's current word, so it retires the
+                // delta that was standing in for one.
                 statusOverrides[information.id] = nil
             } else if update.action == "removed" {
                 forget(update.session)
             } else {
-                // An arrival notice with no row: the `list` that answers it is
-                // what fills the gap, and there is nothing to redraw yet.
+                // An arrival notice with no row: nothing to redraw until the
+                // `list` behind it lands.
                 return
             }
             publishRoster()
@@ -484,8 +456,8 @@ final class TermiodBackend: DeviceClient {
     }
 
     private func publishRoster() {
-        // No identity yet means no workspace id, and a roster whose workspace
-        // ids churn between pushes would reshuffle every list on screen.
+        // A workspace id that churned between pushes would reshuffle every list
+        // on screen, so nothing is published until the host names itself.
         guard let hostID else { return }
         let live = sessionOrder.compactMap { sessionsByID[$0] }
         onRoster?(DeviceRoster(
@@ -503,9 +475,8 @@ final class TermiodBackend: DeviceClient {
                 continue
             }
             onFileList?(listing.path, listing.entries.map {
-                // Nothing marks a device entry as changed: that flag comes from
-                // the working diff, which is the git plane this connection does
-                // not have.
+                // Nothing is marked as changed: that flag comes from the working
+                // diff, and this connection has no git plane.
                 DeviceFileEntry(name: $0.name, isDirectory: $0.isDirectory)
             })
         }
@@ -553,8 +524,7 @@ final class TermiodBackend: DeviceClient {
             data: data,
             size: Int(clamping: header.size),
             // The host reports bytes and says nothing about what they are, so
-            // the classification is this side's: a NUL in the first block is
-            // what every diff tool calls binary.
+            // the classification is this side's.
             isBinary: data.prefix(8 << 10).contains(0),
             isTruncated: header.truncated,
             modifiedMilliseconds: Int(clamping: header.mtime) * 1000
@@ -566,9 +536,8 @@ final class TermiodBackend: DeviceClient {
               let query = pendingSearches.removeValue(forKey: request)
         else { return }
         guard !payload.indexIsMissing else {
-            // Zero hits at zero coverage means the device never indexed this
-            // checkout — reporting that as "no matches" would be a lie about
-            // the repository rather than about the connection.
+            // Reporting an unindexed checkout as "no matches" would be a claim
+            // about the repository rather than about the connection.
             onError?(localized("This device hasn't indexed this project's filenames."))
             return
         }
@@ -620,8 +589,8 @@ final class TermiodBackend: DeviceClient {
         sendNextChunk()
     }
 
-    /// One chunk per ack — the daemon's credit-of-one, which is what keeps a
-    /// transfer from starving the keystrokes sharing this connection.
+    /// One chunk per ack — the daemon's credit-of-one, which keeps a transfer
+    /// from starving the keystrokes sharing this connection.
     private func sendNextChunk() {
         guard let transfer = transfers.first, let uploadID = transfer.uploadID else { return }
         let start = Int(clamping: transfer.offset)
@@ -760,10 +729,9 @@ struct DeviceUnreachable: Error {
 }
 
 extension TermiodBackend {
-    /// D4's verify step: dial once, wait for `hello_ok`, and hand back the
-    /// device's own `host_id`. Nothing is written to the paired list until this
-    /// answers — saving an unverified address is what produced the companion's
-    /// worst failure mode, paired and silently unreachable.
+    /// Dial once, wait for `hello_ok`, hand back the device's `host_id`. Nothing
+    /// is written to the paired list until this answers: saving an unverified
+    /// address is what produced the companion's paired-but-unreachable state.
     ///
     /// `completion` runs on the main queue, exactly once.
     static func verify(
@@ -774,9 +742,8 @@ extension TermiodBackend {
             capabilities: Termiod.controlCapabilities, delegateQueue: .main
         )
         var answered = false
-        // The link never gives up on its own, which is right for a session and
-        // wrong for a dialog waiting on an answer: a box that is simply not
-        // there has to become a refusal the person can act on.
+        // The link never gives up on its own, so a box that is not there has to
+        // become a refusal the person can act on.
         let deadline = DispatchWorkItem {
             guard !answered else { return }
             answered = true
@@ -806,7 +773,7 @@ extension TermiodBackend {
 
 private extension DeviceRoster {
     /// The device's flat session list as the Device → Workspace → Project →
-    /// Session tree the screens draw.
+    /// Session tree the screens draw. Three things the wire does not answer:
     ///
     /// Three things the wire does not answer, decided here:
     ///
@@ -820,8 +787,7 @@ private extension DeviceRoster {
     ///   that and is not wired up yet (see the RFC's P4 follow-ups) — a separate
     ///   change from this one, which only fixed how replies find their caller.
     /// - **The workspace.** One device is one workspace, and it carries no
-    ///   `deviceAlias`: the box *is* the paired peer, which is what makes
-    ///   `RosterStore.localWorkspaces` offer it as a place to start a session.
+    ///   `deviceAlias`: the box *is* the paired peer.
     init(
         hostID: String,
         projects: [TermiodRoster.Project],
@@ -832,9 +798,8 @@ private extension DeviceRoster {
             deviceName: nil,
             agents: RosterAgent.legacyDefaults,
             projects: projects.map { project in
-                // The two loose containers are named here rather than on the
-                // wire, for the same reason the device supplies no display name
-                // for itself: the words a person reads are the client's.
+                // Named here rather than on the wire: the words a person reads
+                // are the client's.
                 let name = switch project.kind {
                 case .terminals: localized("Terminals")
                 case .chats: localized("Chats")
@@ -871,11 +836,10 @@ private extension MockSession {
         let title = reported.flatMap { $0.isEmpty ? nil : $0 }
         self.init(
             // A reported title first, then the agent's display name when the
-            // device declared one — `displayLabel` would hand back the raw
-            // `agent_id` there, so a chat would read `terminal` rather than
-            // `Terminal`. A session that declared no agent has no name to
-            // borrow, and `displayLabel` is what turns it into the program
-            // actually running (`zsh`) instead of the daemon's uuid handle.
+            // device declared one: `displayLabel` hands back the raw `agent_id`
+            // there, so a chat would read `terminal` rather than `Terminal`.
+            // Without a declared agent it is what names the program actually
+            // running (`zsh`) instead of the daemon's uuid handle.
             title: title ?? (declared ? agent.name : information.displayLabel),
             project: containerName,
             agent: agent,
@@ -898,19 +862,16 @@ struct StatusDelta: Equatable {
 /// What the client decides about a session the device merely describes: which
 /// agent it is, and what to run when starting a new one.
 enum TermiodAgentLaunch {
-    /// The environment a session inherits from *this* client — how output
-    /// should look, which belongs to the viewer no matter which machine the
-    /// process runs on. Nothing here names a path or an identity: those describe
-    /// where the process runs, and the device owns that.
+    /// How output should look, which belongs to the viewer wherever the process
+    /// runs. Nothing here names a path or an identity — the device owns those.
     static let presentationEnvironment = [
         ["TERM", "xterm-ghostty"],
         ["COLORTERM", "truecolor"],
         ["TERM_PROGRAM", "termio"],
     ]
 
-    /// What to exec for an agent. A login shell runs it so the agent is found
-    /// on the user's own `PATH` — a GUI process's `PATH` is not the shell's, and
-    /// a bare exec is how agents came up dead at 0 ms on the Mac.
+    /// A login shell runs the agent so it is found on the user's own `PATH`; a
+    /// bare exec is how agents came up dead at 0 ms on the Mac.
     static func argv(forAgent id: String) -> [String] {
         guard id != RosterAgent.terminal.id else { return [] }
         return ["/bin/sh", "-lc", "exec \(shellQuoted(id))"]
@@ -927,17 +888,16 @@ enum TermiodAgentLaunch {
                 "mkdir -p \(directory) && cd \(directory) && exec \(shellQuoted(id))"]
     }
 
-    /// Single-quoted for `sh`. An agent id comes from a manifest and a root from
-    /// the device's own handshake, so neither is hostile — but both end up
-    /// inside a shell command, and a path with a space in it would otherwise
-    /// spawn in the wrong place.
+    /// Single-quoted for `sh`. Neither an agent id nor a root is hostile, but
+    /// both land inside a shell command and a path with a space in it would
+    /// otherwise spawn in the wrong place.
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Which agent a roster row is running. The device's own `agent_id` wins;
-    /// without one the foreground argv is read, because the host reports the
-    /// process and the client owns the mapping.
+    /// The device's own `agent_id` wins; without one the foreground argv is
+    /// read, because the host reports the process and the client owns the
+    /// mapping to an agent.
     static func agent(for information: Termiod.SessionInformation) -> RosterAgent {
         if let id = information.agentID, !id.isEmpty { return RosterAgent.fallback(wire: id) }
         guard let executable = information.foregroundArgv?.first, !executable.isEmpty else {

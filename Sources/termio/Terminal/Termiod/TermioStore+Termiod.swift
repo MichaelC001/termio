@@ -155,25 +155,15 @@ extension TermioStore {
     // MARK: - Host-reported workstream status
 
     /// Lands an `E status` event on the session's row. The vocabulary is the
-    /// protocol's (`working · idle · needs_you · done · failed · unknown`, §4);
-    /// the mapping to a dot, a spinner, or a notification is this client's and
-    /// deliberately mirrors `applyStatusReport` arm for arm, so a session behaves
-    /// the same whether its status came from a local hook or from the daemon.
-    ///
-    /// Unlike the hook path there is no correlation guesswork: the event arrived
-    /// on this session's own attach channel, so it can only be about this
-    /// session. That is also why it is not gated on `effectiveAgent` — a remote
-    /// terminal is created as a plain `.terminal` row (the agent runs over
-    /// there), and gating would silently discard every status a VPS agent
-    /// reports, which is the entire reason this path exists.
+    /// protocol's; the mapping to a dot, a spinner, or a notification mirrors
+    /// `applyStatusReport` arm for arm, so a session behaves the same whether
+    /// its status came from a local hook or from the daemon.
     func applyTermiodStatus(_ report: Termiod.StatusPayload, for id: Session.ID) {
         guard session(id) != nil else { return }
 
-        // Everything from here to the state switch used to live behind the app's
-        // own hook socket and applied only to agents on this Mac. One report path
-        // means a device agent gets it too — the Info pane's transcript address,
-        // the `/new` rotation signal, and the running tool are no longer things
-        // only a local agent could say.
+        // Everything from here to the state switch used to sit behind the app's
+        // own hook socket and reach only agents on this Mac. One report path
+        // means a device agent gets it too.
         if let candidate = report.promptTitle {
             recordPromptTitle(candidate, for: id)
         }
@@ -193,12 +183,9 @@ extension TermioStore {
         // field name could be mined as the id by mistake, while SessionStart and
         // Stop payloads are the agent's own minimal envelope.
         //
-        // What is *no longer* checked here is whether the report named this
-        // session exactly. It used to have to be: hook files are global, every
-        // same-agent process on the machine reported into one socket, and a
-        // cwd-guessed match must never re-pin a tab to an outside run's
-        // conversation. A report now arrives addressed by the daemon that owns
-        // the PTY, so there is nothing to guess and nothing to guard against.
+        // Whether the report named this session exactly is no longer checked.
+        // The hook path had to, because a global socket left it matching by cwd;
+        // a report now arrives addressed by the daemon that owns the PTY.
         if report.status != "working" {
             if let path = carriedTranscript {
                 // A carried path can name a *new* conversation id in its filename
@@ -235,16 +222,12 @@ extension TermioStore {
         }
         switch report.status {
         case "working":
-            // No "is this really an agent row?" guard here, and deliberately.
-            // The local hook path had one, because its reports arrived at a
-            // global socket and could be matched to a session by *cwd* — a
-            // sibling's report could spin an unrelated pane, so it only spun
-            // rows already known to be agents. A report now arrives addressed by
-            // the daemon that owns the PTY, so its arrival is itself the proof
-            // an agent is running in that session. Keeping the guard would
-            // discard every status a remote agent sends (a remote row is a plain
-            // `.terminal` — the agent runs on the far machine), and would drop a
-            // local one whenever the foreground poll had not caught up yet.
+            // No "is this really an agent row?" guard, deliberately: an
+            // addressed report is itself the proof an agent is running there.
+            // Guarding would discard every status a remote agent sends, since a
+            // remote row is a plain `.terminal` — the agent runs on the far
+            // machine — and would drop a local one whenever the foreground poll
+            // had not caught up yet.
             setStatus(.working, for: id)
             setCurrentTool(report.tool, for: id)
             // Remember when work was last seen, so a turn that ends abnormally

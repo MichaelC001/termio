@@ -4797,6 +4797,16 @@
         }
       }
     },
+    "Privacy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私"
+          }
+        }
+      }
+    },
     "Project Files": {
       "localizations": {
         "zh-Hans": {
@@ -5594,6 +5604,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "选择"
+          }
+        }
+      }
+    },
+    "Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每天发送一条匿名事件，用于统计活跃安装数。不含项目路径、终端内容和账号。"
           }
         }
       }
@@ -6985,6 +7005,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "用量"
+          }
+        }
+      }
+    },
+    "Usage statistics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用统计"
           }
         }
       }

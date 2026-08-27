@@ -43,13 +43,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
 /// Snapshot payload carrying packed cells.
 ///
 /// v3 replaced v1's resolved-RGB cell with a tagged colour slot. v1 is gone
-/// rather than kept for compatibility: it could not express "the client's
-/// default" or "palette index N", so every payload it produced had already lost
-/// the information a client needs to apply its own theme. Nothing shipped
-/// consumed it — no client negotiates `grid_diff`, and a `snapshot` client is
-/// served VT (v2) — so retiring it costs nothing and carrying it would keep a
-/// format that is wrong by construction. Old clients hard-refuse on the version
-/// byte, which is the documented behaviour (§C.3: never limp).
+/// rather than kept for compatibility: it could express neither "the client's
+/// default" nor "palette index N", so every payload it produced had already
+/// lost what a client needs to apply its own theme, and nothing shipped
+/// consumed it. Old clients hard-refuse on the version byte rather than limp.
 pub const SNAPSHOT_FORMAT_VERSION: u8 = 3;
 /// Snapshot payload carrying **VT sequences** instead of packed cells.
 ///
@@ -469,17 +466,11 @@ impl Default for CreateSpec {
 
 /// The protocol's workstream vocabulary, from whatever a hook said.
 ///
-/// A manifest declares its events in the hook vocabulary — `working`,
-/// `attention`, `done`, `idle` — and the protocol speaks `working`, `idle`,
-/// `needs_you`, `done`, `failed`, `unknown`. `attention` and `needs_you` are the
-/// same state under two names, and nothing translated between them: a device
-/// agent stopped at a permission prompt reported `attention`, which no client
-/// recognised, so it sat there looking idle. Local hooks never hit it because
-/// they reported to a socket that spoke the hook vocabulary.
-///
-/// One report path means one vocabulary, and this is where the two meet.
-/// Anything else is passed through untouched — the daemon is not the judge of
-/// what a status may be.
+/// A manifest declares its events as `working` / `attention` / `done` / `idle`;
+/// the protocol says `needs_you` where a manifest says `attention`. Untranslated,
+/// a device agent stopped at a permission prompt reported a state no client
+/// recognised and sat there looking idle. Anything else passes through untouched
+/// — the daemon is not the judge of what a status may be.
 pub fn normalize_status(status: &str) -> &str {
     match status {
         "attention" => "needs_you",
@@ -618,18 +609,12 @@ pub enum Control {
     },
     /// Client asks for the write token, without re-attaching to get it.
     ///
-    /// Attaching interactively takes the token only when nobody holds it, which
-    /// is right for the first client and would be wrong for every one after it:
-    /// two devices on one session — a Mac and a phone showing the same agent —
-    /// would otherwise have to tear down and rebuild an attachment every time
-    /// the user's hands moved, whichever attached last would silently mute the
-    /// other, and the newcomer's grid would drag the one shared PTY to its own
-    /// width behind the muted client's back.
-    ///
-    /// So the token follows the device being *used*: a client claims it when
-    /// its user actually types. Observers are refused (§A: observers never
-    /// claim the write token), which is what keeps "many readers" from
-    /// degenerating into a race between writers.
+    /// Attaching takes the token only when nobody holds it, so without this a
+    /// Mac and a phone on one session would rebuild their attachments every time
+    /// the user's hands moved, and the newcomer's grid would drag the shared PTY
+    /// to its own width behind the muted client's back. The token follows the
+    /// device being *used*: a client claims it when its user actually types.
+    /// Observers are refused — they never claim the write token.
     ClaimWriter {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
@@ -796,15 +781,12 @@ pub enum Control {
     },
     /// Report a session's agent status.
     ///
-    /// Everything past `title` is what a hook on *this Mac* used to carry to the
-    /// app's own socket and a hook on a device could not say at all. Growing it
-    /// here is what made one report path an upgrade rather than a reshuffle: the
-    /// Info pane's transcript address, the `/new` rotation signal, the running
-    /// tool, and a first-prompt label are now available wherever the agent runs.
-    ///
-    /// All optional and all additive: an older client ignores what it does not
-    /// know, and a hook that has nothing to say omits the field rather than
-    /// sending an empty one.
+    /// Everything past `title` used to reach only the Mac app's own socket: the
+    /// transcript address, the `/new` rotation signal, the running tool, and a
+    /// first-prompt label are now available wherever the agent runs. All
+    /// optional and additive — an older client ignores what it does not know,
+    /// and a hook with nothing to say omits the field rather than sending an
+    /// empty one.
     SetStatus {
         id: String,
         status: String,
@@ -835,15 +817,14 @@ pub enum Control {
     /// (capability `agents`).
     ///
     /// The machine that owns the files decides what goes in them: the client
-    /// says *which agents are on the user's list* — a preference — and the
-    /// daemon works out where each one keeps its config, whether its CLI is
-    /// even here, and what to merge. What used to be forty to sixty sequential
-    /// `ssh` round trips is this one message.
+    /// names which agents the user enabled — a preference — and the daemon works
+    /// out where each keeps its config, whether its CLI is even here, and what
+    /// to merge. What used to be forty to sixty sequential `ssh` round trips is
+    /// this one message.
     ///
     /// The client never names a destination. Every path written comes from a
-    /// manifest this box already has — the daemon's own bundled roster, or the
-    /// user's own `~/.termio/config/agents` — so the write surface is fixed by
-    /// the box rather than chosen by the caller.
+    /// manifest this box already has, so the write surface is fixed by the box
+    /// rather than chosen by the caller.
     InstallAgents {
         /// The agent ids the user has enabled, or absent for the whole catalog.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1142,15 +1123,13 @@ pub enum Event {
     },
     /// A session's agent status changed.
     ///
-    /// **Ordering.** This is queued into the session's own per-client channel,
-    /// the same FIFO its `D` data goes through, so it cannot overtake output the
-    /// daemon has already read — a client is right to apply it on arrival and
-    /// needs no sequence number to do so. (`SetStatus.seq` is a request id for
-    /// reply de-duplication, not an ordering token; every hook sends 1.) What no
-    /// token could fix is upstream of here: an agent writes to its PTY and runs
-    /// its hook, and the daemon may process the hook before it has read those
-    /// bytes. That race is bounded by one read, and it is the reason `working`
-    /// arriving a few milliseconds early is not worth a buffering client.
+    /// Queued into the session's own per-client channel, the same FIFO its `D`
+    /// data goes through, so it cannot overtake output the daemon has already
+    /// read and needs no sequence number. (`SetStatus.seq` is a request id, not
+    /// an ordering token.) What no token could fix is upstream: an agent may run
+    /// its hook before the daemon has read the bytes it just wrote. That race is
+    /// bounded by one read, so `working` arriving a few milliseconds early is
+    /// not worth a buffering client.
     Status {
         session: String,
         status: String,

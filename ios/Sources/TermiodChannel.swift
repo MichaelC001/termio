@@ -6,15 +6,14 @@ import TermioShared
 ///
 /// The daemon's listener is a splice, not a second protocol: it copies the same
 /// framed stream a Unix socket carries into binary messages of whatever size its
-/// copy loop happened to read. So a WebSocket message boundary means nothing
-/// here — one message may hold three frames or a third of one, and
-/// `Termiod.FrameReader` is what cuts them apart. The Mac's `Termiod.readFrame`
-/// pulls exactly what a header asks for from a blocking descriptor and has no
-/// equivalent on this side.
+/// copy loop happened to read, so a message boundary means nothing here — one
+/// may hold three frames or a third of one, and `Termiod.FrameReader` cuts them
+/// apart. Everything link-shaped belongs to `WebSocketLink`; what lives here is
+/// the `hello` that must be frame #1, the reassembly, and the decode.
 ///
-/// Everything link-shaped — dialling, backoff, the liveness ping, the
-/// foreground retry — belongs to `WebSocketLink`. What lives here is the
-/// protocol: the `hello` that must be frame #1, the reassembly, and the decode.
+/// Every callback below fires on the link's delegate queue except `onLinkState`
+/// going down and `onFailure`, which arrive on the main queue where the link
+/// schedules its reconnect.
 final class TermiodChannel {
     /// One control frame, and the request it is an answer to.
     ///
@@ -40,28 +39,20 @@ final class TermiodChannel {
     var onControl: ((Reply) -> Void)?
     /// A decoded `E` frame, on the delegate queue.
     var onEvent: ((Termiod.IncomingEvent) -> Void)?
-    /// Raw PTY bytes (`D`), on the delegate queue.
     var onData: ((Data) -> Void)?
-    /// A snapshot keyframe (`S`) payload, on the delegate queue.
     var onSnapshot: ((Data) -> Void)?
-    /// A file chunk (`F`) payload, on the delegate queue.
     var onFileChunk: ((Data) -> Void)?
-    /// The link came up (`true`, meaning the handshake landed) or went down
-    /// (`false`). `true` arrives on the delegate queue, immediately ahead of
-    /// `onReady`; `false` arrives on the main queue, where the link schedules
-    /// its own reconnect. An owner whose delegate queue is the main queue sees
-    /// both there.
+    /// `true` means the handshake landed, and arrives immediately ahead of
+    /// `onReady`.
     var onLinkState: ((Bool) -> Void)?
-    /// The device refused this connection outright — a rejected handshake, a
-    /// stream that lost alignment. Main queue; the reason has to survive the
-    /// reconnect loop or it reads as an unexplained outage.
+    /// The device refused this connection outright. The reason has to survive
+    /// the reconnect loop or it reads as an unexplained outage.
     var onFailure: ((String) -> Void)?
 
-    /// The client id `hello_ok` named this connection, which is the only way to
-    /// tell whether a `writer_changed` naming a client means us.
+    /// The only way to tell whether a `writer_changed` naming a client means us.
     private(set) var clientID: String?
-    /// The device's home directory, for the verbs that must name a path over
-    /// there. Empty until the handshake lands.
+    /// For the verbs that must name a path over there. Empty until the
+    /// handshake lands.
     private(set) var homeDirectory = "/"
 
     private let name: String
@@ -87,16 +78,14 @@ final class TermiodChannel {
             name: name, url: endpoint.url, delegateQueue: delegateQueue,
             pingRunLoopMode: pingRunLoopMode
         )
-        // D3: the token rides the negotiated subprotocol. A query string on the
-        // Upgrade line is the proxy-log leak the daemon's listener exists to
-        // close, so it is never put back here.
+        // The token rides the negotiated subprotocol. A query string on the
+        // Upgrade line leaks it into proxy logs, so it never goes there.
         if let token = endpoint.token {
             configuration.subprotocols = ["termiod.\(token)"]
         }
-        // D2: the listener's CSRF check refuses a missing Origin, and
-        // `URLSession` sends none from a native app. The phone states the
-        // operator's own allowed origin — a value it chose, which is why the
-        // token remains the only thing authenticating the pipe.
+        // The listener's CSRF check refuses a missing Origin and `URLSession`
+        // sends none from a native app, so the phone states the operator's own
+        // allowed origin. The token stays the only thing authenticating the pipe.
         if let origin = endpoint.origin {
             configuration.headers["Origin"] = origin
         }
@@ -126,9 +115,8 @@ final class TermiodChannel {
         link.send(Termiod.frame(kind: kind, payload: payload))
     }
 
-    /// Encode and send one control operation. Throws rather than swallowing an
-    /// encode failure: the caller is the one holding the request that will now
-    /// never be answered, and it is the only place that knows what to say.
+    /// Throws rather than swallowing an encode failure: the caller holds the
+    /// request that will now never be answered, and knows what to say about it.
     func send(control operation: some Encodable) throws {
         send(kind: .control, payload: try Termiod.encodeControl(operation))
     }
@@ -172,8 +160,8 @@ final class TermiodChannel {
             case .event: receiveEvent(frame.payload)
             case .upload, .history, .grid, .resize:
                 // `R` is client-to-host only, and `H`/`G` need capabilities this
-                // client never offers. Receiving one means the daemon sent a
-                // frame nobody asked for — say so rather than drop it silently.
+                // client never offers, so one arriving is a frame nobody asked
+                // for rather than something to drop silently.
                 Log.device.error("""
                 unnegotiated \(String(UnicodeScalar(frame.kind.rawValue)), privacy: .public) \
                 frame on \(self.name, privacy: .public)
@@ -226,9 +214,8 @@ final class TermiodChannel {
         }
     }
 
-    /// What this client calls itself in `hello`. The shared codec deliberately
-    /// does not supply one — claiming to be a particular client is the one thing
-    /// a shared codec must not do.
+    /// What this client calls itself in `hello`. The shared codec supplies no
+    /// banner — claiming to be a particular client is not its to do.
     private static let clientBanner: String = {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         return "termio-ios/\(version as? String ?? "dev")"

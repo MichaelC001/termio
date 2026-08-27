@@ -5,43 +5,30 @@
 //! dialect the hook here is generated **source**, not a command string, and the
 //! machine it is for reaches further into it than a swapped binary path.
 //!
-//! Three traps live in this file, and all three fail *silently*, because every
-//! hook form ends in `2>/dev/null || true` or `.quiet().nothrow()`. They are
-//! recorded in `docs/design/20260824-agent-integration-on-a-device.md`:
+//! Two traps live here, and both fail *silently*, because every hook form ends
+//! in `2>/dev/null || true` or `.quiet().nothrow()`. See
+//! `docs/design/20260824-agent-integration-on-a-device.md`:
 //!
-//! 1. **The binary is interpolated by Bun's `$`, which escapes each hole into
-//!    one argv token.** Handing it `$HOME/.local/bin/termiod` reaches the kernel
-//!    as a directory literally named `$HOME`, exactly the way an over-quoted
-//!    shell path does. The SSH arm worked around it by joining the path in
-//!    JavaScript — `(process.env.HOME ?? "") + "/.local/bin/termiod"` — because
-//!    the writer could not see the box. This daemon *is* on the box, so it
-//!    interpolates its own resolved path and the question does not arise. See
-//!    [`cli_declaration`].
-//! 2. **The session id comes from the environment**, `TERMIOD_SESSION_ID`, which
+//! 1. **Bun's `$` escapes each hole into one argv token**, so a path containing
+//!    `$HOME` reaches the kernel as a directory literally named `$HOME`. This
+//!    daemon runs on the box, so it interpolates its own resolved path and the
+//!    question does not arise. See [`cli_declaration`].
+//! 2. **The session id comes from `TERMIOD_SESSION_ID`**, which
 //!    `session::daemon_owned_env` exports after the client's `env` so a client
-//!    cannot spoof it. A plugin loaded *outside* a termiod session has no id, and
-//!    must report nothing rather than call `set-status` with an empty one the
-//!    daemon would reject.
-//! 3. **A device used to drop the conversation plumbing**, because `SetStatus`
-//!    carried a state and a title and nothing else. It carries four more fields
-//!    now, so it does not — and with that gone there is no machine branch left in
-//!    this file at all. One template per dialect, not two.
+//!    cannot spoof it. A plugin loaded outside a termiod session has no id and
+//!    must report nothing rather than send an empty one.
 //!
-//! Pi needs no branch of its own either: it already shells out through
-//! `pi.exec("sh", …)`, so it emits the same command the JSON-manifest and
-//! script-directory dialects get.
+//! Pi needs no branch of its own: it shells out through `pi.exec("sh", …)`, so
+//! it emits the same command the other dialects get.
 
 use super::apple_json;
 use super::install::{InstallRequest, StdinMining, SOCKET_MARKER};
 use super::manifest::{HookDialect, HookEvent};
 
-/// A JavaScript string literal.
-///
-/// Swift builds these with a plain `JSONSerialization.data(withJSONObject:)` and
-/// no `withoutEscapingSlashes`, so a `/` comes out as `\/`. That is legal
-/// JavaScript and means the same thing, and it is also what is on disk in every
-/// plugin termio has already installed — so it is reproduced rather than
-/// tidied, and the files do not churn when the writer changes hands.
+/// A JavaScript string literal, with `/` escaped as `\/`. Legal JavaScript, and
+/// what Swift's `JSONSerialization` put on disk in every plugin termio already
+/// installed — reproduced rather than tidied so the files do not churn now that
+/// the writer has changed hands.
 fn js(value: &str) -> String {
     apple_json::string_literal(value, true)
 }
