@@ -17,6 +17,28 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.44.0",
+    date: "2026-08-27",
+    title: "Set up a machine in one step, every time",
+    changes: {
+      new: [
+        "Installing and updating termiod on a machine is one step that works from any state: nothing installed, an older build, a newer build the daemon hasn't picked up. Set Up puts the right binary there, restarts the daemon when it's safe, checks the new one answers, and puts the old one back if it doesn't.",
+        "termiod reports its version. A machine's pane shows what it runs, and an update waiting on work in progress says so — naming the session — with Update Anyway beside it.",
+        "Your own idle terminals on a machine no longer block its update; only a command still running or an agent mid-task does.",
+        "Settings ▸ General ▸ Privacy: a switch for anonymous daily usage statistics. It sends nothing in this release.",
+      ],
+      improved: [
+        "A machine's pane offers one action, not the same one twice; hooks and the skill each get their own Reinstall row.",
+        "A machine whose daemon is restarting for an update keeps its spinner instead of reading as unreachable.",
+        "The terminal engine is ghostty v1.3.1-2293, on the Mac, on the phone, and on every machine's daemon.",
+      ],
+      fixed: [
+        "Installing agent hooks — on this Mac and on devices — failed in 0.43.0 with \"unknown variant\". It works again.",
+        "The remote file explorer is titled with the folder it shows, not the device.",
+      ],
+    },
+  },
+  {
     version: "0.43.0",
     date: "2026-08-27",
     title: "Every machine, set up like this one",
