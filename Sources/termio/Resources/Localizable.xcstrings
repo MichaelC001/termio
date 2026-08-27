@@ -6879,6 +6879,16 @@
         }
       }
     },
+    "Update ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新已就绪"
+          }
+        }
+      }
+    },
     "Updated.": {
       "localizations": {
         "zh-Hans": {

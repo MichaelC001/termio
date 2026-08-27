@@ -1382,6 +1382,8 @@
 	<string>Unsaved changes — saving…</string>
 	<key>Update</key>
 	<string>Update</string>
+	<key>Update ready</key>
+	<string>Update ready</string>
 	<key>Updated.</key>
 	<string>Updated.</string>
 	<key>Usage</key>

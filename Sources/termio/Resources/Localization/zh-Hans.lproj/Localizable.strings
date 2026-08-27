@@ -1382,6 +1382,8 @@
 	<string>未存储的更改 — 正在存储…</string>
 	<key>Update</key>
 	<string>更新</string>
+	<key>Update ready</key>
+	<string>更新已就绪</string>
 	<key>Updated.</key>
 	<string>已更新。</string>
 	<key>Usage</key>
