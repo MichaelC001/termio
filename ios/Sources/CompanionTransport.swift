@@ -134,18 +134,13 @@ final class CompanionTransport {
     /// The preamble every (re)connect puts on the wire, in this order: auth,
     /// the attach it gates, and the grid claim the Mac's repaint is driven by.
     ///
-    /// Nothing resets the screen first. A reconnect used to emit RIS ahead of
-    /// the server's ring-buffer replay, back when the replay was raw scrollback
-    /// this end had to make sense of; the phone now attaches through the daemon,
-    /// which answers with a snapshot rendered at this client's grid. That
-    /// snapshot carries its own prologue (`SNAPSHOT_PROLOGUE` in
-    /// `termiod/vt/src/lib.rs`), built so it lands identically on a client in
-    /// any prior state — and deliberately stopping short of RIS, because the
-    /// palette, title and scrollback it would clear are the client's, not the
-    /// host's. So RIS bought nothing and cost a visible flash: it wiped the
-    /// screen the moment the socket opened, leaving it blank until the snapshot
-    /// arrived, on every transient reconnect the phone's foreground and network
-    /// churn produces.
+    /// Nothing resets the screen first. The daemon's attach snapshot carries its
+    /// own prologue (`SNAPSHOT_PROLOGUE` in `termiod/vt/src/lib.rs`), built to
+    /// land identically on a client in any prior state and deliberately stopping
+    /// short of RIS — the palette, title and scrollback it would clear are the
+    /// client's, not the host's. The `ESC c` that used to precede the old
+    /// raw-scrollback replay bought nothing here and cost a flash on every
+    /// reconnect the phone's foreground churn produces.
     private func sendPreamble() {
         // Auth precedes the attach on the same socket — the server refuses
         // the bridge (and everything else) until the token lands.
