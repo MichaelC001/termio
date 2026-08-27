@@ -45,18 +45,24 @@ struct DevicesSettingsTab: View {
     var body: some View {
         Form {
             // No section header: the tab is called Devices and this is the
-            // only list of them in it. The add row is the last row of the
-            // list it adds to rather than a bar pinned to the window bottom,
-            // which in a tall window sat a screen away from the roster with
-            // two unrelated sections in between — and so read as adding a
-            // public key.
+            // only list of them in it. The add control is the roster's own
+            // gutter rather than a bar pinned to the window bottom, which in a
+            // tall window sat a screen away from the roster with two unrelated
+            // sections in between — and so read as adding a public key.
             Section {
                 ForEach(machines) { machine in
                     NavigationLink(value: DeviceRoute(key: machine.settingsKey)) {
                         DeviceListRow(machine: machine, host: host(for: machine))
                     }
                 }
-                AddDeviceRow { addingHost = true }
+                SettingsListGutter {
+                    Button { addingHost = true } label: {
+                        SettingsGutterGlyph(symbol: "plus")
+                    }
+                    .buttonStyle(.plain)
+                    .help(localized("Add Device"))
+                    .accessibilityLabel(localized("Add Device"))
+                }
             } footer: {
                 Text(localized("Open one to see how it is reached and what it runs."))
                     .font(.caption)
@@ -234,29 +240,4 @@ private struct DeviceListRow: View {
     }
 }
 
-/// The roster's add action, as the last row of the roster.
-///
-/// Styled as a row of the group rather than a bar with its own inset background:
-/// inside a grouped `Form` the card already draws the surface, and a second
-/// rounded rect on top of it is what made this read as bolted on.
-private struct AddDeviceRow: View {
-    let onAdd: () -> Void
-
-    var body: some View {
-        Button(action: onAdd) {
-            HStack(spacing: 12) {
-                // No badge — an action is not a device — but it takes the same
-                // leading width so its label starts on the roster's text column.
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: settingsRowIconWidth, height: 26)
-                Text(localized("Add Device"))
-                Spacer(minLength: 4)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
 

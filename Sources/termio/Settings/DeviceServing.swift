@@ -1,24 +1,66 @@
 import CoreImage
 import SwiftUI
 
-/// What a machine serves to phones: the companion port, the pairing token, the
-/// QR carrying both, and the tunnel fronting them (RFC §D9).
+/// Settings ▸ Mobile: what this Mac serves to phones — the companion port, the
+/// pairing token, the QR carrying both, and the tunnel fronting them (RFC §D9).
 ///
-/// This was a top-level **Mobile** tab, and every line of it was already a fact
-/// about *one machine* — this Mac's port, this Mac's token, the phones paired to
-/// this Mac. It only read as app-wide because this Mac is currently the only
-/// machine that serves anything, which `termiod serve --wss` ends. A tab whose
-/// scope is a single machine is the same lie the Agents tab told, so it moves to
-/// the place that already answers for one machine.
+/// This lived inside Devices ▸ this Mac for a while, on the argument that every
+/// line of it is a fact about *one machine*: this Mac's port, this Mac's token,
+/// the phones paired to this Mac. The scope reading was right; the placement it
+/// implied was not. Pairing is the one step a new user cannot guess at, and it
+/// was three levels down a tab named after something else — so nobody found it.
 ///
-/// Unlike a command path, serving config is **not** comparable across machines —
-/// every box has its own port, its own token, its own QR — so this is the case
-/// where a drill-down is right and rows would be nonsense. It is the other half
-/// of the same rule: the machine's pane owns what is true of exactly one machine.
-///
-/// The QR being one level deeper is a real cost, paid the way §D9 says: pairing
-/// is an *action*, and it lives in the command palette ("Pair a phone…"), not as
-/// a duplicate settings entry.
+/// So the tab is back, and the scope objection is answered where it belongs: a
+/// machine picker at the top, and the card named after whichever machine is
+/// showing. A phone pairs with a *box*, and this Mac is only the nearest one —
+/// the VPS the user actually leaves agents running on is the case that matters,
+/// and it was unreachable from the UI entirely.
+struct MobileSettingsTab: View {
+    @ObservedObject var store: TermioStore
+    /// The machine being paired with, by `settingsKey`. Defaults to this Mac:
+    /// it is the one that always answers, and on a roster of one it is the only
+    /// choice — in which case the picker does not appear at all.
+    @State private var scope = KnownDevice.thisMac.settingsKey
+
+    private var machines: [KnownDevice] { DeviceRoster.known(in: store) }
+
+    /// Falls back to this Mac when the selected box leaves the roster, so the
+    /// pane never renders against a machine that is no longer there.
+    private var selected: KnownDevice {
+        machines.first { $0.settingsKey == scope } ?? .thisMac
+    }
+
+    var body: some View {
+        Form {
+            if machines.count > 1 {
+                Section {
+                    Picker(localized("Device"), selection: $scope) {
+                        ForEach(machines) { machine in
+                            Text(machine.name).tag(machine.settingsKey)
+                        }
+                    }
+                } footer: {
+                    Text(localized("Which machine your iPhone connects to. Each one serves its own sessions."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if selected.isLocal {
+                DeviceServingSection()
+            } else {
+                RemotePairingSection(machine: selected)
+                    // Rebuilt per machine: the pane's whole state is one box's
+                    // invite, and carrying the previous box's QR into the next
+                    // selection would offer a working code for the wrong host.
+                    .id(selected.settingsKey)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// The pane's one card: everything this Mac serves, under the machine's own name
+/// so the scope is on screen rather than assumed.
 struct DeviceServingSection: View {
     /// The reachable addresses, refreshed on open: Wi-Fi/Ethernet IPv4s
     /// first (the proven path), the Bonjour `.local` name as a fallback that
@@ -57,12 +99,9 @@ struct DeviceServingSection: View {
         return false
     }
 
-    /// One section, matching the machine pane's other three. The four cards this
-    /// was as a tab do not survive the move: on a pane that already carries
-    /// Status, Reached by and Installed by Termio, a fifth and sixth card for one
-    /// switch apiece would read as four unrelated subjects rather than one. So
-    /// the two lone-control cards fold into rows with their sentence as subtext,
-    /// which is the shape every other row on this pane already has.
+    /// One card, not the four this was the first time it was a tab: a card per
+    /// lone switch read as four unrelated subjects. The switches stay rows with
+    /// their sentence as subtext, which is the shape every settings row has.
     var body: some View {
         Section {
             Toggle(isOn: $mobile.isEnabled) {
@@ -139,7 +178,9 @@ struct DeviceServingSection: View {
                 betaRow
             }
         } header: {
-            SectionHeaderLabel(title: localized("Serving"))
+            // The machine, not "Serving": this pane answers for exactly one Mac,
+            // and naming it is what keeps the settings from reading as app-wide.
+            SectionHeaderLabel(title: KnownDevice.thisMac.name)
         } footer: {
             // Say plainly whose server the phone's traffic crosses, so the
             // "can I self-host the relay?" question is answered in the app: the
@@ -400,15 +441,19 @@ struct DeviceServingSection: View {
         return name.hasSuffix(".local") ? name : nil
     }
 
-    /// Plain CoreImage QR (medium error correction), rendered nearest-neighbor
-    /// so the modules stay sharp at display size.
-    private static func qrImage(for string: String) -> NSImage? {
-        let filter = CIFilter(name: "CIQRCodeGenerator")
-        filter?.setValue(Data(string.utf8), forKey: "inputMessage")
-        filter?.setValue("M", forKey: "inputCorrectionLevel")
-        guard let output = filter?.outputImage else { return nil }
-        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: scaled.extent.width, height: scaled.extent.height))
-    }
+    private static func qrImage(for string: String) -> NSImage? { pairingQRImage(for: string) }
+}
+
+/// Plain CoreImage QR (medium error correction), rendered nearest-neighbor so
+/// the modules stay sharp at display size. Shared by both arms of the pane:
+/// this Mac encodes its own `ws://…` address, a remote box encodes the
+/// `termio://device` invite its own `termiod pair` minted.
+func pairingQRImage(for string: String) -> NSImage? {
+    let filter = CIFilter(name: "CIQRCodeGenerator")
+    filter?.setValue(Data(string.utf8), forKey: "inputMessage")
+    filter?.setValue("M", forKey: "inputCorrectionLevel")
+    guard let output = filter?.outputImage else { return nil }
+    let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+    guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+    return NSImage(cgImage: cg, size: NSSize(width: scaled.extent.width, height: scaled.extent.height))
 }

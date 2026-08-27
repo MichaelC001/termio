@@ -12,8 +12,12 @@
 	<string>%1$@ changed on %2$@</string>
 	<key>%@ and %@</key>
 	<string>%@ and %@</string>
+	<key>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</key>
+	<string>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ didn’t come up — check the network and retry</string>
+	<key>%@ has nothing to pair against</key>
+	<string>%@ has nothing to pair against</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
 	<string>%@ is a dark theme in the %@ slot.</string>
 	<key>%@ is a light theme in the %@ slot.</key>
@@ -70,6 +74,8 @@
 	<string>%lldw</string>
 	<key>1 result</key>
 	<string>1 result</string>
+	<key>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</key>
+	<string>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</string>
 	<key>A double quote can’t be written to ssh config.</key>
@@ -160,6 +166,8 @@
 	<string>Apply</string>
 	<key>Asking %@ what it has.</key>
 	<string>Asking %@ what it has.</string>
+	<key>Asking %@…</key>
+	<string>Asking %@…</string>
 	<key>Assigned to Me</key>
 	<string>Assigned to Me</string>
 	<key>Assignee</key>
@@ -282,6 +290,8 @@
 	<string>Close the session and open it again to reattach.</string>
 	<key>Closed</key>
 	<string>Closed</string>
+	<key>Closes every session in it. The folders on disk are left alone.</key>
+	<string>Closes every session in it. The folders on disk are left alone.</string>
 	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
 	<string>Closing it stops %lld session(s). The folders on disk are left alone.</string>
 	<key>Collapse All</key>
@@ -336,6 +346,8 @@
 	<string>Copy Diff</string>
 	<key>Copy Image</key>
 	<string>Copy Image</string>
+	<key>Copy Invite</key>
+	<string>Copy Invite</string>
 	<key>Copy Link</key>
 	<string>Copy Link</string>
 	<key>Copy Path</key>
@@ -352,6 +364,8 @@
 	<string>Copy on select</string>
 	<key>Copy ssh Command</key>
 	<string>Copy ssh Command</string>
+	<key>Could not run ssh: %@</key>
+	<string>Could not run ssh: %@</string>
 	<key>Couldn’t change the Themes folder</key>
 	<string>Couldn’t change the Themes folder</string>
 	<key>Couldn’t create the worktrees folder: %@</key>
@@ -422,6 +436,8 @@
 	<string>Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.</string>
 	<key>Detached at %@</key>
 	<string>Detached at %@</string>
+	<key>Device</key>
+	<string>Device</string>
 	<key>Device Unavailable</key>
 	<string>Device Unavailable</string>
 	<key>Devices</key>
@@ -478,8 +494,12 @@
 	<string>Enter a path that starts with “/”. “~/” works too, once %@ has said where home is.</string>
 	<key>Enter an absolute path</key>
 	<string>Enter an absolute path</string>
+	<key>Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.</key>
+	<string>Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.</string>
 	<key>Every paired iPhone is signed out and must re-scan the new QR to reconnect.</key>
 	<string>Every paired iPhone is signed out and must re-scan the new QR to reconnect.</string>
+	<key>Exited with status %lld.</key>
+	<string>Exited with status %lld.</string>
 	<key>Expand Results</key>
 	<string>Expand Results</string>
 	<key>Family</key>
@@ -670,6 +690,8 @@
 	<string>Minimize</string>
 	<key>Missing on %lld devices</key>
 	<string>Missing on %lld devices</string>
+	<key>Mobile</key>
+	<string>Mobile</string>
 	<key>Mobile Access</key>
 	<string>Mobile Access</string>
 	<key>Move Down</key>
@@ -834,12 +856,12 @@
 	<string>Notifications for Termio are turned off in System Settings.</string>
 	<key>OK</key>
 	<string>OK</string>
-	<key>Off</key>
-	<string>Off</string>
 	<key>Off — LAN only</key>
 	<string>Off — LAN only</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
+	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
@@ -888,8 +910,12 @@
 	<string>Overwrite</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
+	<key>Pair</key>
+	<string>Pair</string>
 	<key>Pair a Phone…</key>
 	<string>Pair a Phone…</string>
+	<key>Pair your iPhone with the machines you work on</key>
+	<string>Pair your iPhone with the machines you work on</string>
 	<key>Pairing Token</key>
 	<string>Pairing Token</string>
 	<key>Panes</key>
@@ -938,6 +964,8 @@
 	<string>Project Files</string>
 	<key>Projects</key>
 	<string>Projects</string>
+	<key>Public address</key>
+	<string>Public address</string>
 	<key>Public keys</key>
 	<string>Public keys</string>
 	<key>Pull Requests</key>
@@ -1002,6 +1030,8 @@
 	<string>Removed from PATH.</string>
 	<key>Removes this custom agent and its configuration file. Existing sessions keep running.</key>
 	<string>Removes this custom agent and its configuration file. Existing sessions keep running.</string>
+	<key>Remove…</key>
+	<string>Remove…</string>
 	<key>Rename</key>
 	<string>Rename</string>
 	<key>Rename Session</key>
@@ -1230,6 +1260,8 @@
 	<string>The machine Termio is running on</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
+	<key>The machine everything filed under this workspace lives on.</key>
+	<string>The machine everything filed under this workspace lives on.</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1310,6 +1342,8 @@
 	<string>This session couldn’t be started.</string>
 	<key>This week</key>
 	<string>This week</string>
+	<key>This workspace is no longer on your list.</key>
+	<string>This workspace is no longer on your list.</string>
 	<key>Timed out</key>
 	<string>Timed out</string>
 	<key>Today</key>
@@ -1356,6 +1390,8 @@
 	<string>Use Regular Expression</string>
 	<key>Use Selection for Find</key>
 	<string>Use Selection for Find</string>
+	<key>Used for this invite only. To make it stick, start the daemon there with --wss-origin.</key>
+	<string>Used for this invite only. To make it stick, start the daemon there with --wss-origin.</string>
 	<key>User</key>
 	<string>User</string>
 	<key>Uses %@</key>
@@ -1372,6 +1408,8 @@
 	<string>WeChat</string>
 	<key>WeChat group</key>
 	<string>WeChat group</string>
+	<key>What this workspace is called in the sidebar.</key>
+	<string>What this workspace is called in the sidebar.</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
@@ -1380,6 +1418,8 @@
 	<string>Whether you want these at all, and putting them on every device.</string>
 	<key>Whether you want these at all, and putting them on this Mac.</key>
 	<string>Whether you want these at all, and putting them on this Mac.</string>
+	<key>Which machine your iPhone connects to. Each one serves its own sessions.</key>
+	<string>Which machine your iPhone connects to. Each one serves its own sessions.</string>
 	<key>Window</key>
 	<string>Window</string>
 	<key>Working Directory</key>
@@ -1388,8 +1428,8 @@
 	<string>Workspace</string>
 	<key>Workspace Settings…</key>
 	<string>Workspace Settings…</string>
-	<key>Workspace actions</key>
-	<string>Workspace actions</string>
+	<key>Workspace Unavailable</key>
+	<string>Workspace Unavailable</string>
 	<key>Workspaces</key>
 	<string>Workspaces</string>
 	<key>Worktree has changes</key>

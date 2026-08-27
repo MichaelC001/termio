@@ -12,8 +12,12 @@
 	<string>%1$@ 在 %2$@ 上已被修改</string>
 	<key>%@ and %@</key>
 	<string>%1$@ 和 %2$@</string>
+	<key>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</key>
+	<string>%@ 有响应，但返回的不是配对邀请。它的 termiod 可能比本应用旧——重新部署一次。</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ 未能启动——请检查网络后重试</string>
+	<key>%@ has nothing to pair against</key>
+	<string>%@ 上没有可配对的目标</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
 	<string>“%@”是深色主题，与“%@”插槽不匹配。</string>
 	<key>%@ is a light theme in the %@ slot.</key>
@@ -70,6 +74,8 @@
 	<string>%lld 周</string>
 	<key>1 result</key>
 	<string>1 个结果</string>
+	<key>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</key>
+	<string>只有当机器上的 termiod 正在运行、并且可以从外部访问时才能配对——需要隧道，或在它前面加一层代理。</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
 	<string>另一个 `%@` 已存在于 %@。请先移除，Termio 不会覆盖并非自己创建的文件。</string>
 	<key>A double quote can’t be written to ssh config.</key>
@@ -160,6 +166,8 @@
 	<string>应用</string>
 	<key>Asking %@ what it has.</key>
 	<string>正在询问 %@ 上有什么。</string>
+	<key>Asking %@…</key>
+	<string>正在询问 %@…</string>
 	<key>Assigned to Me</key>
 	<string>指派给我</string>
 	<key>Assignee</key>
@@ -282,6 +290,8 @@
 	<string>关闭会话后重新打开即可接回。</string>
 	<key>Closed</key>
 	<string>已关闭</string>
+	<key>Closes every session in it. The folders on disk are left alone.</key>
+	<string>会关闭其中的所有会话。磁盘上的文件夹不受影响。</string>
 	<key>Closing it stops %lld session(s). The folders on disk are left alone.</key>
 	<string>关闭它会停止 %lld 个会话。磁盘上的文件夹不受影响。</string>
 	<key>Collapse All</key>
@@ -336,6 +346,8 @@
 	<string>拷贝差异</string>
 	<key>Copy Image</key>
 	<string>拷贝图像</string>
+	<key>Copy Invite</key>
+	<string>拷贝邀请</string>
 	<key>Copy Link</key>
 	<string>拷贝链接</string>
 	<key>Copy Path</key>
@@ -352,6 +364,8 @@
 	<string>选中即拷贝</string>
 	<key>Copy ssh Command</key>
 	<string>拷贝 ssh 命令</string>
+	<key>Could not run ssh: %@</key>
+	<string>无法运行 ssh：%@</string>
 	<key>Couldn’t change the Themes folder</key>
 	<string>无法修改主题文件夹</string>
 	<key>Couldn’t create the worktrees folder: %@</key>
@@ -422,6 +436,8 @@
 	<string>部署 `termiod`，查找你的 Agent 命令行工具，然后安装 Termio 的 hooks 和技能。</string>
 	<key>Detached at %@</key>
 	<string>已分离于 %@</string>
+	<key>Device</key>
+	<string>设备</string>
 	<key>Device Unavailable</key>
 	<string>设备不可用</string>
 	<key>Devices</key>
@@ -478,8 +494,12 @@
 	<string>请输入以“/”开头的路径。等 %@ 报出主目录之后，“~/”也可以用。</string>
 	<key>Enter an absolute path</key>
 	<string>请输入绝对路径</string>
+	<key>Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.</key>
+	<string>所有与 %@ 配对的 iPhone 都会退出登录，需重新扫描新的二维码才能重新连接。</string>
 	<key>Every paired iPhone is signed out and must re-scan the new QR to reconnect.</key>
 	<string>所有已配对的 iPhone 都会退出登录，需重新扫描新的二维码才能重新连接。</string>
+	<key>Exited with status %lld.</key>
+	<string>退出状态 %lld。</string>
 	<key>Expand Results</key>
 	<string>展开结果</string>
 	<key>Family</key>
@@ -670,6 +690,8 @@
 	<string>最小化</string>
 	<key>Missing on %lld devices</key>
 	<string>%lld 台设备上缺失</string>
+	<key>Mobile</key>
+	<string>手机</string>
 	<key>Mobile Access</key>
 	<string>移动访问</string>
 	<key>Move Down</key>
@@ -834,12 +856,12 @@
 	<string>Termio 的通知已在“系统设置”中关闭。</string>
 	<key>OK</key>
 	<string>好</string>
-	<key>Off</key>
-	<string>未开启</string>
 	<key>Off — LAN only</key>
 	<string>关闭 — 仅局域网</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
+	<string>在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
@@ -888,8 +910,12 @@
 	<string>覆盖</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
+	<key>Pair</key>
+	<string>配对</string>
 	<key>Pair a Phone…</key>
 	<string>配对手机…</string>
+	<key>Pair your iPhone with the machines you work on</key>
+	<string>把 iPhone 与你正在使用的机器配对</string>
 	<key>Pairing Token</key>
 	<string>配对 Token</string>
 	<key>Panes</key>
@@ -938,6 +964,8 @@
 	<string>项目文件</string>
 	<key>Projects</key>
 	<string>项目</string>
+	<key>Public address</key>
+	<string>公网地址</string>
 	<key>Public keys</key>
 	<string>公钥</string>
 	<key>Pull Requests</key>
@@ -1002,6 +1030,8 @@
 	<string>已从 PATH 中移除。</string>
 	<key>Removes this custom agent and its configuration file. Existing sessions keep running.</key>
 	<string>移除此自定义 Agent 及其配置文件。现有会话会继续运行。</string>
+	<key>Remove…</key>
+	<string>移除…</string>
 	<key>Rename</key>
 	<string>重命名</string>
 	<key>Rename Session</key>
@@ -1230,6 +1260,8 @@
 	<string>Termio 正在运行的设备</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
+	<key>The machine everything filed under this workspace lives on.</key>
+	<string>归入这个工作区的一切所在的机器。</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1310,6 +1342,8 @@
 	<string>这个会话没能启动。</string>
 	<key>This week</key>
 	<string>本周</string>
+	<key>This workspace is no longer on your list.</key>
+	<string>这个工作区已不在你的列表中。</string>
 	<key>Timed out</key>
 	<string>连接超时</string>
 	<key>Today</key>
@@ -1356,6 +1390,8 @@
 	<string>使用正则表达式</string>
 	<key>Use Selection for Find</key>
 	<string>用所选内容查找</string>
+	<key>Used for this invite only. To make it stick, start the daemon there with --wss-origin.</key>
+	<string>仅用于本次邀请。要长期生效，请在那台机器上用 --wss-origin 启动守护进程。</string>
 	<key>User</key>
 	<string>用户</string>
 	<key>Uses %@</key>
@@ -1372,6 +1408,8 @@
 	<string>微信</string>
 	<key>WeChat group</key>
 	<string>微信群</string>
+	<key>What this workspace is called in the sidebar.</key>
+	<string>这个工作区在侧栏中显示的名称。</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
@@ -1380,6 +1418,8 @@
 	<string>是否启用这些功能，以及把它们装到每台设备上。</string>
 	<key>Whether you want these at all, and putting them on this Mac.</key>
 	<string>是否启用这些功能，以及把它们装到这台 Mac 上。</string>
+	<key>Which machine your iPhone connects to. Each one serves its own sessions.</key>
+	<string>iPhone 连接到哪台机器。每台机器各自提供自己的会话。</string>
 	<key>Window</key>
 	<string>窗口</string>
 	<key>Working Directory</key>
@@ -1388,8 +1428,8 @@
 	<string>工作区</string>
 	<key>Workspace Settings…</key>
 	<string>工作区设置…</string>
-	<key>Workspace actions</key>
-	<string>工作区操作</string>
+	<key>Workspace Unavailable</key>
+	<string>工作区不可用</string>
 	<key>Workspaces</key>
 	<string>工作区</string>
 	<key>Worktree has changes</key>
