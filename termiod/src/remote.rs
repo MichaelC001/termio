@@ -7,10 +7,18 @@
 //! `ssh host termiod attach <id>` runs the *client* on the remote host, whose
 //! stdin/stdout are the SSH channel; the daemon it starts survives the SSH
 //! disconnect because it is in its own session. Detach ≠ kill, remotely, free.
+//!
+//! Installing and updating the daemon on a host is the lifecycle loop
+//! (`lifecycle::reconcile`); this module is its ssh arm — [`SshNode`] — plus
+//! the artifact selection: which of the bundled daemons a host gets.
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+use crate::lifecycle::{self, DaemonHello, Node, Options, Report, Run, Unreachable};
 
 /// Where the binary is installed on the remote host. `$HOME` is expanded by
 /// the remote shell. Overridable with `TERMIOD_REMOTE_BIN` for custom install
@@ -53,18 +61,39 @@ fn control_path() -> Option<String> {
     Some(dir.join("%C").display().to_string())
 }
 
+/// The options every non-interactive ssh here runs with. Nobody can answer a
+/// prompt on these channels — the app runs them with no terminal at all — so
+/// `BatchMode` turns a passphrase prompt into a prompt failure in a second,
+/// and `ConnectTimeout` bounds a host that swallows the connect.
+fn batch_args() -> Vec<String> {
+    let mut args = vec![
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=10".to_string(),
+    ];
+    args.extend(ssh_multiplex_args());
+    args
+}
+
 #[derive(Subcommand)]
 pub enum RemoteCmd {
-    /// Build for the remote's arch and install `termiod` over SSH.
+    /// Install or update `termiod` on a host over SSH — `termiod deploy --host`.
     Deploy {
         /// SSH host alias from `~/.ssh/config` (or user@host).
         host: String,
-        /// Use this prebuilt Linux binary instead of cross-compiling.
+        /// Use this prebuilt binary instead of the bundled or cross-compiled one.
         #[arg(long)]
         bin: Option<String>,
         /// Force a Rust target triple instead of auto-detecting from `uname`.
         #[arg(long)]
         target: Option<String>,
+        /// Stop the old daemon even while its sessions are in use.
+        #[arg(long)]
+        force: bool,
+        /// Emit the outcome as one JSON document on stdout.
+        #[arg(long)]
+        json: bool,
     },
 
     /// List sessions on a remote host.
@@ -107,17 +136,63 @@ pub enum RemoteCmd {
 }
 
 pub async fn run(cmd: RemoteCmd) -> Result<()> {
-    // These shell out to ssh/scp; run them on a blocking thread so the async
-    // runtime stays free.
-    tokio::task::spawn_blocking(move || run_blocking(cmd)).await?
+    match cmd {
+        RemoteCmd::Deploy {
+            host,
+            bin,
+            target,
+            force,
+            json,
+        } => {
+            let mut node = SshNode::new(host);
+            node.prebuilt = bin.map(PathBuf::from);
+            node.target = target;
+            let report = reconcile(&node, Options { force, stage_only: false }).await;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.describe());
+            }
+            let code = report.exit_code();
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        RemoteCmd::Open {
+            host,
+            cwd,
+            agent,
+            name,
+            no_deploy,
+        } => {
+            if !no_deploy {
+                // The same loop the app runs before an attach. A daemon left
+                // staged behind busy sessions is still a working daemon, so
+                // that is a note rather than a stop.
+                let report = reconcile(&SshNode::new(host.clone()), Options::default()).await;
+                match report.outcome {
+                    lifecycle::Outcome::Current { .. } => {}
+                    lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
+                    _ => bail!("{}", report.describe()),
+                }
+            }
+            tokio::task::spawn_blocking(move || open(&host, cwd.as_deref(), &agent, name.as_deref()))
+                .await?
+        }
+        // These shell out to ssh; run them on a blocking thread so the async
+        // runtime stays free.
+        other => tokio::task::spawn_blocking(move || run_blocking(other)).await?,
+    }
+}
+
+/// The lifecycle loop against a host, for the build this binary is.
+pub async fn reconcile(node: &SshNode, options: Options) -> Report {
+    lifecycle::reconcile(node, lifecycle::BUILD_VERSION, options).await
 }
 
 fn run_blocking(cmd: RemoteCmd) -> Result<()> {
     match cmd {
-        RemoteCmd::Deploy { host, bin, target } => {
-            deploy(&host, bin.as_deref(), target.as_deref())?;
-            Ok(())
-        }
         RemoteCmd::List { host, json } => {
             let bin = remote_bin();
             let flag = if json { " --json" } else { "" };
@@ -134,13 +209,9 @@ fn run_blocking(cmd: RemoteCmd) -> Result<()> {
             let status = ssh_interactive(&host, !observe, &remote)?;
             std::process::exit(status);
         }
-        RemoteCmd::Open {
-            host,
-            cwd,
-            agent,
-            name,
-            no_deploy,
-        } => open(&host, cwd.as_deref(), &agent, name.as_deref(), no_deploy),
+        RemoteCmd::Deploy { .. } | RemoteCmd::Open { .. } => {
+            unreachable!("handled on the async path")
+        }
     }
 }
 
@@ -161,23 +232,8 @@ fn build_attach_cmd(target: &str, observe: bool, argv: &[String]) -> String {
     s
 }
 
-fn open(
-    host: &str,
-    cwd: Option<&str>,
-    agent: &str,
-    name: Option<&str>,
-    no_deploy: bool,
-) -> Result<()> {
+fn open(host: &str, cwd: Option<&str>, agent: &str, name: Option<&str>) -> Result<()> {
     let bin = remote_bin();
-    if !no_deploy {
-        // Deploy if the binary is missing (cheap idempotent check).
-        let present = ssh_capture(host, &format!("test -x {bin} && echo yes || echo no"))?;
-        if present.trim() != "yes" {
-            eprintln!("termiod not found on {host}; deploying…");
-            deploy(host, None, None)?;
-        }
-    }
-
     let argv: Vec<String> = match agent {
         "shell" | "" => Vec::new(),
         other => vec![other.to_string()],
@@ -207,46 +263,189 @@ fn open(
     std::process::exit(status);
 }
 
-/// Cross-compile (or take a prebuilt binary) and install it on the remote.
-fn deploy(host: &str, prebuilt: Option<&str>, target_override: Option<&str>) -> Result<()> {
-    let bin_path = match prebuilt {
-        Some(p) => p.to_string(),
-        None => {
-            let target = match target_override {
-                Some(t) => t.to_string(),
-                None => detect_target(host)?,
-            };
-            match shipped_binary(&target) {
-                Some(path) => {
-                    eprintln!("[deploy] using the bundled {target} binary");
-                    path
+// MARK: The ssh arm of the lifecycle loop
+
+/// A machine reached with the user's own `ssh`, as `~/.ssh/config` defines it.
+/// The daemon installed is whichever of the bundled builds matches the box's
+/// `uname`, or this very binary for another Mac.
+pub struct SshNode {
+    pub host: String,
+    /// A binary to install instead of choosing one — the developer override.
+    pub prebuilt: Option<PathBuf>,
+    /// A Rust target triple instead of asking `uname`.
+    pub target: Option<String>,
+}
+
+impl SshNode {
+    pub fn new(host: String) -> SshNode {
+        SshNode {
+            host,
+            prebuilt: None,
+            target: None,
+        }
+    }
+
+    fn ssh(&self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("ssh");
+        command.args(batch_args());
+        command
+    }
+
+    /// The directory the daemon lives in, spelled for the remote shell and for
+    /// scp — which does not expand `$HOME`, but resolves a relative path
+    /// against it.
+    fn install_directory(&self) -> (String, String) {
+        let binary = remote_bin();
+        let directory = match binary.rsplit_once('/') {
+            Some((directory, _)) if !directory.is_empty() => directory.to_string(),
+            _ => "$HOME/.local/bin".to_string(),
+        };
+        let for_scp = directory
+            .strip_prefix("$HOME/")
+            .or_else(|| directory.strip_prefix("~/"))
+            .map(str::to_string)
+            .unwrap_or_else(|| directory.clone());
+        (directory, for_scp)
+    }
+}
+
+impl Node for SshNode {
+    fn label(&self) -> String {
+        self.host.clone()
+    }
+
+    fn binary(&self) -> String {
+        remote_bin()
+    }
+
+    async fn run(&self, command: &str) -> Result<Run> {
+        let output = self
+            .ssh()
+            .arg(&self.host)
+            .arg(command)
+            .output()
+            .await
+            .context("spawning ssh")?;
+        let code = output.status.code().unwrap_or(1);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        // 255 is ssh's own exit status — connection or authentication, never
+        // the remote command's. It is the line between "unreachable" and
+        // "reached, and this failed".
+        if code == 255 {
+            return Err(Unreachable(last_line(&stderr)).into());
+        }
+        Ok(Run {
+            code,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr,
+        })
+    }
+
+    async fn put(&self, local: &Path, name: &str) -> Result<()> {
+        let (directory, for_scp) = self.install_directory();
+        let made = self.run(&format!("mkdir -p {directory}")).await?;
+        if made.code != 0 {
+            bail!("creating {directory} on {}: {}", self.host, last_line(&made.stderr));
+        }
+        eprintln!(
+            "[deploy] copying {} → {}:{for_scp}/{name}",
+            local.display(),
+            self.host
+        );
+        let output = tokio::process::Command::new("scp")
+            .args(batch_args())
+            .arg(local)
+            .arg(format!("{}:{for_scp}/{name}", self.host))
+            .output()
+            .await
+            .context("spawning scp")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.code() == Some(255) {
+                return Err(Unreachable(last_line(&stderr)).into());
+            }
+            bail!("copying the binary to {}: {}", self.host, last_line(&stderr));
+        }
+        Ok(())
+    }
+
+    async fn artifact(&self) -> Result<PathBuf> {
+        if let Some(prebuilt) = &self.prebuilt {
+            return Ok(prebuilt.clone());
+        }
+        let target = match &self.target {
+            Some(target) => target.clone(),
+            None => {
+                let uname = self.run("uname -sm").await?;
+                if uname.code != 0 {
+                    bail!("asking {} its uname: {}", self.host, last_line(&uname.stderr));
                 }
-                None => cross_compile(&target)?,
+                target_for_uname(uname.stdout.trim())?
+            }
+        };
+        if let Some(path) = shipped_binary(&target) {
+            eprintln!("[deploy] using the bundled {target} binary");
+            return Ok(PathBuf::from(path));
+        }
+        let built = tokio::task::spawn_blocking(move || cross_compile(&target)).await??;
+        Ok(PathBuf::from(built))
+    }
+
+    async fn hello(&self) -> Result<DaemonHello> {
+        let mut child = self
+            .ssh()
+            .arg(&self.host)
+            .arg(format!("{} stdio", remote_bin()))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .context("spawning ssh")?;
+        let mut reader = child.stdout.take().context("ssh stdout")?;
+        let mut writer = child.stdin.take().context("ssh stdin")?;
+        let answer = tokio::time::timeout(
+            Duration::from_secs(10),
+            lifecycle::handshake(&mut reader, &mut writer),
+        )
+        .await;
+        match answer {
+            Ok(Ok(hello)) => Ok(hello),
+            other => {
+                // The remote binary's own words are the diagnosis — "Exec
+                // format error" for a wrong slice, ssh's line for auth — so
+                // they are read before the child is discarded.
+                let _ = child.kill().await;
+                let mut stderr = String::new();
+                if let Some(mut stream) = child.stderr.take() {
+                    use tokio::io::AsyncReadExt;
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        stream.read_to_string(&mut stderr),
+                    )
+                    .await;
+                }
+                let reason = match other {
+                    Ok(Err(error)) => format!("{error:#}"),
+                    _ => "no protocol reply within 10s".to_string(),
+                };
+                let detail = last_line(&stderr);
+                if detail == "no output" {
+                    bail!("{reason}")
+                }
+                bail!("{reason} ({detail})")
             }
         }
-    };
+    }
+}
 
-    eprintln!("[deploy] installing {bin_path} → {host}:~/.local/bin/termiod");
-    run_cmd(Command::new("ssh").args([host, "mkdir -p ~/.local/bin"]))?;
-    // Uploaded beside the target and renamed over it, never written in place: a
-    // deployed daemon is usually *running*, and Linux refuses to open a running
-    // executable for writing (ETXTBSY) — so writing directly is the one case
-    // that always fails, upgrading a machine already in use. `mv` within a
-    // directory is `rename(2)`: atomic, and it leaves the running daemon holding
-    // the old inode until it exits, which is exactly the handover wanted.
-    //
-    // scp expands `~` on the remote for OpenSSH.
-    run_cmd(Command::new("scp").args([&bin_path, &format!("{host}:.local/bin/termiod.new")]))?;
-    run_cmd(Command::new("ssh").args([
-        host,
-        "chmod +x ~/.local/bin/termiod.new && mv ~/.local/bin/termiod.new ~/.local/bin/termiod",
-    ]))?;
-
-    let bin = remote_bin();
-    let version = ssh_capture(host, &format!("{bin} --version"))?;
-    eprintln!("[deploy] installed: {}", version.trim());
-    eprintln!("[deploy] daemon auto-starts on first attach/list (no service needed).");
-    Ok(())
+fn last_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()
+        .unwrap_or("no output")
+        .to_string()
 }
 
 /// A daemon for `target` shipped beside this executable.
@@ -279,20 +478,14 @@ fn shipped_binary(target: &str) -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
-/// Ask the remote `uname` and map it to a Rust target.
+/// The `uname -sm` half of target detection, split out so the mapping can be
+/// checked without a machine to ask.
 ///
 /// Macs are here because a device is a machine the user owns, and plenty of them
 /// are a Mac mini or a Studio on the same desk — "remote" describes the road, not
 /// the thing at the end of it. The daemon's own build already covers Darwin (it is
 /// what runs local sessions), so supporting it costs a branch here rather than a
 /// new artifact.
-fn detect_target(host: &str) -> Result<String> {
-    let uname = ssh_capture(host, "uname -sm")?;
-    target_for_uname(uname.trim())
-}
-
-/// The `uname -sm` half of `detect_target`, split out so the mapping can be
-/// checked without a machine to ask.
 fn target_for_uname(uname: &str) -> Result<String> {
     let arm = uname.contains("aarch64") || uname.contains("arm64");
     let intel = uname.contains("x86_64") || uname.contains("amd64");
@@ -359,7 +552,6 @@ fn ssh_interactive(host: &str, tty: bool, remote_cmd: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// Run an SSH command and capture stdout (for create/list/version probes).
 /// One host's session table, for the cross-host view. Failure is returned per
 /// host rather than aborting the sweep — a cloud fleet always has one box
 /// that is rebooting, and that must not blank the other rows.
@@ -378,12 +570,10 @@ pub async fn list_json(host: &str) -> (String, Result<Vec<crate::protocol::Sessi
     }
 }
 
+/// Run an SSH command and capture stdout (for create/list probes).
 fn ssh_capture(host: &str, remote_cmd: &str) -> Result<String> {
     let mut cmd = Command::new("ssh");
-    cmd.arg("-o").arg("BatchMode=yes");
-    for arg in ssh_multiplex_args() {
-        cmd.arg(arg);
-    }
+    cmd.args(batch_args());
     let out = cmd
         .args([host, remote_cmd])
         .output()
@@ -397,26 +587,9 @@ fn ssh_capture(host: &str, remote_cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn run_cmd(cmd: &mut Command) -> Result<()> {
-    let status = cmd.status().context("spawning subprocess")?;
-    if !status.success() {
-        bail!("command failed: {:?}", cmd);
-    }
-    Ok(())
-}
-
 /// Minimal single-quote shell escaping for remote command args.
 fn shell_quote(s: &str) -> String {
-    if s.is_empty() {
-        return "''".to_string();
-    }
-    if s
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'/' | b'=' | b'@' | b':'))
-    {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
+    lifecycle::shell_quote(s)
 }
 
 #[cfg(test)]
@@ -450,5 +623,18 @@ mod tests {
         let running = std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned));
         assert_eq!(shipped_binary("aarch64-apple-darwin"), running);
         assert_eq!(shipped_binary("x86_64-apple-darwin"), running);
+    }
+
+    /// scp does not expand `$HOME`; the default install path has to reach it
+    /// as a path relative to the login directory, and a custom absolute path
+    /// has to reach it untouched.
+    #[test]
+    fn the_install_directory_is_spelled_for_scp() {
+        let node = SshNode::new("box".into());
+        std::env::remove_var("TERMIOD_REMOTE_BIN");
+        assert_eq!(
+            node.install_directory(),
+            ("$HOME/.local/bin".to_string(), ".local/bin".to_string())
+        );
     }
 }

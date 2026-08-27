@@ -540,6 +540,14 @@ pub enum Control {
         host_id: String,
         host: String,
         client_id: String,
+        /// The daemon's build, `<app version>+<build>` — the version of the
+        /// app that shipped it (`lifecycle::BUILD_VERSION`). This is what
+        /// lets a control plane say "termiod 0.43 on ukvps; this app needs
+        /// 0.44" instead of inferring age from a missing capability. Absent
+        /// from a daemon that predates it, which the lifecycle loop reads as
+        /// older than anything that reports one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
         /// This account's home directory on the device, so a client that has
         /// to name a path over here — a project picker, a `~`-prefixed entry —
         /// starts where the user's work is instead of at `/`. Sent at the

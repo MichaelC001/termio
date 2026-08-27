@@ -102,8 +102,9 @@ rustup target add aarch64-unknown-linux-musl   # ARM VPS (Graviton, Ampere, Pi)
 rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 ```
 
-`termiod remote deploy <host>` runs `uname -m` on the host, picks the matching
-target, cross-compiles, and installs. Manual build:
+`termiod deploy --host <host>` runs `uname -sm` on the host, picks the matching
+target — the slice bundled beside the binary when there is one, a cross-compile
+otherwise — and installs. Manual build:
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-musl
@@ -121,13 +122,26 @@ termiod remote deploy my-vps --bin path/to/linux/termiod
 
 ## What deploy does
 
+One reconcile loop (`src/lifecycle.rs`; the design is
+`docs/design/20260827-termiod-lifecycle-reconcile.md`):
+
 ```sh
-termiod remote deploy my-vps
-#  ssh  my-vps mkdir -p ~/.local/bin
-#  scp  <built binary>  my-vps:.local/bin/termiod
-#  ssh  my-vps chmod +x ~/.local/bin/termiod
-#  ssh  my-vps ~/.local/bin/termiod --version      # verify
+termiod deploy --host my-vps
+#  ssh  my-vps ~/.local/bin/termiod status --json   # observe: binary, daemon, sessions
+#  scp  <bundled slice>  my-vps:.local/bin/termiod.new
+#  ssh  my-vps 'chmod +x … && mv termiod termiod.prev && mv termiod.new termiod'   # stage
+#  ssh  my-vps ~/.local/bin/termiod stop --json     # activate — declined while in use (exit 3)
+#  ssh  my-vps ~/.local/bin/termiod stdio           # verify: hello, compare the version
+#  on failure: mv termiod.prev termiod               # roll back
 ```
+
+Each step is skipped when the observed state already matches: a box on the
+current build costs one `status`. A box whose daemon holds a session someone
+is attached to, or an agent still `working`, is left **staged** — the new
+binary is in place and takes over the next time the daemon is stopped — and
+the sessions are named so the decision is the user's. `--force` overrides.
+The version compared is the app's build stamp (`0.44.0+1533`), carried by the
+daemon at `hello`; a box a newer app set up is left alone.
 
 Install path is `~/.local/bin/termiod`. Override with `TERMIOD_REMOTE_BIN`
 (e.g. `/usr/local/bin/termiod`) on the client for both deploy and attach.

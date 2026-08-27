@@ -13,6 +13,7 @@ mod daemon;
 mod files;
 mod git;
 mod id;
+mod lifecycle;
 mod paths;
 mod proc;
 mod protocol;
@@ -32,7 +33,7 @@ use std::net::SocketAddr;
 #[derive(Parser)]
 #[command(
     name = "termiod",
-    version,
+    version = lifecycle::BUILD_VERSION,
     about = "Durable session host — viewers attach; detach ≠ kill (#164 POC)",
     long_about = "termiod is a session host (not a window manager).\n\
 A session lives in the host; Mac/iOS/CLI only attach.\n\
@@ -237,6 +238,53 @@ enum Cmd {
     /// it lets a native client speak the same framed protocol to a remote host
     /// that it speaks to a local Unix socket. The daemon auto-starts.
     Stdio,
+
+    /// What this machine has: the binary, the daemon on its socket, and the
+    /// daemon's sessions. Read-only, one process, one connection.
+    ///
+    /// The daemon's version comes from the daemon, not from the file on disk:
+    /// the two differ exactly when an update is staged and not yet running.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Ask the daemon to stop. Declines while a session is attached or an
+    /// agent is mid-task, and names them; `--force` stops it regardless.
+    ///
+    /// The daemon is found by the credential on its socket, never by its
+    /// command line, so a second daemon someone runs by hand on another socket
+    /// is never the one stopped. Exit 3 means "in use", not failure.
+    Stop {
+        /// Stop even while sessions are in use. Every session ends.
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Install or update termiod here or on an SSH host, and verify it.
+    ///
+    /// One loop for every state the machine can be in: nothing installed, an
+    /// older binary, a newer binary the daemon has not picked up. It stages
+    /// the binary this build carries, asks the old daemon to stop when it is
+    /// idle, checks the new one answers, and puts the previous binary back if
+    /// it does not. Running it again is the recovery from any outcome.
+    Deploy {
+        /// SSH host alias from `~/.ssh/config` (or user@host). Without it,
+        /// this machine's own daemon is checked and restarted if stale.
+        #[arg(long)]
+        host: Option<String>,
+        /// Stop the old daemon even while its sessions are in use.
+        #[arg(long)]
+        force: bool,
+        /// Put the binary in place and leave the running daemon alone.
+        #[arg(long)]
+        stage_only: bool,
+        /// Emit the outcome as one JSON document on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Remote (SSH) deploy and attach — see `termiod remote --help`.
     Remote {
@@ -616,6 +664,58 @@ async fn main() -> Result<()> {
         Cmd::Agent { cmd } => run_agent(cmd).await,
 
         Cmd::Stdio => client::stdio().await,
+
+        Cmd::Status { json } => {
+            let status = lifecycle::status().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                lifecycle::print_status(&status);
+            }
+            Ok(())
+        }
+
+        Cmd::Stop { force, json } => {
+            let outcome = lifecycle::stop(force).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                println!("{}", outcome.message);
+                for session in &outcome.busy {
+                    println!("  • {} — {}", session.name, session.command);
+                }
+            }
+            if !outcome.stopped {
+                std::process::exit(lifecycle::EXIT_BUSY);
+            }
+            Ok(())
+        }
+
+        Cmd::Deploy {
+            host,
+            force,
+            stage_only,
+            json,
+        } => {
+            let options = lifecycle::Options { force, stage_only };
+            let report = match host {
+                Some(host) => remote::reconcile(&remote::SshNode::new(host), options).await,
+                None => {
+                    lifecycle::reconcile(&lifecycle::LocalNode, lifecycle::BUILD_VERSION, options)
+                        .await
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.describe());
+            }
+            let code = report.exit_code();
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
 
         Cmd::Remote { cmd } => remote::run(cmd).await,
 

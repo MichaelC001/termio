@@ -100,11 +100,19 @@ host (zmx lesson).
 Transport is **system OpenSSH** only — no public listener. The **host still runs on the VPS**; SSH only reaches it.
 
 ```sh
-termiod remote deploy my-vps           # cross-compile musl → ~/.local/bin/termiod
+termiod deploy --host my-vps           # install or update ~/.local/bin/termiod, verify it
 termiod remote list my-vps
 termiod remote attach my-vps demo -- bash
 termiod remote open my-vps --cwd '~/proj' --agent shell
 ```
+
+`deploy` is one loop for every state a box can be in — nothing installed, an
+older binary, a newer binary the daemon has not picked up. It stages the build
+this binary carries, asks the old daemon to stop when nothing is in use, checks
+the new one answers, and puts the previous binary back if it does not. Running
+it again is the recovery from any outcome. On the box itself, `termiod status`
+says what is there and `termiod stop` asks the daemon to leave (declined, with
+the sessions named, while one is attached or an agent is mid-task).
 
 `my-vps` = `~/.ssh/config` alias. Close the laptop; reattach — agent kept running on the VPS. See [`DEPLOY.md`](DEPLOY.md).
 

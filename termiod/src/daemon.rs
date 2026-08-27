@@ -606,11 +606,12 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
                     host_id: (*manager.host_id).clone(),
                     host: format!(
                         "termiod/{} {}-{}",
-                        env!("CARGO_PKG_VERSION"),
+                        crate::lifecycle::BUILD_VERSION,
                         std::env::consts::OS,
                         std::env::consts::ARCH
                     ),
                     client_id: client_id.to_string(),
+                    version: Some(crate::lifecycle::BUILD_VERSION.to_string()),
                     home: std::env::var("HOME").unwrap_or_default(),
                 },
             )
