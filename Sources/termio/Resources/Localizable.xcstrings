@@ -41,12 +41,32 @@
         }
       }
     },
+    "%@ answered as a different machine than %@. Its address is being served by something else.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 回应的是另一台机器，不是 %2$@。这个地址正被别的东西占用。"
+          }
+        }
+      }
+    },
     "%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "%@ 有响应，但返回的不是配对邀请。它的 termiod 可能比本应用旧——重新部署一次。"
+          }
+        }
+      }
+    },
+    "%@ answered, but not with the handshake termiod sends.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 有回应，但回的不是 termiod 的握手。"
           }
         }
       }
@@ -91,6 +111,26 @@
         }
       }
     },
+    "%@ is not an address the iPhone could dial.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不是 iPhone 能拨通的地址。"
+          }
+        }
+      }
+    },
+    "%@ is published, but the connection an iPhone would make was refused.\n%@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已发布，但 iPhone 会发起的那种连接被拒绝了。\n%2$@"
+          }
+        }
+      }
+    },
     "%@ is ready.": {
       "localizations": {
         "zh-Hans": {
@@ -131,12 +171,32 @@
         }
       }
     },
+    "%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ 上没有安装 %1$@，Termio 也不提供它的构建版本。请先在那台机器上安装，然后重试。"
+          }
+        }
+      }
+    },
     "%@ isn’t on your PATH": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "%@ 不在 PATH 中"
+          }
+        }
+      }
+    },
+    "%@ isn’t published yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 尚未发布"
           }
         }
       }
@@ -151,12 +211,62 @@
         }
       }
     },
+    "%@ never answered on its published address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 始终没有在它发布的地址上回应。"
+          }
+        }
+      }
+    },
     "%@ opened %@": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "%1$@ 创建于 %2$@"
+          }
+        }
+      }
+    },
+    "%@ refused the handshake.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 拒绝了握手。"
+          }
+        }
+      }
+    },
+    "%@ reports an architecture we have no build for: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 报告的架构没有对应的构建版本：%2$@"
+          }
+        }
+      }
+    },
+    "%@ started on %@ but never printed an address.\n%@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 已在 %2$@ 上启动，但始终没有打印地址。\n%3$@"
+          }
+        }
+      }
+    },
+    "%@ stays published only until you log out of it. Termio couldn’t set it to keep services running after that.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 只在你登录期间保持发布。Termio 无法让它在登出后继续运行服务。"
           }
         }
       }
@@ -1142,6 +1252,16 @@
         }
       }
     },
+    "Checking that %@ answers…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在确认 %@ 有回应…"
+          }
+        }
+      }
+    },
     "Checking the machine…": {
       "localizations": {
         "zh-Hans": {
@@ -1832,6 +1952,16 @@
         }
       }
     },
+    "Couldn’t install %@ on %@.\n%@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %2$@ 上安装 %1$@。\n%3$@"
+          }
+        }
+      }
+    },
     "Couldn’t link `%@` into %@.": {
       "localizations": {
         "zh-Hans": {
@@ -1888,6 +2018,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法把密码保存到钥匙串。"
+          }
+        }
+      }
+    },
+    "Couldn’t start %@ on %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %2$@ 上启动 %1$@。"
+          }
+        }
+      }
+    },
+    "Couldn’t start termiod on %@ with a listener.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %1$@ 上带监听器启动 termiod。"
           }
         }
       }
@@ -3584,6 +3734,16 @@
         }
       }
     },
+    "Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要先在那台机器上运行 `ngrok config add-authtoken`。免费版的地址每次重启都会变。"
+          }
+        }
+      }
+    },
     "New": {
       "localizations": {
         "zh-Hans": {
@@ -3984,6 +4144,16 @@
         }
       }
     },
+    "No command to run.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可运行的命令。"
+          }
+        }
+      }
+    },
     "No description provided.": {
       "localizations": {
         "zh-Hans": {
@@ -4120,6 +4290,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有主题与“%@”匹配"
+          }
+        }
+      }
+    },
+    "No tunnel selected.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未选择隧道。"
           }
         }
       }
@@ -4281,6 +4461,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "关闭 — 仅局域网"
+          }
+        }
+      }
+    },
+    "Off — SSH only": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭 — 仅 SSH"
           }
         }
       }
@@ -4517,6 +4707,16 @@
         }
       }
     },
+    "Opening the listener needs the daemon restarted, which ends what it is hosting:\n%@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开监听器需要重启守护进程，这会结束它正在承载的内容：\n%@"
+          }
+        }
+      }
+    },
     "Opens the ~/.ssh/config entry this machine is defined in.": {
       "localizations": {
         "zh-Hans": {
@@ -4647,6 +4847,16 @@
         }
       }
     },
+    "Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择从外部访问 %@ 的方式。Termio 会通过 SSH 在那台机器上运行它，并把地址读回来——你不需要手输任何地址。"
+          }
+        }
+      }
+    },
     "Pick the branch this one would merge into.": {
       "localizations": {
         "zh-Hans": {
@@ -4723,6 +4933,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "播放声音"
+          }
+        }
+      }
+    },
+    "Pointing termiod at %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在把 termiod 指向 %@…"
           }
         }
       }
@@ -4843,6 +5063,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "公钥"
+          }
+        }
+      }
+    },
+    "Publish": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发布"
+          }
+        }
+      }
+    },
+    "Publish and End Them": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发布并结束它们"
+          }
+        }
+      }
+    },
+    "Publishing restarts termiod on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发布会重启 %@ 上的 termiod"
           }
         }
       }
@@ -5277,6 +5527,16 @@
         }
       }
     },
+    "Restarting the tunnel changes the address, and every paired iPhone has to scan again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重启隧道会更换地址，所有已配对的 iPhone 都需要重新扫码。"
+          }
+        }
+      }
+    },
     "Restore Defaults": {
       "localizations": {
         "zh-Hans": {
@@ -5393,6 +5653,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "运行于 %@"
+          }
+        }
+      }
+    },
+    "Runs on that machine with your login’s privileges — no shell, arguments split on spaces. Use {port} for the daemon’s port.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以你的登录身份在那台机器上运行——不经过 shell，参数按空格切分。用 {port} 代表守护进程的端口。"
           }
         }
       }
@@ -5978,6 +6248,16 @@
         }
       }
     },
+    "Starting %@ on %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在 %2$@ 上启动 %1$@…"
+          }
+        }
+      }
+    },
     "Starting tunnel…": {
       "localizations": {
         "zh-Hans": {
@@ -6548,6 +6828,16 @@
         }
       }
     },
+    "This address changes when the tunnel restarts, and every paired iPhone must scan again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道重启后这个地址会变，所有已配对的 iPhone 都必须重新扫码。"
+          }
+        }
+      }
+    },
     "This agent is no longer on your list.": {
       "localizations": {
         "zh-Hans": {
@@ -6744,6 +7034,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "此 PR 未更改任何文件。"
+          }
+        }
+      }
+    },
+    "This relay has no valid URL pattern, so its address could never be read back.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个中转没有有效的 URL 正则，它的地址永远读不回来。"
           }
         }
       }
@@ -7125,6 +7425,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "微信群"
+          }
+        }
+      }
+    },
+    "What the daemon said": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "守护进程的原始输出"
           }
         }
       }
@@ -7521,6 +7831,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。\n\n启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。"
+          }
+        }
+      }
+    },
+    "termiod on %@ never opened its listener.\n%@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 上的 termiod 始终没有打开监听器。\n%2$@"
           }
         }
       }
