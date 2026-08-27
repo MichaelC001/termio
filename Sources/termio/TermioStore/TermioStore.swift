@@ -997,6 +997,12 @@ final class TermioStore: ObservableObject {
 
     var rosterFetches: [String: RosterFetch] = [:]
 
+    /// Routes whose daemon this app has asked to stop and is waiting to see come
+    /// back (`ensureRemoteReady`). A roster that fails meanwhile is the restart
+    /// in progress, not a dead machine — without this the two are the same red
+    /// row. Keyed by `TermiodRoute.description`.
+    var upgradingRoutes: Set<String> = []
+
     /// App-quit teardown: without this, session children outlive the app — the
     /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
     /// launchd orphans across restarts. Graceful signals first, a short

@@ -122,6 +122,7 @@ struct DevicePane: View {
         switch model.readiness {
         case .ready: return localized("Ready")
         case .checking: return model.step?.label ?? localized("Checking…")
+        case .staged: return localized("Update ready")
         case .blocked, .unasked: return localized("Set up this device")
         }
     }
@@ -138,7 +139,7 @@ struct DevicePane: View {
                 : localized("Agents on \(machine.name) can run.")
         case .checking:
             return localized("Asking \(machine.name) what it has.")
-        case .blocked(let reason):
+        case .blocked(let reason), .staged(let reason):
             // Only the first blocking rung, by design: a machine with no `termiod`
             // also has no hooks, and naming both invites fixing the consequence.
             return reason
@@ -260,7 +261,9 @@ struct DevicePane: View {
                 } label: {
                     SettingsLabel(
                         title: "termiod",
-                        subtext: localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
+                        subtext: model.discovered?.termiodVersion.map {
+                            localized("Version \($0) on \(machine.name). Sessions keep running there after you disconnect.")
+                        } ?? localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
                         titleFont: .headline
                     )
                 }

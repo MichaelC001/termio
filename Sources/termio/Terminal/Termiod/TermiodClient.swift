@@ -235,8 +235,8 @@ extension Termiod {
     /// safe, and the compiler cannot see that.
     nonisolated(unsafe) private static var sshArgumentsCache: [String: [String]] = [:]
 
-    /// Matches the remote-readiness probe in `TermioStore+Termiod.swift`, so
-    /// both roads to a host give up on the same clock.
+    /// Matches the daemon's own ssh (`termiod/src/remote.rs`), so both roads
+    /// to a host give up on the same clock.
     static let connectTimeoutSeconds = 10
 
     /// The argument list itself, taking what the probe found rather than
@@ -592,8 +592,11 @@ extension Termiod {
         guard reply.kind == .control else { throw TermiodClientError.malformedFrame }
         switch try decodeControl(reply.payload) {
         case .helloOk(let payload):
+            // The build stamp when the daemon has one; the banner it has always
+            // sent (`termiod/0.1.0 linux-aarch64`) for one that predates it.
             let device = TermiodDeviceRegistry.shared.record(
-                hostID: payload.hostId, daemonVersion: payload.host, route: transport.route)
+                hostID: payload.hostId, daemonVersion: payload.version ?? payload.host,
+                route: transport.route)
             // An offer the daemon dropped is not an error — negotiate, never
             // lockstep — but it does change what this connection can expect, so
             // it is worth saying out loud once per channel.
@@ -649,20 +652,6 @@ extension Termiod {
     /// cannot install, and says so at the handshake rather than at the write —
     /// which is what turns version skew into a sentence instead of a no-op.
     static let agentCapability = "agents"
-
-    /// Whether the daemon on this route can install agent integration.
-    ///
-    /// Asked with the handshake the caller was going to run anyway, so it costs
-    /// nothing. Used by the device pane's foundation rung: a box whose termiod
-    /// is too old is *redeployed*, so the answer to skew is the rung the user
-    /// was already pressing, not an error they have to act on.
-    static func supportsAgentInstall(route: TermiodRoute) throws -> Bool {
-        let transport = try Transport.open(route)
-        defer { transport.close() }
-        let handshake = try performHello(
-            transport, role: "control", caps: [agentCapability])
-        return handshake.capabilities.contains(agentCapability)
-    }
 
     /// Install (or remove) termio's agent integration on the machine this route
     /// reaches. One round trip for the whole roster.
@@ -724,6 +713,36 @@ extension Termiod {
                     continue
                 }
             }
+        }
+    }
+
+    /// What `termiod deploy --json` left a machine as — the lifecycle loop's
+    /// report (`termiod/src/lifecycle.rs`), read rather than reconstructed.
+    /// The daemon runs the loop; this side only says what the state means.
+    struct LifecycleReport: Decodable, Sendable {
+        enum State: String, Decodable, Sendable {
+            case current, staged, unhealthy, unreachable, failed
+        }
+        struct BusySession: Decodable, Sendable {
+            let name: String
+            let command: String
+            let status: String
+        }
+        let state: State
+        let node: String
+        let desired: String
+        let version: String?
+        let hostId: String?
+        let newer: Bool?
+        let daemon: String?
+        let busy: [BusySession]?
+        let message: String?
+        let rolledBack: Bool?
+
+        static func decode(_ data: Data) throws -> LifecycleReport {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(LifecycleReport.self, from: data)
         }
     }
 

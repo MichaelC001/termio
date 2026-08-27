@@ -574,6 +574,13 @@ extension TermioStore {
         switch outcome {
         case .failure(let error):
             let message = error.localizedDescription
+            // A daemon this app asked to stop is between builds, not gone. The
+            // column keeps its spinner; the loop refreshes it when it is done.
+            if upgradingRoutes.contains(key) {
+                deviceSessions = .loading
+                deviceSessionsRoute = key
+                return
+            }
             // The last good answer is no longer this device's answer, so it
             // cannot stand in for the next reply: a machine that comes back must
             // repaint even if it comes back holding exactly what it held before.
@@ -937,18 +944,29 @@ extension TermioStore {
     }
 
     struct RemoteSetupError {
+        /// The states the lifecycle loop can leave a machine in short of ready
+        /// (RFC §8). `staged` is the one that is not a fault: the binary is in
+        /// place and takes over once the sessions named in `message` close.
+        enum State {
+            case unreachable, staged, unhealthy, failed
+        }
+        let state: State
         let message: String
     }
 
-    /// Ensures `host` has `termiod` deployed before an attach — the same
-    /// idempotent check the CLI's `remote open` runs (`test -x ~/.local/bin/termiod`,
-    /// deploy if absent, see termiod/src/remote.rs). Runs off the main thread with a
-    /// borderless "Setting up host…" HUD; `completion` fires back on the main queue.
-    /// The deploy step shells out to the *local* `termiod remote deploy <host>`
-    /// (which cross-compiles + scps), so the app never re-implements the deploy.
+    /// Ensures `host` runs the `termiod` this app ships before an attach, by
+    /// running the daemon's own lifecycle loop against it (`termiod deploy
+    /// --host`): observe, stage the binary if older, stop the old daemon if it
+    /// is idle, verify the new one answers, roll back if it does not. Runs off
+    /// the main thread with a borderless "Setting up host…" HUD; `completion`
+    /// fires back on the main queue.
     func ensureRemoteReady(host: String, completion: @escaping (RemoteSetupResult) -> Void) {
         let hud = RemoteSetupHUD(message: "Setting up \(host)…")
         hud.show()
+        // While the loop may have the daemon down, a failed roster is the restart
+        // in progress, not an unreachable machine (RFC §5.5).
+        let route = TermiodRoute.ssh(host)
+        upgradingRoutes.insert(route.description)
         // Only the probe leaves the main actor. `completion` is the caller's
         // closure and captures main-actor state, so it must never be sent to
         // another isolation domain — it is called here, where it was formed.
@@ -957,11 +975,16 @@ extension TermioStore {
                 Self.performRemoteReadyCheck(host: host)
             }.value
             hud.dismiss()
+            guard let self else { return }
+            self.upgradingRoutes.remove(route.description)
             // Whatever the caller does next, the alias has now resolved to a
             // machine — write that down before handing back, so state keyed by
             // device is addressable by the time it is read.
             if case .success(let device) = result {
-                self?.adoptDevice(device, forRoute: .ssh(host))
+                self.adoptDevice(device, forRoute: route)
+            }
+            if self.currentDevice.route == route {
+                self.refreshDeviceSessions()
             }
             completion(result)
         }
@@ -981,105 +1004,72 @@ extension TermioStore {
         }.value
     }
 
-    /// The blocking half of `ensureRemoteReady`, run off-main. Probes for the
-    /// remote binary and, when missing, invokes the local `termiod remote deploy`.
-    /// `nonisolated` because it is invoked from a background queue and touches only
-    /// process/filesystem primitives — never `TermioStore`'s main-actor state.
+    /// The blocking half of `ensureRemoteReady`, run off-main: one process, one
+    /// JSON document. The loop itself lives in the daemon (`lifecycle.rs`) so
+    /// that every state a machine can be in is decided by the binary that also
+    /// runs on the machine; this side only turns the report into a sentence.
+    /// `nonisolated` because it is invoked from a background queue and touches
+    /// only process primitives — never `TermioStore`'s main-actor state.
     private nonisolated static func performRemoteReadyCheck(host: String) -> RemoteSetupResult {
-        // Which device is behind this alias, asked with a hello and hung up. The
-        // handshake is the only thing that can answer it, and it is the same
-        // handshake the attach would run anyway.
-        func identify() -> Result<TermiodDevice, Error> {
-            Result { try Termiod.probeDevice(route: .ssh(host)) }
-        }
-
-        // A quick reachability + presence probe. `BatchMode=yes` keeps it from
-        // hanging on a password prompt (the user's key/agent must already work,
-        // exactly as `ssh <host>` in a plain terminal would need). The remote path
-        // mirrors `Termiod.remoteBinary()` (`$HOME/.local/bin/termiod`).
-        let probe = runProcess(
-            "/usr/bin/ssh",
-            ["-o", "BatchMode=yes",
-             "-o", "ConnectTimeout=\(Termiod.connectTimeoutSeconds)", host,
-             "test -x $HOME/.local/bin/termiod && echo yes || echo no"]
-        )
-        guard let probe else {
-            return .failure(RemoteSetupError(message: "Couldn't run ssh to reach \(host)."))
-        }
-        if probe.exitCode != 0 {
-            // A non-zero ssh exit before our echo means the connection or auth
-            // failed — surface ssh's own last line, which names the cause.
-            let detail = probe.standardError
-                .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .last(where: { !$0.isEmpty }) ?? "Connection failed"
-            return .failure(RemoteSetupError(
-                message: "Couldn't reach \(host) over SSH.\n\(detail)"))
-        }
-        /// Whether the daemon answering on this host can install agent
-        /// integration. Since the installers moved onto the box, a daemon that
-        /// predates the `agents` capability writes nothing — where before the
-        /// move the same box still got its hooks, because the Mac did the
-        /// writing over ssh. That regression must not be silent.
-        func canInstallAgents() -> Bool {
-            (try? Termiod.supportsAgentInstall(route: .ssh(host))) ?? false
-        }
-
-        var upgrading = false
-        if probe.standardOutput.contains("yes") {
-            // Already deployed — the common case after first use.
-            switch identify() {
-            case .success(let device):
-                if canInstallAgents() { return .success(device) }
-                // Present is not the same as current. Put the new binary in
-                // place; whether the *running* daemon picks it up is the next
-                // question, and it is not ours to force.
-                upgrading = true
-            case .failure(let error):
-                // The binary is there but will not shake hands: a stale daemon, a
-                // protocol mismatch, a half-written deploy. Say so rather than
-                // opening a pane that dies on attach for an unexplained reason.
-                return .failure(RemoteSetupError(
-                    message: "termiod on \(host) didn't answer.\n\(error.localizedDescription)"))
-            }
-        }
-
-        // Missing: deploy via the local termiod binary's `remote deploy`, which
-        // cross-compiles the aarch64-musl daemon and scps it (termiod/DEPLOY.md).
         let localBinary = Termiod.daemonBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: localBinary) else {
-            let what = upgrading
-                ? "termiod on \(host) is too old to install agent integration, and the local"
-                : "termiod isn't deployed on \(host), and the local"
             return .failure(RemoteSetupError(
-                message: "\(what) termiod binary to deploy it wasn't found at \(localBinary)."))
+                state: .failed,
+                message: "The termiod binary to deploy wasn't found at \(localBinary)."))
         }
-        let deploy = runProcess(localBinary, ["remote", "deploy", host])
-        guard let deploy, deploy.exitCode == 0 else {
-            let detail = deploy.map { output in
-                (output.standardError + output.standardOutput)
-                    .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                    .last(where: { !$0.isEmpty }) ?? "deploy failed"
-            } ?? "couldn't run termiod remote deploy"
+        guard let run = runProcess(localBinary, ["deploy", "--host", host, "--json"]) else {
             return .failure(RemoteSetupError(
-                message: "Couldn't deploy termiod to \(host).\n\(detail)"))
+                state: .failed, message: "Couldn't run termiod deploy."))
         }
-        switch identify() {
-        case .success(let device):
-            guard upgrading, !canInstallAgents() else { return .success(device) }
-            // The new binary is in place and the *running* daemon is still the
-            // old one: `mv` over a running executable leaves the process holding
-            // the old inode, which is the whole reason the deploy is safe. It is
-            // not restarted from here on purpose — a termiod restart kills every
-            // session it owns, and detach-≠-kill is the promise the daemon
-            // exists for. So this names the state and the cost, and stops.
+        let report: Termiod.LifecycleReport
+        do {
+            report = try Termiod.LifecycleReport.decode(Data(run.standardOutput.utf8))
+        } catch {
+            // No report means the loop never ran to a state: the binary could
+            // not start, or died. Its last words are the diagnosis.
+            let detail = run.standardError
+                .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                .last(where: { !$0.isEmpty }) ?? "termiod deploy exited \(run.exitCode)"
             return .failure(RemoteSetupError(
-                message: "Updated termiod on \(host), but the daemon still running there is "
-                    + "the older one and can't install agent integration. It takes over once "
-                    + "that daemon exits — close the sessions on \(host) and set it up again."))
-        case .failure(let error):
+                state: .failed, message: "Couldn't set up termiod on \(host).\n\(detail)"))
+        }
+        switch report.state {
+        case .current:
+            guard let hostID = report.hostId, let version = report.version else {
+                return .failure(RemoteSetupError(
+                    state: .failed,
+                    message: "termiod on \(host) answered without saying which machine it is."))
+            }
+            return .success(TermiodDevice(
+                id: hostID, daemonVersion: version, routes: [.ssh(host)], lastSeen: Date()))
+        case .staged:
+            // Named, not counted. "1 session" is a number the user cannot act
+            // on: whether to close it depends entirely on whether it is an
+            // agent mid-task or a shell someone left at a prompt, and only the
+            // command answers that.
+            let names = (report.busy ?? [])
+                .map { "• \($0.name) — \($0.command)" }
+                .joined(separator: "\n")
             return .failure(RemoteSetupError(
-                message: "Deployed termiod to \(host), but it didn't answer.\n"
-                    + error.localizedDescription))
+                state: .staged,
+                message: "termiod \(report.desired) is ready on \(host), and takes over once "
+                    + "the sessions still running there close:\n\(names)\n"
+                    + "Close those on \(host) and set it up again."))
+        case .unhealthy:
+            let rolledBack = report.rolledBack == true
+                ? "\nThe previous termiod is back in place." : ""
+            return .failure(RemoteSetupError(
+                state: .unhealthy,
+                message: "Updated termiod on \(host), but the new one didn't answer.\n"
+                    + "\(report.message ?? "")\(rolledBack)"))
+        case .unreachable:
+            return .failure(RemoteSetupError(
+                state: .unreachable,
+                message: "Couldn't reach \(host) over SSH.\n\(report.message ?? "")"))
+        case .failed:
+            return .failure(RemoteSetupError(
+                state: .failed,
+                message: "Couldn't set up termiod on \(host).\n\(report.message ?? "")"))
         }
     }
 
