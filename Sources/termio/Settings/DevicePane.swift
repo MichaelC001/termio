@@ -102,6 +102,11 @@ struct DevicePane: View {
                     ProgressView().controlSize(.small)
                 } else if case .ready = model.readiness {
                     Button(localized("Check Again")) { Task { await model.check() } }
+                } else if case .staged = model.readiness {
+                    // The work holding the old daemon up is named right beside
+                    // this, so the choice is informed; the daemon otherwise
+                    // takes the update the next time it stops on its own.
+                    Button(localized("Update Anyway")) { Task { await model.setUp(force: true) } }
                 } else {
                     Button(localized("Set Up \(machine.name)")) { Task { await model.setUp() } }
                 }

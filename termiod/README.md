@@ -112,7 +112,7 @@ this binary carries, asks the old daemon to stop when nothing is in use, checks
 the new one answers, and puts the previous binary back if it does not. Running
 it again is the recovery from any outcome. On the box itself, `termiod status`
 says what is there and `termiod stop` asks the daemon to leave (declined, with
-the sessions named, while one is attached or an agent is mid-task).
+the sessions named, while a command is running or an agent is mid-task).
 
 `my-vps` = `~/.ssh/config` alias. Close the laptop; reattach — agent kept running on the VPS. See [`DEPLOY.md`](DEPLOY.md).
 

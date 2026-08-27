@@ -88,7 +88,7 @@ pub enum RemoteCmd {
         /// Force a Rust target triple instead of auto-detecting from `uname`.
         #[arg(long)]
         target: Option<String>,
-        /// Stop the old daemon even while its sessions are in use.
+        /// Stop the old daemon even while its sessions have work in progress.
         #[arg(long)]
         force: bool,
         /// Emit the outcome as one JSON document on stdout.

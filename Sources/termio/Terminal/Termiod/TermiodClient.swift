@@ -726,7 +726,17 @@ extension Termiod {
         struct BusySession: Decodable, Sendable {
             let name: String
             let command: String
+            let title: String?
             let status: String
+            let running: Bool?
+
+            /// What to call the session on a pane. The app names daemon
+            /// sessions by its own UUIDs, which say nothing to a person; the
+            /// agent's title does, and the command is the fallback.
+            var label: String {
+                if let title, !title.isEmpty { return title }
+                return UUID(uuidString: name) == nil ? "\(name) — \(command)" : command
+            }
         }
         let state: State
         let node: String

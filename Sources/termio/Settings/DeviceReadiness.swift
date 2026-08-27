@@ -105,8 +105,9 @@ enum DeviceReadinessState: Equatable {
     /// consequence instead of the cause.
     case blocked(String)
     /// The new `termiod` is on the machine and the old daemon is still running
-    /// because it holds sessions someone is using — named in the text. Not a
-    /// fault: it takes over once they close, and setup then completes.
+    /// because it has work in progress — a command running, or an agent
+    /// mid-task — named in the text. Not a fault: it takes over once that
+    /// finishes, or when the user says to stop it now.
     case staged(String)
 
     var isBusy: Bool { self == .checking }
@@ -318,14 +319,17 @@ final class DevicePaneModel: ObservableObject {
     /// The whole safe chain, in one click (RFC §D6). Stops at the first rung that
     /// blocks and says what it was — the later rungs cannot succeed anyway, and
     /// reporting all three invites fixing a consequence instead of a cause.
-    func setUp() async {
+    ///
+    /// `force` stops the machine's old daemon even while it has work in
+    /// progress — "Update Anyway", offered only once that work has been named.
+    func setUp(force: Bool = false) async {
         guard !readiness.isBusy else { return }
         readiness = .checking
         feedback = nil
         defer { step = nil }
 
         step = .foundation
-        if let failure = await installFoundation() {
+        if let failure = await installFoundation(force: force) {
             readiness = failure
             return
         }
@@ -364,7 +368,7 @@ final class DevicePaneModel: ObservableObject {
     /// installs invokes it by name. A device needs the `termiod` this build
     /// ships, which is also the reachability check, since deploying requires
     /// reaching it. `nil` when the rung passed; otherwise the state to show.
-    private func installFoundation() async -> DeviceReadinessState? {
+    private func installFoundation(force: Bool) async -> DeviceReadinessState? {
         guard let alias = device.alias else {
             switch CommandLineTool.install() {
             case .installed:
@@ -378,7 +382,7 @@ final class DevicePaneModel: ObservableObject {
                 return .blocked(localized("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
             }
         }
-        switch await TermioStore.remoteReadyCheck(host: alias) {
+        switch await TermioStore.remoteReadyCheck(host: alias, force: force) {
         case .success:
             return nil
         case .failure(let error):
