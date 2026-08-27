@@ -13,6 +13,12 @@ extension AppSettings {
     }
 }
 
+/// SwiftUI's `.sidebar` list style insets every row about 18pt from the column's leading edge —
+/// two points past the 16pt baseline the navigator toggle above the column sits on. Every row and
+/// section label pulls back by this much, so the whole left side of the sidebar — the toggle in
+/// the toolbar, the section labels, the project and session rows — starts on one line.
+private let sidebarLeadingTrim: CGFloat = 2
+
 /// Left column: projects, each a section containing its sessions. Hovering a
 /// project header reveals VSCode-style quick-add buttons (one per agent preset).
 /// One pinned worktree lifted into the sidebar's top working set, paired with its
@@ -84,7 +90,7 @@ private struct SidebarSectionHeader: View {
         // No `listRowInsets` override — the header keeps the rows' default inset so both
         // share one left baseline. The small leading then lands the label's left edge on
         // the folder/terminal glyph's own inset in its 16pt slot, so they read aligned.
-        .padding(.leading, 2.5)
+        .padding(.leading, 2.5 - sidebarLeadingTrim)
         .contentShape(Rectangle())
         .onTapGesture { toggleCollapsed() }
         .background {
@@ -1068,7 +1074,7 @@ private struct ProjectHeader: View {
             .allowsHitTesting(isHovering)
         }
         .padding(.vertical, 3)
-        .padding(.leading, leadingIndent)
+        .padding(.leading, leadingIndent - sidebarLeadingTrim)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { toggleCollapsed() }
@@ -1519,7 +1525,7 @@ private struct SessionRow: View {
         // list. The selection highlight (listRowBackground) stays full-width — the
         // standard macOS source-list look where children inset but the lift spans
         // the row.
-        .padding(.leading, leadingIndent)
+        .padding(.leading, leadingIndent - sidebarLeadingTrim)
         // Keep the bracket in the final 16-point gutter immediately before the child
         // icon. At worktree depth this avoids laying its spine over the branch node's
         // own column while preserving the existing primary-session geometry.
@@ -1527,7 +1533,7 @@ private struct SessionRow: View {
             if let splitLink {
                 SplitLinkGlyph(mark: splitLink, chrome: chrome, isMarked: marksSourceGroup)
                     .frame(width: 16)
-                    .padding(.leading, max(0, leadingIndent - 16))
+                    .padding(.leading, max(0, leadingIndent - 16) - sidebarLeadingTrim)
             }
         }
         .modifier(SessionRowDragAndDrop(session: session, chrome: chrome))
@@ -1618,7 +1624,7 @@ private struct SidebarNoticeRow: View {
             Spacer(minLength: 4)
         }
         .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, 16)
+        .padding(.leading, 16 - sidebarLeadingTrim)
         .contentShape(Rectangle())
         .help(detail ?? title)
     }
@@ -1684,7 +1690,7 @@ private struct DeviceOnlySessionRow: View {
             }
         }
         .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, 16)
+        .padding(.leading, 16 - sidebarLeadingTrim)
         .contentShape(Rectangle())
         .help(helpText)
         .simultaneousGesture(TapGesture().onEnded { store.adoptDeviceSession(information) })
@@ -1777,7 +1783,7 @@ private struct EndedSessionRow: View {
             Spacer(minLength: 4)
         }
         .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, leadingIndent)
+        .padding(.leading, leadingIndent - sidebarLeadingTrim)
         .modifier(SessionRowDragAndDrop(session: session, chrome: chrome))
         .onHover { isHovering = $0 }
         .simultaneousGesture(TapGesture().onEnded { store.selectedSessionID = session.id })
