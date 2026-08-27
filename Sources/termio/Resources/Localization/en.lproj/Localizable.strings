@@ -12,8 +12,12 @@
 	<string>%1$@ changed on %2$@</string>
 	<key>%@ and %@</key>
 	<string>%@ and %@</string>
+	<key>%@ answered as a different machine than %@. Its address is being served by something else.</key>
+	<string>%@ answered as a different machine than %@. Its address is being served by something else.</string>
 	<key>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</key>
 	<string>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</string>
+	<key>%@ answered, but not with the handshake termiod sends.</key>
+	<string>%@ answered, but not with the handshake termiod sends.</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ didn’t come up — check the network and retry</string>
 	<key>%@ has nothing to pair against</key>
@@ -22,6 +26,12 @@
 	<string>%@ is a dark theme in the %@ slot.</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>%@ is a light theme in the %@ slot.</string>
+	<key>%@ is not an address the iPhone could dial.</key>
+	<string>%@ is not an address the iPhone could dial.</string>
+	<key>%@ is published, but the connection an iPhone would make was refused.
+%@</key>
+	<string>%@ is published, but the connection an iPhone would make was refused.
+%@</string>
 	<key>%@ is ready.</key>
 	<string>%@ is ready.</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
@@ -30,12 +40,28 @@
 	<string>%@ isn’t available on this device yet.</string>
 	<key>%@ isn’t installed on %@</key>
 	<string>%@ isn’t installed on %@</string>
+	<key>%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.</key>
+	<string>%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ isn’t on your PATH</string>
+	<key>%@ isn’t published yet</key>
+	<string>%@ isn’t published yet</string>
 	<key>%@ keeps exiting — retrying every %llds</key>
 	<string>%@ keeps exiting — retrying every %llds</string>
+	<key>%@ never answered on its published address.</key>
+	<string>%@ never answered on its published address.</string>
 	<key>%@ opened %@</key>
 	<string>%@ opened %@</string>
+	<key>%@ refused the handshake.</key>
+	<string>%@ refused the handshake.</string>
+	<key>%@ reports an architecture we have no build for: %@</key>
+	<string>%@ reports an architecture we have no build for: %@</string>
+	<key>%@ started on %@ but never printed an address.
+%@</key>
+	<string>%@ started on %@ but never printed an address.
+%@</string>
+	<key>%@ stays published only until you log out of it. Termio couldn’t set it to keep services running after that.</key>
+	<string>%@ stays published only until you log out of it. Termio couldn’t set it to keep services running after that.</string>
 	<key>%@ tokens</key>
 	<string>%@ tokens</string>
 	<key>%@ · %@ tokens</key>
@@ -236,6 +262,8 @@
 	<string>Check for Updates…</string>
 	<key>Checked out on %@</key>
 	<string>Checked out on %@</string>
+	<key>Checking that %@ answers…</key>
+	<string>Checking that %@ answers…</string>
 	<key>Checking the machine…</key>
 	<string>Checking the machine…</string>
 	<key>Checking…</key>
@@ -374,6 +402,10 @@
 	<string>Couldn’t create worktree session</string>
 	<key>Couldn’t inspect worktree</key>
 	<string>Couldn’t inspect worktree</string>
+	<key>Couldn’t install %@ on %@.
+%@</key>
+	<string>Couldn’t install %@ on %@.
+%@</string>
 	<key>Couldn’t link `%@` into %@.</key>
 	<string>Couldn’t link `%@` into %@.</string>
 	<key>Couldn’t load</key>
@@ -386,6 +418,10 @@
 	<string>Couldn’t remove worktree</string>
 	<key>Couldn’t save the password to your Keychain.</key>
 	<string>Couldn’t save the password to your Keychain.</string>
+	<key>Couldn’t start %@ on %@.</key>
+	<string>Couldn’t start %@ on %@.</string>
+	<key>Couldn’t start termiod on %@ with a listener.</key>
+	<string>Couldn’t start termiod on %@ with a listener.</string>
 	<key>Couldn’t update %@.</key>
 	<string>Couldn’t update %@.</string>
 	<key>Couldn’t update .gitignore</key>
@@ -724,6 +760,8 @@
 	<string>Navigation</string>
 	<key>Navigator</key>
 	<string>Navigator</string>
+	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
+	<string>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</string>
 	<key>New</key>
 	<string>New</string>
 	<key>New %@ Session</key>
@@ -804,6 +842,8 @@
 	<string>No agent CLIs found.</string>
 	<key>No bundled tool to install from.</key>
 	<string>No bundled tool to install from.</string>
+	<key>No command to run.</key>
+	<string>No command to run.</string>
 	<key>No description provided.</key>
 	<string>No description provided.</string>
 	<key>No file changes</key>
@@ -832,6 +872,8 @@
 	<string>No textual changes to show.</string>
 	<key>No theme matches “%@”</key>
 	<string>No theme matches “%@”</string>
+	<key>No tunnel selected.</key>
+	<string>No tunnel selected.</string>
 	<key>None</key>
 	<string>None</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
@@ -864,6 +906,8 @@
 	<string>OK</string>
 	<key>Off — LAN only</key>
 	<string>Off — LAN only</string>
+	<key>Off — SSH only</key>
+	<string>Off — SSH only</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
@@ -910,6 +954,10 @@
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
 	<string>Opened outside Termio on this device</string>
+	<key>Opening the listener needs the daemon restarted, which ends what it is hosting:
+%@</key>
+	<string>Opening the listener needs the daemon restarted, which ends what it is hosting:
+%@</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>Opens the ~/.ssh/config entry this machine is defined in.</string>
 	<key>Overwrite</key>
@@ -936,6 +984,8 @@
 	<string>Permissions</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>Pick a file on the left to see its changes.</string>
+	<key>Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.</key>
+	<string>Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.</string>
 	<key>Pick the branch this one would merge into.</key>
 	<string>Pick the branch this one would merge into.</string>
 	<key>Pin</key>
@@ -952,6 +1002,8 @@
 	<string>Plan limits come from %@'s OAuth login; no passwords are stored. Revoking stops all reading of %@'s data.</string>
 	<key>Play sound</key>
 	<string>Play sound</string>
+	<key>Pointing termiod at %@…</key>
+	<string>Pointing termiod at %@…</string>
 	<key>Port</key>
 	<string>Port</string>
 	<key>Posts a notification when an agent finishes or needs you while Termio is in the background.</key>
@@ -976,6 +1028,12 @@
 	<string>Public address</string>
 	<key>Public keys</key>
 	<string>Public keys</string>
+	<key>Publish</key>
+	<string>Publish</string>
+	<key>Publish and End Them</key>
+	<string>Publish and End Them</string>
+	<key>Publishing restarts termiod on %@</key>
+	<string>Publishing restarts termiod on %@</string>
 	<key>Pull Requests</key>
 	<string>Pull Requests</string>
 	<key>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
@@ -1062,6 +1120,8 @@
 	<string>Request Permission</string>
 	<key>Reset Font Size</key>
 	<string>Reset Font Size</string>
+	<key>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</key>
+	<string>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</string>
 	<key>Restore Defaults</key>
 	<string>Restore Defaults</string>
 	<key>Reveal in Finder</key>
@@ -1086,6 +1146,8 @@
 	<string>Runs</string>
 	<key>Runs on %@</key>
 	<string>Runs on %@</string>
+	<key>Runs on that machine with your login’s privileges — no shell, arguments split on spaces. Use {port} for the daemon’s port.</key>
+	<string>Runs on that machine with your login’s privileges — no shell, arguments split on spaces. Use {port} for the daemon’s port.</string>
 	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
 	<string>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</string>
 	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
@@ -1202,6 +1264,8 @@
 	<string>Staged — the next git commit takes this file</string>
 	<key>Start an agent in a project.</key>
 	<string>Start an agent in a project.</string>
+	<key>Starting %@ on %@…</key>
+	<string>Starting %@ on %@…</string>
 	<key>Starting tunnel…</key>
 	<string>Starting tunnel…</string>
 	<key>Starting…</key>
@@ -1316,6 +1380,8 @@
 	<string>This Mac and the machines you reach from it</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
+	<key>This address changes when the tunnel restarts, and every paired iPhone must scan again.</key>
+	<string>This address changes when the tunnel restarts, and every paired iPhone must scan again.</string>
 	<key>This agent is no longer on your list.</key>
 	<string>This agent is no longer on your list.</string>
 	<key>This branch and the base branch share no commits.</key>
@@ -1356,6 +1422,8 @@
 	<string>This month</string>
 	<key>This pull request changes no files.</key>
 	<string>This pull request changes no files.</string>
+	<key>This relay has no valid URL pattern, so its address could never be read back.</key>
+	<string>This relay has no valid URL pattern, so its address could never be read back.</string>
 	<key>This session couldn’t be started.</key>
 	<string>This session couldn’t be started.</string>
 	<key>This week</key>
@@ -1432,6 +1500,8 @@
 	<string>WeChat</string>
 	<key>WeChat group</key>
 	<string>WeChat group</string>
+	<key>What the daemon said</key>
+	<string>What the daemon said</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>What this workspace is called in the sidebar.</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
@@ -1514,6 +1584,10 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</string>
+	<key>termiod on %@ never opened its listener.
+%@</key>
+	<string>termiod on %@ never opened its listener.
+%@</string>
 	<key>this Mac</key>
 	<string>this Mac</string>
 	<key>· resets %@</key>

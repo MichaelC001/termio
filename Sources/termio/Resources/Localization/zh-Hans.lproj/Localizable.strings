@@ -12,8 +12,12 @@
 	<string>%1$@ 在 %2$@ 上已被修改</string>
 	<key>%@ and %@</key>
 	<string>%1$@ 和 %2$@</string>
+	<key>%@ answered as a different machine than %@. Its address is being served by something else.</key>
+	<string>%1$@ 回应的是另一台机器，不是 %2$@。这个地址正被别的东西占用。</string>
 	<key>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</key>
 	<string>%@ 有响应，但返回的不是配对邀请。它的 termiod 可能比本应用旧——重新部署一次。</string>
+	<key>%@ answered, but not with the handshake termiod sends.</key>
+	<string>%@ 有回应，但回的不是 termiod 的握手。</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ 未能启动——请检查网络后重试</string>
 	<key>%@ has nothing to pair against</key>
@@ -22,6 +26,12 @@
 	<string>“%@”是深色主题，与“%@”插槽不匹配。</string>
 	<key>%@ is a light theme in the %@ slot.</key>
 	<string>“%@”是浅色主题，与“%@”插槽不匹配。</string>
+	<key>%@ is not an address the iPhone could dial.</key>
+	<string>%@ 不是 iPhone 能拨通的地址。</string>
+	<key>%@ is published, but the connection an iPhone would make was refused.
+%@</key>
+	<string>%1$@ 已发布，但 iPhone 会发起的那种连接被拒绝了。
+%2$@</string>
 	<key>%@ is ready.</key>
 	<string>%@ 已就绪。</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
@@ -30,12 +40,28 @@
 	<string>%@ 暂不支持这台设备。</string>
 	<key>%@ isn’t installed on %@</key>
 	<string>%1$@ 未安装在 %2$@ 上</string>
+	<key>%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.</key>
+	<string>%2$@ 上没有安装 %1$@，Termio 也不提供它的构建版本。请先在那台机器上安装，然后重试。</string>
 	<key>%@ isn’t on your PATH</key>
 	<string>%@ 不在 PATH 中</string>
+	<key>%@ isn’t published yet</key>
+	<string>%@ 尚未发布</string>
 	<key>%@ keeps exiting — retrying every %llds</key>
 	<string>%1$@ 反复退出——每 %2$lld 秒重试一次</string>
+	<key>%@ never answered on its published address.</key>
+	<string>%@ 始终没有在它发布的地址上回应。</string>
 	<key>%@ opened %@</key>
 	<string>%1$@ 创建于 %2$@</string>
+	<key>%@ refused the handshake.</key>
+	<string>%@ 拒绝了握手。</string>
+	<key>%@ reports an architecture we have no build for: %@</key>
+	<string>%1$@ 报告的架构没有对应的构建版本：%2$@</string>
+	<key>%@ started on %@ but never printed an address.
+%@</key>
+	<string>%1$@ 已在 %2$@ 上启动，但始终没有打印地址。
+%3$@</string>
+	<key>%@ stays published only until you log out of it. Termio couldn’t set it to keep services running after that.</key>
+	<string>%@ 只在你登录期间保持发布。Termio 无法让它在登出后继续运行服务。</string>
 	<key>%@ tokens</key>
 	<string>%@ token</string>
 	<key>%@ · %@ tokens</key>
@@ -236,6 +262,8 @@
 	<string>检查更新…</string>
 	<key>Checked out on %@</key>
 	<string>检出在 %@</string>
+	<key>Checking that %@ answers…</key>
+	<string>正在确认 %@ 有回应…</string>
 	<key>Checking the machine…</key>
 	<string>正在检查设备…</string>
 	<key>Checking…</key>
@@ -374,6 +402,10 @@
 	<string>无法创建 worktree 会话</string>
 	<key>Couldn’t inspect worktree</key>
 	<string>无法检查 worktree</string>
+	<key>Couldn’t install %@ on %@.
+%@</key>
+	<string>无法在 %2$@ 上安装 %1$@。
+%3$@</string>
 	<key>Couldn’t link `%@` into %@.</key>
 	<string>无法将 `%@` 链接到 %@。</string>
 	<key>Couldn’t load</key>
@@ -386,6 +418,10 @@
 	<string>无法移除 worktree</string>
 	<key>Couldn’t save the password to your Keychain.</key>
 	<string>无法把密码保存到钥匙串。</string>
+	<key>Couldn’t start %@ on %@.</key>
+	<string>无法在 %2$@ 上启动 %1$@。</string>
+	<key>Couldn’t start termiod on %@ with a listener.</key>
+	<string>无法在 %1$@ 上带监听器启动 termiod。</string>
 	<key>Couldn’t update %@.</key>
 	<string>无法更新 %@。</string>
 	<key>Couldn’t update .gitignore</key>
@@ -724,6 +760,8 @@
 	<string>导航</string>
 	<key>Navigator</key>
 	<string>导航器</string>
+	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
+	<string>需要先在那台机器上运行 `ngrok config add-authtoken`。免费版的地址每次重启都会变。</string>
 	<key>New</key>
 	<string>新建</string>
 	<key>New %@ Session</key>
@@ -804,6 +842,8 @@
 	<string>未找到任何 Agent 命令行工具。</string>
 	<key>No bundled tool to install from.</key>
 	<string>应用包中没有可安装的工具。</string>
+	<key>No command to run.</key>
+	<string>没有可运行的命令。</string>
 	<key>No description provided.</key>
 	<string>未提供描述。</string>
 	<key>No file changes</key>
@@ -832,6 +872,8 @@
 	<string>没有可显示的文本更改。</string>
 	<key>No theme matches “%@”</key>
 	<string>没有主题与“%@”匹配</string>
+	<key>No tunnel selected.</key>
+	<string>尚未选择隧道。</string>
 	<key>None</key>
 	<string>无</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
@@ -864,6 +906,8 @@
 	<string>好</string>
 	<key>Off — LAN only</key>
 	<string>关闭 — 仅局域网</string>
+	<key>Off — SSH only</key>
+	<string>关闭 — 仅 SSH</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
@@ -910,6 +954,10 @@
 	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
 	<string>在这台设备上由 Termio 之外打开</string>
+	<key>Opening the listener needs the daemon restarted, which ends what it is hosting:
+%@</key>
+	<string>打开监听器需要重启守护进程，这会结束它正在承载的内容：
+%@</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>打开定义该设备的 ~/.ssh/config 条目。</string>
 	<key>Overwrite</key>
@@ -936,6 +984,8 @@
 	<string>权限</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>在左侧选择一个文件以查看其更改。</string>
+	<key>Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.</key>
+	<string>选择从外部访问 %@ 的方式。Termio 会通过 SSH 在那台机器上运行它，并把地址读回来——你不需要手输任何地址。</string>
 	<key>Pick the branch this one would merge into.</key>
 	<string>选择这个分支将要合入的分支。</string>
 	<key>Pin</key>
@@ -952,6 +1002,8 @@
 	<string>套餐限额来自 %@ 的 OAuth 登录；不会存储任何密码。撤销后将停止读取 %@ 的所有数据。</string>
 	<key>Play sound</key>
 	<string>播放声音</string>
+	<key>Pointing termiod at %@…</key>
+	<string>正在把 termiod 指向 %@…</string>
 	<key>Port</key>
 	<string>端口</string>
 	<key>Posts a notification when an agent finishes or needs you while Termio is in the background.</key>
@@ -976,6 +1028,12 @@
 	<string>公网地址</string>
 	<key>Public keys</key>
 	<string>公钥</string>
+	<key>Publish</key>
+	<string>发布</string>
+	<key>Publish and End Them</key>
+	<string>发布并结束它们</string>
+	<key>Publishing restarts termiod on %@</key>
+	<string>发布会重启 %@ 上的 termiod</string>
 	<key>Pull Requests</key>
 	<string>PR</string>
 	<key>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
@@ -1062,6 +1120,8 @@
 	<string>请求权限</string>
 	<key>Reset Font Size</key>
 	<string>重设字体大小</string>
+	<key>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</key>
+	<string>重启隧道会更换地址，所有已配对的 iPhone 都需要重新扫码。</string>
 	<key>Restore Defaults</key>
 	<string>恢复默认</string>
 	<key>Reveal in Finder</key>
@@ -1086,6 +1146,8 @@
 	<string>运行</string>
 	<key>Runs on %@</key>
 	<string>运行于 %@</string>
+	<key>Runs on that machine with your login’s privileges — no shell, arguments split on spaces. Use {port} for the daemon’s port.</key>
+	<string>以你的登录身份在那台机器上运行——不经过 shell，参数按空格切分。用 {port} 代表守护进程的端口。</string>
 	<key>Runs on this Mac with your privileges when Custom is selected — no shell, arguments split on spaces. Use {port} for the companion port; the URL pattern is a regex matching the public https URL your relay prints.</key>
 	<string>选择“自定义”后，该命令会以你的权限在这台 Mac 上运行——不经过 shell，参数按空格拆分。用 {port} 表示配套端口；URL 模式是用于匹配中继输出的公开 https URL 的正则表达式。</string>
 	<key>Runs with `%@`. The agent won’t ask before editing files or running commands.</key>
@@ -1202,6 +1264,8 @@
 	<string>已暂存：下一次 git 提交将包含此文件</string>
 	<key>Start an agent in a project.</key>
 	<string>在项目中启动一个 Agent。</string>
+	<key>Starting %@ on %@…</key>
+	<string>正在 %2$@ 上启动 %1$@…</string>
 	<key>Starting tunnel…</key>
 	<string>正在启动隧道…</string>
 	<key>Starting…</key>
@@ -1316,6 +1380,8 @@
 	<string>本机以及你能连接的设备</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
+	<key>This address changes when the tunnel restarts, and every paired iPhone must scan again.</key>
+	<string>隧道重启后这个地址会变，所有已配对的 iPhone 都必须重新扫码。</string>
 	<key>This agent is no longer on your list.</key>
 	<string>该助手已不在你的列表中。</string>
 	<key>This branch and the base branch share no commits.</key>
@@ -1356,6 +1422,8 @@
 	<string>本月</string>
 	<key>This pull request changes no files.</key>
 	<string>此 PR 未更改任何文件。</string>
+	<key>This relay has no valid URL pattern, so its address could never be read back.</key>
+	<string>这个中转没有有效的 URL 正则，它的地址永远读不回来。</string>
 	<key>This session couldn’t be started.</key>
 	<string>这个会话没能启动。</string>
 	<key>This week</key>
@@ -1432,6 +1500,8 @@
 	<string>微信</string>
 	<key>WeChat group</key>
 	<string>微信群</string>
+	<key>What the daemon said</key>
+	<string>守护进程的原始输出</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>这个工作区在侧栏中显示的名称。</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
@@ -1514,6 +1584,10 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。
 
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
+	<key>termiod on %@ never opened its listener.
+%@</key>
+	<string>%1$@ 上的 termiod 始终没有打开监听器。
+%2$@</string>
 	<key>this Mac</key>
 	<string>本机</string>
 	<key>· resets %@</key>

@@ -50,21 +50,19 @@ enum RemotePairing {
     /// Asks `<alias>` for an invite. `rotate` issues a new token first, which
     /// signs out every phone already paired with that box.
     ///
-    /// `url` answers the one question the box cannot: what public name fronts
-    /// it. The listener binds loopback on purpose — a daemon that bound `0.0.0.0`
-    /// would be a shell server on the open internet — so nothing on the box can
-    /// derive the address a phone would dial, and `termiod pair` refuses rather
-    /// than mint a QR pointing nowhere.
+    /// The box's own answer, never an override. `termiod pair` takes a `--url`,
+    /// and passing it here would be a trap: it changes only the address the
+    /// invite *prints*, not the origins the daemon will accept, so the QR scans
+    /// and the connection is then refused with a 403 the phone cannot explain.
+    /// The address a box is reachable at is set by arming the daemon
+    /// (`RemoteTunnelService.arm`), which is also what makes `pair` able to
+    /// answer at all — the listener binds loopback on purpose, so nothing on the
+    /// box can derive a public name it was not given.
     ///
     /// Runs on a detached task: this forks `ssh`, and a box that is asleep or
     /// behind a slow link would otherwise block whatever called it.
-    static func invite(
-        from alias: String, url: String? = nil, rotate: Bool = false
-    ) async throws -> Invite {
-        var command = "\(Termiod.remoteBinary()) pair --json\(rotate ? " --rotate" : "")"
-        if let url, !url.isEmpty {
-            command += " --url \(shellQuoted(url))"
-        }
+    static func invite(from alias: String, rotate: Bool = false) async throws -> Invite {
+        let command = "\(Termiod.remoteBinary()) pair --json\(rotate ? " --rotate" : "")"
         let result = try await run(alias: alias, command: command)
         guard result.status == 0 else {
             throw Failure(message: message(from: result))
@@ -76,13 +74,6 @@ enum RemotePairing {
     }
 
     // MARK: - Running it
-
-    /// Single-quoted for the remote's shell, which is what `ssh host <command>`
-    /// hands the string to. A URL is user-typed and reaches a login shell on
-    /// another machine; anything less than quoting is a command injection.
-    private static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 
     private struct Result {
         let status: Int32
@@ -159,16 +150,36 @@ struct RemotePairingSection: View {
 
     private enum Phase: Equatable {
         case asking
+        /// A remote step is running. Publishing is several of them with real
+        /// latency — installing a binary, waiting for a relay to answer,
+        /// restarting a daemon — so the phase carries which one it is on: a
+        /// spinner that never explains itself is indistinguishable from a hang.
+        case working(String)
         case ready(RemotePairing.Invite)
         case failed(String)
     }
 
+    /// termiod's own default WebSocket port (`DEPLOY.md`) — not the Mac
+    /// companion's 8787/8788, so a Mac running both does not have them fight.
+    private static let daemonPort = 8790
+
     @State private var phase = Phase.asking
     @State private var copied = false
     @State private var confirmRotate = false
-    /// The public address the user typed, kept across a retry so a rotate or a
-    /// failed attempt does not make them type it again.
-    @State private var address = ""
+    /// How this box is published, remembered per machine so re-publishing after
+    /// a reboot is one click rather than a re-decision.
+    @State private var provider = RemoteTunnelProvider.off
+    @State private var custom = RemoteCustomTunnel()
+    /// The sessions arming would end, named. Empty means nothing is at risk and
+    /// Publish proceeds without asking.
+    @State private var atRisk: [String] = []
+    @State private var confirmArm = false
+    /// Whether the box stays published across a reboot. False only when
+    /// `loginctl enable-linger` was refused, which is worth one line on screen
+    /// and is not worth failing a publish over. Read from what the last publish
+    /// found rather than re-probed, so the warning outlives the pane it first
+    /// appeared in.
+    @State private var survivesReboot = true
 
     var body: some View {
         Section {
@@ -193,10 +204,24 @@ struct RemotePairingSection: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     addressRow(invite)
+                    if !survivesReboot {
+                        Label(
+                            localized("\(machine.name) stays published only until you log out of it. Termio couldn’t set it to keep services running after that."),
+                            systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 rotateRow
+            case .working(let step):
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(step).foregroundStyle(.secondary)
+                }
             case .failed(let message):
-                unreachable(message)
+                unpublished(message)
             }
         } header: {
             SectionHeaderLabel(title: machine.name)
@@ -205,7 +230,11 @@ struct RemotePairingSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task { await ask() }
+        .task {
+            provider = .remembered(device: machine.settingsKey)
+            custom = .load(device: machine.settingsKey)
+            await ask()
+        }
     }
 
     // MARK: - Pieces
@@ -260,57 +289,177 @@ struct RemotePairingSection: View {
         }
     }
 
-    /// The box could not mint an invite. Its own words, verbatim and monospaced —
-    /// they are terminal output, and the fixes they name are commands.
+    /// The box has no way in from outside yet — so this is where you choose one.
     ///
-    /// The address field is the first of those fixes, made typable: `termiod`
-    /// says "pass `--url https://<host>/termio/`", and this is that flag with a
-    /// text box in front of it. Only the box's *name* is missing; everything
-    /// else about pairing already works, which is why one field closes it.
-    private func unreachable(_ message: String) -> some View {
+    /// It offers the same list the Mac's own Mobile Access does, for the same
+    /// reason it exists there: **we cannot be everyone's relay.** Termio's relay
+    /// has finite capacity, so a tunnel the user already owns is a first-class
+    /// answer, not a consolation. The one thing this pane will not do is ask
+    /// someone to type an address: the Mac has SSH to this box, so it can run
+    /// the tunnel and *read the address back* — a value read is a value that
+    /// cannot be mistyped, and it is the value the daemon gets pinned to.
+    private func unpublished(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(localized("\(machine.name) has nothing to pair against"), systemImage: "exclamationmark.triangle")
+            Label(
+                localized("\(machine.name) isn’t published yet"),
+                systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
-            Text(message)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
+
+            LabeledContent(localized("Tunnel")) {
+                Picker("", selection: $provider) {
+                    ForEach(RemoteTunnelProvider.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+
+            if provider == .custom {
                 TextField(
-                    localized("Public address"), text: $address,
-                    prompt: Text(verbatim: "https://example.com/termio/"))
+                    localized("Command"), text: $custom.command,
+                    prompt: Text(verbatim: "cloudflared tunnel run --url http://127.0.0.1:{port} my-tunnel"))
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { pair(at: address) }
-                Button(localized("Pair")) { pair(at: address) }
-                    .buttonStyle(.bordered)
-                    .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
+                TextField(
+                    localized("URL Pattern"), text: $custom.urlPattern,
+                    prompt: Text(verbatim: #"https://[a-z0-9-]+\.example\.com"#))
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            if let note = provider.prerequisite {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if provider != .off, !provider.keepsItsAddress {
+                // Said before the click, not after: an address that rotates is
+                // not a defect to discover later, it is the deal being offered.
+                Label(
+                    localized("This address changes when the tunnel restarts, and every paired iPhone must scan again."),
+                    systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                Button(localized("Publish")) { Task { await beginPublish() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(provider == .off || (provider == .custom && !custom.isUsable))
                 Button(localized("Try Again")) { Task { await ask() } }
                     .buttonStyle(.bordered)
+                Spacer(minLength: 0)
             }
-            // Said once, here, where someone is about to type an address: this
-            // invite carries it, the next one will not. Persisting it is the
-            // daemon's `--wss-origin`, which is a decision about how the box
-            // runs — not something an app should write behind the user's back.
-            Text(localized("Used for this invite only. To make it stick, start the daemon there with --wss-origin."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .confirmationDialog(
+                localized("Publishing restarts termiod on \(machine.name)"),
+                isPresented: $confirmArm, titleVisibility: .visible
+            ) {
+                Button(localized("Publish and End Them"), role: .destructive) {
+                    Task { await publish() }
+                }
+                Button(localized("Cancel"), role: .cancel) {}
+            } message: {
+                Text(localized("Opening the listener needs the daemon restarted, which ends what it is hosting:\n\(atRisk.joined(separator: "\n"))"))
+            }
+
+            // The daemon's own words, kept but demoted: they are terminal output
+            // aimed at whoever is fixing the box, not at whoever is choosing a
+            // tunnel. Leading the card with them made a solvable choice look
+            // like a crash.
+            DisclosureGroup(localized("What the daemon said")) {
+                Text(message)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.caption)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The typed address, or `nil` when there is none — so a rotate carries the
-    /// address that worked rather than dropping back to the box's own idea of
-    /// itself, which is the one that already failed.
-    private var nonEmptyAddress: String? {
-        let trimmed = address.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? nil : trimmed
+    /// Asks first when the daemon is hosting something, because arming restarts
+    /// it. A count would not be enough to decide on: whether to end a session
+    /// depends on whether it is an agent mid-task or a shell left at a prompt,
+    /// and only its command line answers that.
+    private func beginPublish() async {
+        guard let alias = machine.alias else { return }
+        // Off the main actor: this forks `ssh`, and a box on a slow link would
+        // otherwise freeze the window for as long as it takes to answer.
+        let live = await Task.detached {
+            (try? Termiod.roster(route: .ssh(alias)))?.sessions.filter(\.alive) ?? []
+        }.value
+        atRisk = live.map { "• \($0.command)" }
+        if atRisk.isEmpty {
+            await publish()
+        } else {
+            confirmArm = true
+        }
     }
 
-    private func pair(at url: String) {
-        let trimmed = url.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        Task { await ask(url: trimmed) }
+    private func publish() async {
+        guard let alias = machine.alias else { return }
+        provider.remember(device: machine.settingsKey)
+        custom.save(device: machine.settingsKey)
+        do {
+            phase = .working(localized("Starting \(provider.label) on \(machine.name)…"))
+            let published = try await RemoteTunnelService.publish(
+                alias: alias, provider: provider,
+                port: Self.daemonPort, custom: custom)
+            survivesReboot = published.survivesReboot
+            RemoteTunnelService.rememberLinger(
+                published.survivesReboot, device: machine.settingsKey)
+            // The address is written to the daemon rather than shown to be
+            // copied: the invite, the daemon's allowed origin and the phone's
+            // stored origin must be one value, and the only way to guarantee
+            // that is for one place to know it.
+            phase = .working(localized("Pointing termiod at \(published.address)…"))
+            try await RemoteTunnelService.arm(
+                alias: alias, origin: published.address, port: Self.daemonPort)
+
+            phase = .working(localized("Checking that \(published.address) answers…"))
+            let invite = try await RemotePairing.invite(from: alias)
+            // Retried, unlike the check on appear: the tunnel is seconds old
+            // here, and a relay's first route can lag its own log line.
+            try await verify(invite, attempts: 3)
+            phase = .ready(invite)
+        } catch let failure as RemoteTunnelService.Failure {
+            phase = .failed(failure.message)
+        } catch let failure as RemotePairing.Failure {
+            phase = .failed(failure.message)
+        } catch {
+            phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Dials the box the way the phone will, before showing a QR that says it
+    /// can be dialled.
+    ///
+    /// `termiod pair` never contacts the daemon — it reads the token and the
+    /// origin off disk — so an invite proves only that the box has *opinions*
+    /// about where it is reachable. The path from there to the phone crosses a
+    /// relay, a fresh listener and an origin pin, and every one of them fails as
+    /// a 403 the phone reports as nothing at all.
+    private func verify(_ invite: RemotePairing.Invite, attempts: Int) async throws {
+        var last: Error?
+        for attempt in 0..<max(1, attempts) {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(2)) }
+            do {
+                let answered = try await RemoteTunnelService.handshake(
+                    url: invite.url, token: invite.token)
+                guard answered == invite.hostID else {
+                    // Same address, different machine: a relay handed the name
+                    // to someone else, and pairing would attach the phone to a
+                    // box that is not this one.
+                    throw RemoteTunnelService.Failure(message: localized("\(invite.url) answered as a different machine than \(machine.name). Its address is being served by something else."))
+                }
+                return
+            } catch let failure as RemoteTunnelService.Failure {
+                last = failure
+            }
+        }
+        throw last ?? RemoteTunnelService.Failure(
+            message: localized("\(machine.name) never answered on its published address."))
     }
 
     private var footnote: String {
@@ -318,19 +467,32 @@ struct RemotePairingSection: View {
         case .ready:
             return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on \(machine.name) and demanded on every connection.")
         default:
-            return localized("A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.")
+            return localized("Pick how \(machine.name) is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.")
         }
     }
 
-    /// `url` empty means "ask the box what it knows" — the first attempt, and
-    /// the right one whenever the daemon there was started with `--wss-origin`.
-    private func ask(url: String? = nil, rotate: Bool = false) async {
+    /// Always asks the box what *it* knows. Nothing is passed in: after
+    /// publishing, the daemon's own `wss.origin` is the address, and a second
+    /// source for it is a second chance to disagree.
+    ///
+    /// Then dials it. An invite the box hands over says only what it *believes*
+    /// about where it is reachable — the tunnel in front of it may have died
+    /// since, and a QR minted from a stale belief scans perfectly and then
+    /// connects to nothing. A box that no longer answers is, to the person
+    /// holding the phone, exactly a box that is not published, so it lands in
+    /// the same state and offers the same way out.
+    private func ask(rotate: Bool = false) async {
         guard let alias = machine.alias else { return }
         phase = .asking
+        survivesReboot = RemoteTunnelService.lingers(device: machine.settingsKey)
         do {
-            phase = .ready(try await RemotePairing.invite(
-                from: alias, url: url ?? nonEmptyAddress, rotate: rotate))
+            let invite = try await RemotePairing.invite(from: alias, rotate: rotate)
+            phase = .working(localized("Checking that \(invite.url) answers…"))
+            try await verify(invite, attempts: 1)
+            phase = .ready(invite)
         } catch let failure as RemotePairing.Failure {
+            phase = .failed(failure.message)
+        } catch let failure as RemoteTunnelService.Failure {
             phase = .failed(failure.message)
         } catch {
             phase = .failed(error.localizedDescription)
