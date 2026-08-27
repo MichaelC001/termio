@@ -13,6 +13,10 @@ struct InstallOutcome {
     /// Names of the targets that refused it (unparseable config, failed write, or
     /// a file termio doesn't own sitting at its path).
     private(set) var failed: [String] = []
+    /// Why the request itself failed, when it never reached the machine —
+    /// the daemon refused it, or the connection dropped. `nil` when the
+    /// machine answered, even if it refused every agent.
+    var failure: String?
 
     var isEmpty: Bool { succeeded.isEmpty && failed.isEmpty }
 

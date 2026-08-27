@@ -24,31 +24,26 @@ import TermioShared
 /// from — no daemon binary at all — is reported, never swallowed, because a Mac
 /// that could always install its own hooks must not start failing quietly.
 enum AgentIntegrationInstaller {
-    /// Where the integration is written, and what a hook there runs to report.
+    /// Where the integration is written, and which machine's skill it gets.
     ///
-    /// The two travel together because they are one decision. A hook on this Mac
-    /// reports through the `termio` CLI to the app's control socket; a hook on a
-    /// device has neither, and reports through `termiod set-status` to the daemon
-    /// that owns its PTY.
+    /// The two travel together because they are one decision. Every hook
+    /// reports to the daemon that owns its PTY — the daemon builds that command
+    /// itself — but this Mac's skill teaches the `termio` CLI and a device's
+    /// does not.
     struct Target {
         let route: TermiodRoute
         let reporter: Termiod.AgentHookReporter
 
         /// This Mac. The daemon is local, and the app is what listens.
         static var thisMac: Target {
-            Target(
-                route: .local,
-                reporter: .termioCommandLineTool(path: CommandLineTool.supportCopyURL.path))
+            Target(route: .local, reporter: .thisMac)
         }
 
         static func device(host: String) -> Target {
-            Target(route: .ssh(host), reporter: .termiodDaemon)
+            Target(route: .ssh(host), reporter: .device)
         }
 
-        var isLocal: Bool {
-            if case .termioCommandLineTool = reporter { return true }
-            return false
-        }
+        var isLocal: Bool { reporter == .thisMac }
     }
 
     /// Marker + version stamped into every installed hook. The command string
@@ -140,9 +135,12 @@ extension InstallOutcome {
     }
 
     /// The install never reached the machine at all. Named so a Settings row
-    /// says what happened instead of showing an empty success.
+    /// says what happened instead of showing an empty success, and kept apart
+    /// from the per-agent list so a pane can print it as the sentence it is
+    /// rather than as the name of an agent.
     init(failure: String) {
         self.init()
+        self.failure = failure
         record(failure, installed: false)
     }
 }

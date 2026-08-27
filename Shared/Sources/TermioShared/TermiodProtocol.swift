@@ -1225,14 +1225,16 @@ public enum Termiod {
         case leave
     }
 
-    /// What an installed hook runs to report status. Only the client knows
-    /// whether an app is listening and where its CLI copy is, so it says.
-    public enum AgentHookReporter: Sendable {
-        /// `termio agent report <state>` into this app's control socket.
-        case termioCommandLineTool(path: String)
-        /// `termiod set-status "$TERMIOD_SESSION_ID" <state>` into the daemon
-        /// that owns the PTY. A box has no `termio` and no app to report to.
-        case termiodDaemon
+    /// Which machine the integration is for. Every hook reports to the daemon
+    /// that owns its PTY, so the daemon resolves the command itself; what
+    /// still differs is the skill payload — a Mac has a `termio` binary to
+    /// teach and a box does not. Spelled exactly as the daemon's `Reporter`
+    /// (`termiod/src/agent/install.rs`): `this_mac`, `device`.
+    public enum AgentHookReporter: String, Sendable {
+        /// This Mac, where the app is running.
+        case thisMac = "this_mac"
+        /// A box reached over the protocol.
+        case device
     }
 
     /// Decoded control frames the client reacts to. Anything else — unknown
@@ -1397,20 +1399,12 @@ public enum Termiod {
         let hookVersion: String
         let seq: Int
 
-        /// Externally tagged the way the daemon spells it: `{kind, …}`.
+        /// Internally tagged the way the daemon spells it: `{"kind": …}`.
         struct Reporter: Encodable {
             let kind: String
-            let path: String?
 
             init(_ reporter: AgentHookReporter) {
-                switch reporter {
-                case .termioCommandLineTool(let path):
-                    kind = "termio_cli"
-                    self.path = path
-                case .termiodDaemon:
-                    kind = "termiod_daemon"
-                    path = nil
-                }
+                kind = reporter.rawValue
             }
         }
     }
