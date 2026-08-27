@@ -16,6 +16,12 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-env-changed=TERMIO_VERSION");
     println!("cargo:rerun-if-env-changed=TERMIO_BUILD");
+    // The commit-count fallback below moves with every commit, so the stamp
+    // has to be recomputed when HEAD does — otherwise a checkout keeps
+    // reporting the count of whatever it was first built at.
+    for path in head_paths() {
+        println!("cargo:rerun-if-changed={path}");
+    }
 
     let version = std::env::var("TERMIO_VERSION")
         .ok()
@@ -27,6 +33,34 @@ fn main() {
         .or_else(commit_count)
         .unwrap_or_else(|| "0".to_string());
     println!("cargo:rustc-env=TERMIOD_VERSION={version}+{build}");
+}
+
+/// The files that change when HEAD moves: `HEAD` itself, and the branch ref
+/// it points at. Resolved through git so a worktree's private git dir is
+/// found too. Empty outside a checkout.
+fn head_paths() -> Vec<String> {
+    let git = |args: &[&str]| -> Option<String> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|text| !text.is_empty())
+    };
+    let mut paths = Vec::new();
+    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
+        paths.push(head);
+    }
+    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(path) = git(&["rev-parse", "--git-path", &reference]) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 /// `git rev-list --count HEAD`, the same number the release workflow stamps as
