@@ -100,10 +100,12 @@ npx skills add termio-sh/termio --skill termio
 esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转写进提示词。免费，公测中：
 [加入 TestFlight](https://testflight.apple.com/join/1Arf1UKR)。
 
-<p>
-  <img alt="iPhone 上的 Termio：一个项目下的会话，每个都在报告自己的状态" src="web/landing/public/screenshots/iphone-sessions.webp" width="260" />
-  <img alt="iPhone 上的 Termio：一个正在运行的 Agent 会话，键盘上方是按键条" src="web/landing/public/screenshots/iphone-session-keys.webp" width="260" />
-</p>
+<table>
+  <tr>
+    <td><img alt="iPhone 上的 Termio：一个项目下的会话，每个都在报告自己的状态" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
+    <td><img alt="iPhone 上的 Termio：一个正在运行的 Agent 会话，键盘上方是按键条" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+  </tr>
+</table>
 
 ## 架构
 

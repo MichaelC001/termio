@@ -107,10 +107,12 @@ TUI, not a chat summary. A key bar puts esc, tab, ctrl, and arrows above the
 keyboard, and hold-to-speak transcribes straight into the prompt. Free, in
 public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
-<p>
-  <img alt="Termio on iPhone: the sessions in a project, each reporting its status" src="web/landing/public/screenshots/iphone-sessions.webp" width="260" />
-  <img alt="Termio on iPhone: a live agent session with the key bar above the keyboard" src="web/landing/public/screenshots/iphone-session-keys.webp" width="260" />
-</p>
+<table>
+  <tr>
+    <td><img alt="Termio on iPhone: the sessions in a project, each reporting its status" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
+    <td><img alt="Termio on iPhone: a live agent session with the key bar above the keyboard" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+  </tr>
+</table>
 
 ## Architecture
 

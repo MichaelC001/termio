@@ -101,10 +101,12 @@ npx skills add termio-sh/termio --skill termio
 按鍵列把 esc、tab、ctrl 和方向鍵放在鍵盤上方，按住說話把語音直接轉寫進提示。免費，
 公開測試中：[在 TestFlight 上加入](https://testflight.apple.com/join/1Arf1UKR)。
 
-<p>
-  <img alt="iPhone 上的 Termio：一個專案底下的工作階段，每個都在回報自己的狀態" src="web/landing/public/screenshots/iphone-sessions.webp" width="260" />
-  <img alt="iPhone 上的 Termio：一個正在執行的 Agent 工作階段，鍵盤上方是按鍵列" src="web/landing/public/screenshots/iphone-session-keys.webp" width="260" />
-</p>
+<table>
+  <tr>
+    <td><img alt="iPhone 上的 Termio：一個專案底下的工作階段，每個都在回報自己的狀態" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
+    <td><img alt="iPhone 上的 Termio：一個正在執行的 Agent 工作階段，鍵盤上方是按鍵列" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+  </tr>
+</table>
 
 ## 架構
 
