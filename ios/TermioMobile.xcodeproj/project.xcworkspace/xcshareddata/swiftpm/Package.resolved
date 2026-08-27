@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/termio-sh/libghostty-swift",
       "state" : {
-        "revision" : "21d67c485107aa2c0d0ac76cfd6d52d16ad1eafd",
-        "version" : "1.0.18"
+        "revision" : "b0deec8df1dd8795a8025ae51671dd6c5b591eea",
+        "version" : "1.0.20"
       }
     },
     {
