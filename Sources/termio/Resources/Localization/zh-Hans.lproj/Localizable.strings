@@ -966,6 +966,8 @@
 	<string>上一个匹配项</string>
 	<key>Previous Session</key>
 	<string>上一个会话</string>
+	<key>Privacy</key>
+	<string>隐私</string>
 	<key>Project Files</key>
 	<string>项目文件</string>
 	<key>Projects</key>
@@ -1126,6 +1128,8 @@
 	<string>选择一个会话以查看其信息。</string>
 	<key>Selection</key>
 	<string>选择</string>
+	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
+	<string>每天发送一条匿名事件，用于统计活跃安装数。不含项目路径、终端内容和账号。</string>
 	<key>Serving</key>
 	<string>对外服务</string>
 	<key>Session</key>
@@ -1404,6 +1408,8 @@
 	<string>已更新。</string>
 	<key>Usage</key>
 	<string>用量</string>
+	<key>Usage statistics</key>
+	<string>使用统计</string>
 	<key>Use Regular Expression</key>
 	<string>使用正则表达式</string>
 	<key>Use Selection for Find</key>

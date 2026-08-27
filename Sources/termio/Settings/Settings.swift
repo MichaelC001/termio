@@ -95,6 +95,7 @@ final class AppSettings: ObservableObject {
         Key.addedAgents, Key.agentOrder, Key.agentHooksEnabled,
         Key.sessionControlEnabled, Key.githubIntegrationEnabled,
         Key.notifyTaskCompletion, Key.notificationSound,
+        Key.analyticsEnabled,
         Key.projectSortOrder, Key.defaultChatAgent,
     ]
 
@@ -142,6 +143,7 @@ final class AppSettings: ObservableObject {
         static let githubIntegrationEnabled = "github.integrationEnabled"
         static let notifyTaskCompletion = "notifications.taskCompletion"
         static let notificationSound = "notifications.sound"
+        static let analyticsEnabled = "privacy.analyticsEnabled"
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
@@ -463,6 +465,15 @@ final class AppSettings: ObservableObject {
         didSet { store.set(notificationSoundEnabled, forKey: Key.notificationSound) }
     }
 
+    // MARK: Privacy
+
+    /// Whether termio reports one anonymous "active today" event per day, so the
+    /// project can see how many installs are in use. `Analytics` is the whole of
+    /// what that sends and when.
+    @Published var analyticsEnabled: Bool {
+        didSet { store.set(analyticsEnabled, forKey: Key.analyticsEnabled) }
+    }
+
     /// The Ghostty config's contribution to the registration defaults — the middle layer of
     /// termio setting > Ghostty config > built-in default. Only names the bundled catalog
     /// resolves inherit; see `ThemeLibrary.catalogTheme(matching:)` for which those are.
@@ -567,6 +578,10 @@ final class AppSettings: ObservableObject {
             // by default.
             Key.notifyTaskCompletion: true,
             Key.notificationSound: false,
+            // On by default. It is one event a day carrying no path, no content
+            // and no identity, and the toggle beside it says exactly that — a
+            // count nobody can opt into is a count that measures the wrong people.
+            Key.analyticsEnabled: true,
         ]
 
         // Ghostty inheritance: a user's own Ghostty config upgrades the *defaults* only —
@@ -612,6 +627,7 @@ final class AppSettings: ObservableObject {
         claudeKeychainDeclined = defaults.bool(forKey: Key.claudeKeychainDeclined)
         notifyOnTaskCompletion = store.bool(Key.notifyTaskCompletion)
         notificationSoundEnabled = store.bool(Key.notificationSound)
+        analyticsEnabled = store.bool(Key.analyticsEnabled)
         projectSortOrder = store.string(Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []

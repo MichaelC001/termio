@@ -154,6 +154,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Task-completion notifications: the delegate must be installed before a
         // notification click can arrive, so wire it before any session runs.
         TaskNotificationCenter.shared.activate(store: store)
+        // Count this install as active today, and keep counting across midnight
+        // for a Mac that is left running (see `Analytics`).
+        Analytics.start(settings: settings)
         // Menu items cache their key equivalents at build time, so rebuild the
         // whole main menu whenever a user rebinds a shortcut in Settings.
         keybindingsObserver = NotificationCenter.default.addObserver(

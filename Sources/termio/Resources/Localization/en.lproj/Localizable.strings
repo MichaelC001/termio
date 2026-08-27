@@ -966,6 +966,8 @@
 	<string>Previous Match</string>
 	<key>Previous Session</key>
 	<string>Previous Session</string>
+	<key>Privacy</key>
+	<string>Privacy</string>
 	<key>Project Files</key>
 	<string>Project Files</string>
 	<key>Projects</key>
@@ -1126,6 +1128,8 @@
 	<string>Select a session to see its info.</string>
 	<key>Selection</key>
 	<string>Selection</string>
+	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
+	<string>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</string>
 	<key>Serving</key>
 	<string>Serving</string>
 	<key>Session</key>
@@ -1404,6 +1408,8 @@
 	<string>Updated.</string>
 	<key>Usage</key>
 	<string>Usage</string>
+	<key>Usage statistics</key>
+	<string>Usage statistics</string>
 	<key>Use Regular Expression</key>
 	<string>Use Regular Expression</string>
 	<key>Use Selection for Find</key>

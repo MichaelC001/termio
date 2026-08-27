@@ -1,8 +1,8 @@
 import SwiftUI
 import UserNotifications
 
-/// App-and-account settings: language, task-completion notifications, and the
-/// GitHub integration.
+/// App-and-account settings: language, task-completion notifications, the
+/// GitHub integration, and the usage-statistics opt-out.
 ///
 /// It used to also carry the `termio` command-line tool, the session-control
 /// skill and the status hooks. Every one of those installs a file **on a
@@ -47,6 +47,18 @@ struct GeneralSettingsTab: View {
                 .toggleStyle(.switch)
             } header: {
                 SectionHeaderLabel(title: localized("Integrations"))
+            }
+            Section {
+                Toggle(isOn: $settings.analyticsEnabled) {
+                    SettingsLabel(
+                        title: localized("Usage statistics"),
+                        subtext: localized("Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account."),
+                        titleFont: .headline
+                    )
+                }
+                .toggleStyle(.switch)
+            } header: {
+                SectionHeaderLabel(title: localized("Privacy"))
             }
         }
         .formStyle(.grouped)
