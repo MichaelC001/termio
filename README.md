@@ -109,8 +109,9 @@ public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
 <table>
   <tr>
-    <td><img alt="Termio on iPhone: the sessions in a project, each reporting its status" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
-    <td><img alt="Termio on iPhone: a live agent session with the key bar above the keyboard" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+    <td><img alt="Termio on iPhone: the home screen, with Needs You above the projects" src="web/landing/public/screenshots/iphone-home.webp" width="230" /></td>
+    <td><img alt="Termio on iPhone: the sessions in a project, each reporting its status" src="web/landing/public/screenshots/iphone-sessions.webp" width="230" /></td>
+    <td><img alt="Termio on iPhone: a live agent session with the key bar above the keyboard" src="web/landing/public/screenshots/iphone-session-keys.webp" width="230" /></td>
   </tr>
 </table>
 

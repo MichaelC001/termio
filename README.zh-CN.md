@@ -102,8 +102,9 @@ esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转
 
 <table>
   <tr>
-    <td><img alt="iPhone 上的 Termio：一个项目下的会话，每个都在报告自己的状态" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
-    <td><img alt="iPhone 上的 Termio：一个正在运行的 Agent 会话，键盘上方是按键条" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+    <td><img alt="iPhone 上的 Termio：首页，等你的会话排在项目上方" src="web/landing/public/screenshots/iphone-home.webp" width="230" /></td>
+    <td><img alt="iPhone 上的 Termio：一个项目下的会话，每个都在报告自己的状态" src="web/landing/public/screenshots/iphone-sessions.webp" width="230" /></td>
+    <td><img alt="iPhone 上的 Termio：一个正在运行的 Agent 会话，键盘上方是按键条" src="web/landing/public/screenshots/iphone-session-keys.webp" width="230" /></td>
   </tr>
 </table>
 

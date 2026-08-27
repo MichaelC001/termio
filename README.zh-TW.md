@@ -103,8 +103,9 @@ npx skills add termio-sh/termio --skill termio
 
 <table>
   <tr>
-    <td><img alt="iPhone 上的 Termio：一個專案底下的工作階段，每個都在回報自己的狀態" src="web/landing/public/screenshots/iphone-sessions.webp" width="270" /></td>
-    <td><img alt="iPhone 上的 Termio：一個正在執行的 Agent 工作階段，鍵盤上方是按鍵列" src="web/landing/public/screenshots/iphone-session-keys.webp" width="270" /></td>
+    <td><img alt="iPhone 上的 Termio：首頁，等你的工作階段排在專案上方" src="web/landing/public/screenshots/iphone-home.webp" width="230" /></td>
+    <td><img alt="iPhone 上的 Termio：一個專案底下的工作階段，每個都在回報自己的狀態" src="web/landing/public/screenshots/iphone-sessions.webp" width="230" /></td>
+    <td><img alt="iPhone 上的 Termio：一個正在執行的 Agent 工作階段，鍵盤上方是按鍵列" src="web/landing/public/screenshots/iphone-session-keys.webp" width="230" /></td>
   </tr>
 </table>
 
