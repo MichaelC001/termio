@@ -239,6 +239,11 @@ extension Termiod {
         /// request on it, which is why they need a second delivery path rather
         /// than a long-lived fake request.
         private var eventObservers: [UUID: ChannelObserver] = [:]
+        /// Live resource subscriptions, by resource id. A `fs:`/`git:` event is
+        /// addressed to a *resource*, not to a request, so it cannot ride an
+        /// inbox: the reply that armed the subscription is long finished by the
+        /// time the batches arrive.
+        private var subscribers: [String: [ObjectIdentifier: ResourceSubscription]] = [:]
         private var nextSeq: UInt64 = 1
         private var dead = false
         private var lastUsed = ContinuousClock.now
@@ -253,10 +258,16 @@ extension Termiod {
             return dead
         }
 
+        /// A channel is idle only when nothing is riding it. A subscription is
+        /// riding it — that is the whole point of holding the connection — so a
+        /// subscribed channel is never reaped, however long since its last
+        /// request. Hanging one up would silently stop the updates the pane is
+        /// drawing from, which reads as "the device stopped changing".
         fileprivate var idleDuration: Duration {
             stateLock.lock()
             defer { stateLock.unlock() }
-            return inboxes.isEmpty ? lastUsed.duration(to: .now) : .zero
+            guard inboxes.isEmpty, subscribers.isEmpty else { return .zero }
+            return lastUsed.duration(to: .now)
         }
 
         fileprivate init(route: TermiodRoute, caps: [String]) throws {
@@ -350,6 +361,26 @@ extension Termiod {
             return eventObservers.count
         }
 
+        fileprivate func register(_ subscription: ResourceSubscription) -> Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard !dead else { return false }
+            subscribers[subscription.resource, default: [:]][
+                ObjectIdentifier(subscription)] = subscription
+            return true
+        }
+
+        fileprivate func unregister(_ subscription: ResourceSubscription) {
+            stateLock.lock()
+            subscribers[subscription.resource]?
+                .removeValue(forKey: ObjectIdentifier(subscription))
+            if subscribers[subscription.resource]?.isEmpty == true {
+                subscribers.removeValue(forKey: subscription.resource)
+            }
+            lastUsed = .now
+            stateLock.unlock()
+        }
+
         fileprivate func release(_ seq: UInt64) {
             stateLock.lock()
             inboxes.removeValue(forKey: seq)
@@ -385,6 +416,8 @@ extension Termiod {
             inboxes.removeAll()
             let observers = eventObservers
             eventObservers.removeAll()
+            let orphaned = subscribers.values.flatMap(\.values)
+            subscribers.removeAll()
             stateLock.unlock()
             // `dead` is set before this lock is taken, so no further write can
             // start; taking it waits out the one that may already be running.
@@ -398,6 +431,9 @@ extension Termiod {
             // cannot land on this same corpse: `dead` is already set, so its
             // request for a channel opens a fresh one.
             for observer in observers.values { observer(.closed) }
+            // The device keeps the resource and its replay ring, so a subscriber
+            // told the pipe died can resume from its cursor rather than rebuild.
+            for subscription in orphaned { subscription.interrupted() }
         }
 
         /// Dedicated blocking-read thread, the same shape a session link uses:
@@ -415,6 +451,7 @@ extension Termiod {
                     }
                     guard let seq = Self.requestID(of: frame) else {
                         deliverUnaddressed(frame)
+                        deliverResourceEvent(frame)
                         continue
                     }
                     stateLock.lock()
@@ -445,6 +482,32 @@ extension Termiod {
             for observer in observers.values { observer(.event(event)) }
         }
 
+        /// Fans one resource event out to whoever subscribed to that resource.
+        ///
+        /// Run on the reader thread, like the inbox delivery beside it — but a
+        /// subscriber's handler *is* caller code, which the inbox path
+        /// deliberately never runs. So a handler must do nothing but hand the
+        /// payload on; the two consumers here hop to the main actor immediately.
+        /// The alternative, a queue per subscription, buys nothing while that
+        /// holds and costs a hop on every batch.
+        private func deliverResourceEvent(_ frame: (kind: FrameKind, payload: Data)) {
+            guard frame.kind == .event,
+                  let resource = Self.resourceID(of: frame.payload)
+            else { return }
+            stateLock.lock()
+            let listeners = subscribers[resource].map { Array($0.values) } ?? []
+            stateLock.unlock()
+            for subscription in listeners { subscription.deliver(frame.payload) }
+        }
+
+        /// The resource a `fs_changed` / `git_changed` event belongs to. Decoded
+        /// off the one field they share rather than through the event enum, so a
+        /// resource kind this build has never heard of still routes.
+        private static func resourceID(of payload: Data) -> String? {
+            struct Tagged: Decodable { let resource: String? }
+            return (try? JSONDecoder().decode(Tagged.self, from: payload))?.resource
+        }
+
         /// Which request a frame answers, or `nil` for one that answers nobody.
         ///
         /// Three shapes, because the protocol has three: a control reply carries
@@ -466,6 +529,71 @@ extension Termiod {
                 return nil
             }
         }
+    }
+
+    /// A live subscription to one device resource (`fs:<root>`, `git:<root>`).
+    ///
+    /// Held by whoever is drawing from it; releasing the last reference drops
+    /// the interest on the device, so a pane that goes away cannot leave a watch
+    /// running on someone's box.
+    final class ResourceSubscription: @unchecked Sendable {
+        let resource: String
+        private let onEvent: @Sendable (Data) -> Void
+        /// Fired when the channel underneath dies. The device keeps the resource
+        /// and its replay ring for its linger window, so the owner re-subscribes
+        /// with the last `seq` it applied rather than rebuilding from nothing.
+        private let onInterrupted: @Sendable () -> Void
+        private weak var channel: PooledChannel?
+        private let lock = NSLock()
+        private var cancelled = false
+
+        fileprivate init(
+            resource: String,
+            channel: PooledChannel,
+            onEvent: @escaping @Sendable (Data) -> Void,
+            onInterrupted: @escaping @Sendable () -> Void
+        ) {
+            self.resource = resource
+            self.channel = channel
+            self.onEvent = onEvent
+            self.onInterrupted = onInterrupted
+        }
+
+        fileprivate func deliver(_ payload: Data) {
+            lock.lock()
+            let stopped = cancelled
+            lock.unlock()
+            guard !stopped else { return }
+            onEvent(payload)
+        }
+
+        fileprivate func interrupted() {
+            lock.lock()
+            let stopped = cancelled
+            lock.unlock()
+            guard !stopped else { return }
+            onInterrupted()
+        }
+
+        /// Drops the interest, and tells the device so it can retire the watch.
+        /// Idempotent, and safe on a channel that has already died.
+        func cancel() {
+            lock.lock()
+            let alreadyCancelled = cancelled
+            cancelled = true
+            lock.unlock()
+            guard !alreadyCancelled, let channel else { return }
+            channel.unregister(self)
+            // Best effort: a channel that is already gone has no watch left to
+            // retire, and the device retires an unwatched resource on its own.
+            let seq = channel.nextRequestID()
+            try? channel.write(
+                kind: .control,
+                payload: encodeControl(
+                    UnsubscribeResourceOperation(resource: resource, seq: seq)))
+        }
+
+        deinit { cancel() }
     }
 
     /// The channels themselves, keyed by the device they reach and what they
@@ -747,6 +875,66 @@ extension Termiod {
                 pooled \(caps.joined(separator: ","), privacy: .public) channel to \
                 \(route.description, privacy: .public) was stale; reconnecting
                 """)
+                stale = channel
+            }
+        }
+        throw TermiodClientError.connectionClosed
+    }
+
+    /// Subscribes to a device resource over the pooled channel, and returns once
+    /// the device has acknowledged.
+    ///
+    /// The handler is registered *before* the request goes out, because the
+    /// first batch can arrive before the ack is read — measured at 2 ms behind
+    /// it against a real device. Registering after would drop the baseline and
+    /// leave the pane empty until something next changed.
+    ///
+    /// `since` resumes an interrupted subscription from the last `seq` applied;
+    /// the reply's `gap` says whether the device could replay from there.
+    ///
+    /// Blocking; call it off the main thread.
+    static func subscribeResource(
+        route: TermiodRoute,
+        caps: [String],
+        resource: String,
+        since: UInt64? = nil,
+        onEvent: @escaping @Sendable (Data) -> Void,
+        onInterrupted: @escaping @Sendable () -> Void = {}
+    ) throws -> (subscription: ResourceSubscription, gap: Bool, seq: UInt64) {
+        var stale: PooledChannel?
+        for attempt in 0 ... 1 {
+            let channel = try ControlPool.channel(route: route, caps: caps, discarding: stale)
+            let subscription = ResourceSubscription(
+                resource: resource, channel: channel,
+                onEvent: onEvent, onInterrupted: onInterrupted)
+            guard channel.register(subscription), let call = channel.begin() else {
+                stale = channel
+                continue
+            }
+            let reused = call.wasReused
+            defer { call.finish() }
+            do {
+                try call.send(payload: encodeControl(SubscribeResourceOperation(
+                    resource: resource, since: since, seq: call.seq)))
+                while true {
+                    let frame = try call.next(
+                        timeoutSeconds: connectTimeoutSeconds,
+                        operation: "subscribe \(resource)")
+                    guard frame.kind == .control else { continue }
+                    switch try decodeControl(frame.payload) {
+                    case .subscribed(let ack):
+                        return (subscription, ack.gap, ack.seq)
+                    case .error(let failure):
+                        throw TermiodClientError.requestFailed(failure.message)
+                    default:
+                        continue
+                    }
+                }
+            } catch {
+                channel.unregister(subscription)
+                guard attempt == 0, reused, !call.hasDelivered, isConnectionLoss(error) else {
+                    throw error
+                }
                 stale = channel
             }
         }
