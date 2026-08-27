@@ -252,42 +252,55 @@ struct DevicePane: View {
 
     // MARK: The ladder, as disclosure
 
-    /// The rungs behind the one line. Each is still individually runnable — a
-    /// config hand-edited after Termio wrote it is exactly what "Reinstall" is
-    /// for — but none of them is the primary action.
+    /// The facts behind the one line. The daemon's row is read-only: putting it
+    /// there, and updating it, is what *Set Up* does, and a second button for
+    /// the same loop was the same action twice under two verbs. The hooks and
+    /// the skill keep a "Reinstall" each because a config hand-edited after
+    /// Termio wrote it is a real case — but neither is the primary action.
     private var integrationSection: some View {
         Section {
             if machine.isLocal {
                 CommandLineToolRow()
             } else {
-                LabeledContent {
-                    Button(localized("Deploy")) { Task { await model.setUp() } }
-                        .disabled(model.readiness.isBusy)
-                } label: {
-                    SettingsLabel(
-                        title: "termiod",
-                        subtext: model.discovered?.termiodVersion.map {
-                            localized("Version \($0) on \(machine.name). Sessions keep running there after you disconnect.")
-                        } ?? localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
-                        titleFont: .headline
-                    )
+                SettingsLabel(
+                    title: "termiod",
+                    subtext: model.discovered?.termiodVersion.map {
+                        localized("Version \($0) on \(machine.name). Sessions keep running there after you disconnect.")
+                    } ?? localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
+                    titleFont: .headline
+                )
+            }
+            LabeledContent {
+                InstallButtonRow(title: localized("Reinstall"), trailing: true) {
+                    .summarizing(
+                        await AgentIntegrationInstaller.sync(
+                            hooks: settings.agentHooksEnabled ? .install : .remove,
+                            skills: .leave,
+                            target: machine.integrationTarget),
+                        headline: localized("Hooks reinstalled"), unit: localized("agents"))
                 }
+            } label: {
+                SettingsLabel(
+                    title: localized("Hooks"),
+                    subtext: localized("Report each agent’s status back to Termio."),
+                    titleFont: .headline
+                )
             }
-            InstallButtonRow(title: localized("Reinstall hooks")) {
-                .summarizing(
-                    await AgentIntegrationInstaller.sync(
-                        hooks: settings.agentHooksEnabled ? .install : .remove,
-                        skills: .leave,
-                        target: machine.integrationTarget),
-                    headline: localized("Hooks reinstalled"), unit: localized("agents"))
-            }
-            InstallButtonRow(title: localized("Reinstall skill")) {
-                .summarizing(
-                    await AgentIntegrationInstaller.sync(
-                        hooks: .leave,
-                        skills: settings.sessionControlEnabled ? .install : .remove,
-                        target: machine.integrationTarget),
-                    headline: localized("Skill reinstalled"), unit: localized("agents"))
+            LabeledContent {
+                InstallButtonRow(title: localized("Reinstall"), trailing: true) {
+                    .summarizing(
+                        await AgentIntegrationInstaller.sync(
+                            hooks: .leave,
+                            skills: settings.sessionControlEnabled ? .install : .remove,
+                            target: machine.integrationTarget),
+                        headline: localized("Skill reinstalled"), unit: localized("agents"))
+                }
+            } label: {
+                SettingsLabel(
+                    title: localized("Skill"),
+                    subtext: localized("Teaches agents the termio session commands."),
+                    titleFont: .headline
+                )
             }
         } header: {
             SectionHeaderLabel(title: localized("Installed by Termio"))

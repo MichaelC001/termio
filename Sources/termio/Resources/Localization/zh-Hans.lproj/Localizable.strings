@@ -562,6 +562,12 @@
 	<string>隐藏或显示导航器</string>
 	<key>History</key>
 	<string>历史</string>
+	<key>Hooks</key>
+	<string>Hooks</string>
+	<key>Hooks and skill installed</key>
+	<string>Hooks 和技能已安装</string>
+	<key>Hooks installed</key>
+	<string>Hooks 已安装</string>
 	<key>Hooks reinstalled</key>
 	<string>Hooks 已重新安装</string>
 	<key>Host</key>
@@ -1046,6 +1052,8 @@
 	<string>替换</string>
 	<key>Replace All</key>
 	<string>全部替换</string>
+	<key>Report each agent’s status back to Termio.</key>
+	<string>把每个 Agent 的状态报告回 Termio。</string>
 	<key>Repository</key>
 	<string>仓库</string>
 	<key>Request Permission</key>
@@ -1162,6 +1170,10 @@
 	<string>使用 ssh 默认提供的密钥登录。</string>
 	<key>Size: %lld pt</key>
 	<string>大小：%lld 磅</string>
+	<key>Skill</key>
+	<string>技能</string>
+	<key>Skill installed</key>
+	<string>技能已安装</string>
 	<key>Skill reinstalled</key>
 	<string>技能已重新安装</string>
 	<key>Skip permission prompts</key>
@@ -1212,6 +1224,8 @@
 	<string>根据 %@ 在这台 Mac 上所有终端和编辑器的本地会话日志统计——即你的实际用量，与套餐计费方式无关。%@</string>
 	<key>Task completion</key>
 	<string>任务完成</string>
+	<key>Teaches agents the termio session commands.</key>
+	<string>教 Agent 使用 termio 的会话命令。</string>
 	<key>Terminal</key>
 	<string>终端</string>
 	<key>Terminal default</key>

@@ -300,6 +300,10 @@ extension View {
 /// actor; this type's job is to not block on it.
 struct InstallButtonRow: View {
     let title: String
+    /// Laid out as a `LabeledContent` control — the button at the row's
+    /// trailing edge with its result to the left of it — rather than as a
+    /// standalone row that leads with the button.
+    var trailing = false
     let action: () async -> InstallFeedback
 
     @State private var state = InstallFeedbackState()
@@ -307,6 +311,7 @@ struct InstallButtonRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            if trailing { result }
             Button(title) {
                 running = true
                 Task {
@@ -316,16 +321,23 @@ struct InstallButtonRow: View {
                 }
             }
             .disabled(running)
-            if running {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            } else if let feedback = state.feedback {
-                InstallFeedbackLabel(feedback: feedback)
+            if !trailing {
+                result
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
         .autoDismissing($state)
+    }
+
+    @ViewBuilder
+    private var result: some View {
+        if running {
+            ProgressView()
+                .controlSize(.small)
+                .transition(.opacity)
+        } else if let feedback = state.feedback {
+            InstallFeedbackLabel(feedback: feedback)
+        }
     }
 }
 
