@@ -362,10 +362,15 @@ the text above, the code is right and the reason is recorded here:
   binary on disk, and the binary on the first upgrade has no `status`. The
   loop reads clap's "unrecognized subcommand" as *older than anything*, stages
   first, and observes again with the new binary.
-- **Idle (open question 1) is decided:** no client attached *and* no session
-  `working` or `needs_you`. `stop` declines by default and names the sessions
-  (exit 3); `--force` overrides. There is no `--if-idle` flag — declining is
-  the default, not an option.
+- **Idle (open question 1) is decided, and §5.2's `attached == 0` is not it.**
+  Busy means *work in progress*: a command running in the foreground
+  (`foreground_job`, the daemon's own "closing this loses work" signal) or a
+  session `working` / `needs_you`. Being attached does not count — the client
+  on an idle prompt is usually the app whose user just asked for the update,
+  and an update the user's own tabs could veto has them closing tabs to get
+  it. `stop` declines by default and names the sessions (exit 3); `--force`
+  overrides, and the pane offers it as "Update Anyway" beside those names.
+  There is no `--if-idle` flag — declining is the default, not an option.
 - **A box a newer app set up is left alone** and reported as `current` with
   `newer: true`; the loop only ever moves a version up.
 - **§5.5 is `TermioStore.upgradingRoutes`:** a roster that fails while the app

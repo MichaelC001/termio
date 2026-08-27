@@ -136,10 +136,11 @@ termiod deploy --host my-vps
 ```
 
 Each step is skipped when the observed state already matches: a box on the
-current build costs one `status`. A box whose daemon holds a session someone
-is attached to, or an agent still `working`, is left **staged** — the new
-binary is in place and takes over the next time the daemon is stopped — and
-the sessions are named so the decision is the user's. `--force` overrides.
+current build costs one `status`. A box whose daemon has work in progress — a
+command running in a session's foreground, or an agent still `working` — is
+left **staged**: the new binary is in place and takes over the next time the
+daemon is stopped, and the sessions are named so the decision is the user's.
+A client attached to an idle prompt does not hold it up. `--force` overrides.
 The version compared is the app's build stamp (`0.44.0+1533`), carried by the
 daemon at `hello`; a box a newer app set up is left alone.
 

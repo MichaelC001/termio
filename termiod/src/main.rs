@@ -249,14 +249,15 @@ enum Cmd {
         json: bool,
     },
 
-    /// Ask the daemon to stop. Declines while a session is attached or an
-    /// agent is mid-task, and names them; `--force` stops it regardless.
+    /// Ask the daemon to stop. Declines while a command is running or an
+    /// agent is mid-task, and names the sessions; `--force` stops it regardless.
+    /// A client attached to an idle prompt does not hold it up.
     ///
     /// The daemon is found by the credential on its socket, never by its
     /// command line, so a second daemon someone runs by hand on another socket
     /// is never the one stopped. Exit 3 means "in use", not failure.
     Stop {
-        /// Stop even while sessions are in use. Every session ends.
+        /// Stop even while work is in progress. Every session ends.
         #[arg(long)]
         force: bool,
         #[arg(long)]
@@ -275,7 +276,7 @@ enum Cmd {
         /// this machine's own daemon is checked and restarted if stale.
         #[arg(long)]
         host: Option<String>,
-        /// Stop the old daemon even while its sessions are in use.
+        /// Stop the old daemon even while its sessions have work in progress.
         #[arg(long)]
         force: bool,
         /// Put the binary in place and leave the running daemon alone.

@@ -998,9 +998,12 @@ extension TermioStore {
     /// `static` because it touches nothing on the store: the device a successful
     /// check reveals is handed back rather than adopted here, so a caller that is
     /// only *inspecting* a machine does not silently rewrite the registry.
-    static func remoteReadyCheck(host: String) async -> RemoteSetupResult {
+    ///
+    /// `force` stops the old daemon even while its sessions have work in
+    /// progress — the pane's "Update Anyway", offered with those sessions named.
+    static func remoteReadyCheck(host: String, force: Bool = false) async -> RemoteSetupResult {
         await Task.detached(priority: .userInitiated) {
-            performRemoteReadyCheck(host: host)
+            performRemoteReadyCheck(host: host, force: force)
         }.value
     }
 
@@ -1010,14 +1013,18 @@ extension TermioStore {
     /// runs on the machine; this side only turns the report into a sentence.
     /// `nonisolated` because it is invoked from a background queue and touches
     /// only process primitives — never `TermioStore`'s main-actor state.
-    private nonisolated static func performRemoteReadyCheck(host: String) -> RemoteSetupResult {
+    private nonisolated static func performRemoteReadyCheck(
+        host: String, force: Bool = false
+    ) -> RemoteSetupResult {
         let localBinary = Termiod.daemonBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: localBinary) else {
             return .failure(RemoteSetupError(
                 state: .failed,
                 message: "The termiod binary to deploy wasn't found at \(localBinary)."))
         }
-        guard let run = runProcess(localBinary, ["deploy", "--host", host, "--json"]) else {
+        var arguments = ["deploy", "--host", host, "--json"]
+        if force { arguments.append("--force") }
+        guard let run = runProcess(localBinary, arguments) else {
             return .failure(RemoteSetupError(
                 state: .failed, message: "Couldn't run termiod deploy."))
         }
@@ -1044,17 +1051,16 @@ extension TermioStore {
                 id: hostID, daemonVersion: version, routes: [.ssh(host)], lastSeen: Date()))
         case .staged:
             // Named, not counted. "1 session" is a number the user cannot act
-            // on: whether to close it depends entirely on whether it is an
-            // agent mid-task or a shell someone left at a prompt, and only the
-            // command answers that.
+            // on: whether to interrupt it depends entirely on what it is doing,
+            // and only the name and the command answer that.
             let names = (report.busy ?? [])
-                .map { "• \($0.name) — \($0.command)" }
+                .map { "• \($0.label)" }
                 .joined(separator: "\n")
             return .failure(RemoteSetupError(
                 state: .staged,
-                message: "termiod \(report.desired) is ready on \(host), and takes over once "
-                    + "the sessions still running there close:\n\(names)\n"
-                    + "Close those on \(host) and set it up again."))
+                message: "termiod \(report.desired) is ready on \(host) and takes over once "
+                    + "this finishes:\n\(names)\n"
+                    + "Update Anyway stops it now."))
         case .unhealthy:
             let rolledBack = report.rolledBack == true
                 ? "\nThe previous termiod is back in place." : ""

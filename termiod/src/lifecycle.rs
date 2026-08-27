@@ -232,8 +232,14 @@ pub struct SessionSummary {
     pub id: String,
     pub name: String,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub status: String,
     pub attached: usize,
+    /// A command is running in the foreground — the shell is not at its
+    /// prompt. The daemon's own "closing this loses work" signal.
+    #[serde(default)]
+    pub running: bool,
     pub alive: bool,
 }
 
@@ -243,21 +249,28 @@ impl From<SessionInfo> for SessionSummary {
             id: info.id,
             name: info.name,
             command: info.command,
+            title: info.title,
             status: info.status,
             attached: info.attached_clients,
+            running: info.foreground_job,
             alive: info.alive,
         }
     }
 }
 
 impl SessionSummary {
-    /// Whether stopping the daemon would take work from someone. A client
-    /// attached is one answer; an agent still working, or waiting on its
-    /// user, is the other — the workstream status is in the protocol so that
-    /// a daemon does not have to guess from a screen, and an agent nobody is
-    /// watching is exactly the session "lives on the box" promises to keep.
+    /// Whether stopping the daemon would take *work* from someone: a command
+    /// running in the foreground, or an agent still working or waiting on its
+    /// user. The workstream status is in the protocol so a daemon does not
+    /// have to guess from a screen, and an agent nobody is watching is exactly
+    /// the session "lives on the box" promises to keep.
+    ///
+    /// Being attached is deliberately not the test. A client on a shell at its
+    /// prompt loses nothing but the prompt, and that client is usually the
+    /// app whose user just asked for the update — an update the user's own
+    /// idle tabs could veto would have them closing tabs to get it.
     pub fn busy(&self) -> bool {
-        self.alive && (self.attached > 0 || matches!(self.status.as_str(), "working" | "needs_you"))
+        self.alive && (self.running || matches!(self.status.as_str(), "working" | "needs_you"))
     }
 }
 
@@ -437,13 +450,12 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
             .collect();
         if !busy.is_empty() {
             let message = format!(
-                "{} in use on this machine; close {} or pass --force",
+                "{} still working on this machine; wait, or pass --force",
                 if busy.len() == 1 {
                     "1 session is".to_string()
                 } else {
                     format!("{} sessions are", busy.len())
-                },
-                if busy.len() == 1 { "it" } else { "them" }
+                }
             );
             return Ok(StopOutcome {
                 stopped: false,
@@ -604,12 +616,17 @@ impl Report {
             ),
             Outcome::Staged { version, busy, .. } => {
                 let mut text = format!(
-                    "{node}: termiod {version} is staged, but the daemon still running there is in use:"
+                    "{node}: termiod {version} is staged, but the daemon still running there has work in progress:"
                 );
                 for session in busy {
-                    text.push_str(&format!("\n  • {} — {}", session.name, session.command));
+                    text.push_str(&format!(
+                        "\n  • {} — {} ({})",
+                        session.title.as_deref().unwrap_or(&session.name),
+                        session.command,
+                        session.status
+                    ));
                 }
-                text.push_str(&format!("\nClose those on {node} and run this again, or pass --force."));
+                text.push_str("\nRun this again once it finishes, or pass --force to stop it now.");
                 text
             }
             Outcome::Unhealthy {
@@ -933,23 +950,28 @@ mod tests {
         assert!(Version::parse("0.44.0+abc").is_none());
     }
 
+    /// Busy is about work, not watchers: a command in the foreground or an
+    /// agent mid-task holds the daemon up; a client attached to an idle prompt
+    /// does not, because that client is usually the app asking for the update.
     #[test]
-    fn a_session_is_busy_when_attached_or_the_agent_is_mid_task() {
-        let session = |attached, status: &str, alive| SessionSummary {
+    fn a_session_is_busy_when_work_is_in_progress_not_when_someone_is_attached() {
+        let session = |attached, running, status: &str, alive| SessionSummary {
             id: "1".into(),
             name: "s".into(),
             command: "bash".into(),
+            title: None,
             status: status.into(),
             attached,
+            running,
             alive,
         };
-        assert!(!session(0, "unknown", true).busy());
-        assert!(!session(0, "idle", true).busy());
-        assert!(!session(0, "done", true).busy());
-        assert!(session(1, "idle", true).busy());
-        assert!(session(0, "working", true).busy());
-        assert!(session(0, "needs_you", true).busy());
-        assert!(!session(1, "working", false).busy());
+        assert!(!session(0, false, "unknown", true).busy());
+        assert!(!session(1, false, "idle", true).busy());
+        assert!(!session(3, false, "done", true).busy());
+        assert!(session(0, true, "unknown", true).busy());
+        assert!(session(0, false, "working", true).busy());
+        assert!(session(0, false, "needs_you", true).busy());
+        assert!(!session(1, true, "working", false).busy());
     }
 
     /// The build stamp `build.rs` produces always parses — the loop's desired
@@ -1105,8 +1127,10 @@ mod tests {
                 id: "1".into(),
                 name: "claude".into(),
                 command: "claude".into(),
+                title: None,
                 status: "working".into(),
                 attached: 0,
+                running: true,
                 alive: true,
             }],
             message: "1 session is in use".into(),
