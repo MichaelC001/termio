@@ -182,8 +182,8 @@ final class CompanionTransport {
         switch CompanionControl.decode(text) {
         case .exit:
             finish(.closed)
-        case .error(let message):
-            finish(.failed(message))
+        case .error(let message, let code):
+            finish(.failed(CompanionRefusal.text(code: code, fallback: message)))
         default:
             break
         }

@@ -78,20 +78,59 @@ struct DeviceServingSection: View {
     /// never becomes the live spec mid-keystroke.
     @State private var customCommand = ""
     @State private var customURLPattern = ""
+    /// This Mac's session-host invite, minted by the daemon whenever the address
+    /// it would carry changes. nil while direct attach is off, and between the
+    /// address changing and the daemon answering.
+    @State private var invite: RemotePairing.Invite?
+    /// Why there is no invite, when there should be one. Rendered in the QR's
+    /// place: an empty hero unit reads as a pane still loading.
+    @State private var inviteFailure: String?
+    /// The address the invite on screen was minted for, so a late answer for an
+    /// address the pane has already moved off is dropped rather than shown.
+    @State private var invitedBase: String?
+    /// A mint is in flight. The tunnel reports `.starting` and then `.running`
+    /// within a second or two, and each is a trigger — without this the pane
+    /// forks two `termiod pair` processes for one address.
+    @State private var minting = false
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
     private var onTunnel: Bool { tunnel.provider != .off }
 
-    /// What the QR encodes: the tunnel's public URL while one is running,
-    /// the LAN address otherwise — either way carrying the pairing token the
-    /// server demands before serving anything.
-    private var url: String {
+    /// What the QR encodes: over the companion wire the socket address itself,
+    /// carrying the token as the query the server reads; over the session
+    /// protocol the `termio://device` invite the daemon minted, which is the
+    /// same link a Linux box's QR carries.
+    private var qrPayload: String {
+        if mobile.attachesDirectly { return invite?.link ?? "" }
+        return companionURL
+    }
+
+    /// The address under the QR — what the user copies and what they can check
+    /// against the phone. The invite link is not it: it is a `termio://` URL
+    /// with a secret in it, and it says nothing about where this Mac is.
+    private var addressText: String {
+        if mobile.attachesDirectly { return invite?.url ?? "" }
+        return companionURL
+    }
+
+    private var companionURL: String {
         if case .running(let publicURL) = tunnel.status {
             let host = publicURL.absoluteString.replacingOccurrences(of: "https://", with: "wss://")
             return "\(host)/?t=\(token)"
         }
         return "ws://\(selectedHost):\(CompanionServer.defaultPort)/?t=\(token)"
+    }
+
+    /// Where a phone would reach this Mac's session host: the public URL while a
+    /// tunnel is up, the selected LAN address otherwise. nil when there is no
+    /// address to hand out, which is what stops a QR being minted for one.
+    private var directBase: String? {
+        if case .running(let publicURL) = tunnel.status {
+            return publicURL.absoluteString
+        }
+        guard !selectedHost.isEmpty else { return nil }
+        return "http://\(selectedHost):\(AppChannel.devicePort)"
     }
 
     private var tunnelRunning: Bool {
@@ -117,8 +156,31 @@ struct DeviceServingSection: View {
             // master switch reveals it — a dimmed, unscannable QR (and an
             // address nothing is listening on) is more misleading than absent.
             if mobile.isEnabled {
+                Toggle(isOn: $mobile.attachesDirectly) {
+                    SettingsLabel(
+                        title: localized("Direct Attach"),
+                        subtext: localized("Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet."),
+                        titleFont: .headline
+                    )
+                }
+                .toggleStyle(.switch)
+                // The switch changes what the QR means, so every phone paired
+                // the other way is signed out by flipping it. Said here rather
+                // than in a dialog: it is a fact about the switch, not a
+                // consequence of one particular flip.
+                footnote(localized("Paired iPhones must scan the code again after switching."))
+
                 if hosts.isEmpty, !tunnelRunning {
                     footnote(localized("No network address found. Join a network, then reopen this pane."))
+                } else if mobile.attachesDirectly, let inviteFailure {
+                    footnote(inviteFailure)
+                } else if mobile.attachesDirectly, invite == nil {
+                    // A QR generated from an empty string is a scannable code
+                    // for nothing, which is worse than the wait it hides.
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
                 } else {
                     // QR + its URL are one unit ("scan this, or copy the same
                     // thing") — kept in a single row so no divider splits them.
@@ -157,7 +219,11 @@ struct DeviceServingSection: View {
                             titleVisibility: .visible
                         ) {
                             Button(localized("Rotate Token"), role: .destructive) {
-                                token = PairingToken.regenerate()
+                                if mobile.attachesDirectly {
+                                    refreshInvite(rotate: true)
+                                } else {
+                                    token = PairingToken.regenerate()
+                                }
                             }
                             Button(localized("Cancel"), role: .cancel) {}
                         } message: {
@@ -193,7 +259,14 @@ struct DeviceServingSection: View {
             let custom = CustomTunnel.current
             customCommand = custom.command
             customURLPattern = custom.urlPattern
+            refreshInvite()
         }
+        // The invite names one address, so it is re-minted whenever that address
+        // could have changed: the switch, the picked LAN host, and the tunnel
+        // coming up or going away.
+        .onChange(of: mobile.attachesDirectly) { refreshInvite() }
+        .onChange(of: selectedHost) { refreshInvite() }
+        .onChange(of: tunnel.status) { refreshInvite() }
     }
 
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
@@ -361,7 +434,7 @@ struct DeviceServingSection: View {
     /// it. One row (no divider between) so the pair reads as a single thing.
     private var scanBlock: some View {
         VStack(spacing: 12) {
-            if let qr = Self.qrImage(for: url) {
+            if let qr = Self.qrImage(for: qrPayload) {
                 Image(nsImage: qr)
                     .interpolation(.none)
                     .resizable()
@@ -381,7 +454,7 @@ struct DeviceServingSection: View {
     /// a trailing Copy the way Apple pins Copy to a serial-number row.
     private var addressRow: some View {
         HStack(spacing: 8) {
-            Text(url)
+            Text(addressText)
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -390,7 +463,7 @@ struct DeviceServingSection: View {
             Spacer(minLength: 8)
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(url, forType: .string)
+                NSPasteboard.general.setString(addressText, forType: .string)
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
             } label: {
@@ -398,6 +471,44 @@ struct DeviceServingSection: View {
             }
             .buttonStyle(.borderless)
             .fixedSize()
+        }
+    }
+
+    /// Asks this Mac's daemon for the invite that names `directBase`.
+    ///
+    /// `rotate` mints a fresh pairing token first, which is what Rotate Token
+    /// does on this side: the secret belongs to the daemon, so revoking it is
+    /// the daemon's verb rather than a defaults key this app clears.
+    private func refreshInvite(rotate: Bool = false) {
+        guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
+            invite = nil
+            inviteFailure = nil
+            invitedBase = nil
+            return
+        }
+        guard !minting else { return }
+        guard rotate || base != invitedBase || invite == nil else { return }
+        invitedBase = base
+        minting = true
+        Task {
+            defer { minting = false }
+            do {
+                let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
+                // The pane may have moved to another address while the daemon
+                // was answering; a QR for the previous one would scan and then
+                // reach nothing.
+                guard base == invitedBase else { return }
+                invite = minted
+                inviteFailure = nil
+            } catch let failure as RemotePairing.Failure {
+                guard base == invitedBase else { return }
+                invite = nil
+                inviteFailure = failure.message
+            } catch {
+                guard base == invitedBase else { return }
+                invite = nil
+                inviteFailure = error.localizedDescription
+            }
         }
     }
 

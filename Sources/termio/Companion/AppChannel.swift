@@ -112,4 +112,10 @@ enum AppChannel {
     /// Companion (phone) server port: 8787 for release, 8788 for dev, so both can
     /// bind at once.
     static var companionPort: UInt16 { suffix.isEmpty ? 8787 : 8788 }
+
+    /// Where a phone dials this Mac's session host (`DeviceSpliceServer`): 8795
+    /// for release, 8796 for dev. Clear of the companion pair above and of the
+    /// daemon's own loopback listener on 8790, so a Mac running all three has
+    /// nothing to fight over.
+    static var devicePort: UInt16 { suffix.isEmpty ? 8795 : 8796 }
 }

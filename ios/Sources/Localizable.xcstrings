@@ -1950,6 +1950,36 @@
           }
         }
       }
+    },
+    "This Mac didn't recognize this phone. Scan its QR code again in Settings ▸ Mobile.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 无法识别此 iPhone。请重新扫描 Mac 上“设置 ▸ 移动设备”中的二维码。"
+          }
+        }
+      }
+    },
+    "Update Termio on this phone to connect to this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请更新这台 iPhone 上的 Termio 以连接这台 Mac。"
+          }
+        }
+      }
+    },
+    "That Mac didn't answer.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该 Mac 没有响应。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

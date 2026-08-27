@@ -478,6 +478,8 @@
 	<string>设备不可用</string>
 	<key>Devices</key>
 	<string>设备</string>
+	<key>Direct Attach</key>
+	<string>直接连接</string>
 	<key>Discard %lld Files…</key>
 	<string>放弃 %lld 个文件的更改…</string>
 	<key>Discard Changes</key>
@@ -970,8 +972,12 @@
 	<string>配对手机…</string>
 	<key>Pair your iPhone with the machines you work on</key>
 	<string>把 iPhone 与你正在使用的机器配对</string>
+	<key>Paired iPhones must scan the code again after switching.</key>
+	<string>切换后，已配对的 iPhone 需要重新扫码。</string>
 	<key>Pairing Token</key>
 	<string>配对 Token</string>
+	<key>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</key>
+	<string>让 iPhone 直接连到这台 Mac 的会话宿主。没有会话在跑的项目暂时不会出现。</string>
 	<key>Panes</key>
 	<string>窗格</string>
 	<key>Password</key>
@@ -1352,6 +1358,8 @@
 	<string>读取失败。</string>
 	<key>The search failed.</key>
 	<string>搜索失败。</string>
+	<key>The session host answered, but not with a pairing invite.</key>
+	<string>会话宿主有回应，但返回的不是配对邀请。</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
 	<string>%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。</string>
 	<key>The session host went away</key>

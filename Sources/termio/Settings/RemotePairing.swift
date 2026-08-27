@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import TermioShared
 
-/// Pairing a phone with a box that is not this Mac.
+/// Minting the invite a phone scans — for a box reached over SSH, and for this
+/// Mac itself.
 ///
 /// The invite is minted **on the box**, by the `termiod` already deployed there:
 /// `termiod pair --json` prints the URL it is reachable at, the token it will
@@ -73,6 +74,29 @@ enum RemotePairing {
         return invite
     }
 
+    /// This Mac's own invite, minted by the daemon in the app bundle rather than
+    /// over SSH.
+    ///
+    /// `--url` is passed here, and it is not the trap it is on a remote box.
+    /// There, the address the invite prints and the origin the daemon accepts
+    /// are two different values and only arming reconciles them, so a typed
+    /// address produces a QR that scans and then 403s. This Mac's listener is
+    /// the app's own (`DeviceSpliceServer`), which checks no origin — the
+    /// address is the one the app is listening on, and the app is the only
+    /// thing that knows it.
+    static func localInvite(url: String, rotate: Bool = false) async throws -> Invite {
+        var arguments = ["pair", "--json", "--url", url]
+        if rotate { arguments.append("--rotate") }
+        let result = try await runLocally(arguments: arguments)
+        guard result.status == 0 else {
+            throw Failure(message: message(from: result))
+        }
+        guard let invite = decode(result.stdout) else {
+            throw Failure(message: localized("The session host answered, but not with a pairing invite."))
+        }
+        return invite
+    }
+
     // MARK: - Running it
 
     private struct Result {
@@ -105,6 +129,46 @@ enum RemotePairing {
                 }
                 // Both pipes drain before the wait: a child that fills either one
                 // blocks forever against a parent waiting on exit.
+                let stdout = out.fileHandleForReading.readDataToEndOfFile()
+                let stderr = err.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                continuation.resume(returning: Result(
+                    status: process.terminationStatus,
+                    stdout: String(data: stdout, encoding: .utf8) ?? "",
+                    stderr: String(data: stderr, encoding: .utf8) ?? ""))
+            }
+        }
+    }
+
+    /// The bundled `termiod`, run against this app's own channel so it reads the
+    /// state directory the running daemon uses. Without the variable a dev build
+    /// would mint a pairing token for the release channel's daemon.
+    private static func runLocally(arguments: [String]) async throws -> Result {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let binary = Termiod.daemonBinaryPath()
+                guard FileManager.default.isExecutableFile(atPath: binary) else {
+                    continuation.resume(throwing: Failure(
+                        message: localized("The termiod binary wasn't found at \(binary).")))
+                    return
+                }
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: binary)
+                process.arguments = arguments
+                var environment = ProcessInfo.processInfo.environment
+                environment["TERMIO_CHANNEL"] = Termiod.channelName
+                process.environment = environment
+                let out = Pipe()
+                let err = Pipe()
+                process.standardOutput = out
+                process.standardError = err
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(throwing: Failure(
+                        message: localized("Could not run termiod: \(error.localizedDescription)")))
+                    return
+                }
                 let stdout = out.fileHandleForReading.readDataToEndOfFile()
                 let stderr = err.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()

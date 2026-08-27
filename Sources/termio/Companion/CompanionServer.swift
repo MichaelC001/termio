@@ -86,9 +86,24 @@ final class MobileAccess: ObservableObject {
         }
     }
 
+    /// Which of this Mac's two servers answers a phone: the companion wire, or
+    /// the session host itself through `DeviceSpliceServer`.
+    ///
+    /// One switch rather than two servers running at once, because everything
+    /// downstream has to agree — which port the tunnel fronts, what the QR
+    /// encodes, and what Rotate Token rotates. A Mac serving both would be
+    /// telling a phone two different stories about where it lives.
+    @Published var attachesDirectly: Bool {
+        didSet {
+            guard attachesDirectly != oldValue else { return }
+            UserDefaults.standard.set(attachesDirectly, forKey: PhoneServing.defaultsKey)
+        }
+    }
+
     private init() {
         // Absent key → on, so upgrading users keep today's always-serving behavior.
         isEnabled = UserDefaults.standard.object(forKey: Self.defaultsKey) as? Bool ?? true
+        attachesDirectly = PhoneServing.isDirect
     }
 }
 
@@ -343,7 +358,9 @@ final class CompanionServer {
             Task { @MainActor in
                 guard let self, self.connections.contains(id),
                       self.authenticatedWireByConnection[id] == nil else { return }
-                self.refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
+                self.refuse(
+                    connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile",
+                    code: WireRefusal.unauthorized)
             }
         }
         // Keep the receive pump alive so pings/close are handled.
@@ -407,12 +424,16 @@ final class CompanionServer {
         let id = ObjectIdentifier(connection)
         if case .auth(let token, let wire) = control {
             guard token == PairingToken.current else {
-                refuse(connection, message: "unauthorized — re-scan the QR code on your Mac")
+                refuse(
+                    connection, message: "unauthorized — re-scan the QR code on your Mac",
+                    code: WireRefusal.unauthorized)
                 return
             }
             Log.companion.notice("phone declared wire version \(wire, privacy: .public)")
             guard wire >= Wire.minimumClient else {
-                refuse(connection, message: "Update Termio on your phone to connect to this Mac.")
+                refuse(
+                    connection, message: "Update Termio on your phone to connect to this Mac.",
+                    code: WireRefusal.clientTooOld)
                 return
             }
             authenticatedWireByConnection[id] = wire
@@ -420,7 +441,9 @@ final class CompanionServer {
             return
         }
         guard authenticatedWireByConnection[id] != nil else {
-            refuse(connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile")
+            refuse(
+                connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile",
+                code: WireRefusal.unauthorized)
             return
         }
         switch control {
@@ -952,11 +975,14 @@ final class CompanionServer {
     /// Sends a last control frame, then drops the connection only after the
     /// frame has been handed to the transport — a plain send-then-cancel
     /// loses that race and the phone sees a dead socket instead of the reason.
-    private func refuse(_ connection: NWConnection, message: String) {
+    /// `code` is what the phone actually shows: it words the refusal in its own
+    /// locale, and `message` is the English it falls back to when it is too old
+    /// to know the code.
+    private func refuse(_ connection: NWConnection, message: String, code: String) {
         let meta = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "control", metadata: [meta])
         connection.send(
-            content: Data(CompanionControl.error(message: message).encoded().utf8),
+            content: Data(CompanionControl.error(message: message, code: code).encoded().utf8),
             contentContext: context,
             completion: .contentProcessed { [weak self] _ in
                 Task { @MainActor in self?.drop(ObjectIdentifier(connection)) }

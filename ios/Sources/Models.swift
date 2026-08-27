@@ -532,23 +532,69 @@ enum CompanionLink {
         }
         let token = token(of: url)
         let address = strippedAddress(of: url)
-        var macs = pairedMacs
-        if let existing = macs.first(where: { $0.address == address && $0.token == token }) {
+        if let existing = pairedMacs.first(where: { $0.address == address && $0.token == token }) {
             setActive(existing.id)
             completion?(.success(()))
             return true
         }
-        let mac = PairedMac(
-            id: "local-\(UUID().uuidString)",
-            name: url.host ?? "Mac",
-            address: address,
-            token: token
-        )
-        macs.append(mac)
-        save(macs)
-        setActive(mac.id)
-        completion?(.success(()))
+        // Dial before filing it, the way an invite does. An address saved
+        // unverified is one the app redials on every launch with nothing to
+        // show for it, and the person who typed it learns nothing either way.
+        verify(companion: url) { result in
+            if case .failure(let failure) = result {
+                completion?(.failure(failure))
+                return
+            }
+            var macs = pairedMacs
+            let mac = PairedMac(
+                id: "local-\(UUID().uuidString)",
+                name: url.host ?? "Mac",
+                address: address,
+                token: token
+            )
+            macs.append(mac)
+            save(macs)
+            setActive(mac.id)
+            completion?(.success(()))
+        }
         return true
+    }
+
+    /// Dial a companion address and wait for the Mac's roster, which is the Mac
+    /// saying yes: the token was good and both ends read each other's `wire`.
+    /// A refusal arrives already worded for this phone.
+    private static func verify(
+        companion url: URL, completion: @escaping (Result<Void, PairingFailure>) -> Void
+    ) {
+        let client = CompanionClient(url: url)
+        // The link self-heals rather than giving up, which is wrong for a
+        // pairing someone is waiting on: a Mac that never answers has to become
+        // a refusal instead of a socket dialling forever behind a tapped
+        // Connect.
+        let deadline = DispatchWorkItem {
+            retire(client)
+            completion(.failure(.unreachable(localized("That Mac didn't answer."))))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: deadline)
+        // These closures are the client's only owner, so clearing them frees it.
+        client.onRoster = { _ in
+            deadline.cancel()
+            retire(client)
+            completion(.success(()))
+        }
+        client.onConnectionFailure = { reason in
+            deadline.cancel()
+            retire(client)
+            completion(.failure(.unreachable(reason)))
+        }
+        client.start()
+    }
+
+    /// Drops a one-shot client and the closure cycle keeping it alive.
+    private static func retire(_ client: CompanionClient) {
+        client.onRoster = nil
+        client.onConnectionFailure = nil
+        client.stop()
     }
 
     /// Why a pairing did not take. Each case is a sentence the Devices page can
@@ -797,13 +843,20 @@ enum CompanionLink {
     static func normalize(_ raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        var full = trimmed.contains("://") ? trimmed : "ws://\(trimmed):8787"
-        if full.hasPrefix("https://") {
-            full = "wss://" + full.dropFirst("https://".count)
-        } else if full.hasPrefix("http://") {
-            full = "ws://" + full.dropFirst("http://".count)
+        let full = trimmed.contains("://") ? trimmed : "ws://\(trimmed):8787"
+        guard var components = URLComponents(string: full) else { return nil }
+        // A scheme this does not recognize has to fail here, not at dial time:
+        // `URLSession.webSocketTask(with:)` answers a non-ws(s) URL with an
+        // ObjC exception, which Swift cannot catch. Since a parsed address is
+        // saved before anything dials, letting one through crashes the app on
+        // every launch afterwards, not just on the pairing that typed it.
+        switch components.scheme?.lowercased() {
+        case "https", "wss": components.scheme = "wss"
+        case "http", "ws": components.scheme = "ws"
+        default: return nil
         }
-        return URL(string: full)
+        guard let host = components.host, !host.isEmpty else { return nil }
+        return components.url
     }
 
     /// The pairing token riding the paired URL's `t` query param — sent as

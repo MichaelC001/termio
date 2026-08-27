@@ -1,4 +1,5 @@
 @testable import TermioMobile
+import TermioShared
 import XCTest
 
 /// The paired-device list decodes with `try?` and returns `[]` on failure, so a
@@ -94,5 +95,76 @@ final class DeviceInviteParsingTests: XCTestCase {
     func testACompanionAddressIsNotAnInvite() {
         XCTAssertNil(CompanionLink.parseDeviceInvite("ws://studio.local:8787/?t=abc"))
         XCTAssertNil(CompanionLink.parseDeviceInvite("studio.local"))
+    }
+}
+
+/// A typed address is saved before anything dials it, and `URLSession` answers
+/// a socket URL it cannot dial with an ObjC exception rather than an error —
+/// so an address that gets past here does not fail the pairing, it aborts the
+/// process on every launch afterwards. Everything this refuses is a crash.
+final class CompanionAddressNormalizationTests: XCTestCase {
+    func testABareHostGetsTheCompanionSchemeAndPort() {
+        XCTAssertEqual(
+            CompanionLink.normalize("studio.local")?.absoluteString,
+            "ws://studio.local:8787")
+    }
+
+    /// Tunnel addresses get pasted with the scheme the browser showed.
+    func testAWebSchemeBecomesItsSocketTwin() {
+        XCTAssertEqual(
+            CompanionLink.normalize("https://box.trycloudflare.com")?.absoluteString,
+            "wss://box.trycloudflare.com")
+        XCTAssertEqual(
+            CompanionLink.normalize("http://127.0.0.1:8787")?.absoluteString,
+            "ws://127.0.0.1:8787")
+        XCTAssertEqual(
+            CompanionLink.normalize("HTTPS://Box.Example.com")?.absoluteString,
+            "wss://Box.Example.com")
+    }
+
+    func testAnAlreadySocketAddressIsKeptWhole() {
+        XCTAssertEqual(
+            CompanionLink.normalize("ws://studio.local:8787/?t=abc")?.absoluteString,
+            "ws://studio.local:8787/?t=abc")
+    }
+
+    func testASchemeTheSocketCannotDialIsRefused() {
+        XCTAssertNil(CompanionLink.normalize("ssh://studio.local"))
+        XCTAssertNil(CompanionLink.normalize("wsss://studio.local:8787"))
+        XCTAssertNil(CompanionLink.normalize("file:///etc/hosts"))
+        XCTAssertNil(CompanionLink.normalize("termio://session/abc"))
+    }
+
+    func testAnAddressWithNoHostIsRefused() {
+        XCTAssertNil(CompanionLink.normalize("ws://"))
+        XCTAssertNil(CompanionLink.normalize("ws:///path"))
+        XCTAssertNil(CompanionLink.normalize("   "))
+    }
+}
+
+/// The Mac names a refusal, the phone words it. A code the phone knows must
+/// never reach a screen as the Mac's English, and a code it does not know must
+/// never reach one as nothing at all.
+final class CompanionRefusalWordingTests: XCTestCase {
+    func testAKnownCodeIsWordedByThePhone() {
+        let text = CompanionRefusal.text(
+            code: WireRefusal.clientTooOld,
+            fallback: "Update Termio on your phone to connect to this Mac.")
+
+        XCTAssertEqual(text, localized("Update Termio on this phone to connect to this Mac."))
+    }
+
+    /// An older Mac names nothing, so its sentence is the whole story.
+    func testAnUncodedRefusalKeepsTheMacsWords() {
+        XCTAssertEqual(
+            CompanionRefusal.text(code: nil, fallback: "unknown project"), "unknown project")
+    }
+
+    /// A newer Mac may name a reason this build has no wording for. Showing its
+    /// English beats showing an empty zero state.
+    func testAnUnknownCodeFallsBackToTheMacsWords() {
+        XCTAssertEqual(
+            CompanionRefusal.text(code: "some_future_reason", fallback: "the Mac said no"),
+            "the Mac said no")
     }
 }

@@ -36,10 +36,15 @@ final class TunnelManager: ObservableObject {
         var binaryName: String { spec?.binaryName ?? "" }
 
         /// Everything the manager needs to run this provider, in one place.
-        /// `nil` for `.off`. Bakes in the companion port and the host arch so
-        /// the call sites stay provider-agnostic.
-        var spec: Spec? {
-            let port = String(CompanionServer.defaultPort)
+        /// `nil` for `.off`. Bakes in the served port and the host arch so the
+        /// call sites stay provider-agnostic.
+        var spec: Spec? { spec(servedPort: PhoneServing.port) }
+
+        /// Parameterised by port because the reaper has to name a tunnel this
+        /// Mac spawned under the *other* serving mode — a switch mid-run leaves
+        /// an orphan advertising a public URL for a port nothing answers on.
+        func spec(servedPort: UInt16) -> Spec? {
+            let port = String(servedPort)
             #if arch(arm64)
             let arch = "arm64"
             #else
@@ -97,7 +102,7 @@ final class TunnelManager: ObservableObject {
         }
 
         /// A `pkill -f` substring that matches *our* tunnel for this provider and
-        /// nothing else. Always port-scoped (the argv carries the companion port),
+        /// nothing else. Always port-scoped (the argv carries the served port),
         /// so a user's unrelated tunnel on another port is spared.
         ///
         /// A custom relay is deliberately excluded: its argv is a user-typed
@@ -107,9 +112,10 @@ final class TunnelManager: ObservableObject {
         /// doing it on every restart for as long as the command sits in
         /// settings, whichever provider is actually selected. Custom orphans
         /// are reaped by recorded pid instead; see `reapStrayCustomTunnel`.
-        var reapPattern: String? {
+        func reapPattern(servedPort: UInt16) -> String? {
             guard self != .custom else { return nil }
-            return spec.map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
+            return spec(servedPort: servedPort)
+                .map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
         }
 
         /// Where tunelo keeps the Ed25519 key its stable subdomain is derived from.
@@ -264,6 +270,15 @@ final class TunnelManager: ObservableObject {
         // was last true. That was a spinner mid-start, and "Connected" with a
         // URL that no longer resolves when a live tunnel was torn down.
         status = .off
+    }
+
+    /// The served port moved under a running tunnel (the Mobile pane's Direct
+    /// Attach switch). A no-op when the provider is Off, so flipping the switch
+    /// on a LAN-only Mac spawns nothing.
+    func restartIfRunning() {
+        guard provider != .off else { return }
+        consecutiveFailures = 0
+        restart()
     }
 
     func setProvider(_ newProvider: Provider) {
@@ -545,7 +560,15 @@ final class TunnelManager: ObservableObject {
     /// SIGKILL (not TERM) because cloudflared drains slowly on TERM and we want
     /// the port's advertised URL gone *now*, before we mint a fresh one.
     private static func reapStrayTunnels() {
-        for pattern in Provider.allCases.compactMap(\.reapPattern) {
+        // Both ports, not just the one being served now: flipping the Mobile
+        // pane's switch changes which port the next tunnel fronts, and the
+        // orphan left on the old one is exactly the stale public URL a paired
+        // phone is still pinned to.
+        let ports = [AppChannel.companionPort, AppChannel.devicePort]
+        let patterns = ports.flatMap { port in
+            Provider.allCases.compactMap { $0.reapPattern(servedPort: port) }
+        }
+        for pattern in patterns {
             let pkill = Process()
             pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
             pkill.arguments = ["-9", "-f", pattern]

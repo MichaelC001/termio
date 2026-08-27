@@ -235,3 +235,45 @@ final class WireProtocolTests: XCTestCase {
         XCTAssertEqual(CompanionServer.loggableTag(""), "(empty)")
     }
 }
+
+/// A refusal is the one server message a person has to read and act on, and the
+/// Mac has no idea what language the phone is in. The code is what the phone
+/// words; the English is what a phone too old to know the code shows instead —
+/// so a refusal that loses either half loses a reader.
+final class WireRefusalTests: XCTestCase {
+    func testARefusalCarriesItsCodeAndItsEnglish() throws {
+        let message = CompanionControl.error(
+            message: "Update Termio on your phone to connect to this Mac.",
+            code: WireRefusal.clientTooOld
+        )
+
+        let decoded = try XCTUnwrap(CompanionControl.decode(message.encoded()))
+
+        XCTAssertEqual(decoded, message)
+    }
+
+    /// An older Mac sends no code at all. Its sentence still has to arrive.
+    func testARefusalWithoutACodeStillDecodes() throws {
+        let decoded = try XCTUnwrap(
+            CompanionControl.decode(#"{"t":"error","message":"unknown project"}"#))
+
+        XCTAssertEqual(decoded, .error(message: "unknown project", code: nil))
+    }
+
+    /// Errors that are not refusals stay codeless, so the phone shows the Mac's
+    /// own words rather than a wording table entry that does not exist.
+    func testARequestErrorNamesNoCode() {
+        let encoded = CompanionControl.error(message: "unknown project").encoded()
+
+        XCTAssertEqual(encoded, #"{"t":"error","message":"unknown project"}"#)
+    }
+
+    func testAQuoteInARefusalSurvivesEncoding() throws {
+        let message = CompanionControl.error(
+            message: #"could not read "a".txt"#, code: WireRefusal.unauthorized)
+
+        let decoded = try XCTUnwrap(CompanionControl.decode(message.encoded()))
+
+        XCTAssertEqual(decoded, message)
+    }
+}

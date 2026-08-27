@@ -157,6 +157,18 @@ final class WebSocketLink: NSObject {
 
     private func connect() {
         guard !stopped else { return }
+        // `webSocketTask(with:)` raises an uncatchable ObjC exception for a URL
+        // it cannot dial, so a link that would abort the process stays down
+        // instead. Callers validate before they get here; this is the backstop
+        // that keeps a bad address a dead link rather than a dead app.
+        guard let scheme = configuration.url.scheme?.lowercased(),
+              scheme == "ws" || scheme == "wss", configuration.url.host != nil
+        else {
+            Log.companion.error(
+                "\(self.configuration.name, privacy: .public) cannot dial \(self.configuration.url.scheme ?? "<no scheme>", privacy: .public):// — the socket needs a ws(s) URL with a host"
+            )
+            return
+        }
         currentTaskDidDie = false
         task?.cancel(with: .goingAway, reason: nil)
         let task = makeTask()

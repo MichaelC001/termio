@@ -54,6 +54,32 @@ extension Termiod {
         return "\(base)/termiod-\(getuid())\(channelSuffix)/termiod.sock"
     }
 
+    /// The directory the daemon keeps everything that belongs to *one host* in
+    /// — `host.id`, the pairing token, the durable wss settings. Mirrors
+    /// `state_dir()` in termiod/src/paths.rs, which is the configured socket's
+    /// own directory precisely so a channel-scoped socket takes its identity
+    /// with it.
+    static func stateDirectory() -> String {
+        (socketPath() as NSString).deletingLastPathComponent
+    }
+
+    /// The pairing secret that authenticates a WebSocket pipe to this daemon —
+    /// never the session write token that arbitrates who may type.
+    ///
+    /// Read from disk on every call rather than cached, the way `wss.rs` reads
+    /// it per handshake: `termiod pair --rotate` has to sign paired phones out
+    /// on their next dial, and a cached copy would keep letting them in until
+    /// the app was relaunched. nil means nothing has ever paired with this
+    /// daemon.
+    static func pairToken() -> String? {
+        let path = stateDirectory() + "/pair.token"
+        guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return nil
+        }
+        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
+    }
+
     /// What to hand the daemon as `TERMIO_CHANNEL` so it derives the same socket
     /// this app just did. Spelled out even for the release channel: the daemon
     /// may be spawned from a process that already has the variable set to

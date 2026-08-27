@@ -2323,6 +2323,16 @@
         }
       }
     },
+    "Direct Attach": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直接连接"
+          }
+        }
+      }
+    },
     "Discard %lld Files…": {
       "localizations": {
         "zh-Hans": {
@@ -4777,12 +4787,32 @@
         }
       }
     },
+    "Paired iPhones must scan the code again after switching.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换后，已配对的 iPhone 需要重新扫码。"
+          }
+        }
+      }
+    },
     "Pairing Token": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "配对 Token"
+          }
+        }
+      }
+    },
+    "Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让 iPhone 直接连到这台 Mac 的会话宿主。没有会话在跑的项目暂时不会出现。"
           }
         }
       }
@@ -6684,6 +6714,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "搜索失败。"
+          }
+        }
+      }
+    },
+    "The session host answered, but not with a pairing invite.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会话宿主有回应，但返回的不是配对邀请。"
           }
         }
       }

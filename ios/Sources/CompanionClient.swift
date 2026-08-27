@@ -141,14 +141,33 @@ final class CompanionClient {
             onSearchResults?(query, paths, truncated)
         case .changes(let files): onChanges?(files)
         case .diff(let diff): onDiff?(diff)
-        case .error(let reason):
+        case .error(let reason, let code):
+            let refusal = CompanionRefusal.text(code: code, fallback: reason)
             lastServerError = (
-                message: reason,
+                message: refusal,
                 uptime: ProcessInfo.processInfo.systemUptime
             )
-            onError?(reason)
+            onError?(refusal)
         case .sshConfigList(let hosts): onSSHConfig?(hosts)
         default: break
+        }
+    }
+}
+
+/// The Mac's refusals, worded here. A refusal is the one server message a
+/// person has to read and act on, and the Mac has no idea what language this
+/// phone is in — so it names the reason and the phone says it. An older Mac
+/// names nothing, and its English sentence is all there is to show.
+enum CompanionRefusal {
+    static func text(code: String?, fallback: String) -> String {
+        switch code {
+        case WireRefusal.unauthorized:
+            return localized(
+                "This Mac didn't recognize this phone. Scan its QR code again in Settings ▸ Mobile.")
+        case WireRefusal.clientTooOld:
+            return localized("Update Termio on this phone to connect to this Mac.")
+        default:
+            return fallback
         }
     }
 }

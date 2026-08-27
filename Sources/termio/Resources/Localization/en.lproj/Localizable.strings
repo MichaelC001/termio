@@ -478,6 +478,8 @@
 	<string>Device Unavailable</string>
 	<key>Devices</key>
 	<string>Devices</string>
+	<key>Direct Attach</key>
+	<string>Direct Attach</string>
 	<key>Discard %lld Files…</key>
 	<string>Discard %lld Files…</string>
 	<key>Discard Changes</key>
@@ -970,8 +972,12 @@
 	<string>Pair a Phone…</string>
 	<key>Pair your iPhone with the machines you work on</key>
 	<string>Pair your iPhone with the machines you work on</string>
+	<key>Paired iPhones must scan the code again after switching.</key>
+	<string>Paired iPhones must scan the code again after switching.</string>
 	<key>Pairing Token</key>
 	<string>Pairing Token</string>
+	<key>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</key>
+	<string>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</string>
 	<key>Panes</key>
 	<string>Panes</string>
 	<key>Password</key>
@@ -1352,6 +1358,8 @@
 	<string>The read failed.</string>
 	<key>The search failed.</key>
 	<string>The search failed.</string>
+	<key>The session host answered, but not with a pairing invite.</key>
+	<string>The session host answered, but not with a pairing invite.</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
 	<string>The session host on %@. Sessions keep running there after you disconnect.</string>
 	<key>The session host went away</key>

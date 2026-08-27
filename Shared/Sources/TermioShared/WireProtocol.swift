@@ -35,6 +35,18 @@ public enum Wire {
     }
 }
 
+/// Why a connection was refused, as a token both ends agree on rather than a
+/// sentence. A refusal is the one server message a person reads and has to act
+/// on, and the Mac cannot know what language the phone is in — so the reason
+/// travels as a code and the phone words it. English prose still rides along in
+/// `message` for a phone too old to know the code.
+public enum WireRefusal {
+    /// The token was wrong, missing, or arrived too late. Re-pair.
+    public static let unauthorized = "unauthorized"
+    /// The phone speaks a `wire` older than `Wire.minimumClient`.
+    public static let clientTooOld = "client_too_old"
+}
+
 /// The companion wire protocol, shared by the Mac companion server and the iOS
 /// client so the two never drift. v1 is deliberately tiny:
 ///
@@ -158,7 +170,11 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// Mac → phone: the parsed `~/.ssh/config` host blocks.
     case sshConfigList(hosts: [WireSSHHost])
 
-    case error(message: String)
+    /// A refusal. `code` names the reason from `WireRefusal` when the phone is
+    /// expected to word it; `message` is the English the Mac would have shown
+    /// on its own, and stays the whole story for a phone too old to know the
+    /// code. Additive with a safe default, so it costs no `wire` bump.
+    case error(message: String, code: String? = nil)
 
     /// A message this build has no case for — a newer peer's vocabulary. The
     /// receiver ignores it, but it arrives as a value rather than as `nil` so
@@ -269,11 +285,15 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                     ["alias": $0.alias, "hostName": $0.hostName, "user": $0.user, "port": $0.port]
                 },
             ])
-        case .error(let message):
+        case .error(let message, let code):
             let escaped = message
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
-            return #"{"t":"error","message":"\#(escaped)"}"#
+            guard let code else { return #"{"t":"error","message":"\#(escaped)"}"# }
+            let escapedCode = code
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"t":"error","message":"\#(escaped)","code":"\#(escapedCode)"}"#
         case .unsupported(let type):
             // The tag is carried under its own envelope rather than re-emitted
             // as itself. Echoing the raw tag would turn a message this build
@@ -432,7 +452,7 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return .sshConfigList(hosts: hosts)
         case "error":
             guard let message = obj["message"] as? String else { return nil }
-            return .error(message: message)
+            return .error(message: message, code: obj["code"] as? String)
         case "unsupported":
             // Only reachable from this build's own `encoded()`; a peer never
             // originates it. Named so the envelope round-trips instead of

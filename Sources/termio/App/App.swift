@@ -43,10 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Rebuilds the main menu when the user rebinds a shortcut in Settings.
     private var keybindingsObserver: NSObjectProtocol?
     private var companionServer: CompanionServer?
+    /// The other half of what this Mac serves a phone: the session protocol,
+    /// spliced onto the daemon. Exactly one of the two ever runs — see
+    /// `MobileAccess.attachesDirectly`.
+    private var deviceSpliceServer: DeviceSpliceServer?
     private var settingsWindow: NSWindow?
     private var settingsObserver: AnyCancellable?
     /// Starts/stops the companion server + tunnel as the Mobile Access toggle flips.
     private var mobileAccessObserver: AnyCancellable?
+    private var attachModeObserver: AnyCancellable?
     // Drives in-app auto-update. Started only in release builds — a debug build has
     // no Developer-ID signature for Sparkle to validate the appcast's EdDSA against,
     // and we don't want dev runs phoning the update feed. The feed URL and public
@@ -400,8 +405,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Mobile Access is the master switch: only serve (and resume the public
         // tunnel) when it's on. The token gate in the server is what makes
         // fronting it with a tunnel safe.
+        let splice = DeviceSpliceServer()
+        deviceSpliceServer = splice
+        splice.onListenerFailed = {
+            Log.companion.error("device splice not serving — taking the public tunnel down")
+            TunnelManager.shared.suspend()
+        }
+
         if MobileAccess.shared.isEnabled {
-            companion.start()
+            startServing()
             TunnelManager.shared.startIfEnabled()
         }
         // React to the Settings toggle. `dropFirst` skips the value already
@@ -410,15 +422,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] enabled in
-                guard let companion = self?.companionServer else { return }
                 if enabled {
-                    companion.start()
+                    self?.startServing()
                     TunnelManager.shared.startIfEnabled()
                 } else {
                     // Fully dark: drop live phones and kill the public URL.
-                    companion.stop()
+                    self?.stopServing()
                     TunnelManager.shared.suspend()
                 }
+            }
+        // Which server answers is one decision with two consequences — the port
+        // the phone dials and the port the tunnel fronts — so the swap and the
+        // tunnel restart happen together or the published URL points at a port
+        // nothing answers on.
+        attachModeObserver = MobileAccess.shared.$attachesDirectly
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard MobileAccess.shared.isEnabled else { return }
+                self?.stopServing()
+                self?.startServing()
+                TunnelManager.shared.restartIfRunning()
             }
 
         if !pendingOpenURLs.isEmpty {
@@ -428,6 +452,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         maybePromptForSessionControl()
+    }
+
+    /// Start whichever server the Mobile pane's Direct Attach switch selects.
+    /// Exactly one: a Mac answering on both ports would be telling a phone two
+    /// different stories about where its sessions live.
+    private func startServing() {
+        if MobileAccess.shared.attachesDirectly {
+            deviceSpliceServer?.start()
+        } else {
+            companionServer?.start()
+        }
+    }
+
+    /// Stop both, unconditionally. The switch may already have moved by the time
+    /// this runs, and stopping only the server the *current* value names would
+    /// leave the other one holding its port.
+    private func stopServing() {
+        companionServer?.stop()
+        deviceSpliceServer?.stop()
     }
 
     /// A one-time, first-run offer to let agents coordinate. Enabling session control
