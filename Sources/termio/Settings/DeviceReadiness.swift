@@ -350,6 +350,13 @@ final class DevicePaneModel: ObservableObject {
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
             target: device.integrationTarget)
+        // A request the machine never acted on is reported in its own words —
+        // it is a sentence, not an agent that refused.
+        if let failure = outcome.failure {
+            apply(state)
+            readiness = .blocked(localized("Couldn’t install hooks on \(device.name).\n\(failure)"))
+            return
+        }
         // A rung that reached the machine but could not write every agent's config
         // is still a failure of *this* rung, and the one worth naming.
         let refused = outcome.failed

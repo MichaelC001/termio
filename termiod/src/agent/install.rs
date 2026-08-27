@@ -1328,6 +1328,17 @@ pub(super) mod tests {
     use super::*;
     use crate::agent::manifest::AgentManifest;
 
+    /// The wire spelling the app sends (`Termiod.AgentHookReporter` in
+    /// `TermioShared`). Renaming a variant here without the app is how every
+    /// hook install in one release failed with "unknown variant".
+    #[test]
+    fn a_reporter_is_spelled_the_way_the_app_sends_it() {
+        assert_eq!(serde_json::to_string(&Reporter::ThisMac).unwrap(), r#"{"kind":"this_mac"}"#);
+        assert_eq!(serde_json::to_string(&Reporter::Device).unwrap(), r#"{"kind":"device"}"#);
+        let parsed: Reporter = serde_json::from_str(r#"{"kind":"device"}"#).unwrap();
+        assert_eq!(parsed, Reporter::Device);
+    }
+
     /// A request whose binary is stated rather than resolved, so a test can
     /// assert generated output byte for byte without depending on where the
     /// test binary happens to sit.
