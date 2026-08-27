@@ -15,16 +15,14 @@
 //!   next destructive writer cannot out-merge us;
 //! - write nothing when the bytes already match.
 //!
-//! There is a fifth rule that only shows up on the *second* install, and it is
-//! the one the SSH arm got wrong: **an install must replace what the last one
-//! wrote.** Each dialect has its own way of recognising its own work — a JSON
-//! group by its command, a script and a plugin by their marker, the TOML block
-//! by its begin/end banner — and every one of them has to hold, or a reinstall
-//! quietly doubles the hooks instead of refreshing them.
+//! A fifth rule only shows up on the *second* install: **it must replace what
+//! the last one wrote.** Each dialect recognises its own work differently — a
+//! JSON group by its command, a script and a plugin by their marker, the TOML
+//! block by its banner — and every one has to hold, or a reinstall doubles the
+//! hooks instead of refreshing them.
 //!
-//! Stages 2 and 3 of `docs/design/20260825-agent-integration-moves-to-termiod.md`:
-//! all six dialects plus the skill. The generated plugin sources live in
-//! [`super::plugin`].
+//! See `docs/design/20260825-agent-integration-moves-to-termiod.md`. The
+//! generated plugin sources live in [`super::plugin`].
 
 use super::machine;
 use super::manifest::{AgentCatalog, AgentDefinition, HookDialect, HookEvent, HookSpec, HookType};
@@ -43,14 +41,10 @@ pub const SOCKET_MARKER: &str = "agent-status.sock";
 pub const CLI_MARKER: &str = "agent report";
 
 /// The same role for a hook on a box, which has no `termio` and no app to report
-/// to and instead names the daemon's own session id.
-///
-/// The SSH arm never had this: it emitted `set-status` hooks it could not
-/// afterwards recognize, so a second install on the same device appended a
-/// duplicate of every entry instead of replacing it. It is the fingerprint
-/// `docs/design/20260824-agent-integration-on-a-device.md` §D2 specified;
-/// spelled with the environment variable so it cannot match a user's own tool
-/// that happens to have a `set-status` verb.
+/// to and instead names the daemon's own session id. Spelled with the
+/// environment variable so it cannot match a user's own tool that happens to
+/// have a `set-status` verb — without a fingerprint a reinstall appends a
+/// duplicate of every entry instead of replacing it, as the SSH arm did.
 pub const DAEMON_MARKER: &str = "set-status \"$TERMIOD_SESSION_ID\"";
 
 /// Fingerprints of third-party status hooks that full-replace the shared `hooks`
@@ -1025,16 +1019,14 @@ impl PluginFile {
 /// Agents that declare hooks as TOML `[[hooks]]` tables inside their main config
 /// file — currently Kimi Code.
 ///
-/// There is no structured merge like the JSON agents get, and deliberately so:
-/// TOML arrays of tables may be non-contiguous, so termio appends one
-/// marker-delimited block at the end of the file and strips it back out by those
-/// markers on reinstall. Only the bytes between the markers are ever touched, so
-/// the user's providers, keys and their own `[[hooks]]` are never disturbed —
-/// the same conservative contract as the JSON dialect, without needing a TOML
-/// parser.
+/// No structured merge, deliberately: TOML arrays of tables may be
+/// non-contiguous, so termio appends one marker-delimited block at the end of
+/// the file and strips it back out by those markers on reinstall. Only the bytes
+/// between the markers are touched, which is the JSON dialect's contract without
+/// needing a TOML parser.
 ///
 /// Kimi reads a hook's exit code (0 = allow) and the shared command ends in
-/// `|| true`, so no clean-stdout handling is required on its blockable events.
+/// `|| true`, so its blockable events need no clean-stdout handling.
 struct TomlHookBlock<'a> {
     path: String,
     spec: Option<&'a HookSpec>,
@@ -1259,22 +1251,16 @@ fn remove(path: &str) {
 /// the merge was computed from. `expected == None` means it must still be
 /// absent.
 ///
-/// A hook is a merge into a file the user also owns and edits, and
+/// A hook merges into a file the user also owns and edits, so a
 /// read-modify-write that ignores what happened in between silently discards
-/// their edits — the one failure this must never produce. Refusing is the whole
-/// guarantee; re-merging in a loop is not, and a loop that keeps rewriting a
-/// file somebody is typing in is its own hazard. So a lost race reports the
-/// agent as not installed, and the setup button is the retry.
+/// their edits. Refusing is the whole guarantee; re-merging in a loop is not,
+/// and rewriting a file somebody is typing in is its own hazard — a lost race
+/// reports the agent as not installed, and the setup button is the retry.
 ///
-/// **The precondition stays now that the writer is on the box.** What went with
-/// the SSH arm is `expect_sha256` — shipping a digest across a network so a
-/// *remote* check-and-swap could be atomic. That existed because the merge and
-/// the file were on opposite ends of a link, and it is gone with the link. The
-/// thing it was protecting is not: the user's own editor is on this machine, and
-/// `~/.claude/settings.json` is a file people keep open. The window is now
-/// microseconds inside one process instead of two round trips, which makes the
-/// check nearly free rather than unnecessary — one extra `read` per file against
-/// silently discarding somebody's edit is not a trade worth taking.
+/// The precondition stays now that the writer runs on the box. The window is
+/// microseconds inside one process rather than two network round trips, which
+/// makes the check nearly free, not unnecessary: the user's editor is on this
+/// machine, and `~/.claude/settings.json` is a file people keep open.
 fn write_if_unchanged(path: &str, data: &[u8], expected: Option<&[u8]>) -> Result<(), String> {
     let current = read_bytes(path);
     if current.as_deref() != expected {

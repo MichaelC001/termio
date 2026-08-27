@@ -46,20 +46,9 @@ public enum Termiod {
     public static let controlCapabilities: [String] = []
 
     /// What a client that *renders a whole device* asks for on its control
-    /// channel — the phone's roster socket and its inspector's.
-    ///
-    /// Wider than `controlCapabilities` because every one of these has a
-    /// consumer here, which is the same rule the attach table follows:
-    ///
-    /// | Capability | Consumer |
-    /// | ---------- | -------- |
-    /// | `events`   | `subscribe` on `roster` + `status`, so the session list is pushed rather than polled |
-    /// | `files`    | `fs_list` / `fs_read` / `fs_match` — the Files pane |
-    /// | `upload`   | `upload_open` / `U` / `upload_commit` — saving an edit, and a photo crossing to the device |
-    ///
-    /// `git` is deliberately absent: nothing on this side decodes its replies
-    /// yet, and offering a capability with nothing behind it is worse than not
-    /// offering it.
+    /// channel: a pushed session list, the Files pane, and a save or a paste
+    /// crossing over. `git` is absent because nothing on this side decodes its
+    /// replies yet, and a capability with nothing behind it is worse than none.
     public static let deviceCapabilities = ["events", "files", "upload"]
 
     public static let protocolVersion: UInt32 = 1
@@ -151,14 +140,9 @@ public enum Termiod {
     }
 
     /// Reassembles frames from a transport whose own message boundaries mean
-    /// nothing to this protocol.
-    ///
-    /// `readFrame` above pulls exactly as many bytes as a header says it needs,
-    /// which a blocking descriptor can do and a WebSocket cannot: the daemon's
-    /// listener splices raw stream bytes into binary messages of whatever size
-    /// the copy loop happened to read, so one message may carry three frames, or
-    /// a third of one. Bytes are accumulated here and cut by the 5-byte header
-    /// instead — the same rule, driven by arrival rather than by demand.
+    /// nothing to this protocol. `readFrame` above pulls exactly what a header
+    /// asks for, which a blocking descriptor can do and a WebSocket cannot — one
+    /// message may carry three frames, or a third of one.
     ///
     /// Not thread-safe: its owner feeds it from one queue.
     public struct FrameReader {
@@ -166,12 +150,10 @@ public enum Termiod {
 
         public init() {}
 
-        /// Every frame that `chunk` completed, in order. A partial frame stays
-        /// buffered for the next chunk.
-        ///
-        /// Throws on a length past `maximumFrameSize` or a kind byte this
-        /// protocol does not define: both mean the stream has lost alignment,
-        /// and every later frame would be garbage read at a garbage offset.
+        /// Every frame that `chunk` completed, in order; a partial one stays
+        /// buffered. Throws on an over-long length or an undefined kind byte,
+        /// which both mean the stream has lost alignment and every later frame
+        /// would be read at a garbage offset.
         public mutating func append(
             _ chunk: Data
         ) throws -> [(kind: FrameKind, payload: Data)] {
@@ -514,11 +496,9 @@ public enum Termiod {
         }
     }
 
-    /// Filename search, which is a different question from `fs_search`'s
-    /// content search: this one matches the *names* in the host's index, and is
-    /// what a "jump to file" field asks. Answered from an index the host keeps
-    /// rather than by walking, so the reply carries how much of the tree that
-    /// index has covered.
+    /// Filename search, which is a different question from `fs_search`'s content
+    /// search: this matches *names* in an index the host keeps, so the reply
+    /// carries how much of the tree that index has covered.
     public struct FsMatchOperation: Encodable, Sendable {
         public let op = "fs_match"
         public let root: String
@@ -535,10 +515,8 @@ public enum Termiod {
     }
 
     /// Reply to `fs_match`: root-relative paths, best first. `coverage` is the
-    /// fraction of the tree the index has walked (0–1), and it is load-bearing
-    /// rather than decoration — a host with no index for this root answers with
-    /// no paths at coverage 0, which means *not indexed* and must never be shown
-    /// as "no matches".
+    /// fraction of the tree the index has walked (0–1) — no paths at coverage 0
+    /// means *not indexed*, and must never be shown as "no matches".
     public struct FsMatchedPayload: Decodable, Sendable {
         public let paths: [String]
         public let coverage: Double
@@ -1016,17 +994,13 @@ public enum Termiod {
     }
 
     /// A workstream status delta — `working · idle · needs_you · done · failed ·
-    /// unknown` (§4). The host reports the *state*; which dot, which words, and
-    /// whether it fires a notification are entirely the client's call.
-    /// A session's agent status, as its own daemon reports it.
+    /// unknown`. The host reports the *state*; which dot, which words, and
+    /// whether it fires a notification are the client's call.
     ///
-    /// Everything past `title` used to exist only on this Mac, carried by a hook
-    /// writing the app's own socket, and a device could not say any of it. One
-    /// report path made them the same message — see the `set_status` op.
-    ///
-    /// **Ordering.** This rides the session's own channel, the same FIFO its
-    /// output goes through, so it cannot overtake bytes the daemon has already
-    /// read and a client is right to apply it on arrival.
+    /// Everything past `title` used to exist only on the Mac, carried by a hook
+    /// writing the app's own socket; the `set_status` op made local and remote
+    /// the same message. It rides the session's own FIFO, so it cannot overtake
+    /// bytes the daemon has already read and is right to apply on arrival.
     public struct StatusPayload: Decodable, Sendable {
         public let session: String
         public let status: String
@@ -1465,16 +1439,9 @@ public enum Termiod {
 }
 
 /// Turns `list`'s flat `[SessionInformation]` into the Workspace → container →
-/// Session tree a viewer draws.
-///
-/// The daemon has no notion of a project: it holds sessions, and a session
-/// carries at most the workstream it was started for. So the grouping is the
-/// client's to do — and it belongs here rather than in one client, because a
-/// phone and a browser looking at the same box must not draw two different
-/// trees out of the same list.
-///
-/// The classification mirrors the desktop's `Workspace` exactly
-/// (`Sources/termio/App/Models.swift`), and turns on two fields and no others:
+/// Session tree a viewer draws. The daemon has no notion of a project, so the
+/// grouping is the client's — and it lives here so a phone and a browser looking
+/// at the same box cannot draw two different trees out of one list.
 ///
 /// | Condition | Container |
 /// | --- | --- |
@@ -1482,24 +1449,20 @@ public enum Termiod {
 /// | no project, an agent | the workspace's **Chats** |
 /// | no project, no agent | the workspace's **Terminals** |
 ///
-/// **`cwd` is never consulted.** A loose shell spawns at `$HOME` and then
-/// carries its own cwd wherever the user walks it, so filing by `cwd` would
-/// invent a folder project named after wherever they happened to `cd` — and
-/// both loose containers would starve while folders appeared that nobody
-/// opened. The cwd of a loose session is incidental; the workstream is identity.
-/// See `docs/design/20260713-loose-terminal-entity.md`.
+/// `cwd` is never consulted: a loose session's cwd is wherever the user walked
+/// it, and filing by it would invent folder projects nobody opened. See
+/// `docs/design/20260713-loose-terminal-entity.md`.
 public enum TermiodRoster {
-    /// What a container is, in the companion wire's own `kind` vocabulary so the
-    /// screens that switch on it need no second spelling.
+    /// The companion wire's own `kind` vocabulary, so the screens that switch on
+    /// it need no second spelling.
     public enum Kind: String, Sendable {
         case folder
         case terminals
         case chats
     }
 
-    /// One container's worth of sessions. `id` is stable across pushes — it is
-    /// derived from what the container *is*, never from a position in a list, so
-    /// a row keeps its identity while the roster churns underneath it.
+    /// `id` is derived from what the container *is*, never from a position in a
+    /// list, so a row keeps its identity while the roster churns underneath it.
     public struct Project: Equatable, Sendable {
         public let id: String
         /// The absolute path on the device: a checkout for a folder, and the
@@ -1510,20 +1473,17 @@ public enum TermiodRoster {
         public let sessions: [Termiod.SessionInformation]
     }
 
-    /// The two loose containers' ids. Named rather than derived so a client can
-    /// also *address* one when starting a session into it, the way the companion
-    /// wire addresses a workspace's funnels by `Wire.looseSectionID`.
+    /// Named rather than derived so a client can also *address* one when
+    /// starting a session into it.
     public static let terminalsProjectID = "termiod:terminals"
     public static let chatsProjectID = "termiod:chats"
 
-    /// Where a loose **shell** spawns on the device: the account's home
-    /// directory, the way launching a new terminal window drops you at `~`.
+    /// A new terminal window drops you at `~`, and so does this.
     public static func looseTerminalRoot(homeDirectory: String) -> String { homeDirectory }
 
-    /// Where a loose **agent** session spawns: a scoped scratch directory, never
-    /// `$HOME` — an autonomous agent turned loose in a home directory can read
-    /// and write `~/.ssh` and everything beside it. The desktop's
-    /// `TermioStore.looseChatRoot`, resolved against the device's own home.
+    /// A scoped scratch directory, never `$HOME`: an autonomous agent turned
+    /// loose in a home directory can read and write `~/.ssh` and everything
+    /// beside it. The desktop's `TermioStore.looseChatRoot`, on the device.
     public static func looseChatRoot(homeDirectory: String) -> String {
         (homeDirectory as NSString).appendingPathComponent(".termio/chats")
     }
@@ -1541,17 +1501,11 @@ public enum TermiodRoster {
         return String(id.dropFirst(prefix.count))
     }
 
-    /// Group `sessions` into the containers above.
-    ///
-    /// Terminals, then Chats, then the folder projects — the desktop's own
-    /// emission order (`CompanionServer.companionRoster`), and each loose
-    /// container appears only when it holds something, so a box with no loose
-    /// sessions shows no empty funnels.
-    ///
-    /// Folders are ordered by path rather than by arrival: the daemon walks a
-    /// hash map to answer `list`, so the same set of sessions comes back in a
-    /// different order every time, and a list that reshuffles under the reader
-    /// between two identical pushes is worse than one merely sorted oddly.
+    /// Terminals, then Chats, then folders — the desktop's own emission order,
+    /// with a loose container appearing only when it holds something. Folders
+    /// sort by path because the daemon answers `list` by walking a hash map, and
+    /// a list that reshuffles between two identical pushes is worse than one
+    /// sorted oddly.
     public static func projects(
         from sessions: [Termiod.SessionInformation], homeDirectory: String
     ) -> [Project] {
@@ -1600,8 +1554,7 @@ public enum TermiodRoster {
         }
     }
 
-    /// Oldest first — a fact about the sessions rather than about the hash map
-    /// they came out of, and the tie-break keeps two sessions created in the
+    /// Oldest first, with a tie-break that keeps two sessions created in the
     /// same second from swapping between pushes.
     private static func ordered(
         _ sessions: [Termiod.SessionInformation]

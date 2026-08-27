@@ -5,33 +5,31 @@ import TermioShared
 /// PTY on the device, carrying keystrokes out and its bytes back.
 ///
 /// Everything the companion transport does over a Mac's relay, this does one hop
-/// earlier — with three differences the protocol makes possible:
+/// earlier, with three differences the protocol makes possible:
 ///
-/// - **A reattach repaints from a snapshot, not a replay.** The daemon's
-///   authoritative VT hands over the *current* screen (`S`) and live bytes
-///   resume on top, instead of a torrent of historical escapes that mangles an
-///   idle TUI. That is the reattach story, and the phone reattaches every time
-///   it unlocks.
-/// - **The grid is arbitrated.** §C.5 makes the PTY's size a host-side barrier
-///   owned by one writer, so `E resized` is the authoritative answer and this
-///   client honours it rather than assuming its own viewport won.
-/// - **Input is gated on a token, not on auth.** Many clients may watch one
-///   session and exactly one may type into it.
+/// - **A reattach repaints from a snapshot, not a replay.** The daemon's VT
+///   hands over the *current* screen (`S`) and live bytes resume on top, rather
+///   than a torrent of historical escapes that mangles an idle TUI. The phone
+///   reattaches every time it unlocks.
+/// - **The grid is arbitrated.** The PTY's size is a host-side barrier owned by
+///   one writer, so `E resized` is authoritative and this client honours it
+///   rather than assuming its own viewport won.
+/// - **Input is gated on a token.** Many clients may watch one session and
+///   exactly one may type into it.
 final class TermiodSession: DeviceSession {
     var onOutput: ((Data) -> Void)?
     var onState: ((DeviceSessionState) -> Void)?
 
     /// How long the grid must hold still before a size goes to the device. Every
-    /// distinct size is a host-side barrier — the session quiesces, resizes, and
-    /// pushes a fresh keyframe to every attachment — so a settling keyboard
-    /// animation must not become a burst of full repaints.
+    /// distinct size is a host-side barrier — quiesce, resize, fresh keyframe to
+    /// every attachment — so a settling keyboard animation must not become a
+    /// burst of full repaints.
     private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(50)
 
     private let sessionName: String
     private let channel: TermiodChannel
-    /// Everything below is touched only on `queue`, which is also the channel's
-    /// delegate queue — so a frame's arrival and this state are already serial
-    /// and PTY bytes never wait behind UI work.
+    /// The state below is touched only here, and this is the channel's delegate
+    /// queue, so PTY bytes never wait behind UI work.
     private let queue = DispatchQueue(label: "sh.termio.mobile.termiod-session")
     private var attached = false
     private var isWriter = false
@@ -44,9 +42,8 @@ final class TermiodSession: DeviceSession {
     private var desiredGrid = TerminalGrid(rows: 0, cols: 0)
     private var authoritativeGrid: TerminalGrid?
     private var resizeGeneration: UInt64 = 0
-    /// A reconnect re-attaches rather than opening a second session, and the
-    /// snapshot is what repaints the screen — so the reader must not be told the
-    /// old link's screen is still valid.
+    /// Whether this screen ever had a session, which is what separates "the
+    /// device refused a request" from "that session is not there".
     private var everAttached = false
 
     init(endpoint: DeviceEndpoint, sessionName: String) {
@@ -87,11 +84,10 @@ final class TermiodSession: DeviceSession {
     }
 
     func stop() {
-        // Leave the stream without killing the session — the whole reason it
-        // lives in a daemon. Sent straight through rather than hopping to the
-        // frame queue first: this runs from a view controller's `deinit`, where
-        // capturing self into a later block is not allowed, and a detach on a
-        // channel that never attached is a no-op the device ignores.
+        // Detach without killing the session — the whole reason it lives in a
+        // daemon. Sent straight through rather than by hopping to the frame
+        // queue: this runs from a view controller's `deinit`, where capturing
+        // self into a later block is not allowed.
         if let payload = try? Termiod.detachPayload() {
             channel.send(kind: .control, payload: payload)
         }
@@ -126,9 +122,9 @@ final class TermiodSession: DeviceSession {
             guard attached, isWriter, desiredGrid.rows > 0, desiredGrid.cols > 0 else { return }
             // Deliberately past the "already this size" check `resize` applies.
             // libghostty drops an unchanged viewport at two layers, so on a cold
-            // attach no resize ever fires and the screen stays blank under a
-            // correct title; this is the call that has to put an `R` on the wire
-            // regardless, and the fresh keyframe behind it is the repaint.
+            // attach no resize fires and the screen stays blank under a correct
+            // title. This puts an `R` on the wire regardless, and the keyframe
+            // behind it is the repaint.
             sendResize(desiredGrid)
         }
     }

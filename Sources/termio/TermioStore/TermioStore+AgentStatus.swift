@@ -14,20 +14,14 @@ extension TermioStore {
     /// Brings up the hook socket and aligns `~/.claude/settings.json` with the
     /// current setting. The listener always runs (it is harmless when no hooks are
     /// installed); only the settings-file side is toggled.
-    /// Starts the status upkeep this app still owns.
+    /// Starts the status upkeep this app still owns. It no longer *receives*
+    /// status — every hook reports to the daemon that owns its PTY, and the app
+    /// reads `E status` off the session's own channel.
     ///
-    /// It no longer *receives* status. Every hook reports to the daemon that
-    /// owns its PTY, and the app reads `E status` off the session's own channel
-    /// (`applyTermiodStatus`) — one path, whichever machine the agent runs on.
-    ///
-    /// What stays here is the half that reads a **screen**, because that is the
-    /// half a daemon cannot do for a local session: the stale-working sweep
-    /// below, the streak promotion, and the `OSC 0/2` title classification. For
-    /// a device the authoritative VT is the daemon's; for this Mac it is the
-    /// app's own surface. They are the only status signal an agent with no hook
-    /// system has, so they are not leftovers to tidy away — they stay until the
-    /// VT itself moves (docs/design/20260819-unify-server-plane.md). Deleting
-    /// them would silently take that fallback with them.
+    /// What stays is the half that reads a **screen**: the stale-working sweep,
+    /// the streak promotion, and the `OSC 0/2` title classification. They are
+    /// the only status an agent with no hook system has, so they stay until the
+    /// VT itself moves (docs/design/20260819-unify-server-plane.md).
     func startHookMonitoring() {
         installedHooksEnabled = settings.agentHooksEnabled
         syncHooksInstallation()

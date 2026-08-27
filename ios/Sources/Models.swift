@@ -384,11 +384,10 @@ struct DeviceEndpoint: Equatable {
     }
 }
 
-/// One machine this phone has paired with — the Slack-workspace model: several
-/// stay paired, one is active at a time. `id` is the peer's stable identity
-/// (the Mac's `macID`, a box's `host_id`); until the first roster names it (a
-/// fresh companion pairing, or an older Mac that never will) it holds a locally
-/// minted placeholder that `CompanionLink.adoptIdentity` replaces in place.
+/// One machine this phone has paired with — several stay paired, one is active.
+/// `id` is the peer's stable identity (a Mac's `macID`, a box's `host_id`), and
+/// until the first roster names it, a locally minted placeholder that
+/// `CompanionLink.adoptIdentity` replaces in place.
 struct PairedMac: Codable, Equatable {
     var id: String
     var name: String
@@ -404,9 +403,8 @@ struct PairedMac: Codable, Equatable {
     /// the invite's `url`. nil for the companion wire, which checks none.
     var origin: String?
 
-    /// The URL the socket dials. The companion wire carries its token as the
-    /// `t` query param — the shape the Mac's QR encodes and `CompanionClient`
-    /// reads the token back out of; termiod carries it as a subprotocol, so its
+    /// The companion wire carries its token as the `t` query param, the shape
+    /// the Mac's QR encodes; termiod carries it as a subprotocol, so a termiod
     /// address dials as stored.
     var connectURL: URL? {
         guard var components = URLComponents(string: address) else { return nil }
@@ -514,18 +512,12 @@ enum CompanionLink {
     /// Where and how to reach the active peer — nil when nothing is paired.
     static var savedEndpoint: DeviceEndpoint? { activeMac?.endpoint }
 
-    /// A scanned QR or typed address, whichever screen it came from — the
-    /// scanner hands back a raw string and parses nothing, so this is the one
-    /// place a pairing is understood.
-    ///
-    /// A companion address pairs the moment it parses, which is the shipped
-    /// behaviour. A `termio://device` invite does not: per D4 it dials once and
-    /// waits for `hello_ok` before anything is written, because saving an
-    /// unverified address is what produced the companion's worst failure mode —
-    /// paired, silently unreachable, and indistinguishable from a bug.
-    ///
-    /// Returns false for an address that does not parse; `completion` (main
-    /// queue) carries the real outcome, which for an invite arrives later.
+    /// The one place a pairing is understood: the scanner hands back a raw
+    /// string and parses nothing. A companion address pairs the moment it
+    /// parses; a `termio://device` invite dials first and waits for `hello_ok`,
+    /// because saving an unverified address is what left the companion paired
+    /// and silently unreachable. Returns false for an address that does not
+    /// parse — `completion` carries the real outcome, later, on the main queue.
     @discardableResult
     static func pair(
         rawAddress: String, completion: ((Result<Void, PairingFailure>) -> Void)? = nil
@@ -581,9 +573,8 @@ enum CompanionLink {
         }
     }
 
-    /// The four fields `termiod pair` puts in a `termio://device` link. No
-    /// display name: device architecture §4 leaves that to the client, exactly
-    /// as `PairedMac.name` does for a Mac.
+    /// What `termiod pair` puts in a `termio://device` link. No display name:
+    /// the host never supplies one, so `PairedMac.name` stands.
     struct DeviceInvite: Equatable {
         /// The dial URL, already resolved to `ws(s)://…/ws`.
         let url: URL
@@ -651,10 +642,9 @@ enum CompanionLink {
         return "\(webScheme)://\(host)\(port)"
     }
 
-    /// D4's verify-before-save: dial the box, wait for `hello_ok`, and only then
-    /// write it to the paired list — keyed by the identity the daemon answered
-    /// with rather than the one the QR claimed, so a box already known through
-    /// another route is updated instead of duplicated.
+    /// Verify before saving: dial the box, wait for `hello_ok`, and key the
+    /// entry by the identity the daemon answered with rather than the one the QR
+    /// claimed, so a box already known by another route is not duplicated.
     private static func pair(
         invite: DeviceInvite, completion: ((Result<Void, PairingFailure>) -> Void)?
     ) {

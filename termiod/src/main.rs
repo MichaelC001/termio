@@ -135,15 +135,14 @@ enum Cmd {
 
     /// Set agent/workstream status metadata for a session.
     ///
-    /// This is what every installed hook runs, on every machine. The mining
-    /// flags exist because a hook's host hands it a JSON blob on stdin and the
-    /// hook is the only thing that ever sees it — mining here is what lets a
-    /// device agent carry the transcript path, the conversation id, the running
-    /// tool and a first-prompt label, which before this it could not say at all.
+    /// What every installed hook runs, on every machine. The mining flags exist
+    /// because a hook's host hands it a JSON blob on stdin that nothing else
+    /// sees, so mining here is what lets a device agent carry the transcript
+    /// path, the conversation id, the running tool and a first-prompt label.
     ///
-    /// Flag names match `termio agent report`'s deliberately: that is the public
-    /// hook contract, it now forwards here, and two spellings of one vocabulary
-    /// is how the two report forms drifted apart in the first place.
+    /// Flag names match `termio agent report`'s deliberately: it is the public
+    /// hook contract and now forwards here, and two spellings of one vocabulary
+    /// is how the report forms drifted apart in the first place.
     SetStatus {
         /// Session id or name.
         target: String,
@@ -402,12 +401,9 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
     Ok(())
 }
 
-/// The host's JSON payload on stdin, or `None`.
-///
-/// Never read from a tty. A hook invoked without its payload piped in would
-/// otherwise leave this waiting on the terminal forever, while a closed or
-/// absent stdin reads instantly as empty — and a hook that hangs is worse than
-/// one that reports nothing, because it hangs the agent's turn with it.
+/// The host's JSON payload on stdin, or `None`. Never read from a tty: a hook
+/// invoked without its payload piped in would wait on the terminal forever, and
+/// a hook that hangs hangs the agent's turn with it.
 fn read_hook_payload() -> Option<serde_json::Value> {
     use std::io::Read;
     if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
