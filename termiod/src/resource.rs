@@ -631,6 +631,9 @@ fn absorb(
         seen.clear();
         return;
     }
+    if is_read_only_access(&event.kind) {
+        return;
+    }
     for path in event.paths {
         match classify(&path) {
             Classified::Ignored => {}
@@ -650,6 +653,29 @@ fn absorb(
                 }
             }
         }
+    }
+}
+
+/// Reading a directory is not a change to it — and on Linux, saying otherwise
+/// is a closed loop. `notify`'s inotify backend watches `IN_OPEN`
+/// (notify-8.2.0 `inotify.rs`, `WatchMask::OPEN`), so the name index's own
+/// `read_dir` of a directory in a batch is reported back as that directory
+/// changing, which produces the next batch, which re-walks it. Measured against
+/// a Linux host: one lap per `DEBOUNCE` on an empty, untouched directory,
+/// forever — and since the watch only retires on its idle tick, which never
+/// fires while it is chattering, it never stops. Every batch also drives a
+/// `git status` run (`git_loop`), so the cost lands on the user's box, not just
+/// on the wire.
+///
+/// Closing a file after *writing* it (`IN_CLOSE_WRITE`) is a change and stays.
+/// macOS never saw this: FSEvents does not report reads at all, which is why
+/// the loop is invisible on the platform the daemon is developed on.
+fn is_read_only_access(kind: &notify::EventKind) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    match kind {
+        notify::EventKind::Access(AccessKind::Close(AccessMode::Write)) => false,
+        notify::EventKind::Access(_) => true,
+        _ => false,
     }
 }
 
@@ -738,6 +764,43 @@ mod tests {
         }
         assert!(pending.full_rescan, "storm must set full_rescan");
         assert!(pending.paths.is_empty(), "paths are dropped once rescanning");
+    }
+
+    /// The index re-walks every directory a batch names, and on Linux that read
+    /// comes back as an `IN_OPEN` on the same directory. Treating it as a change
+    /// makes the watch feed itself forever, so a read must produce no batch at
+    /// all — while a write that closes still must.
+    #[test]
+    fn reading_a_directory_is_not_a_change_but_closing_a_written_file_is() {
+        use notify::event::{AccessKind, AccessMode};
+        let mut pending = FsBatch::default();
+        let mut seen = std::collections::HashSet::new();
+
+        for kind in [
+            notify::EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            notify::EventKind::Access(AccessKind::Read),
+            notify::EventKind::Access(AccessKind::Close(AccessMode::Read)),
+        ] {
+            absorb(
+                Ok(notify::Event::new(kind).add_path(PathBuf::from("/repo/src/main.rs"))),
+                &mut pending,
+                &mut seen,
+            );
+        }
+        assert!(pending.paths.is_empty(), "a read is not a change");
+        assert!(!pending.full_rescan);
+
+        absorb(
+            Ok(
+                notify::Event::new(notify::EventKind::Access(AccessKind::Close(
+                    AccessMode::Write,
+                )))
+                .add_path(PathBuf::from("/repo/src/main.rs")),
+            ),
+            &mut pending,
+            &mut seen,
+        );
+        assert_eq!(pending.paths, vec!["/repo/src".to_string()]);
     }
 
     /// A watch with no OS watcher behind it, so the ring and replay rules can
