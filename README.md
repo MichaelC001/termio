@@ -107,6 +107,11 @@ TUI, not a chat summary. A key bar puts esc, tab, ctrl, and arrows above the
 keyboard, and hold-to-speak transcribes straight into the prompt. Free, in
 public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
+<p>
+  <img alt="Termio on iPhone: the sessions in a project, each reporting its status" src="web/landing/public/screenshots/iphone-sessions.webp" width="260" />
+  <img alt="Termio on iPhone: a live agent session with the key bar above the keyboard" src="web/landing/public/screenshots/iphone-session-keys.webp" width="260" />
+</p>
+
 ## Architecture
 
 Termio is moving every session onto `termiod`, a small Rust daemon that owns the
@@ -162,7 +167,12 @@ web client, Windows, or the iOS companion — join the Discord and say hi, or
 just pick up an issue.
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — chat with the developer and other users
+- **WeChat group** — Chinese-speaking users, scan the QR code below
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — bugs and feature requests
+
+<img alt="WeChat group QR code" src="web/landing/public/wechat-group.png" width="220" />
+
+The WeChat code expires every few days. If it has, ask in Discord and it gets refreshed.
 
 ## Contributors
 
