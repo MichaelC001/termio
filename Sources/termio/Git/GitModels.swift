@@ -42,6 +42,58 @@ struct GitChange: Identifiable, Hashable, Sendable {
     var directory: String { (path as NSString).deletingLastPathComponent }
 }
 
+/// Reading a device's status into the pane's own row type. An extension, not a
+/// member, so `GitChange` keeps its memberwise initializer.
+extension GitChange {
+    /// One row of a device's `git_changed` batch, in the pane's own vocabulary.
+    ///
+    /// `nil` for a status the row cannot draw: an ignored file, which the local
+    /// parser drops for the same reason, and a status this build does not know.
+    /// The two-axis form is what decides `isStaged` — the worktree axis wins
+    /// when it moved, exactly as `GitService.make(xy:path:untracked:)` reads
+    /// porcelain v2 on this Mac, so a row means the same thing on either road.
+    init?(device entry: Termiod.GitStatusEntryPayload) {
+        let status: GitFileStatus
+        var staged = false
+        switch entry.status {
+        case .untracked:
+            status = .untracked
+        case .unmerged:
+            status = .conflicted
+        case .ignored, .unknown:
+            return nil
+        case .tracked(let index, let worktree):
+            let primary = worktree == "unmodified" ? index : worktree
+            status = GitFileStatus(code: Self.letter(for: primary))
+            staged = index != "unmodified" && worktree == "unmodified"
+        }
+        self.init(
+            path: entry.path,
+            status: status,
+            isUntracked: status == .untracked,
+            additions: entry.additions,
+            deletions: entry.deletions,
+            originalPath: entry.originalPath,
+            isStaged: staged,
+            isBinary: entry.binary)
+    }
+
+    /// `git.rs`'s `GitStatusCode`, back to the porcelain letter `GitFileStatus`
+    /// already reads. Going through the letter rather than adding a second
+    /// mapping keeps one definition of what a status means.
+    private static func letter(for code: String) -> Character {
+        switch code {
+        case "modified": return "M"
+        case "type_changed": return "T"
+        case "added": return "A"
+        case "deleted": return "D"
+        case "renamed": return "R"
+        case "copied": return "C"
+        default: return "M"
+        }
+    }
+}
+
 /// One commit in the branch's history, parsed from `git log`. Shown as a row in
 /// the git pane's History tab; selecting it lists the files it touched, each of
 /// which opens that commit's diff over the terminal.
@@ -118,6 +170,10 @@ enum GitFileStatus: Hashable, Sendable {
 /// can run `git diff` for the file without re-deriving it.
 struct GitDiffRequest: Hashable, Sendable {
     let repoRoot: String
+    /// The machine `repoRoot` is a path on, when it is not this one. The overlay
+    /// asks that device for the diff instead of running `git` here — a path from
+    /// another box means nothing to this one's filesystem.
+    var device: TermiodRoute? = nil
     let change: GitChange
     /// When set, the overlay shows the file's diff *as of that commit*
     /// (`git show <sha>`) rather than the working-tree diff — the History tab's
