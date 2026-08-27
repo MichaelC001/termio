@@ -41,12 +41,32 @@
         }
       }
     },
+    "%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 有响应，但返回的不是配对邀请。它的 termiod 可能比本应用旧——重新部署一次。"
+          }
+        }
+      }
+    },
     "%@ didn’t come up — check the network and retry": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "%@ 未能启动——请检查网络后重试"
+          }
+        }
+      }
+    },
+    "%@ has nothing to pair against": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上没有可配对的目标"
           }
         }
       }
@@ -327,6 +347,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "1 个结果"
+          }
+        }
+      }
+    },
+    "A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有当机器上的 termiod 正在运行、并且可以从外部访问时才能配对——需要隧道，或在它前面加一层代理。"
           }
         }
       }
@@ -758,6 +788,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在询问 %@ 上有什么。"
+          }
+        }
+      }
+    },
+    "Asking %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在询问 %@…"
           }
         }
       }
@@ -1372,6 +1412,16 @@
         }
       }
     },
+    "Closes every session in it. The folders on disk are left alone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "会关闭其中的所有会话。磁盘上的文件夹不受影响。"
+          }
+        }
+      }
+    },
     "Closing it stops %lld session(s). The folders on disk are left alone.": {
       "localizations": {
         "zh-Hans": {
@@ -1642,6 +1692,16 @@
         }
       }
     },
+    "Copy Invite": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝邀请"
+          }
+        }
+      }
+    },
     "Copy Link": {
       "localizations": {
         "zh-Hans": {
@@ -1718,6 +1778,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "拷贝 ssh 命令"
+          }
+        }
+      }
+    },
+    "Could not run ssh: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法运行 ssh：%@"
           }
         }
       }
@@ -2073,6 +2143,16 @@
         }
       }
     },
+    "Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
+          }
+        }
+      }
+    },
     "Device Unavailable": {
       "localizations": {
         "zh-Hans": {
@@ -2353,12 +2433,32 @@
         }
       }
     },
+    "Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有与 %@ 配对的 iPhone 都会退出登录，需重新扫描新的二维码才能重新连接。"
+          }
+        }
+      }
+    },
     "Every paired iPhone is signed out and must re-scan the new QR to reconnect.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "所有已配对的 iPhone 都会退出登录，需重新扫描新的二维码才能重新连接。"
+          }
+        }
+      }
+    },
+    "Exited with status %lld.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出状态 %lld。"
           }
         }
       }
@@ -3314,6 +3414,16 @@
         }
       }
     },
+    "Mobile": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机"
+          }
+        }
+      }
+    },
     "Mobile Access": {
       "localizations": {
         "zh-Hans": {
@@ -4135,16 +4245,6 @@
         }
       }
     },
-    "Off": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未开启"
-          }
-        }
-      }
-    },
     "Off — LAN only": {
       "localizations": {
         "zh-Hans": {
@@ -4161,6 +4261,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。"
+          }
+        }
+      }
+    },
+    "On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。"
           }
         }
       }
@@ -4407,12 +4517,32 @@
         }
       }
     },
+    "Pair": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对"
+          }
+        }
+      }
+    },
     "Pair a Phone…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "配对手机…"
+          }
+        }
+      }
+    },
+    "Pair your iPhone with the machines you work on": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把 iPhone 与你正在使用的机器配对"
           }
         }
       }
@@ -4653,6 +4783,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "项目"
+          }
+        }
+      }
+    },
+    "Public address": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "公网地址"
           }
         }
       }
@@ -4973,6 +5113,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "移除此自定义 Agent 及其配置文件。现有会话会继续运行。"
+          }
+        }
+      }
+    },
+    "Remove…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除…"
           }
         }
       }
@@ -6118,6 +6268,16 @@
         }
       }
     },
+    "The machine everything filed under this workspace lives on.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "归入这个工作区的一切所在的机器。"
+          }
+        }
+      }
+    },
     "The project and session list. Kept separate from the terminal font, and need not be monospaced.": {
       "localizations": {
         "zh-Hans": {
@@ -6518,6 +6678,16 @@
         }
       }
     },
+    "This workspace is no longer on your list.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个工作区已不在你的列表中。"
+          }
+        }
+      }
+    },
     "Timed out": {
       "localizations": {
         "zh-Hans": {
@@ -6709,6 +6879,16 @@
         }
       }
     },
+    "Update ready": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新已就绪"
+          }
+        }
+      }
+    },
     "Updated.": {
       "localizations": {
         "zh-Hans": {
@@ -6745,6 +6925,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "用所选内容查找"
+          }
+        }
+      }
+    },
+    "Used for this invite only. To make it stick, start the daemon there with --wss-origin.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅用于本次邀请。要长期生效，请在那台机器上用 --wss-origin 启动守护进程。"
           }
         }
       }
@@ -6829,6 +7019,16 @@
         }
       }
     },
+    "What this workspace is called in the sidebar.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个工作区在侧栏中显示的名称。"
+          }
+        }
+      }
+    },
     "When on, selecting text copies it straight to the clipboard.": {
       "localizations": {
         "zh-Hans": {
@@ -6865,6 +7065,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "是否启用这些功能，以及把它们装到这台 Mac 上。"
+          }
+        }
+      }
+    },
+    "Which machine your iPhone connects to. Each one serves its own sessions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone 连接到哪台机器。每台机器各自提供自己的会话。"
           }
         }
       }
@@ -6909,12 +7119,12 @@
         }
       }
     },
-    "Workspace actions": {
+    "Workspace Unavailable": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "工作区操作"
+            "value": "工作区不可用"
           }
         }
       }

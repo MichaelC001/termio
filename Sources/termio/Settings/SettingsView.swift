@@ -67,13 +67,20 @@ struct SettingsView: View {
                             // `Section` — which does leave the right gap — squares
                             // off the top corners of its first row's pill.
                             .padding(.top, index > 0 && position == 0 ? 13 : 0)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10))
+                            // Leading is left at zero and paid back in `row(for:)`
+                            // instead — see `settingsSidebarBaseIndent`. Trailing
+                            // behaves, so it is set here and only has to make up
+                            // the ~4pt the list already leaves on that side.
+                            .listRowInsets(EdgeInsets(
+                                top: 1, leading: 0,
+                                bottom: 1, trailing: settingsSidebarPillInset - 4))
                             .tag(tab)
                             // Strips the source list's own selection fill, which
                             // would otherwise draw the full row height behind the
-                            // pill. Mounted in a row: that is where the walk-up
-                            // reaches the table (see `OutlineViewFixups`).
-                            .background(OutlineViewFixups())
+                            // pill, and takes its leading indent with it. Mounted
+                            // in a row: that is where the walk-up reaches the
+                            // table (see `OutlineViewFixups`).
+                            .background(OutlineViewFixups(style: .fullWidth))
                     }
                 }
             }
@@ -90,7 +97,28 @@ struct SettingsView: View {
                         // title + subtitle into one inline "Title – Subtitle" line
                         // beside the traffic lights. An empty principal item forces
                         // the full-height two-line chrome on every pane (macOS 26).
-                        ToolbarItem(placement: .principal) { Text("") }
+                        //
+                        // It carries a definite 1×1 frame: a bare `Text("")`
+                        // measures zero in both axes, and AppKit answers that by
+                        // re-measuring the item under ambiguous constraints and
+                        // logging about it — four times per tab switch, on the
+                        // main thread, which is work the switch pays for.
+                        //
+                        // macOS 26 backs every toolbar item with the shared glass,
+                        // and at this item's 1pt width that backing is all you see:
+                        // a stray hairline standing in the middle of the title bar.
+                        // The item has to stay — it is what keeps the two-line
+                        // chrome — so the background is what goes.
+                        if #available(macOS 26.0, *) {
+                            ToolbarItem(placement: .principal) {
+                                Color.clear.frame(width: 1, height: 1)
+                            }
+                            .sharedBackgroundVisibility(.hidden)
+                        } else {
+                            ToolbarItem(placement: .principal) {
+                                Color.clear.frame(width: 1, height: 1)
+                            }
+                        }
                     }
                     .toolbarBackground(.regularMaterial, for: .windowToolbar)
             }
@@ -121,12 +149,15 @@ struct SettingsView: View {
             HugeIconView(icon: tab.icon, size: 15, color: isSelected ? .white : .primary)
         }
         .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, settingsSidebarPillPadding)
         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(isSelected ? Color.accentColor : Color.clear)
         )
+        // Applied *after* the pill so the pill widens with the row rather than
+        // sliding out from under it, and last so nothing downstream re-insets it.
+        .padding(.leading, settingsSidebarPillInset - settingsSidebarBaseIndent)
     }
 
     @ViewBuilder
@@ -145,7 +176,30 @@ struct SettingsView: View {
         case .agents:
             AgentSettingsTab(settings: settings, store: store)
         case .usage: UsageSettingsTab(settings: settings, usage: usage)
+        case .mobile: MobileSettingsTab(store: store)
         case .community: CommunitySettingsTab()
         }
     }
 }
+
+/// Where a sidebar row lands. `pillInset + pillPadding` is the icon's leading
+/// edge, aimed at the close button's — a sidebar whose items hang to the right of
+/// the traffic lights reads as a column that was nudged and never lined back up,
+/// and it is the first thing the eye checks, since the two are the only things on
+/// that edge.
+///
+/// `baseIndent` is what the sidebar list indents every row by before any inset of
+/// ours, and it is the reason the first three attempts at this moved nothing:
+/// it is not reachable from `listRowInsets`, from `contentMargins` at either
+/// placement, or from the table's style — each was tried and measured, and the
+/// pill stayed at 26.7pt. So it is paid back rather than removed, with a negative
+/// leading padding on the row.
+///
+/// The number is measured off a screenshot, not guessed: the window's left edge
+/// comes from fitting its rounded corner, the scale from the sidebar's own 184pt
+/// minimum width, and the indent is then pill-left minus the inset that produced
+/// it. Re-measure the same way if a macOS release moves it; a wrong value shows
+/// up immediately as rows that overhang the window or sit short of the lights.
+private let settingsSidebarBaseIndent: CGFloat = 18.7
+private let settingsSidebarPillInset: CGFloat = 10
+private let settingsSidebarPillPadding: CGFloat = 6

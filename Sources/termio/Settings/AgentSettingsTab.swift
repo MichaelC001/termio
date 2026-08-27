@@ -71,43 +71,6 @@ struct AgentSettingsTab: View {
             }
 
             Section {
-                ForEach(listedAgents) { preset in
-                    NavigationLink(value: AgentRoute(id: preset.id)) {
-                        AgentListRow(settings: settings, preset: preset, devices: devices)
-                    }
-                    .draggable(preset.id)
-                    .dropDestination(for: String.self) { ids, _ in
-                        guard let dragged = ids.first else { return false }
-                        return move(dragged, onto: preset)
-                    }
-                    .contextMenu {
-                        Button(localized("Move Up")) { move(preset, by: -1) }
-                            .disabled(listedAgents.first?.id == preset.id)
-                        Button(localized("Move Down")) { move(preset, by: 1) }
-                            .disabled(listedAgents.last?.id == preset.id)
-                        Divider()
-                        Button(localized("Remove from List")) { remove(preset) }
-                    }
-                }
-                AddAgentRow(
-                    addable: addableAgents,
-                    onAdd: add,
-                    onCustom: createCustomAgent
-                )
-            } header: {
-                SectionHeaderLabel(title: localized("Agents"))
-            } footer: {
-                // Only worth saying once there is more than one machine to cover.
-                // On a roster of one the sentence would be true and pointless, and
-                // this page's whole claim is that a single machine costs nothing.
-                Text(devices.count > 1
-                    ? localized("Drag an agent onto another to reorder. Readiness covers every device you work on.")
-                    : localized("Drag an agent onto another to reorder."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 Toggle(isOn: $settings.agentHooksEnabled) {
                     SettingsLabel(
                         title: localized("Live agent status"),
@@ -142,6 +105,43 @@ struct AgentSettingsTab: View {
                 Text(devices.count > 1
                     ? localized("Whether you want these at all, and putting them on every device.")
                     : localized("Whether you want these at all, and putting them on this Mac."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(listedAgents) { preset in
+                    NavigationLink(value: AgentRoute(id: preset.id)) {
+                        AgentListRow(settings: settings, preset: preset, devices: devices)
+                    }
+                    .draggable(preset.id)
+                    .dropDestination(for: String.self) { ids, _ in
+                        guard let dragged = ids.first else { return false }
+                        return move(dragged, onto: preset)
+                    }
+                    .contextMenu {
+                        Button(localized("Move Up")) { move(preset, by: -1) }
+                            .disabled(listedAgents.first?.id == preset.id)
+                        Button(localized("Move Down")) { move(preset, by: 1) }
+                            .disabled(listedAgents.last?.id == preset.id)
+                        Divider()
+                        Button(localized("Remove from List")) { remove(preset) }
+                    }
+                }
+                AddAgentGutter(
+                    addable: addableAgents,
+                    onAdd: add,
+                    onCustom: createCustomAgent
+                )
+            } header: {
+                SectionHeaderLabel(title: localized("Agents"))
+            } footer: {
+                // Only worth saying once there is more than one machine to cover.
+                // On a roster of one the sentence would be true and pointless, and
+                // this page's whole claim is that a single machine costs nothing.
+                Text(devices.count > 1
+                    ? localized("Drag an agent onto another to reorder. Readiness covers every device you work on.")
+                    : localized("Drag an agent onto another to reorder."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -360,50 +360,51 @@ private struct AgentRoute: Hashable {
     let id: String
 }
 
-/// The roster's add action, as the last row of the roster.
+/// The roster's add and remove actions, in the list's own gutter (see
+/// `SettingsListGutter`).
 ///
-/// A pull-down rather than a button: the agents worth adding are a known list,
-/// and a sheet to pick one from it would be a window for a menu's worth of
-/// choice. Styled as a row of the group — inside a grouped `Form` the card
-/// already draws the surface, so a second rounded rect on top of it is what made
-/// this read as bolted on to the window's bottom edge.
-private struct AddAgentRow: View {
+/// The roster's add action, in the list's own gutter (see `SettingsListGutter`).
+///
+/// A pull-down rather than a plain button: the agents worth adding are a known
+/// list, and a sheet to pick one from it would be a window for a menu's worth of
+/// choice.
+private struct AddAgentGutter: View {
     let addable: [AgentPreset]
     let onAdd: (AgentPreset) -> Void
     let onCustom: () -> Void
 
     var body: some View {
-        Menu {
-            // Plain text rows: AppKit menus rasterize custom SwiftUI icon views
-            // at their natural image size, not the badge frame.
-            ForEach(addable) { preset in
-                Button(preset.displayName) { onAdd(preset) }
+        SettingsListGutter {
+            Menu {
+                // Plain text rows: AppKit menus rasterize custom SwiftUI icon
+                // views at their natural image size, not the badge frame.
+                ForEach(addable) { preset in
+                    Button(preset.displayName) { onAdd(preset) }
+                }
+                if !addable.isEmpty { Divider() }
+                Button(localized("Custom Agent…")) { onCustom() }
+            } label: {
+                SettingsGutterGlyph(symbol: "plus")
             }
-            if !addable.isEmpty { Divider() }
-            Button(localized("Custom Agent…")) { onCustom() }
-        } label: {
-            HStack(spacing: 12) {
-                // The rows' icon column, so the label starts where agent names do.
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: settingsRowIconWidth, height: 26)
-                Text(localized("Add Agent"))
-                Spacer(minLength: 4)
-            }
-            .contentShape(Rectangle())
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .help(localized("Add Agent"))
+            .accessibilityLabel(localized("Add Agent"))
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
     }
 }
 
-/// One agent on the roster: brand mark, name, and a second line — no controls, the
-/// way a Notifications row carries no switch. The second line is the command the
-/// agent actually launches with, bypass flag and all, so the roster answers "what
-/// will this run?" without opening every row; anything blocking that launch (the
-/// agent switched off, its CLI missing) leads the same line.
+/// One agent on the roster: brand mark, name, a second line, and the switch that
+/// decides whether the agent is offered at all — the shape a Sharing row has, where
+/// the on/off state is the thing you came to read and the row still opens onto the
+/// details behind it.
+///
+/// The switch lived in the pushed pane, which made the roster's whole point — which
+/// agents are on — a click deep per row, and cost the line a leading "Off ·" to say
+/// what a switch says by being off. The second line is now only ever the command
+/// the agent launches with, bypass flag and all, led by anything that blocks that
+/// launch.
 private struct AgentListRow: View {
     @ObservedObject var settings: AppSettings
     let preset: AgentPreset
@@ -416,12 +417,15 @@ private struct AgentListRow: View {
     /// premature warning.
     @State private var fleet: AgentFleetReadiness?
 
-    /// Nothing to say about an enabled agent present everywhere — the common
-    /// case, where the line is the command alone.
-    private var status: String? {
-        if !settings.isAgentEnabled(preset) { return localized("Off") }
-        return fleet?.summary
-    }
+    /// Whether *this Mac* can launch it, which is what the switch is allowed to
+    /// gate. The fleet answer is the wrong one for that: an agent installed here
+    /// and missing on a sleeping VPS is still perfectly launchable, and a switch
+    /// dimmed by a box you are not sitting at cannot be argued with.
+    @State private var availableHere: Bool?
+
+    /// Nothing to say about an agent present everywhere — the common case, where
+    /// the line is the command alone.
+    private var status: String? { fleet?.summary }
 
     /// This Mac's command. A machine with its own path shows it on its own row in
     /// the pushed pane; repeating four of them here would make the roster a table.
@@ -456,11 +460,28 @@ private struct AgentListRow: View {
                     .foregroundStyle(.tertiary)
                     .help(missingHelp)
             }
+            Toggle(isOn: Binding(
+                get: { settings.isAgentEnabled(preset) },
+                set: { settings.setAgent(preset, enabled: $0) }
+            )) {
+                EmptyView()
+            }
+            .toggleStyle(.switch)
+            .labelsHidden()
+            // A missing CLI can't be launched, so it can't be switched on — only
+            // off (an already-on agent stays revocable while the badge shows).
+            .disabled(availableHere == false && !settings.isAgentEnabled(preset))
+            .help(localized("Offers \(preset.displayName) in the new-session menus."))
+            .accessibilityLabel(localized("Enable \(preset.displayName)"))
         }
         // Re-probed when any machine's command changes, or when the roster does.
         .task(id: probeTargets.map { "\($0.device.settingsKey)=\($0.command)" }
             .joined(separator: "|")) {
             fleet = await AgentReadiness.acrossFleet(agent: preset, on: probeTargets)
+        }
+        .task(id: settings.command(for: preset) ?? "") {
+            availableHere = await AgentAvailability.isCommandAvailable(
+                settings.command(for: preset) ?? "")
         }
     }
 
@@ -489,8 +510,6 @@ private struct AgentDetailPane: View {
     /// Set only for user-manifest agents: deletes the manifest file.
     var onDelete: (() -> Void)?
 
-    /// Same probe semantics as the list row (see `AgentListRow.available`).
-    @State private var available: Bool?
     @State private var confirmingDelete = false
     /// Removing or deleting takes the row away, so the pane it opened has to go
     /// back with it.
@@ -521,22 +540,6 @@ private struct AgentDetailPane: View {
                     }
                 }
                 .padding(.vertical, 2)
-            }
-
-            Section {
-                Toggle(isOn: Binding(
-                    get: { settings.isAgentEnabled(preset) },
-                    set: { settings.setAgent(preset, enabled: $0) }
-                )) {
-                    SettingsLabel(
-                        title: localized("Enable \(preset.displayName)"),
-                        subtext: localized("Offers \(preset.displayName) in the new-session menus.")
-                    )
-                }
-                .toggleStyle(.switch)
-                // A missing CLI can't be launched, so it can't be switched on — only
-                // off (an already-on agent stays revocable while the hint shows).
-                .disabled(available == false && !settings.isAgentEnabled(preset))
             }
 
             Section {
@@ -630,22 +633,7 @@ private struct AgentDetailPane: View {
         }
         .formStyle(.grouped)
         .navigationTitle(preset.displayName)
-        // Re-checks whenever the effective command changes, so typing a valid path
-        // clears the install link. The PATH probe runs once (cached); each check is
-        // an in-memory lookup. The leading sleep debounces per-keystroke edits into
-        // one probe once the user pauses.
-        .task(id: effectiveCommand) {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            available = await AgentAvailability.isCommandAvailable(effectiveCommand)
-        }
     }
-
-    /// This Mac's command. The switch it gates is a preference with no machine
-    /// dimension, and the one machine that is certainly there is the one whose
-    /// answer can be trusted to arrive: `available` for a remote box means "its
-    /// device file said so", which is not a reason to refuse the switch.
-    private var effectiveCommand: String { settings.command(for: preset) ?? "" }
 }
 
 /// One machine's command path for this agent.

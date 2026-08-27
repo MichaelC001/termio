@@ -8,12 +8,12 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance
     case terminal
     case keyboard
-    /// Sits directly above Devices because that is the containment order the app
-    /// itself uses: a workspace belongs to a device, and everything filed in it
-    /// lives on that machine.
-    case workspaces
     /// The roster: this Mac and every device sessions can run on, one row apiece,
     /// drilling into how that device is reached.
+    ///
+    /// Sits directly above Workspaces because that is the containment order the
+    /// app itself uses: a workspace belongs to a device, so the machine is named
+    /// before the things filed on it.
     ///
     /// **Devices**, matching the word the whole codebase already uses —
     /// `KnownDevice`, `DeviceRoster`, `DeviceClient`, `deviceInvite` — so the UI
@@ -31,18 +31,28 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// everyone who left this one showing. It has now survived four renamings,
     /// which is the point of it.
     case devices = "ssh"
+    case workspaces
     case agents
     case usage
+    /// Pairing an iPhone, and the tunnel that carries it.
+    ///
+    /// This was folded into Devices ▸ this Mac ▸ Serving on the argument that
+    /// every line of it is a fact about one machine (see `DeviceServingSection`).
+    /// That argument was right about scope and wrong about cost: it put the QR —
+    /// the one step a new user cannot guess at — three levels down a tab named
+    /// after something else. A setting nobody finds is not a setting. It is
+    /// first-level again, and the card names the machine it answers for, which
+    /// is what the scope objection was actually asking for.
+    case mobile
     case community
 
     var id: String { rawValue }
 
-    /// Opens a new sidebar group. Workspaces starts the run about the machines
-    /// this Mac reaches and what runs on them — a workspace, the device holding
-    /// it, the agents, their usage, the phone watching them — where the group
-    /// above is how the app itself behaves; Community stands alone because it
-    /// leaves the app entirely.
-    var startsGroup: Bool { self == .workspaces || self == .community }
+    /// Opens a new sidebar group. Devices starts the run about the machines this
+    /// Mac reaches and what runs on them — the device, the workspaces filed on
+    /// it, the agents, their usage — where the group above is how the app itself
+    /// behaves; Community stands alone because it leaves the app entirely.
+    var startsGroup: Bool { self == .devices || self == .community }
 
     /// `allCases` cut into the sidebar's groups, which System Settings separates
     /// with a gap rather than a header. Derived from `startsGroup` so a new tab
@@ -72,6 +82,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
+        case .mobile: return localized("Mobile")
         case .community: return localized("Community")
         }
     }
@@ -88,6 +99,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
+        case .mobile: return .smartPhoneWifi
         case .community: return .bubbleChat
         }
     }
@@ -104,6 +116,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return localized("Keyboard shortcuts for every command")
         case .agents: return localized("The coding agents offered when you start a session")
         case .usage: return localized("Token usage for your connected agents")
+        case .mobile: return localized("Pair your iPhone with the machines you work on")
         case .community: return localized("Discord, GitHub, and the WeChat group")
         }
     }

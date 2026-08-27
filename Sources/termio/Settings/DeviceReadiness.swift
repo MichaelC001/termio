@@ -104,6 +104,10 @@ enum DeviceReadinessState: Equatable {
     /// `termiod` also has no hooks, and listing both invites the user to fix the
     /// consequence instead of the cause.
     case blocked(String)
+    /// The new `termiod` is on the machine and the old daemon is still running
+    /// because it holds sessions someone is using — named in the text. Not a
+    /// fault: it takes over once they close, and setup then completes.
+    case staged(String)
 
     var isBusy: Bool { self == .checking }
 }
@@ -202,9 +206,12 @@ enum DeviceProbe {
                     ? AgentReadiness.available.rawValue
                     : AgentReadiness.missing.rawValue
             }
+            // Every handshake records the daemon's build in the registry, and
+            // the probe just made one.
             return DeviceDiscoveredState(
                 checkedAt: now, reachable: true,
-                termiodVersion: nil, agents: agents)
+                termiodVersion: TermiodDeviceRegistry.shared.device(for: .ssh(alias))?.daemonVersion,
+                agents: agents)
         } catch {
             // Reached over ssh, but the daemon could not answer — an old
             // termiod, or one that will not start. Reported as reachable with
@@ -319,7 +326,7 @@ final class DevicePaneModel: ObservableObject {
 
         step = .foundation
         if let failure = await installFoundation() {
-            readiness = .blocked(failure)
+            readiness = failure
             return
         }
 
@@ -354,25 +361,28 @@ final class DevicePaneModel: ObservableObject {
     }
 
     /// The first rung. This Mac needs the `termio` CLI on `PATH` — a hook it
-    /// installs invokes it by name. A device needs `termiod`, which is also the
-    /// reachability check, since deploying requires reaching it.
-    private func installFoundation() async -> String? {
+    /// installs invokes it by name. A device needs the `termiod` this build
+    /// ships, which is also the reachability check, since deploying requires
+    /// reaching it. `nil` when the rung passed; otherwise the state to show.
+    private func installFoundation() async -> DeviceReadinessState? {
         guard let alias = device.alias else {
             switch CommandLineTool.install() {
             case .installed:
                 return nil
             case .conflict:
-                return localized("Something else already owns \(CommandLineTool.installURL.path).")
+                return .blocked(localized("Something else already owns \(CommandLineTool.installURL.path)."))
             case .unavailable:
-                return localized("Run Termio from the built app to install its command-line tool.")
+                return .blocked(localized("Run Termio from the built app to install its command-line tool."))
             case .notInstalled, .stale:
                 let directory = CommandLineTool.installURL.deletingLastPathComponent().path
-                return localized("Couldn’t link `\(CommandLineTool.toolName)` into \(directory).")
+                return .blocked(localized("Couldn’t link `\(CommandLineTool.toolName)` into \(directory)."))
             }
         }
         switch await TermioStore.remoteReadyCheck(host: alias) {
-        case .success: return nil
-        case .failure(let error): return error.message
+        case .success:
+            return nil
+        case .failure(let error):
+            return error.state == .staged ? .staged(error.message) : .blocked(error.message)
         }
     }
 

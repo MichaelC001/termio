@@ -127,5 +127,6 @@ from the real front matter).
 | in-review | rfc | [Every machine is a device, every place you work is a project](design/20260814-remote-to-device.md) |
 | in-review | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](design/20260702-split-panes.md) |
+| in-review | rfc | [termiod lifecycle — install and update as one reconcile loop](design/20260827-termiod-lifecycle-reconcile.md) |
 | resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->

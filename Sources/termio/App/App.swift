@@ -2728,6 +2728,12 @@ private struct NavigatorToggleToolbarView: View {
     /// gap on screen is a few points past this.
     private static let nameSpacing: CGFloat = 6
 
+    /// In fullscreen there are no traffic lights to hold the toolbar's leading edge open, so the
+    /// item lands flush against the window edge. This inset puts the glyph's leading edge on the
+    /// same line the section labels and rows in the column below start on (`sidebarLeadingTrim`
+    /// pulls that column back to meet it), so the sidebar has one left margin rather than two.
+    private static let fullScreenLeadingInset: CGFloat = 10.5
+
     var body: some View {
         HStack(spacing: Self.nameSpacing) {
             toggle
@@ -2735,6 +2741,7 @@ private struct NavigatorToggleToolbarView: View {
                 WorkspaceSwitcherToolbarView()
             }
         }
+        .padding(.leading, store.windowIsFullScreen ? Self.fullScreenLeadingInset : 0)
     }
 
     private var toggle: some View {

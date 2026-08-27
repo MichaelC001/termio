@@ -578,6 +578,10 @@ public enum Termiod {
         /// name a path on that machine. Empty on a daemon too old to send it, and
         /// on one that could not read `HOME`; read it through `homeDirectory`.
         public let home: String
+        /// The daemon's build, `<app version>+<build>` — the version of the app
+        /// that shipped it. `nil` on a daemon that predates the field, which
+        /// every reader treats as older than anything that reports one.
+        public let version: String?
 
         /// `home`, or `/` when the daemon did not answer with an absolute path.
         /// Never empty, so a picker always has somewhere to start — and one rule,
@@ -585,7 +589,7 @@ public enum Termiod {
         public var homeDirectory: String { home.hasPrefix("/") ? home : "/" }
 
         private enum CodingKeys: String, CodingKey {
-            case hostId, host, clientId, caps, home
+            case hostId, host, clientId, caps, home, version
         }
 
         public init(from decoder: Decoder) throws {
@@ -595,6 +599,7 @@ public enum Termiod {
             clientId = try container.decode(String.self, forKey: .clientId)
             caps = try container.decodeIfPresent([String].self, forKey: .caps) ?? []
             home = try container.decodeIfPresent(String.self, forKey: .home) ?? ""
+            version = try container.decodeIfPresent(String.self, forKey: .version)
         }
     }
 

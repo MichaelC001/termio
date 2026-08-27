@@ -72,6 +72,86 @@ struct SettingsSymbolBadge: View {
 /// an icon still lines its title up with the ones that have one.
 let settingsRowIconWidth: CGFloat = 26
 
+/// The gutter AppKit hangs under an editable table — the `+` strip in System
+/// Settings' Login Items and Users & Groups. Sits as the last row of the section
+/// whose list it acts on, wearing its own faint fill so it reads as the list's
+/// chrome rather than as one more entry.
+///
+/// It replaces a full-width "Add Device" / "Add Agent" row, which was the same
+/// height, in the same text column, with the same hit target as the entries
+/// above it — so the roster looked like it contained a device named Add Device.
+///
+/// There is no `−`. AppKit's minus acts on the table's selected row, and these
+/// rosters drill into a pane on click rather than select; the pane a row opens
+/// already carries that row's Remove. Both ways of paying for a minus here were
+/// built and dropped: a pull-down naming its own target is a menu pretending to
+/// be a button, and giving the rows a selection to act on costs the click that
+/// opens them — a mode, a highlight and a double-click, so that a verb one click
+/// away can have a second door.
+struct SettingsListGutter<Content: View>: View {
+    /// The gutter's control — a `SettingsGutterGlyph`, which spans the strip.
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(height: settingsGutterHeight)
+            // Rounded on all four corners rather than square, because the strip cannot
+            // reach the card's own corners and inherit their curve the way an AppKit
+            // table's gutter does: the grouped `Form` insets every row about 10pt from
+            // the card edge, and that inset survives `listRowInsets(EdgeInsets())` both
+            // on the row and on its background — both were tried. Inset and square it
+            // read as a rectangle dropped inside a rounded card; inset and rounded it
+            // reads as the control it actually is.
+            .background(
+                RoundedRectangle(cornerRadius: settingsGutterCornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+            // The Form already rules off the row above; the strip drawing a second
+            // hairline of its own put two lines a row's padding apart.
+            .listRowSeparator(.hidden)
+    }
+}
+
+/// The gutter's control: a glyph parked in the rows' icon column, and behind it a
+/// hit target spanning the whole strip.
+///
+/// AppKit sizes its gutter segments to their glyph, which left a 30pt square to
+/// aim at under a card several hundred points wide — the rest of the strip looked
+/// like a button and wasn't one. A row-wide target costs nothing to draw and is
+/// the size Fitts' law says the only control on a line should be. The hover fill
+/// is what says so before the click: it lands on the next frame, no fade, like
+/// every other hover cue in the app.
+struct SettingsGutterGlyph: View {
+    let symbol: String
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 30)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: settingsGutterHeight)
+        .background(
+            RoundedRectangle(cornerRadius: settingsGutterCornerRadius, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
+/// AppKit's table gutter is a hair shorter than a list row, which is what keeps
+/// it reading as chrome rather than as one more entry.
+private let settingsGutterHeight: CGFloat = 28
+
+/// The strip's own curve. Small enough to read as a control sitting in the card
+/// rather than as a second card inside the first.
+private let settingsGutterCornerRadius: CGFloat = 6
+
 /// A grouped-section header rendered as a badge plus title, replacing the default
 /// uppercased gray caption so each card reads as a labeled group (Dia style).
 struct SectionHeaderLabel: View {

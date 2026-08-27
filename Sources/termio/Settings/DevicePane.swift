@@ -57,11 +57,8 @@ struct DevicePane: View {
             }
             reachedBySection
             integrationSection
-            // Only this Mac serves anything today: `termiod` has no `serve --wss`
-            // yet, so a Serving section on a remote pane would offer a switch
-            // that cannot turn anything on. It appears on a device's pane when
-            // the daemon can answer for it, not before.
-            if machine.isLocal { DeviceServingSection() }
+            // What this Mac serves to phones is Settings ▸ Mobile, not a second
+            // copy here: one set of controls, one place they live.
         }
         .formStyle(.grouped)
         .navigationTitle(machine.name)
@@ -125,6 +122,7 @@ struct DevicePane: View {
         switch model.readiness {
         case .ready: return localized("Ready")
         case .checking: return model.step?.label ?? localized("Checking…")
+        case .staged: return localized("Update ready")
         case .blocked, .unasked: return localized("Set up this device")
         }
     }
@@ -141,7 +139,7 @@ struct DevicePane: View {
                 : localized("Agents on \(machine.name) can run.")
         case .checking:
             return localized("Asking \(machine.name) what it has.")
-        case .blocked(let reason):
+        case .blocked(let reason), .staged(let reason):
             // Only the first blocking rung, by design: a machine with no `termiod`
             // also has no hooks, and naming both invites fixing the consequence.
             return reason
@@ -263,7 +261,9 @@ struct DevicePane: View {
                 } label: {
                     SettingsLabel(
                         title: "termiod",
-                        subtext: localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
+                        subtext: model.discovered?.termiodVersion.map {
+                            localized("Version \($0) on \(machine.name). Sessions keep running there after you disconnect.")
+                        } ?? localized("The session host on \(machine.name). Sessions keep running there after you disconnect."),
                         titleFont: .headline
                     )
                 }

@@ -586,14 +586,22 @@ struct OutlineViewCapture: NSViewRepresentable {
 ///   feel like every other Mac list. Trackpads send precise pixel deltas and never
 ///   consult it.
 struct OutlineViewFixups: NSViewRepresentable {
+    /// Overrides the table's style. Left `nil` everywhere the source list's own
+    /// metrics are wanted; the settings sidebar passes `.fullWidth` because
+    /// `.sourceList` reserves a leading strip for a disclosure column that a flat
+    /// list never uses, and that strip is not reachable from `listRowInsets` —
+    /// it lands *outside* them, so the rows can only ever start further right
+    /// than the traffic lights they should line up under.
+    var style: NSTableView.Style?
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        DispatchQueue.main.async { Self.apply(from: view) }
+        DispatchQueue.main.async { Self.apply(from: view, style: style) }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { Self.apply(from: nsView) }
+        DispatchQueue.main.async { Self.apply(from: nsView, style: style) }
     }
 
     /// Reasserts the wheel increment on an outline captured earlier (see
@@ -604,13 +612,19 @@ struct OutlineViewFixups: NSViewRepresentable {
         scroll.verticalLineScroll = 24
     }
 
-    private static func apply(from view: NSView) {
+    private static func apply(from view: NSView, style: NSTableView.Style?) {
         var ancestor = view.superview
         while let current = ancestor {
             // NSOutlineView is an NSTableView subclass, so this catches the tree.
             if let table = current as? NSTableView {
                 if table.selectionHighlightStyle != .none {
                     table.selectionHighlightStyle = .none
+                }
+                if let style, table.style != style {
+                    table.style = style
+                    // The other half of the same strip: an outline indents every
+                    // row by one level's worth even when nothing is nested.
+                    (table as? NSOutlineView)?.indentationPerLevel = 0
                 }
                 if let scroll = table.enclosingScrollView {
                     if scroll.verticalLineScroll != 24 {
