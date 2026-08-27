@@ -24,6 +24,17 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
             root: root)
     }
 
+    /// The header names the folder, as the local explorer does — not the device,
+    /// which titled every project on one box with the box's name.
+    func testHeaderNamesTheRootFolderNotTheDevice() {
+        XCTAssertEqual(model().rootName, "api")
+        let home = RemoteFileBrowserModel(
+            checkout: Checkout(
+                device: KnownDevice(alias: "test-box", deviceID: nil), root: "/"),
+            root: "/")
+        XCTAssertEqual(home.rootName, "test-box")
+    }
+
     private func listing(
         _ path: String, _ entries: [(String, FileEntry.Kind)], error: String? = nil
     ) -> Termiod.DirectoryListing {

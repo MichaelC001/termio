@@ -213,6 +213,16 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     var host: String { checkout.device.name }
 
+    /// What the header calls the tree: the root folder's name, as the local
+    /// explorer shows `root.name`. The header used to show the device instead,
+    /// so every project on one box was titled with the box. The device still
+    /// names the tree where it matters — the failure state, and search — and a
+    /// root with no name to give (`/`, or a bare `~`) falls back to it.
+    var rootName: String {
+        let name = (root as NSString).lastPathComponent
+        return name.isEmpty || name == "/" || name == "~" ? host : name
+    }
+
     func node(at path: String) -> RemoteFileNode? { nodesByPath[path] }
 
     /// Re-lists the tree from the device. Existing rows stay up while the
@@ -458,10 +468,11 @@ struct RemoteFileTreeView: View {
         }
     }
 
-    /// The explorer-style header: the host, and a Refresh that re-roots the tree.
+    /// The explorer-style header: the root folder's name, and a Refresh that
+    /// re-roots the tree.
     private var header: some View {
         HStack(spacing: 2) {
-            Text(model.host)
+            Text(model.rootName)
                 .font(.system(size: 11, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.5)
