@@ -6,22 +6,25 @@ use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
 const VERSION: &str = env!("TERMIOD_VERSION");
+
+/// One number per directory, per process. The tests here run concurrently in
+/// one process, and a clock-based nonce collided on macOS, whose clock is
+/// coarse enough for two of them to start in the same tick.
+static DIRECTORIES: AtomicUsize = AtomicUsize::new(0);
 
 struct TestDir(PathBuf);
 
 impl TestDir {
     fn new() -> TestDir {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
+        let nonce = DIRECTORIES.fetch_add(1, Ordering::Relaxed);
         // Unix-domain socket paths are short on macOS; the per-user temporary
         // directory can consume most of that limit before the test adds a name.
-        let path = PathBuf::from(format!("/tmp/tlc-{}-{nonce:x}", std::process::id()));
+        let path = PathBuf::from(format!("/tmp/tlc-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&path).expect("create isolated daemon state directory");
         TestDir(path)
     }
