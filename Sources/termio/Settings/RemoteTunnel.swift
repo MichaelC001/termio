@@ -558,6 +558,18 @@ enum RemoteTunnelService {
 }
 
 extension RemoteTunnelService {
+    /// The value an HTTP client sends in `Origin`: scheme, host, and optional
+    /// port. A published address may have a path (for example, a relay mounted
+    /// at `/termio`), but an origin never does.
+    static func originValue(of address: String) -> String? {
+        guard let components = URLComponents(string: address),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host else { return nil }
+        let webScheme = scheme == "wss" ? "https" : (scheme == "ws" ? "http" : scheme)
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(webScheme)://\(host)\(port)"
+    }
+
     /// Points the daemon at the address the tunnel just published, and restarts
     /// it so the listener actually exists.
     ///

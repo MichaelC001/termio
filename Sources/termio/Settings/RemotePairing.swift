@@ -414,8 +414,12 @@ struct RemotePairingSection: View {
             // stored origin must be one value, and the only way to guarantee
             // that is for one place to know it.
             phase = .working(localized("Pointing termiod at \(published.address)…"))
+            guard let origin = RemoteTunnelService.originValue(of: published.address) else {
+                throw RemoteTunnelService.Failure(
+                    message: localized("\(published.address) is not an address the iPhone could dial."))
+            }
             try await RemoteTunnelService.arm(
-                alias: alias, origin: published.address, port: Self.daemonPort)
+                alias: alias, origin: origin, port: Self.daemonPort)
 
             phase = .working(localized("Checking that \(published.address) answers…"))
             let invite = try await RemotePairing.invite(from: alias)
