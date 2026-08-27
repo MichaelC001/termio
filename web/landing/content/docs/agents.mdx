@@ -15,16 +15,27 @@ Termio recognizes the common coding agents out of the box:
 | --- | --- |
 | Claude Code | `claude` |
 | Codex | `codex` |
-| Amp | `amp` |
-| Pi | `pi` |
 | OpenCode | `opencode` |
-| Copilot | `copilot` |
+| Pi | `pi` |
+| Amp | `amp` |
+| Droid | `droid` |
 | Cursor | `cursor-agent` |
+| Copilot | `copilot` |
+| Kimi | `kimi` |
+| Qwen Code | `qwen` |
 | Antigravity | `agy` |
+| Crush | `crush` |
+| Cline | `cline` |
+| Hermes | `hermes` |
+| Grok | `grok` |
 
 Any of these that’s installed on your `PATH` appears as a launch option. A plain
 shell is always available too. Running something else? Any CLI can become a
 first-class agent — see [Custom agents](/docs/custom-agents).
+
+`PATH` means the machine’s own `PATH`: Termio looks for these on whichever
+machine the workspace is on, so a VPS offers what is installed there. **Settings
+▸ Agents** carries a machine picker for the same reason.
 
 <DocsImage
   src="/screenshots/docs/17-agents-settings.png"
@@ -53,8 +64,9 @@ sharpest.
 ## Switching without losing your place
 
 Clicking a session brings it forward instantly; the others keep running in the
-background. Because each session is a real process, an agent doesn’t pause when
-it’s off-screen — you can kick off a long run in one, switch to another, and come
-back when the first raises its hand. When you have more than a handful of
+background. Because each session is a real process hosted on its machine, an
+agent doesn’t pause when it’s off-screen — or when you close the window. Kick off
+a long run in one, switch to another, and come back when the first raises its
+hand. When you have more than a handful of
 sessions, `⇧⌘O` jumps straight to any of them by name — see
 [Navigation](/docs/navigation).

@@ -3,8 +3,8 @@ title: 安装
 description: 下载 macOS 版 Termio，拖进「应用程序」，之后交给 Sparkle 自动更新——无需账号，也没有许可证密钥。
 x-i18n:
   source_path: installation.mdx
-  source_hash: 968aba8f624339dfa5dd6d81106ecc061f71f8a91854395c47af9ef268ea7686
-  generated_at: 2026-08-25
+  source_hash: 6aed0d4e4398c9662f5e1edbdcee2212945beeb86631444868e9db032005aedd
+  generated_at: 2026-08-27
 ---
 
 Termio 用同一个下载包同时运行在 Apple 芯片和 Intel 的 Mac 上。安装就是普通的拖进「应用程序」——不用注册账号，
@@ -53,7 +53,9 @@ Termio 不打包编程 Agent——它托管你 Mac 上已有的那些。装上�
 `claude`、`codex` 或 `amp`），确保它们在 `PATH` 上。Termio 会在登录 shell 里启动
 每一个，所以你 shell 配置里准备的一切都能用上。
 
-Agent 安装好之后，新建会话时它就会出现在可启动的选项里。
+Agent 安装好之后，新建会话时它就会出现在可启动的选项里。另一台机器上的 Agent 也是一样
+——Termio 会去那儿找它们，并把 hooks 装到那台机器上。见
+[工作区与设备](/zh-CN/docs/machines)。
 
 ## `termio` 命令（可选）
 

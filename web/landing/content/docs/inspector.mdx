@@ -1,18 +1,35 @@
 ---
 title: The inspector
-description: Browse files, edit them with syntax highlighting, read the git diff, and search the project — a full side panel that never pulls you out of the terminal.
+description: Browse files, edit them with syntax highlighting, read the git diff, and search the project — on this Mac or on the machine the session runs on, without leaving the terminal.
 ---
 
 The inspector is Termio’s side panel for everything *around* the terminal:
 files, changes, and search. It sits beside your sessions so you can glance at
 code without switching apps.
 
+Every pane reads the project on the machine the selected session runs on. Point
+at a session on a VPS and the tree, the search and the diff are that box’s —
+read over the session host, not copied down.
+
 ## Files
 
 The file tree mirrors the working directory. Single-click a file to open it in a
 built-in editor with syntax highlighting, soft-wrap, and a live line/column
-readout. Edits auto-save — there’s no save button. Images, PDFs, and HTML open
-in a Quick Look preview instead.
+readout. Edits auto-save — there’s no save button, and a file read from another
+machine is written back to that machine. Images, PDFs, and HTML open in a Quick
+Look preview instead.
+
+### Editing
+
+The editor is a real one, not a viewer:
+
+- **Find and replace** with the Mac find keys — `⌘F`, `⌘G`, `⇧⌘G`, `⌘E`, and
+  replace or replace all.
+- **Comment lines**, and **move** or **copy** a line or a selection up and down.
+- **Tab** indents a block and **Return** keeps the indent you were on, with
+  indentation guides drawn behind the code.
+- Other occurrences of the word under the caret get a quiet wash, so you can see
+  where a name is used without searching for it.
 
 <DocsImage
   src="/screenshots/docs/06-files-editor.png"
@@ -62,6 +79,11 @@ The inspector’s **Search** tab runs a content search across the project (backe
 by `git grep`) and jumps you straight to the matching line in the editor — it
 searches inside files, not just filenames. This is the “find in files” you know
 from an editor.
+
+Results read as excerpts, painted where the matcher hit, so you can tell which
+match you want before opening anything. Search follows the session too: a
+checkout on another machine is searched there, and a `cd` in that session moves
+the search with it.
 
 <DocsImage
   src="/screenshots/docs/09-project-search.png"

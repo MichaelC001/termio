@@ -3,8 +3,8 @@ title: 同时运行多个 Agent
 description: 让一支 Agent 队伍并排工作，一眼读出它们的实时状态，并让 Termio 的 hooks 在某一个需要你时立刻告诉你。
 x-i18n:
   source_path: agents.mdx
-  source_hash: 599ed6c5e20c2e27bc380117e550347a031e1520b528aef9e682389d4a24279a
-  generated_at: 2026-08-19
+  source_hash: 198b10f9a55cd2fa1aa3ad97f07c58c533c5811ad5e7e9ed2997f2048aed4027
+  generated_at: 2026-08-27
 ---
 
 Termio 就是为同时运行多个 Agent 造的。侧栏是你的控制台：每个会话是一行，每一行都汇报
@@ -18,16 +18,26 @@ Termio 开箱即认常见的编程 Agent：
 | --- | --- |
 | Claude Code | `claude` |
 | Codex | `codex` |
-| Amp | `amp` |
-| Pi | `pi` |
 | OpenCode | `opencode` |
-| Copilot | `copilot` |
+| Pi | `pi` |
+| Amp | `amp` |
+| Droid | `droid` |
 | Cursor | `cursor-agent` |
+| Copilot | `copilot` |
+| Kimi | `kimi` |
+| Qwen Code | `qwen` |
 | Antigravity | `agy` |
+| Crush | `crush` |
+| Cline | `cline` |
+| Hermes | `hermes` |
+| Grok | `grok` |
 
 其中任何一个只要装在你的 `PATH` 上，就会出现在启动选项里。普通 shell 始终可用。用的是
 别的工具？任何命令行工具都能成为一等 Agent——参见
 [自定义 Agent](/zh-CN/docs/custom-agents)。
+
+这里的 `PATH` 指那台机器自己的 `PATH`：Termio 会去工作区所在的机器上找它们，所以一台
+VPS 提供的是装在它上面的那些。**设置 ▸ Agent** 带一个设备选择器，也是同一个道理。
 
 <DocsImage
   src="/screenshots/docs/17-agents-settings.png"
@@ -53,7 +63,7 @@ Termio 开箱即认常见的编程 Agent：
 
 ## 切换而不丢失位置
 
-点击一个会话会立刻把它带到前面；其余的继续在后台运行。因为每个会话都是真实进程，Agent
-不会因为不在屏幕上就暂停——你可以在一个会话里发起长任务，切到另一个，等第一个举手时再
-回来。会话多到超过几个时，`⇧⌘O` 能直接按名字跳过去——参见
+点击一个会话会立刻把它带到前面；其余的继续在后台运行。因为每个会话都是托管在它那台机器
+上的真实进程，Agent 不会因为不在屏幕上就暂停——关掉窗口也一样。你可以在一个会话里发起
+长任务，切到另一个，等第一个举手时再回来。会话多到超过几个时，`⇧⌘O` 能直接按名字跳过去——参见
 [导航](/zh-CN/docs/navigation)。

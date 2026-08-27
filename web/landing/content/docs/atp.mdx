@@ -57,6 +57,8 @@ One JSON file per agent. This is Termio’s bundled Grok manifest, verbatim:
 | `icon` | `vector` (a built-in brand mark), `path` (your PNG/SVG file), or `symbol` (an SF Symbol), with an optional `tint`. |
 | `install` | The vendor’s install page, offered when the command isn’t found. Optional. |
 | `order` | Position in the agent picker. Optional; omitted manifests sort last. |
+| `skills` | The agent’s user-level skills directory (`{"dir": "~/.claude/skills"}`), which is where Termio writes its session-control skill. Optional; omit it for an agent with no skills ecosystem. |
+| `configHome` | The environment variable the agent documents for moving its config tree, and the path that variable replaces (`{"env": "CLAUDE_CONFIG_DIR", "path": "~/.claude"}`). Set it and Termio installs where the agent actually reads, rather than at the literal default. Optional. |
 
 ## Status
 

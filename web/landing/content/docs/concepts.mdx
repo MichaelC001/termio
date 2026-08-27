@@ -1,15 +1,34 @@
 ---
 title: Concepts
-description: The four nouns Termio is built from — project, session, pane, and worktree — plus the status model that tells you which agent needs you.
+description: The nouns Termio is built from — machine, workspace, project, session, pane, and worktree — plus the status model that tells you which agent needs you.
 ---
 
 Termio is a terminal for running several coding agents at once. Everything in the
-app is built from four nouns and one status model. Learn these and the rest of the
+app is built from six nouns and one status model. Learn these and the rest of the
 docs read quickly.
+
+## Machine
+
+A machine is a box you can reach: this Mac, the Mac mini on the same desk, a VPS.
+Termio reads `~/.ssh/config` to find them and shells out to the system `ssh` to
+get there — it never provisions a machine and never routes your traffic.
+
+This Mac is a machine like any other, so the level stays invisible until you add
+a second one. See [Workspaces and machines](/docs/machines).
+
+## Workspace
+
+A workspace is a named scope in the sidebar, holding projects and loose
+terminals. Switching to one swaps what the sidebar lists, and each workspace
+remembers the session you left it on.
+
+Every workspace belongs to exactly one machine, which is how the machine
+question gets answered once, at the top, instead of again for every project.
+`⌘1` through `⌘9` switch between them.
 
 ## Project
 
-A project is a folder on your Mac — usually a repository. It’s the unit the
+A project is a folder on a machine — usually a repository. It’s the unit the
 sidebar groups by, and the working directory every session inside it starts in.
 
 Opening a project doesn’t copy or index anything. Termio remembers the path and
@@ -22,22 +41,19 @@ plain shell. Each session owns a PTY — the same kind of terminal `ssh` or
 Terminal.app gives a process — and Termio renders it with
 [libghostty](https://ghostty.org), Ghostty’s terminal core.
 
-Two properties matter:
+Three properties matter:
 
 - **A session keeps running when you look away.** Switch to another session, hide
   the window, or use another app; the agent keeps working. Its output is buffered
   and repainted when you come back.
+- **A session lives on its machine, not in the app.** Every session — including
+  the ones on this Mac — runs inside `termiod`, the session host, and the app is
+  a viewer that attaches to it. Closing the window leaves the agent working, and
+  a dropped SSH connection detaches you rather than killing anything. Only
+  **Close Session** ends one on purpose.
 - **A session is addressable.** Every session has a stable URL,
   `termio://session/<uuid>`, which is what the menu-bar tray, a notification, and
   the `termio` CLI all use to bring one to the front.
-
-<Callout type="note" title="Sessions don't outlive the app">
-  Quitting Termio ends its terminals. What persists is the *shape* of your
-  workspace — the session tree, which session was selected, the inspector layout
-  — so relaunching restores the same list with fresh shells. Sessions that survive
-  a quit (and a laptop lid) are what the `termiod` session host is being built
-  for; they are not what today’s app does.
-</Callout>
 
 ## Pane
 
@@ -69,6 +85,12 @@ Termio reads them from git (`git worktree list`) rather than tracking its own co
 and shows each one as a nested folder under the project. Create one in the app or
 with `git worktree add` on the command line — either way both agree, because git
 is the source of truth. See [Git worktrees](/docs/worktrees).
+
+<Callout type="note" title="“Workspace” means the sidebar’s scope">
+  A repository checked out on a machine is a *project* here, and a second
+  checkout of it is a *worktree*. Workspace is reserved for the named scope in
+  the sidebar, even though some other tools use it for the folder.
+</Callout>
 
 ## Status
 
@@ -111,5 +133,8 @@ authority:
   </Card>
   <Card href="/docs/agents" title="Running multiple agents">
     The sidebar as a control surface for a fleet.
+  </Card>
+  <Card href="/docs/machines" title="Workspaces and machines">
+    Put a workspace on another box and set up the session host there.
   </Card>
 </Cards>

@@ -1,24 +1,27 @@
 ---
 title: 简介
-description: Termio 是一款原生 Mac 应用，为你的 AI 编程 Agent 提供工作台——Claude Code、Codex 以及其他 Agent 并排运行，各自待在真实终端里，所有数据都不离开你的机器。
+description: Termio 是一款原生 Mac 应用，为你的 AI 编程 Agent 提供工作台——Claude Code、Codex 以及其他 Agent 并排运行，各自待在真实终端里，跑在本机或你自己的机器上。
 x-i18n:
   source_path: index.mdx
-  source_hash: e6f20a9d113a2453956815ea080a8670bab4021c776c845a317f0792e29ade53
-  generated_at: 2026-08-19
+  source_hash: 8e9f8f478de44ea135acbaf69fd1065baeaec69c78de08d8fc2edd0e664db890
+  generated_at: 2026-08-27
 ---
 
 Termio 是一款原生 Mac 应用，为你的 AI 编程 Agent 安了个家。你不必再在零散的终端
 标签页之间来回倒腾，而是让它们并排运行——每个都在真实终端里——并且瞬间切换。
-一切都在你自己的 Mac 上运行，也只留在这里。
+一切都跑在你自己的硬件上：本机，或者任何你 `ssh` 得上的机器。
 
 ## Termio 给你什么
 
-- **每个 Agent 一个真实终端。** Claude Code、Codex、Antigravity、Amp、Pi、OpenCode、
-  Copilot 和 Cursor 都跑在真正的 PTY 里，而不是被重新渲染的聊天记录。你在 iTerm
-  里看到的样子，在这里一模一样。
+- **每个 Agent 一个真实终端。** Claude Code、Codex、Amp、Droid、Cursor、Copilot、
+  Antigravity、Crush、Cline 等等，都跑在真正的 PTY 里，而不是被重新渲染的聊天记录。
+  你在 iTerm 里看到的样子，在这里一模一样。
 - **一条会话侧栏。** 每个 Agent 和 shell 都只需一次点击。状态实时更新，哪个在
   工作、哪个空闲、哪个需要你，一眼就知道。
 - **拆分窗格。** 把 Agent、开发服务器和 shell 放进同一个窗口，按你的思路排布。
+- **任何一台你自己的机器。** 工作区可以放在 VPS 上，或者房间另一头的 Mac mini 上。
+  Termio 通过 SSH 把一个二进制复制过去，把 Agent 配好；会话跑在那台机器上，你附不
+  附着都照跑。
 - **内置检查器。** 浏览工作目录、带语法高亮地编辑文件、读 git 差异、在整个项目
   里搜索——全都不用离开窗口。
 - **一套编排 API。** `termio sessions` 命令行让一个 Agent（或你的脚本）通过本地
@@ -28,9 +31,10 @@ Termio 是一款原生 Mac 应用，为你的 AI 编程 Agent 安了个家。你
 
 ## 始终本地优先
 
-Termio 没有账号、没有登录、没有遥测。你的终端、代码和 Agent 对话不会经过我们的
-服务器——产品的数据路径里根本没有我们的服务器。你运行的 Agent 用你自己的账号与
-它们各自的服务商通信，和在普通终端里完全一样。
+Termio 没有账号，也不需要登录。你的终端、代码和 Agent 对话不会经过我们的服务器
+——产品的数据路径里根本没有我们的服务器。连另一台机器走的是系统 `ssh` 和你自己的
+`~/.ssh/config`；Termio 不开通任何机器，也不中转任何流量。你运行的 Agent 用你自己
+的账号与它们各自的服务商通信，和在普通终端里完全一样。
 
 Termio **免费使用**——没有账号，没有许可证密钥，也没有支付后端。
 
@@ -45,6 +49,9 @@ Termio **免费使用**——没有账号，没有许可证密钥，也没有支
   </Card>
   <Card href="/zh-CN/docs/agents" title="同时运行多个 Agent">
     让一支队伍并排工作，一眼读出每个 Agent 的实时状态。
+  </Card>
+  <Card href="/zh-CN/docs/machines" title="工作区与设备">
+    把工作区放到另一台机器上，并在那儿装好会话宿主。
   </Card>
   <Card href="/zh-CN/docs/session-control" title="编排与命令行">
     用 `termio sessions` 让 Agent 互相派生、驱动与监督。

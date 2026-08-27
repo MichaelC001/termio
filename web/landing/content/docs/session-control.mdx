@@ -22,9 +22,10 @@ once on first launch). Toggling it off removes the hooks again, leaving any hook
 you added yourself untouched.
 
 The switch says whether you want the feature; each machine installs it for its own
-agents. Open a machine under **Settings ▸ Machines** and use **Set up this
-device** — or **Reinstall hooks** — to put the hooks on that box. That is what
-gives an agent running on a VPS the same status dots as one running here.
+agents. Open a machine under **Settings ▸ Devices** and press **Set Up** — or
+**Reinstall** on the Hooks row — to put the hooks on that box. That is what gives
+an agent running on a VPS the same status dots as one running here. See
+[Workspaces and machines](/docs/machines).
 
 ## Session control
 
@@ -59,7 +60,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## The `termio` command-line tool
 
-Turn on **Settings ▸ Machines ▸ This Mac ▸ Command-line tool**. It symlinks a `termio`
+Turn on **Settings ▸ Devices ▸ This Mac ▸ Command-line tool**. It symlinks a `termio`
 command onto your `PATH` (at `/usr/local/bin/termio`; macOS asks for permission
 once), and turning it off removes the link again.
 

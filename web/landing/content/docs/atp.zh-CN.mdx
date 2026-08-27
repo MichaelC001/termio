@@ -3,8 +3,8 @@ title: Agent 终端协议
 description: ATP 是 Termio 托管任意 Agent 命令行工具的方式——一份 JSON 清单声明如何启动它、它如何汇报状态、如何精确恢复那段对话。Agent 自己的 TUI 始终留在真实终端里。
 x-i18n:
   source_path: atp.mdx
-  source_hash: ddaac7ba90facb8742421a55ce91330612319489c8673ffd79a63eea794ad86c
-  generated_at: 2026-08-18
+  source_hash: 2f51dccdbf356ac52a0ae23bb27d5c9873147318bf9d9b651be00ee664354485
+  generated_at: 2026-08-27
 ---
 
 编辑器类协议把你的 Agent 重新渲染进编辑器面板。ATP 押的是相反的注：Agent 自己的 TUI
@@ -60,6 +60,8 @@ API。
 | `icon` | `vector`（内置品牌标记）、`path`（你自己的 PNG/SVG 文件）或 `symbol`（一个 SF Symbol），可附带 `tint`。 |
 | `install` | 厂商的安装页面，在找不到该命令时提示。可选。 |
 | `order` | 在 Agent 选择器里的位置。可选；未声明的清单排在最后。 |
+| `skills` | Agent 的用户级技能目录（`{"dir": "~/.claude/skills"}`），Termio 的会话控制技能就写在那儿。可选；没有技能生态的 Agent 可以不写。 |
+| `configHome` | Agent 自己文档里那个用来搬走配置树的环境变量，以及它替换掉的路径（`{"env": "CLAUDE_CONFIG_DIR", "path": "~/.claude"}`）。写上它，Termio 就会装到 Agent 真正读取的位置，而不是那个字面默认值。可选。 |
 
 ## 状态
 

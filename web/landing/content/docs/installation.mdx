@@ -55,11 +55,13 @@ your Mac. Install whichever CLIs you use (for example `claude`, `codex`, or
 login shell, so anything your shell profile sets up will be available.
 
 Once an agent is installed, it shows up as a launchable option when you start a
-session.
+session. The same is true of the agents on another machine — Termio looks for
+them there and installs its hooks on that box. See [Workspaces and
+machines](/docs/machines).
 
 ## The `termio` command (optional)
 
-Termio ships a small command-line tool. Open **Settings ▸ Machines ▸ This Mac**
+Termio ships a small command-line tool. Open **Settings ▸ Devices ▸ This Mac**
 and turn on **Command-line tool** to symlink `termio` onto your `PATH`. From then on
 `termio` in any directory opens it as a project, and `termio sessions …` lets your
 agents coordinate with each other. It’s entirely optional — see

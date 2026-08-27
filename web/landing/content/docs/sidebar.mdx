@@ -1,12 +1,24 @@
 ---
 title: The sidebar
-description: The sidebar is Termio’s control surface — Terminals, Chats, and Projects grouped in one list, each session reporting a live status so you always know which agent needs you.
+description: The sidebar is Termio’s control surface — one workspace at a time, with Terminals, Chats, and Projects grouped in one list and every session reporting a live status.
 ---
 
 Everything you run in Termio lives in the sidebar on the left. It’s one scrollable
 list, grouped into sections, where every row is a live session reporting what it’s
 doing right now. Click a row to bring it forward; the rest keep running in the
 background.
+
+## One workspace at a time
+
+The sidebar is scoped to a workspace: the switcher in its toolbar names the one
+you’re in, and the list below holds only what’s filed under it. Switch with `⌘1`
+through `⌘9`, from the switcher, or from `File ▸ Workspace`. Each workspace comes
+back to the session you left it on, with its panes and its inspector tab.
+
+A workspace belongs to one machine, so switching workspaces is also how you move
+between machines — the switcher names the machine beside any workspace whose own
+name doesn’t already say it. See [Workspaces and
+machines](/docs/machines).
 
 ## Sections
 
@@ -21,6 +33,13 @@ The sidebar groups your sessions by what they are:
   worktrees](/docs/worktrees).
 
 Empty sections stay hidden, so the list only shows what you’re actually using.
+
+One more section appears when the machine has something Termio didn’t start:
+**Also Running** is that machine’s own claim about what it is hosting, including
+sessions you began over plain `ssh`. It is the one place a session started
+outside Termio shows up, and you can open it here. On another machine the header
+names it, and if the machine can’t be reached the section says so in `ssh`’s own
+words rather than going quiet.
 
 <DocsImage
   src="/screenshots/docs/04-project-session-hierarchy.png"
@@ -62,7 +81,12 @@ you need to keep.
 
 ## Switching without losing your place
 
-Because each session is a real process, an agent doesn’t pause when it’s
-off-screen. Click between rows freely, or — once you have more than a handful —
-jump straight to any session by name with `⇧⌘O`. See
-[Navigation](/docs/navigation).
+Because each session is a real process running on its machine, an agent doesn’t
+pause when it’s off-screen — or when you switch workspaces, or close the window.
+Click between rows freely, or — once you have more than a handful — jump straight
+to any session by name with `⇧⌘O`. See [Navigation](/docs/navigation).
+
+Rows move by drag. Dropping one in the middle of another groups the two sessions
+into one split; dropping on a row’s top or bottom edge reorders it into that gap.
+A line means *between these*, a lifted row means *into this one*. Dragging a row
+onto a pane groups it in there instead.

@@ -1,0 +1,141 @@
+---
+title: Workspaces and machines
+description: A workspace is the sidebar’s scope and it belongs to one machine — this Mac, or a box you reach over SSH. Termio sets up the session host there, and the sessions keep running whether or not you’re attached.
+---
+
+Termio runs your agents on machines you already own: this Mac, the Mac mini on
+the same desk, a VPS you pay for. There is no Termio cloud to provision from and
+nothing to sign into — a machine is a machine Termio can `ssh` to.
+
+Everything in the app files under one hierarchy:
+
+```
+Machine       a box you can reach, this Mac included
+  └ Workspace   a named scope in the sidebar
+      └ Project    a checkout on that machine
+          └ Session   one real terminal
+```
+
+Each level belongs to exactly one level above it. That is what makes the machine
+question answerable once, at the top, instead of being asked again for every
+project and every pane.
+
+## Workspaces
+
+A workspace is a named scope in the sidebar. It holds projects and loose
+terminals, and switching to it swaps what the sidebar lists — the projects filed
+under it, its worktrees, its sessions, and nothing else.
+
+Switch with `⌘1` through `⌘9`, or from the switcher in the sidebar’s toolbar.
+The digits are positional: they follow the order of the list, and the switcher
+draws each one beside its name so you read the number rather than memorize it.
+`File ▸ Workspace` carries the same rows.
+
+A workspace remembers the session you left it on, with its panes, its split
+group, and its inspector tab. Coming back to a scope puts your own work back on
+screen rather than whatever sorts first.
+
+**Settings ▸ Workspaces** lists every workspace with the machine it’s on and how
+many sessions it holds. Renaming and removing live there, beside the workspace
+they act on. Removing one closes its sessions; the folders on disk are left
+alone.
+
+<Callout type="note" title="One workspace, one machine">
+  A workspace can’t span two machines. A checkout already lives on exactly one
+  box, so a workspace covering both was never more than a visual grouping over
+  leaves that disagreed. Work that touches a repo here and a repo on the VPS is
+  two workspaces.
+</Callout>
+
+## Adding a machine
+
+This Mac is a machine like any other, and it’s the one you already have. Until
+you add a second, the level stays out of your way — `New Terminal` and `Open
+Project…` are plain verbs, because there is only one place they could mean.
+
+Termio reads `~/.ssh/config` and never rewrites it behind your back. Anything
+you can already `ssh` to is a machine Termio can reach:
+
+- **File ▸ Connect to…** lists the aliases in your config that Termio hasn’t
+  worked on yet. Connecting opens a terminal there.
+- **Add Host…** appends a `Host` block for a box that isn’t in your config yet.
+  Lead with the address; the name is what you’ll type after `ssh`. A key is the
+  credential that works everywhere, including for the sessions running on the
+  box. A password is saved to your Keychain, never to `ssh` config, and read
+  only when `ssh` asks for it.
+
+## Setting up a machine
+
+Open **Settings ▸ Devices**, pick the machine, and press **Set Up**. Termio
+copies one binary — `termiod`, the session host — into `~/.local/bin` over SSH.
+No root, no package manager, nothing to add to your shell profile. It then looks
+for the agent CLIs installed there and writes Termio’s hooks, its config block,
+and its agent skill for each one, so an agent on a VPS reports **working**,
+**needs you**, and **done** exactly the way a local one does.
+
+The same button is also the update. It works from any state — nothing installed,
+an older build, a build the running daemon hasn’t picked up yet — and it puts
+the old binary back if the new one doesn’t answer. A machine’s pane shows the
+version it runs.
+
+An update that would interrupt work in progress says so and names the session,
+with **Update Anyway** beside it. Your own idle terminals never block an update;
+a command still running or an agent mid-task does.
+
+Under **Installed by Termio**, the daemon, the hooks, and the skill each get
+their own **Reinstall** row. A reinstall replaces the hooks Termio put there and
+leaves any you wrote yourself alone.
+
+<Callout type="note" title="What Termio does not do">
+  Termio never provisions a machine, never runs a control plane, and never
+  routes your traffic. It shells out to the system `ssh`, with your
+  `~/.ssh/config` and your keychain as the only authorities. Your code stays on
+  hardware you control — which is the only trust story that survives giving an
+  agent a shell on a private repo.
+</Callout>
+
+## Sessions live on the machine
+
+Every session runs inside `termiod` on the machine that owns it — including the
+sessions on this Mac, which run in the local daemon. The app is a viewer that
+attaches and detaches.
+
+That’s why closing the window leaves everything running, and why a remote
+session isn’t tied to the SSH connection that opened it: dropping the link
+detaches you, it doesn’t kill the agent. Reattaching restores the screen.
+
+Only **Close Session** (`⌘W`) ends a session on purpose. `⌘Q` asks first when
+something is still running.
+
+## What reaches across
+
+Once a machine is set up, the panes that read a project read it on the machine
+the project is on:
+
+- **Files** — browse the checkout, open a file, and save it back to the machine
+  it was read from.
+- **Search** — search a checkout on the machine, follow its `cd`, and open what
+  the search found.
+- **Changes, Compare, History** — the git pane reads that machine’s repository,
+  and stays as read-only there as it is here.
+- **Agents** — the same manifests, hooks, and skill, installed on the box.
+  **Settings ▸ Agents** carries a machine scope, so where an agent’s CLI lives
+  is answered per machine.
+- **Paste an image** into an agent running on the machine and Termio carries the
+  file across.
+
+The sidebar also has an **Also Running** section: what the machine itself says
+is running, including sessions started outside Termio — `ssh` in, `termiod`
+sees it, and you can open it here.
+
+<Cards>
+  <Card href="/docs/sidebar" title="The sidebar">
+    Workspaces, projects, and the status every session reports.
+  </Card>
+  <Card href="/docs/session-control" title="Session control & the CLI">
+    The hooks that make status honest, on this Mac and on every machine.
+  </Card>
+  <Card href="/docs/iphone" title="The iPhone companion">
+    Pair the phone with a machine and reach its sessions from anywhere.
+  </Card>
+</Cards>
