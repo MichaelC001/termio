@@ -80,10 +80,24 @@ Termio 附帶 `termio` 命令列工具，工作階段因此可以用腳本操作
 跑在 Termio 裡的 Agent 可以生出一個同儕，交給它一項任務，再把回覆讀回來：
 
 ```sh
-termio sessions list                       # 誰在工作、閒置，或正在等你
-termio sessions spawn "fix the flaky test" # 用一段提示啟動新的 Agent 工作階段
-termio sessions send ab12cd34 "1"          # 回答同儕的權限確認
-termio sessions watch                      # 即時串流狀態變化
+termio .                                    # 把目前目錄當成專案打開
+termio sessions list                        # 誰在工作、閒置，或正在等你
+termio sessions spawn "fix the flaky test"  # 用一段提示啟動新的 Agent 工作階段
+termio sessions run "pnpm test --watch"     # 用一條指令啟動一般終端機工作階段
+termio sessions send ab12cd34 "1"           # 回答同儕的權限確認
+termio sessions read ab12cd34 --lines 40    # 印出某個工作階段目前的畫面
+termio sessions watch                       # 即時串流狀態變化
+termio sessions focus ab12cd34              # 在應用程式裡把某個工作階段切到前景
+termio sessions close ab12cd34              # 關掉它
+termio notify "the migration finished"      # 發一則 macOS 通知
+```
+
+其餘的交給參數：`--wait` 會一路等到這一輪結束，回來時帶著最終狀態和可以去讀的紀錄
+行範圍；`--json` 讓任何 `sessions` 指令輸出機器可讀的結果；`--agent` 決定 `spawn`
+啟動哪個 Agent；`--direction` / `--ratio` 決定新面板落在哪、佔多大。
+
+```sh
+termio sessions spawn "run the migration" --agent codex --wait
 ```
 
 Agent 自己會學會這套：工作階段控制會往每個 Agent 的技能目錄（`~/.claude/skills`、

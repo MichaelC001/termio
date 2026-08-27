@@ -74,10 +74,22 @@ Pi、Kimi — そのほかどんな CLI エージェントでも動きます。�
 Termio には `termio` CLI が同梱されており、セッションをスクリプトから操作できます — エージェント自身からも。Termio の中で動くエージェントは、兄弟セッションを起動してタスクを渡し、返答を読み取れます。
 
 ```sh
-termio sessions list                       # 誰が作業中か、アイドルか、あなたを待っているか
-termio sessions spawn "fix the flaky test" # プロンプトを渡して新しいエージェントセッションを開始
-termio sessions send claude@ab12cd34 "1"   # 兄弟セッションの許可プロンプトに応答
-termio sessions watch                      # ステータスの変化をリアルタイムにストリーム
+termio .                                    # カレントディレクトリをプロジェクトとして開く
+termio sessions list                        # 誰が作業中か、アイドルか、あなたを待っているか
+termio sessions spawn "fix the flaky test"  # プロンプトを渡して新しいエージェントセッションを開始
+termio sessions run "pnpm test --watch"     # コマンドを渡して通常のターミナルセッションを開始
+termio sessions send ab12cd34 "1"           # 兄弟セッションの許可プロンプトに応答
+termio sessions read ab12cd34 --lines 40    # そのセッションの画面を出力
+termio sessions watch                       # ステータスの変化をリアルタイムにストリーム
+termio sessions focus ab12cd34              # アプリでそのセッションを前面に出す
+termio sessions close ab12cd34              # 閉じる
+termio notify "the migration finished"      # macOS の通知を送る
+```
+
+残りはフラグが担います。`--wait` はターンが落ち着くまでブロックし、最終ステータスと読むべきトランスクリプトの行範囲を返します。`--json` は任意の `sessions` コマンドを機械可読にし、`--agent` は `spawn` が起動するエージェントを選び、`--direction` / `--ratio` は新しいペインの位置と大きさを決めます。
+
+```sh
+termio sessions spawn "run the migration" --agent codex --wait
 ```
 
 ## iPhone で

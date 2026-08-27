@@ -85,10 +85,25 @@ agents themselves. An agent running inside Termio can spawn a sibling, hand it
 a task, and read back the reply:
 
 ```sh
-termio sessions list                       # who's working, idle, or waiting on you
-termio sessions spawn "fix the flaky test" # start a new agent session on a prompt
-termio sessions send ab12cd34 "1"          # answer a sibling's permission prompt
-termio sessions watch                      # stream status changes as they happen
+termio .                                    # open the current directory as a project
+termio sessions list                        # who's working, idle, or waiting on you
+termio sessions spawn "fix the flaky test"  # start a new agent session on a prompt
+termio sessions run "pnpm test --watch"     # start a plain terminal session on a command
+termio sessions send ab12cd34 "1"           # answer a sibling's permission prompt
+termio sessions read ab12cd34 --lines 40    # print what's on a session's screen
+termio sessions watch                       # stream status changes as they happen
+termio sessions focus ab12cd34              # bring a session forward in the app
+termio sessions close ab12cd34              # close it
+termio notify "the migration finished"      # post a macOS notification
+```
+
+Flags carry the rest: `--wait` blocks until the turn settles and comes back with
+the final status and the transcript range to read, `--json` makes any `sessions`
+command machine-readable, `--agent` picks which agent `spawn` starts, and
+`--direction` / `--ratio` decide where the new pane lands and how big it is.
+
+```sh
+termio sessions spawn "run the migration" --agent codex --wait
 ```
 
 Agents learn this themselves: Session control installs a `termio`

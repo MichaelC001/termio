@@ -79,10 +79,24 @@ Termio 附带 `termio` 命令行工具，会话因此可以脚本化——Agent 
 里的 Agent 可以派生一个同伴，交给它一个任务，再把回复读回来：
 
 ```sh
-termio sessions list                       # 谁在工作、空闲，或在等你
-termio sessions spawn "fix the flaky test" # 用一段提示启动新的 Agent 会话
-termio sessions send ab12cd34 "1"          # 回答同伴的权限确认
-termio sessions watch                      # 实时流式输出状态变化
+termio .                                    # 把当前目录作为项目打开
+termio sessions list                        # 谁在工作、空闲，或在等你
+termio sessions spawn "fix the flaky test"  # 用一段提示启动新的 Agent 会话
+termio sessions run "pnpm test --watch"     # 用一条命令启动普通终端会话
+termio sessions send ab12cd34 "1"           # 回答同伴的权限确认
+termio sessions read ab12cd34 --lines 40    # 打印某个会话当前的屏幕
+termio sessions watch                       # 实时流式输出状态变化
+termio sessions focus ab12cd34              # 在应用里把某个会话切到前台
+termio sessions close ab12cd34              # 关掉它
+termio notify "the migration finished"      # 发一条 macOS 通知
+```
+
+剩下的交给参数：`--wait` 一直等到这一轮结束，回来时带上最终状态和可以去读的记录行
+范围；`--json` 让任何 `sessions` 命令输出机器可读的结果；`--agent` 决定 `spawn`
+启动哪个 Agent；`--direction` / `--ratio` 决定新面板落在哪、占多大。
+
+```sh
+termio sessions spawn "run the migration" --agent codex --wait
 ```
 
 Agent 自己会学会这套：会话控制会往每个 Agent 的技能目录（`~/.claude/skills`、

@@ -91,10 +91,25 @@ Termio는 `termio` CLI를 함께 제공해서 세션을 스크립트로 다룰 �
 작업을 넘기고, 답을 읽어올 수 있어요:
 
 ```sh
-termio sessions list                       # 누가 작업 중이고, 대기 중이고, 당신을 기다리는지
-termio sessions spawn "fix the flaky test" # 프롬프트로 새 에이전트 세션 시작
-termio sessions send claude@ab12cd34 "1"   # 형제 세션의 권한 프롬프트에 답하기
-termio sessions watch                      # 상태 변화를 실시간으로 스트리밍
+termio .                                    # 현재 디렉터리를 프로젝트로 열기
+termio sessions list                        # 누가 작업 중이고, 대기 중이고, 당신을 기다리는지
+termio sessions spawn "fix the flaky test"  # 프롬프트로 새 에이전트 세션 시작
+termio sessions run "pnpm test --watch"     # 명령 하나로 일반 터미널 세션 시작
+termio sessions send ab12cd34 "1"           # 형제 세션의 권한 프롬프트에 답하기
+termio sessions read ab12cd34 --lines 40    # 그 세션의 현재 화면 출력
+termio sessions watch                       # 상태 변화를 실시간으로 스트리밍
+termio sessions focus ab12cd34              # 앱에서 그 세션을 앞으로 가져오기
+termio sessions close ab12cd34              # 닫기
+termio notify "the migration finished"      # macOS 알림 보내기
+```
+
+나머지는 플래그가 맡아요. `--wait`는 이번 턴이 정리될 때까지 기다렸다가 최종 상태와
+읽어야 할 트랜스크립트 줄 범위를 돌려주고, `--json`은 어떤 `sessions` 명령이든 기계가
+읽을 수 있게 만들고, `--agent`는 `spawn`이 띄울 에이전트를 고르고,
+`--direction` / `--ratio`는 새 페인이 어디에 얼마나 크게 놓일지 정해요.
+
+```sh
+termio sessions spawn "run the migration" --agent codex --wait
 ```
 
 ## iPhone에서
