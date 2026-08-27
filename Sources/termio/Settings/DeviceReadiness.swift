@@ -368,7 +368,15 @@ final class DevicePaneModel: ObservableObject {
         }
         state.integrationVersion = AppInfo.buildStamp
         apply(state)
-        feedback = .success(localized("\(device.name) is ready."))
+        // The outcome line already says "Ready"; what this adds is *what was
+        // put there*, and with both switches off there is nothing to add.
+        let headline: String? = switch (settings.agentHooksEnabled, settings.sessionControlEnabled) {
+        case (true, true): localized("Hooks and skill installed")
+        case (true, false): localized("Hooks installed")
+        case (false, true): localized("Skill installed")
+        case (false, false): nil
+        }
+        feedback = headline.map { .summarizing(outcome, headline: $0, unit: localized("agents")) }
     }
 
     /// The first rung. This Mac needs the `termio` CLI on `PATH` — a hook it

@@ -2774,6 +2774,36 @@
         }
       }
     },
+    "Hooks": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hooks"
+          }
+        }
+      }
+    },
+    "Hooks and skill installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hooks 和技能已安装"
+          }
+        }
+      }
+    },
+    "Hooks installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hooks 已安装"
+          }
+        }
+      }
+    },
     "Hooks reinstalled": {
       "localizations": {
         "zh-Hans": {
@@ -5197,6 +5227,16 @@
         }
       }
     },
+    "Report each agent’s status back to Termio.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把每个 Agent 的状态报告回 Termio。"
+          }
+        }
+      }
+    },
     "Repository": {
       "localizations": {
         "zh-Hans": {
@@ -5778,6 +5818,26 @@
         }
       }
     },
+    "Skill": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技能"
+          }
+        }
+      }
+    },
+    "Skill installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技能已安装"
+          }
+        }
+      }
+    },
     "Skill reinstalled": {
       "localizations": {
         "zh-Hans": {
@@ -6024,6 +6084,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "任务完成"
+          }
+        }
+      }
+    },
+    "Teaches agents the termio session commands.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "教 Agent 使用 termio 的会话命令。"
           }
         }
       }

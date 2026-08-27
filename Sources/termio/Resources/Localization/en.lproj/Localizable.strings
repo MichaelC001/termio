@@ -562,6 +562,12 @@
 	<string>Hide or show the navigator</string>
 	<key>History</key>
 	<string>History</string>
+	<key>Hooks</key>
+	<string>Hooks</string>
+	<key>Hooks and skill installed</key>
+	<string>Hooks and skill installed</string>
+	<key>Hooks installed</key>
+	<string>Hooks installed</string>
 	<key>Hooks reinstalled</key>
 	<string>Hooks reinstalled</string>
 	<key>Host</key>
@@ -1046,6 +1052,8 @@
 	<string>Replace</string>
 	<key>Replace All</key>
 	<string>Replace All</string>
+	<key>Report each agent’s status back to Termio.</key>
+	<string>Report each agent’s status back to Termio.</string>
 	<key>Repository</key>
 	<string>Repository</string>
 	<key>Request Permission</key>
@@ -1162,6 +1170,10 @@
 	<string>Signs in with the keys ssh offers by default.</string>
 	<key>Size: %lld pt</key>
 	<string>Size: %lld pt</string>
+	<key>Skill</key>
+	<string>Skill</string>
+	<key>Skill installed</key>
+	<string>Skill installed</string>
 	<key>Skill reinstalled</key>
 	<string>Skill reinstalled</string>
 	<key>Skip permission prompts</key>
@@ -1212,6 +1224,8 @@
 	<string>Tallied from %@'s own local session logs across every terminal and editor on this Mac — your actual usage, regardless of how the plan bills.%@</string>
 	<key>Task completion</key>
 	<string>Task completion</string>
+	<key>Teaches agents the termio session commands.</key>
+	<string>Teaches agents the termio session commands.</string>
 	<key>Terminal</key>
 	<string>Terminal</string>
 	<key>Terminal default</key>
