@@ -241,7 +241,15 @@ final class TermioStore: ObservableObject {
                     remotePreviewLease = nil
                     openFileDisplayName = nil
                 }
+                openFileDirty = false
             }
+            // Whatever put a file on screen — or took one off it — settles the
+            // question the placeholder was asking, and ends the download behind
+            // it. The generation guard already stops a late reply from
+            // presenting itself; this stops it from crossing the network at all.
+            // Cancelling the task that is *doing* the presenting is harmless:
+            // the download is over by then, and the cache was written first.
+            if oldValue != openFileURL { cancelRemoteFileOpen() }
             if openFileURL != nil { openDiff = nil; openIssueDetail = nil; noteDetailOpened() }
             // Closing always returns to the editable default; a read-only open re-asserts the flag
             // immediately before setting the URL (see `openTerminalLink`). The jump line clears too,
@@ -277,6 +285,30 @@ final class TermioStore: ObservableObject {
     /// False for files staged from an SSH host. HTML/SVG must then open as
     /// read-only source rather than executing in the local web preview.
     @Published var openFileAllowsActiveWebContent = true
+
+    /// The file on another machine that a click has asked for and whose bytes
+    /// have not landed yet, or `nil` when nothing is on its way.
+    ///
+    /// A remote open is a round trip, and until this existed the click spent it
+    /// showing whatever was already on screen: no chrome, no name, no sign the
+    /// app had heard the click at all. The overlay now goes up on the click and
+    /// the content fills in, which is what makes a device's tree feel like the
+    /// local one — the wire is the same speed either way.
+    @Published private(set) var openingRemoteFile: RemoteFileOpening? {
+        didSet {
+            if openingRemoteFile != nil { openDiff = nil; openIssueDetail = nil; noteDetailOpened() }
+            refreshDetailPresentation()
+        }
+    }
+
+    /// Whether the open file has edits the editor has not written yet, reported
+    /// by `FileEditorView`. Read by the remote open path, which must never
+    /// replace a buffer somebody is typing into (see `openRemoteFile`).
+    @Published var openFileDirty = false
+
+    /// The in-flight remote read. Held so the next open — or the close — ends it
+    /// rather than leaving a download running for a file nobody will see.
+    private var remoteOpenTask: Task<Void, Never>?
 
     /// A monotonically increasing guard for asynchronous remote downloads. Any
     /// local open/close/replacement invalidates a pending remote presentation.
@@ -369,7 +401,8 @@ final class TermioStore: ObservableObject {
     /// Recomputes `isDetailPresented` from the three detail properties and drops the maximize
     /// state once nothing is left to show. Called from each detail setter's `didSet`.
     private func refreshDetailPresentation() {
-        let presented = openFileURL != nil || openDiff != nil || openIssueDetail != nil
+        let presented = openFileURL != nil || openingRemoteFile != nil
+            || openDiff != nil || openIssueDetail != nil
         if isDetailPresented != presented { isDetailPresented = presented }
         if !presented {
             if inspectorMaximized { inspectorMaximized = false }
@@ -1764,6 +1797,119 @@ final class TermioStore: ObservableObject {
         openFileLine = line
         openFileURL = lease.fileURL
         return true
+    }
+
+    /// Opens a file that lives on another machine: the overlay goes up on the
+    /// click, and the bytes fill it in when they land.
+    ///
+    /// The single path both the device's file tree and its content search open
+    /// through, because the interesting part is the same for both and easy to
+    /// get subtly different twice. Three things happen in order:
+    ///
+    /// 1. **The click is answered immediately.** `openingRemoteFile` puts the
+    ///    file's own chrome on screen for the whole round trip. This is the whole
+    ///    difference between a device tree that feels local and one that looks
+    ///    broken: the wire was never the slow part, the silence was.
+    /// 2. **A cached copy is shown at once** when this file has been read before,
+    ///    so going back to a file you just closed costs nothing.
+    /// 3. **The device is asked anyway.** A cache that answered on its own would
+    ///    be wrong the moment an agent touched the file, which here is constantly.
+    ///    The reply replaces what is on screen only when it actually differs and
+    ///    nobody has started typing into it.
+    func openRemoteFile(
+        path: String, name: String, provider: DeviceFileProvider, host: String,
+        at line: Int? = nil
+    ) {
+        let key = RemoteFileContentCache.Key(
+            route: provider.route, root: provider.root, path: path)
+        // Explicitly, not through `openFileURL`'s `didSet`: a second click while
+        // the first file is still on its way never changes that URL, and the
+        // first download would otherwise run on.
+        cancelRemoteFileOpen()
+        openFileURL = nil
+        openingRemoteFile = RemoteFileOpening(name: name, host: host)
+
+        let cached = RemoteFileContentCache.entry(for: key)
+        if let cached {
+            _ = presentRemoteFile(
+                cached.data, mtime: cached.mtime, name: name, path: path,
+                provider: provider, host: host, at: line)
+        }
+        // After the cached present, which bumps the generation itself.
+        let generation = filePresentationGeneration
+        remoteOpenTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let file = try await provider.read(
+                    path, limit: Termiod.filePreviewByteLimit)
+                try Task.checkCancellation()
+                // Before presenting, so the cache is written even for the open
+                // that gets cancelled by the presentation it is performing.
+                RemoteFileContentCache.store(
+                    .init(data: file.data, mtime: file.mtime), for: key)
+                guard generation == self.filePresentationGeneration else { return }
+                if let cached {
+                    // The device agrees with what is already on screen, or the
+                    // person has started typing into it. Either way, rebuilding
+                    // the editor under them would be the wrong answer.
+                    guard file.data != cached.data, !self.openFileDirty else { return }
+                }
+                _ = self.presentRemoteFile(
+                    file.data, mtime: file.mtime, name: name, path: path,
+                    provider: provider, host: host, at: line)
+            } catch is CancellationError {
+                return
+            } catch {
+                Log.files.error("""
+                device read \(host, privacy: .public):\(path, privacy: .public): \
+                \(String(describing: error), privacy: .public)
+                """)
+                // A failed revalidation of bytes already on screen is not the
+                // user's problem — what they are reading is still what the
+                // device last said.
+                guard cached == nil, generation == self.filePresentationGeneration else { return }
+                self.openingRemoteFile = RemoteFileOpening(
+                    name: name, host: host,
+                    failure: RemoteFileFailure.message(for: error))
+            }
+        }
+    }
+
+    /// Stages one device file locally and puts it on screen. Shared by the first
+    /// present and the revalidation that may replace it.
+    private func presentRemoteFile(
+        _ data: Data, mtime: UInt64, name: String, path: String,
+        provider: DeviceFileProvider, host: String, at line: Int?
+    ) -> Bool {
+        do {
+            let lease = try RemotePreviewStorage.stage(data, named: name)
+            return presentRemoteFilePreview(
+                lease, expectedGeneration: filePresentationGeneration, at: line,
+                origin: RemoteDocument(
+                    route: provider.route, root: provider.root, path: path,
+                    mtime: mtime, host: host))
+        } catch {
+            Log.files.error("""
+            staging \(host, privacy: .public):\(path, privacy: .public): \
+            \(String(describing: error), privacy: .public)
+            """)
+            // Only when this open has nothing on screen yet. A revalidation that
+            // failed to stage its replacement leaves the copy already being read
+            // alone rather than covering it with an error about bytes the reader
+            // never asked for.
+            if openFileURL == nil {
+                openingRemoteFile = RemoteFileOpening(
+                    name: name, host: host, failure: RemoteFileFailure.message(for: error))
+            }
+            return false
+        }
+    }
+
+    /// Ends a remote open in flight and takes its placeholder down.
+    func cancelRemoteFileOpen() {
+        remoteOpenTask?.cancel()
+        remoteOpenTask = nil
+        if openingRemoteFile != nil { openingRemoteFile = nil }
     }
 
     /// The working directory of the selected session (its worktree, else the project root), used as

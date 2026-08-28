@@ -49,7 +49,6 @@ struct FileSearchView: View {
     /// The in-flight debounce+grep, cancelled by the next keystroke.
     @State private var searchTask: Task<Void, Never>?
     /// The in-flight download of a hit's file, for a device checkout.
-    @State private var openTask: Task<Void, Never>?
     @State private var fieldFocused = false
     @State private var focusRequest = 0
     @State private var isVisible = false
@@ -68,7 +67,6 @@ struct FileSearchView: View {
         .onDisappear {
             isVisible = false
             searchTask?.cancel()
-            openTask?.cancel()
         }
     }
 
@@ -380,22 +378,13 @@ struct FileSearchView: View {
     /// is quoted verbatim. `fallback` says which of the two round trips failed,
     /// since an error with no message of its own tells the user nothing else.
     private static func message(for error: Error, fallback: String) -> String {
-        switch error {
-        case DeviceFileError.unsupported:
-            return localized("This device’s termiod is too old to browse files.")
-        case DeviceFileError.tooLarge:
-            return localized("Preview is capped at 1 MB.")
-        case DeviceFileError.notRegularFile:
-            return localized("Only regular files can be previewed.")
-        case TermiodClientError.timedOut:
-            // Silence, not a refusal — and the likeliest cause is a host that
-            // has never heard of the op, so the sentence names that.
+        // Silence, not a refusal — and the likeliest cause is a host that has
+        // never heard of the op, so the sentence names that. The rest is the
+        // shared table every device pane words its failures from.
+        if case TermiodClientError.timedOut = error {
             return localized("This device didn’t answer. Its termiod may be too old to search.")
-        case TermiodClientError.requestFailed(let detail) where !detail.isEmpty:
-            return detail
-        default:
-            return fallback
         }
+        return RemoteFileFailure.message(for: error, fallback: fallback)
     }
 
     // MARK: - Opening a hit
@@ -422,40 +411,13 @@ struct FileSearchView: View {
             store.openFileInEditor(match.url, at: target)
             return
         }
-        openTask?.cancel()
-        let path = match.url.path
-        let name = match.url.lastPathComponent
-        let line = target
-        let generation = store.filePresentationGeneration
-        openTask = Task { @MainActor in
-            do {
-                let file = try await provider.read(
-                    path, limit: Termiod.filePreviewByteLimit)
-                try Task.checkCancellation()
-                let lease = try RemotePreviewStorage.stage(file.data, named: name)
-                store.presentRemoteFilePreview(
-                    lease, expectedGeneration: generation, at: line,
-                    origin: RemoteDocument(
-                        route: provider.route, root: provider.root, path: path,
-                        mtime: file.mtime, host: host))
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled else { return }
-                Log.files.error("""
-                device read \(host, privacy: .public):\(path, privacy: .public): \
-                \(String(describing: error), privacy: .public)
-                """)
-                // The click has to answer for itself: the results list stays on
-                // screen, so a failure recorded only in the pane's empty state
-                // would be a click that did nothing.
-                let alert = NSAlert()
-                alert.messageText = "“\(name)” couldn’t be opened."
-                alert.informativeText = Self.message(
-                    for: error, fallback: localized("The read failed."))
-                alert.runModal()
-            }
-        }
+        // The same open the device's file tree uses: the overlay goes up on the
+        // click, a file read before is shown from the cache while the device is
+        // asked again, and a failure is reported in the overlay rather than in a
+        // modal the click has to be dismissed out of.
+        store.openRemoteFile(
+            path: match.url.path, name: match.url.lastPathComponent,
+            provider: provider, host: host, at: target)
     }
 
     /// The terminal surface fights for first responder; keep asking for a few

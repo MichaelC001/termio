@@ -60,6 +60,108 @@ struct RemoteDocument: Hashable {
     }
 }
 
+/// The file a click on a device's tree has asked for, while its bytes are still
+/// crossing the network. What the overlay draws until the editor takes over.
+struct RemoteFileOpening: Equatable {
+    let name: String
+    let host: String
+    /// The device's own sentence when the read failed. The click has to answer
+    /// for itself, and an overlay that opened and then vanished would leave the
+    /// same "did it hear me" question the placeholder exists to end.
+    var failure: String?
+}
+
+/// What went wrong on a device, in the vocabulary the panes show.
+///
+/// The device describes the cause and is quoted verbatim where it has one; only
+/// the cases the client decides for itself are worded here. One table rather
+/// than one per pane, because the tree, the search and the file overlay are all
+/// answering the same question and were drifting apart doing it.
+enum RemoteFileFailure {
+    static func message(
+        for error: Error, fallback: String = localized("The read failed.")
+    ) -> String {
+        switch error {
+        case DeviceFileError.unsupported:
+            return localized("This device’s termiod is too old to browse files.")
+        case DeviceFileError.tooLarge:
+            return localized("Preview is capped at 1 MB.")
+        case DeviceFileError.notRegularFile:
+            return localized("Only regular files can be previewed.")
+        case DeviceFileError.unsafeName:
+            return localized("This device sent a name the file tree can’t show.")
+        case TermiodClientError.requestFailed(let detail) where !detail.isEmpty:
+            return detail
+        default:
+            return fallback
+        }
+    }
+}
+
+/// The bytes of files read from a device, so opening one a second time costs no
+/// round trip.
+///
+/// Kept in memory rather than on disk on purpose: this is VS Code's text model
+/// cache, not a sync product. It survives closing a file and switching sessions,
+/// and dies with the process — nothing on this Mac has to be reconciled with the
+/// machine the bytes came from.
+///
+/// Every hit is still revalidated (`TermioStore.openRemoteFile`): agents rewrite
+/// files constantly, so a cache that answered on its own would be wrong within
+/// seconds. What it removes is the *wait*, not the read.
+@MainActor
+enum RemoteFileContentCache {
+    struct Key: Hashable {
+        let route: TermiodRoute
+        let root: String
+        let path: String
+    }
+
+    struct Entry {
+        let data: Data
+        let mtime: UInt64
+    }
+
+    /// Small on both axes. A file tree is browsed a few files at a time, and the
+    /// entries are whole file contents — this is a convenience for going back to
+    /// what you just read, not a store worth spending memory on.
+    static let capacity = 16
+    static let byteBudget = 8 * 1024 * 1024
+
+    private static var entries: [Key: Entry] = [:]
+    /// Least-recently-used first, so eviction has an order to follow.
+    private static var order: [Key] = []
+    private static var bytes = 0
+
+    static func entry(for key: Key) -> Entry? {
+        guard let entry = entries[key] else { return nil }
+        order.removeAll { $0 == key }
+        order.append(key)
+        return entry
+    }
+
+    static func store(_ entry: Entry, for key: Key) {
+        if let existing = entries[key] {
+            bytes -= existing.data.count
+            order.removeAll { $0 == key }
+        }
+        entries[key] = entry
+        order.append(key)
+        bytes += entry.data.count
+        while order.count > capacity || (bytes > byteBudget && order.count > 1) {
+            guard let oldest = order.first else { break }
+            order.removeFirst()
+            bytes -= entries.removeValue(forKey: oldest)?.data.count ?? 0
+        }
+    }
+
+    static func clear() {
+        entries.removeAll()
+        order.removeAll()
+        bytes = 0
+    }
+}
+
 @MainActor
 enum RemotePreviewStorage {
     private static var liveDirectories: Set<URL> = []
@@ -143,6 +245,12 @@ final class RemoteFileNode: Identifiable {
     nonisolated var id: String { path }
 
     fileprivate var loadedChildren: [RemoteFileNode]?
+    /// Whether a listing for this folder is on the wire with nothing to show
+    /// yet. An unloaded folder answers `[]`, which draws as a folder that is
+    /// genuinely empty — the one thing it is not. The row shows a spinner
+    /// instead, the way the local tree never has to because its answer is
+    /// already there.
+    fileprivate(set) var isLoading = false
     private weak var model: RemoteFileBrowserModel?
 
     fileprivate init(
@@ -166,8 +274,12 @@ final class RemoteFileNode: Identifiable {
     var children: [RemoteFileNode]? {
         guard isDirectory else { return nil }
         if let loadedChildren { return loadedChildren }
+        // `loadChildren` adopts a prefetched listing synchronously, so a folder
+        // whose contents were fetched ahead of this click opens with its rows
+        // already in it — read back here rather than published, because a
+        // publish from inside a getter runs during a view update.
         model?.loadChildren(of: self)
-        return []
+        return loadedChildren ?? []
     }
 }
 
@@ -195,20 +307,50 @@ final class RemoteFileBrowserModel: ObservableObject {
     @Published private(set) var phase: Phase = .connecting
     @Published private(set) var rootNodes: [RemoteFileNode] = []
 
-    /// The same read cap as the iOS companion's file preview and the daemon's
-    /// own `fs.read` soft cap.
-    static let previewByteLimit = Termiod.filePreviewByteLimit
+    /// Listings fetched before anything asked for them: when a folder opens, the
+    /// folders inside it are the ones about to be clicked, and asking for them
+    /// while the user is still reading the rows costs a round trip nobody waits
+    /// on. Consumed by the click, so an expand three levels down is three
+    /// instant openings instead of three sequential waits.
+    ///
+    /// Deliberately not tree state — a prefetched folder is not "loaded", it is
+    /// a guess held aside. Adopting one still asks the device for real, so a
+    /// guess that went stale is corrected within one round trip and never
+    /// survives longer than the first look at it.
+    private var prefetched: [String: [FileEntry]] = [:]
+    /// Directories per prefetch, and in total. A checkout with 400 folders under
+    /// one parent must not turn one expand into a listing of the whole tree; the
+    /// cap is generous enough to cover the folders actually on screen.
+    static let prefetchFanout = 32
+    static let prefetchCeiling = 256
 
     private let provider: DeviceFileProvider
     private var nodesByPath: [String: RemoteFileNode] = [:]
     private var loadsInFlight: Set<String> = []
+    private var prefetchesInFlight: Set<String> = []
     private var refreshing = false
+    /// Holds this device's channel open, and warm, while the pane is on screen.
+    /// See `Termiod.ControlPool.pin`.
+    private var pin: Termiod.ControlPool.ChannelPin?
 
     init(checkout: Checkout, root: String) {
         self.checkout = checkout
         self.root = root
         self.provider = DeviceFileProvider(
             route: checkout.device.route, root: root)
+    }
+
+    /// The pane is on screen: keep the connection it browses over alive, so a
+    /// click seconds from now does not pay to rebuild it.
+    func startWarming() {
+        guard pin == nil else { return }
+        pin = Termiod.ControlPool.pin(route: checkout.device.route, caps: ["files"])
+    }
+
+    /// The pane is gone or hidden. The channel goes back on the idle clock,
+    /// which hangs it up two minutes later if nothing else wants it.
+    func stopWarming() {
+        pin = nil
     }
 
     var host: String { checkout.device.name }
@@ -251,6 +393,10 @@ final class RemoteFileBrowserModel: ObservableObject {
                 let listings = try await provider.list(wanted)
                 apply(listings)
                 phase = .ready
+                // The folders at the top of the tree are the ones about to be
+                // clicked. Asking for them now costs a round trip nobody is
+                // waiting on; asking for them on the click costs one they are.
+                prefetchChildren(of: rootNodes)
             } catch {
                 report(error, context: "list \(host):\(root)")
             }
@@ -272,6 +418,14 @@ final class RemoteFileBrowserModel: ObservableObject {
                 return left == right ? $0 < $1 : left < right
             }
     }
+
+    /// The folders whose contents have been fetched ahead of a click.
+    ///
+    /// Reachable from a test for the same reason `loadedDirectories` is: whether
+    /// a guess is in hand *before* the folder is touched is the whole of the
+    /// claim, and it cannot be seen from the outside once touching it is what
+    /// consumes it.
+    func prefetchedPaths() -> Set<String> { Set(prefetched.keys) }
 
     /// Grafts a batch of listings onto the tree, keeping expansion state: a
     /// directory that is still there and still has children keeps them, so the
@@ -301,6 +455,35 @@ final class RemoteFileBrowserModel: ObservableObject {
         objectWillChange.send()
     }
 
+    /// Asks the device for the contents of the folders in `nodes`, one level
+    /// deep, so the click that opens one of them does not have to wait.
+    ///
+    /// Everything already loaded, already guessed at, or already on the wire is
+    /// skipped, so a refresh that re-lists a tree eight folders deep does not
+    /// re-prefetch what it prefetched the last time. One `fs.list` for the whole
+    /// batch — the same array the refresh uses, for the same reason.
+    private func prefetchChildren(of nodes: [RemoteFileNode]) {
+        guard prefetched.count < Self.prefetchCeiling else { return }
+        let wanted = nodes
+            .filter { $0.isDirectory && $0.loadedChildren == nil }
+            .map(\.path)
+            .filter { prefetched[$0] == nil && !prefetchesInFlight.contains($0) }
+            .prefix(Self.prefetchFanout)
+        guard !wanted.isEmpty else { return }
+        let paths = Array(wanted)
+        prefetchesInFlight.formUnion(paths)
+        Task {
+            defer { prefetchesInFlight.subtract(paths) }
+            // A guess that fails is not worth a word: the click that needed it
+            // asks again for itself, and reports its own failure if it comes to
+            // that.
+            guard let listings = try? await provider.list(paths) else { return }
+            for listing in listings where listing.error == nil {
+                prefetched[listing.path] = listing.entries
+            }
+        }
+    }
+
     /// Drops every node the tree can no longer reach from its roots.
     private func pruneUnreachableNodes() {
         var reachable: [String: RemoteFileNode] = [:]
@@ -310,20 +493,49 @@ final class RemoteFileBrowserModel: ObservableObject {
             frontier.append(contentsOf: node.loadedChildren ?? [])
         }
         nodesByPath = reachable
+        // A guess about a folder that is no longer in the tree answers a click
+        // that can no longer happen.
+        prefetched = prefetched.filter { reachable[$0.key] != nil }
     }
 
     /// Fetches one folder's entries — called from the `children` getter on first
     /// expand, so it must tolerate being re-entered on every list render while
     /// the fetch is in flight.
+    ///
+    /// A folder that was prefetched fills in **synchronously**, before this
+    /// returns, so the getter that called it can hand the rows straight to the
+    /// outline. The device is asked either way: a guess is shown, never trusted.
     fileprivate func loadChildren(of node: RemoteFileNode) {
+        if let ready = prefetched.removeValue(forKey: node.path) {
+            node.loadedChildren = nodes(for: ready, under: node.path)
+        }
         guard !loadsInFlight.contains(node.path) else { return }
         loadsInFlight.insert(node.path)
         Task {
             defer { loadsInFlight.remove(node.path) }
+            // Only when there is nothing to show meanwhile: a folder opened from
+            // a prefetch already has its rows, and a spinner on it would be
+            // reporting work the user has no reason to know about.
+            if node.loadedChildren == nil {
+                node.isLoading = true
+                objectWillChange.send()
+            }
+            defer {
+                if node.isLoading {
+                    node.isLoading = false
+                    objectWillChange.send()
+                }
+            }
             do {
                 let entries = try await provider.list(node.path)
-                node.loadedChildren = nodes(for: entries, under: node.path)
+                // Reusing the nodes already there keeps whatever is expanded
+                // underneath a prefetched folder when its real listing lands.
+                let previous = Dictionary(
+                    uniqueKeysWithValues: (node.loadedChildren ?? []).map { ($0.path, $0) })
+                node.loadedChildren = nodes(
+                    for: entries, under: node.path, reusing: previous)
                 objectWillChange.send()
+                prefetchChildren(of: node.loadedChildren ?? [])
             } catch {
                 // Settle the folder as empty rather than leaving it unloaded —
                 // the getter would re-fire the fetch on every render otherwise.
@@ -334,21 +546,11 @@ final class RemoteFileBrowserModel: ObservableObject {
         }
     }
 
-    /// Downloads the file into a uniquely-named temp file (keeping the device
-    /// file's name, so icon and syntax detection work) for the overlay, and
-    /// answers with where it came from so a save can put it back. Throws
-    /// `DeviceFileError.tooLarge` past the preview cap.
-    func stageForPreview(
-        _ node: RemoteFileNode
-    ) async throws -> (lease: RemotePreviewLease, origin: RemoteDocument) {
-        guard node.canPreview else { throw DeviceFileError.notRegularFile }
-        let file = try await provider.read(node.path, limit: Self.previewByteLimit)
-        try Task.checkCancellation()
-        let lease = try RemotePreviewStorage.stage(file.data, named: node.name)
-        return (lease, RemoteDocument(
-            route: checkout.device.route, root: root, path: node.path,
-            mtime: file.mtime, host: host))
-    }
+    /// How this tree's files are read. The open itself belongs to the store
+    /// (`TermioStore.openRemoteFile`), which is also where the search pane's
+    /// opens go — one path, so the overlay, the cache and the cancellation
+    /// behave the same however a file was clicked.
+    var files: DeviceFileProvider { provider }
 
     /// Routes a failure into the pane's state: an already-loaded tree stays up
     /// (a single folder failing shouldn't blank the pane) and only an empty one
@@ -374,7 +576,11 @@ final class RemoteFileBrowserModel: ObservableObject {
         reusing existing: [String: RemoteFileNode] = [:]
     ) -> [RemoteFileNode] {
         let base = parent.hasSuffix("/") ? parent : parent + "/"
-        return entries.map { entry in
+        // The same order and the same hidden names as the local explorer
+        // (`FileEntry.sortedForTree`): the host sorts by name alone, which put
+        // files above folders and left `.git` in the tree — one browser behaving
+        // two ways depending on which machine the checkout is on.
+        return entries.sortedForTree().map { entry in
             let path = base + entry.name
             let node: RemoteFileNode
             if let kept = existing[path], kept.isDirectory == entry.isDirectory {
@@ -391,22 +597,8 @@ final class RemoteFileBrowserModel: ObservableObject {
         }
     }
 
-    /// The device describes what went wrong; turning that into a sentence is the
-    /// client's job, so the daemon's own message is shown verbatim where it has
-    /// one and only the client-side cases are worded here.
     private static func message(for error: Error) -> String {
-        switch error {
-        case DeviceFileError.unsupported:
-            return localized("This device’s termiod is too old to browse files.")
-        case DeviceFileError.unsafeName:
-            return localized("This device sent a name the file tree can’t show.")
-        case DeviceFileError.notRegularFile:
-            return localized("Only regular files can be previewed.")
-        case TermiodClientError.requestFailed(let detail) where !detail.isEmpty:
-            return detail
-        default:
-            return localized("The listing failed.")
-        }
+        RemoteFileFailure.message(for: error, fallback: localized("The listing failed."))
     }
 }
 
@@ -423,8 +615,6 @@ struct RemoteFileTreeView: View {
     @StateObject private var model: RemoteFileBrowserModel
     @State private var selection: String?
     @State private var outlineView: NSOutlineView?
-    @State private var previewTask: Task<Void, Never>?
-    @State private var previewRequestID = 0
 
     init(checkout: Checkout, root: String) {
         _model = StateObject(
@@ -436,8 +626,11 @@ struct RemoteFileTreeView: View {
             header
             content
         }
-        .onAppear { model.refresh() }
-        .onDisappear { cancelPreviewRequest() }
+        .onAppear {
+            model.startWarming()
+            model.refresh()
+        }
+        .onDisappear { model.stopWarming() }
         // The refresh model (no remote watching): reload when the app comes back
         // to the front — the same reconcile trigger as the git pane — but only
         // while the pane is actually visible.
@@ -446,9 +639,14 @@ struct RemoteFileTreeView: View {
         }
         .onChange(of: store.inspectorVisible) { _, visible in
             if visible {
+                model.startWarming()
                 model.refresh()
             } else {
-                cancelPreviewRequest()
+                // A hidden pane is not worth a connection to somebody's VPS, and
+                // the download behind a click nobody can see is not worth
+                // finishing.
+                model.stopWarming()
+                store.cancelRemoteFileOpen()
             }
         }
         .onChange(of: selection) {
@@ -458,7 +656,9 @@ struct RemoteFileTreeView: View {
             if node.isDirectory {
                 toggleSelectedFolder()
             } else if node.canPreview {
-                preview(node)
+                store.openRemoteFile(
+                    path: node.path, name: node.name,
+                    provider: model.files, host: model.host)
                 // Every click should be observable, including reopening the same
                 // file after the overlay was dismissed.
                 selection = nil
@@ -536,41 +736,62 @@ struct RemoteFileTreeView: View {
         }
         selection = nil
     }
+}
 
-    private func preview(_ node: RemoteFileNode) {
-        previewTask?.cancel()
-        previewRequestID &+= 1
-        let requestID = previewRequestID
-        let presentationGeneration = store.filePresentationGeneration
-        previewTask = Task { @MainActor in
-            do {
-                let staged = try await model.stageForPreview(node)
-                guard !Task.isCancelled, requestID == previewRequestID else { return }
-                // Adoption is conditional on no other local/remote presentation
-                // winning while the download was in flight. HTML/SVG is routed
-                // to source, and failed raster decoding never falls into WebKit.
-                _ = store.presentRemoteFilePreview(
-                    staged.lease, expectedGeneration: presentationGeneration,
-                    origin: staged.origin)
-            } catch DeviceFileError.tooLarge {
-                guard !Task.isCancelled, requestID == previewRequestID else { return }
-                let alert = NSAlert()
-                alert.messageText = "“\(node.name)” is too large to preview."
-                alert.informativeText = "Preview is capped at 1 MB."
-                alert.runModal()
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled, requestID == previewRequestID else { return }
-                model.report(error, context: "read \(node.path)")
-            }
-        }
+/// What the overlay shows between the click and the bytes: the file's own header
+/// — icon, name, and a spinner where the editor's save dot goes — over an empty
+/// body.
+///
+/// The header is built to the editor's own measurements (`FileEditorView.header`)
+/// on purpose. When the content lands, only the body below it changes; a
+/// placeholder with a different shape would make every remote open flash a
+/// second layout on its way in.
+struct RemoteFileOpeningView: View {
+    let opening: RemoteFileOpening
+    @ObservedObject var settings: AppSettings
+
+    /// The name is a device path's leaf, so a synthetic local URL is all the
+    /// icon needs to pick the right mark. Never touched on disk.
+    private var iconURL: URL {
+        URL(fileURLWithPath: "/", isDirectory: true).appendingPathComponent(opening.name)
     }
 
-    private func cancelPreviewRequest() {
-        previewRequestID &+= 1
-        previewTask?.cancel()
-        previewTask = nil
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                FileIconView(url: iconURL, size: 15, symbolSize: 13)
+                    .frame(width: 16)
+                Text(opening.name)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if opening.failure == nil {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .help(localized("Reading from \(opening.host)…"))
+                }
+                Spacer()
+                InspectorDetailChromeButtons()
+            }
+            .padding(.leading, 20)
+            .padding(.trailing, 12)
+            .frame(height: 32)
+            .modifier(DetailHeaderTitlebarInset())
+            .background(Color(nsColor: settings.terminalBackgroundColor))
+
+            if let failure = opening.failure {
+                PaneEmptyState(
+                    localized("Can’t open \(opening.name)"),
+                    icon: .fileQuestion,
+                    message: failure
+                )
+            } else {
+                // Empty, not a second spinner: the header already says the file
+                // is on its way, and a small file lands inside a frame or two.
+                Color.clear
+            }
+        }
+        .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
     }
 }
 
@@ -603,6 +824,17 @@ private struct RemoteFileRow: View {
                 .font(font)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            // A folder waiting on its listing draws as an empty folder, which is
+            // the one thing it is not. Only while there is nothing to show:
+            // a folder opened from a prefetch has its rows and says nothing.
+            if node.isLoading {
+                // No `scaleEffect`: a continuously animating layer under a
+                // transform re-rasterizes every frame, which is how the working
+                // indicator beachballed the sidebar once already.
+                ProgressView()
+                    .controlSize(.mini)
+                    .padding(.leading, 2)
+            }
         }
         .padding(.vertical, 2)
         .padding(.leading, -6)

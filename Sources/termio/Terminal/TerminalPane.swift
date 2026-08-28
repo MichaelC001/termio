@@ -102,6 +102,7 @@ struct TerminalPane: View {
                 store.openDiff = nil
             } else {
                 store.openFileURL = nil
+                store.cancelRemoteFileOpen()
                 store.openIssueDetail = nil
             }
             requestSelectedTerminalFocus(reason: .overlayClosed)
@@ -275,6 +276,7 @@ struct TerminalPane: View {
                 return store.selectedSessionID == id
                     && store.visiblePaneIDs.contains(id)
                     && store.openFileURL == nil
+                    && store.openingRemoteFile == nil
                     && store.openDiff == nil
                     && store.paletteMode == nil
             }
@@ -294,6 +296,7 @@ struct TerminalPane: View {
                 return store.selectedSessionID == id
                     && store.visiblePaneIDs.contains(id)
                     && store.openFileURL == nil
+                    && store.openingRemoteFile == nil
                     && store.openDiff == nil
                     && store.paletteMode == nil
             },
