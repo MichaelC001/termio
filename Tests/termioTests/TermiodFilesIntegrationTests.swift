@@ -614,6 +614,57 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(attempts, 1, "a request that heard part of its answer is not replayed")
     }
+
+    /// The idle reaper hangs up a connection nobody has used, which is right for
+    /// a device nobody is looking at and wrong for a pane that is on screen: its
+    /// next click is seconds away, and rebuilding the connection for it is the
+    /// 32 ms median / 260 ms p90 the pool exists to stop paying.
+    func testAPinnedChannelSurvivesTheIdleReaper() throws {
+        let channel = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        let pin = Termiod.ControlPool.pin(route: .local, caps: ["files"])
+
+        // A threshold every idle channel is already past, so only the exemption
+        // can be what keeps this one.
+        Termiod.ControlPool.reap(idleTimeout: .seconds(-1))
+
+        let held = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        XCTAssertTrue(channel === held, "a pinned channel is not hung up for being idle")
+
+        withExtendedLifetime(pin) {}
+    }
+
+    /// And goes back on the clock when the pane does: a pin is a claim, not a
+    /// promotion. Holding somebody's VPS process open for a pane that closed an
+    /// hour ago is the cost this trade was only ever worth paying while looking.
+    func testAReleasedPinPutsTheChannelBackOnTheIdleClock() throws {
+        let channel = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        var pin: Termiod.ControlPool.ChannelPin? =
+            Termiod.ControlPool.pin(route: .local, caps: ["files"])
+        XCTAssertNotNil(pin)
+        pin = nil
+
+        Termiod.ControlPool.reap(idleTimeout: .seconds(-1))
+
+        let replacement = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        XCTAssertFalse(channel === replacement, "the unpinned channel was hung up")
+    }
+
+    /// Two panes on one device is one connection with two claims on it. The
+    /// first one to close must not take the second one's connection with it.
+    func testTwoPinsOnOneDeviceAreCountedNotFlagged() throws {
+        let channel = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        var first: Termiod.ControlPool.ChannelPin? =
+            Termiod.ControlPool.pin(route: .local, caps: ["files"])
+        let second = Termiod.ControlPool.pin(route: .local, caps: ["files"])
+        XCTAssertNotNil(first)
+        first = nil
+
+        Termiod.ControlPool.reap(idleTimeout: .seconds(-1))
+
+        let held = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
+        XCTAssertTrue(channel === held, "the pane still open keeps the connection")
+        withExtendedLifetime(second) {}
+    }
 }
 
 /// A box for handing a result back from a detached queue in a test. The values

@@ -347,6 +347,10 @@ struct InspectorDetailContent: View {
         } else if let item = store.openIssueDetail, let model = store.issuesModel {
             IssueDetailView(item: item, model: model, settings: settings, onBack: close)
                 .id(item.number)
+        } else if let opening = store.openingRemoteFile {
+            // The click is answered before the network is: the file's chrome goes
+            // up now, and the editor replaces it when the bytes land.
+            RemoteFileOpeningView(opening: opening, settings: settings)
         } else if let url = store.openFileURL {
             // Content staged from an SSH host is previewed as source, never as live
             // web content: HTML and SVG from a remote box would otherwise run in
@@ -366,6 +370,7 @@ struct InspectorDetailContent: View {
                                displayName: store.openFileDisplayName,
                                remote: store.openFileRemote,
                                onRemoteSave: { store.openFileRemote = $0 },
+                               onDirtyChange: { store.openFileDirty = $0 },
                                addToChat: { selection in
                                    if let selection {
                                        _ = store.addSnippetToSelectedSessionPrompt(selection)

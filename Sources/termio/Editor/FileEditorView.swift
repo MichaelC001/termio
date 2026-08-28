@@ -33,6 +33,14 @@ struct FileEditorView: View {
     /// Records the version a save produced, so the next one claims it rather
     /// than the version the file was opened at.
     let onRemoteSave: ((RemoteDocument) -> Void)?
+    /// Reports whether the buffer has edits that are not on disk yet.
+    ///
+    /// Read by the remote open path: a device file shown from the cache is
+    /// re-read behind it, and a reply that disagrees replaces the buffer — which
+    /// it must never do to one somebody has started typing into. `isDirty` flips
+    /// on the keystroke itself, well before the debounced write, so this closes
+    /// the window the file's own bytes on disk cannot.
+    let onDirtyChange: ((Bool) -> Void)?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
@@ -124,6 +132,7 @@ struct FileEditorView: View {
          displayName: String? = nil,
          remote: RemoteDocument? = nil,
          onRemoteSave: ((RemoteDocument) -> Void)? = nil,
+         onDirtyChange: ((Bool) -> Void)? = nil,
          addToChat: ((String?) -> Void)? = nil, canAddToChat: (() -> Bool)? = nil,
          showsInspectorChrome: Bool = true, onClose: @escaping () -> Void) {
         self.url = url
@@ -133,6 +142,7 @@ struct FileEditorView: View {
         self.displayName = displayName
         self.remote = remote
         self.onRemoteSave = onRemoteSave
+        self.onDirtyChange = onDirtyChange
         self.addToChat = addToChat
         self.canAddToChat = canAddToChat
         self.showsInspectorChrome = showsInspectorChrome
@@ -249,6 +259,10 @@ struct FileEditorView: View {
         .onChange(of: text) {
             if !readOnly { scheduleSave() }
         }
+        // Both directions, and from the first render: a save clears the flag as
+        // surely as a keystroke sets it, and the mount is what resets whatever
+        // the previously open file left behind.
+        .onChange(of: isDirty, initial: true) { onDirtyChange?(isDirty) }
         // A fresh jump target while a Markdown file sits in Preview (clicking another
         // content-search hit): the jump needs the source editor's lines, so flip to Edit
         // first — Preview has no text view to scroll and would swallow it.

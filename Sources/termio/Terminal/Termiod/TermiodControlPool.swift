@@ -398,6 +398,9 @@ extension Termiod {
         /// and not worth holding for a pane nobody has looked at since lunch.
         /// Paying 32 ms again after two idle minutes is the right trade; holding
         /// a process on someone's VPS indefinitely is not.
+        ///
+        /// A pane that is *on screen* is the case this clock gets wrong, and
+        /// `pin` is the exemption for it (see `ChannelPin`).
         static let idleTimeout = Duration.seconds(120)
 
         private static let lock = NSLock()
@@ -405,6 +408,10 @@ extension Termiod {
         /// lock is what makes this safe and the compiler cannot see that.
         nonisolated(unsafe) private static var channels: [Key: PooledChannel] = [:]
         nonisolated(unsafe) private static var reaper: DispatchSourceTimer?
+        /// How many pins each key is holding. A count rather than a flag: two
+        /// panes on one device must not have the first one closed to unpin the
+        /// second's connection.
+        nonisolated(unsafe) private static var pins: [Key: Int] = [:]
 
         /// A channel to `route`, opening one if none is live. Blocking; call it
         /// off the main thread.
@@ -442,6 +449,120 @@ extension Termiod {
             return opened
         }
 
+        /// Holds the channel to `route` open, and re-opens it in the background
+        /// when it dies, for as long as the returned pin is retained.
+        ///
+        /// The idle clock above is written for a pane nobody is looking at. A
+        /// pane that is **on screen** is the opposite case: its next click is
+        /// seconds away, and making that click pay the 32 ms median / 260 ms p90
+        /// of an SSH channel open plus a remote `termiod` exec is the difference
+        /// between a file tree that answers and one that thinks. VS Code Remote
+        /// never pays it after the first connect — its server is one process held
+        /// for the window's lifetime — and this is the same bargain, scoped to a
+        /// visible pane so an unwatched device still gets hung up.
+        ///
+        /// The re-open is what makes it a *warm* connection rather than merely an
+        /// unreaped one: `ControlPersist` expiring, a laptop waking or a VPS
+        /// rebooting all leave a corpse behind, and finding that out on the user's
+        /// first click costs exactly what the pin exists to avoid. It only ever
+        /// runs when there is no live channel, so the steady state is free.
+        static func pin(route: TermiodRoute, caps: [String]) -> ChannelPin {
+            ChannelPin(route: route, caps: caps)
+        }
+
+        /// A pin's claim on one key, released when it deinits.
+        ///
+        /// `@unchecked Sendable` on the same terms as `PooledChannel`: the timer
+        /// fires on a utility queue, and the backoff state it touches is behind
+        /// `backoffLock`.
+        final class ChannelPin: @unchecked Sendable {
+            private let key: Key
+            private let route: TermiodRoute
+            private let caps: [String]
+            private let timer: DispatchSourceTimer
+            private let backoffLock = NSLock()
+            /// Consecutive failed re-opens, which push the next attempt out. A
+            /// device that is off does not want a fresh `ssh` every 20 seconds
+            /// for as long as its pane is open.
+            private var failures = 0
+            private var nextAttempt = ContinuousClock.now
+
+            /// Slower than the reaper: this is insurance against a connection
+            /// that died between clicks, not a heartbeat the protocol needs.
+            static let interval = Duration.seconds(20)
+            static let backoffCeiling = Duration.seconds(300)
+
+            fileprivate init(route: TermiodRoute, caps: [String]) {
+                self.key = Key(route: route, capabilities: caps.sorted())
+                self.route = route
+                self.caps = caps
+                self.timer = DispatchSource.makeTimerSource(
+                    queue: DispatchQueue.global(qos: .utility))
+                ControlPool.retain(key)
+                let seconds = Double(ChannelPin.interval.components.seconds)
+                timer.schedule(deadline: .now() + seconds, repeating: seconds)
+                timer.setEventHandler { [weak self] in self?.warm() }
+                timer.resume()
+            }
+
+            deinit {
+                timer.cancel()
+                ControlPool.release(key)
+            }
+
+            /// Re-opens the channel if it is gone. Runs on a utility queue, and
+            /// never on the click path — by the time a click asks, this has
+            /// already paid for it.
+            private func warm() {
+                if ControlPool.hasLiveChannel(key) {
+                    backoffLock.withLock { failures = 0 }
+                    return
+                }
+                let due = backoffLock.withLock { ContinuousClock.now >= nextAttempt }
+                guard due else { return }
+                do {
+                    _ = try ControlPool.channel(route: route, caps: caps)
+                    backoffLock.withLock { failures = 0 }
+                } catch {
+                    let attempt = backoffLock.withLock { () -> Int in
+                        failures += 1
+                        let backoff = min(
+                            ChannelPin.interval * Double(1 << min(failures, 4)),
+                            ChannelPin.backoffCeiling)
+                        nextAttempt = .now.advanced(by: backoff)
+                        return failures
+                    }
+                    Log.termiod.debug("""
+                    warming \(self.route.description, privacy: .public) failed \
+                    (\(attempt, privacy: .public)): \
+                    \(String(describing: error), privacy: .public)
+                    """)
+                }
+            }
+        }
+
+        private static func retain(_ key: Key) {
+            lock.lock()
+            pins[key, default: 0] += 1
+            lock.unlock()
+        }
+
+        private static func release(_ key: Key) {
+            lock.lock()
+            if let count = pins[key] {
+                if count <= 1 { pins.removeValue(forKey: key) } else { pins[key] = count - 1 }
+            }
+            lock.unlock()
+        }
+
+        private static func hasLiveChannel(_ key: Key) -> Bool {
+            lock.lock()
+            let channel = channels[key]
+            lock.unlock()
+            guard let channel else { return false }
+            return !channel.isDead
+        }
+
         /// Hangs up every channel to `route`, or the whole pool when `route` is
         /// nil, so the next request opens fresh rather than waiting on a pipe
         /// whose far end is gone.
@@ -471,16 +592,23 @@ extension Termiod {
             let timer = DispatchSource.makeTimerSource(
                 queue: DispatchQueue.global(qos: .utility))
             timer.schedule(deadline: .now() + 30, repeating: 30)
-            timer.setEventHandler { reap() }
+            timer.setEventHandler { reap(idleTimeout: idleTimeout) }
             reaper = timer
             timer.resume()
         }
 
-        private static func reap() {
+        /// - Parameter idleTimeout: how long unused is too long. A parameter only
+        ///   so a test can hand it a threshold every idle channel is already past
+        ///   — the pin's whole effect is what this method does *not* hang up, and
+        ///   waiting two minutes to see it is not a test.
+        static func reap(idleTimeout: Duration) {
             lock.lock()
             var expired: [PooledChannel] = []
+            // A pinned key is exempt from the idle clock but not from death: a
+            // channel whose pipe is gone is removed here as it always was, and
+            // the pin's own timer is what opens its replacement.
             for (key, channel) in channels
-            where channel.isDead || channel.idleDuration > idleTimeout {
+            where channel.isDead || (pins[key] == nil && channel.idleDuration > idleTimeout) {
                 expired.append(channel)
                 channels.removeValue(forKey: key)
             }
