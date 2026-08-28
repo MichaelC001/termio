@@ -39,11 +39,22 @@ extension TermioStore {
         // A worktree session runs somewhere other than the project root; the
         // companion shell should land where the focused session actually works.
         newSession.worktreePath = session(focusedID)?.worktreePath
+        // …and "where it works" is where its shell *is*, not just which checkout
+        // it belongs to: a pane split off one sitting in `packages/web` opens in
+        // `packages/web`, so the split costs no `cd` (#497). Ghostty states the
+        // same rule as `split-inherit-working-directory`, on by default.
+        newSession.spawnDirectory = liveWorkingDirectory(for: focusedID)
         // …and "where it works" includes *which machine*. Splitting a session
         // that runs on another device must not silently hand back a shell on
         // this Mac: the pane sits beside its origin and reads as the same
         // place, so it has to be the same place.
         newSession.inheritDevice(from: session(focusedID))
+        // The directory rule holds over there too. `inheritDevice` carried the
+        // directory the origin was *started* in; the daemon on that box says
+        // where its shell has since walked to.
+        if let remote = remoteWorkingDirectory(for: focusedID) {
+            newSession.termiodRemoteCwd = remote
+        }
         // Beside the session it splits, not at the end of the project — the
         // sidebar then reads the split group as adjacent rows, which is what lets
         // it draw the VS Code-style ┌/└ group bracket (see `splitLinkMarks`). The
@@ -124,9 +135,19 @@ extension TermioStore {
         // Share the anchor's working directory so a worktree agent's sibling lands
         // in the same checkout — the same courtesy `splitSelectedPane` extends.
         newSession.worktreePath = session(anchorID)?.worktreePath
+        // A *shell* also follows the anchor down to wherever it has `cd`'d, the
+        // way ⌘D does. An agent does not: where an agent is turned loose is a
+        // decision about what it may read and write, and it is made by the
+        // checkout above, never by wherever a neighbouring shell wandered.
+        if agent == .terminal {
+            newSession.spawnDirectory = liveWorkingDirectory(for: anchorID)
+        }
         // And the anchor's device, for the same reason: a split of a session on
         // another machine stays on that machine.
         newSession.inheritDevice(from: session(anchorID))
+        if agent == .terminal, let remote = remoteWorkingDirectory(for: anchorID) {
+            newSession.termiodRemoteCwd = remote
+        }
         // Adjacent to the anchor, so the sidebar reads the group as neighbouring
         // rows and draws its ┌/└ bracket (see `splitLinkMarks`).
         insertSession(newSession, at: anchorHome.atSession(anchorHome.sessionIndex + 1))

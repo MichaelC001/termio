@@ -303,17 +303,52 @@ extension TermioStore {
         addScratchSession(agent: .terminal)
     }
 
+    /// Where a session's shell actually is right now — the directory the actions
+    /// that open a *second* shell beside it start in (New Terminal ⌘T, and every
+    /// split). Three rungs, because a shell says where it is in two different ways
+    /// and neither is guaranteed:
+    ///
+    /// 1. the daemon's own kernel sample of the child (`childCwd`), the rung that
+    ///    always answers — macOS's stock zsh emits `OSC 7` only under
+    ///    `TERM_PROGRAM=Apple_Terminal` and termiod injects no shell integration,
+    ///    so most shells never volunteer one;
+    /// 2. the cwd already on record: an `OSC 7` from a shell that *does* have
+    ///    integration, or the sample a loose terminal keeps;
+    /// 3. the cwd persisted from this session's last run.
+    ///
+    /// Each rung must still name a directory that exists — a shell spawned in a
+    /// deleted one lands at `/`. `nil` for a session that runs on another machine:
+    /// the path it reports exists over *there*, and handing it to a local spawn
+    /// would `chdir` somewhere else entirely, or somewhere that happens to exist
+    /// here. (`remoteWorkingDirectory` is that case's own answer.)
+    func liveWorkingDirectory(for id: Session.ID) -> String? {
+        guard let session = session(id),
+              session.sshHost == nil, session.termiodRemoteHost == nil else { return nil }
+        return Self.existingDirectory(termiodLinks[id]?.latestInformation?.childCwd)
+            ?? Self.existingDirectory(workingDirectory(for: id))
+            ?? Self.existingDirectory(session.lastWorkingDirectory)
+    }
+
+    /// The same question for a session hosted on another machine: where the daemon
+    /// over there last saw that shell. Never checked against this Mac's disk — the
+    /// path describes the far box — and `nil` for anything running locally, so a
+    /// caller can ask both and take whichever answers.
+    func remoteWorkingDirectory(for id: Session.ID) -> String? {
+        guard session(id)?.termiodRemoteHost != nil,
+              let cwd = termiodLinks[id]?.latestInformation?.childCwd,
+              !cwd.isEmpty else { return nil }
+        return cwd
+    }
+
     /// Opens a terminal where the user already is — New Terminal (⌘T). The shell
     /// starts in the focused session's working directory and the row lands beside it:
     /// in the same project and worktree bucket for a real project, in the Terminals
     /// section for a loose shell or a scratch chat (a shell has no business in the
     /// Chats funnel).
     ///
-    /// The directory is the cwd the session reported over OSC 7. A shell without
-    /// integration never reports one, and an SSH terminal reports a path that exists
-    /// only on the remote host, so anything that isn't a local directory falls through
-    /// to the session's own anchor — and to `$HOME` with nothing focused, which is
-    /// what New Terminal at Home does on purpose.
+    /// The directory is wherever that session's shell is now (`liveWorkingDirectory`),
+    /// which falls through to the session's own anchor when nothing knows — and to
+    /// `$HOME` with nothing focused, which is what New Terminal at Home does on purpose.
     func addTerminalHere() {
         guard let id = selectedSessionID, let slot = locate(id) else {
             addScratchTerminal()
@@ -327,8 +362,7 @@ extension TermioStore {
             addRemoteTerminal(host: alias)
             return
         }
-        let reported = Self.existingDirectory(
-            workingDirectory(for: id) ?? session.lastWorkingDirectory)
+        let reported = liveWorkingDirectory(for: id)
         guard case .project(let index, _) = slot else {
             let directory = reported ?? session.spawnDirectory
             addScratchSession(agent: .terminal, spawnDirectory: directory)

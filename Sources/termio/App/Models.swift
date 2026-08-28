@@ -574,10 +574,11 @@ struct Session: Identifiable, Hashable, Codable {
     var lastWorkingDirectory: String?
 
     /// Where this session was opened, when that isn't its project's own anchor: ⌘T
-    /// records the directory the user was in, so the new shell starts *there* rather
-    /// than at the project root. Persisted, so a relaunch reopens it in the same
-    /// place. `lastWorkingDirectory` outranks it for a loose terminal — a shell that
-    /// reported its own cwd knows better than the seed it was given.
+    /// and every split record the directory the pane they came from was sitting in,
+    /// so the new shell starts *there* rather than at the project root. Persisted, so
+    /// a relaunch reopens it in the same place. `lastWorkingDirectory` outranks it for
+    /// a loose terminal — a shell that reported its own cwd knows better than the seed
+    /// it was given.
     var spawnDirectory: String?
 
     /// The last meaningful terminal title (`OSC 0/2`) the session's agent reported,
