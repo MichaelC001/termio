@@ -17,6 +17,28 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.45.0",
+    date: "2026-08-28",
+    title: "A device's files answer the click",
+    changes: {
+      new: [
+        "Settings ▸ Mobile ▸ Direct Attach: the Mac can serve the iPhone from its own session host, the same way a Linux box does.",
+        "A machine's pane publishes the box for your phone — Tunelo, Cloudflare, ngrok, or your own command — and reads the address back, so the invite, the daemon and the phone can't disagree about it.",
+      ],
+      improved: [
+        "Opening a file on a device puts the file's header on screen at the click; the content fills in when it lands. A file you've read before opens at once and is checked against the device behind you.",
+        "Expanding a folder on a device fetches the folders inside it ahead of your next click, and a folder still waiting on its listing shows a spinner instead of drawing as empty.",
+        "A device's file tree keeps its connection warm while the pane is on screen, so a click seconds later doesn't pay to reconnect.",
+        "A split opens in the working directory of the pane it came from, on this Mac and on a device.",
+      ],
+      fixed: [
+        "A pane could tear along a vertical seam under a burst of output — the left of the screen a frame ahead of the right — and heal a frame later. The renderer no longer draws into a surface still on screen.",
+        "The phone no longer flashes a blank screen on every reconnect.",
+        "Dark text on a light theme read thinner on the phone than on the Mac. Both now blend glyphs the same way.",
+      ],
+    },
+  },
+  {
     version: "0.44.0",
     date: "2026-08-27",
     title: "Set up a machine in one step, every time",
