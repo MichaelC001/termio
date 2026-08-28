@@ -804,6 +804,10 @@ final class TerminalViewController: UIViewController {
             for family in terminalFontChain() {
                 builder.withFontFamily(family)
             }
+            // Ghostty blends in `native` (Display P3) on macOS but `linear-corrected`
+            // on every other OS, iOS included. Linear blending thins dark-on-light
+            // glyph edges, so the same theme read softer here than on the Mac.
+            builder.withCustom("alpha-blending", "native")
             // The phone is a viewer, not the scrollback of record — the Mac keeps
             // the full history. libghostty's renderer paints its "non-functional"
             // panel when it exhausts a GPU/allocator resource reflowing scrollback
