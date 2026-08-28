@@ -14,6 +14,7 @@ mod files;
 mod git;
 mod id;
 mod lifecycle;
+mod log;
 mod paths;
 mod proc;
 mod protocol;
@@ -47,6 +48,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Print the daemon's log — what it recorded while nobody was attached.
+    Logs {
+        /// Print the path and exit, for piping into an editor or a bug report.
+        #[arg(long)]
+        path: bool,
+
+        /// Keep printing as the daemon writes, like `tail -f`.
+        #[arg(short, long)]
+        follow: bool,
+
+        /// How many trailing lines to print (default 200; 0 for the whole file).
+        #[arg(short = 'n', long, default_value_t = 200)]
+        lines: usize,
+    },
+
     /// Run the session host in the foreground (usually auto-started).
     Serve {
         /// Also accept WebSocket clients on this address (default port 8790).
@@ -431,6 +447,12 @@ fn mine_field(payload: &serde_json::Value, field: &str) -> Option<String> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Logs {
+            path,
+            follow,
+            lines,
+        } => log::show(path, follow, lines).await,
+
         Cmd::Serve { wss, wss_origin } => daemon::serve(wss, wss_origin).await,
 
         Cmd::Pair {
