@@ -17,6 +17,19 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.46.0",
+    date: "2026-08-28",
+    title: "A frozen session leaves evidence behind",
+    changes: {
+      new: [
+        "The session host keeps a log at ~/Library/Logs/termio/termiod.log, so a session that froze or died has something to show for it afterwards. `termiod logs` prints it.",
+      ],
+      fixed: [
+        "In fullscreen, the navigator toggle sat a gap away from the column below it once the titlebar was summoned.",
+      ],
+    },
+  },
+  {
     version: "0.45.0",
     date: "2026-08-28",
     title: "A device's files answer the click",
