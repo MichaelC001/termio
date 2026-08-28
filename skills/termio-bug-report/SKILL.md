@@ -1,5 +1,5 @@
 ---
-name: bug-report
+name: termio-bug-report
 description: "Diagnose a termio hang, beachball, crash, or 'it froze again' from the evidence macOS and termio actually leave behind — live process samples, crash and CPU-burn reports, the unified log, the daemon's session roster — then redact the bundle and file it as a GitHub issue. Invoke when the user says 'termio froze', 'it hangs', 'beachball', 'spinning wheel', 'it crashed', 'does termio have logs', 'help me file a bug', 'collect the logs', '卡死了', '又卡住了', '转圈', '崩溃了', 'termio 有日志吗', '帮我定位问题', '帮我报个 bug'."
 ---
 
@@ -21,7 +21,7 @@ cannot be recovered afterwards from any log.
 Capture it immediately:
 
 ```bash
-./skills/bug-report/scripts/collect.sh --minutes 60
+./skills/termio-bug-report/scripts/collect.sh --minutes 60
 ```
 
 The script samples every live termio and termiod process first, before it touches
@@ -77,8 +77,8 @@ maximum, not a target.
 ## 3. Redact — and verify the redaction
 
 ```bash
-./skills/bug-report/scripts/redact.py <bundle>
-./skills/bug-report/scripts/redact.py <bundle> --check
+./skills/termio-bug-report/scripts/redact.py <bundle>
+./skills/termio-bug-report/scripts/redact.py <bundle> --check
 ```
 
 The first pass rewrites in place and prints what it matched. The second scans and
@@ -91,7 +91,7 @@ ordinary paths. Ask the user whether any project path in the bundle is private,
 and pass each one:
 
 ```bash
-./skills/bug-report/scripts/redact.py <bundle> --path /Users/you/work/client-repo
+./skills/termio-bug-report/scripts/redact.py <bundle> --path /Users/you/work/client-repo
 ```
 
 `--check` takes `--path` too, and will flag the name if it survived.

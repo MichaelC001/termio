@@ -226,6 +226,17 @@ for support in "$HOME/Library/Application Support/termio" "$HOME/Library/Applica
     fi
 done
 
+# The Rust daemon's own log. It owns every PTY, so when the complaint is "a
+# session froze" this is the process that was there.
+for logs in "$HOME/Library/Logs/termio" "$HOME/Library/Logs/termio-dev" \
+            "$HOME/.local/state/termio" "$HOME/.local/state/termio-dev"; do
+    [ -d "$logs" ] || continue
+    dest="$OUT/daemon-log-$(basename "$logs")"
+    mkdir -p "$dest"
+    find "$logs" -maxdepth 1 -type f -name 'termiod.log*' -exec cp {} "$dest/" \; 2>/dev/null
+    note "daemon log from $logs"
+done
+
 for extra in /tmp/termio-status.log /tmp/termio-dev.log; do
     [ -f "$extra" ] && tail -n 2000 "$extra" >"$OUT/$(basename "$extra")" 2>/dev/null
 done

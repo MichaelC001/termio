@@ -98,13 +98,18 @@ everything else is blocked on.
 
 Two gaps to state honestly in an issue rather than paper over:
 
-- **The Rust daemon's stderr goes to `/dev/null`.** `TermiodClient.spawnDaemon`
-  opens fd 0/1/2 on `/dev/null` so the daemon outlives the app, so `termiod`'s own
-  `eprintln!` diagnostics are not recoverable after the fact. What you *can* get:
-  a `sample` of the live `termiod`, its `roster.json` / `tombstones.json`, and the
-  Swift-side `Log.termiod` trail in `unified-log-termio.txt`. To capture the
-  daemon's own output, the user has to quit termio and run
-  `/Applications/termio.app/Contents/Resources/termiod serve` in a terminal.
+- **The Rust daemon keeps its own log**, at `~/Library/Logs/termio/termiod.log`
+  (`termio-dev` for the dev channel), collected into `daemon-log-*/`. It holds
+  one `--- termiod <version> starting, pid N ---` line per daemon run followed by
+  everything that run printed, including a panic message. Read it whenever the
+  complaint is about a session rather than the window: `termiod` owns the PTYs.
+  Note the daemon writes it only when its stderr goes to `/dev/null`, which is
+  how the app and launchd start it — a daemon someone ran by hand in a terminal
+  printed to that terminal instead, and left no file.
+
+  Builds before this existed have no such log at all, so an old report legitimately
+  has nothing here. Check `environment.md` for the version before concluding the
+  daemon was silent.
 - **`log show` drops `.debug` and `.info` unless you ask.** `collect.sh` passes
   `--info --debug`; a hand-run `log show` without them looks empty and is not
   evidence of a quiet app.
