@@ -52,6 +52,56 @@ pub fn runtime_dir() -> Result<PathBuf> {
     Ok(base)
 }
 
+/// Where the daemon writes its own diagnostics.
+///
+/// Deliberately **not** under `runtime_dir()` in the ordinary case: that lives in
+/// `$TMPDIR`, which the OS may sweep, and a log whose whole purpose is to explain
+/// a crash that happened yesterday has to outlive the socket beside it. On macOS
+/// that means `~/Library/Logs`, the directory Console.app opens and the one place
+/// a user can be told to look without being handed a path. Elsewhere it is
+/// `$XDG_STATE_HOME/termio{suffix}`, which is already the path
+/// `RemoteTunnelPaths.daemonLog` names for a published Linux box.
+///
+/// An explicit `TERMIOD_SOCK` overrides that and puts the log beside the socket,
+/// for the same reason `host_id_path` and the graveyard hang off `state_dir`: a
+/// daemon pointed at its own socket is its own daemon, and its files must not
+/// land on the real one's. Without this the test suite — which gives each daemon
+/// a temp socket but no channel — appends its runs to the installed app's log.
+/// That is the same accident `AppChannel.isRunningTests` exists to prevent on the
+/// Swift side, where it once overwrote a real user's session tree.
+///
+/// `TERMIOD_LOG` names the file outright, for tests and for anyone who wants it
+/// somewhere else.
+pub fn log_path() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("TERMIOD_LOG") {
+        return Ok(PathBuf::from(explicit));
+    }
+    if std::env::var_os("TERMIOD_SOCK").is_some() {
+        return Ok(state_dir()?.join("termiod.log"));
+    }
+    durable_log_dir(&channel_suffix())?.map_or_else(
+        || state_dir().map(|dir| dir.join("termiod.log")),
+        |dir| Ok(dir.join("termiod.log")),
+    )
+}
+
+/// The per-user log directory for a channel, or `None` when there is no home to
+/// hang it off — in which case the caller falls back beside the socket rather
+/// than failing to start over a log file.
+fn durable_log_dir(suffix: &str) -> Result<Option<PathBuf>> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Ok(None);
+    };
+    let directory = if cfg!(target_os = "macos") {
+        home.join("Library").join("Logs").join(format!("termio{suffix}"))
+    } else if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
+        PathBuf::from(state).join(format!("termio{suffix}"))
+    } else {
+        home.join(".local").join("state").join(format!("termio{suffix}"))
+    };
+    Ok(Some(directory))
+}
+
 /// Full path to the control socket. Overridable with `TERMIOD_SOCK` so tests
 /// (and side-by-side daemons) can isolate.
 pub fn socket_path() -> Result<PathBuf> {

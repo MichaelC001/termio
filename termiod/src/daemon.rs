@@ -367,6 +367,14 @@ pub async fn serve(
     wss_bind: Option<std::net::SocketAddr>,
     wss_origins: Vec<crate::wss::Origin>,
 ) -> Result<()> {
+    // First, before anything that can fail: whoever spawned this daemon most
+    // likely pointed its stderr at /dev/null, and a startup error is exactly the
+    // kind worth keeping. A failure to set up logging is not a reason to refuse
+    // to serve, so it is reported and stepped over.
+    if let Err(error) = crate::log::redirect() {
+        eprintln!("termiod: could not open the log file: {error:#}");
+    }
+
     paths::ensure_runtime_dir()?;
     let sock_path = paths::socket_path()?;
 
