@@ -2755,6 +2755,73 @@ private struct PaneToggleToolbarView: View {
     }
 }
 
+/// Reports its own leading edge in the window, so a toolbar item can tell whether the toolbar has
+/// already opened that edge past the traffic lights or has laid it flush.
+///
+/// AppKit moves the item without anything inside it changing, so there is nothing for SwiftUI's own
+/// geometry to react to. Every ancestor's frame notification is watched instead — one of them is
+/// the item the toolbar repositions.
+private struct ToolbarItemLeadingReader: NSViewRepresentable {
+    let report: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> LeadingReaderView { LeadingReaderView(report: report) }
+
+    func updateNSView(_ view: LeadingReaderView, context: Context) { view.report = report }
+
+    final class LeadingReaderView: NSView {
+        var report: (CGFloat) -> Void
+        private var reported: CGFloat?
+
+        init(report: @escaping (CGFloat) -> Void) {
+            self.report = report
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            watchAncestors()
+            readLeadingEdge()
+        }
+
+        override func layout() {
+            super.layout()
+            readLeadingEdge()
+        }
+
+        private func watchAncestors() {
+            let center = NotificationCenter.default
+            center.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+            var view: NSView? = self
+            while let current = view {
+                center.addObserver(
+                    self,
+                    selector: #selector(ancestorFrameChanged),
+                    name: NSView.frameDidChangeNotification,
+                    object: current
+                )
+                view = current.superview
+            }
+        }
+
+        @objc private func ancestorFrameChanged(_ notification: Notification) {
+            readLeadingEdge()
+        }
+
+        private func readLeadingEdge() {
+            guard window != nil else { return }
+            let leading = convert(bounds, to: nil).minX
+            guard reported != leading else { return }
+            reported = leading
+            // The caller's state drives the layout this is being read from, so hand it back after
+            // the pass rather than inside it.
+            DispatchQueue.main.async { [report] in report(leading) }
+        }
+    }
+}
+
 /// The navigator toggle and, while the navigator is open, the name of the workspace the column
 /// below is scoped to.
 ///
@@ -2774,11 +2841,29 @@ private struct NavigatorToggleToolbarView: View {
     /// gap on screen is a few points past this.
     private static let nameSpacing: CGFloat = 6
 
-    /// In fullscreen there are no traffic lights to hold the toolbar's leading edge open, so the
-    /// item lands flush against the window edge. This inset puts the glyph's leading edge on the
-    /// same line the section labels and rows in the column below start on (`sidebarLeadingTrim`
+    /// With nothing holding the toolbar's leading edge open the item lands flush against the window
+    /// edge, several points left of everything in the column below. This inset puts the glyph's
+    /// leading edge on the same line the section labels and rows start on (`sidebarLeadingTrim`
     /// pulls that column back to meet it), so the sidebar has one left margin rather than two.
-    private static let fullScreenLeadingInset: CGFloat = 10.5
+    private static let flushLeadingInset: CGFloat = 10.5
+
+    /// Past this, the traffic lights are on screen and the toolbar has already opened its leading
+    /// edge past them — they end around 80pt in, where flush is around 10. Fullscreen has the item
+    /// in both places (the buttons are hidden until the titlebar is summoned), so the inset can't
+    /// key off `windowIsFullScreen`: adding it on top of the toolbar's own offset leaves a hole
+    /// between the last button and the glyph.
+    private static let trafficLightsClearance: CGFloat = 40
+
+    /// The item's own leading edge in window coordinates, read from AppKit rather than assumed.
+    /// `nil` until the first layout pass has been through.
+    @State private var itemLeading: CGFloat?
+
+    private var leadingInset: CGFloat {
+        // Before the first reading, fall back to what the window can say for itself: windowed, the
+        // buttons are always up.
+        guard let itemLeading else { return store.windowIsFullScreen ? Self.flushLeadingInset : 0 }
+        return itemLeading < Self.trafficLightsClearance ? Self.flushLeadingInset : 0
+    }
 
     var body: some View {
         HStack(spacing: Self.nameSpacing) {
@@ -2787,7 +2872,12 @@ private struct NavigatorToggleToolbarView: View {
                 WorkspaceSwitcherToolbarView()
             }
         }
-        .padding(.leading, store.windowIsFullScreen ? Self.fullScreenLeadingInset : 0)
+        .padding(.leading, leadingInset)
+        // After the padding, so the reader sits on the edge the toolbar gave the item rather than
+        // on the one this view just moved.
+        .background(alignment: .leading) {
+            ToolbarItemLeadingReader { itemLeading = $0 }
+        }
     }
 
     private var toggle: some View {
