@@ -912,11 +912,12 @@ extension TermioStore {
         return control(request, ok: true, text: text, json: json)
     }
 
-    /// Lines currently in a file, counted cheaply by newline bytes — the cursor a
-    /// caller resumes a transcript read from.
+    /// Lines currently in a file, counted by newline bytes — the cursor a caller
+    /// resumes a transcript read from. Runs on the main thread from every `done`
+    /// transition and every `list`/`watch` snapshot, so it must not re-read the
+    /// file each time: see `TranscriptLineCounter`.
     nonisolated static func lineCount(of path: String) -> Int {
-        guard let data = FileManager.default.contents(atPath: path) else { return 0 }
-        return data.reduce(into: 0) { count, byte in if byte == 0x0A { count += 1 } }
+        TranscriptLineCounter.shared.count(path)
     }
 
     private func closeTab(_ request: ControlRequest, in scope: ControlScope) -> Data {
@@ -1122,5 +1123,88 @@ extension TermioStore {
         case .done: return "done"
         case .needsAttention: return "needs-you"
         }
+    }
+}
+
+/// Counts a transcript's lines without re-reading it.
+///
+/// A transcript only grows, so the count is kept per path together with the size
+/// it was taken at; the next call seeks to the end and scans only the bytes
+/// appended since. An unchanged file costs one `lseek` and no read at all.
+///
+/// This replaced a whole-file read on every call. That ran on the main thread —
+/// from every `done` transition and, once per finished session, from every
+/// `list`/`watch` snapshot — and a 28 MB transcript under memory pressure turned
+/// it into a spinning cursor. A file that shrank (rewritten, truncated) is counted
+/// again from the start.
+final class TranscriptLineCounter: @unchecked Sendable {
+    static let shared = TranscriptLineCounter()
+
+    private struct Known {
+        var size: UInt64
+        var lines: Int
+    }
+
+    private let lock = NSLock()
+    private var known: [String: Known] = [:]
+    private var scanned: UInt64 = 0
+
+    /// Bytes read across every call — how a test tells an incremental scan from a
+    /// full one.
+    var bytesScanned: UInt64 { lock.withLock { scanned } }
+
+    func count(_ path: String) -> Int {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            lock.withLock { _ = known.removeValue(forKey: path) }
+            return 0
+        }
+        defer {
+            do { try handle.close() } catch {
+                Log.app.error("""
+                transcript close failed for \(path, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+        do {
+            let size = try handle.seekToEnd()
+            let resume = lock.withLock { known[path] }
+            var offset: UInt64 = 0
+            var lines = 0
+            if let resume, resume.size <= size {
+                offset = resume.size
+                lines = resume.lines
+            }
+            if offset < size {
+                try handle.seek(toOffset: offset)
+                lines += try scanNewlines(handle, bytes: size - offset)
+            }
+            lock.withLock { known[path] = Known(size: size, lines: lines) }
+            return lines
+        } catch {
+            Log.app.error("""
+            transcript line count failed for \(path, privacy: .public): \
+            \(error.localizedDescription, privacy: .public)
+            """)
+            lock.withLock { _ = known.removeValue(forKey: path) }
+            return 0
+        }
+    }
+
+    /// Reads exactly `bytes` from the handle's position in bounded chunks, so a
+    /// transcript still being appended to is counted at the size that was recorded.
+    private func scanNewlines(_ handle: FileHandle, bytes: UInt64) throws -> Int {
+        var remaining = bytes
+        var lines = 0
+        while remaining > 0 {
+            let want = Int(min(remaining, 1 << 18))
+            guard let chunk = try handle.read(upToCount: want), !chunk.isEmpty else { break }
+            lines += chunk.withUnsafeBytes { buffer in
+                buffer.reduce(into: 0) { if $1 == 0x0A { $0 += 1 } }
+            }
+            remaining -= UInt64(chunk.count)
+            lock.withLock { scanned += UInt64(chunk.count) }
+        }
+        return lines
     }
 }
