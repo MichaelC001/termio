@@ -219,14 +219,23 @@ extension Termiod {
                     // installed afterwards would miss the ones already on the
                     // wire.
                     let token = channel.addObserver { [weak self] signal in
-                        self?.handle(signal, generation: generation)
+                        self?.handle(signal, generation: generation, from: channel)
+                    }
+                    // Claimed *before* the subscribe answers, not after. The
+                    // host replays from `since` as events following the reply,
+                    // and a signal is only acted on when it comes from the
+                    // channel the watch is holding — so a channel claimed only
+                    // afterwards would have its replay thrown away as coming
+                    // from a stranger.
+                    guard self.claim(channel: channel, token: token, generation: generation)
+                    else {
+                        channel.removeObserver(token)
+                        return
                     }
                     do {
                         let subscribed = try Self.subscribe(
                             call, resource: resource, since: since)
-                        self.adopt(
-                            channel: channel, token: token, generation: generation,
-                            resource: subscribed.resource)
+                        self.resolve(resource: subscribed.resource, generation: generation)
                         // A first subscribe always reports a gap — there is
                         // nothing to replay from. Reporting that as a reset
                         // would open every pane with two full listings instead
@@ -244,7 +253,10 @@ extension Termiod {
                         }
                         self.lock.withLock { self.failures = 0 }
                     } catch {
-                        channel.removeObserver(token)
+                        // Give the claim back with the observer, or `isSubscribed`
+                        // would keep answering yes for a channel this attempt
+                        // has already abandoned.
+                        self.release(channel: channel, token: token, generation: generation)
                         throw error
                     }
                 }
@@ -274,28 +286,66 @@ extension Termiod {
             }
         }
 
-        private func adopt(
-            channel: PooledChannel, token: UUID, generation: UInt64, resource: String
-        ) {
+        /// Makes `channel` the one this watch listens to, dropping whatever it
+        /// held before. `false` when a `deinit` or a newer attempt has taken the
+        /// watch over — this subscription is already history and the caller
+        /// unregisters rather than fighting for it.
+        private func claim(
+            channel: PooledChannel, token: UUID, generation: UInt64
+        ) -> Bool {
             lock.lock()
-            // A `deinit` or a newer attempt that landed while this one was on
-            // the wire owns the watch now; this subscription is already history.
             guard !stopped, generation == self.generation else {
                 lock.unlock()
-                channel.removeObserver(token)
-                return
+                return false
             }
             let previousChannel = self.channel
             let previousToken = observerToken
             self.channel = channel
             observerToken = token
-            if !resource.isEmpty { resolvedResource = resource }
             lock.unlock()
-            if let previousToken { previousChannel?.removeObserver(previousToken) }
+            // `withPooledRequest` retries a stale channel *inside* one attempt,
+            // without this watch's generation moving — so the thing being
+            // replaced here is usually the first try's own corpse.
+            if let previousToken, previousChannel !== channel {
+                previousChannel?.removeObserver(previousToken)
+            }
+            return true
         }
 
-        private func handle(_ signal: ChannelSignal, generation: UInt64) {
-            let current = lock.withLock { !stopped && generation == self.generation }
+        /// Undoes a claim whose subscribe never landed.
+        private func release(
+            channel: PooledChannel, token: UUID, generation: UInt64
+        ) {
+            lock.lock()
+            if !stopped, generation == self.generation, self.channel === channel {
+                self.channel = nil
+                observerToken = nil
+            }
+            lock.unlock()
+            channel.removeObserver(token)
+        }
+
+        /// Records the id the host answered with, once the subscribe has landed.
+        private func resolve(resource: String, generation: UInt64) {
+            guard !resource.isEmpty else { return }
+            lock.withLock {
+                guard !stopped, generation == self.generation else { return }
+                resolvedResource = resource
+            }
+        }
+
+        private func handle(
+            _ signal: ChannelSignal, generation: UInt64, from source: PooledChannel
+        ) {
+            // The generation alone is not enough. `withPooledRequest` retries a
+            // stale channel inside one attempt without moving it, so the first
+            // try's channel can close *after* the retry's has been claimed — and
+            // acting on that close would clear a subscription that is working,
+            // leaving `isSubscribed` permanently false and arming a duplicate.
+            // A signal counts only from the channel this watch is holding.
+            let current = lock.withLock {
+                !stopped && generation == self.generation && self.channel === source
+            }
             guard current else { return }
             switch signal {
             case .event(.fsChanged(let batch)):
@@ -308,6 +358,7 @@ extension Termiod {
                 // `isSubscribed` reports the outage while it lasts and a
                 // caller's own reconcile can cover it.
                 lock.withLock {
+                    guard channel === source else { return }
                     channel = nil
                     observerToken = nil
                 }

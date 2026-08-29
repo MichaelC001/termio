@@ -229,4 +229,21 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
             model().isLive,
             "no watch means the pane's own reconcile is still the only signal")
     }
+
+    /// The bug the `established` reconcile shipped with: a refresh raised while
+    /// one is in flight used to be dropped on the floor. At startup that is the
+    /// ordinary case — `onAppear` starts the subscription and the first listing
+    /// together, both one round trip — so the reconcile hit the guard, returned,
+    /// and the listing it was meant to correct settled at `seq == 0` behind it.
+    func testARefreshRaisedDuringOneIsQueuedRatherThanDropped() {
+        let tree = model()
+        XCTAssertFalse(tree.refreshQueued)
+
+        tree.refresh()   // takes the guard synchronously; its listing never answers
+        tree.refresh()   // this is the reconcile, and it must not vanish
+
+        XCTAssertTrue(
+            tree.refreshQueued,
+            "the second refresh is held for after the first, not discarded")
+    }
 }

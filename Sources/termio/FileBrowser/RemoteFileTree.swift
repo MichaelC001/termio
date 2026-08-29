@@ -334,6 +334,16 @@ final class RemoteFileBrowserModel: ObservableObject {
     private var loadsInFlight: Set<String> = []
     private var prefetchesInFlight: Set<String> = []
     private var refreshing = false
+    /// A refresh that arrived while one was already running, to be run after it.
+    ///
+    /// Dropping it instead is how the `established` reconcile lost its whole
+    /// point: the subscription and the pane's first listing are both started by
+    /// `onAppear` and are both one network round trip, so the subscribe landing
+    /// *during* the first listing is the ordinary case, not a rare one. The
+    /// reconcile then hit this guard, returned, and the listing it was waiting to
+    /// correct settled at `seq == 0` behind it — the exact stale tree the signal
+    /// exists to repair. Not private so a test can see the queueing.
+    var refreshQueued = false
     /// The `fs:` cursor the tree's rows were last stamped at. Zero means the
     /// listing was taken while the device had no watch running, so nothing
     /// invalidates it and nothing will — the state `established` exists to
@@ -404,10 +414,23 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// mention keep the rows they had, so a folder that failed does not blank
     /// itself while the rest of the tree refreshes around it.
     func refresh() {
-        guard !refreshing else { return }
+        guard !refreshing else {
+            refreshQueued = true
+            return
+        }
         refreshing = true
+        refreshQueued = false
         Task {
-            defer { refreshing = false }
+            defer {
+                refreshing = false
+                // The queued one re-reads what the finished one could not know
+                // it needed to. Bounded: only a settled signal queues a refresh,
+                // and each is consumed before the next can be raised.
+                if refreshQueued {
+                    refreshQueued = false
+                    refresh()
+                }
+            }
             // Root first: the reply is applied in the order asked, and the root's
             // children have to exist before a descendant's can be attached.
             let wanted = [root] + loadedDirectories()
