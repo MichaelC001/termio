@@ -317,8 +317,11 @@ at its own window size. *(`Attached` carries `rows`/`cols` as of Phase 1c. As
 of 2026-08-29 both app clients conform: the Mac pane letterboxes a demoted
 surface at the shared grid (`SharedGridLetterbox`) and the phone lays its
 surface out at that grid and scales it to fit, both driven by `E resized` and
-`writer_changed`. The reference CLI client still parses at its own size —
-acceptable for a single same-size CLI.)*
+`writer_changed`. The keyframe that announces a new grid reaches an observer
+before its surface has moved, so it is parsed at the old grid; the first
+resize that lands on the shared grid sends `request_snapshot`, and that
+keyframe paints right. The reference CLI client still parses at its own size
+— acceptable for a single same-size CLI.)*
 
 **Writer policy — single writer, follows the device being used, observable.**
 A `mode:"interact"` attach takes the write token only when nobody holds it;

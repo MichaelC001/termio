@@ -42,6 +42,12 @@ final class TermiodSession: DeviceSession {
     /// differ while a resize is in flight, and while another client owns size.
     private var desiredGrid = TerminalGrid(rows: 0, cols: 0)
     private var authoritativeGrid: TerminalGrid?
+    /// An observer whose surface is not yet at the shared grid. The keyframe
+    /// that announced the grid was parsed at the old one, and the surface is
+    /// re-laid-out only after `onSharedGrid` reaches the screen — so the first
+    /// `resize` that lands *on* the shared grid asks the device for a fresh
+    /// keyframe, and that one paints right.
+    private var observerRepaintPending = false
     private var resizeGeneration: UInt64 = 0
     /// Whether this screen ever had a session, which is what separates "the
     /// device refused a request" from "that session is not there".
@@ -123,7 +129,19 @@ final class TermiodSession: DeviceSession {
         queue.async { [self] in
             let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
             desiredGrid = grid
-            guard attached, isWriter, grid.rows > 0, grid.cols > 0 else { return }
+            guard attached, grid.rows > 0, grid.cols > 0 else { return }
+            // An observer cannot move the PTY; arriving at the shared grid is
+            // the one moment it needs something from the device: a keyframe it
+            // can finally paint.
+            guard isWriter else {
+                if observerRepaintPending, authoritativeGrid == grid {
+                    observerRepaintPending = false
+                    if let payload = try? Termiod.requestSnapshotPayload() {
+                        channel.send(kind: .control, payload: payload)
+                    }
+                }
+                return
+            }
             // A size the PTY already has would cost every attachment a barrier
             // repaint for nothing.
             guard authoritativeGrid != grid else { return }
@@ -182,6 +200,7 @@ final class TermiodSession: DeviceSession {
             // announces it. Seeding from here is what lets an observer know the
             // grid its bytes are wrapped at.
             authoritativeGrid = TerminalGrid(rows: payload.rows, cols: payload.cols)
+            observerRepaintPending = !isWriter && authoritativeGrid != desiredGrid
             publishSharedGrid()
             if !pendingInput.isEmpty {
                 let buffered = pendingInput
@@ -296,6 +315,7 @@ final class TermiodSession: DeviceSession {
         write token on \(self.sessionName, privacy: .public) \
         \(mine ? "claimed" : "lost", privacy: .public)
         """)
+        observerRepaintPending = !mine && authoritativeGrid != desiredGrid
         publishSharedGrid()
         // A client that was demoted stopped sending resizes, so the PTY can be
         // any size by the time the token comes back.
@@ -310,6 +330,7 @@ final class TermiodSession: DeviceSession {
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         guard authoritativeGrid != grid else { return }
         authoritativeGrid = grid
+        if !isWriter { observerRepaintPending = grid != desiredGrid }
         publishSharedGrid()
         guard grid != desiredGrid, desiredGrid.rows > 0 else { return }
         Log.device.info("""
