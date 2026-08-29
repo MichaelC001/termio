@@ -83,11 +83,29 @@ pub struct DaemonHello {
     /// reports one, which is how the loop reads it.
     pub version: Option<String>,
     pub host_id: String,
+    /// What the daemon can do, from its own `hello_ok`. Read for one thing: a
+    /// daemon that does not list `handoff` has to be stopped to be upgraded,
+    /// and the loop needs to know that before it takes the destructive path.
+    pub caps: Vec<String>,
 }
 
 /// `hello` as a control channel with no capabilities, returning the daemon's
 /// self-description. Works against every daemon that speaks protocol v1.
 pub async fn handshake<R, W>(reader: &mut R, writer: &mut W) -> Result<DaemonHello>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    handshake_asking(reader, writer, Vec::new()).await
+}
+
+/// `handshake`, negotiating capabilities. A verb the daemon gates on one — as
+/// `handoff` is — is refused unless it was asked for here.
+pub async fn handshake_asking<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    ask: Vec<String>,
+) -> Result<DaemonHello>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -98,17 +116,21 @@ where
             proto: PROTOCOL_VERSION,
             min_proto: PROTOCOL_VERSION,
             role: ChannelRole::Control,
-            caps: Vec::new(),
+            caps: ask,
             client: format!("termiod-cli/{BUILD_VERSION}"),
         },
     )
     .await?;
     match read_frame(reader).await? {
         Some(Frame::Control(Control::HelloOk {
-            version, host_id, ..
+            version,
+            host_id,
+            caps,
+            ..
         })) => Ok(DaemonHello {
             version: version.filter(|value| !value.is_empty()),
             host_id,
+            caps,
         }),
         Some(Frame::Control(Control::HelloErr { supported, .. })) => bail!(
             "the daemon speaks protocol {supported:?}; this binary speaks {PROTOCOL_VERSION}"
@@ -491,6 +513,167 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
     }
 }
 
+// MARK: Node side — `termiod handoff`
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffOutcome {
+    /// The daemon's pid. Unchanged across a handoff — that is the claim, and
+    /// printing it is what lets a human check it.
+    pub pid: Option<i32>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub sessions: usize,
+    pub message: String,
+}
+
+/// The capability a daemon must advertise before it can be asked to hand off.
+pub const HANDOFF_CAPABILITY: &str = "handoff";
+
+/// Ask the daemon on the canonical socket to become `binary`.
+///
+/// Defaults to this executable, which is the shape a control plane wants: stage
+/// the new build over the old path, then run the new build's own `handoff`. The
+/// daemon vets the path before it takes a single session apart, so a refusal
+/// here costs nothing.
+pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
+    let binary = match binary {
+        Some(path) => path,
+        None => std::env::current_exe().context("resolving this executable")?,
+    };
+    let binary = binary
+        .canonicalize()
+        .with_context(|| format!("resolving {}", binary.display()))?;
+
+    let socket = paths::socket_path()?;
+    let Some(mut stream) = connect_existing(&socket).await else {
+        return Ok(HandoffOutcome {
+            pid: None,
+            from: None,
+            to: None,
+            sessions: 0,
+            message: "no daemon is running; the next client to connect starts this build"
+                .to_string(),
+        });
+    };
+    let pid = peer_pid(&stream);
+
+    let (from, sessions) = {
+        let (mut reader, mut writer) = stream.split();
+        let hello = tokio::time::timeout(
+            Duration::from_secs(5),
+            handshake_asking(
+                &mut reader,
+                &mut writer,
+                vec![HANDOFF_CAPABILITY.to_string()],
+            ),
+        )
+        .await
+        .context("the daemon did not answer hello in time")?
+        .context("asking the daemon what it is")?;
+        if !hello.caps.iter().any(|cap| cap == HANDOFF_CAPABILITY) {
+            bail!(
+                "the daemon running here ({}) cannot replace its own binary; stop it to upgrade",
+                hello.version.as_deref().unwrap_or("no version")
+            );
+        }
+        let sessions = list_sessions(&mut reader, &mut writer).await.unwrap_or_default();
+        write_control(
+            &mut writer,
+            &Control::Handoff {
+                binary: binary.display().to_string(),
+                seq: Some(1),
+            },
+        )
+        .await?;
+        // The reply says the daemon accepted, not that it finished: the exec
+        // follows it and takes this connection with it. Anything after this is
+        // read from the *new* image, over a new connection.
+        match read_frame(&mut reader).await? {
+            Some(Frame::Control(Control::Ok { .. })) => {}
+            Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+            Some(_) => bail!("the daemon answered handoff with something else"),
+            None => bail!("the daemon closed the connection without answering handoff"),
+        }
+        // This connection dies with the image, so its EOF *is* the exec. Waiting
+        // for it is what makes the check below meaningful: without it the very
+        // next handshake can be answered by the old daemon, still up, still
+        // reporting a version — which on a same-build handoff is indistinguishable
+        // from success.
+        let _ = tokio::time::timeout(SETTLE, async {
+            while let Ok(Some(_)) = read_frame(&mut reader).await {}
+        })
+        .await;
+        (hello.version, sessions.len())
+    };
+    drop(stream);
+
+    let want = Version::parse(BUILD_VERSION);
+    let deadline = Instant::now() + SETTLE;
+    let mut last = None;
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let Some(mut stream) = connect_existing(&socket).await else {
+            continue;
+        };
+        let now_pid = peer_pid(&stream);
+        let (mut reader, mut writer) = stream.split();
+        let Ok(Ok(hello)) = tokio::time::timeout(
+            Duration::from_secs(5),
+            handshake(&mut reader, &mut writer),
+        )
+        .await
+        else {
+            continue;
+        };
+        let reported = hello.version.as_deref().and_then(Version::parse);
+        if want.is_some() && reported < want {
+            last = hello.version;
+            continue;
+        }
+        // A different pid means the daemon was replaced rather than rebuilt:
+        // something stopped it and something else autostarted. The sessions did
+        // not survive that, so it must not be reported as a handoff.
+        if pid.is_some() && now_pid != pid {
+            bail!(
+                "the daemon answering now is pid {} where the handoff started at pid {} — it was restarted, not handed off",
+                now_pid.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
+                pid.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string())
+            );
+        }
+        let carried = list_sessions(&mut reader, &mut writer)
+            .await
+            .map(|list| list.len())
+            .unwrap_or(0);
+        return Ok(HandoffOutcome {
+            pid: now_pid,
+            from: from.clone(),
+            to: hello.version,
+            sessions: carried,
+            message: format!(
+                "pid {} is now termiod {}; {carried} of {sessions} session(s) carried",
+                now_pid.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
+                BUILD_VERSION
+            ),
+        });
+    }
+    bail!(
+        "the daemon did not come back as {BUILD_VERSION} within {}s (last seen: {})",
+        SETTLE.as_secs(),
+        last.as_deref().unwrap_or("nothing answering")
+    )
+}
+
+/// `termiod handoff` — the CLI around [`handoff`].
+pub async fn run_handoff(json: bool, binary: Option<PathBuf>) -> Result<()> {
+    let outcome = handoff(binary).await?;
+    if json {
+        println!("{}", serde_json::to_string(&outcome)?);
+    } else {
+        println!("{}", outcome.message);
+    }
+    Ok(())
+}
+
 // MARK: Control-plane side — the loop
 
 /// What one command on a node produced. `Err` from [`Node::run`] is reserved
@@ -715,25 +898,40 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             .and_then(Version::parse)
             .map_or(true, |have| have < want);
     if daemon_is_stale {
-        eprintln!("[deploy] asking the daemon on {label} to stop…");
-        let command = format!(
-            "{} stop --json{}",
-            node.binary(),
-            if options.force { " --force" } else { "" }
-        );
-        let run = node.run(&command).await?;
-        match run.code {
-            0 => {}
-            EXIT_BUSY => {
-                let outcome: StopOutcome = serde_json::from_str(run.stdout.trim())
-                    .context("reading the daemon's answer to stop")?;
-                return Ok(Outcome::Staged {
-                    version: status.binary.version,
-                    daemon: status.daemon.version,
-                    busy: outcome.busy,
-                });
+        // Handoff first, always. It is not an optimisation over stopping: it is
+        // the difference between an upgrade the user pays for in lost work and
+        // one they do not notice. Stopping stays as the fallback for a daemon
+        // too old to replace its own image, and as what `--force` reaches for
+        // when the handoff itself fails.
+        eprintln!("[deploy] asking the daemon on {label} to take on the new binary…");
+        let handoff = node.run(&format!("{} handoff --json", node.binary())).await?;
+        if handoff.code == 0 {
+            eprintln!("[deploy] {}", handoff_line(&handoff.stdout));
+        } else {
+            eprintln!(
+                "[deploy] {label} could not hand off ({}); stopping it instead",
+                last_line(&handoff.stderr)
+            );
+            eprintln!("[deploy] asking the daemon on {label} to stop…");
+            let command = format!(
+                "{} stop --json{}",
+                node.binary(),
+                if options.force { " --force" } else { "" }
+            );
+            let run = node.run(&command).await?;
+            match run.code {
+                0 => {}
+                EXIT_BUSY => {
+                    let outcome: StopOutcome = serde_json::from_str(run.stdout.trim())
+                        .context("reading the daemon's answer to stop")?;
+                    return Ok(Outcome::Staged {
+                        version: status.binary.version,
+                        daemon: status.daemon.version,
+                        busy: outcome.busy,
+                    });
+                }
+                _ => bail!("stopping termiod on {label}: {}", last_line(&run.stderr)),
             }
-            _ => bail!("stopping termiod on {label}: {}", last_line(&run.stderr)),
         }
     }
 
@@ -853,6 +1051,14 @@ async fn roll_back<N: Node>(node: &N) -> Result<()> {
         bail!("no previous binary to roll back to on {}", node.label());
     }
     Ok(())
+}
+
+/// The one line worth showing from a `handoff --json` reply, falling back to
+/// the raw output when the node answered with something this build cannot read.
+fn handoff_line(stdout: &str) -> String {
+    serde_json::from_str::<HandoffOutcome>(stdout.trim())
+        .map(|outcome| outcome.message)
+        .unwrap_or_else(|_| last_line(stdout))
 }
 
 fn last_line(text: &str) -> String {
@@ -1073,7 +1279,25 @@ mod tests {
         Ok(DaemonHello {
             version: version.map(str::to_string),
             host_id: "h_1".to_string(),
+            caps: vec![HANDOFF_CAPABILITY.to_string()],
         })
+    }
+
+    /// What a daemon that can replace its own image answers `handoff --json`.
+    fn handed_off(sessions: usize) -> Run {
+        ok(&serde_json::to_string(&HandoffOutcome {
+            pid: Some(4242),
+            from: Some("0.43.0+1500".to_string()),
+            to: Some(WANT.to_string()),
+            sessions,
+            message: format!("pid 4242 is now termiod {WANT}; {sessions} of {sessions} session(s) carried"),
+        })
+        .unwrap())
+    }
+
+    /// What a daemon too old to know the verb answers.
+    fn cannot_hand_off() -> Run {
+        failed(2, "error: unrecognized subcommand 'handoff'")
     }
 
     const WANT: &str = "0.44.0+1600";
@@ -1106,7 +1330,8 @@ mod tests {
                 failed(2, "error: unrecognized subcommand 'status'"),
                 ok(""),
                 ok(&status_json(WANT, None, true)), // old daemon: running, no version
-                ok(""),                            // stop
+                cannot_hand_off(),
+                ok(""), // stop
             ],
             vec![hello(Some(WANT))],
         );
@@ -1114,7 +1339,46 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
         let commands = node.commands.borrow();
         assert!(commands[1].contains("termiod.prev"), "{}", commands[1]);
-        assert!(commands[3].ends_with("stop --json"), "{}", commands[3]);
+        assert!(commands[3].ends_with("handoff --json"), "{}", commands[3]);
+        assert!(commands[4].ends_with("stop --json"), "{}", commands[4]);
+    }
+
+    /// The whole point: a daemon that can take on the new binary is never
+    /// stopped, so the sessions running under it are never asked about.
+    #[tokio::test]
+    async fn a_daemon_that_can_hand_off_is_never_stopped() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // chmod + mv
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(commands.iter().any(|command| command.ends_with("handoff --json")), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A daemon busy enough to refuse a stop is upgraded anyway when it can
+    /// hand off — the state that used to leave a box permanently staged.
+    #[tokio::test]
+    async fn a_busy_daemon_is_upgraded_by_handing_off() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(1),
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        assert_eq!(report.exit_code(), 0);
     }
 
     /// The daemon declining to stop is a named state with the sessions in it,
@@ -1140,6 +1404,7 @@ mod tests {
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
                 ok(""),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                cannot_hand_off(),
                 Run {
                     code: EXIT_BUSY,
                     stdout: serde_json::to_string(&busy).unwrap(),
@@ -1168,6 +1433,7 @@ mod tests {
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
                 ok(""),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                cannot_hand_off(),
                 ok(""), // stop
                 ok(""), // roll back: stop --force
                 ok(""), // roll back: mv prev

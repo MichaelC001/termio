@@ -39,6 +39,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "upload",
     "git",
     "agents",
+    "handoff",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -690,6 +691,26 @@ pub enum Control {
         root: String,
         query: String,
         limit: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Replace the daemon's own binary without stopping it (capability
+    /// `handoff`). The host `execve`s `binary`, keeping its pid, its children
+    /// and every PTY master, so no session is lost to the upgrade.
+    ///
+    /// `binary` is the path the *client* wants the host to become, absolute and
+    /// on the host's own filesystem — normally the client's own executable,
+    /// because the thing that asks for a handoff is the new build that was just
+    /// staged there. The socket is owner-only, and anyone who can reach it can
+    /// already ask for a session running anything, so naming an executable here
+    /// grants nothing that was not already granted.
+    ///
+    /// The reply is `ok` and it means the host accepted, not that it finished:
+    /// the exec follows it, and it takes the connection with it. A client
+    /// confirms by reconnecting and reading the version at the handshake — with
+    /// the pid unchanged, which is the whole claim.
+    Handoff {
+        binary: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

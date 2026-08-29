@@ -22,10 +22,9 @@ export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 cargo build
 alias tio=./target/debug/termiod
 
-# 2. Deploy to the VPS. Two gotchas: a RUNNING daemon keeps executing the old
-#    binary image (and scp onto a running binary fails with ETXTBSY), so stop
-#    it first. Existing sessions die with it — this is a dev-loop step.
-ssh ukvps pkill -x termiod || true
+# 2. Deploy to the VPS. The running daemon keeps executing the old image until
+#    it is told otherwise, so deploy stages the new binary beside it and then
+#    asks it to hand off — same pid, same PTYs, sessions intact.
 tio remote deploy ukvps
 
 # 3. Open a durable session and attach (creates + attaches in one command;
@@ -130,17 +129,27 @@ termiod deploy --host my-vps
 #  ssh  my-vps ~/.local/bin/termiod status --json   # observe: binary, daemon, sessions
 #  scp  <bundled slice>  my-vps:.local/bin/termiod.new
 #  ssh  my-vps 'chmod +x … && mv termiod termiod.prev && mv termiod.new termiod'   # stage
-#  ssh  my-vps ~/.local/bin/termiod stop --json     # activate — declined while in use (exit 3)
-#  ssh  my-vps ~/.local/bin/termiod stdio           # verify: hello, compare the version
-#  on failure: mv termiod.prev termiod               # roll back
+#  ssh  my-vps ~/.local/bin/termiod handoff --json  # activate — execve in place, sessions kept
+#  ssh  my-vps ~/.local/bin/termiod stop --json      # only if the daemon is too old to hand off
+#  ssh  my-vps ~/.local/bin/termiod stdio            # verify: hello, compare the version
+#  on failure: mv termiod.prev termiod                # roll back
 ```
 
 Each step is skipped when the observed state already matches: a box on the
-current build costs one `status`. A box whose daemon has work in progress — a
-command running in a session's foreground, or an agent still `working` — is
-left **staged**: the new binary is in place and takes over the next time the
-daemon is stopped, and the sessions are named so the decision is the user's.
-A client attached to an idle prompt does not hold it up. `--force` overrides.
+current build costs one `status`.
+
+Activation is a **handoff**: the running daemon `execve`s the staged binary,
+keeping its pid, its children and every PTY master, so the sessions on the box
+do not notice the upgrade and work in progress is never a reason to postpone
+one. Clients are disconnected — their sockets die with the image — and reattach
+by session id to find the session alive.
+
+Stopping is the fallback, for a daemon too old to know the verb. There a box
+whose daemon has work in progress — a command running in a session's
+foreground, or an agent still `working` — is left **staged**: the new binary is
+in place and takes over the next time the daemon is stopped, and the sessions
+are named so the decision is the user's. A client attached to an idle prompt
+does not hold it up. `--force` overrides.
 The version compared is the app's build stamp (`0.44.0+1533`), carried by the
 daemon at `hello`; a box a newer app set up is left alone.
 

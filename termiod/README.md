@@ -108,11 +108,17 @@ termiod remote open my-vps --cwd '~/proj' --agent shell
 
 `deploy` is one loop for every state a box can be in — nothing installed, an
 older binary, a newer binary the daemon has not picked up. It stages the build
-this binary carries, asks the old daemon to stop when nothing is in use, checks
-the new one answers, and puts the previous binary back if it does not. Running
-it again is the recovery from any outcome. On the box itself, `termiod status`
-says what is there and `termiod stop` asks the daemon to leave (declined, with
-the sessions named, while a command is running or an agent is mid-task).
+this binary carries, asks the running daemon to take it on, checks the new one
+answers, and puts the previous binary back if it does not. Running it again is
+the recovery from any outcome.
+
+Taking it on is an **`execve`**, not a restart: the daemon replaces its own
+image while keeping its pid, its children and every PTY master, so upgrading a
+box does not cost the work running on it. On the box itself, `termiod handoff`
+is that verb by hand, `termiod status` says what is there, and `termiod stop`
+asks the daemon to leave — declined, with the sessions named, while a command is
+running or an agent is mid-task. Stopping is now only the fallback for a daemon
+too old to replace itself.
 
 `my-vps` = `~/.ssh/config` alias. Close the laptop; reattach — agent kept running on the VPS. See [`DEPLOY.md`](DEPLOY.md).
 

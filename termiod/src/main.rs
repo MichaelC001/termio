@@ -12,6 +12,7 @@ mod client;
 mod daemon;
 mod files;
 mod git;
+mod handoff;
 mod id;
 mod lifecycle;
 mod log;
@@ -80,6 +81,15 @@ enum Cmd {
         /// compares the page's Origin against a loopback Host and refuses.
         #[arg(long, value_name = "URL", value_parser = wss::parse_origin, value_delimiter = ',')]
         wss_origin: Vec<wss::Origin>,
+
+        /// Adopt the sessions on this descriptor instead of starting empty.
+        ///
+        /// Set by a daemon replacing its own image (`termiod handoff`) and by
+        /// nothing else: the number means something only inside the process
+        /// that wrote it, which is the same process, on the far side of an
+        /// `execve`.
+        #[arg(long = "handoff", value_name = "FD", hide = true)]
+        handoff_fd: Option<std::os::fd::RawFd>,
     },
 
     /// Print the pairing token that lets a phone or a browser attach.
@@ -103,6 +113,24 @@ enum Cmd {
         /// `--wss-origin` — a tunnel, or a proxy mounted under a path.
         #[arg(long, value_name = "URL")]
         url: Option<String>,
+    },
+
+    /// Replace the running daemon's binary without stopping it.
+    ///
+    /// The host `execve`s the new binary, keeping its pid, its children and
+    /// every PTY, so nothing running in a session notices. This is what makes
+    /// upgrading a box with work in progress free rather than destructive.
+    ///
+    /// The binary handed over to is this executable, which is what makes
+    /// `termiod handoff` the right thing for a control plane to run right after
+    /// staging a new build.
+    Handoff {
+        /// Emit the result as JSON — pid, version, sessions.
+        #[arg(long)]
+        json: bool,
+        /// Hand off to this binary instead of the one running this command.
+        #[arg(long, value_name = "PATH")]
+        binary: Option<std::path::PathBuf>,
     },
 
     /// Create a new session and print its id.
@@ -453,7 +481,13 @@ async fn main() -> Result<()> {
             lines,
         } => log::show(path, follow, lines).await,
 
-        Cmd::Serve { wss, wss_origin } => daemon::serve(wss, wss_origin).await,
+        Cmd::Serve {
+            wss,
+            wss_origin,
+            handoff_fd,
+        } => daemon::serve(wss, wss_origin, handoff_fd).await,
+
+        Cmd::Handoff { json, binary } => lifecycle::run_handoff(json, binary).await,
 
         Cmd::Pair {
             json,

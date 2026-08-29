@@ -51,6 +51,10 @@ pub struct Manager {
     /// "nothing was running" rather than "everything was lost".
     graveyard: Arc<Graveyard>,
     session_removed: Arc<Notify>,
+    /// Where a `handoff` request goes. The accept loop owns the listener and
+    /// the runtime, so replacing the image is its move to make; a connection
+    /// task only vets the request and passes it along.
+    handoff: mpsc::UnboundedSender<std::path::PathBuf>,
 }
 
 impl Manager {
@@ -58,6 +62,7 @@ impl Manager {
         on_exit: mpsc::UnboundedSender<SessionEnded>,
         host_id: String,
         graveyard: Arc<Graveyard>,
+        handoff: mpsc::UnboundedSender<std::path::PathBuf>,
     ) -> Manager {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         Manager {
@@ -74,7 +79,39 @@ impl Manager {
             uploads: crate::files::Uploads::new(),
             graveyard,
             session_removed: Arc::new(Notify::new()),
+            handoff,
         }
+    }
+
+    /// Ask every session for its PTY, so an `execve` can carry them.
+    ///
+    /// Sequential rather than concurrent, and bounded: a session that does not
+    /// answer within `handoff::CARRY_TIMEOUT` is left out of the blob and
+    /// returned as stranded. It loses its PTY at the exec, and naming it in the
+    /// log is the difference between an upgrade with a known cost and an
+    /// upgrade that quietly ate someone's work.
+    async fn carry_all(&self) -> (Vec<session::Carried>, Vec<String>) {
+        let handles: Vec<SessionHandle> = {
+            let mut guard = self.inner.lock().unwrap();
+            // Nothing new may start once the PTYs are being handed over: a
+            // session spawned after this point has no descriptor in the blob.
+            guard.draining = true;
+            guard.sessions.values().cloned().collect()
+        };
+        let mut carried = Vec::new();
+        let mut stranded = Vec::new();
+        for handle in handles {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if !handle.send(SessionMsg::Carry { reply: reply_tx }) {
+                stranded.push(handle.id.to_string());
+                continue;
+            }
+            match tokio::time::timeout(crate::handoff::CARRY_TIMEOUT, reply_rx).await {
+                Ok(Ok(one)) => carried.push(one),
+                _ => stranded.push(handle.id.to_string()),
+            }
+        }
+        (carried, stranded)
     }
 
     fn alloc_client_id(&self) -> ClientId {
@@ -125,6 +162,17 @@ impl Manager {
         .context("spawning session")?;
         guard.sessions.insert(id.clone(), handle);
         Ok(id)
+    }
+
+    /// Install a session that crossed a handoff. Not a `create`: nothing is
+    /// spawned, no id is minted, and the roster entry the previous daemon wrote
+    /// is already correct — this session never stopped being alive.
+    fn adopt(&self, carried: crate::handoff::CarriedSession, ring: Vec<u8>) -> Result<()> {
+        let id = SessionId::new(carried.id.clone());
+        let handle = session::adopt(carried, ring, self.on_exit.clone(), self.events.clone())
+            .context("adopting session")?;
+        self.inner.lock().unwrap().sessions.insert(id, handle);
+        Ok(())
     }
 
     fn find(&self, id: &SessionId) -> Option<SessionHandle> {
@@ -363,9 +411,16 @@ impl Manager {
 }
 
 /// Run the daemon: bind the socket and accept forever.
+///
+/// `handoff_fd` is set only when this image is the far side of an `execve` from
+/// a previous one (`crate::handoff`). Everything that would otherwise be
+/// startup — binding the socket, wiping the scratch tree, reading the roster as
+/// evidence of a crash — is instead adoption: the listener and the sessions are
+/// already there, on descriptors this process inherited from itself.
 pub async fn serve(
     wss_bind: Option<std::net::SocketAddr>,
     wss_origins: Vec<crate::wss::Origin>,
+    handoff_fd: Option<std::os::fd::RawFd>,
 ) -> Result<()> {
     // First, before anything that can fail: whoever spawned this daemon most
     // likely pointed its stderr at /dev/null, and a startup error is exactly the
@@ -378,21 +433,31 @@ pub async fn serve(
     paths::ensure_runtime_dir()?;
     let sock_path = paths::socket_path()?;
 
-    if sock_path.exists() {
-        match UnixStream::connect(&sock_path).await {
-            Ok(_) => {
-                anyhow::bail!("termiod already running at {}", sock_path.display());
-            }
-            Err(_) => {
-                let _ = std::fs::remove_file(&sock_path);
-            }
-        }
-    }
+    let inherited = match handoff_fd {
+        Some(fd) => Some(crate::handoff::unpack(fd).context("reading the handoff blob")?),
+        None => None,
+    };
 
-    let listener = UnixListener::bind(&sock_path)
-        .with_context(|| format!("binding {}", sock_path.display()))?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = match &inherited {
+        Some((blob, _)) => adopt_listener(blob.listener_fd)?,
+        None => {
+            if sock_path.exists() {
+                match UnixStream::connect(&sock_path).await {
+                    Ok(_) => {
+                        anyhow::bail!("termiod already running at {}", sock_path.display());
+                    }
+                    Err(_) => {
+                        let _ = std::fs::remove_file(&sock_path);
+                    }
+                }
+            }
+            let listener = UnixListener::bind(&sock_path)
+                .with_context(|| format!("binding {}", sock_path.display()))?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
+            listener
+        }
+    };
 
     // Resolved before anything else starts, because an explicit `--wss` with
     // no pairing token refuses the whole start: the operator asked for a
@@ -400,17 +465,56 @@ pub async fn serve(
     let wss = crate::wss::resolve(wss_bind, &wss_origins)?;
 
     let host_id = paths::load_or_create_host_id()?;
-    // Scratch dirs are session-scoped and every session died with the
-    // previous daemon, so the whole tree is stale by definition here.
-    if let Ok(scratch) = paths::scratch_root() {
-        let _ = std::fs::remove_dir_all(&scratch);
+    if inherited.is_none() {
+        // Scratch dirs are session-scoped and every session died with the
+        // previous daemon, so the whole tree is stale by definition here.
+        // After a handoff the sessions are the same sessions, and so are
+        // their scratch dirs.
+        if let Ok(scratch) = paths::scratch_root() {
+            let _ = std::fs::remove_dir_all(&scratch);
+        }
     }
     // Opening the graveyard is also the crash check: anything the previous
     // daemon left on its roster is adopted as `daemon_lost` here, before this
-    // one accepts a single connection.
-    let graveyard = Arc::new(Graveyard::open(&paths::state_dir()?)?);
+    // one accepts a single connection. A session that crossed a handoff is on
+    // that roster and is alive, so it is retained instead — while one that was
+    // stranded at the exec is on it too, and is buried like any other loss.
+    let carried_ids: Vec<String> = inherited
+        .iter()
+        .flat_map(|(blob, _)| blob.sessions.iter().map(|session| session.id.clone()))
+        .collect();
+    let graveyard = Arc::new(Graveyard::open_retaining(
+        &paths::state_dir()?,
+        &carried_ids,
+    )?);
     let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
-    let manager = Manager::new(on_exit_tx, host_id, graveyard);
+    let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel::<std::path::PathBuf>();
+    let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx);
+
+    let adopted_sessions = inherited.is_some();
+    if let Some((blob, rings)) = inherited {
+        let from = blob.from_build.clone();
+        let mut adopted = 0usize;
+        for (carried, ring) in blob.sessions.into_iter().zip(rings) {
+            let id = carried.id.clone();
+            match manager.adopt(carried, ring) {
+                Ok(()) => adopted += 1,
+                // The descriptor arrived but this image could not build a
+                // session around it. Dropping it closes the master and hangs
+                // the program up, which is the honest outcome — the session is
+                // gone either way, and leaving the descriptor open would only
+                // hide it. It stays on the roster and is buried as
+                // `daemon_lost` at the next start; the log is what names it now.
+                Err(error) => {
+                    eprintln!("termiod: could not adopt session {id} after handoff: {error:#}");
+                }
+            }
+        }
+        eprintln!(
+            "termiod: handoff from {from} to {} complete — {adopted} session(s) carried",
+            crate::lifecycle::BUILD_VERSION
+        );
+    }
 
     {
         let manager = manager.clone();
@@ -442,14 +546,31 @@ pub async fn serve(
         });
     }
 
-    eprintln!("termiod listening on {}", sock_path.display());
+    if !adopted_sessions {
+        // Not printed after a handoff: the socket was never unbound, so
+        // "listening on" would read as a start that did not happen. The
+        // handoff line above is the event.
+        eprintln!("termiod listening on {}", sock_path.display());
+    }
 
     // The WSS listener stops accepting and drops its splices on the same signal
     // that ends the accept loop, so nothing attaches into a daemon that is
     // already burying its sessions.
     let (wss_shutdown, wss_shutdown_rx) = watch::channel(false);
     if let Some(config) = wss {
-        crate::wss::start(config, wss_shutdown_rx).await?;
+        match crate::wss::start(config, wss_shutdown_rx).await {
+            Ok(()) => {}
+            // On a cold start, an operator who asked for a listener and did not
+            // get one wants to know immediately, and nothing is lost by
+            // refusing. After a handoff the same failure would take every
+            // carried session down with it, which is a far worse answer to
+            // "the phone cannot connect" than the phone not connecting.
+            Err(error) if adopted_sessions => {
+                eprintln!("termiod: the WebSocket listener did not come back after the handoff: {error:#}");
+                eprintln!("termiod: sessions are unaffected; `termiod pair` and a restart re-establish it");
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     let mut terminate =
@@ -463,11 +584,17 @@ pub async fn serve(
     };
     tokio::pin!(shutdown_signal);
 
+    let mut becoming: Option<std::path::PathBuf> = None;
     loop {
         tokio::select! {
             biased;
             result = &mut shutdown_signal => {
                 result?;
+                break;
+            }
+            requested = handoff_rx.recv() => {
+                let Some(binary) = requested else { continue };
+                becoming = Some(binary);
                 break;
             }
             accepted = listener.accept() => {
@@ -483,6 +610,17 @@ pub async fn serve(
     }
 
     let _ = wss_shutdown.send(true);
+
+    if let Some(binary) = becoming {
+        // From here the daemon is committed. `hand_over` returns only on
+        // failure, and by then the session actors have already given up their
+        // PTYs — there is no daemon left to go back to being.
+        let error = hand_over(&manager, &listener, &binary).await;
+        eprintln!("termiod: handoff to {} failed: {error:#}", binary.display());
+        eprintln!("termiod: the sessions this daemon held are lost; the next start will bury them");
+        std::process::exit(1);
+    }
+
     manager.begin_draining(EndReason::DaemonStopped);
     let drained = manager.finish_draining(EndReason::DaemonStopped).await;
     // Keeping the bound listener through the drain prevents an autostarting
@@ -494,6 +632,71 @@ pub async fn serve(
         Err(error) => eprintln!("termiod: could not remove socket during shutdown: {error}"),
     }
     drained
+}
+
+/// Re-establish a `UnixListener` on a descriptor that crossed an `execve`.
+///
+/// The socket was never unlinked and never re-bound, so anything that connected
+/// during the crossing is sitting in the kernel's accept backlog and is served
+/// the moment this listener starts accepting.
+fn adopt_listener(fd: std::os::fd::RawFd) -> Result<UnixListener> {
+    use std::os::fd::FromRawFd;
+    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) };
+    // Tokio polls the descriptor and will not block for it; the previous image
+    // set this on the same open file description, but a carried descriptor is
+    // exactly the kind of assumption worth not making twice.
+    listener
+        .set_nonblocking(true)
+        .context("making the carried listener non-blocking")?;
+    UnixListener::from_std(listener).context("adopting the carried listener")
+}
+
+/// Pack every session and become `binary`. Returns only on failure.
+///
+/// The order is the safety property. Duplicating the listener and collecting
+/// the sessions comes *after* the binary has been vetted, and writing the blob
+/// comes after both, so the only step left once anything is irreversible is the
+/// exec itself.
+async fn hand_over(
+    manager: &Manager,
+    listener: &UnixListener,
+    binary: &std::path::Path,
+) -> anyhow::Error {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+
+    let listener_fd = match crate::handoff::duplicate_for_exec(listener.as_raw_fd()) {
+        Ok(fd) => fd,
+        Err(error) => return error.context("carrying the listener"),
+    };
+
+    let (carried, stranded) = manager.carry_all().await;
+    for id in &stranded {
+        eprintln!("termiod: session {id} did not hand over its pty and will not survive the upgrade");
+    }
+    let (sessions, rings): (Vec<_>, Vec<_>) = carried
+        .into_iter()
+        .map(|one| (one.info, one.ring))
+        .unzip();
+    eprintln!(
+        "termiod: handing off to {} with {} session(s)",
+        binary.display(),
+        sessions.len()
+    );
+
+    let blob = crate::handoff::Blob {
+        from_build: crate::lifecycle::BUILD_VERSION.to_string(),
+        listener_fd,
+        sessions,
+    };
+    let state_dir = match paths::state_dir() {
+        Ok(dir) => dir,
+        Err(error) => return error.context("locating the state directory"),
+    };
+    let blob_fd = match crate::handoff::pack(&blob, &rings, &state_dir) {
+        Ok(fd) => fd.into_raw_fd(),
+        Err(error) => return error.context("packing the handoff blob"),
+    };
+    crate::handoff::exec(binary, blob_fd)
 }
 
 #[derive(Clone)]
@@ -511,6 +714,10 @@ enum Outbound {
     History(Metered),
     Grid(Metered),
     File(Bytes),
+    /// Not a message: a marker the writer answers once everything queued ahead
+    /// of it is on the socket. One caller needs it — `handoff`, which must not
+    /// replace the process image while its own `ok` is still in a channel.
+    Flushed(oneshot::Sender<()>),
 }
 
 async fn write_outbound(
@@ -549,6 +756,10 @@ async fn write_outbound(
                 result
             }
             Outbound::File(payload) => write_file_payload(&mut wr, &payload).await,
+            Outbound::Flushed(signal) => {
+                let _ = signal.send(());
+                Ok(())
+            }
         };
         if result.is_err() {
             break;
@@ -908,6 +1119,50 @@ async fn process_control(
                     format!("no such session: {id}"),
                     false,
                 ),
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::Handoff { binary, seq } => {
+            let response = if !connection.capabilities.contains("handoff") {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the handoff capability was not negotiated",
+                    false,
+                )
+            } else {
+                // Vetting runs on a blocking thread because it *runs* the
+                // candidate binary, and the answer decides whether the daemon
+                // is still whole a moment from now. Everything that can refuse
+                // refuses here, while there is still a connection to refuse on.
+                let path = std::path::PathBuf::from(&binary);
+                let vetted = tokio::task::spawn_blocking(move || crate::handoff::vet(&path))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+                    .and_then(|result| result);
+                match vetted {
+                    Ok(path) => {
+                        // The reply goes out *before* the accept loop is told,
+                        // and this waits for it to reach the socket: the exec
+                        // that follows takes the connection with it, so an `ok`
+                        // still sitting in a channel is an `ok` the client
+                        // never sees — and a successful handoff that reads, at
+                        // the other end, as a daemon that died mid-request.
+                        send_response(out, response_cache, seq, Control::Ok { re: seq });
+                        let (flushed, on_wire) = oneshot::channel();
+                        if out.send(Outbound::Flushed(flushed)).is_ok() {
+                            let _ = on_wire.await;
+                        }
+                        let _ = manager.handoff.send(path);
+                        return Ok(ControlFlow::Continue);
+                    }
+                    Err(reason) => error(
+                        seq,
+                        ErrorCode::Denied,
+                        format!("{binary} cannot be handed off to: {reason:#}"),
+                        false,
+                    ),
+                }
             };
             send_response(out, response_cache, seq, response);
         }

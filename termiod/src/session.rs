@@ -108,6 +108,13 @@ pub enum SessionMsg {
     Info {
         reply: oneshot::Sender<SessionInfo>,
     },
+    /// The daemon is about to replace its own image and needs this session's
+    /// PTY on a descriptor that survives the `execve`. The actor answers and
+    /// stops — without killing anything, and without a burial: the process in
+    /// there is about to be someone else's to read.
+    Carry {
+        reply: oneshot::Sender<Carried>,
+    },
     Kill {
         reason: EndReason,
     },
@@ -400,6 +407,37 @@ impl Session {
         let request_id = self.next_snapshot_request;
         self.next_snapshot_request = self.next_snapshot_request.wrapping_add(1);
         request_id
+    }
+
+    /// Pack this session for a handoff and give up the actor's claim on it.
+    ///
+    /// The PTY master is *duplicated* rather than surrendered. The copy names
+    /// the same open file description — the same master, the same termios, the
+    /// same foreground process group — while the original stays with the `Pty`
+    /// and closes normally when this actor drops. Handing out the raw number
+    /// instead would leave the new image reading a descriptor the old one had
+    /// already closed.
+    fn into_carried(self) -> anyhow::Result<Carried> {
+        let master_fd = crate::handoff::duplicate_for_exec(self.pty.master_fd())?;
+        let ring: Vec<Bytes> = self.ring.iter().cloned().collect();
+        Ok(Carried {
+            info: crate::handoff::CarriedSession {
+                id: self.id.to_string(),
+                name: self.name.clone(),
+                cwd: self.cwd.clone(),
+                command: self.command.clone(),
+                pid: self.pid,
+                rows: self.rows,
+                cols: self.cols,
+                created_unix: self.created_unix,
+                status: self.status.clone(),
+                title: self.title.clone(),
+                workstream: self.workstream.clone(),
+                master_fd,
+                ring_len: self.ring_bytes as u64,
+            },
+            ring,
+        })
     }
 
     fn push_ring(&mut self, data: Bytes) {
@@ -1089,6 +1127,15 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
     env
 }
 
+/// Everything a session actor hands over when its daemon is about to `execve`
+/// (see `crate::handoff`): the facts that describe it, the PTY master as a
+/// descriptor the exec can carry, and the replay ring so the new image can put
+/// the screen back without asking the program to redraw it.
+pub struct Carried {
+    pub info: crate::handoff::CarriedSession,
+    pub ring: Vec<Bytes>,
+}
+
 /// Spawn a session task. On process exit the session id is sent to the
 /// manager so it can remove the handle from the table.
 #[allow(clippy::too_many_arguments)]
@@ -1112,12 +1159,133 @@ pub fn spawn(
     };
     let env = daemon_owned_env(&id, env);
     let (pty, child) = Pty::spawn(&argv, cwd_opt, &env, rows, cols)?;
-    let pty = Arc::new(pty);
-    let pid = pty.pid;
     let created_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let waiter = tokio::task::spawn_blocking(move || {
+        let mut child = child;
+        match child.wait() {
+            Ok(status) => status.code().unwrap_or_else(|| {
+                use std::os::unix::process::ExitStatusExt;
+                status.signal().map(|s| 128 + s).unwrap_or(-1)
+            }),
+            Err(_) => -1,
+        }
+    });
+    start(
+        Facts {
+            id,
+            name,
+            cwd,
+            command,
+            rows,
+            cols,
+            created_unix,
+            status: "unknown".to_string(),
+            title: None,
+            workstream,
+        },
+        pty,
+        waiter,
+        Vec::new(),
+        on_exit,
+        events,
+    )
+}
+
+/// Take a session back over after a handoff: same PTY, same child, same ring,
+/// a new actor around them.
+///
+/// The screen is rebuilt rather than re-fetched. Feeding the carried ring
+/// through a fresh VT sidecar is exactly what the previous image did with those
+/// same bytes as they arrived, so the snapshot the first re-attaching client
+/// gets is the screen it would have got had nothing happened.
+pub fn adopt(
+    carried: crate::handoff::CarriedSession,
+    ring: Vec<u8>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
+    events: broadcast::Sender<Event>,
+) -> anyhow::Result<SessionHandle> {
+    let pty = Pty::adopt(carried.master_fd, carried.pid)?;
+    let waiter = reap(carried.pid);
+    let replay = if ring.is_empty() {
+        Vec::new()
+    } else {
+        vec![Bytes::from(ring)]
+    };
+    start(
+        Facts {
+            id: SessionId::new(carried.id),
+            name: carried.name,
+            cwd: carried.cwd,
+            command: carried.command,
+            rows: carried.rows,
+            cols: carried.cols,
+            created_unix: carried.created_unix,
+            status: carried.status,
+            title: carried.title,
+            workstream: carried.workstream,
+        },
+        pty,
+        waiter,
+        replay,
+        on_exit,
+        events,
+    )
+}
+
+/// Reap a child this process still owns but no longer has a `Child` for — the
+/// shape every carried session is in, because `execve` kept the parentage and
+/// destroyed the bookkeeping.
+fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
+    tokio::task::spawn_blocking(move || loop {
+        let mut status: libc::c_int = 0;
+        let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if reaped < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return -1;
+        }
+        if libc::WIFEXITED(status) {
+            return libc::WEXITSTATUS(status);
+        }
+        if libc::WIFSIGNALED(status) {
+            return 128 + libc::WTERMSIG(status);
+        }
+        // Stopped or continued. Neither was asked for — no `WUNTRACED`, no
+        // `WCONTINUED` — but a spurious wake is cheaper to loop on than to
+        // reason about.
+    })
+}
+
+/// What describes a session independently of how this daemon came by it.
+struct Facts {
+    id: SessionId,
+    name: String,
+    cwd: String,
+    command: String,
+    rows: u16,
+    cols: u16,
+    created_unix: u64,
+    status: String,
+    title: Option<String>,
+    workstream: Option<WorkstreamSpec>,
+}
+
+/// The half of session startup that a fresh spawn and a carried session share:
+/// the writer task, the VT sidecar, the ring, and the actor around them.
+fn start(
+    facts: Facts,
+    pty: Pty,
+    waiter: tokio::task::JoinHandle<i32>,
+    replay: Vec<Bytes>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
+    events: broadcast::Sender<Event>,
+) -> anyhow::Result<SessionHandle> {
+    let pty = Arc::new(pty);
+    let pid = pty.pid;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let writer_pty = pty.clone();
@@ -1129,22 +1297,22 @@ pub fn spawn(
         }
     });
 
-    let sidecar = spawn_sidecar(rows, cols)?;
+    let sidecar = spawn_sidecar(facts.rows, facts.cols)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let termination_reason = Arc::new(Mutex::new(None));
-    let session = Session {
-        id: id.clone(),
-        name,
-        cwd,
-        command,
+    let mut session = Session {
+        id: facts.id.clone(),
+        name: facts.name,
+        cwd: facts.cwd,
+        command: facts.command,
         pid,
-        rows,
-        cols,
-        created_unix,
-        status: "unknown".to_string(),
-        title: None,
-        workstream,
+        rows: facts.rows,
+        cols: facts.cols,
+        created_unix: facts.created_unix,
+        status: facts.status,
+        title: facts.title,
+        workstream: facts.workstream,
         pty,
         input_tx,
         clients: HashMap::new(),
@@ -1157,17 +1325,12 @@ pub fn spawn(
         vt: Vt::live(sidecar.commands, sidecar.queue),
         foreground: Foreground::default(),
     };
-
-    let waiter = tokio::task::spawn_blocking(move || {
-        let mut child = child;
-        match child.wait() {
-            Ok(status) => status.code().unwrap_or_else(|| {
-                use std::os::unix::process::ExitStatusExt;
-                status.signal().map(|s| 128 + s).unwrap_or(-1)
-            }),
-            Err(_) => -1,
-        }
-    });
+    for chunk in replay {
+        // Through the same two paths a live byte takes, in the same order: the
+        // ring it will be replayed from, and the VT that answers snapshots.
+        session.send_sidecar(SidecarCommand::Write(chunk.clone()));
+        session.push_ring(chunk);
+    }
 
     tokio::spawn(run(
         session,
@@ -1179,7 +1342,7 @@ pub fn spawn(
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
-        id,
+        id: facts.id,
         pid,
         tx,
         termination_reason,
@@ -1392,6 +1555,40 @@ async fn run(
             }
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
+                if let SessionMsg::Carry { reply } = msg {
+                    let session_id = session.id.clone();
+                    // The one exit from this loop that is not an ending. No
+                    // reap, no `on_exit`, no tombstone: the child keeps running
+                    // and the daemon that reads it next is this same process
+                    // with different code in it. Returning here drops the
+                    // `Session` — and with it the original PTY descriptor,
+                    // which is why `into_carried` duplicated one first.
+                    session.send_sidecar(SidecarCommand::Shutdown);
+                    let carried = session.into_carried();
+                    // The parser is a few kilobytes of grid and a thread that
+                    // has already been told to stop; joining it here costs a
+                    // scheduler turn on a runtime that is about to cease to
+                    // exist, and skipping it would leave the thread running
+                    // into the exec.
+                    let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
+                    match carried {
+                        Ok(carried) => {
+                            let _ = reply.send(carried);
+                            return;
+                        }
+                        Err(error) => {
+                            // The descriptor could not be duplicated, so this
+                            // session cannot cross. Dropping `reply` is what
+                            // tells the daemon so, in time for it to name the
+                            // session in its report rather than lose it
+                            // silently at the exec.
+                            eprintln!(
+                                "termiod: session {session_id} cannot be carried across a handoff: {error:#}"
+                            );
+                            return;
+                        }
+                    }
+                }
                 if let Some(reason) = handle_msg(&mut session, msg) {
                     end_reason = reason;
                     break;
@@ -1674,6 +1871,12 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::Info { reply } => {
             let _ = reply.send(session.info());
         }
+        // Intercepted in `run` before it reaches here: handing a session over
+        // ends the actor without ending the session, which is not something a
+        // handler returning `Option<EndReason>` can express. Dropping `reply`
+        // un-answered is the right degradation anyway — the daemon reads a
+        // dropped reply as a session that could not be carried, and names it.
+        SessionMsg::Carry { .. } => {}
         SessionMsg::Kill { reason } => {
             // The child is a session leader, so pgid == pid.
             unsafe {
