@@ -194,4 +194,39 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
             tree.directoriesToRelist(for: ["\(root)/src"]), [],
             "a path the tree no longer holds is not worth a round trip")
     }
+
+    // MARK: - The window between the first listing and the first batch
+
+    /// A listing taken before the device had any watch is stamped `seq == 0`.
+    /// Anything that changed between it and the subscription raised no batch
+    /// anybody was subscribed for, and the watch then starts at a cursor already
+    /// past it — so nothing later repairs the tree. `established` is when that
+    /// has to be re-read.
+    func testATreeListedBeforeTheWatchExistedReconcilesWhenItArrives() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        XCTAssertTrue(
+            tree.needsReconcileOnEstablish,
+            "nothing has stamped these rows, so they may already be stale")
+    }
+
+    /// The opposite, which is the common case and must not cost a second full
+    /// listing: the load happened while a watch was already running, so the
+    /// cursor on it proves what the rows include.
+    func testATreeListedUnderARunningWatchNeedsNoReconcile() {
+        let tree = model()
+        tree.noteListed(at: 42)
+        XCTAssertFalse(
+            tree.needsReconcileOnEstablish,
+            "a stamped listing already reflects everything up to its cursor")
+    }
+
+    /// A tree with no subscription — a daemon too old to grant `resources` —
+    /// keeps the app-focus reconcile it always had. Dropping that unconditionally
+    /// left those trees with nothing but the refresh button.
+    func testATreeWithNoSubscriptionIsNotLive() {
+        XCTAssertFalse(
+            model().isLive,
+            "no watch means the pane's own reconcile is still the only signal")
+    }
 }

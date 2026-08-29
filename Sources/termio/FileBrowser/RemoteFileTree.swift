@@ -334,6 +334,11 @@ final class RemoteFileBrowserModel: ObservableObject {
     private var loadsInFlight: Set<String> = []
     private var prefetchesInFlight: Set<String> = []
     private var refreshing = false
+    /// The `fs:` cursor the tree's rows were last stamped at. Zero means the
+    /// listing was taken while the device had no watch running, so nothing
+    /// invalidates it and nothing will — the state `established` exists to
+    /// repair.
+    private var listedSeq: UInt64 = 0
     /// The live subscription, held while the pane is on screen. `nil` on a
     /// device whose daemon does not serve `resources`, where the tree falls back
     /// to exactly the manual refresh it always had.
@@ -412,7 +417,7 @@ final class RemoteFileBrowserModel: ObservableObject {
                 // Tells the watch which batches this listing already reflects,
                 // so a change raised *before* it lands does not send the tree
                 // back to ask the device a question it just answered.
-                watch?.noteListed(at: listed.seq)
+                noteListed(at: listed.seq)
                 phase = .ready
                 // The folders at the top of the tree are the ones about to be
                 // clicked. Asking for them now costs a round trip nobody is
@@ -440,6 +445,15 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// whole-tree reload.
     func applyWatch(_ update: Termiod.ResourceWatch.Update) {
         switch update {
+        case .established:
+            // The rows on screen may predate the watch. A listing taken before
+            // the daemon had one carries `seq == 0` — nothing raised a batch for
+            // a change in that window, and the watch now starts at a cursor
+            // already past it, so no later event will ever repair the tree. One
+            // re-read closes the window; a listing that was already stamped by a
+            // running watch needs nothing.
+            guard needsReconcileOnEstablish else { return }
+            refresh()
         case .reset:
             refresh()
         case .batch(let batch):
@@ -454,7 +468,7 @@ final class RemoteFileBrowserModel: ObservableObject {
                 do {
                     let listed = try await provider.listing(changed)
                     apply(listed.listings)
-                    watch?.noteListed(at: listed.seq)
+                    noteListed(at: listed.seq)
                     Log.files.debug(
                         "\(self.host, privacy: .public) batch \(batch.seq, privacy: .public): \(batch.paths.count, privacy: .public) changed, \(changed.count, privacy: .public) on screen")
                 } catch {
@@ -463,6 +477,30 @@ final class RemoteFileBrowserModel: ObservableObject {
             }
         }
     }
+
+    /// Records the cursor a listing was stamped at. Called by the tree's own
+    /// loads; separate from the watch's copy because the two answer different
+    /// questions — the watch's decides which batches to drop, this one decides
+    /// whether the rows predate the watch entirely.
+    func noteListed(at seq: UInt64) {
+        listedSeq = max(listedSeq, seq)
+        watch?.noteListed(at: seq)
+    }
+
+    /// Whether the rows on screen were listed before any watch existed, and so
+    /// have to be re-read now that one does.
+    ///
+    /// Reachable from a test: the window it closes is a race nothing can observe
+    /// from the outside once it has been closed.
+    var needsReconcileOnEstablish: Bool { listedSeq == 0 }
+
+    /// Whether the device is telling this tree about changes.
+    ///
+    /// False on a daemon too old to grant `resources`, and while a dropped
+    /// subscription is being re-established. The pane keeps its app-focus
+    /// reconcile for exactly those windows — a live tree does not need it, and a
+    /// tree that cannot have one still does.
+    var isLive: Bool { watch?.isSubscribed ?? false }
 
     /// Which of a batch's changed directories this tree actually has to re-read.
     ///
@@ -734,13 +772,16 @@ struct RemoteFileTreeView: View {
             model.refresh()
         }
         .onDisappear { model.stopWarming() }
-        // No app-focus reload. The subscription is what keeps the tree honest
-        // now, and it kept running while the window was in the back — so coming
-        // back to the front is not news, and re-listing every open directory on
-        // it was the tree's largest recurring cost against a box where an agent
-        // is writing files. A subscription that could not be kept up says so
-        // itself (`ResourceWatch.Update.reset`), which is the case this used to
-        // be standing in for.
+        // The app-focus reload, now only when nothing is watching. A live
+        // subscription kept running while the window was in the back, so coming
+        // back to the front is not news — and re-listing every open directory on
+        // it was this tree's largest recurring cost against a box where an agent
+        // is writing files. But a daemon too old to grant `resources` never gets
+        // a subscription at all, and dropping this unconditionally would leave
+        // those trees with nothing but the refresh button.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if store.inspectorVisible, !model.isLive { model.refresh() }
+        }
         .onChange(of: store.inspectorVisible) { _, visible in
             if visible {
                 model.startWarming()

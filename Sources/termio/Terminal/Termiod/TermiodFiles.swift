@@ -55,6 +55,19 @@ extension Termiod {
             /// The subscription could not be continued from where it left off.
             /// Whatever is held may be stale; re-read it.
             case reset
+            /// The **first** subscribe of this watch's life has landed.
+            ///
+            /// Sent once, because it answers a question that can only be asked
+            /// at the start: a listing taken before the daemon had any watch is
+            /// stamped `seq == 0`, and anything that changed between that
+            /// listing and this moment raised no batch anybody was subscribed
+            /// for. No later event repairs it — the watch begins at a cursor
+            /// already past the change. A caller holding such a listing has to
+            /// re-read here.
+            ///
+            /// Later re-subscribes say `reset` instead: those have a `since` to
+            /// replay from, and their failure to use it is what `gap` reports.
+            case established
         }
 
         /// The capability the daemon must have granted. A device too old to
@@ -90,6 +103,8 @@ extension Termiod {
         private var cursor: UInt64?
         private var failures = 0
         private var stopped = false
+        /// Whether a subscribe has ever landed, so `established` fires once.
+        private var hasEstablished = false
         /// The id the **host** answered with, which is what batches are tagged
         /// with. Clients name a workspace root and the daemon canonicalises it
         /// (`daemon.rs` — "two spellings of one repo share a single watch"), so
@@ -133,6 +148,20 @@ extension Termiod {
                     try encodeControl(
                         UnsubscribeResourceOperation(resource: resource, seq: seq))
                 }
+            }
+        }
+
+        /// Whether a subscription is up right now.
+        ///
+        /// False before the first subscribe lands, while a dropped one is being
+        /// re-established, and forever on a daemon that never granted
+        /// `resources`. A caller that had a reconcile of its own before this
+        /// existed keeps it as the fallback for that last case: a watch that
+        /// cannot run must not take the old behaviour down with it.
+        var isSubscribed: Bool {
+            lock.withLock {
+                guard !stopped, let channel else { return false }
+                return !channel.isDead
             }
         }
 
@@ -199,10 +228,20 @@ extension Termiod {
                             channel: channel, token: token, generation: generation,
                             resource: subscribed.resource)
                         // A first subscribe always reports a gap — there is
-                        // nothing to replay from. That is not news: the caller
-                        // is loading anyway, and reporting it would make every
-                        // pane open with two full listings instead of one.
-                        if subscribed.gap, since != nil { self.onUpdate(.reset) }
+                        // nothing to replay from. Reporting that as a reset
+                        // would open every pane with two full listings instead
+                        // of one. What the caller does need is to know the watch
+                        // is armed, so a listing taken before it can be
+                        // reconsidered.
+                        let first = self.lock.withLock { () -> Bool in
+                            defer { self.hasEstablished = true }
+                            return !self.hasEstablished
+                        }
+                        if first {
+                            self.onUpdate(.established)
+                        } else if subscribed.gap {
+                            self.onUpdate(.reset)
+                        }
                         self.lock.withLock { self.failures = 0 }
                     } catch {
                         channel.removeObserver(token)
@@ -265,6 +304,13 @@ extension Termiod {
             case .event:
                 break
             case .closed:
+                // Dropped here rather than left for the next `adopt`, so
+                // `isSubscribed` reports the outage while it lasts and a
+                // caller's own reconcile can cover it.
+                lock.withLock {
+                    channel = nil
+                    observerToken = nil
+                }
                 // Batches raised while the link was down are replayed from
                 // `cursor` on the way back — but only as far as the host's ring
                 // reaches, so the tree is told to re-read regardless.
