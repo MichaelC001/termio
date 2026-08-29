@@ -378,12 +378,18 @@ fn a_session_is_either_listed_or_gone_never_both() {
     drop(daemon);
 }
 
-/// A carried session whose ring can no longer draw its own screen must not have
-/// the host claim otherwise. The daemon answers such a snapshot by falling back
-/// to ring replay — the client's terminal interpreting bytes it was handed —
-/// rather than asserting a grid it reconstructed from an incomplete replay.
+/// A handoff that happens while a client is attached leaves the session
+/// driveable afterwards. The client's socket dies with the image, which is the
+/// documented cost; the session behind it must not.
+///
+/// What this does *not* cover is the stale-VT decision — whether an adopted
+/// session declines to reconstruct a screen it cannot know. That needs a real
+/// resize, which an observer cannot perform (`attach --observe` has no tty and
+/// no resize handling), so it is asserted against the session actor directly in
+/// `session::tests::a_resize_makes_the_ring_stop_describing_the_screen` and
+/// `an_unfaithful_ring_comes_back_with_a_vt_that_refuses_snapshots`.
 #[test]
-fn a_resized_session_does_not_come_back_with_a_confidently_wrong_screen() {
+fn a_session_with_a_client_attached_is_still_driveable_afterwards() {
     let dir = TestDir::new();
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
@@ -399,8 +405,6 @@ fn a_resized_session_does_not_come_back_with_a_confidently_wrong_screen() {
     let sent = termiod(&socket, &["send", &session_id, "echo MARKER-BEFORE-RESIZE"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
 
-    // An observer attaching at a different size is what moves the session off
-    // the geometry its ring was written at.
     let _ = observed(&socket, &session_id);
 
     let handed = termiod(&socket, &["handoff", "--json"]);
@@ -420,6 +424,77 @@ fn a_resized_session_does_not_come_back_with_a_confidently_wrong_screen() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+
+    drop(daemon);
+}
+
+/// A candidate that never answers, and one that will not stop answering, are
+/// both refused on a deadline — and the daemon is still there afterwards.
+///
+/// This is the shape that bites: the probe runs on a control task, so a
+/// candidate that hangs does not merely fail its own handoff, it wedges the
+/// verb for everyone. The first version of the timeout read the child's output
+/// before waiting on it, which meant the deadline below was never reached at
+/// all: the read blocked in the kernel on a pipe the sleeping child kept open.
+#[test]
+fn a_probe_that_hangs_or_floods_is_refused_and_leaves_the_daemon_working() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("s");
+    let daemon = Daemon::start(&socket);
+
+    let created = termiod(&socket, &["create", "--name", "kept", "--", "sh"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let daemon_pid = status(&socket)["daemon"]["pid"]
+        .as_i64()
+        .expect("daemon pid");
+
+    for (name, script) in [
+        (
+            "hang",
+            "#!/bin/sh\ncase \"$1\" in handoff) sleep 600;; esac\n",
+        ),
+        (
+            "flood",
+            "#!/bin/sh\ncase \"$1\" in handoff) yes termiod-handoff;; esac\n",
+        ),
+    ] {
+        let path = dir.0.join(name);
+        std::fs::write(&path, script).expect("write candidate");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod candidate");
+        }
+        let started = Instant::now();
+        let refused = termiod(
+            &socket,
+            &["handoff", "--binary", path.to_str().expect("path")],
+        );
+        assert!(
+            !refused.status.success(),
+            "{name} was accepted: {refused:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "{name} was refused only after {:?} — the deadline is not being reached",
+            started.elapsed()
+        );
+    }
+
+    // Still the same daemon, still holding its session, still able to hand off
+    // for real.
+    assert_eq!(
+        status(&socket)["daemon"]["pid"].as_i64(),
+        Some(daemon_pid),
+        "a refused probe cost the daemon"
+    );
+    assert_eq!(listed(&socket).len(), 1, "a refused probe cost a session");
+    let handed = termiod(&socket, &["handoff", "--json"]);
+    assert!(
+        handed.status.success(),
+        "the verb was wedged by the refusals: {handed:?}"
+    );
 
     drop(daemon);
 }

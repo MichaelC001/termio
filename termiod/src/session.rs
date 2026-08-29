@@ -2716,6 +2716,119 @@ mod tests {
         (handle, events_rx, on_exit_rx)
     }
 
+    /// A resize invalidates the ring as a source of truth for the screen: the
+    /// bytes already in it were written into a differently shaped grid, and
+    /// replaying them into this one puts them in the wrong places. Nothing in
+    /// this daemon cares — its VT was fed every byte as it arrived — but the far
+    /// side of a handoff has only the ring, and must be told not to trust it.
+    #[tokio::test]
+    async fn a_resize_makes_the_ring_stop_describing_the_screen() {
+        let untouched = attached_session().await;
+        let carried = carry(&untouched.handle).await;
+        assert!(
+            carried.info.ring_reconstructs_screen,
+            "a session nothing has resized should carry a usable ring"
+        );
+
+        let resized = attached_session().await;
+        resized.handle.send(SessionMsg::Resize {
+            id: ClientId::new("writer"),
+            rows: 40,
+            cols: 120,
+        });
+        let carried = carry(&resized.handle).await;
+        assert!(
+            !carried.info.ring_reconstructs_screen,
+            "a resized session must not claim its ring still draws its screen"
+        );
+    }
+
+    /// A session handed over with a ring that cannot draw its screen comes back
+    /// with its VT stale, so snapshots fall back to ring replay instead of the
+    /// host asserting a grid it reconstructed from bytes it was told are wrong.
+    #[tokio::test]
+    async fn an_unfaithful_ring_comes_back_with_a_vt_that_refuses_snapshots() {
+        let session = attached_session().await;
+        session.handle.send(SessionMsg::Resize {
+            id: ClientId::new("writer"),
+            rows: 40,
+            cols: 120,
+        });
+        let mut carried = carry(&session.handle).await;
+        assert!(!carried.info.ring_reconstructs_screen);
+
+        // Adopt it the way a new image would.
+        use std::os::fd::IntoRawFd as _;
+        carried.info.master_fd = carried.master.into_raw_fd();
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, mut events_rx) = broadcast::channel(64);
+        let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
+            .expect("adopting the carried session");
+
+        // The adopting actor declares its VT unusable rather than answering
+        // snapshots from a screen it reconstructed out of bytes it was told
+        // are wrong.
+        let stale = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events_rx.recv().await {
+                    Ok(Event::VtStale { reason, .. }) => return reason,
+                    Ok(_) => continue,
+                    Err(error) => panic!("event stream ended: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the adopted session declared its VT stale");
+        assert!(stale.contains("handoff"), "{stale}");
+
+        adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A live session with an interactive client holding the write token.
+    ///
+    /// The client's receiver is held for as long as the session is: dropping it
+    /// closes the channel, the actor removes the client on its next send, and
+    /// the write token goes with it — after which a `Resize` is refused as
+    /// coming from a stranger and the test silently stops testing anything.
+    struct Attached {
+        handle: SessionHandle,
+        _client: mpsc::UnboundedReceiver<ClientEvent>,
+        _events: broadcast::Receiver<Event>,
+        _on_exit: mpsc::UnboundedReceiver<super::SessionEnded>,
+    }
+
+    async fn attached_session() -> Attached {
+        let (handle, events, on_exit) = start_session(vec!["/bin/sh".to_string()], "/");
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        let granted = answer.await.expect("attached");
+        assert!(granted.writer, "the first interactive client takes the token");
+        Attached {
+            handle,
+            _client: client_rx,
+            _events: events,
+            _on_exit: on_exit,
+        }
+    }
+
+    async fn carry(handle: &SessionHandle) -> super::Carried {
+        let (reply, answer) = oneshot::channel();
+        assert!(handle.send(SessionMsg::Carry { reply }));
+        answer.await.expect("the session handed itself over")
+    }
+
     /// The whole point: a live session can name the program in its terminal,
     /// say where that program is standing, and pin the binary behind it —
     /// against a real child, not a fixture.

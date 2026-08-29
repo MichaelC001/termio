@@ -40,6 +40,26 @@
 //!   image starts a fresh one and replays the carried ring through it, which
 //!   reconstructs the screen from the same bytes that produced it.
 //!
+//! ## What is still not proven
+//!
+//! The probe below asks a candidate whether it implements this contract, and a
+//! candidate that lies passes. Nothing short of running `serve --handoff` for
+//! real would prove otherwise, and running it for real is the thing that cannot
+//! be taken back — by the time a new image could report that it cannot start,
+//! the old one no longer exists to hear it.
+//!
+//! So the residual risk is stated rather than hidden: **a binary that answers
+//! the probe correctly and then fails to start takes every session with it.**
+//! What the probe does close is the case that actually happens — a termiod old
+//! enough to answer `--version` and too old to know this verb — and what keeps
+//! the rest small is that the caller with any business asking for a handoff is
+//! `deploy`, handing off to a binary it staged from its own bundle moments
+//! earlier and has just seen answer `status`.
+//!
+//! The far side helps where it can: every startup step that a cold start is
+//! right to refuse over degrades instead, because on this path refusing means
+//! killing what it was handed. See `daemon::serve`.
+//!
 //! The Unix listener *is* carried, on its own descriptor. Re-binding would mean
 //! unlinking and re-creating the socket, and a client connecting in that window
 //! would find nothing there and autostart a second daemon over a state
@@ -179,21 +199,8 @@ pub fn vet(binary: &Path) -> Result<PathBuf> {
     if !metadata.is_file() {
         bail!("{} is not a regular file", binary.display());
     }
-    let probe = std::process::Command::new(&binary)
-        .arg("handoff")
-        .arg("--probe")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .with_context(|| format!("running {} handoff --probe", binary.display()))?;
-    if !probe.status.success() {
-        bail!(
-            "{} does not implement the handoff contract ({} exited {})",
-            binary.display(),
-            "handoff --probe",
-            probe.status
-        );
-    }
-    let spoken = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    let probe = run_probe(&binary)?;
+    let spoken = probe.trim().to_string();
     let wanted = probe_token();
     if spoken != wanted {
         bail!(
@@ -232,6 +239,70 @@ pub fn stage_blob(state_dir: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// How long a candidate binary gets to answer the probe, and how much it may
+/// say. A binary that hangs must not hang the daemon with it: `vet` runs on a
+/// control task, and a handoff that never resolves is a daemon that can no
+/// longer be upgraded — by anyone, ever, until it is stopped.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROBE_MAX_OUTPUT: u64 = 4 * 1024;
+
+/// Ask a candidate what handoff contract it speaks, without letting it decide
+/// how long that takes or how much it costs.
+///
+/// The process is waited on *before* its output is read, which is the only
+/// order that bounds anything. Reading first looks natural and is a trap: a
+/// child that never writes and never exits holds its end of the pipe open, the
+/// read blocks in the kernel, and no deadline written after it is ever
+/// evaluated — the daemon's control task waits forever on a program whose whole
+/// contribution was to sleep. Killing the child on the deadline closes that
+/// pipe, which is what makes the read below terminate.
+fn run_probe(binary: &Path) -> Result<String> {
+    use std::io::Read as _;
+
+    let mut child = std::process::Command::new(binary)
+        .arg("handoff")
+        .arg("--probe")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("running {} handoff --probe", binary.display()))?;
+
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!(
+                    "{} did not answer handoff --probe within {}s",
+                    binary.display(),
+                    PROBE_TIMEOUT.as_secs()
+                );
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(error) => bail!("waiting for {} handoff --probe: {error}", binary.display()),
+        }
+    };
+
+    let mut spoken = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        // Capped: an answer longer than this is not an answer, and a candidate
+        // does not get to spend the daemon's memory saying it. A child that
+        // wrote more than a pipe holds never exited, so it was killed above and
+        // never reaches here.
+        let _ = stdout.take(PROBE_MAX_OUTPUT).read_to_string(&mut spoken);
+    }
+    if !status.success() {
+        bail!(
+            "{} does not implement the handoff contract (handoff --probe exited {status})",
+            binary.display()
+        );
+    }
+    Ok(spoken)
+}
+
 /// Write the blob into the staged file and return its descriptor, rewound and
 /// exec-safe.
 ///
@@ -239,13 +310,25 @@ pub fn stage_blob(state_dir: &Path) -> Result<std::fs::File> {
 /// the header at the moment it is committed to the blob, and not before.
 pub fn pack(
     mut blob: Blob,
+    listener: OwnedFd,
     sessions: Vec<(CarriedSession, OwnedFd, Vec<Bytes>)>,
     mut file: std::fs::File,
 ) -> Result<OwnedFd> {
+    // The descriptors stay owned for the whole of this function. Their numbers
+    // are stable while they are held — that is what a descriptor number is —
+    // so the header can name them without anything giving up ownership, and a
+    // failure anywhere below drops the lot: every master closes, every carried
+    // program is hung up, and nothing is left half-committed. Ownership is
+    // released only after the last fallible step has succeeded, which is the
+    // point at which the crossing is going to happen.
+    set_inheritable(listener.as_raw_fd())?;
+    blob.listener_fd = listener.as_raw_fd();
+    let mut masters = Vec::with_capacity(sessions.len());
     let mut rings = Vec::with_capacity(sessions.len());
     for (mut info, master, ring) in sessions {
-        info.master_fd = master.into_raw_fd();
-        set_inheritable(info.master_fd)?;
+        set_inheritable(master.as_raw_fd())?;
+        info.master_fd = master.as_raw_fd();
+        masters.push(master);
         rings.push(ring);
         blob.sessions.push(info);
     }
@@ -260,10 +343,20 @@ pub fn pack(
         }
     }
     file.flush()?;
+    // The bytes have to be on the file, not in this process's buffers: the
+    // reader is a different program image and shares nothing with this one but
+    // the descriptor.
+    file.sync_data()
+        .context("flushing the handoff blob to disk")?;
     file.seek(SeekFrom::Start(0))?;
-
     let fd = unsafe { OwnedFd::from_raw_fd(file.into_raw_fd()) };
     set_inheritable(fd.as_raw_fd())?;
+
+    // Committed. From here the descriptors belong to the next image.
+    let _ = listener.into_raw_fd();
+    for master in masters {
+        let _ = master.into_raw_fd();
+    }
     Ok(fd)
 }
 
@@ -392,7 +485,7 @@ mod tests {
             format: FORMAT_VERSION,
             from_build: "0.1.0+1".to_string(),
             host_id: "h_1".to_string(),
-            listener_fd: 7,
+            listener_fd: -1,
             sessions: Vec::new(),
         };
         // Two descriptors that are not ptys but are perfectly good stand-ins
@@ -406,9 +499,12 @@ mod tests {
             ),
         ];
         let file = stage_blob(&dir).unwrap();
-        let fd = pack(blob, sessions, file).unwrap();
+        let listener = devnull();
+        let listener_number = listener.as_raw_fd();
+        let fd = pack(blob, listener, sessions, file).unwrap();
         let (read_back, read_rings) = unpack(fd.into_raw_fd()).unwrap();
-        assert_eq!(read_back.listener_fd, 7);
+        assert_eq!(read_back.listener_fd, listener_number);
+        unsafe { libc::close(read_back.listener_fd) };
         assert_eq!(read_back.from_build, "0.1.0+1");
         assert_eq!(read_back.host_id, "h_1");
         assert_eq!(read_rings, vec![b"abc".to_vec(), b"defgh".to_vec()]);

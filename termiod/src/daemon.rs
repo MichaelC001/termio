@@ -523,7 +523,8 @@ pub async fn serve(
             Ok(graveyard) => graveyard,
             Err(error) if adopted => {
                 eprintln!("termiod: the tombstone log did not open after the handoff: {error:#}");
-                eprintln!("termiod: sessions are unaffected; losses will go unrecorded until a restart");
+                eprintln!("termiod: sessions are unaffected, but nothing this daemon does will be recorded — no roster, no tombstones");
+                eprintln!("termiod: fix the state directory and hand off again; a restart would take the sessions with it");
                 Graveyard::detached()
             }
             Err(error) => return Err(error),
@@ -724,8 +725,11 @@ async fn hand_over(
         Err(error) => return error.context("staging the handoff blob"),
     };
     let host_id = manager.host_id.to_string();
+    // Held, not released: like the session masters, this is committed by `pack`
+    // once the blob is written, so a failure before then closes it instead of
+    // leaving a listener nothing owns.
     let listener_fd = match crate::handoff::duplicate_for_exec(listener.as_raw_fd()) {
-        Ok(fd) => fd.into_raw_fd(),
+        Ok(fd) => fd,
         Err(error) => return error.context("carrying the listener"),
     };
 
@@ -750,10 +754,11 @@ async fn hand_over(
         format: crate::handoff::FORMAT_VERSION,
         from_build: crate::lifecycle::BUILD_VERSION.to_string(),
         host_id,
-        listener_fd,
+        // Assigned by `pack`, with the session masters.
+        listener_fd: -1,
         sessions: Vec::new(),
     };
-    let blob_fd = match crate::handoff::pack(blob, sessions, staged) {
+    let blob_fd = match crate::handoff::pack(blob, listener_fd, sessions, staged) {
         Ok(fd) => fd.into_raw_fd(),
         Err(error) => return error.context("packing the handoff blob"),
     };

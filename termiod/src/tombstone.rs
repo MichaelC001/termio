@@ -264,6 +264,12 @@ impl Graveyard {
     /// which are the only things in this system that cannot be recreated. A
     /// daemon with no tombstone log explains a later loss worse. A daemon that
     /// exited caused one.
+    ///
+    /// The cost is larger than "no history": every session this daemon goes on
+    /// to create is invisible to the roster too, so a later crash cannot
+    /// explain their loss either, and this does not heal by itself. The way
+    /// back is to repair the state directory and hand off again — a restart
+    /// would end the very sessions the fallback existed to keep.
     pub fn detached() -> Graveyard {
         Graveyard {
             graves_path: PathBuf::new(),
