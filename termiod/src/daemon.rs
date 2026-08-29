@@ -26,6 +26,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch, Notify};
 
 const EVENT_BUFFER: usize = 1024;
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a handoff waits for its own `ok` to reach the requesting socket
+/// before exec'ing anyway.
+const HANDOFF_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct ManagerInner {
     sessions: HashMap<SessionId, SessionHandle>,
@@ -430,13 +433,30 @@ pub async fn serve(
         eprintln!("termiod: could not open the log file: {error:#}");
     }
 
-    paths::ensure_runtime_dir()?;
     let sock_path = paths::socket_path()?;
 
     let inherited = match handoff_fd {
         Some(fd) => Some(crate::handoff::unpack(fd).context("reading the handoff blob")?),
         None => None,
     };
+
+    // From here to the accept loop, every failure on the handoff path costs the
+    // sessions this image was handed: their masters are held by descriptors
+    // nothing would be left to read. So each step that a cold start is right to
+    // refuse over is, here, something to log and go without. The daemon is worth
+    // less with no WebSocket listener or no tombstone log; it is worth nothing
+    // to the person whose agent was mid-task if it exits instead.
+    let adopted = inherited.is_some();
+    match paths::ensure_runtime_dir() {
+        Ok(_) => {}
+        // The directory is already there and already holds the socket this
+        // image inherited — a failure here is about creating it, which is a
+        // question that was answered before the previous daemon started.
+        Err(error) if adopted => {
+            eprintln!("termiod: runtime directory check failed after the handoff: {error:#}");
+        }
+        Err(error) => return Err(error),
+    }
 
     let listener = match &inherited {
         Some((blob, _)) => adopt_listener(blob.listener_fd)?,
@@ -461,10 +481,25 @@ pub async fn serve(
 
     // Resolved before anything else starts, because an explicit `--wss` with
     // no pairing token refuses the whole start: the operator asked for a
-    // listener that cannot authenticate.
-    let wss = crate::wss::resolve(wss_bind, &wss_origins)?;
+    // listener that cannot authenticate. After a handoff that same refusal
+    // would be a refusal to keep running sessions alive, so it degrades.
+    let wss = match crate::wss::resolve(wss_bind, &wss_origins) {
+        Ok(wss) => wss,
+        Err(error) if adopted => {
+            eprintln!("termiod: the WebSocket configuration did not resolve after the handoff: {error:#}");
+            eprintln!("termiod: sessions are unaffected; `termiod pair` and a restart re-establish it");
+            None
+        }
+        Err(error) => return Err(error),
+    };
 
-    let host_id = paths::load_or_create_host_id()?;
+    // Carried rather than re-read: the identity must not change across a
+    // handoff, and the read that would establish it is one more thing that can
+    // fail where failing is expensive.
+    let host_id = match &inherited {
+        Some((blob, _)) => blob.host_id.clone(),
+        None => paths::load_or_create_host_id()?,
+    };
     if inherited.is_none() {
         // Scratch dirs are session-scoped and every session died with the
         // previous daemon, so the whole tree is stale by definition here.
@@ -483,15 +518,21 @@ pub async fn serve(
         .iter()
         .flat_map(|(blob, _)| blob.sessions.iter().map(|session| session.id.clone()))
         .collect();
-    let graveyard = Arc::new(Graveyard::open_retaining(
-        &paths::state_dir()?,
-        &carried_ids,
-    )?);
+    let graveyard = Arc::new(
+        match paths::state_dir().and_then(|dir| Graveyard::open_retaining(&dir, &carried_ids)) {
+            Ok(graveyard) => graveyard,
+            Err(error) if adopted => {
+                eprintln!("termiod: the tombstone log did not open after the handoff: {error:#}");
+                eprintln!("termiod: sessions are unaffected; losses will go unrecorded until a restart");
+                Graveyard::detached()
+            }
+            Err(error) => return Err(error),
+        },
+    );
     let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
     let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel::<std::path::PathBuf>();
     let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx);
 
-    let adopted_sessions = inherited.is_some();
     if let Some((blob, rings)) = inherited {
         let from = blob.from_build.clone();
         let mut adopted = 0usize;
@@ -503,10 +544,12 @@ pub async fn serve(
                 // session around it. Dropping it closes the master and hangs
                 // the program up, which is the honest outcome — the session is
                 // gone either way, and leaving the descriptor open would only
-                // hide it. It stays on the roster and is buried as
-                // `daemon_lost` at the next start; the log is what names it now.
+                // hide it. Burying it here is what keeps the roster honest too:
+                // it was retained as alive on the strength of being carried,
+                // and it is not.
                 Err(error) => {
                     eprintln!("termiod: could not adopt session {id} after handoff: {error:#}");
+                    manager.graveyard.bury_by_id(&id, EndReason::DaemonLost);
                 }
             }
         }
@@ -546,7 +589,7 @@ pub async fn serve(
         });
     }
 
-    if !adopted_sessions {
+    if !adopted {
         // Not printed after a handoff: the socket was never unbound, so
         // "listening on" would read as a start that did not happen. The
         // handoff line above is the event.
@@ -565,7 +608,7 @@ pub async fn serve(
             // refusing. After a handoff the same failure would take every
             // carried session down with it, which is a far worse answer to
             // "the phone cannot connect" than the phone not connecting.
-            Err(error) if adopted_sessions => {
+            Err(error) if adopted => {
                 eprintln!("termiod: the WebSocket listener did not come back after the handoff: {error:#}");
                 eprintln!("termiod: sessions are unaffected; `termiod pair` and a restart re-establish it");
             }
@@ -653,10 +696,18 @@ fn adopt_listener(fd: std::os::fd::RawFd) -> Result<UnixListener> {
 
 /// Pack every session and become `binary`. Returns only on failure.
 ///
-/// The order is the safety property. Duplicating the listener and collecting
-/// the sessions comes *after* the binary has been vetted, and writing the blob
-/// comes after both, so the only step left once anything is irreversible is the
-/// exec itself.
+/// Order is what keeps this survivable. Everything fallible that does *not*
+/// need the sessions runs first — resolving the state directory, creating and
+/// unlinking the file the blob will go in, duplicating the listener — while the
+/// daemon is still whole and a failure is an ordinary error. Only then are the
+/// actors asked for their PTYs, which is the step that cannot be undone.
+///
+/// It is not the case that nothing can fail afterwards. Writing the blob can
+/// still run out of space, and the new image can still fail to start. What the
+/// ordering buys is that the *likely* failures — a missing directory, a
+/// read-only filesystem, a listener that cannot be duplicated — happen before
+/// the point of no return rather than after it. The far side answers the rest
+/// by degrading instead of exiting; see `serve`.
 async fn hand_over(
     manager: &Manager,
     listener: &UnixListener,
@@ -664,19 +715,31 @@ async fn hand_over(
 ) -> anyhow::Error {
     use std::os::fd::{AsRawFd, IntoRawFd};
 
+    let state_dir = match paths::state_dir() {
+        Ok(dir) => dir,
+        Err(error) => return error.context("locating the state directory"),
+    };
+    let staged = match crate::handoff::stage_blob(&state_dir) {
+        Ok(file) => file,
+        Err(error) => return error.context("staging the handoff blob"),
+    };
+    let host_id = manager.host_id.to_string();
     let listener_fd = match crate::handoff::duplicate_for_exec(listener.as_raw_fd()) {
-        Ok(fd) => fd,
+        Ok(fd) => fd.into_raw_fd(),
         Err(error) => return error.context("carrying the listener"),
     };
 
+    // Past here the sessions are no longer readable by anything in this image.
     let (carried, stranded) = manager.carry_all().await;
     for id in &stranded {
-        eprintln!("termiod: session {id} did not hand over its pty and will not survive the upgrade");
+        eprintln!(
+            "termiod: session {id} did not hand over its pty and will not survive the upgrade"
+        );
     }
-    let (sessions, rings): (Vec<_>, Vec<_>) = carried
+    let sessions: Vec<_> = carried
         .into_iter()
-        .map(|one| (one.info, one.ring))
-        .unzip();
+        .map(|one| (one.info, one.master, one.ring))
+        .collect();
     eprintln!(
         "termiod: handing off to {} with {} session(s)",
         binary.display(),
@@ -684,15 +747,13 @@ async fn hand_over(
     );
 
     let blob = crate::handoff::Blob {
+        format: crate::handoff::FORMAT_VERSION,
         from_build: crate::lifecycle::BUILD_VERSION.to_string(),
+        host_id,
         listener_fd,
-        sessions,
+        sessions: Vec::new(),
     };
-    let state_dir = match paths::state_dir() {
-        Ok(dir) => dir,
-        Err(error) => return error.context("locating the state directory"),
-    };
-    let blob_fd = match crate::handoff::pack(&blob, &rings, &state_dir) {
+    let blob_fd = match crate::handoff::pack(blob, sessions, staged) {
         Ok(fd) => fd.into_raw_fd(),
         Err(error) => return error.context("packing the handoff blob"),
     };
@@ -1151,7 +1212,22 @@ async fn process_control(
                         send_response(out, response_cache, seq, Control::Ok { re: seq });
                         let (flushed, on_wire) = oneshot::channel();
                         if out.send(Outbound::Flushed(flushed)).is_ok() {
-                            let _ = on_wire.await;
+                            // Bounded, because the queue ahead of the marker is
+                            // not this connection's to drain: a client that has
+                            // stopped reading its own terminal output blocks the
+                            // writer on a payload that came before the request,
+                            // and waiting on that forever would let any attached
+                            // client veto an upgrade by going quiet. The `ok` is
+                            // a courtesy; the handoff is not.
+                            if tokio::time::timeout(HANDOFF_FLUSH_TIMEOUT, on_wire)
+                                .await
+                                .is_err()
+                            {
+                                eprintln!(
+                                    "termiod: the handoff reply could not be flushed in {}s; going ahead without it",
+                                    HANDOFF_FLUSH_TIMEOUT.as_secs()
+                                );
+                            }
                         }
                         let _ = manager.handoff.send(path);
                         return Ok(ControlFlow::Continue);

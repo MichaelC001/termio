@@ -256,6 +256,49 @@ impl Graveyard {
     /// nobody buried — the previous daemon died holding it. Adopting those as
     /// `daemon_lost` here is what turns a crash from a silently empty list into
     /// an explanation.
+    /// A graveyard that records nothing, for the one caller that must not fail:
+    /// a daemon that has just inherited live sessions across an `execve`.
+    ///
+    /// Opening the real one reads and rewrites two files, and on that path a
+    /// failure would end the process — taking with it the PTYs it was handed,
+    /// which are the only things in this system that cannot be recreated. A
+    /// daemon with no tombstone log explains a later loss worse. A daemon that
+    /// exited caused one.
+    pub fn detached() -> Graveyard {
+        Graveyard {
+            graves_path: PathBuf::new(),
+            roster_path: PathBuf::new(),
+            state: Mutex::new(State {
+                graves: Vec::new(),
+                roster: HashMap::new(),
+                buried: HashSet::new(),
+            }),
+        }
+    }
+
+    /// Move a session from the roster to the graves by id, for a caller that
+    /// knows the session is gone but never held its `SessionInfo` — the
+    /// adoption path, where what is known about a session is whatever the
+    /// previous daemon wrote down.
+    pub fn bury_by_id(&self, id: &str, reason: EndReason) {
+        {
+            let mut state = self.state.lock().unwrap();
+            let key = SessionId::new(id.to_string());
+            let Some(entry) = state.roster.remove(&key) else {
+                return;
+            };
+            let grave = entry.into_tombstone(reason);
+            let grave_key = GraveKey::from_grave(&grave);
+            if state.buried.insert(grave_key) {
+                state.graves.insert(0, grave);
+                state.graves.truncate(MAX_GRAVES);
+            }
+        }
+        if let Err(error) = self.persist_graves().and_then(|_| self.persist_roster()) {
+            eprintln!("termiod: could not record the loss of session {id}: {error:#}");
+        }
+    }
+
     /// Open the graveyard, keeping `alive` on the roster instead of burying it.
     ///
     /// The roster's whole meaning is "these were running when a daemon last
@@ -370,11 +413,25 @@ impl Graveyard {
     }
 
     fn persist_graves(&self) -> Result<()> {
+        if self.detached_from_disk() {
+            return Ok(());
+        }
         let graves = self.state.lock().unwrap().graves.clone();
         write_json(&self.graves_path, &graves)
     }
 
+    /// A `detached` graveyard has no files. Writing is a success that writes
+    /// nothing rather than an error, so the callers that already treat a
+    /// persist failure as "a worse explanation later, never a broken terminal
+    /// now" do not fill the log saying so on every session.
+    fn detached_from_disk(&self) -> bool {
+        self.graves_path.as_os_str().is_empty()
+    }
+
     fn persist_roster(&self) -> Result<()> {
+        if self.detached_from_disk() {
+            return Ok(());
+        }
         let mut roster: Vec<RosterEntry> = self
             .state
             .lock()

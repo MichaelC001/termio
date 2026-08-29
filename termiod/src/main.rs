@@ -131,6 +131,14 @@ enum Cmd {
         /// Hand off to this binary instead of the one running this command.
         #[arg(long, value_name = "PATH")]
         binary: Option<std::path::PathBuf>,
+        /// Print the handoff contract this build speaks and exit.
+        ///
+        /// How a running daemon decides whether a candidate binary can be
+        /// exec'd in its place. Hidden because it is a machine's question: it
+        /// is asked of the *new* binary, by the *old* daemon, before it takes
+        /// itself apart.
+        #[arg(long, hide = true)]
+        probe: bool,
     },
 
     /// Create a new session and print its id.
@@ -487,7 +495,18 @@ async fn main() -> Result<()> {
             handoff_fd,
         } => daemon::serve(wss, wss_origin, handoff_fd).await,
 
-        Cmd::Handoff { json, binary } => lifecycle::run_handoff(json, binary).await,
+        Cmd::Handoff {
+            json,
+            binary,
+            probe,
+        } => {
+            if probe {
+                println!("{}", handoff::probe_token());
+                Ok(())
+            } else {
+                lifecycle::run_handoff(json, binary).await
+            }
+        }
 
         Cmd::Pair {
             json,

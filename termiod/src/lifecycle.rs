@@ -543,6 +543,12 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
     let binary = binary
         .canonicalize()
         .with_context(|| format!("resolving {}", binary.display()))?;
+    // What the daemon should be afterwards is the version of the binary it is
+    // becoming, which is only this build when the default was taken. An
+    // explicit `--binary` naming an older compatible build is a legitimate
+    // request — a rollback — and checking it against this CLI's own stamp would
+    // report a handoff that worked as one that failed.
+    let (want, want_text) = binary_version(&binary);
 
     let socket = paths::socket_path()?;
     let Some(mut stream) = connect_existing(&socket).await else {
@@ -607,7 +613,6 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
     };
     drop(stream);
 
-    let want = Version::parse(BUILD_VERSION);
     let deadline = Instant::now() + SETTLE;
     let mut last = None;
     while Instant::now() < deadline {
@@ -644,22 +649,49 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
             .await
             .map(|list| list.len())
             .unwrap_or(0);
+        let to = hello.version;
         return Ok(HandoffOutcome {
             pid: now_pid,
             from: from.clone(),
-            to: hello.version,
+            to: to.clone(),
             sessions: carried,
             message: format!(
                 "pid {} is now termiod {}; {carried} of {sessions} session(s) carried",
                 now_pid.map(|value| value.to_string()).unwrap_or_else(|| "?".to_string()),
-                BUILD_VERSION
+                to.as_deref().unwrap_or("an unnamed build")
             ),
         });
     }
     bail!(
-        "the daemon did not come back as {BUILD_VERSION} within {}s (last seen: {})",
+        "the daemon did not come back as {} within {}s (last seen: {})",
+        want_text.as_deref().unwrap_or("the requested build"),
         SETTLE.as_secs(),
         last.as_deref().unwrap_or("nothing answering")
+    )
+}
+
+/// The build stamp a candidate binary reports — parsed, and as it printed it.
+///
+/// `None` is not a failure: it means the version check is skipped and the
+/// handoff is judged on the pid and the reconnect alone. Refusing to hand off
+/// to a binary whose `--version` this build cannot parse would be refusing on
+/// the strength of a string.
+fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
+    let Ok(output) = std::process::Command::new(binary)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return (None, None);
+    };
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let stamp = printed
+        .split_whitespace()
+        .find(|word| Version::parse(word).is_some())
+        .map(str::to_string);
+    (
+        stamp.as_deref().and_then(Version::parse),
+        stamp,
     )
 }
 

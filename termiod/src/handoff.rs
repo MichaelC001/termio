@@ -60,6 +60,28 @@ pub const HANDOFF_FLAG: &str = "--handoff";
 
 const MAGIC: &[u8; 8] = b"TERMIOD\x01";
 
+/// The shape of what crosses. Bumped whenever [`Blob`] or [`CarriedSession`]
+/// changes in a way the far side would misread — a renamed field, a new
+/// descriptor, a different order for the ring runs.
+///
+/// It is checked *before* the exec, not after: by the time a new image could
+/// notice it cannot read the blob, the old one is gone and so are the sessions.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// What `termiod handoff --probe` prints, and the only thing `vet` accepts.
+///
+/// Whether a candidate can be handed off to is not a question `--version`
+/// answers. Every termiod ever built answers `--version`, including the ones
+/// that have never heard of `serve --handoff`; so does `/usr/bin/true` with a
+/// wrapper around it. Exec'ing one of those replaces the daemon with a program
+/// that exits, and every PTY master closes behind it.
+///
+/// So the probe asks the one question that matters — "do you implement this
+/// exact contract" — and the candidate answers by naming the format it speaks.
+pub fn probe_token() -> String {
+    format!("termiod-handoff {FORMAT_VERSION}")
+}
+
 /// How long the daemon waits for a session actor to hand its PTY over. A
 /// session that misses this is left behind rather than holding the upgrade
 /// open, and is named in the daemon's log on the way out.
@@ -84,19 +106,47 @@ pub struct CarriedSession {
     #[serde(default)]
     pub workstream: Option<crate::protocol::WorkstreamSpec>,
     /// The PTY master, as a descriptor number in the process about to `execve`.
+    ///
+    /// Filled in at [`pack`] time, from the owning descriptor the session actor
+    /// handed over, and *only* for the sessions that actually reach the blob.
+    /// A number written here earlier would outlive the decision to carry it:
+    /// a session dropped for missing the carry deadline would have left an open
+    /// master with no owner and no reader on the far side of the exec — a
+    /// process alive, un-hung-up, and invisible.
     pub master_fd: RawFd,
     /// How many bytes of replay ring follow this session's header in the blob.
     pub ring_len: u64,
+    /// Whether replaying that ring into a blank terminal of these dimensions
+    /// draws the screen the program is actually looking at.
+    ///
+    /// False once the ring has evicted anything, or the session was resized
+    /// after those bytes were written. The new image starts its VT stale rather
+    /// than answering snapshots from a reconstruction it has been told is
+    /// wrong. Defaults to false for a blob that predates the field: a daemon
+    /// that did not think about the question is not evidence the answer is yes.
+    #[serde(default)]
+    pub ring_reconstructs_screen: bool,
 }
 
 /// The header the new image reads before it has any state of its own. Ring
 /// bytes follow it, one run per session in `sessions` order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blob {
+    /// What [`FORMAT_VERSION`] was when this was written. `vet` has already
+    /// refused a candidate that speaks a different one, so a mismatch here is
+    /// not a version skew but a corrupt or forged blob.
+    pub format: u32,
     /// The build that packed this. Recorded for the log line the new image
     /// writes: "0.46.0+1201 handed off to 0.47.0+1240" is the one fact that
     /// makes an upgrade legible after the fact.
     pub from_build: String,
+    /// This host's stable identity, carried rather than re-read.
+    ///
+    /// The new image could load it from disk the way a cold start does, but
+    /// that is a fallible read on a path where a failure costs every carried
+    /// session — and the identity must not change across a handoff anyway,
+    /// which carrying it states outright.
+    pub host_id: String,
     /// The already-bound Unix listener. See the module docs for why this is
     /// carried rather than re-bound.
     pub listener_fd: RawFd,
@@ -107,14 +157,16 @@ pub struct Blob {
 /// daemon takes a single session apart.
 ///
 /// The order matters more than the checks do. Once the session actors have
-/// given up their PTYs there is no way back: the actors are gone, the rings are
-/// in a blob, and the only paths left are `execve` or death. So everything that
-/// can say no says it here, while the daemon is still whole and the client is
-/// still holding a socket that can carry the refusal.
+/// given up their PTYs there is no way back. So everything that can say no says
+/// it here, while the daemon is still whole and the client is still holding a
+/// socket that can carry the refusal.
 ///
-/// The last check is the strong one: the candidate is *run*. A binary for the
-/// wrong architecture, or missing an interpreter, or truncated by an upload
-/// that lost its connection, all fail `--version` and all look fine to `stat`.
+/// The last check is the strong one: the candidate is *run*, and it has to
+/// answer [`probe_token`]. That catches all of the same things `stat` cannot —
+/// a binary for the wrong architecture, one missing an interpreter, one
+/// truncated by an upload that lost its connection — and, unlike `--version`,
+/// also catches the case that actually happens: a termiod old enough to answer
+/// but too old to know what `serve --handoff` means.
 pub fn vet(binary: &Path) -> Result<PathBuf> {
     if !binary.is_absolute() {
         bail!("{} is not an absolute path", binary.display());
@@ -128,44 +180,81 @@ pub fn vet(binary: &Path) -> Result<PathBuf> {
         bail!("{} is not a regular file", binary.display());
     }
     let probe = std::process::Command::new(&binary)
-        .arg("--version")
+        .arg("handoff")
+        .arg("--probe")
         .stdin(std::process::Stdio::null())
         .output()
-        .with_context(|| format!("running {} --version", binary.display()))?;
+        .with_context(|| format!("running {} handoff --probe", binary.display()))?;
     if !probe.status.success() {
         bail!(
-            "{} --version exited {}: {}",
+            "{} does not implement the handoff contract ({} exited {})",
             binary.display(),
-            probe.status,
-            String::from_utf8_lossy(&probe.stderr).trim()
+            "handoff --probe",
+            probe.status
         );
     }
-    if String::from_utf8_lossy(&probe.stdout).trim().is_empty() {
-        bail!("{} --version printed nothing", binary.display());
+    let spoken = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    let wanted = probe_token();
+    if spoken != wanted {
+        bail!(
+            "{} speaks {:?} where this daemon speaks {wanted:?}",
+            binary.display(),
+            spoken
+        );
     }
     Ok(binary)
 }
 
-/// Write the blob to an unlinked file and return its descriptor, rewound and
-/// exec-safe.
-pub fn pack(blob: &Blob, rings: &[Vec<Bytes>], state_dir: &Path) -> Result<OwnedFd> {
+/// Create the file the blob will be written to, before anything irreversible
+/// has happened.
+///
+/// Split from [`pack`] because it is the fallible half: a missing state
+/// directory, a read-only filesystem, no space. Doing it while the daemon is
+/// still whole turns those from "the sessions are gone and so is the daemon"
+/// into an ordinary refusal the client is told about.
+///
+/// The file is unlinked before it is returned, so it has no name for anything
+/// to open and the kernel reclaims it when the last descriptor closes. That
+/// matters: it is about to hold every session's replay ring, which is raw
+/// terminal output — an agent's transcript, whatever `env` printed, a token
+/// someone echoed. A handoff must not become a way of writing that to disk
+/// behind the user's back.
+pub fn stage_blob(state_dir: &Path) -> Result<std::fs::File> {
     let path = state_dir.join(format!("handoff.{}", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .create_new(true)
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    // Before a byte goes in. From here the file has no name: nothing can open
-    // it, and the kernel reclaims it when the last descriptor closes — which,
-    // on the success path, is the new image closing it after the read.
     std::fs::remove_file(&path).with_context(|| format!("unlinking {}", path.display()))?;
+    Ok(file)
+}
 
-    let header = serde_json::to_vec(blob).context("encoding the handoff header")?;
+/// Write the blob into the staged file and return its descriptor, rewound and
+/// exec-safe.
+///
+/// Consumes the owning master descriptors: a session's number is written into
+/// the header at the moment it is committed to the blob, and not before.
+pub fn pack(
+    mut blob: Blob,
+    sessions: Vec<(CarriedSession, OwnedFd, Vec<Bytes>)>,
+    mut file: std::fs::File,
+) -> Result<OwnedFd> {
+    let mut rings = Vec::with_capacity(sessions.len());
+    for (mut info, master, ring) in sessions {
+        info.master_fd = master.into_raw_fd();
+        set_inheritable(info.master_fd)?;
+        rings.push(ring);
+        blob.sessions.push(info);
+    }
+
+    let header = serde_json::to_vec(&blob).context("encoding the handoff header")?;
     file.write_all(MAGIC)?;
     file.write_all(&(header.len() as u32).to_le_bytes())?;
     file.write_all(&header)?;
-    for ring in rings {
+    for ring in &rings {
         for chunk in ring {
             file.write_all(chunk)?;
         }
@@ -194,6 +283,12 @@ pub fn unpack(fd: RawFd) -> Result<(Blob, Vec<Vec<u8>>)> {
     let mut header = vec![0u8; u32::from_le_bytes(length) as usize];
     file.read_exact(&mut header)?;
     let blob: Blob = serde_json::from_slice(&header).context("decoding the handoff header")?;
+    if blob.format != FORMAT_VERSION {
+        bail!(
+            "the handoff blob is format {} where this build reads {FORMAT_VERSION}",
+            blob.format
+        );
+    }
 
     let mut rings = Vec::with_capacity(blob.sessions.len());
     for session in &blob.sessions {
@@ -212,7 +307,7 @@ pub fn unpack(fd: RawFd) -> Result<(Blob, Vec<Vec<u8>>)> {
 /// be dropped normally on its way out: its `OwnedFd` closes, this copy stays,
 /// and both named the same open file description all along — the same PTY
 /// master, at the same offset, with the same termios.
-pub fn duplicate_for_exec(fd: RawFd) -> Result<RawFd> {
+pub fn duplicate_for_exec(fd: RawFd) -> Result<OwnedFd> {
     let copy = unsafe { libc::dup(fd) };
     if copy < 0 {
         bail!(
@@ -223,7 +318,7 @@ pub fn duplicate_for_exec(fd: RawFd) -> Result<RawFd> {
     // `dup` already clears `FD_CLOEXEC` on the copy. Set it anyway: the one
     // invariant this whole module rests on should not be an inherited default.
     set_inheritable(copy)?;
-    Ok(copy)
+    Ok(unsafe { OwnedFd::from_raw_fd(copy) })
 }
 
 fn set_inheritable(fd: RawFd) -> Result<()> {
@@ -294,19 +389,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("termiod-handoff-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let blob = Blob {
+            format: FORMAT_VERSION,
             from_build: "0.1.0+1".to_string(),
+            host_id: "h_1".to_string(),
             listener_fd: 7,
-            sessions: vec![session("a", 3), session("b", 5)],
+            sessions: Vec::new(),
         };
-        let rings = vec![
-            vec![Bytes::from_static(b"abc")],
-            vec![Bytes::from_static(b"de"), Bytes::from_static(b"fgh")],
+        // Two descriptors that are not ptys but are perfectly good stand-ins
+        // for "an owning fd the actor handed over".
+        let sessions = vec![
+            (session("a", 3), devnull(), vec![Bytes::from_static(b"abc")]),
+            (
+                session("b", 5),
+                devnull(),
+                vec![Bytes::from_static(b"de"), Bytes::from_static(b"fgh")],
+            ),
         ];
-        let fd = pack(&blob, &rings, &dir).unwrap();
+        let file = stage_blob(&dir).unwrap();
+        let fd = pack(blob, sessions, file).unwrap();
         let (read_back, read_rings) = unpack(fd.into_raw_fd()).unwrap();
         assert_eq!(read_back.listener_fd, 7);
         assert_eq!(read_back.from_build, "0.1.0+1");
+        assert_eq!(read_back.host_id, "h_1");
         assert_eq!(read_rings, vec![b"abc".to_vec(), b"defgh".to_vec()]);
+        // The numbers were assigned at pack time, from the descriptors handed
+        // over — never the placeholder the caller built the header with.
+        for carried in &read_back.sessions {
+            assert!(carried.master_fd > 2, "{}", carried.master_fd);
+            unsafe { libc::close(carried.master_fd) };
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -328,6 +439,29 @@ mod tests {
         );
     }
 
+    /// The property the stranded-session path rests on: what a session actor
+    /// hands over is *owned*, so a `Carried` nobody takes closes the master
+    /// instead of leaking an un-hung-up process into the next image. Only
+    /// `pack` gives that ownership up, and only for what reaches the blob.
+    #[test]
+    fn a_carried_descriptor_that_is_dropped_is_closed() {
+        let original = devnull();
+        let copy = duplicate_for_exec(original.as_raw_fd()).unwrap();
+        let number = copy.as_raw_fd();
+        assert!(unsafe { libc::fcntl(number, libc::F_GETFD) } >= 0);
+        drop(copy);
+        assert!(
+            unsafe { libc::fcntl(number, libc::F_GETFD) } < 0,
+            "descriptor {number} outlived the Carried that held it"
+        );
+    }
+
+    fn devnull() -> OwnedFd {
+        std::fs::File::open("/dev/null")
+            .expect("open /dev/null")
+            .into()
+    }
+
     fn session(id: &str, ring_len: u64) -> CarriedSession {
         CarriedSession {
             id: id.to_string(),
@@ -341,8 +475,9 @@ mod tests {
             status: "unknown".to_string(),
             title: None,
             workstream: None,
-            master_fd: 10,
+            master_fd: -1,
             ring_len,
+            ring_reconstructs_screen: true,
         }
     }
 }

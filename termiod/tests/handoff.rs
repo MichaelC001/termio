@@ -91,6 +91,22 @@ fn status(socket: &Path) -> Value {
     serde_json::from_slice(&output.stdout).expect("status is json")
 }
 
+/// `list --json` — `SessionInfo`, which carries the pid that `status` omits.
+fn listed(socket: &Path) -> Vec<Value> {
+    let output = termiod(socket, &["list", "--json"]);
+    assert!(output.status.success(), "list failed: {output:?}");
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("list is json");
+    match parsed {
+        Value::Array(sessions) => sessions,
+        Value::Object(ref map) => map
+            .get("sessions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 fn counter(path: &Path) -> u64 {
     std::fs::read_to_string(path)
         .ok()
@@ -223,8 +239,14 @@ fn observed(socket: &Path, session: &str) -> String {
 /// A handoff to something that is not a working termiod is refused before the
 /// daemon takes a single session apart — so the refusal costs nothing, and the
 /// daemon that refuses is still the daemon that was running.
+///
+/// The impostor here is the dangerous shape, not the obvious one: it exits 0
+/// and prints a plausible version, which is all `--version` ever proved. Only
+/// the handoff contract itself tells it apart from a real termiod — and an
+/// older termiod, which answers `--version` and has never heard of
+/// `serve --handoff`, is the same case wearing the right name.
 #[test]
-fn a_binary_that_cannot_run_is_refused_and_changes_nothing() {
+fn a_binary_that_cannot_adopt_is_refused_and_changes_nothing() {
     let dir = TestDir::new();
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
@@ -235,7 +257,11 @@ fn a_binary_that_cannot_run_is_refused_and_changes_nothing() {
     let daemon_pid = before["daemon"]["pid"].as_i64().expect("daemon pid");
 
     let impostor = dir.0.join("not-termiod");
-    std::fs::write(&impostor, "#!/bin/sh\nexit 9\n").expect("write impostor");
+    std::fs::write(
+        &impostor,
+        "#!/bin/sh\ncase \"$1\" in --version) echo 'termiod 9.9.9+9999'; exit 0;; esac\nexit 0\n",
+    )
+    .expect("write impostor");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -259,6 +285,141 @@ fn a_binary_that_cannot_run_is_refused_and_changes_nothing() {
         Some(1),
         "the refused handoff cost a session: {after}"
     );
+
+    drop(daemon);
+}
+
+/// The vet's contract, stated as the thing it actually checks. A binary that
+/// answers `--version` convincingly and knows nothing about handing off is
+/// refused; the real one is accepted.
+#[test]
+fn the_probe_is_what_separates_a_termiod_from_a_convincing_impostor() {
+    let dir = TestDir::new();
+    let impostor = dir.0.join("impostor");
+    std::fs::write(
+        &impostor,
+        "#!/bin/sh\ncase \"$1\" in --version) echo 'termiod 9.9.9+9999'; exit 0;; esac\nexit 0\n",
+    )
+    .expect("write impostor");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&impostor, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod impostor");
+    }
+    let version = Command::new(&impostor)
+        .arg("--version")
+        .output()
+        .expect("run impostor");
+    assert!(
+        version.status.success(),
+        "the impostor should pass --version"
+    );
+
+    let probe = Command::new(BIN)
+        .args(["handoff", "--probe"])
+        .output()
+        .expect("probe the real binary");
+    assert!(probe.status.success());
+    let token = String::from_utf8_lossy(&probe.stdout).trim().to_string();
+    assert!(token.starts_with("termiod-handoff "), "{token}");
+
+    let impostor_probe = Command::new(&impostor)
+        .args(["handoff", "--probe"])
+        .output()
+        .expect("probe the impostor");
+    assert_ne!(
+        String::from_utf8_lossy(&impostor_probe.stdout).trim(),
+        token,
+        "the impostor answered the handoff contract"
+    );
+}
+
+/// The invariant that must hold however a handoff goes: a session is either in
+/// the roster or its process is gone. Never both absent.
+///
+/// A carried master that reaches the new image without a session around it
+/// would break exactly this — the program would keep running, un-hung-up, in a
+/// session nothing can list, attach to, or kill. That is why the descriptor is
+/// handed over owned; dropping it is what turns a session that cannot be
+/// carried into an ordinary loss.
+#[test]
+fn a_session_is_either_listed_or_gone_never_both() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("s");
+    let daemon = Daemon::start(&socket);
+
+    let created = termiod(&socket, &["create", "--name", "kept", "--", "sh"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let session_pid = listed(&socket)[0]["pid"].as_i64().expect("session pid");
+    let daemon_pid = status(&socket)["daemon"]["pid"]
+        .as_i64()
+        .expect("daemon pid");
+
+    let handed = termiod(&socket, &["handoff", "--json"]);
+    assert!(handed.status.success(), "handoff failed: {handed:?}");
+    assert_eq!(
+        status(&socket)["daemon"]["pid"].as_i64(),
+        Some(daemon_pid),
+        "the daemon was replaced rather than handed off"
+    );
+
+    let sessions = listed(&socket);
+    let accounted = sessions
+        .iter()
+        .any(|session| session["pid"].as_i64() == Some(session_pid));
+    let alive = unsafe { libc::kill(session_pid as i32, 0) } == 0;
+    assert!(
+        accounted || !alive,
+        "pid {session_pid} is running but no session accounts for it: {sessions:?}"
+    );
+    assert!(accounted, "the session should have survived: {sessions:?}");
+
+    drop(daemon);
+}
+
+/// A carried session whose ring can no longer draw its own screen must not have
+/// the host claim otherwise. The daemon answers such a snapshot by falling back
+/// to ring replay — the client's terminal interpreting bytes it was handed —
+/// rather than asserting a grid it reconstructed from an incomplete replay.
+#[test]
+fn a_resized_session_does_not_come_back_with_a_confidently_wrong_screen() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("s");
+    let daemon = Daemon::start(&socket);
+
+    let created = termiod(&socket, &["create", "--name", "resized", "--", "sh"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let before = status(&socket);
+    let session_id = before["sessions"][0]["id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let sent = termiod(&socket, &["send", &session_id, "echo MARKER-BEFORE-RESIZE"]);
+    assert!(sent.status.success(), "send failed: {sent:?}");
+
+    // An observer attaching at a different size is what moves the session off
+    // the geometry its ring was written at.
+    let _ = observed(&socket, &session_id);
+
+    let handed = termiod(&socket, &["handoff", "--json"]);
+    assert!(handed.status.success(), "handoff failed: {handed:?}");
+
+    // The session is still there and still driveable — degrading the snapshot
+    // must not degrade the session.
+    let marker = format!("touch {}", dir.0.join("after-resize").display());
+    let sent = termiod(&socket, &["send", &session_id, &marker]);
+    assert!(sent.status.success(), "send failed: {sent:?}");
+    let typed = dir.0.join("after-resize");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !typed.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the carried shell stopped responding after the handoff"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     drop(daemon);
 }

@@ -344,6 +344,19 @@ struct Session {
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
+    /// Whether the ring, replayed from its start into a blank terminal of the
+    /// current size, still reconstructs this screen.
+    ///
+    /// It stops being true the moment the ring evicts a chunk (the bytes that
+    /// drew what is still on screen may be the ones dropped) or the session is
+    /// resized (the bytes that remain were written into a differently shaped
+    /// grid, and replaying them into this one lands them elsewhere).
+    ///
+    /// Nothing about *this* daemon reads it: the live VT has been fed every
+    /// byte as it arrived and answers snapshots from what it holds, not from a
+    /// replay. It exists for the far side of a handoff, which has only the ring
+    /// and would otherwise present a confidently wrong screen.
+    ring_reconstructs_screen: bool,
     events: broadcast::Sender<Event>,
     vt: Vt,
     /// Who is in the tty's foreground and where the child is standing.
@@ -417,8 +430,11 @@ impl Session {
     /// and closes normally when this actor drops. Handing out the raw number
     /// instead would leave the new image reading a descriptor the old one had
     /// already closed.
+    ///
+    /// The copy is handed over *owned*, so that a `Carried` nobody takes is a
+    /// session hung up rather than a descriptor orphaned.
     fn into_carried(self) -> anyhow::Result<Carried> {
-        let master_fd = crate::handoff::duplicate_for_exec(self.pty.master_fd())?;
+        let master = crate::handoff::duplicate_for_exec(self.pty.master_fd())?;
         let ring: Vec<Bytes> = self.ring.iter().cloned().collect();
         Ok(Carried {
             info: crate::handoff::CarriedSession {
@@ -433,9 +449,13 @@ impl Session {
                 status: self.status.clone(),
                 title: self.title.clone(),
                 workstream: self.workstream.clone(),
-                master_fd,
+                // Assigned by `handoff::pack`, at the moment this session is
+                // committed to the blob.
+                master_fd: -1,
                 ring_len: self.ring_bytes as u64,
+                ring_reconstructs_screen: self.ring_reconstructs_screen,
             },
+            master,
             ring,
         })
     }
@@ -446,6 +466,7 @@ impl Session {
         while self.ring_bytes > RING_CAP {
             if let Some(evicted) = self.ring.pop_front() {
                 self.ring_bytes -= evicted.len();
+                self.ring_reconstructs_screen = false;
             }
         }
     }
@@ -1133,6 +1154,14 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
 /// the screen back without asking the program to redraw it.
 pub struct Carried {
     pub info: crate::handoff::CarriedSession,
+    /// The PTY master, **owned**. Its number reaches the blob only when the
+    /// daemon commits this session to the crossing; until then, dropping this
+    /// closes the master and the program in the session is hung up like any
+    /// other loss. That is what a session which misses the carry deadline
+    /// needs to happen — the alternative is a descriptor with no owner and no
+    /// reader surviving the exec, and a process alive inside a session nothing
+    /// can see.
+    pub master: std::os::fd::OwnedFd,
     pub ring: Vec<Bytes>,
 }
 
@@ -1188,7 +1217,7 @@ pub fn spawn(
         },
         pty,
         waiter,
-        Vec::new(),
+        Replay::none(),
         on_exit,
         events,
     )
@@ -1209,10 +1238,13 @@ pub fn adopt(
 ) -> anyhow::Result<SessionHandle> {
     let pty = Pty::adopt(carried.master_fd, carried.pid)?;
     let waiter = reap(carried.pid);
-    let replay = if ring.is_empty() {
-        Vec::new()
-    } else {
-        vec![Bytes::from(ring)]
+    let replay = Replay {
+        chunks: if ring.is_empty() {
+            Vec::new()
+        } else {
+            vec![Bytes::from(ring)]
+        },
+        faithful: carried.ring_reconstructs_screen,
     };
     start(
         Facts {
@@ -1260,6 +1292,25 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
     })
 }
 
+/// Output this session has already produced, for an actor that is taking over
+/// rather than starting: the bytes, and whether replaying them still draws the
+/// screen they drew the first time.
+struct Replay {
+    chunks: Vec<Bytes>,
+    /// See `Session::ring_reconstructs_screen`. False means this actor's VT
+    /// must not claim to know what is on the screen.
+    faithful: bool,
+}
+
+impl Replay {
+    fn none() -> Replay {
+        Replay {
+            chunks: Vec::new(),
+            faithful: true,
+        }
+    }
+}
+
 /// What describes a session independently of how this daemon came by it.
 struct Facts {
     id: SessionId,
@@ -1280,7 +1331,7 @@ fn start(
     facts: Facts,
     pty: Pty,
     waiter: tokio::task::JoinHandle<i32>,
-    replay: Vec<Bytes>,
+    replay: Replay,
     on_exit: mpsc::UnboundedSender<SessionEnded>,
     events: broadcast::Sender<Event>,
 ) -> anyhow::Result<SessionHandle> {
@@ -1321,15 +1372,31 @@ fn start(
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
+        ring_reconstructs_screen: true,
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
         foreground: Foreground::default(),
     };
-    for chunk in replay {
+    for chunk in replay.chunks {
         // Through the same two paths a live byte takes, in the same order: the
         // ring it will be replayed from, and the VT that answers snapshots.
         session.send_sidecar(SidecarCommand::Write(chunk.clone()));
         session.push_ring(chunk);
+    }
+    // `push_ring` may have set this itself, if what was carried no longer fits
+    // the cap; either way the previous actor's verdict still applies.
+    session.ring_reconstructs_screen &= replay.faithful;
+    if !session.ring_reconstructs_screen {
+        // The VT this actor started is blank plus a replay, and the replay does
+        // not draw the screen the program believes it is looking at — output
+        // older than the ring is gone, or was written into a different grid.
+        // Snapshots fall back to ring replay, which is wrong in exactly the
+        // same way but is the client's own terminal being wrong about bytes it
+        // was given, not this host asserting a screen it cannot know. The
+        // program repaints on its next output either way.
+        session.mark_vt_stale(
+            "the output that drew this screen did not survive the handoff".to_string(),
+        );
     }
 
     tokio::spawn(run(
@@ -1833,6 +1900,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 }
                 session.rows = rows;
                 session.cols = cols;
+                // The bytes already in the ring were written into the old grid.
+                // Replaying them into this one would put them in the wrong
+                // places, which only matters where a replay is all there is —
+                // the far side of a handoff.
+                session.ring_reconstructs_screen = false;
                 session.send_sidecar(SidecarCommand::Resize { rows, cols });
                 session.begin_snapshot_barrier();
                 session.emit_event(Event::Resized {
@@ -2039,6 +2111,7 @@ mod tests {
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
+                ring_reconstructs_screen: true,
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
                 foreground: super::Foreground::default(),
@@ -2546,6 +2619,7 @@ mod tests {
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,
+            ring_reconstructs_screen: true,
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             foreground: super::Foreground::default(),
