@@ -125,4 +125,73 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
         XCTAssertNil(tree.node(at: "\(root)/src"))
         XCTAssertEqual(tree.loadedDirectories(), ["\(root)/docs"])
     }
+
+    // MARK: - What a live batch re-lists
+
+    /// The rule the subscription exists for: a batch names every directory that
+    /// changed under the checkout, and the tree asks about the ones it is
+    /// actually drawing. This is VS Code's `doesFileEventAffect` — refresh on a
+    /// file event only when a *visible* item was hit.
+    func testABatchOnlyRelistsDirectoriesTheTreeIsShowing() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory), ("target", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)/src"]), ["\(root)/src"],
+            "an open folder that changed is re-read")
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)"]), ["\(root)"],
+            "the root is always realized")
+    }
+
+    /// The case that used to cost a full re-list and now costs nothing: an agent
+    /// writing into a directory nobody has expanded. `target` is a row on screen,
+    /// but its *contents* are not — so a change inside it is not news.
+    func testABatchUnderAnUnopenedFolderAsksForNothing() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory), ("target", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: [
+                "\(root)/target",
+                "\(root)/target/debug",
+                "\(root)/src/generated/nested",
+            ]),
+            [],
+            "nothing realized was touched, so the device is not asked anything")
+    }
+
+    /// A batch repeats a directory when several files under it moved inside one
+    /// quiet window. The tree asks once — `fs.list` is batched, and naming a path
+    /// twice would list it twice.
+    func testARepeatedDirectoryIsAskedForOnce() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: [
+                "\(root)/src", "\(root)/src", "\(root)/nope", "\(root)",
+            ]),
+            ["\(root)/src", "\(root)"],
+            "deduplicated, in the order the batch named them")
+    }
+
+    /// A folder that was open and has since been collapsed out of the tree stops
+    /// being asked about — the same pruning `loadedDirectories` already does for
+    /// the whole-tree refresh.
+    func testACollapsedFolderIsNoLongerRelisted() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+        XCTAssertEqual(tree.directoriesToRelist(for: ["\(root)/src"]), ["\(root)/src"])
+
+        // The folder is gone from the root's listing, so `apply` prunes it.
+        tree.apply([listing(root, [("docs", .directory)])])
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)/src"]), [],
+            "a path the tree no longer holds is not worth a round trip")
+    }
 }
