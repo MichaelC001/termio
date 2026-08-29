@@ -984,6 +984,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// on every genuine change. The link already gates its own `R` frames on
     /// this; the callback is for the UI that has to say "read-only" out loud.
     var onWriter: ((Bool) -> Void)?
+    /// The PTY's actual grid, on the main queue: once from `attached` and then
+    /// on every `E resized`. While another client holds the token this is the
+    /// grid the bytes are wrapped for, and the surface that shows them has to
+    /// be laid out at it — see `SessionRuntime.sharedGrid`.
+    var onSharedGrid: ((TerminalGrid) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1048,8 +1053,10 @@ final class TermiodSessionLink: @unchecked Sendable {
                 // announces it as `E resized`. Seeding from the reply means an
                 // observer — which never triggers that resize — still knows the
                 // grid its bytes are wrapped at.
-                authoritativeGrid = TerminalGrid(
+                let sharedGrid = TerminalGrid(
                     rows: attachedPayload.rows, cols: attachedPayload.cols)
+                authoritativeGrid = sharedGrid
+                DispatchQueue.main.async { [self] in onSharedGrid?(sharedGrid) }
                 if isWriter { sentGrid = requested }
                 Log.termiod.info("""
                 attached session=\(self.sessionName, privacy: .public) \
@@ -1150,6 +1157,29 @@ final class TermiodSessionLink: @unchecked Sendable {
             } catch {
                 Log.termiod.error("""
                 claiming the write token on \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
+    /// A reply this client's libghostty generated to a host query (DA, DSR,
+    /// XTVERSION, a colour query). It goes through only while this client is
+    /// the writer, and it never claims: the host asked its terminal one
+    /// question, and the writer's surface is that terminal. An observer's
+    /// answer would arrive as a late duplicate in the agent's input line — and,
+    /// through `send`, would take the token and drag the PTY back to this
+    /// window's grid every time the agent probed. That silent tug-of-war was
+    /// the resize storm two devices watching one session used to produce.
+    func sendDeviceReport(_ data: Data) {
+        guard !data.isEmpty else { return }
+        workQueue.async { [self] in
+            guard !closed, attached, isWriter else { return }
+            do {
+                try sendDataLocked(data)
+            } catch {
+                Log.termiod.error("""
+                device report to \(self.sessionName, privacy: .public) failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
             }
@@ -1597,13 +1627,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// (`InMemoryTerminalSession.dispatchResize` drops an unchanged viewport),
     /// so a PTY moved out from under a still window has no second chance to be
     /// noticed — the screen stays formatted for someone else's grid until the
-    /// user drags the window edge. Letterboxing an *observer's* viewport, which
-    /// cannot resize anything, is the client-side step this foundation still
-    /// leaves open.
+    /// user drags the window edge. An *observer* cannot resize anything, so its
+    /// answer is on the other side of `onSharedGrid`: the pane lays the surface
+    /// out at the shared grid instead (`SharedGridLetterbox`).
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
             guard grid != desiredGrid else { return }
             Log.termiod.info("""
             \(self.sessionName, privacy: .public) PTY is now \

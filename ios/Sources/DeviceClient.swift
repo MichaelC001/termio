@@ -87,13 +87,22 @@ protocol DeviceSession: AnyObject {
     /// Link and lifecycle transitions, delivered on the main queue.
     var onState: ((DeviceSessionState) -> Void)? { get set }
 
+    /// The PTY's actual grid and whether this device is the one sizing it,
+    /// on the main queue: once on attach and on every change of either. While
+    /// another device holds the write token the bytes arriving are wrapped for
+    /// that grid, and the screen lays its surface out at it.
+    var onSharedGrid: ((TerminalGrid, Bool) -> Void)? { get set }
+
     func start()
     func stop()
-    /// Keystrokes, as raw bytes.
+    /// Keystrokes, as raw bytes. Typing is what claims the write token.
     func send(_ data: Data)
+    /// A reply the surface generated to a host query (`TerminalDeviceReport`).
+    /// Passes only while this device is the writer, and never claims.
+    func sendDeviceReport(_ data: Data)
     func resize(columns: Int, rows: Int)
-    /// Re-claim the PTY's winsize for this device without a size change —
-    /// what a reattach and a returning foreground both need.
+    /// Re-send this device's grid: a no-op unless this device holds the write
+    /// token and the PTY is not already that size.
     func reassertGrid()
 }
 

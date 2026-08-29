@@ -288,6 +288,14 @@ extension TermioStore {
             for: session, argv: argv, cwd: spawnPath, env: env)
         let inMemory = InMemoryTerminalSession(
             write: { [weak self] data in
+                // libghostty answers the host's terminal queries through this
+                // same closure. Those are not the user, so they must not claim
+                // the token — and only the writer's surface may answer at all
+                // (`TerminalDeviceReport`).
+                guard !TerminalDeviceReport.isReport(data) else {
+                    termiodLink.sendDeviceReport(data)
+                    return
+                }
                 // Typing on the Mac reclaims the write token, and with it the
                 // winsize, from an attached phone — the size follows the device
                 // being used. `send` does the claiming.
@@ -782,6 +790,10 @@ extension TermioStore {
         }
     }
 
+    /// The surface's top/bottom margin in points. Named because the pane needs
+    /// the same number to size a letterboxed surface to an exact grid.
+    static let terminalWindowPaddingY = 2
+
     /// Translates `AppSettings` (plain values) into Ghostty config commands. This
     /// is the single place terminal-core keys are named, so surface creation and
     /// the live re-style path can never drift apart. Everything here is accepted
@@ -821,7 +833,7 @@ extension TermioStore {
         // directly above the surface, so matching the setting there would open a
         // visible gap between the title and the first prompt line.
         builder.withWindowPaddingX(settings.windowPadding)
-        builder.withWindowPaddingY(2)
+        builder.withWindowPaddingY(Self.terminalWindowPaddingY)
         builder.withBackgroundOpacity(settings.backgroundOpacity)
         builder.withBackgroundBlur(settings.backgroundBlur)
 
