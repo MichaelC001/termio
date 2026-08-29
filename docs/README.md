@@ -120,6 +120,7 @@ from the real front matter).
 | draft | rfc | [Review — One path, local sessions run through termiod too](design/20260817-one-path-local-through-termiod.review-claude.md) |
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
+| draft | rfc | [The tab strip is the collapsed sidebar](design/20260829-tab-strip-is-the-collapsed-sidebar.md) |
 | fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
