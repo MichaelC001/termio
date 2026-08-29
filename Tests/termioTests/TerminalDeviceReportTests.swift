@@ -18,6 +18,9 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[24;80R")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[1;1R")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[1;40R")))
+        // Row 1, column 3 — a fresh prompt answering `CSI 6 n`. The same bytes
+        // are a legacy modified F3; the report reading is the safe side.
+        XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[1;3R")))
         // DECRQM mode reports, private and ANSI.
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[?2026;2$y")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[4;1$y")))
@@ -43,11 +46,10 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;5C")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[3~")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}OR")))
-        // Modified F3 in the legacy encoding shares its shape with a cursor
-        // report for row 1; the modifier range decides it.
-        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;5R")))
-        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;2R")))
+        // F3 under the kitty keyboard protocol, which agent TUIs enable; the
+        // legacy modified form collides with a cursor report (see the type's doc).
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[13~")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[13;5~")))
         // A key press under the kitty keyboard protocol ends in `u` too, but
         // without the `?` a flags report carries.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[97;5u")))

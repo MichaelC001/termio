@@ -36,12 +36,15 @@ import Foundation
 /// typed text has no ESC lead-in; a paste arrives inside `ESC [ 200 ~`.
 ///
 /// One collision is xterm's, not ours: a modified F3 in the legacy encoding
-/// is `ESC [ 1 ; mod R`, the same shape as a cursor report for row 1. A
-/// report's second parameter is a column, a key's is a modifier in 2…16, and
-/// a cursor sitting in the first sixteen columns of row 1 is answered just
-/// after a clear — so that shape is read as the key. Under the kitty keyboard
-/// protocol, which every agent TUI enables, F3 is `ESC [ 13 ~` and the
-/// collision does not arise.
+/// is `ESC [ 1 ; mod R`, the same shape as a cursor report for row 1, columns
+/// 2–16 — and a fresh prompt answering `CSI 6 n` from column 3 of row 1 is
+/// exactly that report. Bytes alone cannot tell the two apart, so the report
+/// reading wins: an observer's modified F3 is dropped, which costs one
+/// keypress, where the other reading would let a real report claim the token
+/// and start the resize storm again. Under the kitty keyboard protocol, which
+/// every agent TUI enables, F3 is `ESC [ 13 ~` and the collision does not
+/// arise. The exact answer is a wrapper hook that marks generated replies at
+/// the write callback; that lives in the libghostty-swift fork.
 public enum TerminalDeviceReport {
     public static func isReport(_ data: Data) -> Bool {
         let bytes = [UInt8](data)
@@ -66,10 +69,8 @@ public enum TerminalDeviceReport {
             // The final byte of a CSI is the first in 0x40–0x7E.
             if byte >= 0x40, byte <= 0x7E {
                 switch byte {
-                case 0x63, 0x6E, 0x79, 0x74: // c n y t
+                case 0x63, 0x6E, 0x52, 0x79, 0x74: // c n R y t
                     return true
-                case 0x52: // R
-                    return !isLegacyModifiedFunctionKey(bytes[2..<index])
                 case 0x75: // u
                     return marker == 0x3F // ?
                 case 0x6D: // m
@@ -81,15 +82,6 @@ public enum TerminalDeviceReport {
             index += 1
         }
         return false
-    }
-
-    /// `1 ; 2…16` — the parameters of a modified F1–F4 in the legacy encoding.
-    private static func isLegacyModifiedFunctionKey(_ parameters: ArraySlice<UInt8>) -> Bool {
-        let fields = parameters.split(separator: 0x3B, omittingEmptySubsequences: false)
-        guard fields.count == 2, fields[0] == [0x31],
-              let modifier = Int(String(decoding: fields[1], as: UTF8.self))
-        else { return false }
-        return (2...16).contains(modifier)
     }
 
     private static func isDeviceControlReport(_ bytes: [UInt8]) -> Bool {
