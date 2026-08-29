@@ -132,9 +132,13 @@ final class TermiodSession: DeviceSession {
             guard attached, grid.rows > 0, grid.cols > 0 else { return }
             // An observer cannot move the PTY; arriving at the shared grid is
             // the one moment it needs something from the device: a keyframe it
-            // can finally paint.
+            // can finally paint. Leaving the grid — a pinch reports the old
+            // frame at new cell metrics before the layout puts it back — arms
+            // the next arrival, so the bytes parsed in between are repainted too.
             guard isWriter else {
-                if observerRepaintPending, authoritativeGrid == grid {
+                if authoritativeGrid != grid {
+                    observerRepaintPending = true
+                } else if observerRepaintPending {
                     observerRepaintPending = false
                     if let payload = try? Termiod.requestSnapshotPayload() {
                         channel.send(kind: .control, payload: payload)

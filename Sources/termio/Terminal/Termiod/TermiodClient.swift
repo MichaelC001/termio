@@ -1208,8 +1208,13 @@ final class TermiodSessionLink: @unchecked Sendable {
             // writer; the daemon would reject the frame anyway. An observer
             // arriving at the shared grid is the one moment it does need
             // something from the daemon: a keyframe it can finally paint.
+            // Leaving the grid — a font change reports the old frame at new
+            // cell metrics before the letterbox puts it back — arms the next
+            // arrival, so the bytes parsed in between are repainted too.
             guard isWriter else {
-                if observerRepaintPending, authoritativeGrid == size {
+                if authoritativeGrid != size {
+                    observerRepaintPending = true
+                } else if observerRepaintPending {
                     observerRepaintPending = false
                     requestResyncLocked()
                 }
