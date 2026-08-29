@@ -1126,22 +1126,32 @@ extension TermioStore {
     }
 }
 
-/// Counts a transcript's lines without re-reading it.
+/// Counts a transcript's lines without re-reading the whole file each time.
 ///
-/// A transcript only grows, so the count is kept per path together with the size
-/// it was taken at; the next call seeks to the end and scans only the bytes
-/// appended since. An unchanged file costs one `lseek` and no read at all.
+/// The count is kept per path with the identity and extent it was taken at —
+/// inode, modification time, and the byte offset counted to. The next call
+/// reuses that count and scans only the bytes appended since, so an unchanged
+/// file costs one `fstat` and no read. It reuses the cached count *only* when
+/// the file is the same inode and has grown (a plain append) or is byte- and
+/// mtime-identical; a different inode (replaced by rename), a smaller size
+/// (truncated), or the same size with a newer mtime (rewritten in place) all
+/// force a full recount, so a rewrite can never leave a stale count behind.
 ///
-/// This replaced a whole-file read on every call. That ran on the main thread —
+/// This replaced a whole-file read on every call, which ran on the main thread —
 /// from every `done` transition and, once per finished session, from every
-/// `list`/`watch` snapshot — and a 28 MB transcript under memory pressure turned
-/// it into a spinning cursor. A file that shrank (rewritten, truncated) is counted
-/// again from the start.
+/// `list`/`watch` snapshot — and on a tens-of-MB transcript under memory
+/// pressure it was a spinning cursor.
 final class TranscriptLineCounter: @unchecked Sendable {
     static let shared = TranscriptLineCounter()
 
+    /// The count for a file, tagged with what it was counted against.
     private struct Known {
-        var size: UInt64
+        var inode: UInt64
+        var modification: timespec
+        /// The offset the line count covers — the bytes actually scanned, which
+        /// on a concurrent truncation is less than the size `fstat` reported. It
+        /// is what the next call resumes from, so a poisoned extent self-corrects.
+        var countedTo: UInt64
         var lines: Int
     }
 
@@ -1167,19 +1177,46 @@ final class TranscriptLineCounter: @unchecked Sendable {
             }
         }
         do {
-            let size = try handle.seekToEnd()
+            var status = stat()
+            guard fstat(handle.fileDescriptor, &status) == 0 else {
+                let code = errno
+                Log.app.error("""
+                transcript fstat failed for \(path, privacy: .public): errno \(code, privacy: .public)
+                """)
+                lock.withLock { _ = known.removeValue(forKey: path) }
+                return 0
+            }
+            let inode = UInt64(status.st_ino)
+            let modification = status.st_mtimespec
+            let size = UInt64(status.st_size)
+
             let resume = lock.withLock { known[path] }
             var offset: UInt64 = 0
             var lines = 0
-            if let resume, resume.size <= size {
-                offset = resume.size
+            // Reuse the cached count only when the prefix it covers is provably
+            // unchanged: same inode, and either grown (appended past what was
+            // counted) or identical in both size and mtime. Anything else — a
+            // new inode, a shrink, or a same-size in-place rewrite (mtime moves)
+            // — falls through to a full recount from offset 0.
+            if let resume, resume.inode == inode,
+               size >= resume.countedTo,
+               size > resume.countedTo || Self.sameTime(resume.modification, modification) {
+                offset = resume.countedTo
                 lines = resume.lines
             }
+
+            var countedTo = offset
             if offset < size {
                 try handle.seek(toOffset: offset)
-                lines += try scanNewlines(handle, bytes: size - offset)
+                let (added, read) = try scanNewlines(handle, upTo: size - offset)
+                lines += added
+                countedTo += read
             }
-            lock.withLock { known[path] = Known(size: size, lines: lines) }
+            lock.withLock {
+                known[path] = Known(
+                    inode: inode, modification: modification,
+                    countedTo: countedTo, lines: lines)
+            }
             return lines
         } catch {
             Log.app.error("""
@@ -1191,20 +1228,29 @@ final class TranscriptLineCounter: @unchecked Sendable {
         }
     }
 
-    /// Reads exactly `bytes` from the handle's position in bounded chunks, so a
-    /// transcript still being appended to is counted at the size that was recorded.
-    private func scanNewlines(_ handle: FileHandle, bytes: UInt64) throws -> Int {
-        var remaining = bytes
+    private static func sameTime(_ a: timespec, _ b: timespec) -> Bool {
+        a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec
+    }
+
+    /// Counts newlines in the next `budget` bytes from the handle's position,
+    /// reading in bounded chunks, and returns the newline count and the number of
+    /// bytes it actually read — fewer than `budget` if the file was truncated out
+    /// from under it, so the caller records the extent it truly covered.
+    private func scanNewlines(_ handle: FileHandle, upTo budget: UInt64) throws -> (lines: Int, read: UInt64) {
+        var remaining = budget
         var lines = 0
+        var read: UInt64 = 0
         while remaining > 0 {
             let want = Int(min(remaining, 1 << 18))
             guard let chunk = try handle.read(upToCount: want), !chunk.isEmpty else { break }
             lines += chunk.withUnsafeBytes { buffer in
                 buffer.reduce(into: 0) { if $1 == 0x0A { $0 += 1 } }
             }
-            remaining -= UInt64(chunk.count)
-            lock.withLock { scanned += UInt64(chunk.count) }
+            let n = UInt64(chunk.count)
+            remaining -= n
+            read += n
+            lock.withLock { scanned += n }
         }
-        return lines
+        return (lines, read)
     }
 }
