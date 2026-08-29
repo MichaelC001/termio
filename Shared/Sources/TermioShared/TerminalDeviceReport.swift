@@ -34,6 +34,14 @@ import Foundation
 /// Everything else is input: arrows and function keys end a CSI in A–Z, `~`
 /// or `u` without `?`; mouse reports carry `<`; a bare Esc is a lone byte;
 /// typed text has no ESC lead-in; a paste arrives inside `ESC [ 200 ~`.
+///
+/// One collision is xterm's, not ours: a modified F3 in the legacy encoding
+/// is `ESC [ 1 ; mod R`, the same shape as a cursor report for row 1. A
+/// report's second parameter is a column, a key's is a modifier in 2…16, and
+/// a cursor sitting in the first sixteen columns of row 1 is answered just
+/// after a clear — so that shape is read as the key. Under the kitty keyboard
+/// protocol, which every agent TUI enables, F3 is `ESC [ 13 ~` and the
+/// collision does not arise.
 public enum TerminalDeviceReport {
     public static func isReport(_ data: Data) -> Bool {
         let bytes = [UInt8](data)
@@ -58,8 +66,10 @@ public enum TerminalDeviceReport {
             // The final byte of a CSI is the first in 0x40–0x7E.
             if byte >= 0x40, byte <= 0x7E {
                 switch byte {
-                case 0x63, 0x6E, 0x52, 0x79, 0x74: // c n R y t
+                case 0x63, 0x6E, 0x79, 0x74: // c n y t
                     return true
+                case 0x52: // R
+                    return !isLegacyModifiedFunctionKey(bytes[2..<index])
                 case 0x75: // u
                     return marker == 0x3F // ?
                 case 0x6D: // m
@@ -73,12 +83,22 @@ public enum TerminalDeviceReport {
         return false
     }
 
+    /// `1 ; 2…16` — the parameters of a modified F1–F4 in the legacy encoding.
+    private static func isLegacyModifiedFunctionKey(_ parameters: ArraySlice<UInt8>) -> Bool {
+        let fields = parameters.split(separator: 0x3B, omittingEmptySubsequences: false)
+        guard fields.count == 2, fields[0] == [0x31],
+              let modifier = Int(String(decoding: fields[1], as: UTF8.self))
+        else { return false }
+        return (2...16).contains(modifier)
+    }
+
     private static func isDeviceControlReport(_ bytes: [UInt8]) -> Bool {
-        if bytes[2] == 0x3E { return true } // ESC P > | …
+        // XTVERSION: `ESC P > |`.
+        if bytes[2] == 0x3E { return bytes.count > 3 && bytes[3] == 0x7C }
+        // DECRQSS `ESC P n $ r` and XTGETTCAP `ESC P n + r`, n a status digit.
         var index = 2
         while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 { index += 1 }
-        guard index + 1 < bytes.count else { return false }
-        // `$r` (DECRQSS) or `+r` (XTGETTCAP) after the status digit.
+        guard index > 2, index + 1 < bytes.count else { return false }
         return (bytes[index] == 0x24 || bytes[index] == 0x2B) && bytes[index + 1] == 0x72
     }
 
@@ -90,7 +110,8 @@ public enum TerminalDeviceReport {
             index += 1
             if number > 999 { return false }
         }
-        guard index > 2 else { return false }
+        // The number, then the `;` every reply puts before its payload.
+        guard index > 2, index < bytes.count, bytes[index] == 0x3B else { return false }
         switch number {
         case 4, 5, 10...19, 21, 52:
             return true

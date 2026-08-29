@@ -419,9 +419,12 @@ private enum TerminalFocusReason {
 ///
 /// The surface is sized to the grid plus half a cell: libghostty floors
 /// `(size − padding) / cell` to get its column count, and an exact multiple can
-/// round to one column short. A shared grid the pane cannot hold is not
-/// letterboxed — nothing smaller than the bytes' own width shows them right, so
-/// the pane keeps its full surface rather than guess.
+/// round to one column short. A shared grid the pane cannot hold is still laid
+/// out at that grid, anchored top-left and clipped: a surface at any other
+/// width wraps the bytes wrong, and a correct screen with its edge cut off
+/// beats a complete one that is scrambled. It also keeps the promise the
+/// resync depends on — the surface *reaches* the shared grid, so the link can
+/// ask for the keyframe that paints it (`observerRepaintPending`).
 private struct SharedGridLetterbox<Content: View>: View {
     let runtime: SessionRuntime
     @ObservedObject var context: TerminalViewState
@@ -438,12 +441,14 @@ private struct SharedGridLetterbox<Content: View>: View {
         // NSView, which is the repaint this file exists to avoid. A nil frame
         // dimension is "no constraint", so the surface fills the pane.
         let size = letterboxSize
-        ZStack {
+        let fits = size.map { $0.width <= paneSize.width && $0.height <= paneSize.height } ?? true
+        ZStack(alignment: fits ? .center : .topLeading) {
             background
             content()
                 .frame(width: size?.width, height: size?.height)
         }
-        .frame(width: paneSize.width, height: paneSize.height)
+        .frame(width: paneSize.width, height: paneSize.height, alignment: .topLeading)
+        .clipped()
     }
 
     private var letterboxSize: CGSize? {
@@ -460,7 +465,6 @@ private struct SharedGridLetterbox<Content: View>: View {
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
         let width = CGFloat(grid.cols) * cellWidth + 2 * paddingX + cellWidth / 2
         let height = CGFloat(grid.rows) * cellHeight + 2 * paddingY + cellHeight / 2
-        guard width <= paneSize.width, height <= paneSize.height else { return nil }
         return CGSize(width: width, height: height)
     }
 }

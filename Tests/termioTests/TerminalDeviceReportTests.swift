@@ -16,6 +16,8 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[>1;10;0c")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[0n")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[24;80R")))
+        XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[1;1R")))
+        XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[1;40R")))
         // DECRQM mode reports, private and ANSI.
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[?2026;2$y")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[4;1$y")))
@@ -41,6 +43,11 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;5C")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[3~")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}OR")))
+        // Modified F3 in the legacy encoding shares its shape with a cursor
+        // report for row 1; the modifier range decides it.
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;5R")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[1;2R")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[13~")))
         // A key press under the kitty keyboard protocol ends in `u` too, but
         // without the `?` a flags report carries.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[97;5u")))
@@ -50,9 +57,14 @@ final class TerminalDeviceReportTests: XCTestCase {
         // Bracketed paste, even when the pasted text starts with an escape.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[200~pasted\u{1B}[201~")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[200~\u{1B}]11;?\u{1B}\\\u{1B}[201~")))
-        // A title OSC or an unlisted DCS is not a reply libghostty emits.
+        // A title OSC or an unlisted DCS is not a reply libghostty emits, and
+        // neither is a reply-looking prefix without its introducer.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}]0;title\u{1B}\\")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}Pq#0;2;0;0;0\u{1B}\\")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}P>q")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}P$r")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}]4x")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}]11")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}]")))
         XCTAssertFalse(TerminalDeviceReport.isReport(Data()))
     }
