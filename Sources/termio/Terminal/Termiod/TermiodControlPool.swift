@@ -338,6 +338,15 @@ extension Termiod {
             try write(kind: .control, payload: build(nextRequestID()))
         }
 
+        /// How many unaddressed-event sinks are registered. For tests: a watch
+        /// that re-subscribes must replace its observer rather than stack a
+        /// second one, and the count is the only way to see that from outside.
+        var observerCount: Int {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return eventObservers.count
+        }
+
         fileprivate func release(_ seq: UInt64) {
             stateLock.lock()
             inboxes.removeValue(forKey: seq)

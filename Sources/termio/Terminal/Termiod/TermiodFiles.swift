@@ -303,10 +303,15 @@ extension Termiod {
             self.channel = channel
             observerToken = token
             lock.unlock()
-            // `withPooledRequest` retries a stale channel *inside* one attempt,
-            // without this watch's generation moving — so the thing being
-            // replaced here is usually the first try's own corpse.
-            if let previousToken, previousChannel !== channel {
+            // Keyed on the token, not the channel. `withPooledRequest` retries
+            // inside one attempt without this watch's generation moving, and a
+            // retry can land right back on the same pooled channel — a second
+            // registration on it, with a different token. Skipping the removal
+            // whenever the channel matched left that first observer registered
+            // with nothing holding its token, so it could never be removed: two
+            // deliveries of every batch, and one more on every duplicate claim.
+            // The token is what identifies a registration, so it is what decides.
+            if let previousToken, previousToken != token {
                 previousChannel?.removeObserver(previousToken)
             }
             return true

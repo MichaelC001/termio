@@ -764,6 +764,41 @@ final class TermiodFilesIntegrationTests: XCTestCase {
             listed.listings.first?.entries.contains { $0.name == "cursor.txt" } ?? false,
             "and the listing the cursor is stamped on is the one that includes the write")
     }
+
+    /// A watch that loses its channel and comes back re-subscribes, and leaves
+    /// exactly one observer on the channel it lands on.
+    ///
+    /// This covers the reconnect path, not the same-channel double-claim: a
+    /// hung-up channel is closed, so the retry necessarily opens a different one
+    /// and `claim` replaces the observer either way. It passes with and without
+    /// that guard, which is stated here rather than left for the next reader to
+    /// discover — a test that cannot fail for the reason its name suggests is
+    /// worse than no test.
+    func testAReconnectingWatchReplacesItsObserverRatherThanStackingOne() throws {
+        let watch = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { _ in }
+
+        let armed = Date().addingTimeInterval(30)
+        while !watch.isSubscribed, Date() < armed { usleep(100_000) }
+        XCTAssertTrue(watch.isSubscribed, "the first subscribe never landed")
+
+        // Hang the channel up under it, which is what a ControlPersist expiry or
+        // a sleeping laptop does.
+        Termiod.ControlPool.closeAll(route: .local)
+        let backAgain = Date().addingTimeInterval(90)
+        while !watch.isSubscribed, Date() < backAgain { usleep(200_000) }
+        XCTAssertTrue(watch.isSubscribed, "the watch never re-established")
+
+        let channel = try Termiod.ControlPool.channel(
+            route: .local, caps: ["files", Termiod.ResourceWatch.capability])
+        XCTAssertEqual(
+            channel.observerCount, 1,
+            "one watch, one observer — a second would double every batch")
+        withExtendedLifetime(watch) {}
+    }
 }
 
 extension TermiodFilesIntegrationTests {
