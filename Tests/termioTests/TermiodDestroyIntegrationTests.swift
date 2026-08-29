@@ -154,7 +154,7 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
         let (store, _, _, name) = makeStoreWithLiveSession()
         XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
 
-        store.terminateAllSessions()
+        store.detachAllSessions()
 
         // Settle long enough that a kill would have landed.
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))

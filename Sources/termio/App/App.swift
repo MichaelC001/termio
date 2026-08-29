@@ -502,10 +502,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// termio is single-window, so terminating with the last window would make ⌘W a
-    /// quit — and quitting kills every session's agent (see `applicationWillTerminate`).
-    /// The app stays running with its sessions alive; the Dock icon brings the window
-    /// back (see `applicationShouldHandleReopen`). ⌘W ends the session it is aimed
-    /// at; only ⌘Q ends all of them at once.
+    /// quit. Quitting no longer ends anything — the daemon owns the PTYs and keeps
+    /// them (see `applicationWillTerminate`) — but it does tear down the mounted
+    /// surfaces and stop the banners, so the app stays running with its window closed
+    /// and the Dock icon brings it back (see `applicationShouldHandleReopen`). ⌘W ends
+    /// the session it is aimed at, which is still the only verb that ends one.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -530,41 +531,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.repaintSelectedSurface()
     }
 
-    /// Quitting is now the only path that kills sessions, so a quit that would cut
-    /// short an agent mid-turn — or one already waiting on an answer — asks first.
-    /// An all-idle app quits without a word.
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let busy = store.busySessionTitles
-        guard !busy.isEmpty else { return .terminateNow }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = busy.count == 1
-            ? "“\(busy[0])” is still running."
-            : "\(busy.count) sessions are still running."
-        alert.informativeText =
-            "Quitting stops every session's agent and shell. "
-            + "Closing the window leaves them running."
-        // Return quits, Escape cancels — the same two keys every close confirmation
-        // answers to (see `applyConfirmationKeys`). This replaces a first cut where
-        // Cancel took Return and Quit took ⌘Q; the sheet answers a key the user
-        // pressed on purpose, so the answer belongs on the key they'll press next.
-        alert.addButton(withTitle: "Quit")
-        alert.addButton(withTitle: "Cancel")
-        TermioStore.applyConfirmationKeys(to: alert)
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
-    }
-
-    /// Closing the app closes its sessions' processes. Without this there is
-    /// no teardown path at all on quit — the PTYs die with the process and
-    /// agent children that ignore the resulting SIGHUP live on as orphans.
+    /// Quitting detaches; it does not end a session. The daemon owns every PTY and
+    /// outlives the app (`TermiodClient.spawnDaemon` gives it its own session), so a
+    /// working agent keeps working and the next launch reattaches to it. What has to
+    /// happen here is the bookkeeping only the running app holds.
     /// Only a real quit reaches here; closing the window does not.
     func applicationWillTerminate(_ notification: Notification) {
-        // Delivered banners would outlive the sessions they point at.
+        // A delivered banner taps back into a window that is going away.
         TaskNotificationCenter.shared.withdrawAll()
         // Tree edits are debounced (see `persistSoon`), so flush before the
         // process goes away or the last selection change is lost.
         store.persistNow()
-        store.terminateAllSessions()
+        store.detachAllSessions()
         RemotePreviewStorage.cleanup()
     }
 

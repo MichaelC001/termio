@@ -1036,16 +1036,14 @@ final class TermioStore: ObservableObject {
     /// row. Keyed by `TermiodRoute.description`.
     var upgradingRoutes: Set<String> = []
 
-    /// App-quit teardown: without this, session children outlive the app — the
-    /// closing PTY's SIGHUP is swallowed by agent TUIs, and they pile up as
-    /// launchd orphans across restarts. Graceful signals first, a short
-    /// synchronous grace so plain shells exit cleanly, then SIGKILL whatever
-    /// remains — the quit path can't rely on `terminate()`'s dispatched
-    /// escalation timer, because the process dies before it fires.
-    func terminateAllSessions() {
+    /// App-quit teardown, from the era when the app owned the PTYs: it had to
+    /// signal every child, because the closing PTY's SIGHUP is swallowed by agent
+    /// TUIs and they piled up as orphans. The daemon owns them now and outlives
+    /// the app, so the teardown is the opposite verb.
+    func detachAllSessions() {
         // Surviving the quit is the whole point, so the channel detaches and
-        // the daemon keeps the process. Kill is reserved for the explicit
-        // Close Session verb.
+        // the daemon keeps the process. Ending a session is reserved for the
+        // explicit Close Session verb.
         for link in termiodLinks.values { link.detach() }
         termiodLinks.removeAll()
     }
@@ -1688,15 +1686,6 @@ final class TermioStore: ObservableObject {
         if all.contains(.working) { return .working }
         if all.contains(.done) { return .done }
         return .idle
-    }
-
-    /// The sessions a quit would cut short: an agent mid-turn, or one already
-    /// blocked on the user. A finished (`.done`) session has nothing left to lose,
-    /// so it doesn't count — the quit confirmation names these and only these.
-    var busySessionTitles: [String] {
-        allSessions
-            .filter { [.working, .needsAttention].contains(status(for: $0.id)) }
-            .map { displayTitle(for: $0) }
     }
 
     func session(_ id: Session.ID) -> Session? {
