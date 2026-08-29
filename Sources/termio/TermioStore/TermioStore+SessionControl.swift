@@ -1128,30 +1128,33 @@ extension TermioStore {
 
 /// Counts a transcript's lines without re-reading the whole file each time.
 ///
-/// The count is kept per path with the identity and extent it was taken at —
-/// inode, modification time, and the byte offset counted to. The next call
-/// reuses that count and scans only the bytes appended since, so an unchanged
-/// file costs one `fstat` and no read. It reuses the cached count *only* when
-/// the file is the same inode and has grown (a plain append) or is byte- and
-/// mtime-identical; a different inode (replaced by rename), a smaller size
-/// (truncated), or the same size with a newer mtime (rewritten in place) all
-/// force a full recount, so a rewrite can never leave a stale count behind.
+/// The count is the cursor a supervising agent resumes a transcript read from,
+/// and it is taken on the main thread from every `done` transition and every
+/// `list`/`watch` snapshot. A whole-file read there stalls the UI once a
+/// transcript reaches tens of MB, so the count is cached and only newly
+/// appended bytes are scanned.
 ///
-/// This replaced a whole-file read on every call, which ran on the main thread —
-/// from every `done` transition and, once per finished session, from every
-/// `list`/`watch` snapshot — and on a tens-of-MB transcript under memory
-/// pressure it was a spinning cursor.
+/// The hazard that buys is a stale count if the file is not a pure append. It
+/// is closed two ways: the cache is dropped when the inode changes (a transcript
+/// replaced by an atomic rename), and the remembered count is trusted only while
+/// a short anchor of the bytes at the counted boundary still matches — so a
+/// truncation or an in-place rewrite is caught by content, independent of the
+/// timestamp's resolution, and forces a full recount.
 final class TranscriptLineCounter: @unchecked Sendable {
     static let shared = TranscriptLineCounter()
 
-    /// The count for a file, tagged with what it was counted against.
+    /// Bytes remembered at the counted boundary. A rewrite that reproduces this
+    /// many exact bytes ending at the same offset is not a real possibility, so a
+    /// match means the prefix was appended to, not changed.
+    private static let anchorLength = 64
+
     private struct Known {
         var inode: UInt64
-        var modification: timespec
-        /// The offset the line count covers — the bytes actually scanned, which
-        /// on a concurrent truncation is less than the size `fstat` reported. It
-        /// is what the next call resumes from, so a poisoned extent self-corrects.
+        /// The offset the line count covers — the bytes actually scanned, so a
+        /// concurrent mid-scan truncation records the extent it truly reached and
+        /// self-corrects on the next call rather than trusting a partial count.
         var countedTo: UInt64
+        var anchor: [UInt8]
         var lines: Int
     }
 
@@ -1159,8 +1162,9 @@ final class TranscriptLineCounter: @unchecked Sendable {
     private var known: [String: Known] = [:]
     private var scanned: UInt64 = 0
 
-    /// Bytes read across every call — how a test tells an incremental scan from a
-    /// full one.
+    /// Bytes read by the line scan across every call — how a test tells an
+    /// incremental scan from a full one. The fixed-size anchor validation reads
+    /// are not scan work and are excluded.
     var bytesScanned: UInt64 { lock.withLock { scanned } }
 
     func count(_ path: String) -> Int {
@@ -1187,20 +1191,13 @@ final class TranscriptLineCounter: @unchecked Sendable {
                 return 0
             }
             let inode = UInt64(status.st_ino)
-            let modification = status.st_mtimespec
             let size = UInt64(status.st_size)
 
             let resume = lock.withLock { known[path] }
             var offset: UInt64 = 0
             var lines = 0
-            // Reuse the cached count only when the prefix it covers is provably
-            // unchanged: same inode, and either grown (appended past what was
-            // counted) or identical in both size and mtime. Anything else — a
-            // new inode, a shrink, or a same-size in-place rewrite (mtime moves)
-            // — falls through to a full recount from offset 0.
-            if let resume, resume.inode == inode,
-               size >= resume.countedTo,
-               size > resume.countedTo || Self.sameTime(resume.modification, modification) {
+            if let resume, resume.inode == inode, size >= resume.countedTo,
+               try anchorHolds(handle, resume) {
                 offset = resume.countedTo
                 lines = resume.lines
             }
@@ -1208,14 +1205,14 @@ final class TranscriptLineCounter: @unchecked Sendable {
             var countedTo = offset
             if offset < size {
                 try handle.seek(toOffset: offset)
-                let (added, read) = try scanNewlines(handle, upTo: size - offset)
-                lines += added
-                countedTo += read
+                let scan = try scanNewlines(handle, upTo: size - offset)
+                lines += scan.lines
+                countedTo += scan.read
             }
+            let anchor = try readAnchor(handle, endingAt: countedTo)
             lock.withLock {
                 known[path] = Known(
-                    inode: inode, modification: modification,
-                    countedTo: countedTo, lines: lines)
+                    inode: inode, countedTo: countedTo, anchor: anchor, lines: lines)
             }
             return lines
         } catch {
@@ -1228,14 +1225,27 @@ final class TranscriptLineCounter: @unchecked Sendable {
         }
     }
 
-    private static func sameTime(_ a: timespec, _ b: timespec) -> Bool {
-        a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec
+    /// True when the bytes ending at the cached offset are still what they were
+    /// when it was counted — the prefix was appended to, not rewritten.
+    private func anchorHolds(_ handle: FileHandle, _ resume: Known) throws -> Bool {
+        guard resume.countedTo > 0 else { return true }
+        return try readAnchor(handle, endingAt: resume.countedTo) == resume.anchor
+    }
+
+    /// The last `anchorLength` bytes ending at `offset` (fewer if the file is
+    /// shorter). A fixed-size validation read, kept out of `scanned`.
+    private func readAnchor(_ handle: FileHandle, endingAt offset: UInt64) throws -> [UInt8] {
+        guard offset > 0 else { return [] }
+        let length = min(UInt64(Self.anchorLength), offset)
+        try handle.seek(toOffset: offset - length)
+        guard let data = try handle.read(upToCount: Int(length)) else { return [] }
+        return [UInt8](data)
     }
 
     /// Counts newlines in the next `budget` bytes from the handle's position,
-    /// reading in bounded chunks, and returns the newline count and the number of
-    /// bytes it actually read — fewer than `budget` if the file was truncated out
-    /// from under it, so the caller records the extent it truly covered.
+    /// reading in bounded chunks, and returns the newline count and the bytes it
+    /// actually read — fewer than `budget` if the file was truncated out from
+    /// under it, so the caller records the extent it truly covered.
     private func scanNewlines(_ handle: FileHandle, upTo budget: UInt64) throws -> (lines: Int, read: UInt64) {
         var remaining = budget
         var lines = 0

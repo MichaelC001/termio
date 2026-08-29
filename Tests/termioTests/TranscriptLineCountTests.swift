@@ -67,20 +67,22 @@ final class TranscriptLineCountTests: XCTestCase {
 }
 
 extension TranscriptLineCountTests {
-    private func setMtime(_ path: String, toLaterThanNow seconds: TimeInterval) throws {
-        try FileManager.default.setAttributes(
-            [.modificationDate: Date().addingTimeInterval(seconds)], ofItemAtPath: path)
+    private func modificationDate(_ path: String) throws -> Date {
+        let value = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate]
+        return (value as? Date) ?? Date(timeIntervalSince1970: 0)
     }
 
     func testSameSizeInPlaceRewriteIsRecounted() throws {
         let counter = TranscriptLineCounter()
         try append("a\nb\nc\n")                 // 6 bytes, 3 lines
         XCTAssertEqual(counter.count(path), 3)
-        // Overwrite in place with the same byte count but a different newline
-        // count, and move mtime forward so the same-size branch must recount.
+        let stamp = try modificationDate(path)
+        // Overwrite in place with the same byte count but a different line count,
+        // then force mtime back to what it was — so only the content anchor, not
+        // the timestamp, can reveal the rewrite.
         try Data("aabbc\n".utf8).write(to: URL(fileURLWithPath: path))  // 6 bytes, 1 line
-        try setMtime(path, toLaterThanNow: 5)
-        XCTAssertEqual(counter.count(path), 1, "a same-size rewrite must not reuse the old count")
+        try FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: path)
+        XCTAssertEqual(counter.count(path), 1, "a same-size rewrite is caught by content, not mtime")
     }
 
     func testReplacedByRenameIsRecounted() throws {
@@ -96,12 +98,24 @@ extension TranscriptLineCountTests {
         XCTAssertEqual(counter.count(path), 1, "a replaced inode must force a recount")
     }
 
-    func testUnchangedFileAfterMtimeSettleStillCostsNoRead() throws {
+    func testTruncateThenRegrowPastOldExtentIsRecounted() throws {
+        let counter = TranscriptLineCounter()
+        try append("a\nb\nc\n")                 // 6 bytes, 3 lines
+        XCTAssertEqual(counter.count(path), 3)
+        let stamp = try modificationDate(path)
+        // Rewrite in place to a LARGER file whose prefix differs, mtime pinned:
+        // the grow path must not trust the old prefix just because it grew.
+        try Data("x\ny\nz\nw\n".utf8).write(to: URL(fileURLWithPath: path))  // 8 bytes, 4 lines
+        try FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: path)
+        XCTAssertEqual(counter.count(path), 4, "a grown file with a changed prefix is recounted")
+    }
+
+    func testUnchangedFileCostsNoScan() throws {
         let counter = TranscriptLineCounter()
         try append("a\nb\n")
         XCTAssertEqual(counter.count(path), 2)
         let after = counter.bytesScanned
         XCTAssertEqual(counter.count(path), 2)
-        XCTAssertEqual(counter.bytesScanned, after, "an untouched file is not re-read")
+        XCTAssertEqual(counter.bytesScanned, after, "an untouched file is not re-scanned")
     }
 }
