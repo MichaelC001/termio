@@ -204,6 +204,19 @@ extension Termiod {
         private func connect() {
             lock.lock()
             guard !stopped else { lock.unlock(); return }
+            // One failure can arm two recoveries. A channel that closes *during*
+            // the subscribe both reaches `handle` — which schedules a retry —
+            // and fails the request, which `withPooledRequest` retries on a
+            // fresh channel inside the same call. When that inner retry
+            // succeeds, the outer one is still armed, and firing it would
+            // re-subscribe on a channel already carrying this watch: a wasted
+            // round trip, a second registration, and a `gap` that re-lists the
+            // whole tree for nothing. Holding a live channel means there is
+            // nothing to reconnect.
+            if let channel, !channel.isDead {
+                lock.unlock()
+                return
+            }
             generation &+= 1
             let generation = self.generation
             let since = cursor
