@@ -111,6 +111,7 @@ from the real front matter).
 | draft | rfc | [Automation — scheduled agent runs](design/20260702-automation-scheduled-agent-runs.md) |
 | draft | rfc | [Companion Wire Protocol](design/20260810-companion-wire-protocol.md) |
 | draft | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
+| draft | rfc | [Feature cut after Superlogical's 28 Aug demo](design/20260829-feature-cut-after-superlogical-demo.md) |
 | draft | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](design/20260703-fork-libghostty-spm.md) |
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
 | draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |

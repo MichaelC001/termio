@@ -3,20 +3,20 @@ title: 核心概念
 description: Termio 由这几个名词构成——设备、工作区、项目、会话、窗格、worktree——再加上一套状态模型，告诉你哪个 Agent 需要你。
 x-i18n:
   source_path: concepts.mdx
-  source_hash: f8691662291213114f2984559064ae628d2c531ca4f142b7ca0ff3ab46179a79
-  generated_at: 2026-08-27
+  source_hash: 9ddc9bd90e145b6c88f580813095f57eadadd987f272195178420a86f86dd2a7
+  generated_at: 2026-08-30
 ---
 
 Termio 是一个用来同时运行多个编程 Agent 的终端。应用里的一切都由六个名词和一套状态
 模型构成。搞懂这几个，剩下的文档读起来会很快。
 
-## 设备 [#machine]
+## 设备 [#device]
 
 设备就是你能连上的一台机器：本机、同一张桌子上的 Mac mini、一台 VPS。Termio 读
 `~/.ssh/config` 找到它们，调用系统的 `ssh` 过去——它不开通机器，也不中转你的流量。
 
 本机也是一台普通设备，所以在你添加第二台之前，这一层是看不见的。见
-[工作区与设备](/zh-CN/docs/machines)。
+[设备](/zh-CN/docs/devices)。
 
 ## 工作区 [#workspace]
 
@@ -24,7 +24,7 @@ Termio 是一个用来同时运行多个编程 Agent 的终端。应用里的一
 就跟着换，而每个工作区都记得你离开时停在哪个会话上。
 
 每个工作区都只属于一台设备——设备这个问题因此只在最顶上回答一次，不必对每个项目再问
-一遍。`⌘1` 到 `⌘9` 在它们之间切换。
+一遍。`⌘1` 到 `⌘9` 在它们之间切换。见 [工作区](/zh-CN/docs/workspaces)。
 
 ## 项目
 
@@ -119,7 +119,10 @@ Termio 直接从 git 读取（`git worktree list`），而不是自己另存一�
   <Card href="/zh-CN/docs/agents" title="同时运行多个 Agent">
     把侧栏当作一支队伍的控制台。
   </Card>
-  <Card href="/zh-CN/docs/machines" title="工作区与设备">
+  <Card href="/zh-CN/docs/workspaces" title="工作区">
+    决定一个项目在哪台机器上打开的那个作用域。
+  </Card>
+  <Card href="/zh-CN/docs/devices" title="设备">
     把工作区放到另一台机器上，并在那儿装好会话宿主。
   </Card>
 </Cards>

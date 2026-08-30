@@ -1,0 +1,59 @@
+---
+title: Workspaces
+description: A workspace is the sidebar’s scope — it holds projects and loose terminals, remembers the session you left it on, and belongs to exactly one machine.
+---
+
+A workspace is a named scope in the sidebar. It holds projects and loose
+terminals, and switching to it swaps what the sidebar lists — the projects filed
+under it, its worktrees, its sessions, and nothing else.
+
+It’s the level between a [device](/docs/devices) and a project: every workspace
+belongs to one machine, and everything filed under the workspace inherits it.
+
+## Switching
+
+Switch with `⌘1` through `⌘9`, or from the switcher in the sidebar’s toolbar.
+`File ▸ Workspace` carries the same rows.
+
+The digits are positional: they follow the order of the list, so what `⌘2`
+reaches changes when the list does. That’s also why they aren’t rebindable — a
+binding whose target moves isn’t one you can keep. The switcher draws each digit
+beside its name so you read the number rather than memorize it.
+
+A workspace remembers the session you left it on, with its panes, its split
+group, and its inspector tab. Coming back to a scope puts your own work back on
+screen rather than whatever sorts first.
+
+Where a workspace’s name doesn’t already say which machine it’s on, the switcher
+names the machine beside it — so switching workspaces is also how you move
+between machines.
+
+## Managing them
+
+**Settings ▸ Workspaces** lists every workspace with the machine it’s on and how
+many sessions it holds. Renaming and removing live there, beside the workspace
+they act on, rather than in the switcher — a menu that shows the list one
+checked row at a time can only ever offer those verbs for the workspace you’re
+already in.
+
+Removing a workspace closes its sessions. The folders on disk are left alone.
+
+New workspaces come from `File ▸ Workspace ▸ New Workspace…` or the same row in
+the switcher. With more than one machine known, that row asks which machine the
+new workspace is on.
+
+<Callout type="note" title="One workspace, one machine">
+  A workspace can’t span two machines. A checkout already lives on exactly one
+  box, so a workspace covering both was never more than a visual grouping over
+  leaves that disagreed. Work that touches a repo here and a repo on the VPS is
+  two workspaces.
+</Callout>
+
+<Cards>
+  <Card href="/docs/devices" title="Devices">
+    Add a machine, set up the session host, and see what reaches across.
+  </Card>
+  <Card href="/docs/sidebar" title="The sidebar">
+    What a workspace scopes: projects, worktrees, and every session’s status.
+  </Card>
+</Cards>
