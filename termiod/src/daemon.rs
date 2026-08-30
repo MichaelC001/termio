@@ -193,25 +193,25 @@ impl Manager {
         &self,
         sessions: Vec<(crate::handoff::CarriedSession, std::os::fd::OwnedFd, Vec<Bytes>)>,
     ) -> Vec<String> {
-        use std::os::fd::{AsRawFd, IntoRawFd};
+        use std::os::fd::IntoRawFd;
         let mut lost = Vec::new();
         for (mut info, master, ring) in sessions {
-            info.master_fd = master.as_raw_fd();
             let id = info.id.clone();
             let mut bytes = Vec::new();
             for chunk in &ring {
                 bytes.extend_from_slice(chunk);
             }
-            match self.adopt(info, bytes) {
-                // The adopted session owns the descriptor now, so this one must
-                // let go of it rather than close it out from under the actor.
-                Ok(()) => {
-                    let _ = master.into_raw_fd();
-                }
-                Err(error) => {
-                    eprintln!("termiod: session {id} could not be put back: {error:#}");
-                    lost.push(id);
-                }
+            // Ownership goes before the call, not after it succeeds.
+            // `Pty::adopt` wraps the number in an `OwnedFd` the instant it is
+            // entered and closes it itself if any of its own steps fail — so
+            // holding on here to close it on the error path would close the
+            // descriptor twice. By the second close the number can already have
+            // been handed to something else, and what dies is whatever that is:
+            // another session's master, the listener, a client's socket.
+            info.master_fd = master.into_raw_fd();
+            if let Err(error) = self.adopt(info, bytes) {
+                eprintln!("termiod: session {id} could not be put back: {error:#}");
+                lost.push(id);
             }
         }
         // Only once every session is installed again: a create that slipped in
