@@ -19,7 +19,8 @@ related:
 > group (or a lone session); a tab group is a sidebar section or a project, the
 > way a Chrome tab group is a collapsible section in Chrome's vertical tabs.
 > Only the group holding the selection is open; the rest fold to their chips.
-> No new mode, no new setting, no new shortcut, nothing new persisted.
+> Settings › Appearance › Tabs (*Vertical* / *Horizontal*) is the navigator
+> toggle by another name. No new mode, no new shortcut, nothing new persisted.
 
 ## The one idea
 
@@ -51,6 +52,15 @@ and the strip is what a collapsed sidebar *becomes*.
                                            ☰ ───────▶
                     one toggle, one row model, two geometries
 ```
+
+The choice gets two handles and one state. The navigator toggle is one; a
+**Tabs: Vertical / Horizontal** picker in Settings › Appearance is the other,
+and the strip's context menu carries *Show Tabs Vertically* as Chrome's does.
+All three flip the sidebar's collapse — the state `NSSplitView` already
+autosaves — so someone who wants a horizontal browser can say so once in
+Settings, and someone who just wants the sidebar gone clicks the toggle as
+today. There is no third state in which the setting says one thing and the
+window shows another.
 
 That is the whole proposal. The rest of this document is what falls out of it.
 
@@ -114,6 +124,13 @@ Why Chrome's ⌘1–9 reaches tabs and Termio's reaches workspaces: Chrome's
 top-level object is the tab; Termio's is the workspace, decided in the keyboard
 design and already drawn beside each workspace in the switcher. A Chrome
 window is a Termio workspace — one strip, one workspace, switch to see another.
+
+How the two geometries are switched: Chrome's vertical tabs (2025) and Edge's
+before them are one toggle reachable from two places — the strip's context
+menu (*Show tabs vertically*) and Settings › Appearance — and the toggle is
+the whole of the setting; there is no mode underneath that could disagree with
+what the window shows. Chrome's vertical strip collapses to icons and back with
+its own button, which is the navigator toggle's job here.
 
 What Chrome does not do: fold the groups you are not in. Collapse is a click
 per group, and the active tab can never sit inside a collapsed group — collapse
@@ -302,6 +319,75 @@ inserted where those are removed and removed where they are restored. The
 workspace switcher must stay in the band while collapsed — it is the strip's
 workspace dropdown, and today it rides with the sidebar's region.
 
+### Workspaces in the strip
+
+The strip shows one workspace, the way a Chrome window shows one window's tabs,
+and the workspace switcher is the strip's leading control — Superlogical's
+sidebar glyph that also opens the workspace menu. It rides the navigator
+toggle item today (`NavigatorToggleToolbarView`) and hides itself when the
+sidebar collapses; the strip needs it shown, with the workspace's name beside
+the glyph so the strip's first word says whose tabs these are. Everything
+that switches workspaces keeps working unchanged: the dropdown, ⌘1–9, the
+Workspace menu. Agents blocked on the user in another workspace put a dot on
+the switcher (see *Pinned*).
+
+```
+ ┌──────────────────────────────────────────────────────────────┐
+ │ ☰ Work ▾ │ termio·main │ ● Claude Code ⧉2 │ ○ zsh │ +   ⊞ ▤  │
+ └──┬───────────────────────────────────────────────────────────┘
+    │  ✓ Work                ⌘1
+    │    Personal ●          ⌘2       ← needs-you elsewhere
+    │  ──────────────────────
+    │    New Workspace…
+    │    Show Tabs Vertically
+    └──────────────────────────
+```
+
+### The setting
+
+Settings › Appearance gains one row:
+
+> **Tabs** — Vertical | Horizontal
+> *Show sessions in a sidebar beside the terminal, or in a strip above it.*
+
+It is not an `AppSettings` field. The picker reads `store.sidebarVisible` and
+writes by collapsing or expanding the sidebar through the same path the
+toggle uses, so the KVO observer that swaps the toolbar items runs for it
+too, and the split view's autosave remains the only copy of the state. The
+strip's context menu offers *Show Tabs Vertically*, and the sidebar's header
+menu the reverse, as Chrome's strip does — the same verb from where the user
+is looking.
+
+### Beside the inspector
+
+The inspector keeps its band region exactly as it is: the Files / Search /
+Changes / Info switch and the ▤ toggle stay pinned over the inspector column by
+`inspectorTrackingSeparator`. The strip is the terminal column's width, between
+the two tracking separators, and never runs under the inspector's controls —
+the rule the branch picker already follows (`branchPickerWidthLimit` tracks
+the terminal pane), inherited with the slot.
+
+```
+ sidebar collapsed, inspector open
+ ┌─────────────────────────────────────────────────────────────────────┬──────────────────────────────┐
+ │ ☰ Work ▾ │ termio·main │ ● Claude Code ⧉2 │ ○ zsh │ fix-auth ● │ +  ┃ Files Search Changes Info  ▤ │
+ ├─────────────────────────────────────────────────────────────────────┼──────────────────────────────┤
+ │ terminal                                                            │ inspector                    │
+ └─────────────────────────────────────────────────────────────────────┴──────────────────────────────┘
+   strip = the terminal column                     inspector region untouched
+```
+
+Chrome's side panel is the comparison people reach for, and it is shaped
+differently on purpose: the panel carries its own header (title, pop-out, ×)
+so that Chrome's tab strip and toolbar can each span the full window as their
+own rows. Termio has one band, and the accordion keeps the strip short, so a
+self-headed inspector would buy band space nobody needs and cost the inspector
+a row and the window its symmetry — the sidebar's controls would still be in
+the band. What Chrome's panel does get right, Termio already does: the panel
+follows the tab. Gemini's panel is per-tab; the inspector shows the selected
+session's project, and the accordion draws from the same `selectedSessionID`,
+so switching tabs moves the open group and the inspector together.
+
 ### One group open
 
 The strip is an accordion. The open group is the one holding
@@ -432,8 +518,13 @@ exactly as its row does.
    removed by `setNavigatorItemsVisible`, swapping the branch picker out and in
    with it; the workspace switcher survives the collapse; `.unifiedCompact` on
    macOS 26 in `installToolbar`.
-5. No `StateFile` change, no `AppSettings` change, no `KeyCommandID`, no
-   localized strings beyond the pane-count badge.
+5. `Sources/termio/Settings/AppearanceSettingsTab.swift`: the **Tabs** picker,
+   bound to `store.sidebarVisible` through the collapse path; *Show Tabs
+   Vertically* / *Horizontally* as context-menu items on the strip and the
+   sidebar header.
+6. No `StateFile` change, no `AppSettings` change, no `KeyCommandID`;
+   localized strings for the picker, its subtext, the two menu items and the
+   pane-count badge.
 
 In three increments, each shippable: the model extraction alone (nothing
 visible changes; the Session menu is the proof); the strip read-only (click,
@@ -441,9 +532,10 @@ status, the accordion, `+`, chip menus); then × and drag.
 
 ## Rejected
 
-- **A "Tabs: sidebar / strip" preference.** Superlogical exposes the choice as a
-  mode; Termio has the navigator toggle, and a second control that means the
-  same thing is a knob. Collapsed means strip. Open means sidebar.
+- **A tab-layout mode of its own.** Superlogical stores the choice as a mode
+  beside the sidebar toggle, which leaves a state where the setting and the
+  window disagree. Termio's picker is the navigator toggle's second handle on
+  the one autosaved state. Collapsed means strip. Open means sidebar.
 - **Strip and sidebar together.** Built and dropped 2026-07-06. Two switchers.
 - **A second row under the toolbar.** Xcode's shape. It costs a line of terminal
   text, and the band above is empty. Kept only as the fallback if NSToolbar
@@ -452,6 +544,10 @@ status, the accordion, `+`, chip menus); then × and drag.
   double-click pin-open, and its auto-expand switch are all fold state the
   selection does not derive — a second thing to keep in sync, and a knob. The
   selection is the fold.
+- **A self-headed inspector, Chrome side-panel style.** Chrome needs the header
+  because its strip is its own full-width row. One band, short strip: the
+  inspector's controls stay in the band (see *Beside the inspector*). Its
+  left/right alignment setting is a knob for the same reason.
 - **Per-group colours.** Chrome needs them because its groups are arbitrary.
   Termio's groups are folders with names.
 - **Tabs inside a pane.** Rejected by `SplitTree` at birth: a leaf is a session.
@@ -482,4 +578,5 @@ status, the accordion, `+`, chip menus); then × and drag.
 - **Launch order.** The sidebar's autosaved collapse state arrives after the
   toolbar is installed (`syncInspectorSwitch` exists for the inspector's copy
   of this problem); the strip must be present on a launch that restores
-  collapsed, not only on a live toggle.
+  collapsed, not only on a live toggle, and the Settings picker must read the
+  restored state rather than the store's default `true`.
