@@ -251,6 +251,35 @@ impl VtTerminal {
             formatted.extend_from_slice(&bytes);
         }
 
+        let pending_wrap = check(
+            self.terminal.is_cursor_pending_wrap(),
+            "Terminal::is_cursor_pending_wrap",
+        )?;
+
+        // The formatter paints a scrolled primary screen as one newline-joined
+        // flow and stops at the last non-blank row, dropping the blank rows
+        // beneath it — and with them the scroll steps the host has already
+        // taken. A client replaying the payload then holds a screen sitting a
+        // row (or more) behind the host's, so the cursor re-assert below lands
+        // *on* the last painted line instead of the blank row under it, and the
+        // first live byte after the snapshot overwrites that line in place.
+        // This is the reattach seam that ate exactly one line per attach: the
+        // line written in the attach second.
+        //
+        // The engine itself referees: replay the payload into a scratch
+        // terminal of the same grid and, while its screen trails the live one,
+        // feed it the newlines the flow dropped. The padding is adopted only
+        // once the replay converges on the live screen, so a payload the
+        // formatter already positions correctly — an alt-screen frame, a
+        // CUP-addressed repaint, an unscrolled screen — passes through
+        // untouched. Skipped under pending wrap for the same reason the CUP
+        // re-assert is: the formatter's own cell-reprint restore must stand.
+        if !pending_wrap {
+            if let Some(pad) = self.replay_scroll_shortfall(&formatted)? {
+                formatted.extend_from_slice(&pad);
+            }
+        }
+
         // The formatter emits the cursor's CUP *before* the state extras, and
         // some of those move the cursor as a side effect — `tabstops` walks the
         // row with CHA/HTS and leaves it wherever the last stop was, and
@@ -266,10 +295,7 @@ impl VtTerminal {
         // screen diverges from the host's on the very next byte. The formatter's
         // own restore already leaves the cursor in the right place, so this owes
         // nothing further.
-        if !check(
-            self.terminal.is_cursor_pending_wrap(),
-            "Terminal::is_cursor_pending_wrap",
-        )? {
+        if !pending_wrap {
             let cursor_x = check(self.terminal.cursor_x(), "Terminal::cursor_x")?;
             let cursor_y = check(self.terminal.cursor_y(), "Terminal::cursor_y")?;
             formatted.extend_from_slice(
@@ -420,6 +446,61 @@ impl VtTerminal {
             Ok(title) if !title.is_empty() => Some(title.to_string()),
             _ => None,
         })
+    }
+
+    /// How many scroll steps a client replaying `formatted` would end up
+    /// behind this terminal's screen, answered as the `\r\n` padding that
+    /// closes the gap — or `None` when the replay already matches (nothing to
+    /// fix) or never converges within the search bound (nothing this padding
+    /// could fix; the payload ships as-is, which is the pre-existing
+    /// behaviour).
+    ///
+    /// The bound exists because each probe re-reads the scratch grid through
+    /// FFI. A genuine shortfall is the run of blank rows the host's cursor has
+    /// scrolled past — one for a program streaming lines, a handful after a
+    /// burst of bare newlines — so a small cap covers the real cases without
+    /// letting a pathological screen turn a snapshot into a grid crawl.
+    fn replay_scroll_shortfall(&self, formatted: &[u8]) -> Result<Option<Vec<u8>>> {
+        const MAX_SCROLL_SHORTFALL: usize = 8;
+        let rows = check(self.terminal.rows(), "Terminal::rows")?;
+        let cols = check(self.terminal.cols(), "Terminal::cols")?;
+        let live = self.active_codepoints()?;
+        let mut scratch = Self::new(rows, cols)?;
+        scratch.vt_write(formatted);
+        let bound = MAX_SCROLL_SHORTFALL.min(usize::from(rows));
+        for shortfall in 0..=bound {
+            if scratch.active_codepoints()? == live {
+                if shortfall == 0 {
+                    return Ok(None);
+                }
+                return Ok(Some(b"\r\n".repeat(shortfall)));
+            }
+            scratch.vt_write(b"\r\n");
+        }
+        Ok(None)
+    }
+
+    /// The active screen's text, one codepoint per cell in row-major order,
+    /// read through `grid_ref` like `history_cell` — so nothing here touches
+    /// the render state's damage tracking, which `take_damage` owns.
+    fn active_codepoints(&self) -> Result<Vec<u32>> {
+        let rows = check(self.terminal.rows(), "Terminal::rows")?;
+        let cols = check(self.terminal.cols(), "Terminal::cols")?;
+        let mut codepoints = Vec::with_capacity(usize::from(rows) * usize::from(cols));
+        for y in 0..rows {
+            for x in 0..cols {
+                let reference = check(
+                    self.terminal.grid_ref(Point::Active(PointCoordinate {
+                        x,
+                        y: u32::from(y),
+                    })),
+                    "Terminal::grid_ref(active)",
+                )?;
+                let raw_cell = check(reference.cell(), "GridRef::cell(active)")?;
+                codepoints.push(check_at(raw_cell.codepoint(), "Cell::codepoint", "active")?);
+            }
+        }
+        Ok(codepoints)
     }
 
     fn history_cell(&self, x: u16, y: u32) -> Result<Cell> {
