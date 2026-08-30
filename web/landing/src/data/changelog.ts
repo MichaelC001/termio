@@ -17,6 +17,26 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.47.0",
+    date: "2026-08-30",
+    title: "Upgrading the session host no longer costs you your sessions",
+    changes: {
+      new: [
+        "Updating a machine's session host replaces the binary in place. Agents keep running, scrollback survives, and an upgrade that cannot go ahead puts everything back and carries on rather than taking your work with it.",
+        "The file tree for a remote project updates itself when files change on that machine, instead of reloading every time you switch back to the window.",
+        "Linux: the session host is supervised by a systemd --user unit, so it comes back after a reboot.",
+      ],
+      improved: [
+        "Opening a remote file and expanding a folder ask the machine for only what changed, so a checkout an agent is writing to no longer costs a full listing on every glance.",
+      ],
+      fixed: [
+        "Quitting no longer warns that it will end every session — it hasn't for some time.",
+        "A finished agent could freeze the app for seconds while its transcript was counted. The count happens off the main thread now, and is cached.",
+        "iPhone: an observer's screen could stay blank or letterboxed after the Mac resized, cursor reports could be read as typing, and F3 with a modifier was dropped.",
+      ],
+    },
+  },
+  {
     version: "0.46.1",
     date: "2026-08-29",
     title: "A stalled session no longer freezes the app",
