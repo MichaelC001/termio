@@ -18,10 +18,398 @@ import TermioShared
 /// request meant `ssh <host> termiod stdio` per folder expand, which measured at
 /// 32 ms median and 260 ms at p90 on a link whose round trip is 8 ms.
 ///
-/// Live change notification (the `fs:` resource) is still not here. It needs a
-/// connection that outlives one request, which now exists; what it also needs is
-/// a tree that applies deltas, which does not.
+/// Live change notification is `ResourceWatch` below: the `fs:` resource
+/// (§C.10), which the daemon has served since it grew a watcher and nothing
+/// here subscribed to. It is what replaces re-listing the whole tree every time
+/// the app takes focus — the update model VS Code and Zed both settled on, where
+/// the host says what moved and the client re-reads only that.
 extension Termiod {
+    /// A live subscription to one host resource, held for as long as the object
+    /// is retained.
+    ///
+    /// The `fs:` plane is the first consumer: one recursive watch per workspace
+    /// on the device, batched behind a 0.3 s quiet window, delivered as the set
+    /// of **directories** whose contents changed. A subscriber re-lists exactly
+    /// those and nothing else.
+    ///
+    /// Two things make this survivable rather than merely live:
+    ///
+    /// - **The cursor.** Every batch carries a monotonic `seq`, and `fs_listed`
+    ///   carries the cursor its listing was taken at. A reconnect re-subscribes
+    ///   with `since`, so batches that landed while the link was down are
+    ///   replayed rather than lost — and a batch the listing already reflects is
+    ///   dropped rather than re-fetched.
+    /// - **The reset.** When the host cannot replay from `since` (the ring aged
+    ///   out) it answers `gap`, and a dropped connection means the same thing.
+    ///   Both surface as `.reset`, whose only correct handling is to re-read what
+    ///   is held. A watch that quietly resumed after a gap would show a tree that
+    ///   is wrong in exactly the way nobody would notice.
+    ///
+    /// `@unchecked Sendable`: the state is behind `lock`, and every callback is
+    /// raised off the caller's queue.
+    final class ResourceWatch: @unchecked Sendable {
+        enum Update: Sendable {
+            /// The directories named have changed. `fullRescan` means the set is
+            /// not authoritative and everything realized must be re-read.
+            case batch(FsChangedPayload)
+            /// The subscription could not be continued from where it left off.
+            /// Whatever is held may be stale; re-read it.
+            case reset
+            /// The **first** subscribe of this watch's life has landed.
+            ///
+            /// Sent once, because it answers a question that can only be asked
+            /// at the start: a listing taken before the daemon had any watch is
+            /// stamped `seq == 0`, and anything that changed between that
+            /// listing and this moment raised no batch anybody was subscribed
+            /// for. No later event repairs it — the watch begins at a cursor
+            /// already past the change. A caller holding such a listing has to
+            /// re-read here.
+            ///
+            /// Later re-subscribes say `reset` instead: those have a `since` to
+            /// replay from, and their failure to use it is what `gap` reports.
+            case established
+        }
+
+        /// The capability the daemon must have granted. A device too old to
+        /// serve it never gets a subscription, and its tree keeps the manual
+        /// refresh it always had.
+        static let capability = "resources"
+
+        /// How long a failed subscribe waits before trying again, and the
+        /// ceiling it backs off to. Slower than the channel pin's own warm-up:
+        /// the pin is what re-opens the connection, and this only has to notice
+        /// that it came back.
+        static let retryInterval = Duration.seconds(5)
+        static let retryCeiling = Duration.seconds(120)
+
+        private let route: TermiodRoute
+        private let caps: [String]
+        private let resource: String
+        private let onUpdate: @Sendable (Update) -> Void
+        private let queue: DispatchQueue
+        private let pin: ControlPool.ChannelPin
+
+        private let lock = NSLock()
+        /// Which subscribe attempt the observer belongs to. A channel found
+        /// stale mid-subscribe closes *after* this has moved on, and its late
+        /// `.closed` must not reset a subscription that has already been
+        /// re-established on the replacement.
+        private var generation: UInt64 = 0
+        private var channel: PooledChannel?
+        private var observerToken: UUID?
+        /// The highest batch applied, replayed from on reconnect. `nil` until
+        /// the first subscribe answers, which is what makes that first one ask
+        /// for the cursor rather than a replay.
+        private var cursor: UInt64?
+        private var failures = 0
+        private var stopped = false
+        /// Whether a subscribe has ever landed, so `established` fires once.
+        private var hasEstablished = false
+        /// The id the **host** answered with, which is what batches are tagged
+        /// with. Clients name a workspace root and the daemon canonicalises it
+        /// (`daemon.rs` — "two spellings of one repo share a single watch"), so
+        /// on macOS a root under `/var/folders` comes back as `/private/var/...`
+        /// and a subscriber matching on what it asked for hears nothing at all.
+        private var resolvedResource: String?
+
+        /// Subscribes, and keeps the subscription up. `onUpdate` is raised on an
+        /// arbitrary queue and must hop wherever it needs to be.
+        init(
+            route: TermiodRoute, caps: [String], resource: String,
+            onUpdate: @escaping @Sendable (Update) -> Void
+        ) {
+            self.route = route
+            self.caps = caps
+            self.resource = resource
+            self.onUpdate = onUpdate
+            self.queue = DispatchQueue(
+                label: "sh.termio.termiod.watch", qos: .utility)
+            self.pin = ControlPool.pin(route: route, caps: caps)
+            queue.async { [weak self] in self?.connect() }
+        }
+
+        deinit {
+            lock.lock()
+            stopped = true
+            let channel = self.channel
+            let token = observerToken
+            let resolved = resolvedResource
+            self.channel = nil
+            observerToken = nil
+            lock.unlock()
+            if let token { channel?.removeObserver(token) }
+            // Best effort: a daemon whose client vanished retires the watch on
+            // its own when the connection ends, and the connection outliving
+            // this object is exactly the case worth telling it about.
+            guard let channel, !channel.isDead else { return }
+            let resource = resolved ?? self.resource
+            queue.async {
+                try? channel.post { seq in
+                    try encodeControl(
+                        UnsubscribeResourceOperation(resource: resource, seq: seq))
+                }
+            }
+        }
+
+        /// Whether a subscription is up right now.
+        ///
+        /// False before the first subscribe lands, while a dropped one is being
+        /// re-established, and forever on a daemon that never granted
+        /// `resources`. A caller that had a reconcile of its own before this
+        /// existed keeps it as the fallback for that last case: a watch that
+        /// cannot run must not take the old behaviour down with it.
+        var isSubscribed: Bool {
+            lock.withLock {
+                guard !stopped, let channel else { return false }
+                return !channel.isDead
+            }
+        }
+
+        /// The root the host is actually watching, canonicalised — `resolved`
+        /// minus its `fs:` prefix. The tree needs it to translate a batch's
+        /// paths back into its own spelling: the daemon reports changes under
+        /// the real path, while every path the tree holds came from an `fs.list`
+        /// reply, which echoes the path *as asked*. On a root reached through a
+        /// symlink the two differ, and a tree comparing them literally would
+        /// match nothing and never re-list.
+        var watchedRoot: String? {
+            lock.withLock {
+                resolvedResource.map { String($0.dropFirst("fs:".count)) }
+            }
+        }
+
+        /// Tells the watch which cursor a listing was taken at, so batches the
+        /// listing already includes are not applied over it. Called by the tree
+        /// after every `fs.list` it grafts.
+        func noteListed(at seq: UInt64) {
+            guard seq > 0 else { return }
+            lock.lock()
+            if cursor == nil || seq > cursor! { cursor = seq }
+            lock.unlock()
+        }
+
+        /// Whether a batch is news to this watch, and records it if so. The
+        /// listing that answered a previous batch may have been taken *after*
+        /// the batch that follows it was raised, and re-listing on that one
+        /// would ask the device a question it has already answered.
+        private func admit(_ batch: FsChangedPayload) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard batch.resource == (resolvedResource ?? resource) else { return false }
+            if let cursor, batch.seq <= cursor { return false }
+            cursor = batch.seq
+            return true
+        }
+
+        private func connect() {
+            lock.lock()
+            guard !stopped else { lock.unlock(); return }
+            // One failure can arm two recoveries. A channel that closes *during*
+            // the subscribe both reaches `handle` — which schedules a retry —
+            // and fails the request, which `withPooledRequest` retries on a
+            // fresh channel inside the same call. When that inner retry
+            // succeeds, the outer one is still armed, and firing it would
+            // re-subscribe on a channel already carrying this watch: a wasted
+            // round trip, a second registration, and a `gap` that re-lists the
+            // whole tree for nothing. Holding a live channel means there is
+            // nothing to reconnect.
+            if let channel, !channel.isDead {
+                lock.unlock()
+                return
+            }
+            generation &+= 1
+            let generation = self.generation
+            let since = cursor
+            lock.unlock()
+
+            do {
+                try withPooledRequest(route: route, caps: caps) { call, channel in
+                    guard channel.capabilities.contains(Self.capability) else {
+                        throw DeviceFileError.unsupported
+                    }
+                    // Registered before the request goes out: the host replays
+                    // from `since` as events *after* the reply, and an observer
+                    // installed afterwards would miss the ones already on the
+                    // wire.
+                    let token = channel.addObserver { [weak self] signal in
+                        self?.handle(signal, generation: generation, from: channel)
+                    }
+                    // Claimed *before* the subscribe answers, not after. The
+                    // host replays from `since` as events following the reply,
+                    // and a signal is only acted on when it comes from the
+                    // channel the watch is holding — so a channel claimed only
+                    // afterwards would have its replay thrown away as coming
+                    // from a stranger.
+                    guard self.claim(channel: channel, token: token, generation: generation)
+                    else {
+                        channel.removeObserver(token)
+                        return
+                    }
+                    do {
+                        let subscribed = try Self.subscribe(
+                            call, resource: resource, since: since)
+                        self.resolve(resource: subscribed.resource, generation: generation)
+                        // A first subscribe always reports a gap — there is
+                        // nothing to replay from. Reporting that as a reset
+                        // would open every pane with two full listings instead
+                        // of one. What the caller does need is to know the watch
+                        // is armed, so a listing taken before it can be
+                        // reconsidered.
+                        let first = self.lock.withLock { () -> Bool in
+                            defer { self.hasEstablished = true }
+                            return !self.hasEstablished
+                        }
+                        if first {
+                            self.onUpdate(.established)
+                        } else if subscribed.gap {
+                            self.onUpdate(.reset)
+                        }
+                        self.lock.withLock { self.failures = 0 }
+                    } catch {
+                        // Give the claim back with the observer, or `isSubscribed`
+                        // would keep answering yes for a channel this attempt
+                        // has already abandoned.
+                        self.release(channel: channel, token: token, generation: generation)
+                        throw error
+                    }
+                }
+            } catch {
+                retry(after: error, generation: generation)
+            }
+        }
+
+        private static func subscribe(
+            _ call: ChannelCall, resource: String, since: UInt64?
+        ) throws -> SubscribedPayload {
+            try call.send(payload: encodeControl(SubscribeResourceOperation(
+                resource: resource, since: since, seq: call.seq)))
+            while true {
+                let frame = try call.next(
+                    timeoutSeconds: requestIdleTimeoutSeconds,
+                    operation: "subscribe_resource")
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .subscribed(let payload):
+                    return payload
+                case .error(let failure):
+                    throw TermiodClientError.requestFailed(failure.message)
+                default:
+                    continue
+                }
+            }
+        }
+
+        /// Makes `channel` the one this watch listens to, dropping whatever it
+        /// held before. `false` when a `deinit` or a newer attempt has taken the
+        /// watch over — this subscription is already history and the caller
+        /// unregisters rather than fighting for it.
+        private func claim(
+            channel: PooledChannel, token: UUID, generation: UInt64
+        ) -> Bool {
+            lock.lock()
+            guard !stopped, generation == self.generation else {
+                lock.unlock()
+                return false
+            }
+            let previousChannel = self.channel
+            let previousToken = observerToken
+            self.channel = channel
+            observerToken = token
+            lock.unlock()
+            // Keyed on the token, not the channel. `withPooledRequest` retries
+            // inside one attempt without this watch's generation moving, and a
+            // retry can land right back on the same pooled channel — a second
+            // registration on it, with a different token. Skipping the removal
+            // whenever the channel matched left that first observer registered
+            // with nothing holding its token, so it could never be removed: two
+            // deliveries of every batch, and one more on every duplicate claim.
+            // The token is what identifies a registration, so it is what decides.
+            if let previousToken, previousToken != token {
+                previousChannel?.removeObserver(previousToken)
+            }
+            return true
+        }
+
+        /// Undoes a claim whose subscribe never landed.
+        private func release(
+            channel: PooledChannel, token: UUID, generation: UInt64
+        ) {
+            lock.lock()
+            if !stopped, generation == self.generation, self.channel === channel {
+                self.channel = nil
+                observerToken = nil
+            }
+            lock.unlock()
+            channel.removeObserver(token)
+        }
+
+        /// Records the id the host answered with, once the subscribe has landed.
+        private func resolve(resource: String, generation: UInt64) {
+            guard !resource.isEmpty else { return }
+            lock.withLock {
+                guard !stopped, generation == self.generation else { return }
+                resolvedResource = resource
+            }
+        }
+
+        private func handle(
+            _ signal: ChannelSignal, generation: UInt64, from source: PooledChannel
+        ) {
+            // The generation alone is not enough. `withPooledRequest` retries a
+            // stale channel inside one attempt without moving it, so the first
+            // try's channel can close *after* the retry's has been claimed — and
+            // acting on that close would clear a subscription that is working,
+            // leaving `isSubscribed` permanently false and arming a duplicate.
+            // A signal counts only from the channel this watch is holding.
+            let current = lock.withLock {
+                !stopped && generation == self.generation && self.channel === source
+            }
+            guard current else { return }
+            switch signal {
+            case .event(.fsChanged(let batch)):
+                guard admit(batch) else { return }
+                onUpdate(.batch(batch))
+            case .event:
+                break
+            case .closed:
+                // Dropped here rather than left for the next `adopt`, so
+                // `isSubscribed` reports the outage while it lasts and a
+                // caller's own reconcile can cover it.
+                lock.withLock {
+                    guard channel === source else { return }
+                    channel = nil
+                    observerToken = nil
+                }
+                // Batches raised while the link was down are replayed from
+                // `cursor` on the way back — but only as far as the host's ring
+                // reaches, so the tree is told to re-read regardless.
+                onUpdate(.reset)
+                retry(after: TermiodClientError.connectionClosed, generation: generation)
+            }
+        }
+
+        private func retry(after error: Error, generation: UInt64) {
+            let delay: Duration? = lock.withLock {
+                guard !stopped, generation == self.generation else { return nil }
+                // A device that cannot serve resources at all will never start,
+                // so it is not worth a timer: the tree keeps its manual refresh.
+                if case DeviceFileError.unsupported = error { return nil }
+                failures += 1
+                return min(
+                    Self.retryInterval * Double(1 << min(failures, 5)),
+                    Self.retryCeiling)
+            }
+            guard let delay else { return }
+            Log.files.debug("""
+            \(self.resource, privacy: .public) watch on             \(self.route.description, privacy: .public) retrying:             \(String(describing: error), privacy: .public)
+            """)
+            let seconds = Double(delay.components.seconds)
+            queue.asyncAfter(deadline: .now() + seconds) { [weak self] in
+                self?.connect()
+            }
+        }
+    }
+
     /// What one directory answered. `error` is the device's own message for a
     /// path that vanished or escaped the root; a batched request fails one path
     /// at a time rather than as a whole.
@@ -29,6 +417,15 @@ extension Termiod {
         let path: String
         let entries: [FileEntry]
         let error: String?
+    }
+
+    /// A batch of listings and the `fs:` cursor they were taken at — what a
+    /// subscriber needs to tell a batch it has already answered from one it has
+    /// not. Zero when the device is running no watch, which reads as "nothing
+    /// will invalidate this".
+    struct DirectoryListings: Sendable {
+        let listings: [DirectoryListing]
+        let seq: UInt64
     }
 
     /// Reading a file for preview is capped at the same 1 MiB the daemon serves
@@ -90,7 +487,7 @@ extension Termiod {
     /// Blocking; call it off the main thread (`DeviceFileProvider` does).
     static func listDirectories(
         route: TermiodRoute, root: String, paths: [String]
-    ) throws -> [DirectoryListing] {
+    ) throws -> DirectoryListings {
         try withFilesChannel(route: route) { call in
             let listed = try requestFiles(call, operation: "fs.list") { seq in
                 FsListOperation(root: root, paths: paths, seq: seq)
@@ -98,12 +495,14 @@ extension Termiod {
                 if case .fsListed(let payload) = control { return payload }
                 return nil
             }
-            return listed.listings.map { listing in
-                DirectoryListing(
-                    path: listing.path,
-                    entries: listing.entries.map(FileEntry.init(wire:)),
-                    error: listing.error)
-            }
+            return DirectoryListings(
+                listings: listed.listings.map { listing in
+                    DirectoryListing(
+                        path: listing.path,
+                        entries: listing.entries.map(FileEntry.init(wire:)),
+                        error: listing.error)
+                },
+                seq: listed.seq)
         }
     }
 
@@ -355,10 +754,30 @@ struct DeviceFileProvider: Sendable {
     /// its own `error` and the rest of the listings still land. Callers key the
     /// result by `path`, which the daemon echoes back exactly as asked.
     func list(_ paths: [String]) async throws -> [Termiod.DirectoryListing] {
-        guard !paths.isEmpty else { return [] }
+        try await listing(paths).listings
+    }
+
+    /// The same request, with the `fs:` cursor the answer was taken at. The tree
+    /// uses this one: without the cursor it cannot tell a batch its listing
+    /// already includes from one raised after it, and would re-list on every
+    /// change it had just finished reading.
+    func listing(_ paths: [String]) async throws -> Termiod.DirectoryListings {
+        guard !paths.isEmpty else {
+            return Termiod.DirectoryListings(listings: [], seq: 0)
+        }
         return try await run { [route, root] in
             try Termiod.listDirectories(route: route, root: root, paths: paths)
         }
+    }
+
+    /// Subscribes to this checkout's `fs:` resource. Held by the tree for as
+    /// long as its pane is alive; releasing it retires the watch.
+    func watch(
+        onUpdate: @escaping @Sendable (Termiod.ResourceWatch.Update) -> Void
+    ) -> Termiod.ResourceWatch {
+        Termiod.ResourceWatch(
+            route: route, caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root, onUpdate: onUpdate)
     }
 
     /// Content search under the pane's own root, on the device. Confined the same

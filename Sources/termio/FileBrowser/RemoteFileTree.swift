@@ -286,12 +286,17 @@ final class RemoteFileNode: Identifiable {
 /// Drives the tree for a checkout on another machine, over that device's
 /// `fs.list`/`fs.read` (`TermiodFiles.swift`).
 ///
-/// No watching yet: the tree reloads on pane/app focus and the explicit refresh
-/// button. A reload re-lists every directory it is currently showing in one
-/// request and grafts the answers onto the nodes already there, so expansion
-/// survives and nothing re-fetches itself a round trip at a time. Live updates
-/// are the `fs:` resource, which needs a tree that applies deltas and is
-/// deliberately not here.
+/// The tree is **live**: it subscribes to the device's `fs:` resource
+/// (`Termiod.ResourceWatch`) and re-lists only the directories a batch names and
+/// the tree is actually showing — VS Code's rule, which refreshes on a file
+/// event only when the event touched a *visible* item, rather than re-reading
+/// the tree because something somewhere moved.
+///
+/// The whole-tree reload is still here, and still one request for every open
+/// directory, but it is now the exception rather than the beat: a first load, a
+/// `full_rescan` batch, a dropped subscription, and the refresh button. It used
+/// to run on every app focus, which on a box where an agent is writing files
+/// meant re-listing everything each time you came back to the window.
 @MainActor
 final class RemoteFileBrowserModel: ObservableObject {
     enum Phase {
@@ -329,6 +334,25 @@ final class RemoteFileBrowserModel: ObservableObject {
     private var loadsInFlight: Set<String> = []
     private var prefetchesInFlight: Set<String> = []
     private var refreshing = false
+    /// A refresh that arrived while one was already running, to be run after it.
+    ///
+    /// Dropping it instead is how the `established` reconcile lost its whole
+    /// point: the subscription and the pane's first listing are both started by
+    /// `onAppear` and are both one network round trip, so the subscribe landing
+    /// *during* the first listing is the ordinary case, not a rare one. The
+    /// reconcile then hit this guard, returned, and the listing it was waiting to
+    /// correct settled at `seq == 0` behind it — the exact stale tree the signal
+    /// exists to repair. Not private so a test can see the queueing.
+    var refreshQueued = false
+    /// The `fs:` cursor the tree's rows were last stamped at. Zero means the
+    /// listing was taken while the device had no watch running, so nothing
+    /// invalidates it and nothing will — the state `established` exists to
+    /// repair.
+    private var listedSeq: UInt64 = 0
+    /// The live subscription, held while the pane is on screen. `nil` on a
+    /// device whose daemon does not serve `resources`, where the tree falls back
+    /// to exactly the manual refresh it always had.
+    private var watch: Termiod.ResourceWatch?
     /// Holds this device's channel open, and warm, while the pane is on screen.
     /// See `Termiod.ControlPool.pin`.
     private var pin: Termiod.ControlPool.ChannelPin?
@@ -345,12 +369,20 @@ final class RemoteFileBrowserModel: ObservableObject {
     func startWarming() {
         guard pin == nil else { return }
         pin = Termiod.ControlPool.pin(route: checkout.device.route, caps: ["files"])
+        guard watch == nil else { return }
+        watch = provider.watch { [weak self] update in
+            Task { @MainActor in self?.applyWatch(update) }
+        }
     }
 
     /// The pane is gone or hidden. The channel goes back on the idle clock,
     /// which hangs it up two minutes later if nothing else wants it.
     func stopWarming() {
         pin = nil
+        // Retiring the subscription is the point: a watch is a recursive
+        // `notify` on the device, and one per pane nobody is looking at is how
+        // a box runs out of inotify handles.
+        watch = nil
     }
 
     var host: String { checkout.device.name }
@@ -382,16 +414,33 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// mention keep the rows they had, so a folder that failed does not blank
     /// itself while the rest of the tree refreshes around it.
     func refresh() {
-        guard !refreshing else { return }
+        guard !refreshing else {
+            refreshQueued = true
+            return
+        }
         refreshing = true
+        refreshQueued = false
         Task {
-            defer { refreshing = false }
+            defer {
+                refreshing = false
+                // The queued one re-reads what the finished one could not know
+                // it needed to. Bounded: only a settled signal queues a refresh,
+                // and each is consumed before the next can be raised.
+                if refreshQueued {
+                    refreshQueued = false
+                    refresh()
+                }
+            }
             // Root first: the reply is applied in the order asked, and the root's
             // children have to exist before a descendant's can be attached.
             let wanted = [root] + loadedDirectories()
             do {
-                let listings = try await provider.list(wanted)
-                apply(listings)
+                let listed = try await provider.listing(wanted)
+                apply(listed.listings)
+                // Tells the watch which batches this listing already reflects,
+                // so a change raised *before* it lands does not send the tree
+                // back to ask the device a question it just answered.
+                noteListed(at: listed.seq)
                 phase = .ready
                 // The folders at the top of the tree are the ones about to be
                 // clicked. Asking for them now costs a round trip nobody is
@@ -401,6 +450,121 @@ final class RemoteFileBrowserModel: ObservableObject {
                 report(error, context: "list \(host):\(root)")
             }
         }
+    }
+
+    /// Applies one update from the device's `fs:` subscription.
+    ///
+    /// The whole point is what it does *not* do. A batch names every directory
+    /// that changed anywhere under the checkout — an agent's build output, a
+    /// `node_modules` install, a `git checkout` — and almost none of it is on
+    /// screen. Only the directories the tree has actually realized are asked
+    /// about, in one request; a batch that touches nothing realized costs
+    /// nothing at all. This is `doesFileEventAffect` from VS Code's explorer
+    /// (`explorerService.ts`), which walks the model and returns early unless a
+    /// *visible* item was hit.
+    ///
+    /// `fullRescan` and `.reset` both mean the same thing — what is held may be
+    /// wrong and the path set cannot be trusted — so both fall back to the
+    /// whole-tree reload.
+    func applyWatch(_ update: Termiod.ResourceWatch.Update) {
+        switch update {
+        case .established:
+            // The rows on screen may predate the watch. A listing taken before
+            // the daemon had one carries `seq == 0` — nothing raised a batch for
+            // a change in that window, and the watch now starts at a cursor
+            // already past it, so no later event will ever repair the tree. One
+            // re-read closes the window; a listing that was already stamped by a
+            // running watch needs nothing.
+            guard needsReconcileOnEstablish else { return }
+            refresh()
+        case .reset:
+            refresh()
+        case .batch(let batch):
+            guard !batch.fullRescan else {
+                refresh()
+                return
+            }
+            let changed = directoriesToRelist(
+                for: batch.paths, watchedRoot: watch?.watchedRoot)
+            guard !changed.isEmpty else { return }
+            Task {
+                do {
+                    let listed = try await provider.listing(changed)
+                    apply(listed.listings)
+                    noteListed(at: listed.seq)
+                    Log.files.debug(
+                        "\(self.host, privacy: .public) batch \(batch.seq, privacy: .public): \(batch.paths.count, privacy: .public) changed, \(changed.count, privacy: .public) on screen")
+                } catch {
+                    report(error, context: "relist \(host):\(changed.count) dirs")
+                }
+            }
+        }
+    }
+
+    /// Records the cursor a listing was stamped at. Called by the tree's own
+    /// loads; separate from the watch's copy because the two answer different
+    /// questions — the watch's decides which batches to drop, this one decides
+    /// whether the rows predate the watch entirely.
+    func noteListed(at seq: UInt64) {
+        listedSeq = max(listedSeq, seq)
+        watch?.noteListed(at: seq)
+    }
+
+    /// Whether the rows on screen were listed before any watch existed, and so
+    /// have to be re-read now that one does.
+    ///
+    /// Reachable from a test: the window it closes is a race nothing can observe
+    /// from the outside once it has been closed.
+    var needsReconcileOnEstablish: Bool { listedSeq == 0 }
+
+    /// Whether the device is telling this tree about changes.
+    ///
+    /// False on a daemon too old to grant `resources`, and while a dropped
+    /// subscription is being re-established. The pane keeps its app-focus
+    /// reconcile for exactly those windows — a live tree does not need it, and a
+    /// tree that cannot have one still does.
+    var isLive: Bool { watch?.isSubscribed ?? false }
+
+    /// Which of a batch's changed directories this tree actually has to re-read.
+    ///
+    /// A batch names the directory whose *contents* moved, so a folder created
+    /// or deleted arrives as a change to its parent — the row the tree draws —
+    /// and nothing has to walk upward to find it. Everything else is dropped:
+    /// a checkout has thousands of directories and the tree is showing a
+    /// handful, so the common batch (a build wrote into `target/`, an agent
+    /// rewrote a file three folders down from anything open) costs no round trip
+    /// at all.
+    ///
+    /// Reachable from a test because it is the whole claim: the tree used to
+    /// re-list every open directory whenever anything anywhere changed, and what
+    /// it re-lists now is the only thing that changed about that.
+    func directoriesToRelist(
+        for changed: [String], watchedRoot: String? = nil
+    ) -> [String] {
+        let realized = Set([root] + loadedDirectories())
+        var seen: Set<String> = []
+        return changed.compactMap { path -> String? in
+            guard let local = localPath(for: path, watchedRoot: watchedRoot) else { return nil }
+            guard realized.contains(local), seen.insert(local).inserted else { return nil }
+            return local
+        }
+    }
+
+    /// A batch's path in the spelling this tree holds.
+    ///
+    /// The daemon canonicalises the root it watches, so a checkout reached
+    /// through a symlink — `/home/ubuntu/x` where `/home` is a link, or a macOS
+    /// `/var/folders` path, which is really `/private/var/folders` — is reported
+    /// under a prefix no row in the tree carries. Swapping the watched root back
+    /// for the tree's own is the whole translation: everything below it is the
+    /// same relative path either way.
+    private func localPath(for path: String, watchedRoot: String?) -> String? {
+        guard let watchedRoot, watchedRoot != root else { return path }
+        if path == watchedRoot { return root }
+        let prefix = watchedRoot.hasSuffix("/") ? watchedRoot : watchedRoot + "/"
+        guard path.hasPrefix(prefix) else { return nil }
+        let base = root.hasSuffix("/") ? String(root.dropLast()) : root
+        return base + "/" + path.dropFirst(prefix.count)
     }
 
     /// The directories whose contents the tree is holding, deepest last, so a
@@ -631,11 +795,15 @@ struct RemoteFileTreeView: View {
             model.refresh()
         }
         .onDisappear { model.stopWarming() }
-        // The refresh model (no remote watching): reload when the app comes back
-        // to the front — the same reconcile trigger as the git pane — but only
-        // while the pane is actually visible.
+        // The app-focus reload, now only when nothing is watching. A live
+        // subscription kept running while the window was in the back, so coming
+        // back to the front is not news — and re-listing every open directory on
+        // it was this tree's largest recurring cost against a box where an agent
+        // is writing files. But a daemon too old to grant `resources` never gets
+        // a subscription at all, and dropping this unconditionally would leave
+        // those trees with nothing but the refresh button.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if store.inspectorVisible { model.refresh() }
+            if store.inspectorVisible, !model.isLive { model.refresh() }
         }
         .onChange(of: store.inspectorVisible) { _, visible in
             if visible {

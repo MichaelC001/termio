@@ -86,7 +86,7 @@ final class TermiodDirectoryLister: @unchecked Sendable {
             completion(Result {
                 let listings = try Termiod.listDirectories(
                     route: route, root: path, paths: [path])
-                guard let listing = listings.first else {
+                guard let listing = listings.listings.first else {
                     throw Failure.refused(
                         localized("The machine answered with no listing for that folder."))
                 }

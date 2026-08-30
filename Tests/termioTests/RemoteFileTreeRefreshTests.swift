@@ -125,4 +125,125 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
         XCTAssertNil(tree.node(at: "\(root)/src"))
         XCTAssertEqual(tree.loadedDirectories(), ["\(root)/docs"])
     }
+
+    // MARK: - What a live batch re-lists
+
+    /// The rule the subscription exists for: a batch names every directory that
+    /// changed under the checkout, and the tree asks about the ones it is
+    /// actually drawing. This is VS Code's `doesFileEventAffect` — refresh on a
+    /// file event only when a *visible* item was hit.
+    func testABatchOnlyRelistsDirectoriesTheTreeIsShowing() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory), ("target", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)/src"]), ["\(root)/src"],
+            "an open folder that changed is re-read")
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)"]), ["\(root)"],
+            "the root is always realized")
+    }
+
+    /// The case that used to cost a full re-list and now costs nothing: an agent
+    /// writing into a directory nobody has expanded. `target` is a row on screen,
+    /// but its *contents* are not — so a change inside it is not news.
+    func testABatchUnderAnUnopenedFolderAsksForNothing() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory), ("target", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: [
+                "\(root)/target",
+                "\(root)/target/debug",
+                "\(root)/src/generated/nested",
+            ]),
+            [],
+            "nothing realized was touched, so the device is not asked anything")
+    }
+
+    /// A batch repeats a directory when several files under it moved inside one
+    /// quiet window. The tree asks once — `fs.list` is batched, and naming a path
+    /// twice would list it twice.
+    func testARepeatedDirectoryIsAskedForOnce() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: [
+                "\(root)/src", "\(root)/src", "\(root)/nope", "\(root)",
+            ]),
+            ["\(root)/src", "\(root)"],
+            "deduplicated, in the order the batch named them")
+    }
+
+    /// A folder that was open and has since been collapsed out of the tree stops
+    /// being asked about — the same pruning `loadedDirectories` already does for
+    /// the whole-tree refresh.
+    func testACollapsedFolderIsNoLongerRelisted() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        tree.apply([listing("\(root)/src", [("app.swift", .file)])])
+        XCTAssertEqual(tree.directoriesToRelist(for: ["\(root)/src"]), ["\(root)/src"])
+
+        // The folder is gone from the root's listing, so `apply` prunes it.
+        tree.apply([listing(root, [("docs", .directory)])])
+        XCTAssertEqual(
+            tree.directoriesToRelist(for: ["\(root)/src"]), [],
+            "a path the tree no longer holds is not worth a round trip")
+    }
+
+    // MARK: - The window between the first listing and the first batch
+
+    /// A listing taken before the device had any watch is stamped `seq == 0`.
+    /// Anything that changed between it and the subscription raised no batch
+    /// anybody was subscribed for, and the watch then starts at a cursor already
+    /// past it — so nothing later repairs the tree. `established` is when that
+    /// has to be re-read.
+    func testATreeListedBeforeTheWatchExistedReconcilesWhenItArrives() {
+        let tree = model()
+        tree.apply([listing(root, [("src", .directory)])])
+        XCTAssertTrue(
+            tree.needsReconcileOnEstablish,
+            "nothing has stamped these rows, so they may already be stale")
+    }
+
+    /// The opposite, which is the common case and must not cost a second full
+    /// listing: the load happened while a watch was already running, so the
+    /// cursor on it proves what the rows include.
+    func testATreeListedUnderARunningWatchNeedsNoReconcile() {
+        let tree = model()
+        tree.noteListed(at: 42)
+        XCTAssertFalse(
+            tree.needsReconcileOnEstablish,
+            "a stamped listing already reflects everything up to its cursor")
+    }
+
+    /// A tree with no subscription — a daemon too old to grant `resources` —
+    /// keeps the app-focus reconcile it always had. Dropping that unconditionally
+    /// left those trees with nothing but the refresh button.
+    func testATreeWithNoSubscriptionIsNotLive() {
+        XCTAssertFalse(
+            model().isLive,
+            "no watch means the pane's own reconcile is still the only signal")
+    }
+
+    /// The bug the `established` reconcile shipped with: a refresh raised while
+    /// one is in flight used to be dropped on the floor. At startup that is the
+    /// ordinary case — `onAppear` starts the subscription and the first listing
+    /// together, both one round trip — so the reconcile hit the guard, returned,
+    /// and the listing it was meant to correct settled at `seq == 0` behind it.
+    func testARefreshRaisedDuringOneIsQueuedRatherThanDropped() {
+        let tree = model()
+        XCTAssertFalse(tree.refreshQueued)
+
+        tree.refresh()   // takes the guard synchronously; its listing never answers
+        tree.refresh()   // this is the reconcile, and it must not vanish
+
+        XCTAssertTrue(
+            tree.refreshQueued,
+            "the second refresh is held for after the first, not discarded")
+    }
 }

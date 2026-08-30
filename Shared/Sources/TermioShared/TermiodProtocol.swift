@@ -30,7 +30,7 @@ public enum Termiod {
     /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
     /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
     /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
-    /// | `resources`  | no      | `subscribe_resource` — live tree and git updates. The channel that outlives a request now exists (`TermiodControlPool.swift`); what is still missing is a tree that applies deltas rather than re-listing |
+    /// | `resources`  | no      | `subscribe_resource` — the live file tree (`Termiod.ResourceWatch`), on the same pooled control channel the listings ride, never an attachment |
     /// | `fs_watch`   | no      | ditto |
     /// | `files`      | no      | `fs.list`/`fs.read` — the Files pane's consumer, on the device's pooled control channel (`TermiodFiles.swift`), never an attachment |
     /// | `upload`     | no      | remote paste; rides a control channel, not an attachment |
@@ -445,6 +445,35 @@ public enum Termiod {
         }
     }
 
+    /// Resumable subscription to a durable host resource (§C.10). `since` is
+    /// the highest `seq` already applied; omitted on a first subscribe, which
+    /// asks for the cursor rather than a replay. Requires the `resources`
+    /// capability — a daemon that did not grant it answers `error`, and the
+    /// caller falls back to re-listing.
+    public struct SubscribeResourceOperation: Encodable, Sendable {
+        public let op = "subscribe_resource"
+        public let resource: String
+        public let since: UInt64?
+        public let seq: UInt64
+
+        public init(resource: String, since: UInt64?, seq: UInt64) {
+            self.resource = resource
+            self.since = since
+            self.seq = seq
+        }
+    }
+
+    public struct UnsubscribeResourceOperation: Encodable, Sendable {
+        public let op = "unsubscribe_resource"
+        public let resource: String
+        public let seq: UInt64
+
+        public init(resource: String, seq: UInt64) {
+            self.resource = resource
+            self.seq = seq
+        }
+    }
+
     /// No `offset`/`length`: an unranged read is what makes `size` and
     /// `truncated` mean "the whole file" rather than "the window you asked for".
     public struct FsReadOperation: Encodable, Sendable {
@@ -617,6 +646,70 @@ public enum Termiod {
 
     public struct FsListedPayload: Decodable, Sendable {
         public let listings: [PathListingPayload]
+        /// The `fs:` resource's cursor at listing time — the freshness proof
+        /// that lets a subscriber know which batches this listing already
+        /// includes, so a batch that arrived while the listing was in flight is
+        /// applied and one it already reflects is dropped. Zero from a daemon
+        /// running no watch, which reads as "nothing will invalidate this".
+        public let seq: UInt64
+
+        private enum CodingKeys: String, CodingKey {
+            case listings, seq
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            listings = try container.decodeIfPresent([PathListingPayload].self, forKey: .listings) ?? []
+            seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+        }
+    }
+
+    /// Reply to `subscribe_resource`. `seq` is the cursor the subscription
+    /// starts from; `gap` means the host could not replay from the `since` that
+    /// was asked for — the ring aged out, or this is a first subscribe — so the
+    /// subscriber must re-read what it holds rather than trust its cache.
+    public struct SubscribedPayload: Decodable, Sendable {
+        public let resource: String
+        public let seq: UInt64
+        public let gap: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case resource, seq, gap
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            resource = try container.decode(String.self, forKey: .resource)
+            seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+            gap = try container.decodeIfPresent(Bool.self, forKey: .gap) ?? false
+        }
+    }
+
+    /// One watcher batch for an `fs:` resource (§C.10). `paths` names the
+    /// directories whose contents changed, absolute on the device. `fullRescan`
+    /// means the path set is not authoritative and a subscriber must re-walk
+    /// what it has realized — the wire equivalent of FSEvents' `MustScanSubDirs`.
+    /// `gitMeta` means index/HEAD/refs moved; object-store churn is dropped
+    /// host-side and never arrives here.
+    public struct FsChangedPayload: Decodable, Sendable {
+        public let resource: String
+        public let seq: UInt64
+        public let paths: [String]
+        public let fullRescan: Bool
+        public let gitMeta: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case resource, seq, paths, fullRescan, gitMeta
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            resource = try container.decode(String.self, forKey: .resource)
+            seq = try container.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+            paths = try container.decodeIfPresent([String].self, forKey: .paths) ?? []
+            fullRescan = try container.decodeIfPresent(Bool.self, forKey: .fullRescan) ?? false
+            gitMeta = try container.decodeIfPresent(Bool.self, forKey: .gitMeta) ?? false
+        }
     }
 
     /// One batch of `fs.search` hits, addressed to the connection that asked.
@@ -1076,6 +1169,12 @@ public enum Termiod {
         /// (`TermiodFiles.swift`). The only event addressed to a request rather
         /// than to a session, which is why it carries no `session`.
         case searchResults(SearchResultsPayload)
+        /// One filesystem batch for a subscribed `fs:` resource. Like
+        /// `searchResults` it names no session — but unlike it, it is addressed
+        /// to no request either: it is the first event on this plane that
+        /// belongs to the *channel*, which is why the pool grew an observer for
+        /// frames answering nobody (`TermiodControlPool.swift`).
+        case fsChanged(FsChangedPayload)
         case unknown(String)
     }
 
@@ -1224,6 +1323,9 @@ public enum Termiod {
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
         case fsListed(FsListedPayload)
+        /// The reply to `subscribe_resource` (§C.10) — the cursor a live tree
+        /// starts counting batches from.
+        case subscribed(SubscribedPayload)
         /// The read half of the files plane (`TermiodFiles.swift`). `fs_listed`
         /// above answers both the path picker and the tree; this one only the
         /// tree. It rides the same decode table as everything else, so an
@@ -1276,6 +1378,8 @@ public enum Termiod {
             return .uploadCommitted(try decoder.decode(UploadCommittedPayload.self, from: payload))
         case "fs_listed":
             return .fsListed(try decoder.decode(FsListedPayload.self, from: payload))
+        case "subscribed":
+            return .subscribed(try decoder.decode(SubscribedPayload.self, from: payload))
         case "fs_file":
             return .fsFile(try decoder.decode(FsFilePayload.self, from: payload))
         case "fs_searched":
@@ -1314,6 +1418,8 @@ public enum Termiod {
             return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":
             return .sessionExited(try decoder.decode(SessionExitedPayload.self, from: payload))
+        case "fs_changed":
+            return .fsChanged(try decoder.decode(FsChangedPayload.self, from: payload))
         case "search_results":
             return .searchResults(try decoder.decode(SearchResultsPayload.self, from: payload))
         default:
