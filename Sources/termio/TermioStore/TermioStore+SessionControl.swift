@@ -931,7 +931,14 @@ extension TermioStore {
     /// Reading it inline on the main actor stalled the UI once transcripts reached
     /// tens of MB (a spinning cursor under memory pressure).
     nonisolated static func lineCount(of path: String) -> Int {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return 0 }
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            // A session with no transcript yet is 0 lines, not an error; a path
+            // that exists but won't open is one, so it is logged.
+            if FileManager.default.fileExists(atPath: path) {
+                Log.app.error("transcript open failed for \(path, privacy: .public)")
+            }
+            return 0
+        }
         defer {
             do { try handle.close() } catch {
                 Log.app.error("""
