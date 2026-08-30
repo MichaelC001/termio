@@ -295,7 +295,21 @@ request_once() {
         # a wedged app that is in fact running fine behind a socket file whose
         # owner is gone — raising TERMIO_CLI_TIMEOUT can never help.
         if [ "$reach" -ne 0 ]; then
-            echo "termio: nothing is listening at $SOCKET (connection refused) — the socket file outlived the app that made it; restart termio" >&2
+            # nc says nothing about *why* a unix connect failed, and the why
+            # decides the advice: EPERM is a sandbox denying this process, not
+            # a stale socket, and "restart termio" sends that reader the wrong
+            # way. zsh's zsocket names the errno and ships on every macOS; the
+            # probe runs under the same sandbox as the failed connect, so it
+            # reproduces the same denial.
+            reason=$(/bin/zsh -c 'zmodload zsh/net/socket 2>/dev/null || exit 9; zsocket "$1" 2>&1' zsocket "$SOCKET" 2>&1) || true
+            case "$reason" in
+                *"operation not permitted"*|*"permission denied"*)
+                    echo "termio: the OS denied the connection to $SOCKET — this process is likely sandboxed (Codex workspace-write blocks unix sockets); termio itself is fine and restarting it will not help — run the command outside the sandbox" >&2 ;;
+                *"no such file"*)
+                    echo "termio: no socket at $SOCKET — termio isn't running; start it first" >&2 ;;
+                *)
+                    echo "termio: nothing is listening at $SOCKET (connection refused) — the socket file outlived the app that made it; restart termio" >&2 ;;
+            esac
         else
             echo "termio: no reply from the app within ${CLIENT_TIMEOUT}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT" >&2
         fi
