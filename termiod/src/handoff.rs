@@ -308,28 +308,90 @@ fn run_probe(binary: &Path) -> Result<String> {
 ///
 /// Consumes the owning master descriptors: a session's number is written into
 /// the header at the moment it is committed to the blob, and not before.
+/// What a failed [`pack`] gives back: the error, and every descriptor it was
+/// handed, still owned and still open.
+///
+/// Returning them is the whole difference between an upgrade that fails and an
+/// upgrade that destroys. By the time `pack` runs, `carry_all` has already made
+/// every actor exit — the sessions exist only as these descriptors. Dropping
+/// them here, which is what this used to do, closes every PTY master at once
+/// and every shell and agent behind them takes SIGHUP. Handed back, they can be
+/// adopted again and the daemon goes on as though nothing happened.
+impl std::fmt::Debug for PackFailed {
+    /// Only the error: the descriptors are numbers whose meaning died with the
+    /// process that held them, and printing them invites reading them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PackFailed")
+            .field("error", &format_args!("{:#}", self.error))
+            .field("sessions", &self.sessions.len())
+            .finish()
+    }
+}
+
+pub struct PackFailed {
+    pub error: anyhow::Error,
+    pub listener: OwnedFd,
+    pub sessions: Vec<(CarriedSession, OwnedFd, Vec<Bytes>)>,
+}
+
 pub fn pack(
-    mut blob: Blob,
+    blob: Blob,
     listener: OwnedFd,
     sessions: Vec<(CarriedSession, OwnedFd, Vec<Bytes>)>,
+    file: std::fs::File,
+) -> std::result::Result<OwnedFd, PackFailed> {
+    // Everything fallible happens against borrows, so a failure anywhere leaves
+    // the caller holding exactly what it passed in. Ownership moves only after
+    // the last of it has succeeded, which is the instant the crossing becomes
+    // certain.
+    match write_blob(blob, &listener, &sessions, file) {
+        Ok(fd) => {
+            // Committed. From here the descriptors belong to the next image, so
+            // they must not be closed by this one.
+            let _ = listener.into_raw_fd();
+            for (_, master, _) in sessions {
+                let _ = master.into_raw_fd();
+            }
+            Ok(fd)
+        }
+        Err(error) => Err(PackFailed {
+            error,
+            listener,
+            sessions,
+        }),
+    }
+}
+
+/// Writes the header and every replay ring into `file`, and hands back its
+/// descriptor rewound and exec-safe. Borrows throughout: see [`pack`].
+/// Fault injection for the one path that cannot be reached any other way.
+///
+/// The claim this whole rollback exists to make — that a blob write failing
+/// after `carry_all` costs nothing — is only true if it has been watched
+/// happening. A real ENOSPC cannot be arranged inside a test, and the failure
+/// is the difference between an upgrade that aborts and one that kills every
+/// session on the box, so it is worth a gate to reach. Read once, from the
+/// environment of the daemon under test.
+const FAIL_AFTER_CARRY: &str = "TERMIOD_HANDOFF_FAIL_AFTER_CARRY";
+
+fn write_blob(
+    mut blob: Blob,
+    listener: &OwnedFd,
+    sessions: &[(CarriedSession, OwnedFd, Vec<Bytes>)],
     mut file: std::fs::File,
 ) -> Result<OwnedFd> {
-    // The descriptors stay owned for the whole of this function. Their numbers
-    // are stable while they are held — that is what a descriptor number is —
-    // so the header can name them without anything giving up ownership, and a
-    // failure anywhere below drops the lot: every master closes, every carried
-    // program is hung up, and nothing is left half-committed. Ownership is
-    // released only after the last fallible step has succeeded, which is the
-    // point at which the crossing is going to happen.
+    if std::env::var_os(FAIL_AFTER_CARRY).is_some() {
+        bail!("{FAIL_AFTER_CARRY} is set");
+    }
     set_inheritable(listener.as_raw_fd())?;
     blob.listener_fd = listener.as_raw_fd();
-    let mut masters = Vec::with_capacity(sessions.len());
-    let mut rings = Vec::with_capacity(sessions.len());
-    for (mut info, master, ring) in sessions {
+    for (info, master, _) in sessions {
         set_inheritable(master.as_raw_fd())?;
+        let mut info = info.clone();
+        // A descriptor number is stable while something owns it, and these are
+        // owned by the caller for the whole of this function — so the header
+        // can name them without anything giving up ownership.
         info.master_fd = master.as_raw_fd();
-        masters.push(master);
-        rings.push(ring);
         blob.sessions.push(info);
     }
 
@@ -337,7 +399,7 @@ pub fn pack(
     file.write_all(MAGIC)?;
     file.write_all(&(header.len() as u32).to_le_bytes())?;
     file.write_all(&header)?;
-    for ring in &rings {
+    for (_, _, ring) in sessions {
         for chunk in ring {
             file.write_all(chunk)?;
         }
@@ -351,12 +413,6 @@ pub fn pack(
     file.seek(SeekFrom::Start(0))?;
     let fd = unsafe { OwnedFd::from_raw_fd(file.into_raw_fd()) };
     set_inheritable(fd.as_raw_fd())?;
-
-    // Committed. From here the descriptors belong to the next image.
-    let _ = listener.into_raw_fd();
-    for master in masters {
-        let _ = master.into_raw_fd();
-    }
     Ok(fd)
 }
 

@@ -44,11 +44,31 @@ struct Daemon {
 
 impl Daemon {
     fn start(socket: &Path) -> Daemon {
-        let mut child = Command::new(BIN)
+        Daemon::start_with(socket, &[])
+    }
+
+    fn start_with(socket: &Path, env: &[(&str, &str)]) -> Daemon {
+        Daemon::start_logging(socket, env, None)
+    }
+
+    /// `log` sends the daemon's stderr to a file the test can read while it is
+    /// still running — the only way to see what the daemon decided, since the
+    /// `handoff` reply is sent when the request is accepted rather than when it
+    /// has happened.
+    fn start_logging(socket: &Path, env: &[(&str, &str)], log: Option<&Path>) -> Daemon {
+        let mut command = Command::new(BIN);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let errors = match log {
+            Some(path) => Stdio::from(std::fs::File::create(path).expect("daemon log")),
+            None => Stdio::piped(),
+        };
+        let mut child = command
             .arg("serve")
             .env("TERMIOD_SOCK", socket)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(errors)
             .spawn()
             .expect("spawn isolated daemon");
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -495,6 +515,100 @@ fn a_probe_that_hangs_or_floods_is_refused_and_leaves_the_daemon_working() {
         handed.status.success(),
         "the verb was wedged by the refusals: {handed:?}"
     );
+
+    drop(daemon);
+}
+
+/// The claim the rollback exists to make: a blob write that fails *after* every
+/// actor has handed over its PTY costs nothing at all.
+///
+/// This is the one path that cannot be reached by asking the daemon nicely — a
+/// real ENOSPC mid-write is not arrangeable — so the daemon carries a gate for
+/// it. Before the rollback, this failure dropped every carried master at once
+/// and the daemon exited: every shell on the box took SIGHUP together, which is
+/// precisely the loss the feature promises to prevent.
+#[test]
+fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("s");
+    let tally = dir.0.join("tally");
+    let log = dir.0.join("daemon.log");
+    let daemon = Daemon::start_logging(
+        &socket,
+        &[("TERMIOD_HANDOFF_FAIL_AFTER_CARRY", "1")],
+        Some(&log),
+    );
+
+    let created = termiod(&socket, &["create", "--name", "survivor", "--", "sh"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+
+    let before = status(&socket);
+    let daemon_pid = before["daemon"]["pid"].as_i64().expect("daemon pid");
+    let session_id = before["sessions"].as_array().expect("sessions")[0]["id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    // A ticker, so "it never saw a hangup" is a question with an answer rather
+    // than an absence of evidence.
+    let ticker = format!(
+        "(n=0; while :; do n=$((n+1)); echo $n > {}; sleep 0.1; done) &",
+        tally.display()
+    );
+    let sent = termiod(&socket, &["send", &session_id, &ticker]);
+    assert!(sent.status.success(), "send failed: {sent:?}");
+    let ticks = wait_for_counter(&tally, 3);
+
+    // The upgrade is asked for, gets as far as carrying every session, and then
+    // cannot write the blob. The reply says nothing about that: it is sent when
+    // the request is accepted, not when the handoff has happened — so the
+    // daemon's own log is what says which way it went.
+    let _ = termiod(&socket, &["handoff", "--json"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        if said.contains("aborted") {
+            assert!(
+                said.contains("every session is still here"),
+                "the daemon aborted without putting the sessions back: {said}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never reported an aborted handoff: {said}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // The daemon is the same process, still answering, with the session still
+    // in its roster.
+    let after = status(&socket);
+    assert_eq!(
+        after["daemon"]["pid"].as_i64(),
+        Some(daemon_pid),
+        "the daemon exited or was replaced: {after}"
+    );
+    let kept = after["sessions"].as_array().expect("sessions after");
+    assert_eq!(kept.len(), 1, "the session was dropped: {after}");
+    assert_eq!(kept[0]["id"].as_str(), Some(session_id.as_str()), "{after}");
+
+    // The shell behind it never noticed.
+    wait_for_counter(&tally, ticks + 5);
+
+    // And it is still driveable — the master went back to a live actor, not
+    // merely back into a roster entry.
+    let marker = dir.0.join("typed-after-abort");
+    let sent = termiod(&socket, &["send", &session_id, &format!("touch {}", marker.display())]);
+    assert!(sent.status.success(), "send after the abort failed: {sent:?}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the restored session never ran what it was sent"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     drop(daemon);
 }

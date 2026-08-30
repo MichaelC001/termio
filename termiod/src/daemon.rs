@@ -178,6 +178,49 @@ impl Manager {
         Ok(())
     }
 
+    /// Put carried sessions back and start serving them again.
+    ///
+    /// The undo half of `carry_all`. A session that has handed over its PTY
+    /// exists only as a descriptor and a replay ring, and `adopt` is already the
+    /// code that turns exactly that back into a running session — it is what the
+    /// *new* image does on the other side of a successful exec. An aborted
+    /// handoff is the same problem with the same answer, so it uses the same
+    /// path rather than a second one written for failures only.
+    ///
+    /// A session that cannot be adopted back is genuinely lost, and is named:
+    /// its descriptor closes with the `OwnedFd` and its child takes SIGHUP.
+    fn restore(
+        &self,
+        sessions: Vec<(crate::handoff::CarriedSession, std::os::fd::OwnedFd, Vec<Bytes>)>,
+    ) -> Vec<String> {
+        use std::os::fd::{AsRawFd, IntoRawFd};
+        let mut lost = Vec::new();
+        for (mut info, master, ring) in sessions {
+            info.master_fd = master.as_raw_fd();
+            let id = info.id.clone();
+            let mut bytes = Vec::new();
+            for chunk in &ring {
+                bytes.extend_from_slice(chunk);
+            }
+            match self.adopt(info, bytes) {
+                // The adopted session owns the descriptor now, so this one must
+                // let go of it rather than close it out from under the actor.
+                Ok(()) => {
+                    let _ = master.into_raw_fd();
+                }
+                Err(error) => {
+                    eprintln!("termiod: session {id} could not be put back: {error:#}");
+                    lost.push(id);
+                }
+            }
+        }
+        // Only once every session is installed again: a create that slipped in
+        // before this point would have been spawned into a daemon that was
+        // still handing over.
+        self.inner.lock().unwrap().draining = false;
+        lost
+    }
+
     fn find(&self, id: &SessionId) -> Option<SessionHandle> {
         self.inner.lock().unwrap().sessions.get(id).cloned()
     }
@@ -628,42 +671,63 @@ pub async fn serve(
     };
     tokio::pin!(shutdown_signal);
 
-    let mut becoming: Option<std::path::PathBuf> = None;
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut shutdown_signal => {
-                result?;
-                break;
+    // Serving is a loop around the accept loop, not the accept loop itself: a
+    // handoff that cannot go ahead puts its sessions back and comes out here to
+    // carry on serving them. Only a shutdown, or a handoff that lost sessions,
+    // leaves.
+    'serving: loop {
+        let mut becoming: Option<std::path::PathBuf> = None;
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut shutdown_signal => {
+                    result?;
+                    break;
+                }
+                requested = handoff_rx.recv() => {
+                    let Some(binary) = requested else { continue };
+                    becoming = Some(binary);
+                    break;
+                }
+                accepted = listener.accept() => {
+                    let (stream, _addr) = accepted?;
+                    let manager = manager.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_conn(stream, manager).await {
+                            eprintln!("termiod: connection error: {e:#}");
+                        }
+                    });
+                }
             }
-            requested = handoff_rx.recv() => {
-                let Some(binary) = requested else { continue };
-                becoming = Some(binary);
-                break;
+        }
+
+        let Some(binary) = becoming else { break 'serving };
+        match hand_over(&manager, &listener, &binary).await {
+            // Every session that was carried is back in the roster and running.
+            // Nothing was lost, so there is nothing to exit for — go back to
+            // accepting. Whoever asked for the upgrade can ask again.
+            Handoff::Aborted(error) => {
+                eprintln!(
+                    "termiod: handoff to {} aborted: {error:#}",
+                    binary.display()
+                );
+                eprintln!("termiod: every session is still here; carrying on");
+                continue 'serving;
             }
-            accepted = listener.accept() => {
-                let (stream, _addr) = accepted?;
-                let manager = manager.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_conn(stream, manager).await {
-                        eprintln!("termiod: connection error: {e:#}");
-                    }
-                });
+            Handoff::Lost(error) => {
+                eprintln!("termiod: handoff to {} failed: {error:#}", binary.display());
+                eprintln!(
+                    "termiod: the sessions this daemon held are lost; the next start will bury them"
+                );
+                std::process::exit(1);
             }
         }
     }
 
+    // After the serving loop, not before the handoff: an aborted upgrade goes
+    // back to serving, and taking the WebSocket listener down on the way past
+    // would leave the phone disconnected from a daemon that never went anywhere.
     let _ = wss_shutdown.send(true);
-
-    if let Some(binary) = becoming {
-        // From here the daemon is committed. `hand_over` returns only on
-        // failure, and by then the session actors have already given up their
-        // PTYs — there is no daemon left to go back to being.
-        let error = hand_over(&manager, &listener, &binary).await;
-        eprintln!("termiod: handoff to {} failed: {error:#}", binary.display());
-        eprintln!("termiod: the sessions this daemon held are lost; the next start will bury them");
-        std::process::exit(1);
-    }
 
     manager.begin_draining(EndReason::DaemonStopped);
     let drained = manager.finish_draining(EndReason::DaemonStopped).await;
@@ -709,20 +773,30 @@ fn adopt_listener(fd: std::os::fd::RawFd) -> Result<UnixListener> {
 /// read-only filesystem, a listener that cannot be duplicated — happen before
 /// the point of no return rather than after it. The far side answers the rest
 /// by degrading instead of exiting; see `serve`.
+/// How a handoff attempt ended. Only `Lost` is worth exiting over: `Aborted`
+/// means every session is back in the roster and the daemon can go on serving,
+/// which is the whole point of being able to put them back.
+enum Handoff {
+    /// Nothing was carried, or everything carried was restored.
+    Aborted(anyhow::Error),
+    /// Sessions were carried and could not be put back. They are gone.
+    Lost(anyhow::Error),
+}
+
 async fn hand_over(
     manager: &Manager,
     listener: &UnixListener,
     binary: &std::path::Path,
-) -> anyhow::Error {
+) -> Handoff {
     use std::os::fd::{AsRawFd, IntoRawFd};
 
     let state_dir = match paths::state_dir() {
         Ok(dir) => dir,
-        Err(error) => return error.context("locating the state directory"),
+        Err(error) => return Handoff::Aborted(error.context("locating the state directory")),
     };
     let staged = match crate::handoff::stage_blob(&state_dir) {
         Ok(file) => file,
-        Err(error) => return error.context("staging the handoff blob"),
+        Err(error) => return Handoff::Aborted(error.context("staging the handoff blob")),
     };
     let host_id = manager.host_id.to_string();
     // Held, not released: like the session masters, this is committed by `pack`
@@ -730,20 +804,34 @@ async fn hand_over(
     // leaving a listener nothing owns.
     let listener_fd = match crate::handoff::duplicate_for_exec(listener.as_raw_fd()) {
         Ok(fd) => fd,
-        Err(error) => return error.context("carrying the listener"),
+        Err(error) => return Handoff::Aborted(error.context("carrying the listener")),
     };
 
     // Past here the sessions are no longer readable by anything in this image.
     let (carried, stranded) = manager.carry_all().await;
-    for id in &stranded {
-        eprintln!(
-            "termiod: session {id} did not hand over its pty and will not survive the upgrade"
-        );
-    }
     let sessions: Vec<_> = carried
         .into_iter()
         .map(|one| (one.info, one.master, one.ring))
         .collect();
+    // An upgrade that takes most of the sessions is not the feature. A session
+    // misses the deadline because its actor is busy or its VT sidecar is slow
+    // to join — not because it is unhealthy — and going ahead would send SIGHUP
+    // to a running agent whose PTY was fine. Put back the ones that did carry
+    // and leave the daemon exactly as it was; the upgrade can be asked for
+    // again when whatever was slow has finished.
+    if !stranded.is_empty() {
+        let lost = manager.restore(sessions);
+        let error = anyhow::anyhow!(
+            "session(s) {} did not hand over their pty within {:?}",
+            stranded.join(", "),
+            crate::handoff::CARRY_TIMEOUT
+        );
+        return if lost.is_empty() {
+            Handoff::Aborted(error)
+        } else {
+            Handoff::Lost(error.context(format!("and {} could not be put back", lost.join(", "))))
+        };
+    }
     eprintln!(
         "termiod: handing off to {} with {} session(s)",
         binary.display(),
@@ -760,9 +848,25 @@ async fn hand_over(
     };
     let blob_fd = match crate::handoff::pack(blob, listener_fd, sessions, staged) {
         Ok(fd) => fd.into_raw_fd(),
-        Err(error) => return error.context("packing the handoff blob"),
+        // The write ran out of space, or the sync failed. Every descriptor came
+        // back, so every session goes back into the roster and the daemon keeps
+        // running — this used to close the lot and take every shell with it.
+        Err(failed) => {
+            let lost = manager.restore(failed.sessions);
+            let error = failed.error.context("packing the handoff blob");
+            return if lost.is_empty() {
+                Handoff::Aborted(error)
+            } else {
+                Handoff::Lost(
+                    error.context(format!("and {} could not be put back", lost.join(", "))),
+                )
+            };
+        }
     };
-    crate::handoff::exec(binary, blob_fd)
+    // `exec` returns only if it failed, and by then the descriptors belong to an
+    // image that never started. Nothing owns them any more, so there is nothing
+    // to put back.
+    Handoff::Lost(crate::handoff::exec(binary, blob_fd))
 }
 
 #[derive(Clone)]
