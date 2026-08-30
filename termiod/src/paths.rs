@@ -104,6 +104,39 @@ fn durable_log_dir(suffix: &str) -> Result<Option<PathBuf>> {
 
 /// Full path to the control socket. Overridable with `TERMIOD_SOCK` so tests
 /// (and side-by-side daemons) can isolate.
+/// Claims the exclusive right to serve this channel's socket. The returned
+/// file *is* the claim — hold it for the daemon's life; dropping it (or the
+/// process ending, however it ends) releases it.
+pub fn acquire_serve_lock() -> Result<std::fs::File> {
+    // Beside the socket, not in `runtime_dir()`: a `TERMIOD_SOCK` override
+    // moves the socket, and a lock guarding a different directory would
+    // serialize nothing.
+    let dir = state_dir()?;
+    let _ = std::fs::create_dir_all(&dir);
+    flock_exclusive(&dir.join("termiod.lock"))
+}
+
+fn flock_exclusive(path: &std::path::Path) -> Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let taken = unsafe {
+        libc::flock(
+            std::os::fd::AsRawFd::as_raw_fd(&file),
+            libc::LOCK_EX | libc::LOCK_NB,
+        )
+    };
+    if taken != 0 {
+        bail!(
+            "another termiod is starting or serving this channel (lock held at {})",
+            path.display()
+        );
+    }
+    Ok(file)
+}
+
 pub fn socket_path() -> Result<PathBuf> {
     if let Some(explicit) = std::env::var_os("TERMIOD_SOCK") {
         return Ok(PathBuf::from(explicit));
@@ -341,4 +374,20 @@ pub fn ensure_runtime_dir() -> Result<PathBuf> {
             .with_context(|| format!("creating runtime dir {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+#[cfg(test)]
+mod serve_lock_tests {
+    #[test]
+    fn the_serve_lock_is_exclusive_and_released_on_drop() {
+        let path = std::env::temp_dir().join(format!(
+            "termiod-lock-test-{}",
+            std::process::id()
+        ));
+        let held = super::flock_exclusive(&path).expect("first claim");
+        assert!(super::flock_exclusive(&path).is_err(), "second claim must fail");
+        drop(held);
+        super::flock_exclusive(&path).expect("claim after release");
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -21,8 +21,21 @@ const DETACH_KEY: u8 = 0x1c;
 /// Connect to the daemon, auto-starting it if the socket is dead/missing.
 pub async fn connect() -> Result<UnixStream> {
     let sock = paths::socket_path()?;
-    if let Ok(s) = UnixStream::connect(&sock).await {
-        return Ok(s);
+    let error = match UnixStream::connect(&sock).await {
+        Ok(s) => return Ok(s),
+        Err(error) => error,
+    };
+    // Only a connect failure that proves nothing is serving may recover by
+    // spawning. Anything else — EPERM from a sandbox above all — can be a
+    // healthy daemon this process is not allowed to reach, and the daemon a
+    // spawn starts here would unlink the live socket and displace it (#526,
+    // #527).
+    if !absent_daemon(error.raw_os_error()) {
+        bail!(
+            "connecting to termiod at {} failed: {error}{}",
+            sock.display(),
+            denial_hint(error.raw_os_error())
+        );
     }
     // No live daemon — spawn one detached and wait for it to bind.
     spawn_daemon()?;
@@ -70,6 +83,23 @@ pub async fn stdio() -> Result<()> {
         _ = downstream => {}
     }
     Ok(())
+}
+
+/// Whether a connect failure proves nothing is serving the socket. `ENOENT`
+/// (no file) and `ECONNREFUSED` (a file no listener backs) do; every other
+/// errno describes this client's situation, not the daemon's.
+fn absent_daemon(errno: Option<i32>) -> bool {
+    matches!(errno, Some(libc::ENOENT) | Some(libc::ECONNREFUSED))
+}
+
+fn denial_hint(errno: Option<i32>) -> &'static str {
+    match errno {
+        Some(libc::EPERM) | Some(libc::EACCES) => {
+            " — the OS denied the connection, most likely a sandbox; \
+             the daemon may be running fine, and restarting it will not help"
+        }
+        _ => "",
+    }
 }
 
 fn spawn_daemon() -> Result<()> {
@@ -854,4 +884,17 @@ async fn render_cells<W: AsyncWriteExt + Unpin>(
     output.write_all(&rendered).await?;
     output.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod autostart_tests {
+    #[test]
+    fn only_a_provably_absent_daemon_recovers_by_spawning() {
+        assert!(super::absent_daemon(Some(libc::ENOENT)));
+        assert!(super::absent_daemon(Some(libc::ECONNREFUSED)));
+        assert!(!super::absent_daemon(Some(libc::EPERM)));
+        assert!(!super::absent_daemon(Some(libc::EACCES)));
+        assert!(!super::absent_daemon(Some(libc::ETIMEDOUT)));
+        assert!(!super::absent_daemon(None));
+    }
 }

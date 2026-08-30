@@ -516,6 +516,21 @@ pub async fn serve(
     // less with no WebSocket listener or no tombstone log; it is worth nothing
     // to the person whose agent was mid-task if it exits instead.
     let adopted = inherited.is_some();
+    // The claim on the channel, held for the daemon's life. Two cold starts
+    // racing the socket probe could each decide the path was theirs, and the
+    // loser kept a listener bound to an unlinked file forever (#526); with the
+    // lock, the loser exits here. A handoff's `execve` closes the descriptor
+    // (it is CLOEXEC), which releases the lock for the incoming image — and a
+    // failure to re-take it is, like everything on the handoff path, something
+    // to log and go without rather than exit over.
+    let _serve_lock = match paths::acquire_serve_lock() {
+        Ok(lock) => Some(lock),
+        Err(error) if adopted => {
+            eprintln!("termiod: could not take the serve lock after the handoff: {error:#}");
+            None
+        }
+        Err(error) => return Err(error),
+    };
     match paths::ensure_runtime_dir() {
         Ok(_) => {}
         // The directory is already there and already holds the socket this
@@ -527,7 +542,7 @@ pub async fn serve(
         Err(error) => return Err(error),
     }
 
-    let listener = match &inherited {
+    let mut listener = match &inherited {
         Some((blob, _)) => adopt_listener(blob.listener_fd)?,
         None => {
             if sock_path.exists() {
@@ -535,8 +550,18 @@ pub async fn serve(
                     Ok(_) => {
                         anyhow::bail!("termiod already running at {}", sock_path.display());
                     }
-                    Err(_) => {
+                    // Only these errnos prove the file is a corpse. An EPERM
+                    // here is a sandbox denying *this* process, not a dead
+                    // daemon: unlinking on it displaced healthy daemons and
+                    // left them as the unreachable orphans of #526.
+                    Err(error) if socket_is_stale(error.raw_os_error()) => {
                         let _ = std::fs::remove_file(&sock_path);
+                    }
+                    Err(error) => {
+                        anyhow::bail!(
+                            "probing {} failed: {error} — refusing to replace a socket that may still be served",
+                            sock_path.display()
+                        );
                     }
                 }
             }
@@ -697,6 +722,17 @@ pub async fn serve(
     };
     tokio::pin!(shutdown_signal);
 
+    // The socket file's identity at bind time. macOS sweeps $TMPDIR entries it
+    // considers stale, and a raced start used to replace the file — either way
+    // a daemon serving an unlinked path is unreachable and must not keep
+    // pretending otherwise. The periodic check below re-binds a vanished path
+    // and stands down from a replaced one.
+    let mut bound_inode = socket_identity(&sock_path);
+    let mut displacement_reported = false;
+    let mut socket_check = tokio::time::interval(std::time::Duration::from_secs(30));
+    socket_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    socket_check.tick().await;
+
     // Serving is a loop around the accept loop, not the accept loop itself: a
     // handoff that cannot go ahead puts its sessions back and comes out here to
     // carry on serving them. Only a shutdown, or a handoff that lost sessions,
@@ -723,6 +759,48 @@ pub async fn serve(
                             eprintln!("termiod: connection error: {e:#}");
                         }
                     });
+                }
+                _ = socket_check.tick() => {
+                    let identity = socket_identity(&sock_path);
+                    if identity == bound_inode {
+                        displacement_reported = false;
+                    } else if identity.is_none() {
+                        // The file is gone but nothing replaced it — re-bind
+                        // in place. Established connections ride the old
+                        // listener's descriptors and never notice.
+                        match UnixListener::bind(&sock_path) {
+                            Ok(rebound) => {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    &sock_path, std::fs::Permissions::from_mode(0o600));
+                                listener = rebound;
+                                bound_inode = socket_identity(&sock_path);
+                                eprintln!(
+                                    "termiod: {} had vanished; re-bound it",
+                                    sock_path.display());
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "termiod: {} is gone and re-binding failed: {error:#}",
+                                    sock_path.display());
+                            }
+                        }
+                    } else if manager.handles().is_empty() {
+                        // Another daemon owns the path and this one holds
+                        // nothing — lingering is how the #526 orphans lived
+                        // for a week. With sessions it stays: they outrank
+                        // reachability, and killing them to tidy a process
+                        // table is the wrong trade.
+                        eprintln!(
+                            "termiod: {} now belongs to another daemon and no sessions are held here; exiting",
+                            sock_path.display());
+                        std::process::exit(0);
+                    } else if !displacement_reported {
+                        displacement_reported = true;
+                        eprintln!(
+                            "termiod: {} now belongs to another daemon; keeping the sessions held here alive",
+                            sock_path.display());
+                    }
                 }
             }
         }
@@ -767,6 +845,18 @@ pub async fn serve(
         Err(error) => eprintln!("termiod: could not remove socket during shutdown: {error}"),
     }
     drained
+}
+
+/// Whether a failed probe connect proves no daemon is behind the socket file.
+fn socket_is_stale(errno: Option<i32>) -> bool {
+    matches!(errno, Some(libc::ECONNREFUSED) | Some(libc::ENOENT))
+}
+
+/// The inode currently at `path`, or `None` when nothing is.
+fn socket_identity(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| std::os::unix::fs::MetadataExt::ino(&metadata))
 }
 
 /// Re-establish a `UnixListener` on a descriptor that crossed an `execve`.
@@ -2758,5 +2848,17 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
         code,
         message: message.into(),
         retryable,
+    }
+}
+
+#[cfg(test)]
+mod bind_probe_tests {
+    #[test]
+    fn only_refused_and_missing_mean_a_stale_socket() {
+        assert!(super::socket_is_stale(Some(libc::ECONNREFUSED)));
+        assert!(super::socket_is_stale(Some(libc::ENOENT)));
+        assert!(!super::socket_is_stale(Some(libc::EPERM)));
+        assert!(!super::socket_is_stale(Some(libc::EACCES)));
+        assert!(!super::socket_is_stale(None));
     }
 }
