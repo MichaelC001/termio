@@ -1,6 +1,6 @@
 ---
-title: Workspaces and machines
-description: A workspace is the sidebar’s scope and it belongs to one machine — this Mac, or a box you reach over SSH. Termio sets up the session host there, and the sessions keep running whether or not you’re attached.
+title: Devices
+description: Run your agents on machines you already own — this Mac, the Mac mini on the desk, a VPS. Termio copies one binary there over SSH, sets up the agents, and the sessions keep running whether or not you’re attached.
 ---
 
 Termio runs your agents on machines you already own: this Mac, the Mac mini on
@@ -10,7 +10,7 @@ nothing to sign into — a machine is a machine Termio can `ssh` to.
 Everything in the app files under one hierarchy:
 
 ```
-Machine       a box you can reach, this Mac included
+Device        a machine you can reach, this Mac included
   └ Workspace   a named scope in the sidebar
       └ Project    a checkout on that machine
           └ Session   one real terminal
@@ -18,38 +18,12 @@ Machine       a box you can reach, this Mac included
 
 Each level belongs to exactly one level above it. That is what makes the machine
 question answerable once, at the top, instead of being asked again for every
-project and every pane.
-
-## Workspaces
-
-A workspace is a named scope in the sidebar. It holds projects and loose
-terminals, and switching to it swaps what the sidebar lists — the projects filed
-under it, its worktrees, its sessions, and nothing else.
-
-Switch with `⌘1` through `⌘9`, or from the switcher in the sidebar’s toolbar.
-The digits are positional: they follow the order of the list, and the switcher
-draws each one beside its name so you read the number rather than memorize it.
-`File ▸ Workspace` carries the same rows.
-
-A workspace remembers the session you left it on, with its panes, its split
-group, and its inspector tab. Coming back to a scope puts your own work back on
-screen rather than whatever sorts first.
-
-**Settings ▸ Workspaces** lists every workspace with the machine it’s on and how
-many sessions it holds. Renaming and removing live there, beside the workspace
-they act on. Removing one closes its sessions; the folders on disk are left
-alone.
-
-<Callout type="note" title="One workspace, one machine">
-  A workspace can’t span two machines. A checkout already lives on exactly one
-  box, so a workspace covering both was never more than a visual grouping over
-  leaves that disagreed. Work that touches a repo here and a repo on the VPS is
-  two workspaces.
-</Callout>
+project and every pane. The level that answers it is the
+[workspace](/docs/workspaces).
 
 ## Adding a machine
 
-This Mac is a machine like any other, and it’s the one you already have. Until
+This Mac is a device like any other, and it’s the one you already have. Until
 you add a second, the level stays out of your way — `New Terminal` and `Open
 Project…` are plain verbs, because there is only one place they could mean.
 
@@ -119,8 +93,8 @@ the project is on:
 - **Changes, Compare, History** — the git pane reads that machine’s repository,
   and stays as read-only there as it is here.
 - **Agents** — the same manifests, hooks, and skill, installed on the box.
-  **Settings ▸ Agents** carries a machine scope, so where an agent’s CLI lives
-  is answered per machine.
+  **Settings ▸ Agents** carries a device scope, so where an agent’s CLI lives is
+  answered per machine.
 - **Paste an image** into an agent running on the machine and Termio carries the
   file across.
 
@@ -129,8 +103,8 @@ is running, including sessions started outside Termio — `ssh` in, `termiod`
 sees it, and you can open it here.
 
 <Cards>
-  <Card href="/docs/sidebar" title="The sidebar">
-    Workspaces, projects, and the status every session reports.
+  <Card href="/docs/workspaces" title="Workspaces">
+    The scope that decides which machine a project opens on.
   </Card>
   <Card href="/docs/session-control" title="Session control & the CLI">
     The hooks that make status honest, on this Mac and on every machine.

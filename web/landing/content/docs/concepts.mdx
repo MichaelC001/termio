@@ -1,20 +1,20 @@
 ---
 title: Concepts
-description: The nouns Termio is built from — machine, workspace, project, session, pane, and worktree — plus the status model that tells you which agent needs you.
+description: The nouns Termio is built from — device, workspace, project, session, pane, and worktree — plus the status model that tells you which agent needs you.
 ---
 
 Termio is a terminal for running several coding agents at once. Everything in the
 app is built from six nouns and one status model. Learn these and the rest of the
 docs read quickly.
 
-## Machine
+## Device
 
-A machine is a box you can reach: this Mac, the Mac mini on the same desk, a VPS.
+A device is a machine you can reach: this Mac, the Mac mini on the same desk, a VPS.
 Termio reads `~/.ssh/config` to find them and shells out to the system `ssh` to
 get there — it never provisions a machine and never routes your traffic.
 
 This Mac is a machine like any other, so the level stays invisible until you add
-a second one. See [Workspaces and machines](/docs/machines).
+a second one. See [Devices](/docs/devices).
 
 ## Workspace
 
@@ -24,7 +24,7 @@ remembers the session you left it on.
 
 Every workspace belongs to exactly one machine, which is how the machine
 question gets answered once, at the top, instead of again for every project.
-`⌘1` through `⌘9` switch between them.
+`⌘1` through `⌘9` switch between them. See [Workspaces](/docs/workspaces).
 
 ## Project
 
@@ -134,7 +134,10 @@ authority:
   <Card href="/docs/agents" title="Running multiple agents">
     The sidebar as a control surface for a fleet.
   </Card>
-  <Card href="/docs/machines" title="Workspaces and machines">
+  <Card href="/docs/workspaces" title="Workspaces">
+    The scope that decides which machine a project opens on.
+  </Card>
+  <Card href="/docs/devices" title="Devices">
     Put a workspace on another box and set up the session host there.
   </Card>
 </Cards>

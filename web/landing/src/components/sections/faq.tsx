@@ -13,42 +13,61 @@ import { supportedAgents } from "@/lib/site";
 const faqs: { question: string; answer: string }[] = [
   {
     question: "Is Termio free?",
-    answer:
-      "Yes. Termio is free to use — every feature, no trial clock, no license key, no card. Just download it and go.",
+    answer: "Yes. Termio is free and open source. No account, no cloud.",
   },
   {
-    question: "How do I get updates?",
+    question:
+      "What happens to a running agent when I quit Termio or close the laptop?",
     answer:
-      "Automatically. Termio ships with built-in auto-updates, so once you download it the app keeps itself current — no reinstalling, no checking a website.",
+      "Sessions are hosted by termiod, not the app window. Quit Termio, sleep the laptop, or reboot — the agent keeps running. Reattach restores the exact screen.",
   },
   {
-    question: "Do I need an account?",
+    question: "Can I run agents on a remote machine?",
     answer:
-      "No. Download Termio and use every feature — the app runs entirely on your Mac, with no sign-in and no card.",
+      "Yes. Any Linux VPS you can ssh to — Termio reads ~/.ssh/config and never rewrites it. Set Up copies one binary over SSH, starts the daemon, and installs the agents’ hooks there. Local and remote sessions run through the same host.",
+  },
+  {
+    question: "How is this different from Zed remote or VS Code Remote?",
+    answer:
+      "The session lives on the machine, not in the connection. Drop the link and the agent keeps running; reattach restores the exact screen. Zed Remote and VS Code Remote keep remote work inside a live connection.",
+  },
+  {
+    question: "How is this different from tmux?",
+    answer:
+      "tmux is a prefix-key multiplexer you attach a terminal to. Termio is a native Mac app with its own session host — same sessions on this Mac, a remote box, or the iPhone companion. You don’t have to learn tmux. There is no prefix key to remember.",
   },
   {
     question: "Which agents are supported?",
-    answer: `Termio gives a first-class native terminal to ${supportedAgents.join(", ")}. Because each session is just a real PTY, any CLI-based agent works — and we add more as the ecosystem grows.`,
+    answer: `${supportedAgents.join(", ")}, and any other coding agent that runs in a terminal. Each session is a real terminal, not a chat view.`,
   },
   {
-    question: "Is there an iPhone app?",
+    question: "How does Termio know when an agent needs me?",
     answer:
-      "Yes. The free iPhone companion mirrors your Mac sessions live — the full terminal, with a key bar for esc, tab and ctrl, plus hold-to-speak voice input. It's in public beta on TestFlight; pair it by scanning the QR code in Settings → Mobile.",
+      "Agents report working, needs you and done through hooks Termio installs. If a hook isn’t there, Termio reads the screen.",
   },
   {
     question: "Is my code private?",
     answer:
-      "Yes. Termio is local-only: no telemetry, no cloud sync, and no account is needed to start. Your repositories, agent output and sessions never leave your machine.",
+      "Yes. No account, no cloud, no telemetry. Code never leaves machines you own.",
   },
   {
-    question: "Is Termio available in my language?",
+    question: "Is Termio a fork of Ghostty?",
+    answer: "No. Termio is built on libghostty. It is not a fork.",
+  },
+  {
+    question: "Is there an iPhone app?",
     answer:
-      "Termio and the iPhone companion ship in English and Simplified Chinese. The app follows your macOS language; Settings → General pins one if you'd rather choose.",
+      "Yes. A free iPhone companion mirrors sessions live; it’s in TestFlight beta. Remote access uses a tunnel you choose — Tunelo, Cloudflare, ngrok, or a self-hosted relay.",
+  },
+  {
+    question: "Can I script it?",
+    answer:
+      "Yes. The termio CLI drives the running app over a local socket, and ships as an agent skill.",
   },
   {
     question: "What are the requirements?",
     answer:
-      "macOS 14 or later, on Apple silicon or Intel — Termio ships as a universal binary, so the same download runs natively on both. You bring your own agent CLIs and their API keys.",
+      "macOS 14 or later. Universal binary, so the same download runs on Apple silicon and Intel. You bring the agent CLIs and their credentials.",
   },
 ];
 
@@ -79,8 +98,8 @@ export function Faq() {
             Frequently asked questions
           </h2>
           <p className="mt-5 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
-            Can&apos;t find the answer you&apos;re looking for? The docs go deeper,
-            or reach out and a human will help.
+            Can&apos;t find the answer you&apos;re looking for? The docs go
+            deeper, or reach out and a human will help.
           </p>
         </Reveal>
 
