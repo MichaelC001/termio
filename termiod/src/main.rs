@@ -344,7 +344,8 @@ enum Cmd {
         cmd: remote::RemoteCmd,
     },
 
-    /// Keep the daemon running across logins and crashes (launchd, macOS).
+    /// Keep the daemon running across logins and crashes (launchd on macOS,
+    /// systemd --user on Linux).
     Service {
         #[command(subcommand)]
         cmd: service::ServiceCmd,

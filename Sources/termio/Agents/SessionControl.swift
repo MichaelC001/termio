@@ -580,7 +580,8 @@ final class SessionWatchHub: @unchecked Sendable {
             var on: Int32 = 1
             setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &on,
                        socklen_t(MemoryLayout<Int32>.size))
-            for event in snapshot {
+            for var event in snapshot {
+                event.fillCursorIfNeeded()
                 guard Self.write(descriptor, wantsJSON ? event.jsonLine : event.wireLine) else {
                     close(descriptor)
                     return
@@ -597,6 +598,8 @@ final class SessionWatchHub: @unchecked Sendable {
     func broadcast(_ event: SessionWatchEvent) {
         queue.async {
             guard !self.subscribers.isEmpty else { return }
+            var event = event
+            event.fillCursorIfNeeded()
             let line = event.wireLine
             let jsonLine = event.jsonLine
             for (fd, sub) in self.subscribers {
@@ -663,6 +666,16 @@ final class SessionWatchHub: @unchecked Sendable {
 }
 
 private extension SessionWatchEvent {
+    /// Fills `cursorEnd` for a `done` event from its transcript's current line
+    /// count. Called on `SessionWatchHub`'s serial queue, off the main thread —
+    /// the count is an O(file) read the main actor must not do (see
+    /// `TermioStore.lineCount`). Idempotent: only a `done` event carrying a
+    /// transcript path but no cursor yet reads the file.
+    mutating func fillCursorIfNeeded() {
+        guard status == "done", cursorEnd == nil, let transcript else { return }
+        cursorEnd = TermioStore.lineCount(of: transcript)
+    }
+
     var wireLine: Data {
         let suffix = title.isEmpty ? "" : "  \(title)"
         let detail = evidence.map { "  — \($0)" } ?? ""

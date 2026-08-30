@@ -112,8 +112,22 @@ Run from a clean worktree on the commit you want to ship (normally `main`).
      means it still needs submitting, `WAITING_FOR_BETA_REVIEW` means it is
      already in Apple's queue and there is nothing to do but wait, and
      `BETA_TESTING` means it is live on the public link. **Ask the user before
-     submitting** — that ships to real testers. A build of a marketing version
-     that has already cleared review skips this step entirely (see below).
+     submitting** — that ships to real testers.
+
+     It takes **two** commands, and the first one alone looks like it worked:
+
+     ```sh
+     asc builds add-groups --build-id "BUILD_ID" --group fe170244-643a-4c73-9c94-84ab44c254f9
+     asc testflight review submit --build-id "BUILD_ID" --confirm
+     ```
+
+     Adding the group reports success and changes nothing —
+     `externalBuildState` stays `READY_FOR_BETA_SUBMISSION` until the build is
+     actually submitted. This holds even for a marketing version that has
+     already cleared review: 1.1 build 951 still had to be submitted on
+     2026-08-28, having been told here that it would skip the step. What that
+     version buys is the *wait*, not the submission — the state went
+     `WAITING_FOR_REVIEW` → `IN_BETA_TESTING` within a minute rather than hours.
 
 7. **Revert** the pbxproj bump and delete `ios/.asc/` (untracked build
    artifacts, ~10 MB IPA plus the archive).
@@ -171,9 +185,10 @@ you are starting a new version train.**
 Bumping is not free. The *first* build of a new marketing version has to clear
 Apple's Beta App Review before any external tester can install it — it sits at
 `externalBuildState: WAITING_FOR_BETA_REVIEW`, typically hours. Every later
-build of that same version skips review and reaches external testers as soon as
-it finishes processing. Internal testers are never affected either way; they get
-every processed build immediately (`internalBuildState: IN_BETA_TESTING`).
+build of that same version still has to be submitted — see step 6, the
+submission is never automatic — but clears in about a minute instead of hours.
+Internal testers are never affected either way; they get every processed build
+immediately (`internalBuildState: IN_BETA_TESTING`).
 
 So a bump costs one review wait and buys nothing on its own. Bump when the
 version is about to mean something — an App Store submission, or a batch of work

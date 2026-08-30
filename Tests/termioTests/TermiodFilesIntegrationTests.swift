@@ -173,7 +173,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
 
     func testTheRootListsAsTheTreeWouldDrawIt() throws {
         let listings = try Termiod.listDirectories(
-            route: .local, root: root.path, paths: [root.path])
+            route: .local, root: root.path, paths: [root.path]).listings
         XCTAssertEqual(listings.count, 1)
         let listing = try XCTUnwrap(listings.first)
         XCTAssertNil(listing.error)
@@ -191,7 +191,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     func testASubdirectoryListsUnderTheSameRoot() throws {
         let listings = try Termiod.listDirectories(
             route: .local, root: root.path,
-            paths: [root.appendingPathComponent("sub").path])
+            paths: [root.appendingPathComponent("sub").path]).listings
         let listing = try XCTUnwrap(listings.first)
         XCTAssertNil(listing.error)
         XCTAssertEqual(listing.entries.map(\.name), ["b.txt"])
@@ -203,7 +203,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     func testAPathOutsideTheRootIsRefusedOnItsOwn() throws {
         let outside = root.deletingLastPathComponent().path
         let listings = try Termiod.listDirectories(
-            route: .local, root: root.path, paths: [root.path, outside])
+            route: .local, root: root.path, paths: [root.path, outside]).listings
         XCTAssertEqual(listings.count, 2)
         XCTAssertNil(listings[0].error, "the confined path still answers")
         XCTAssertNotNil(listings[1].error, "the escape is refused")
@@ -459,7 +459,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
 
         DispatchQueue.global().async {
             listed.value = (try? Termiod.listDirectories(
-                route: .local, root: root.path, paths: [root.path])) ?? []
+                route: .local, root: root.path, paths: [root.path]))?.listings ?? []
             listEnded.value = clock.now
             done.fulfill()
         }
@@ -564,7 +564,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         daemon = restarted
 
         let listings = try Termiod.listDirectories(
-            route: .local, root: root.path, paths: [root.path])
+            route: .local, root: root.path, paths: [root.path]).listings
         XCTAssertTrue(listings.first?.entries.contains { $0.name == "a.txt" } ?? false)
     }
 
@@ -664,6 +664,149 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         let held = try Termiod.ControlPool.channel(route: .local, caps: ["files"])
         XCTAssertTrue(channel === held, "the pane still open keeps the connection")
         withExtendedLifetime(second) {}
+    }
+
+    // MARK: - The live subscription
+
+    /// The `fs:` plane end to end: subscribe, touch a file, and see the batch
+    /// name the directory it landed in.
+    ///
+    /// This is the half the client had never exercised. The daemon has served
+    /// `fs:` since it grew a watcher; nothing here listened, so the tree re-read
+    /// everything on app focus instead. What is worth pinning is precisely what
+    /// used to be missing: that a frame answering *no request* reaches a
+    /// subscriber at all (`PooledChannel.addObserver`), and that the batch names
+    /// the changed directory rather than the changed file.
+    func testAWatchDeliversABatchNamingTheChangedDirectory() throws {
+        let batches = UncheckedBox<[Termiod.FsChangedPayload]>([])
+        let arrived = expectation(description: "a batch names the directory")
+        arrived.assertForOverFulfill = false
+        let watch = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { update in
+            guard case .batch(let batch) = update else { return }
+            batches.value.append(batch)
+            arrived.fulfill()
+        }
+
+        // The subscribe is asynchronous; a write that beats it would be watched
+        // by nobody. Poll the write rather than sleep once, so a slow machine
+        // lengthens the test instead of failing it.
+        let armed = Date().addingTimeInterval(20)
+        while watch.watchedRoot == nil, Date() < armed { usleep(20_000) }
+        let subscribed = Date()
+        try Data("live\n".utf8).write(to: root.appendingPathComponent("watched.txt"))
+        wait(for: [arrived], timeout: 20)
+        let latency = Date().timeIntervalSince(subscribed)
+        print(String(format: "fs: batch latency after one write: %.0f ms", latency * 1000))
+        XCTAssertLessThan(
+            latency, 5,
+            "a change is meant to reach the tree while the user is still looking at it")
+        withExtendedLifetime(watch) {}
+
+        // The host canonicalises the root it watches, so a `/var/folders` path
+        // comes back as `/private/var/folders`. Comparing the resolved spelling
+        // is the point rather than an allowance: a client that matched on what
+        // it asked for would hear nothing, which is what this test caught.
+        // `realpath` rather than `resolvingSymlinksInPath`, which deliberately
+        // rewrites `/private/var` *back* to `/var` and would agree with the bug.
+        let canonical = try XCTUnwrap(Self.realPath(of: root.path))
+        let named = Set(batches.value.flatMap(\.paths))
+        XCTAssertTrue(
+            named.contains(canonical) || batches.value.contains(where: \.fullRescan),
+            "the batch names the directory the file landed in, not the file: \(named)")
+        XCTAssertEqual(
+            watch.watchedRoot, canonical,
+            "the watch adopts the host's spelling, which is what the tree translates by")
+        XCTAssertTrue(
+            batches.value.allSatisfy { $0.resource == "fs:" + canonical },
+            "every batch is tagged with the resource that raised it")
+    }
+
+    /// The cursor, which is what keeps a live tree from re-reading what it just
+    /// read: a batch at or below the `seq` a listing was taken at is already
+    /// reflected in that listing and must not send the tree back to the device.
+    func testAListingCarriesTheCursorItWasTakenAt() throws {
+        // `fs_listed.seq` is 0 until something is watching the root — the
+        // daemon's honest "nothing will invalidate this". So the subscription
+        // has to exist before the listing can carry a cursor at all, which is
+        // the ordering the tree uses too: subscribe on appear, then load.
+        let delivered = UncheckedBox<[UInt64]>([])
+        let watch = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { update in
+            guard case .batch(let batch) = update else { return }
+            delivered.value.append(batch.seq)
+        }
+        let armed = Date().addingTimeInterval(20)
+        while watch.watchedRoot == nil, Date() < armed { usleep(100_000) }
+        XCTAssertNotNil(watch.watchedRoot, "the subscription is what stamps a listing")
+
+        try Data("cursor\n".utf8).write(to: root.appendingPathComponent("cursor.txt"))
+        var listed = try Termiod.listDirectories(
+            route: .local, root: root.path, paths: [root.path])
+        let cursorDeadline = Date().addingTimeInterval(20)
+        while listed.seq == 0, Date() < cursorDeadline {
+            usleep(200_000)
+            listed = try Termiod.listDirectories(
+                route: .local, root: root.path, paths: [root.path])
+        }
+        withExtendedLifetime(watch) {}
+
+        XCTAssertGreaterThan(
+            listed.seq, 0,
+            "a listing taken while a watch is running carries that watch's cursor")
+        XCTAssertTrue(
+            listed.listings.first?.entries.contains { $0.name == "cursor.txt" } ?? false,
+            "and the listing the cursor is stamped on is the one that includes the write")
+    }
+
+    /// A watch that loses its channel and comes back re-subscribes, and leaves
+    /// exactly one observer on the channel it lands on.
+    ///
+    /// This covers the reconnect path, not the same-channel double-claim: a
+    /// hung-up channel is closed, so the retry necessarily opens a different one
+    /// and `claim` replaces the observer either way. It passes with and without
+    /// that guard, which is stated here rather than left for the next reader to
+    /// discover — a test that cannot fail for the reason its name suggests is
+    /// worse than no test.
+    func testAReconnectingWatchReplacesItsObserverRatherThanStackingOne() throws {
+        let watch = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { _ in }
+
+        let armed = Date().addingTimeInterval(30)
+        while !watch.isSubscribed, Date() < armed { usleep(100_000) }
+        XCTAssertTrue(watch.isSubscribed, "the first subscribe never landed")
+
+        // Hang the channel up under it, which is what a ControlPersist expiry or
+        // a sleeping laptop does.
+        Termiod.ControlPool.closeAll(route: .local)
+        let backAgain = Date().addingTimeInterval(90)
+        while !watch.isSubscribed, Date() < backAgain { usleep(200_000) }
+        XCTAssertTrue(watch.isSubscribed, "the watch never re-established")
+
+        let channel = try Termiod.ControlPool.channel(
+            route: .local, caps: ["files", Termiod.ResourceWatch.capability])
+        XCTAssertEqual(
+            channel.observerCount, 1,
+            "one watch, one observer — a second would double every batch")
+        withExtendedLifetime(watch) {}
+    }
+}
+
+extension TermiodFilesIntegrationTests {
+    /// The path the daemon canonicalises to, resolved the same way it does.
+    static func realPath(of path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 }
 

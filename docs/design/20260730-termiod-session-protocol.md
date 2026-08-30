@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-24
+updated: 2026-08-29
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -313,19 +313,29 @@ and diverge — the synchronized-state-machine guarantee silently breaks. So:
 `attached` (and the v1 `S` snapshot) **carry `rows`/`cols`**, and a smart client
 maintains an internal grid at *authoritative PTY dimensions* with its own
 *local* viewport layered on top (letterbox / scale / scroll) — never by parsing
-at its own window size. *(`Attached` carries `rows`/`cols` as of Phase 1c. The
-residual gap is client conformance, not the wire: the reference client still
-ignores `Resized`/`WriterChanged` (`client.rs`) — acceptable for a single
-same-size CLI, incorrect the moment a second differently-sized viewer
-attaches.)*
+at its own window size. *(`Attached` carries `rows`/`cols` as of Phase 1c. As
+of 2026-08-29 both app clients conform: the Mac pane letterboxes a demoted
+surface at the shared grid (`SharedGridLetterbox`) and the phone lays its
+surface out at that grid and scales it to fit, both driven by `E resized` and
+`writer_changed`. The keyframe that announces a new grid reaches an observer
+before its surface has moved, so it is parsed at the old grid; the first
+resize that lands on the shared grid sends `request_snapshot`, and that
+keyframe paints right. The reference CLI client still parses at its own size
+— acceptable for a single same-size CLI.)*
 
 **Writer policy — single writer, follows the device being used, observable.**
 A `mode:"interact"` attach takes the write token only when nobody holds it;
 after that the token moves on `claim_writer` alone, which every client sends
-when its user actually shows up (typing, or opening the session on a phone).
+when its user actually shows up — that is, types. Opening a session on a phone,
+bringing it to the foreground, or rotating it is *looking*, and takes nothing;
+a phone's grid report is remembered and applied only once it holds the token.
 The previous writer stays attached but demoted, and *everyone* on the session
 gets `E {ev:"writer_changed", writer:"c_41"}`. Observers' `D`/`R` frames are
-answered with `error {code:"not_writer"}` rather than dropped.
+answered with `error {code:"not_writer"}` rather than dropped. A client's own
+replies to the host's terminal queries (DA, DSR, XTVERSION, colour queries) are
+not its user either: they are sent only by the writer and never claim
+(`TerminalDeviceReport`), so one query gets one answer and an observer's
+surface cannot take the token back every time the agent probes its terminal.
 
 Attach originally took the token unconditionally, which reads identically for a
 phone opening one session and a Mac window quietly holding fifteen: the phone's

@@ -889,6 +889,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the authority — §C.5: a client that parses at its own window size instead
     /// of this one wraps the same bytes differently and diverges from the host.
     private var authoritativeGrid: TerminalGrid?
+    /// An observer whose surface is not yet at the shared grid. The keyframe
+    /// that announced the grid was parsed at the old one, and the surface is
+    /// resized only after `onSharedGrid` reaches the UI — so the first `resize`
+    /// that lands *on* the shared grid asks the daemon for a fresh keyframe,
+    /// and that one paints right.
+    private var observerRepaintPending = false
     /// Set on any deliberate teardown so the reader's EOF is not misread as a
     /// daemon crash.
     private var closed = false
@@ -984,6 +990,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// on every genuine change. The link already gates its own `R` frames on
     /// this; the callback is for the UI that has to say "read-only" out loud.
     var onWriter: ((Bool) -> Void)?
+    /// The PTY's actual grid, on the main queue: once from `attached` and then
+    /// on every `E resized`. While another client holds the token this is the
+    /// grid the bytes are wrapped for, and the surface that shows them has to
+    /// be laid out at it — see `SessionRuntime.sharedGrid`.
+    var onSharedGrid: ((TerminalGrid) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1048,9 +1059,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 // announces it as `E resized`. Seeding from the reply means an
                 // observer — which never triggers that resize — still knows the
                 // grid its bytes are wrapped at.
-                authoritativeGrid = TerminalGrid(
+                let sharedGrid = TerminalGrid(
                     rows: attachedPayload.rows, cols: attachedPayload.cols)
+                authoritativeGrid = sharedGrid
+                DispatchQueue.main.async { [self] in onSharedGrid?(sharedGrid) }
                 if isWriter { sentGrid = requested }
+                observerRepaintPending = !isWriter && sharedGrid != requested
                 Log.termiod.info("""
                 attached session=\(self.sessionName, privacy: .public) \
                 device=\(device.id, privacy: .public) \
@@ -1156,6 +1170,29 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    /// A reply this client's libghostty generated to a host query (DA, DSR,
+    /// XTVERSION, a colour query). It goes through only while this client is
+    /// the writer, and it never claims: the host asked its terminal one
+    /// question, and the writer's surface is that terminal. An observer's
+    /// answer would arrive as a late duplicate in the agent's input line — and,
+    /// through `send`, would take the token and drag the PTY back to this
+    /// window's grid every time the agent probed. That silent tug-of-war was
+    /// the resize storm two devices watching one session used to produce.
+    func sendDeviceReport(_ data: Data) {
+        guard !data.isEmpty else { return }
+        workQueue.async { [self] in
+            guard !closed, attached, isWriter else { return }
+            do {
+                try sendDataLocked(data)
+            } catch {
+                Log.termiod.error("""
+                device report to \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
     func resize(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         // Recorded before the hop: this is what the surface is laid out at right
@@ -1168,8 +1205,21 @@ final class TermiodSessionLink: @unchecked Sendable {
             desiredGrid = size
             guard attached else { return }
             // Observers must not resize the shared PTY out from under the
-            // writer; the daemon would reject the frame anyway.
-            guard isWriter else { return }
+            // writer; the daemon would reject the frame anyway. An observer
+            // arriving at the shared grid is the one moment it does need
+            // something from the daemon: a keyframe it can finally paint.
+            // Leaving the grid — a font change reports the old frame at new
+            // cell metrics before the letterbox puts it back — arms the next
+            // arrival, so the bytes parsed in between are repainted too.
+            guard isWriter else {
+                if authoritativeGrid != size {
+                    observerRepaintPending = true
+                } else if observerRepaintPending {
+                    observerRepaintPending = false
+                    requestResyncLocked()
+                }
+                return
+            }
             scheduleResizeLocked()
         }
     }
@@ -1253,17 +1303,20 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// way to know the screen is wrong, so it has to be told. The repaint
     /// arrives as an ordinary snapshot on the reader.
     func requestResync() {
-        workQueue.async { [self] in
-            guard !closed, attached, let transport else { return }
-            do {
-                try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
-                                       payload: Termiod.requestSnapshotPayload())
-            } catch {
-                Log.termiod.error("""
-                resync request on \(self.sessionName, privacy: .public) failed: \
-                \(error.localizedDescription, privacy: .public)
-                """)
-            }
+        workQueue.async { [self] in requestResyncLocked() }
+    }
+
+    /// Must run on `workQueue`.
+    private func requestResyncLocked() {
+        guard !closed, attached, let transport else { return }
+        do {
+            try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
+                                   payload: Termiod.requestSnapshotPayload())
+        } catch {
+            Log.termiod.error("""
+            resync request on \(self.sessionName, privacy: .public) failed: \
+            \(error.localizedDescription, privacy: .public)
+            """)
         }
     }
 
@@ -1501,6 +1554,11 @@ final class TermiodSessionLink: @unchecked Sendable {
             // asked reads its own hits (`Termiod.searchContents`). Nothing on a
             // session's channel can have asked, so there is nobody to give it to.
             break
+        case .fsChanged:
+            // Addressed to a *channel*, not to a session: only a channel
+            // carrying a resource subscription can have asked, and a session's
+            // link never does (`Termiod.ResourceWatch`).
+            break
         case .unknown(let name):
             Log.termiod.debug("""
             ignoring \(name, privacy: .public) event on \(self.sessionName, privacy: .public)
@@ -1527,6 +1585,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             write token on \(self.sessionName, privacy: .public) \
             \(mine ? "claimed" : "lost", privacy: .public)
             """)
+            // Demoted with the surface still at its own grid: the letterbox
+            // will move it, and the resize that lands is what asks for the
+            // keyframe (see `observerRepaintPending`).
+            observerRepaintPending = !mine && authoritativeGrid != desiredGrid
             if mine {
                 do {
                     try sendResizeLocked(desiredGrid)
@@ -1597,13 +1659,15 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// (`InMemoryTerminalSession.dispatchResize` drops an unchanged viewport),
     /// so a PTY moved out from under a still window has no second chance to be
     /// noticed — the screen stays formatted for someone else's grid until the
-    /// user drags the window edge. Letterboxing an *observer's* viewport, which
-    /// cannot resize anything, is the client-side step this foundation still
-    /// leaves open.
+    /// user drags the window edge. An *observer* cannot resize anything, so its
+    /// answer is on the other side of `onSharedGrid`: the pane lays the surface
+    /// out at the shared grid instead (`SharedGridLetterbox`).
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
+            if !isWriter { observerRepaintPending = grid != desiredGrid }
             guard grid != desiredGrid else { return }
             Log.termiod.info("""
             \(self.sessionName, privacy: .public) PTY is now \

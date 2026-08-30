@@ -33,9 +33,9 @@ final class CompanionTransport {
     private let link: WebSocketLink
     /// Last grid the terminal reported, re-sent on every (re)connect and on
     /// foreground: the first resize often fires before the socket exists and
-    /// would be silently lost, a reconnect never re-fires it (the view's size
-    /// didn't change), and each report claims the PTY's winsize for this
-    /// device (the Mac may have taken it back while the app was away).
+    /// would be silently lost, and a reconnect never re-fires it (the view's
+    /// size didn't change). The Mac applies a report only while this phone
+    /// holds the write token; typing is what takes the token.
     private var gridCols = 0
     private var gridRows = 0
     private let gridLock = NSLock()
@@ -58,6 +58,9 @@ final class CompanionTransport {
     var onOutput: ((Data) -> Void)?
     /// State transitions, delivered on the main queue.
     var onState: ((State) -> Void)?
+    /// The PTY's grid and whether this phone is sizing it, from the Mac's
+    /// `grid` control; delivered on the main queue.
+    var onSharedGrid: ((TerminalGrid, Bool) -> Void)?
 
     init(url: URL, attachSessionID: String? = nil) {
         self.url = url
@@ -78,9 +81,9 @@ final class CompanionTransport {
         link.onUp = { [weak self] in self?.notify(.connected) }
         link.onDown = { [weak self] in self?.notify(.reconnecting) }
         link.onForeground = { [weak self] in
-            // The link survived the background trip; coming back to the app is
-            // still a claim — the Mac may have taken the winsize while we were
-            // away.
+            // The link survived the background trip. If this phone still holds
+            // the write token the PTY may have moved while it was away; if not,
+            // the Mac ignores the report.
             self?.reassertGrid()
         }
         link.onData = { [weak self] data in self?.onOutput?(data) }
@@ -111,8 +114,9 @@ final class CompanionTransport {
         sendGrid()
     }
 
-    /// Re-claims the PTY's winsize for this device — called when the user
-    /// comes back to this screen (re-opening a parked session).
+    /// Re-sends this phone's grid — on reconnect, foreground, and re-opening a
+    /// parked session. The Mac applies it only while this phone holds the
+    /// write token, and a size the PTY already has costs nothing.
     func reassertGrid() {
         sendGrid()
     }
@@ -182,6 +186,9 @@ final class CompanionTransport {
         switch CompanionControl.decode(text) {
         case .exit:
             finish(.closed)
+        case .grid(let cols, let rows, let writer):
+            let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+            DispatchQueue.main.async { [onSharedGrid] in onSharedGrid?(grid, writer) }
         case .error(let message, let code):
             finish(.failed(CompanionRefusal.text(code: code, fallback: message)))
         default:

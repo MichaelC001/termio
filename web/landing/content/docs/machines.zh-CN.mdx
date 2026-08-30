@@ -3,8 +3,8 @@ title: 工作区与设备
 description: 工作区是侧栏的作用域，它属于某一台设备——本机，或者你用 SSH 能连上的机器。Termio 会在那台机器上装好会话宿主，会话是否附着都照跑不误。
 x-i18n:
   source_path: machines.mdx
-  source_hash: 15dc0d327b0b7d6fce84dd959dce8b5b644f01f5def72c62e055d92cb7deef6b
-  generated_at: 2026-08-27
+  source_hash: ff1e70ecff4e002162d6a735a0b22f67d09afbdcd63d6e42f66675d09bd61832
+  generated_at: 2026-08-30
 ---
 
 Termio 把 Agent 跑在你自己的机器上：本机、同一张桌子上的 Mac mini、你自己付钱的
@@ -86,7 +86,8 @@ daemon 中。应用只是一个负责附着和分离的查看器。
 所以关掉窗口，一切照跑；所以远程会话并不绑在开启它的那条 SSH 连接上：链路断了只是把你
 分离，不会杀掉 Agent。重新附着，屏幕就回来了。
 
-只有**关闭会话**（`⌘W`）才是有意结束一个会话。`⌘Q` 在还有东西在跑时会先问一句。
+只有**关闭会话**（`⌘W`）才是有意结束一个会话。退出 Termio 只是把你分离，下次启动会重新
+附着。
 
 ## 哪些能力跨得过去
 

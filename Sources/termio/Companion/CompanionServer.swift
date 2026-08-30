@@ -508,10 +508,10 @@ final class CompanionServer {
                 sendControl(.error(message: "unknown session — pull the list to refresh"), to: connection)
             }
         case .resize(let cols, let rows):
-            // The phone reports its grid on attach, foreground, and layout —
-            // each report claims the write token and with it the size (tmux's
-            // newest-client rule; one PTY has one winsize, per-client grids
-            // don't exist at this layer).
+            // The phone reports its grid on attach, foreground, and layout.
+            // A report is a fact about the phone's screen, not a claim on the
+            // session: it moves the PTY only while the phone holds the write
+            // token, and typing is what takes the token.
             bridges[id]?.applyClientResize(cols: cols, rows: rows)
         case .listFiles(let projectID, let path):
             handleListFiles(projectID: projectID, path: path, on: connection)
@@ -541,7 +541,7 @@ final class CompanionServer {
             Log.companion.notice(
                 "ignoring unsupported control \(Self.loggableTag(type), privacy: .public)"
             )
-        case .auth, .exit, .error, .started, .fileList, .file, .written, .uploaded,
+        case .auth, .exit, .grid, .error, .started, .fileList, .file, .written, .uploaded,
              .searchResults, .sshConfigList, .changes, .diff:
             break
         }
@@ -1051,6 +1051,10 @@ final class SessionBridge: @unchecked Sendable {
     private let lock = NSLock()
     private var pendingBytes = 0
     private var behind = false
+    /// What the daemon last said about the session's grid and this phone's
+    /// standing, guarded by `lock`; sent to the phone once both are known.
+    private var sharedGrid: TerminalGrid?
+    private var isWriter: Bool?
     private static let highWater = 1 << 20   // start dropping above 1 MB in flight
     private static let lowWater = 128 << 10  // recovered once under 128 KB
 
@@ -1073,37 +1077,70 @@ final class SessionBridge: @unchecked Sendable {
         link.onExit = { [weak self] status, _, _ in
             self?.onExit?(status)
         }
+        // The phone lays its surface out from these two facts: while another
+        // device sizes the session, the bytes it receives are wrapped for the
+        // shared grid, and only a surface at that grid shows them faithfully.
+        link.onWriter = { [weak self] writer in
+            self?.publishGrid(writer: writer)
+        }
+        link.onSharedGrid = { [weak self] grid in
+            self?.publishGrid(grid: grid)
+        }
         link.start()
     }
 
-    /// Keystrokes from the phone. The link claims the write token on the way
-    /// through, so a phone typing takes the session back from the Mac the same
-    /// way the Mac takes it back by typing.
+    /// Bytes from the phone's surface. Keystrokes claim the write token on the
+    /// way through the link, so a phone typing takes the session back from the
+    /// Mac the same way the Mac takes it back by typing. A terminal's reply to
+    /// a host query is not the person and takes nothing: it passes only while
+    /// the phone is already the writer (`TerminalDeviceReport`).
     func write(_ data: Data) {
+        guard !TerminalDeviceReport.isReport(data) else {
+            link.sendDeviceReport(data)
+            return
+        }
         link.send(data)
         onInput?()
     }
 
-    /// A resize control from this client. Sizing is the writer's to set, and on
-    /// this path the grid report *is* the claim: the phone sends one when it
-    /// opens a session, comes back to that screen, or rotates — every one of
-    /// them the user arriving at this session on this device. Attaching used to
-    /// take the token by itself, which read the same for a phone opening one
-    /// session and for a Mac window quietly holding fifteen, and let the phone
-    /// pull the shared PTY down to its width behind the Mac's back.
-    ///
-    /// The claim lands first and the grid follows it: `resize` records the size
-    /// whether or not this attachment can send it yet, and the grant re-asserts
-    /// it. So the daemon adopts this grid and answers with a keyframe rendered
-    /// for it — but only once the user has actually shown up here.
+    /// The phone's grid. Sizing is the writer's to set: the link sends this as
+    /// an `R` frame only while it holds the token, and otherwise keeps it for
+    /// the moment the token arrives, when the grant re-asserts it. Reporting a
+    /// grid used to claim the token, so a phone that merely opened a session —
+    /// or came back to the foreground, or rotated — pulled the shared PTY down
+    /// to its width and repainted every other attachment, and the Mac pulled it
+    /// back on the next keystroke. Both ends now move the token by typing only.
     func applyClientResize(cols: Int, rows: Int) {
-        link.claimWriter()
         link.resize(rows: rows, cols: cols)
+    }
+
+    private func publishGrid(grid: TerminalGrid? = nil, writer: Bool? = nil) {
+        lock.lock()
+        if let grid { sharedGrid = grid }
+        if let writer { isWriter = writer }
+        guard let sharedGrid, let isWriter else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        sendControl(.grid(cols: Int(sharedGrid.cols), rows: Int(sharedGrid.rows), writer: isWriter))
+    }
+
+    private func sendControl(_ control: CompanionControl) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "control", metadata: [meta])
+        connection.send(
+            content: Data(control.encoded().utf8),
+            contentContext: context,
+            completion: .idempotent
+        )
     }
 
     func stop() {
         link.onOutput = nil
         link.onExit = nil
+        link.onWriter = nil
+        link.onSharedGrid = nil
         onExit = nil
         onInput = nil
         // Detach, never kill: the session belongs to the daemon and outlives

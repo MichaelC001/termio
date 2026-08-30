@@ -113,6 +113,21 @@ extension Termiod {
         }
     }
 
+    /// What a channel tells a resource subscriber about. Two signals rather
+    /// than one, because a subscription's two failure modes are different
+    /// answers: a batch is progress, and a close means the cursor this watch
+    /// was counting from is on a connection that no longer exists.
+    enum ChannelSignal: Sendable {
+        /// An event the host addressed to no request — an `fs_changed` batch.
+        case event(IncomingEvent)
+        /// The connection is gone. Whatever was subscribed on it is not any
+        /// more, and a subscriber must re-subscribe (and, since batches were
+        /// missed while it was down, re-read what it holds).
+        case closed
+    }
+
+    typealias ChannelObserver = @Sendable (ChannelSignal) -> Void
+
     /// One request's handle on a pooled channel: its `seq`, its inbox, and the
     /// write side of the connection it was registered on.
     final class ChannelCall {
@@ -218,6 +233,12 @@ extension Termiod {
         private let writeLock = NSLock()
         private let stateLock = NSLock()
         private var inboxes: [UInt64: RequestInbox] = [:]
+        /// Sinks for frames that answer no request — today the `fs:` plane's
+        /// batches (§C.10). A request's answer goes to its inbox and dies with
+        /// it; a resource's batches belong to the *channel* and outlive every
+        /// request on it, which is why they need a second delivery path rather
+        /// than a long-lived fake request.
+        private var eventObservers: [UUID: ChannelObserver] = [:]
         private var nextSeq: UInt64 = 1
         private var dead = false
         private var lastUsed = ContinuousClock.now
@@ -226,7 +247,7 @@ extension Termiod {
         /// failure from a corpse it inherited.
         private var used = false
 
-        fileprivate var isDead: Bool {
+        var isDead: Bool {
             stateLock.lock()
             defer { stateLock.unlock() }
             return dead
@@ -283,6 +304,49 @@ extension Termiod {
             return seq
         }
 
+        /// Starts delivering unaddressed events to `handler`, until the
+        /// returned token is passed back to `removeObserver`. Runs on the reader
+        /// thread: a handler must hand off and return, never block, or it stalls
+        /// every request sharing this channel.
+        ///
+        /// Registering on a channel that is already dead still succeeds and
+        /// immediately reports `.closed`, so a caller cannot lose the race
+        /// between "is it alive" and "start listening" and end up subscribed to
+        /// a corpse in silence.
+        func addObserver(_ handler: @escaping ChannelObserver) -> UUID {
+            let token = UUID()
+            stateLock.lock()
+            let alreadyDead = dead
+            if !alreadyDead { eventObservers[token] = handler }
+            stateLock.unlock()
+            if alreadyDead { handler(.closed) }
+            return token
+        }
+
+        func removeObserver(_ token: UUID) {
+            stateLock.lock()
+            eventObservers.removeValue(forKey: token)
+            stateLock.unlock()
+        }
+
+        /// Sends one control frame that wants no answer, stamped with an id off
+        /// the same counter so nothing on the wire collides. No inbox, so the
+        /// host's `ok` is dropped — which is the whole shape of a teardown
+        /// message: it is worth sending on the connection that carries the
+        /// state, and worth nothing at all on a fresh one.
+        func post(_ build: (UInt64) throws -> Data) throws {
+            try write(kind: .control, payload: build(nextRequestID()))
+        }
+
+        /// How many unaddressed-event sinks are registered. For tests: a watch
+        /// that re-subscribes must replace its observer rather than stack a
+        /// second one, and the count is the only way to see that from outside.
+        var observerCount: Int {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return eventObservers.count
+        }
+
         fileprivate func release(_ seq: UInt64) {
             stateLock.lock()
             inboxes.removeValue(forKey: seq)
@@ -316,6 +380,8 @@ extension Termiod {
             dead = true
             let pending = inboxes
             inboxes.removeAll()
+            let observers = eventObservers
+            eventObservers.removeAll()
             stateLock.unlock()
             // `dead` is set before this lock is taken, so no further write can
             // start; taking it waits out the one that may already be running.
@@ -325,6 +391,10 @@ extension Termiod {
             writeLock.unlock()
             transport.close()
             for inbox in pending.values { inbox.fail(reason) }
+            // After the inboxes, so a watch that re-subscribes on `.closed`
+            // cannot land on this same corpse: `dead` is already set, so its
+            // request for a channel opens a fresh one.
+            for observer in observers.values { observer(.closed) }
         }
 
         /// Dedicated blocking-read thread, the same shape a session link uses:
@@ -340,7 +410,10 @@ extension Termiod {
                         close(error)
                         return
                     }
-                    guard let seq = Self.requestID(of: frame) else { continue }
+                    guard let seq = Self.requestID(of: frame) else {
+                        deliverUnaddressed(frame)
+                        continue
+                    }
                     stateLock.lock()
                     let inbox = inboxes[seq]
                     stateLock.unlock()
@@ -353,6 +426,20 @@ extension Termiod {
             thread.name = "sh.termio.termiod.pool"
             thread.stackSize = 512 * 1024
             thread.start()
+        }
+
+        /// Hands an event addressed to no request to whoever is listening for
+        /// one. Decoded once here rather than per observer, and skipped entirely
+        /// when nobody is listening — which is every channel that is not
+        /// carrying a resource subscription.
+        private func deliverUnaddressed(_ frame: (kind: FrameKind, payload: Data)) {
+            guard frame.kind == .event else { return }
+            stateLock.lock()
+            let observers = eventObservers
+            stateLock.unlock()
+            guard !observers.isEmpty else { return }
+            guard let event = try? decodeEvent(frame.payload) else { return }
+            for observer in observers.values { observer(.event(event)) }
         }
 
         /// Which request a frame answers, or `nil` for one that answers nobody.

@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.46.1",
+    date: "2026-08-29",
+    title: "A stalled session no longer freezes the app",
+    changes: {
+      fixed: [
+        "Reattaching a session with a large backlog could freeze the whole app with a beachball. The terminal's reader and the main thread no longer share a lock, so a pane that stalls stays one stalled pane.",
+      ],
+    },
+  },
+  {
     version: "0.46.0",
     date: "2026-08-28",
     title: "A frozen session leaves evidence behind",

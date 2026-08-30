@@ -118,10 +118,10 @@ extension TermioStore {
         case "needs-you":
             event.prompt = promptExcerpt(for: id)
         case "done":
-            if let transcript = transcriptPaths[id] {
-                event.transcript = transcript
-                event.cursorEnd = Self.lineCount(of: transcript)
-            }
+            // Only the transcript address; `cursorEnd` is filled off the main
+            // thread where the event is written (SessionWatchHub), because the
+            // line count is an O(file) read and this runs on the main actor.
+            event.transcript = transcriptPaths[id]
         default:
             break
         }
@@ -354,7 +354,12 @@ extension TermioStore {
                 return controlError(request, "not_live",
                     "\(displayTitle(for: fresh)) has no live terminal yet — open it once in Termio.")
             }
-            let cursorAtSend = transcriptPaths[fresh.id].map(Self.lineCount)
+            let cursorAtSend: Int?
+            if let sendPath = transcriptPaths[fresh.id] {
+                cursorAtSend = await Self.lineCountOffMain(of: sendPath)
+            } else {
+                cursorAtSend = nil
+            }
             return await waitForReply(request, session: fresh,
                                       cursorAtSend: cursorAtSend, created: true)
         }
@@ -428,11 +433,16 @@ extension TermioStore {
             return controlError(request, "not_live",
                 "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
         }
-        guard request.wantsWait else { return sentReply(request, session) }
+        guard request.wantsWait else { return await sentReply(request, session) }
         // The cursor to read the reply from: wherever the transcript stands right
         // after submitting. A session's transcript often isn't known until a hook
         // fires mid-turn, so this can be nil and is re-read after the wait.
-        let cursorAtSend = transcriptPaths[session.id].map(Self.lineCount)
+        let cursorAtSend: Int?
+        if let sendPath = transcriptPaths[session.id] {
+            cursorAtSend = await Self.lineCountOffMain(of: sendPath)
+        } else {
+            cursorAtSend = nil
+        }
         return await waitForReply(request, session: session,
                                   cursorAtSend: cursorAtSend, created: false)
     }
@@ -670,8 +680,8 @@ extension TermioStore {
             // No status signal at all (a plain terminal): the screen changed, then stilled.
             if !sawWorking, changedSinceSend, screenQuiet { settled = current; break }
         }
-        return waitReply(request, session: session,
-                         cursorAtSend: cursorAtSend, created: created, settled: settled)
+        return await waitReply(request, session: session,
+                               cursorAtSend: cursorAtSend, created: created, settled: settled)
     }
 
     /// The reply for a completed (or timed-out) `--wait`. Every wait reply — `send`
@@ -684,7 +694,7 @@ extension TermioStore {
     private func waitReply(
         _ request: ControlRequest, session: Session,
         cursorAtSend: Int?, created: Bool, settled: SessionStatus?
-    ) -> Data {
+    ) async -> Data {
         let link = sessionLink(for: session)
         let statusToken = Self.statusToken(status(for: session.id))
         var json: [String: Any] = [
@@ -708,7 +718,7 @@ extension TermioStore {
         // send-time snapshot.
         if let transcript = transcriptPaths[session.id] {
             let start = cursorAtSend ?? 0
-            let end = Self.lineCount(of: transcript)
+            let end = await Self.lineCountOffMain(of: transcript)
             json["transcript"] = transcript
             json["cursor"] = start
             json["cursor_end"] = end
@@ -873,7 +883,7 @@ extension TermioStore {
     /// the session's transcript address and a cursor (its line count at send time), so
     /// the caller can read the agent's response straight from its own structured log —
     /// the caller's file tools resume from `cursor`.
-    private func sentReply(_ request: ControlRequest, _ session: Session) -> Data {
+    private func sentReply(_ request: ControlRequest, _ session: Session) async -> Data {
         let link = sessionLink(for: session)
         var json: [String: Any] = [
             "target": link,
@@ -881,7 +891,7 @@ extension TermioStore {
         ]
         var text = "sent to \(link)"
         if let transcript = transcriptPaths[session.id] {
-            let cursor = Self.lineCount(of: transcript)
+            let cursor = await Self.lineCountOffMain(of: transcript)
             json["transcript"] = transcript
             json["cursor"] = cursor
             text += "\n  transcript: \(transcript)\n  cursor: \(cursor)  (read the response from here on)"
@@ -912,11 +922,56 @@ extension TermioStore {
         return control(request, ok: true, text: text, json: json)
     }
 
-    /// Lines currently in a file, counted cheaply by newline bytes — the cursor a
-    /// caller resumes a transcript read from.
+    /// Newline count of a whole transcript — the cursor a caller resumes a read
+    /// from. The count must be exact (an off-by-one hands an agent the wrong
+    /// reply lines), so it is always the true count, never cached against a
+    /// mutable file. The cost is the read itself, which is why every caller runs
+    /// it off the main thread: the hot path (the `done` watch event) counts on
+    /// the hub's serial queue, and the request-reply paths await `lineCountOffMain`.
+    /// Reading it inline on the main actor stalled the UI once transcripts reached
+    /// tens of MB (a spinning cursor under memory pressure).
     nonisolated static func lineCount(of path: String) -> Int {
-        guard let data = FileManager.default.contents(atPath: path) else { return 0 }
-        return data.reduce(into: 0) { count, byte in if byte == 0x0A { count += 1 } }
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            // A session with no transcript yet is 0 lines, not an error; a path
+            // that exists but won't open is one, so it is logged.
+            if FileManager.default.fileExists(atPath: path) {
+                Log.app.error("transcript open failed for \(path, privacy: .public)")
+            }
+            return 0
+        }
+        defer {
+            do { try handle.close() } catch {
+                Log.app.error("""
+                transcript close failed for \(path, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+        do {
+            var lines = 0
+            while let chunk = try handle.read(upToCount: 1 << 18), !chunk.isEmpty {
+                lines += chunk.withUnsafeBytes { buffer in
+                    buffer.reduce(into: 0) { if $1 == 0x0A { $0 += 1 } }
+                }
+            }
+            return lines
+        } catch {
+            Log.app.error("""
+            transcript line count failed for \(path, privacy: .public): \
+            \(error.localizedDescription, privacy: .public)
+            """)
+            return 0
+        }
+    }
+
+    /// `lineCount` on a utility queue. Awaited by every main-actor caller so the
+    /// O(file) read never runs on the main thread.
+    nonisolated static func lineCountOffMain(of path: String) async -> Int {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: lineCount(of: path))
+            }
+        }
     }
 
     private func closeTab(_ request: ControlRequest, in scope: ControlScope) -> Data {
