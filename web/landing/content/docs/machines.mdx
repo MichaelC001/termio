@@ -104,8 +104,8 @@ That’s why closing the window leaves everything running, and why a remote
 session isn’t tied to the SSH connection that opened it: dropping the link
 detaches you, it doesn’t kill the agent. Reattaching restores the screen.
 
-Only **Close Session** (`⌘W`) ends a session on purpose. `⌘Q` asks first when
-something is still running.
+Only **Close Session** (`⌘W`) ends a session on purpose. Quitting Termio detaches
+instead, and the next launch reattaches.
 
 ## What reaches across
 
