@@ -149,15 +149,24 @@ struct TerminalPane: View {
                 // full bounds; its hidden siblings keep their laid-out frames. An
                 // ungrouped session has no split geometry and fills the pane.
                 let rect = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
-                ManagedTerminalSurface(
-                    context: store.surface(for: item.session),
-                    isSelected: isSelected,
-                    isVisible: isVisible,
-                    onFocused: { selectFocusedSurface(id) },
-                    requestFocus: { reason in
-                        requestTerminalFocus(for: id, reason: reason)
-                    }
-                )
+                let context = store.surface(for: item.session)
+                SharedGridLetterbox(
+                    runtime: store.runtime(for: id),
+                    context: context,
+                    paneSize: rect.size,
+                    paddingX: CGFloat(settings.windowPadding),
+                    background: paneBackground
+                ) {
+                    ManagedTerminalSurface(
+                        context: context,
+                        isSelected: isSelected,
+                        isVisible: isVisible,
+                        onFocused: { selectFocusedSurface(id) },
+                        requestFocus: { reason in
+                            requestTerminalFocus(for: id, reason: reason)
+                        }
+                    )
+                }
                 .frame(width: rect.width, height: rect.height)
                 // Dropping a file (dragged from the file-tree inspector, the Issues list or
                 // the Finder) inserts its shell-quoted path at the prompt — the prebuilt
@@ -394,6 +403,69 @@ private enum TerminalFocusReason {
         case .fileDrop: "file-drop"
         case .faultInjector: "fault-injector"
         }
+    }
+}
+
+/// Lays a surface out at the grid another device is sizing the session to.
+///
+/// One PTY has one winsize, and every attachment parses the same bytes. While a
+/// phone holds the write token those bytes are wrapped for the phone's grid, and
+/// a surface stretched across this pane would re-wrap them at its own width —
+/// the §C.5 divergence: every line that wrapped on the phone lands somewhere
+/// else here, and a TUI that repaints incrementally never repairs it. So a
+/// demoted pane shows the session at exactly the shared grid, centred, with the
+/// terminal background around it — the same picture the phone has, at the Mac's
+/// font. Typing takes the token back, and the surface returns to the pane.
+///
+/// The surface is sized to the grid plus half a cell: libghostty floors
+/// `(size − padding) / cell` to get its column count, and an exact multiple can
+/// round to one column short. A shared grid the pane cannot hold is still laid
+/// out at that grid, anchored top-left and clipped: a surface at any other
+/// width wraps the bytes wrong, and a correct screen with its edge cut off
+/// beats a complete one that is scrambled. It also keeps the promise the
+/// resync depends on — the surface *reaches* the shared grid, so the link can
+/// ask for the keyframe that paints it (`observerRepaintPending`).
+private struct SharedGridLetterbox<Content: View>: View {
+    let runtime: SessionRuntime
+    @ObservedObject var context: TerminalViewState
+    let paneSize: CGSize
+    let paddingX: CGFloat
+    let background: Color
+    @ViewBuilder let content: () -> Content
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        // One structure whether letterboxed or not: a branch here would give
+        // the surface a new identity each time the token moved and remount its
+        // NSView, which is the repaint this file exists to avoid. A nil frame
+        // dimension is "no constraint", so the surface fills the pane.
+        let size = letterboxSize
+        let fits = size.map { $0.width <= paneSize.width && $0.height <= paneSize.height } ?? true
+        ZStack(alignment: fits ? .center : .topLeading) {
+            background
+            content()
+                .frame(width: size?.width, height: size?.height)
+        }
+        .frame(width: paneSize.width, height: paneSize.height, alignment: .topLeading)
+        .clipped()
+    }
+
+    private var letterboxSize: CGSize? {
+        // Not conditioned on the surface's current grid differing from the
+        // shared one: once letterboxed, the surface *is* at the shared grid,
+        // and that condition would take the letterbox away again.
+        guard !runtime.isWriter,
+              let grid = runtime.sharedGrid,
+              let metrics = context.surfaceSize,
+              metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
+        else { return nil }
+        let cellWidth = CGFloat(metrics.cellWidthPixels) / displayScale
+        let cellHeight = CGFloat(metrics.cellHeightPixels) / displayScale
+        let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
+        let width = CGFloat(grid.cols) * cellWidth + 2 * paddingX + cellWidth / 2
+        let height = CGFloat(grid.rows) * cellHeight + 2 * paddingY + cellHeight / 2
+        return CGSize(width: width, height: height)
     }
 }
 

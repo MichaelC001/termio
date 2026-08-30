@@ -49,6 +49,23 @@ final class TerminalViewController: UIViewController {
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
     private var fitDebounce: DispatchWorkItem?
+    /// The area the surface may occupy, pinned by constraints between the
+    /// header and the keyboard. The surface is framed by hand inside it
+    /// (`layoutTerminalSurface`): while another device sizes the session, the
+    /// surface has to be laid out at that device's grid, not this rectangle.
+    private let terminalHost: UIView = {
+        let host = UIView()
+        host.clipsToBounds = true
+        host.translatesAutoresizingMaskIntoConstraints = false
+        return host
+    }()
+    /// The PTY's grid and whether this phone is the one sizing it, from the
+    /// session; `isWriter` starts true so a screen the device has not yet
+    /// described lays out exactly as it always did.
+    private var sharedGrid: TerminalGrid?
+    private var isWriter = true
+    /// The live surface's cell size, from the resize delegate.
+    private var surfaceMetrics: TerminalGridMetrics?
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
     private var companion: DeviceSession?
     private var companionSession: InMemoryTerminalSession?
@@ -195,9 +212,10 @@ final class TerminalViewController: UIViewController {
                 if let companion { companion.start() } else { shellSession.start() }
             }
         } else if case .device = backend {
-            // Re-entering a parked session claims the PTY's winsize back —
-            // the Mac may own it, and this view's size didn't change, so no
-            // layout pass would re-send the grid.
+            // Re-entering a parked session re-sends this phone's grid: if it
+            // still holds the write token the PTY may have moved while the
+            // screen was away, and this view's size didn't change, so no
+            // layout pass would re-send it. An observer sends nothing.
             companion?.reassertGrid()
         }
     }
@@ -213,6 +231,7 @@ final class TerminalViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutDrawer()
+        layoutTerminalSurface()
         // Refit only when the surface's size actually changed, and coalesce
         // the per-frame passes of keyboard animations into one call
         // after the size settles. Every `setSize` can deadlock against the
@@ -230,6 +249,52 @@ final class TerminalViewController: UIViewController {
         }
         fitDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// Frames the surface inside `terminalHost`.
+    ///
+    /// Normally it fills the host. While another device holds the write token
+    /// the PTY is that device's size, and every byte arriving here is wrapped
+    /// for it: a surface at this phone's own grid re-wraps those lines and a TUI
+    /// that repaints incrementally never repairs the result (§C.5 of the
+    /// session protocol). So the surface is laid out at exactly the shared grid
+    /// — the same picture the other device has — and scaled down as a whole to
+    /// fit the host, top-aligned and centred. Typing takes the token, and the
+    /// surface fills the host again at this phone's grid.
+    ///
+    /// Half a cell of slack on each axis: libghostty floors
+    /// `(size − padding) / cell` for its grid, and an exact multiple can round
+    /// to one column short.
+    private func layoutTerminalSurface() {
+        let host = terminalHost.bounds
+        guard host.width > 0, host.height > 0 else { return }
+        // A frame set under a transform is undefined; always start from identity.
+        terminalView.transform = .identity
+        guard case .device = backend, !isWriter,
+              let grid = sharedGrid, let metrics = surfaceMetrics,
+              grid.cols > 0, grid.rows > 0,
+              metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
+        else {
+            terminalView.frame = host
+            return
+        }
+        let scale = max(1, traitCollection.displayScale)
+        let cellWidth = CGFloat(metrics.cellWidthPixels) / scale
+        let cellHeight = CGFloat(metrics.cellHeightPixels) / scale
+        let width = CGFloat(grid.cols) * cellWidth + 2 * Self.terminalPaddingX + cellWidth / 2
+        let height = CGFloat(grid.rows) * cellHeight + 2 * Self.terminalPaddingY + cellHeight / 2
+        let fit = min(1, host.width / width, host.height / height)
+        terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
+        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2)
+    }
+
+    /// The session's word on the PTY's grid and this phone's standing.
+    private func applySharedGrid(_ grid: TerminalGrid, writer: Bool) {
+        guard sharedGrid != grid || isWriter != writer else { return }
+        sharedGrid = grid
+        isWriter = writer
+        view.setNeedsLayout()
     }
 
     // MARK: - Header
@@ -339,9 +404,9 @@ final class TerminalViewController: UIViewController {
     /// happen on every return.
     func prepareForReappearance() {
         if !drawerOpen { focusInput() }
-        // Re-entering a parked companion session claims the PTY's winsize back —
-        // the Mac may own it, and this view's size didn't change while parked,
-        // so no layout pass would re-send the grid.
+        // Re-entering a parked session re-sends this phone's grid (applied only
+        // while it holds the write token); the view's size didn't change while
+        // parked, so no layout pass would.
         if case .device = backend { companion?.reassertGrid() }
     }
 
@@ -399,18 +464,18 @@ final class TerminalViewController: UIViewController {
         terminalView.controller = controller
         terminalView.backgroundColor = .clear
         terminalView.isOpaque = false
-        terminalView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(terminalView)
+        view.addSubview(terminalHost)
+        terminalHost.addSubview(terminalView)
 
         // Sits directly above the surface (below the drawer added later),
         // so unhiding it masks libghostty's panel during a rebuild.
         rendererCoverView.backgroundColor = Self.backdropColor()
         view.addSubview(rendererCoverView)
         NSLayoutConstraint.activate([
-            rendererCoverView.topAnchor.constraint(equalTo: terminalView.topAnchor),
-            rendererCoverView.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor),
-            rendererCoverView.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor),
-            rendererCoverView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
+            rendererCoverView.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+            rendererCoverView.leadingAnchor.constraint(equalTo: terminalHost.leadingAnchor),
+            rendererCoverView.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
+            rendererCoverView.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
         ])
 
         // The key bar lives on the terminal (its inputAccessoryView); the
@@ -480,12 +545,12 @@ final class TerminalViewController: UIViewController {
     /// ~5 rows of dead space under bottom-anchored TUIs. The notification's
     /// end frame is unambiguous — overlap is what it says, zero when hidden.
     private func activateTerminalConstraints() {
-        let bottom = terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        let bottom = terminalHost.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         terminalBottomConstraint = bottom
         NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            terminalHost.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            terminalHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            terminalHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottom,
         ])
         NotificationCenter.default.addObserver(
@@ -687,16 +752,19 @@ final class TerminalViewController: UIViewController {
                 Log.device.error("no session id to attach to; falling back to the sandbox shell")
                 return shellSession.terminalSession
             }
-            // The phone's mirror surface answers terminal queries (XTVERSION,
-            // DA, DSR) on its own, but the authoritative surface already
-            // answered. The duplicate arrives late, misses the agent's parse
-            // window, and leaks into its input line as literal text — a stray
-            // ">|ghostty 1.3.2…". A mirror must never talk back to the host.
-            // Genuine input never looks like a report, so it passes untouched.
+            // The surface answers the host's terminal queries (XTVERSION, DA,
+            // DSR) on its own, through this same closure. Those are not the
+            // person: they must not claim the write token, and only the
+            // writer's surface may answer at all — an observer's reply lands
+            // late in the agent's input line as literal text, a stray
+            // ">|ghostty 1.3.2…" (`TerminalDeviceReport`).
             let terminalSession = InMemoryTerminalSession(
                 write: { [weak transport] data in
-                    guard !MirrorReportFilter.isDeviceReport(data) else { return }
-                    transport?.send(data)
+                    if TerminalDeviceReport.isReport(data) {
+                        transport?.sendDeviceReport(data)
+                    } else {
+                        transport?.send(data)
+                    }
                 },
                 resize: { [weak transport] viewport in
                     transport?.resize(columns: Int(viewport.columns), rows: Int(viewport.rows))
@@ -704,30 +772,16 @@ final class TerminalViewController: UIViewController {
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    let wasAlternate = self.altScreenSniffer.isAlternate
-                    self.altScreenSniffer.consume(data)
-                    // A slow-starting full-screen agent (Grok) switches into its
-                    // alt-screen TUI only after the phone's on-attach grid claim
-                    // has gone stale, and the host will not re-SIGWINCH an unchanged
-                    // winsize — so the TUI first paints at the wrong grid and only
-                    // a tap (which changes the keyboard geometry) forces a reflow.
-                    // Re-claim the grid the instant the TUI appears; the host
-                    // jiggles when the size is unchanged, so the agent reflows on
-                    // its own. Twice, mirroring the on-connect reassert, in case
-                    // the first lands before the agent finishes its opening paint.
-                    if !wasAlternate, self.altScreenSniffer.isAlternate, case .device = self.backend {
-                        self.companion?.reassertGrid()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                            guard let self, case .device = backend else { return }
-                            companion?.reassertGrid()
-                        }
-                    }
-                }
+                // The sniffer only decides what the key bar's scroll-edge keys
+                // send; a TUI switching screens changes nothing about the grid,
+                // which is the writer's and already what the PTY is.
+                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
+            }
+            transport.onSharedGrid = { [weak self] grid, writer in
+                self?.applySharedGrid(grid, writer: writer)
             }
             companion = transport
             companionSession = terminalSession
@@ -748,18 +802,10 @@ final class TerminalViewController: UIViewController {
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
-            // The host wipes this screen on attach and repaints only once the
-            // grid claim lands — a Mac jiggles the PTY, a device answers the
-            // barrier with a snapshot, and both need the claim. libghostty
-            // dedupes an unchanged size at two layers, so on a cold attach none
-            // fires and the screen stays blank under a correct title. Re-assert
-            // now, and again once the wipe has drained, so the last frame on the
-            // wire is the repaint.
+            // The attach snapshot paints the screen. The grid goes out once
+            // more in case this phone is the writer and the PTY moved while the
+            // link was down; an observer's re-send is a no-op by design.
             companion?.reassertGrid()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self, case .device = backend else { return }
-                companion?.reassertGrid()
-            }
         case .failed(let reason):
             statusLabel.text = localized("Connection failed")
             let alert = UIAlertController(title: localized("Companion connection failed"), message: reason, preferredStyle: .alert)
@@ -793,11 +839,17 @@ final class TerminalViewController: UIViewController {
     /// The settings-driven half of the surface config — the single place the
     /// appearance keys are named, so creation and the live re-style path
     /// can't drift apart (same rule as the Mac app's applyAppearance).
+    /// The surface's margins in points. Named because `layoutTerminalSurface`
+    /// needs the same numbers to size a surface to an exact grid; Y is
+    /// libghostty's default, which the configuration below leaves alone.
+    private static let terminalPaddingX: CGFloat = 8
+    private static let terminalPaddingY: CGFloat = 2
+
     private static func appearanceConfiguration() -> TerminalConfiguration {
         TerminalConfiguration { builder in
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
-            builder.withWindowPaddingX(8)
+            builder.withWindowPaddingX(Int(Self.terminalPaddingX))
             // Without a font-family the phone rendered CJK unlike the Mac —
             // libghostty dropped in proportional PingFang whose metrics fight the
             // Latin face. Set the chain to match the desktop (see `terminalFontChain`).
@@ -1151,6 +1203,18 @@ extension TerminalViewController: UIImagePickerControllerDelegate, UINavigationC
     }
 }
 
+extension TerminalViewController: TerminalSurfaceGridResizeDelegate {
+    /// Cell metrics for `layoutTerminalSurface`; they change with the font, so
+    /// a pinch re-frames a letterboxed surface at the same grid.
+    func terminalDidResize(_ size: TerminalGridMetrics) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, surfaceMetrics != size else { return }
+            surfaceMetrics = size
+            view.setNeedsLayout()
+        }
+    }
+}
+
 extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate {
     func terminalDidChangeTitle(_ title: String) {
         // The agent's OSC title rides the byte stream (Claude Code updates it
@@ -1274,43 +1338,6 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         // content arrives over the network) so we don't uncover a blank grid.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             self?.rendererCoverView.isHidden = true
-        }
-    }
-}
-
-// MARK: - Mirror response filter
-
-/// Classifies a companion `write` chunk as a terminal device report — a reply
-/// the phone's mirror surface auto-generates to a host query, which the Mac's
-/// authoritative surface has already answered. Dropping these stops the phone's
-/// late duplicate from leaking into the agent's input line (Grok's stray
-/// ">|ghostty 1.3.2-main-+…").
-///
-/// libghostty emits each reply as one standalone escape sequence:
-///   • ESC P … (DCS) — XTVERSION ">|ghostty …", DECRQSS, XTGETTCAP
-///   • ESC ] … (OSC) — color / clipboard query answers
-///   • ESC [ … c     — Device Attributes (primary / secondary)
-///   • ESC [ … R     — Cursor Position Report
-///
-/// Genuine input never matches: arrows / home / end terminate a CSI in A–H or
-/// `~`, a bare Esc is a lone byte, pasted or typed text carries no ESC lead-in.
-private enum MirrorReportFilter {
-    static func isDeviceReport(_ data: Data) -> Bool {
-        let b = [UInt8](data)
-        guard b.first == 0x1B, b.count >= 2 else { return false }
-        switch b[1] {
-        case 0x50, 0x5D: // ESC P (DCS) / ESC ] (OSC)
-            return true
-        case 0x5B: // ESC [ (CSI): a report only when the final byte is 'c' or 'R'
-            var i = 2
-            while i < b.count {
-                let c = b[i]
-                if c >= 0x40, c <= 0x7E { return c == 0x63 || c == 0x52 }
-                i += 1
-            }
-            return false
-        default:
-            return false
         }
     }
 }

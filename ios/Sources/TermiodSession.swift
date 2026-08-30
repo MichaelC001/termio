@@ -19,6 +19,7 @@ import TermioShared
 final class TermiodSession: DeviceSession {
     var onOutput: ((Data) -> Void)?
     var onState: ((DeviceSessionState) -> Void)?
+    var onSharedGrid: ((TerminalGrid, Bool) -> Void)?
 
     /// How long the grid must hold still before a size goes to the device. Every
     /// distinct size is a host-side barrier — quiesce, resize, fresh keyframe to
@@ -41,6 +42,12 @@ final class TermiodSession: DeviceSession {
     /// differ while a resize is in flight, and while another client owns size.
     private var desiredGrid = TerminalGrid(rows: 0, cols: 0)
     private var authoritativeGrid: TerminalGrid?
+    /// An observer whose surface is not yet at the shared grid. The keyframe
+    /// that announced the grid was parsed at the old one, and the surface is
+    /// re-laid-out only after `onSharedGrid` reaches the screen — so the first
+    /// `resize` that lands *on* the shared grid asks the device for a fresh
+    /// keyframe, and that one paints right.
+    private var observerRepaintPending = false
     private var resizeGeneration: UInt64 = 0
     /// Whether this screen ever had a session, which is what separates "the
     /// device refused a request" from "that session is not there".
@@ -105,11 +112,40 @@ final class TermiodSession: DeviceSession {
         }
     }
 
+    /// The surface's own answer to a host query. The host asked its terminal
+    /// one question and the writer's surface is that terminal, so this goes
+    /// through only while this phone holds the token — an observer's answer
+    /// would arrive late and land in the agent's input line as text — and it
+    /// never claims: a probe is not the person showing up.
+    func sendDeviceReport(_ data: Data) {
+        guard !data.isEmpty else { return }
+        queue.async { [self] in
+            guard attached, isWriter else { return }
+            sendData(data)
+        }
+    }
+
     func resize(columns: Int, rows: Int) {
         queue.async { [self] in
             let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
             desiredGrid = grid
-            guard attached, isWriter, grid.rows > 0, grid.cols > 0 else { return }
+            guard attached, grid.rows > 0, grid.cols > 0 else { return }
+            // An observer cannot move the PTY; arriving at the shared grid is
+            // the one moment it needs something from the device: a keyframe it
+            // can finally paint. Leaving the grid — a pinch reports the old
+            // frame at new cell metrics before the layout puts it back — arms
+            // the next arrival, so the bytes parsed in between are repainted too.
+            guard isWriter else {
+                if authoritativeGrid != grid {
+                    observerRepaintPending = true
+                } else if observerRepaintPending {
+                    observerRepaintPending = false
+                    if let payload = try? Termiod.requestSnapshotPayload() {
+                        channel.send(kind: .control, payload: payload)
+                    }
+                }
+                return
+            }
             // A size the PTY already has would cost every attachment a barrier
             // repaint for nothing.
             guard authoritativeGrid != grid else { return }
@@ -120,11 +156,13 @@ final class TermiodSession: DeviceSession {
     func reassertGrid() {
         queue.async { [self] in
             guard attached, isWriter, desiredGrid.rows > 0, desiredGrid.cols > 0 else { return }
-            // Deliberately past the "already this size" check `resize` applies.
-            // libghostty drops an unchanged viewport at two layers, so on a cold
-            // attach no resize fires and the screen stays blank under a correct
-            // title. This puts an `R` on the wire regardless, and the keyframe
-            // behind it is the repaint.
+            // The same check `resize` applies, on purpose. This used to put an
+            // `R` on the wire regardless, hoping the barrier's keyframe would
+            // repaint a blank screen — but the device ignores a size the PTY
+            // already has (no SIGWINCH, no barrier), so that `R` repainted
+            // nothing, and one that did change the size repainted every other
+            // attachment. The attach snapshot is what paints a cold screen.
+            guard authoritativeGrid != desiredGrid else { return }
             sendResize(desiredGrid)
         }
     }
@@ -166,6 +204,8 @@ final class TermiodSession: DeviceSession {
             // announces it. Seeding from here is what lets an observer know the
             // grid its bytes are wrapped at.
             authoritativeGrid = TerminalGrid(rows: payload.rows, cols: payload.cols)
+            observerRepaintPending = !isWriter && authoritativeGrid != desiredGrid
+            publishSharedGrid()
             if !pendingInput.isEmpty {
                 let buffered = pendingInput
                 pendingInput.removeAll(keepingCapacity: false)
@@ -256,6 +296,10 @@ final class TermiodSession: DeviceSession {
                 channel.send(kind: .control, payload: payload)
             }
         }
+        sendData(data)
+    }
+
+    private func sendData(_ data: Data) {
         var offset = 0
         while offset < data.count {
             let end = min(offset + Termiod.maximumDataFrameSize, data.count)
@@ -275,6 +319,8 @@ final class TermiodSession: DeviceSession {
         write token on \(self.sessionName, privacy: .public) \
         \(mine ? "claimed" : "lost", privacy: .public)
         """)
+        observerRepaintPending = !mine && authoritativeGrid != desiredGrid
+        publishSharedGrid()
         // A client that was demoted stopped sending resizes, so the PTY can be
         // any size by the time the token comes back.
         guard mine, desiredGrid.rows > 0 else { return }
@@ -282,11 +328,14 @@ final class TermiodSession: DeviceSession {
     }
 
     /// §C.5: the PTY has one size and every client parses at it. A writer
-    /// answers a divergence by putting its own size back; an observer can only
-    /// record it, because nothing it sends would be honoured.
+    /// answers a divergence by putting its own size back; an observer lays its
+    /// surface out at the shared grid instead (`onSharedGrid`), because nothing
+    /// it sends would be honoured.
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         guard authoritativeGrid != grid else { return }
         authoritativeGrid = grid
+        if !isWriter { observerRepaintPending = grid != desiredGrid }
+        publishSharedGrid()
         guard grid != desiredGrid, desiredGrid.rows > 0 else { return }
         Log.device.info("""
         \(self.sessionName, privacy: .public) PTY is now \
@@ -312,6 +361,12 @@ final class TermiodSession: DeviceSession {
 
     private func sendResize(_ grid: TerminalGrid) {
         channel.send(kind: .resize, payload: Termiod.resizePayload(grid.rows, grid.cols))
+    }
+
+    private func publishSharedGrid() {
+        guard let grid = authoritativeGrid else { return }
+        let writer = isWriter
+        DispatchQueue.main.async { [onSharedGrid] in onSharedGrid?(grid, writer) }
     }
 
     private func notify(_ state: DeviceSessionState) {

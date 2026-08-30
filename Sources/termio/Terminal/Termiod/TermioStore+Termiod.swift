@@ -112,15 +112,20 @@ extension TermioStore {
             self?.applyTermiodStatus(status, for: session.id)
         }
         // The link itself acts on this (it stops sending `R` frames the daemon
-        // would reject, and re-asserts the grid when the token returns). Logged
-        // here because a demoted pane looks identical to a live one on screen —
-        // saying it out loud is what makes a silently-ignored keystroke
-        // explainable. Showing it in the pane is a client-UI step, not taken here.
-        link.onWriter = { writer in
+        // would reject, and re-asserts the grid when the token returns). The
+        // pane acts on it too: a demoted surface is letterboxed at the grid the
+        // other device chose (`SessionRuntime.sharedGrid`), so what it shows is
+        // what the bytes were wrapped for rather than a wide window's reflow of
+        // a phone-width screen.
+        link.onWriter = { [weak self] writer in
             Log.termiod.info("""
             session \(session.id.uuidString, privacy: .public) is now \
             \(writer ? "the writer" : "an observer", privacy: .public)
             """)
+            self?.runtime(for: session.id).isWriter = writer
+        }
+        link.onSharedGrid = { [weak self] grid in
+            self?.runtime(for: session.id).sharedGrid = grid
         }
         // What the device knows about the process, gated exactly where the
         // in-process PTY's own kernel poll is gated: that poll is installed only

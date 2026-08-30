@@ -108,8 +108,15 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// The client asks the Mac to close a session (the phone's swipe-to-remove).
     /// No success reply — the next roster push drops the row everywhere.
     case stop(sessionID: String)
-    /// The client's terminal grid changed; the server resizes the PTY.
+    /// The client's terminal grid changed. The server applies it only while
+    /// this client holds the write token; otherwise it is remembered for the
+    /// moment the client types and takes the token.
     case resize(cols: Int, rows: Int)
+    /// The PTY's actual grid and whether this client is the one sizing it.
+    /// Sent on attach and every time either changes, so a client that is only
+    /// watching can lay its surface out at the grid the bytes are wrapped for
+    /// instead of its own window.
+    case grid(cols: Int, rows: Int, writer: Bool)
     /// The remote process exited.
     case exit(code: Int32)
     /// The client asks for one directory's entries (`path` relative to the
@@ -215,6 +222,8 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return #"{"t":"stop","session":"\#(sessionID)"}"#
         case .resize(let cols, let rows):
             return #"{"t":"resize","cols":\#(cols),"rows":\#(rows)}"#
+        case .grid(let cols, let rows, let writer):
+            return #"{"t":"grid","cols":\#(cols),"rows":\#(rows),"writer":\#(writer)}"#
         case .exit(let code):
             return #"{"t":"exit","code":\#(code)}"#
         // The file messages carry arbitrary user paths, so they go through
@@ -337,6 +346,10 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "resize":
             guard let cols = obj["cols"] as? Int, let rows = obj["rows"] as? Int else { return nil }
             return .resize(cols: cols, rows: rows)
+        case "grid":
+            guard let cols = obj["cols"] as? Int, let rows = obj["rows"] as? Int,
+                  let writer = obj["writer"] as? Bool else { return nil }
+            return .grid(cols: cols, rows: rows, writer: writer)
         case "exit":
             let code = (obj["code"] as? Int).map(Int32.init) ?? 0
             return .exit(code: code)
