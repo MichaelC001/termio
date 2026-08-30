@@ -612,3 +612,80 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
 
     drop(daemon);
 }
+
+/// Two upgrades asked for at once. Nothing serialised them: both were vetted,
+/// both got `ok`, both reached the accept loop — and the second carried a roster
+/// the first had already emptied.
+#[test]
+fn a_second_handoff_is_refused_while_one_is_under_way() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("s");
+    let log = dir.0.join("daemon.log");
+    // Held at the blob write, so the first handoff is still in flight — which is
+    // the only window in which a second one can be asked for at all.
+    let daemon = Daemon::start_logging(
+        &socket,
+        &[("TERMIOD_HANDOFF_FAIL_AFTER_CARRY", "2500")],
+        Some(&log),
+    );
+
+    let created = termiod(&socket, &["create", "--name", "one", "--", "sh"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let before = status(&socket);
+    let session_id = before["sessions"].as_array().expect("sessions")[0]["id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    // Two, back to back. At most one may be accepted; the daemon must answer the
+    // other rather than run it.
+    // Both at once, on two connections. Sequentially they cannot race at all:
+    // the accept loop is inside the handoff, so a second client simply waits for
+    // it to come back and is then served normally. The window that matters is
+    // the one where both requests are *already* being handled — both vetted,
+    // both about to be accepted — which only two connections in flight can
+    // reach.
+    let (a, b) = (socket.clone(), socket.clone());
+    let left = std::thread::spawn(move || termiod(&a, &["handoff", "--json"]));
+    let right = std::thread::spawn(move || termiod(&b, &["handoff", "--json"]));
+    let first = left.join().expect("first handoff thread");
+    let second = right.join().expect("second handoff thread");
+    // The replies say nothing: `termiod handoff` composes its success message on
+    // the client from a status it fetched, so both calls print the same thing
+    // whatever the daemon decided. That is its own gap — reporting a handoff
+    // that has only been *accepted* as one that happened — and it is why the
+    // daemon's log is what answers here.
+    let _ = (&first, &second);
+
+    // One request reached the accept loop, so one handoff settled. Two would
+    // mean the second carried a roster the first had already emptied.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        let settled = said.matches("aborted").count();
+        assert!(settled <= 1, "both handoffs ran:\n{said}");
+        if settled == 1 {
+            // Long enough for a second one to have shown up if it were coming.
+            std::thread::sleep(Duration::from_millis(1500));
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            assert_eq!(said.matches("aborted").count(), 1, "a second handoff ran:\n{said}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no handoff ever settled: {said}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let after = status(&socket);
+    assert_eq!(
+        after["sessions"].as_array().expect("sessions after").len(),
+        1,
+        "{after}"
+    );
+    let marker = dir.0.join("typed-after-race");
+    let sent = termiod(
+        &socket,
+        &["send", &session_id, &format!("touch {}", marker.display())],
+    );
+    assert!(sent.status.success(), "send after the race failed: {sent:?}");
+
+    drop(daemon);
+}

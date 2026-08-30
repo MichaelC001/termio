@@ -34,6 +34,11 @@ struct ManagerInner {
     sessions: HashMap<SessionId, SessionHandle>,
     id_counter: u32,
     draining: bool,
+    /// Whether a handoff has been accepted and not yet finished. Nothing
+    /// serialised them before: two clients asking at once both got `ok`, both
+    /// requests reached the accept loop, and the second carried a roster the
+    /// first had already emptied. One at a time, and the loser is told so.
+    handing_off: bool,
 }
 
 #[derive(Clone)]
@@ -73,6 +78,7 @@ impl Manager {
                 sessions: HashMap::new(),
                 id_counter: 0,
                 draining: false,
+            handing_off: false,
             })),
             next_client_id: Arc::new(AtomicU64::new(1)),
             on_exit,
@@ -216,9 +222,29 @@ impl Manager {
         }
         // Only once every session is installed again: a create that slipped in
         // before this point would have been spawned into a daemon that was
-        // still handing over.
+        // still handing over. The handoff claim goes with it — this attempt is
+        // over, and the next one is allowed to try.
         self.inner.lock().unwrap().draining = false;
         lost
+    }
+
+    /// Claims the right to hand over, or reports who already has it. Released
+    /// by `restore`, which is the end of every attempt that comes back.
+    fn begin_handoff(&self) -> bool {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.handing_off {
+            return false;
+        }
+        guard.handing_off = true;
+        true
+    }
+
+    /// Gives the claim back. Called where every attempt that comes back
+    /// converges — not in `restore`, which the early failures never reach: they
+    /// fail before anything is carried, and latching the gate on those would
+    /// mean one unreadable state directory blocked every upgrade until restart.
+    fn end_handoff(&self) {
+        self.inner.lock().unwrap().handing_off = false;
     }
 
     fn find(&self, id: &SessionId) -> Option<SessionHandle> {
@@ -712,6 +738,7 @@ pub async fn serve(
                     binary.display()
                 );
                 eprintln!("termiod: every session is still here; carrying on");
+                manager.end_handoff();
                 continue 'serving;
             }
             Handoff::Lost(error) => {
@@ -863,10 +890,48 @@ async fn hand_over(
             };
         }
     };
-    // `exec` returns only if it failed, and by then the descriptors belong to an
-    // image that never started. Nothing owns them any more, so there is nothing
-    // to put back.
-    Handoff::Lost(crate::handoff::exec(binary, blob_fd))
+    let error = crate::handoff::exec(binary, blob_fd);
+
+    // `exec` returns only if it failed — the binary was replaced or removed
+    // between the probe and here, or is busy. "Nothing owns the descriptors any
+    // more" was the reason this used to give up, and it was wrong: unowned is
+    // not closed. Every master is still open in this process, and the blob that
+    // was just written names all of them along with the rings. Reading it back
+    // is exactly what the new image would have done, so the recovery is the same
+    // adoption, run here instead of there.
+    let recovered = match crate::handoff::unpack(blob_fd) {
+        Ok((blob, rings)) => {
+            let sessions: Vec<_> = blob
+                .sessions
+                .into_iter()
+                .zip(rings)
+                .map(|(info, ring)| {
+                    // Taking back ownership of a number this process released to
+                    // an image that never ran. Safe for the same reason the far
+                    // side's adoption is: nothing else holds it.
+                    let master = unsafe {
+                        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(
+                            info.master_fd,
+                        )
+                    };
+                    (info, master, vec![Bytes::from(ring)])
+                })
+                .collect();
+            manager.restore(sessions)
+        }
+        // Without the blob there is no list of what to put back. The descriptors
+        // stay open and unreferenced for the life of the process, which is worse
+        // than a leak only in that the sessions behind them are unreachable.
+        Err(read) => {
+            eprintln!("termiod: the handoff blob could not be read back: {read:#}");
+            vec!["<unknown>".to_string()]
+        }
+    };
+    if recovered.is_empty() {
+        Handoff::Aborted(error)
+    } else {
+        Handoff::Lost(error.context(format!("and {} could not be put back", recovered.join(", "))))
+    }
 }
 
 #[derive(Clone)]
@@ -1325,6 +1390,16 @@ async fn process_control(
                     .map_err(|error| anyhow::anyhow!("{error}"))
                     .and_then(|result| result);
                 match vetted {
+                    // A second request while one is already under way would
+                    // carry a roster the first has emptied and pack a blob of
+                    // nothing. It is refused where every other refusal happens:
+                    // while there is still a connection to refuse on.
+                    Ok(_) if !manager.begin_handoff() => error(
+                        seq,
+                        ErrorCode::Busy,
+                        "a handoff is already under way",
+                        true,
+                    ),
                     Ok(path) => {
                         // The reply goes out *before* the accept loop is told,
                         // and this waits for it to reach the socket: the exec
@@ -2521,10 +2596,25 @@ async fn run_attach(
         };
         match frame {
             Ok(Some(Frame::Data(data))) => {
-                handle.send(SessionMsg::Input {
+                // The same window `Send` and `Kill` answer `busy` for, reached
+                // by the other door: a client typing into an attachment whose
+                // actor has already handed over its PTY. There is nothing to
+                // answer here — an attachment is a stream, not a request — so
+                // the honest move is to say the attachment is over and let the
+                // client reattach. Swallowing the keystrokes would leave someone
+                // typing into a window that stopped listening without saying so.
+                if !handle.send(SessionMsg::Input {
                     id: client_id.clone(),
                     data,
-                });
+                }) {
+                    let _ = out.send(Outbound::Control(error(
+                        None,
+                        ErrorCode::Busy,
+                        "this session is being handed to a new daemon; reattach to keep typing",
+                        true,
+                    )));
+                    break;
+                }
             }
             Ok(Some(Frame::Resize { rows, cols })) => {
                 handle.send(SessionMsg::Resize {

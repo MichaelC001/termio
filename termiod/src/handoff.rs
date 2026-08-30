@@ -380,7 +380,15 @@ fn write_blob(
     sessions: &[(CarriedSession, OwnedFd, Vec<Bytes>)],
     mut file: std::fs::File,
 ) -> Result<OwnedFd> {
-    if std::env::var_os(FAIL_AFTER_CARRY).is_some() {
+    if let Some(setting) = std::env::var_os(FAIL_AFTER_CARRY) {
+        // A number holds the failure open that many milliseconds first. The
+        // instant failure is enough to prove the rollback, but not to prove
+        // anything about what happens *during* a handoff: a second request
+        // arriving after the first has already aborted is not a race. Holding
+        // the window open is what makes it one.
+        if let Some(ms) = setting.to_str().and_then(|value| value.parse::<u64>().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         bail!("{FAIL_AFTER_CARRY} is set");
     }
     set_inheritable(listener.as_raw_fd())?;
