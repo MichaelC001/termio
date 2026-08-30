@@ -9,6 +9,14 @@ If `TERMIO_SESSION` is not set in your environment, you are not running inside
 a Termio-managed session — say so and stop instead of trying to drive sessions
 you cannot see.
 
+A sandboxed command cannot reach the CLI: seatbelt profiles that deny network
+access (Codex `workspace-write` is one) refuse unix-socket connects with
+EPERM, so `termio sessions …` fails with "the OS denied the connection". The
+socket and the app are fine — do not restart Termio; run the command outside
+the sandbox (in Codex, request escalated permissions for it). The link is
+one-directional there: siblings can still drive the sandboxed session, but it
+cannot drive back.
+
 You are running inside Termio alongside other agent sessions in this same
 project. Coordinate with them through the `termio sessions` CLI. Every command
 is scoped to this project automatically; add `--json` for machine-readable
