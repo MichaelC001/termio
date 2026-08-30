@@ -46,9 +46,9 @@ related:
 | §4.3「三处必须逐字节相同」靠人守 | 地址由 Mac 从隧道日志**读回**再写进守护进程，`RemotePairing.invite` 的 `--url` 参数已删除 | 同上 |
 | `pair` 成功 ≠ 可达（§0 已列）——但没人管 | 画二维码之前先按手机的规则拨一次号，比对 `host_id`；不通就退回「尚未发布」 | `RemoteTunnelService.handshake` |
 | §6.1 tunelo 需要 0.3.0 `--identity` | 已满足，稳定子域名跨重启与 `kill -9` 复核过 | `4a6c5284842fef36.tunelo.net` |
-| §6.5 Linux systemd user unit「lifecycle RFC 明确 defer 了」 | **已发布**，但发布的是 `termiod service install`（`a1a8cdc` / PR #522），不是本 RFC 设想的 app 侧写法 | `termiod/src/service.rs` `systemd::unit` |
+| §6.5 Linux systemd user unit「lifecycle RFC 明确 defer 了」 | **已发布**（`a1a8cdc` / PR #522），且 app 侧那份重复的 unit 也已经拆掉（PR #530） | `termiod/src/service.rs` `systemd::unit`；`RemoteTunnel.swift` `arm` |
 
-### 一个必须记下来的冲突
+### 一个必须记下来的冲突（已修，保留经过）
 
 `termiod.service` 现在有**两个写者**，策略不同：
 
@@ -71,16 +71,27 @@ line: the bind survives in `wss.bind` beside the socket, or in a `TERMIOD_WSS`
 drop-in."* 守护进程侧把 `Restart=on-failure` 的理由也写清楚了 ——
 `termiod stop` 发 `SIGTERM` 后要等 socket 排空，`always` 会和那次排空抢。
 
-**结论：app 不该再自己写 `termiod.service`。** 应改成调 `termiod service install`，
-再落一个只带 `Environment=TERMIOD_WSS=…` / `TERMIOD_WSS_ORIGIN=…` 的 drop-in ——
-`DEPLOY.md` §「WSS」已经写好了这个形状和优先级（`--wss` > `TERMIOD_WSS` >
-`wss.bind`）。这样武装监听器就不再需要一份自己的 unit，只是给别人的 unit 加两行
-环境变量；`Restart` 策略也回到守护进程自己说了算。
+**已收敛（2026-08-30，PR #530 `614a00c`）。** app 不再自己写 `termiod.service`，
+`arm` 改成四步：停掉命令行里带 `--wss` 的旧 unit（那是 app 写的标志，`service
+install` 写的从不带）→ 写
+`~/.config/systemd/user/termiod.service.d/override.conf`，只有
+`Environment="TERMIOD_WSS=…"` / `TERMIOD_WSS_ORIGIN=…` → `termiod stop --force`
+→ `termiod service install`。`Restart` 策略回到守护进程自己说了算。
+
+**为什么是 drop-in 而不是 `wss.bind`。** `wss.bind` / `wss.origin` / `pair.token`
+都在 `state_dir()` = `$XDG_RUNTIME_DIR/termiod/`，那是 tmpfs —— 重启就没了。而
+`service install` 只覆盖 unit 文件，不动 `.d/`。守护进程每次启动都读环境变量
+（`wss.rs` 的优先级：`--wss` > `TERMIOD_WSS` > `wss.bind`），所以 drop-in 是唯一
+一份跨重启还在、又不会被 `service install` 冲掉的武装记录。
+
+**代价记一笔**：环境变量武装起来的监听器**不会**把 origin 回写到 `wss.origin`，
+而 `pair` 是另一个进程 —— 所以 `RemotePairing.invite` 现在得先
+`systemctl --user show termiod -p Environment` 把 origin 读回来，再用
+`TERMIOD_WSS_ORIGIN='…' termiod pair --json` 出邀请。§4.3「三处逐字节相同」这条
+约束因此多了一个必须对齐的地方，不是少了一个。
 
 隧道那个 unit（`termio-tunnel.service`）没有第二个写者，保持现状 —— 它的
 `Restart=always` + `StartLimitIntervalSec=0` 是对的：隧道掉了就该一直重连。
-
-这是欠的后续，不在本 RFC 的范围里改。
 
 ## 1. 问题
 
@@ -292,8 +303,8 @@ tunelo 的 QUIC**（它讲 HTTP/3，tunelo 是 quinn 上的自定义协议）。
 5. ~~**Linux systemd user unit。**~~ **已发布**（2026-08-29，`a1a8cdc` / PR #522）：
    `termiod service install` 在 Linux 上写 `termiod.service`，`Restart=on-failure`，
    `spawn_daemon` 在 unit 持有 socket 时改走 `systemctl --user start`。
-   但见 §0.1 —— app 侧又自己写了一份同名 unit，两个写者策略不同，现在是 app 那份在
-   `ukvps` 上空转。**这条从「没做」变成了「做了两遍」，欠一次收敛。**
+   app 侧一度又写了一份同名 unit，两个写者策略不同，在 `ukvps` 上空转了
+   `NRestarts≈74000` 次；PR #530 已收敛成 drop-in（见 §0.1）。
 6. **滥用预案。** 一个公开的、能把任意本地端口暴露到公网的服务**一定**会被拿去做 C2
    和钓鱼 —— dev tunnels 的逆向分析文章标题就叫 "The Accidental C2"，微软的反钓鱼插页
    就是为此而设。上线前要有：滥用举报入口、按 Register token 吊销的能力、以及速率限制。
