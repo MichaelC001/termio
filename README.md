@@ -71,6 +71,31 @@ you, one of them stuck. (The longer argument:
 - **Auto-update.** Notarized DMG, updated by Sparkle.
 - **Free.** No account, no license keys, no paid tier. MIT-licensed.
 
+## You don't have to learn tmux
+
+The reason everyone tells you to learn tmux is that agent work needs sessions
+that outlive the terminal — quit the app, close the laptop, and the agent
+should keep going. Termio does that out of the box: every session's shell
+lives in `termiod`, a daemon, so quitting only detaches. Reopen the app and
+the agent is where you left it — same process, same scrollback. Only Close
+Session (⌘W) ends one.
+
+Everything else tmux would have taught you is a Mac shortcut or already in
+your hands:
+
+- Splits: ⌘D, zoom ⇧⌘↩ — no Ctrl-b first. A ⌘ shortcut never reaches the
+  program in the pane, so nothing collides with vim or a TUI.
+- Scroll, select, copy: trackpad, mouse, ⌘C. No copy-mode to enter and
+  leave.
+- A session on a Linux box: same daemon there, and `termiod attach <session>`
+  reaches it from any shell.
+- Scripting: `termio sessions` (below) does what `send-keys` scripts do, and
+  agent status is a protocol object, not a pane to scrape.
+
+No prefix key, no `.tmux.conf`, no plugins to restore sessions — there is
+nothing to configure before the durability works. And if tmux is already
+muscle memory, it still runs inside a session like any other program.
+
 ## Works with your agents
 
 Claude Code, Codex, Antigravity, Grok, Cursor Agent, Copilot, Amp, OpenCode,

@@ -67,6 +67,27 @@ IDE 是圍繞著一個人打字寫程式設計的。程式碼大半改由 Agent 
 - **自動更新。** 經公證的 DMG，透過 Sparkle 更新。
 - **免費。** 不需帳號、沒有授權金鑰、沒有付費方案。採 MIT 授權。
 
+## 不需要學 tmux 了
+
+所有人勸你學 tmux 的理由，是跑 Agent 需要比終端機活得久的工作階段——退出 app、
+闔上筆電，Agent 得繼續做事。這件事 Termio 開箱就做了：每個工作階段的 shell 都
+活在常駐程式 `termiod` 裡，退出 app 只是斷開連線。再打開，Agent 還在你離開的
+地方——同一個程序，同一份捲動歷史。只有「關閉工作階段」（⌘W）會結束它。
+
+tmux 剩下要教你的東西，要麼是一個 Mac 快捷鍵，要麼你本來就會：
+
+- 分割：⌘D，放大：⇧⌘↩——不用先按 Ctrl-b。⌘ 快捷鍵根本不會傳進窗格裡的程式，
+  所以永遠不會和 vim 或 TUI 搶鍵。
+- 捲歷史、選文字、複製：觸控板、滑鼠、⌘C。沒有 copy-mode 要進出。
+- Linux 機器上的工作階段：同一個常駐程式跑在那邊，任何 shell 裡
+  `termiod attach <session>` 就能接上。
+- 腳本化：`termio sessions`（見下文）做的就是 `send-keys` 腳本做的事，而且
+  Agent 狀態是協定物件，不用抓畫面。
+
+沒有前綴鍵，沒有 `.tmux.conf`，不用裝外掛來還原工作階段——持久化生效之前，
+沒有任何東西需要設定。如果 tmux 已經是你的肌肉記憶，它在工作階段裡照樣能跑，
+和別的程式一樣。
+
 ## 和你現有的 Agent 一起用
 
 Claude Code、Codex、Antigravity、Grok、Cursor Agent、Copilot、Amp、OpenCode、
