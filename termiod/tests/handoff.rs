@@ -560,10 +560,16 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
     let ticks = wait_for_counter(&tally, 3);
 
     // The upgrade is asked for, gets as far as carrying every session, and then
-    // cannot write the blob. The reply says nothing about that: it is sent when
-    // the request is accepted, not when the handoff has happened — so the
-    // daemon's own log is what says which way it went.
-    let _ = termiod(&socket, &["handoff", "--json"]);
+    // cannot write the blob. The client learns this the only way it can: its own
+    // connection is still open. A successful handoff execs and takes that
+    // connection with it, so an aborted one is exactly the case where it does
+    // not close — which is why reporting used to be wrong here, and is now the
+    // assertion.
+    let handed = termiod(&socket, &["handoff", "--json"]);
+    assert!(
+        !handed.status.success(),
+        "an aborted handoff reported success: {handed:?}"
+    );
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let said = std::fs::read_to_string(&log).unwrap_or_default();

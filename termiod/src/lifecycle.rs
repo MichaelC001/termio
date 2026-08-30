@@ -600,15 +600,25 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
             Some(_) => bail!("the daemon answered handoff with something else"),
             None => bail!("the daemon closed the connection without answering handoff"),
         }
-        // This connection dies with the image, so its EOF *is* the exec. Waiting
-        // for it is what makes the check below meaningful: without it the very
-        // next handshake can be answered by the old daemon, still up, still
-        // reporting a version — which on a same-build handoff is indistinguishable
-        // from success.
-        let _ = tokio::time::timeout(SETTLE, async {
+        // This connection dies with the image, so its EOF *is* the exec. That
+        // makes it the only honest signal a client has: an `ok` here means the
+        // request was accepted, not that anything happened, and a handoff that
+        // aborts leaves this connection open and serving. Waiting was already
+        // right; throwing the answer away was not. On a same-build handoff the
+        // version cannot tell the two apart, so without this the CLI reported an
+        // aborted upgrade as a completed one.
+        let crossed = tokio::time::timeout(SETTLE, async {
             while let Ok(Some(_)) = read_frame(&mut reader).await {}
         })
-        .await;
+        .await
+        .is_ok();
+        if !crossed {
+            bail!(
+                "the daemon accepted the handoff but is still answering on the \
+                 connection that asked for it, so the exec never happened — the \
+                 sessions are untouched; its log says why"
+            );
+        }
         (hello.version, sessions.len())
     };
     drop(stream);
