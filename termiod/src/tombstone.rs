@@ -256,7 +256,63 @@ impl Graveyard {
     /// nobody buried — the previous daemon died holding it. Adopting those as
     /// `daemon_lost` here is what turns a crash from a silently empty list into
     /// an explanation.
-    pub fn open(dir: &Path) -> Result<Graveyard> {
+    /// A graveyard that records nothing, for the one caller that must not fail:
+    /// a daemon that has just inherited live sessions across an `execve`.
+    ///
+    /// Opening the real one reads and rewrites two files, and on that path a
+    /// failure would end the process — taking with it the PTYs it was handed,
+    /// which are the only things in this system that cannot be recreated. A
+    /// daemon with no tombstone log explains a later loss worse. A daemon that
+    /// exited caused one.
+    ///
+    /// The cost is larger than "no history": every session this daemon goes on
+    /// to create is invisible to the roster too, so a later crash cannot
+    /// explain their loss either, and this does not heal by itself. The way
+    /// back is to repair the state directory and hand off again — a restart
+    /// would end the very sessions the fallback existed to keep.
+    pub fn detached() -> Graveyard {
+        Graveyard {
+            graves_path: PathBuf::new(),
+            roster_path: PathBuf::new(),
+            state: Mutex::new(State {
+                graves: Vec::new(),
+                roster: HashMap::new(),
+                buried: HashSet::new(),
+            }),
+        }
+    }
+
+    /// Move a session from the roster to the graves by id, for a caller that
+    /// knows the session is gone but never held its `SessionInfo` — the
+    /// adoption path, where what is known about a session is whatever the
+    /// previous daemon wrote down.
+    pub fn bury_by_id(&self, id: &str, reason: EndReason) {
+        {
+            let mut state = self.state.lock().unwrap();
+            let key = SessionId::new(id.to_string());
+            let Some(entry) = state.roster.remove(&key) else {
+                return;
+            };
+            let grave = entry.into_tombstone(reason);
+            let grave_key = GraveKey::from_grave(&grave);
+            if state.buried.insert(grave_key) {
+                state.graves.insert(0, grave);
+                state.graves.truncate(MAX_GRAVES);
+            }
+        }
+        if let Err(error) = self.persist_graves().and_then(|_| self.persist_roster()) {
+            eprintln!("termiod: could not record the loss of session {id}: {error:#}");
+        }
+    }
+
+    /// Open the graveyard, keeping `alive` on the roster instead of burying it.
+    ///
+    /// The roster's whole meaning is "these were running when a daemon last
+    /// wrote this file, and nobody buried them" — which is a crash everywhere
+    /// except one place: a handoff, where the new image inherits the very
+    /// processes the roster names. Those are alive and must stay on the roster;
+    /// anything else in the file is the loss it has always been.
+    pub fn open_retaining(dir: &Path, alive: &[String]) -> Result<Graveyard> {
         let graveyard = Graveyard {
             graves_path: dir.join("tombstones.json"),
             roster_path: dir.join("roster.json"),
@@ -268,7 +324,10 @@ impl Graveyard {
         };
 
         let mut graves: Vec<Tombstone> = read_json(&graveyard.graves_path).unwrap_or_default();
-        let orphans: Vec<RosterEntry> = read_json(&graveyard.roster_path).unwrap_or_default();
+        let entries: Vec<RosterEntry> = read_json(&graveyard.roster_path).unwrap_or_default();
+        let (survivors, orphans): (Vec<RosterEntry>, Vec<RosterEntry>) = entries
+            .into_iter()
+            .partition(|entry| alive.contains(&entry.id));
         // Newest first, so the cap drops the oldest history rather than the
         // sessions that just died.
         for orphan in orphans.into_iter().rev() {
@@ -282,10 +341,14 @@ impl Graveyard {
             // Index what was just loaded, so the invariant holds from the first
             // burial rather than from the first one this daemon happens to make.
             state.buried = state.graves.iter().map(GraveKey::from_grave).collect();
+            // The roster starts with the survivors and nothing else: whatever
+            // the last daemon held and did not hand over is now buried, and
+            // leaving it in the file would bury it twice on the next start.
+            state.roster = survivors
+                .into_iter()
+                .map(|entry| (SessionId::new(entry.id.clone()), entry))
+                .collect();
         }
-        // The roster starts empty for this daemon: whatever the last one held is
-        // now buried, and leaving the file behind would bury it twice on the
-        // next start.
         graveyard.persist_roster()?;
         graveyard.persist_graves()?;
         Ok(graveyard)
@@ -356,11 +419,25 @@ impl Graveyard {
     }
 
     fn persist_graves(&self) -> Result<()> {
+        if self.detached_from_disk() {
+            return Ok(());
+        }
         let graves = self.state.lock().unwrap().graves.clone();
         write_json(&self.graves_path, &graves)
     }
 
+    /// A `detached` graveyard has no files. Writing is a success that writes
+    /// nothing rather than an error, so the callers that already treat a
+    /// persist failure as "a worse explanation later, never a broken terminal
+    /// now" do not fill the log saying so on every session.
+    fn detached_from_disk(&self) -> bool {
+        self.graves_path.as_os_str().is_empty()
+    }
+
     fn persist_roster(&self) -> Result<()> {
+        if self.detached_from_disk() {
+            return Ok(());
+        }
         let mut roster: Vec<RosterEntry> = self
             .state
             .lock()
@@ -437,7 +514,7 @@ mod tests {
     #[test]
     fn a_session_that_exits_is_buried_with_its_status() {
         let dir = temp_dir("exit");
-        let graveyard = Graveyard::open(&dir).unwrap();
+        let graveyard = Graveyard::open_retaining(&dir, &[]).unwrap();
         graveyard.note_live(&info("a"));
         graveyard.bury(&info("a"), EndReason::Exited, Some(0));
 
@@ -456,7 +533,7 @@ mod tests {
     #[test]
     fn a_replaced_executable_survives_in_the_durable_record() {
         let dir = temp_dir("replaced");
-        let graveyard = Graveyard::open(&dir).unwrap();
+        let graveyard = Graveyard::open_retaining(&dir, &[]).unwrap();
         let mut dying = info("a");
         dying.alive = false;
         dying.child_executable_replaced = true;
@@ -466,7 +543,7 @@ mod tests {
 
         // Reopened, so this reads the field back off disk rather than out of
         // the in-memory copy that bury() just wrote.
-        let graves = Graveyard::open(&dir).unwrap().all();
+        let graves = Graveyard::open_retaining(&dir, &[]).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert!(
             graves[0].child_executable_replaced,
@@ -487,7 +564,7 @@ mod tests {
         )
         .unwrap();
 
-        let graves = Graveyard::open(&dir).unwrap().all();
+        let graves = Graveyard::open_retaining(&dir, &[]).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert!(
             !graves[0].child_executable_replaced,
@@ -500,11 +577,11 @@ mod tests {
     #[test]
     fn a_session_the_daemon_died_under_is_adopted_as_lost() {
         let dir = temp_dir("crash");
-        let first = Graveyard::open(&dir).unwrap();
+        let first = Graveyard::open_retaining(&dir, &[]).unwrap();
         first.note_live(&info("a"));
         drop(first); // no bury — the daemon vanished
 
-        let second = Graveyard::open(&dir).unwrap();
+        let second = Graveyard::open_retaining(&dir, &[]).unwrap();
         let graves = second.all();
         assert_eq!(graves.len(), 1);
         assert_eq!(graves[0].id, "a");
@@ -520,12 +597,12 @@ mod tests {
     #[test]
     fn a_buried_session_is_not_mourned_twice() {
         let dir = temp_dir("once");
-        let first = Graveyard::open(&dir).unwrap();
+        let first = Graveyard::open_retaining(&dir, &[]).unwrap();
         first.note_live(&info("a"));
         first.bury(&info("a"), EndReason::Killed, Some(137));
         drop(first);
 
-        let graves = Graveyard::open(&dir).unwrap().all();
+        let graves = Graveyard::open_retaining(&dir, &[]).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert_eq!(graves[0].reason, "killed");
     }
@@ -537,7 +614,7 @@ mod tests {
     #[test]
     fn the_index_is_capped_with_the_graves() {
         let dir = temp_dir("index-cap");
-        let graveyard = Graveyard::open(&dir).unwrap();
+        let graveyard = Graveyard::open_retaining(&dir, &[]).unwrap();
         for index in 0..MAX_GRAVES + 50 {
             let mut ended = info(&format!("s{index}"));
             ended.created_unix = 1000 + index as u64;
@@ -554,7 +631,7 @@ mod tests {
     #[test]
     fn a_late_reaper_does_not_replace_the_shutdown_reason() {
         let dir = temp_dir("shutdown-race");
-        let graveyard = Graveyard::open(&dir).unwrap();
+        let graveyard = Graveyard::open_retaining(&dir, &[]).unwrap();
         graveyard.note_live(&info("a"));
         graveyard
             .bury_remaining(EndReason::DaemonStopped)
@@ -571,12 +648,12 @@ mod tests {
     #[test]
     fn adoption_is_not_repeated_on_every_restart() {
         let dir = temp_dir("idempotent");
-        let first = Graveyard::open(&dir).unwrap();
+        let first = Graveyard::open_retaining(&dir, &[]).unwrap();
         first.note_live(&info("a"));
         drop(first);
 
-        assert_eq!(Graveyard::open(&dir).unwrap().all().len(), 1);
-        assert_eq!(Graveyard::open(&dir).unwrap().all().len(), 1);
+        assert_eq!(Graveyard::open_retaining(&dir, &[]).unwrap().all().len(), 1);
+        assert_eq!(Graveyard::open_retaining(&dir, &[]).unwrap().all().len(), 1);
     }
 
     /// History is bounded, and the cap drops the oldest — a box that has been up
@@ -584,7 +661,7 @@ mod tests {
     #[test]
     fn history_is_capped_and_drops_the_oldest() {
         let dir = temp_dir("cap");
-        let graveyard = Graveyard::open(&dir).unwrap();
+        let graveyard = Graveyard::open_retaining(&dir, &[]).unwrap();
         for index in 0..MAX_GRAVES + 10 {
             graveyard.bury(&info(&format!("s{index}")), EndReason::Exited, Some(0));
         }
@@ -599,11 +676,11 @@ mod tests {
     #[test]
     fn graves_survive_a_restart() {
         let dir = temp_dir("persist");
-        let first = Graveyard::open(&dir).unwrap();
+        let first = Graveyard::open_retaining(&dir, &[]).unwrap();
         first.bury(&info("a"), EndReason::Exited, Some(3));
         drop(first);
 
-        let graves = Graveyard::open(&dir).unwrap().all();
+        let graves = Graveyard::open_retaining(&dir, &[]).unwrap().all();
         assert_eq!(graves.len(), 1);
         assert_eq!(graves[0].exit_status, Some(3));
     }
@@ -616,6 +693,6 @@ mod tests {
         std::fs::write(dir.join("tombstones.json"), b"{not json").unwrap();
         std::fs::write(dir.join("roster.json"), b"[[[").unwrap();
 
-        assert_eq!(Graveyard::open(&dir).unwrap().all().len(), 0);
+        assert_eq!(Graveyard::open_retaining(&dir, &[]).unwrap().all().len(), 0);
     }
 }

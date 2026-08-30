@@ -108,6 +108,13 @@ pub enum SessionMsg {
     Info {
         reply: oneshot::Sender<SessionInfo>,
     },
+    /// The daemon is about to replace its own image and needs this session's
+    /// PTY on a descriptor that survives the `execve`. The actor answers and
+    /// stops — without killing anything, and without a burial: the process in
+    /// there is about to be someone else's to read.
+    Carry {
+        reply: oneshot::Sender<Carried>,
+    },
     Kill {
         reason: EndReason,
     },
@@ -337,6 +344,19 @@ struct Session {
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
+    /// Whether the ring, replayed from its start into a blank terminal of the
+    /// current size, still reconstructs this screen.
+    ///
+    /// It stops being true the moment the ring evicts a chunk (the bytes that
+    /// drew what is still on screen may be the ones dropped) or the session is
+    /// resized (the bytes that remain were written into a differently shaped
+    /// grid, and replaying them into this one lands them elsewhere).
+    ///
+    /// Nothing about *this* daemon reads it: the live VT has been fed every
+    /// byte as it arrived and answers snapshots from what it holds, not from a
+    /// replay. It exists for the far side of a handoff, which has only the ring
+    /// and would otherwise present a confidently wrong screen.
+    ring_reconstructs_screen: bool,
     events: broadcast::Sender<Event>,
     vt: Vt,
     /// Who is in the tty's foreground and where the child is standing.
@@ -402,12 +422,51 @@ impl Session {
         request_id
     }
 
+    /// Pack this session for a handoff and give up the actor's claim on it.
+    ///
+    /// The PTY master is *duplicated* rather than surrendered. The copy names
+    /// the same open file description — the same master, the same termios, the
+    /// same foreground process group — while the original stays with the `Pty`
+    /// and closes normally when this actor drops. Handing out the raw number
+    /// instead would leave the new image reading a descriptor the old one had
+    /// already closed.
+    ///
+    /// The copy is handed over *owned*, so that a `Carried` nobody takes is a
+    /// session hung up rather than a descriptor orphaned.
+    fn into_carried(self) -> anyhow::Result<Carried> {
+        let master = crate::handoff::duplicate_for_exec(self.pty.master_fd())?;
+        let ring: Vec<Bytes> = self.ring.iter().cloned().collect();
+        Ok(Carried {
+            info: crate::handoff::CarriedSession {
+                id: self.id.to_string(),
+                name: self.name.clone(),
+                cwd: self.cwd.clone(),
+                command: self.command.clone(),
+                pid: self.pid,
+                rows: self.rows,
+                cols: self.cols,
+                created_unix: self.created_unix,
+                status: self.status.clone(),
+                title: self.title.clone(),
+                workstream: self.workstream.clone(),
+                // Assigned by `handoff::pack`, at the moment this session is
+                // committed to the blob.
+                master_fd: -1,
+                ring_len: self.ring_bytes as u64,
+                ring_reconstructs_screen: self.ring_reconstructs_screen,
+            },
+            master,
+            ring,
+        })
+    }
+
     fn push_ring(&mut self, data: Bytes) {
         self.ring_bytes += data.len();
         self.ring.push_back(data);
         while self.ring_bytes > RING_CAP {
             if let Some(evicted) = self.ring.pop_front() {
                 self.ring_bytes -= evicted.len();
+                self.ring_reconstructs_screen = false;
             }
         }
     }
@@ -1089,6 +1148,23 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
     env
 }
 
+/// Everything a session actor hands over when its daemon is about to `execve`
+/// (see `crate::handoff`): the facts that describe it, the PTY master as a
+/// descriptor the exec can carry, and the replay ring so the new image can put
+/// the screen back without asking the program to redraw it.
+pub struct Carried {
+    pub info: crate::handoff::CarriedSession,
+    /// The PTY master, **owned**. Its number reaches the blob only when the
+    /// daemon commits this session to the crossing; until then, dropping this
+    /// closes the master and the program in the session is hung up like any
+    /// other loss. That is what a session which misses the carry deadline
+    /// needs to happen — the alternative is a descriptor with no owner and no
+    /// reader surviving the exec, and a process alive inside a session nothing
+    /// can see.
+    pub master: std::os::fd::OwnedFd,
+    pub ring: Vec<Bytes>,
+}
+
 /// Spawn a session task. On process exit the session id is sent to the
 /// manager so it can remove the handle from the table.
 #[allow(clippy::too_many_arguments)]
@@ -1112,12 +1188,155 @@ pub fn spawn(
     };
     let env = daemon_owned_env(&id, env);
     let (pty, child) = Pty::spawn(&argv, cwd_opt, &env, rows, cols)?;
-    let pty = Arc::new(pty);
-    let pid = pty.pid;
     let created_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let waiter = tokio::task::spawn_blocking(move || {
+        let mut child = child;
+        match child.wait() {
+            Ok(status) => status.code().unwrap_or_else(|| {
+                use std::os::unix::process::ExitStatusExt;
+                status.signal().map(|s| 128 + s).unwrap_or(-1)
+            }),
+            Err(_) => -1,
+        }
+    });
+    start(
+        Facts {
+            id,
+            name,
+            cwd,
+            command,
+            rows,
+            cols,
+            created_unix,
+            status: "unknown".to_string(),
+            title: None,
+            workstream,
+        },
+        pty,
+        waiter,
+        Replay::none(),
+        on_exit,
+        events,
+    )
+}
+
+/// Take a session back over after a handoff: same PTY, same child, same ring,
+/// a new actor around them.
+///
+/// The screen is rebuilt rather than re-fetched. Feeding the carried ring
+/// through a fresh VT sidecar is exactly what the previous image did with those
+/// same bytes as they arrived, so the snapshot the first re-attaching client
+/// gets is the screen it would have got had nothing happened.
+pub fn adopt(
+    carried: crate::handoff::CarriedSession,
+    ring: Vec<u8>,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
+    events: broadcast::Sender<Event>,
+) -> anyhow::Result<SessionHandle> {
+    let pty = Pty::adopt(carried.master_fd, carried.pid)?;
+    let waiter = reap(carried.pid);
+    let replay = Replay {
+        chunks: if ring.is_empty() {
+            Vec::new()
+        } else {
+            vec![Bytes::from(ring)]
+        },
+        faithful: carried.ring_reconstructs_screen,
+    };
+    start(
+        Facts {
+            id: SessionId::new(carried.id),
+            name: carried.name,
+            cwd: carried.cwd,
+            command: carried.command,
+            rows: carried.rows,
+            cols: carried.cols,
+            created_unix: carried.created_unix,
+            status: carried.status,
+            title: carried.title,
+            workstream: carried.workstream,
+        },
+        pty,
+        waiter,
+        replay,
+        on_exit,
+        events,
+    )
+}
+
+/// Reap a child this process still owns but no longer has a `Child` for — the
+/// shape every carried session is in, because `execve` kept the parentage and
+/// destroyed the bookkeeping.
+fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
+    tokio::task::spawn_blocking(move || loop {
+        let mut status: libc::c_int = 0;
+        let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if reaped < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return -1;
+        }
+        if libc::WIFEXITED(status) {
+            return libc::WEXITSTATUS(status);
+        }
+        if libc::WIFSIGNALED(status) {
+            return 128 + libc::WTERMSIG(status);
+        }
+        // Stopped or continued. Neither was asked for — no `WUNTRACED`, no
+        // `WCONTINUED` — but a spurious wake is cheaper to loop on than to
+        // reason about.
+    })
+}
+
+/// Output this session has already produced, for an actor that is taking over
+/// rather than starting: the bytes, and whether replaying them still draws the
+/// screen they drew the first time.
+struct Replay {
+    chunks: Vec<Bytes>,
+    /// See `Session::ring_reconstructs_screen`. False means this actor's VT
+    /// must not claim to know what is on the screen.
+    faithful: bool,
+}
+
+impl Replay {
+    fn none() -> Replay {
+        Replay {
+            chunks: Vec::new(),
+            faithful: true,
+        }
+    }
+}
+
+/// What describes a session independently of how this daemon came by it.
+struct Facts {
+    id: SessionId,
+    name: String,
+    cwd: String,
+    command: String,
+    rows: u16,
+    cols: u16,
+    created_unix: u64,
+    status: String,
+    title: Option<String>,
+    workstream: Option<WorkstreamSpec>,
+}
+
+/// The half of session startup that a fresh spawn and a carried session share:
+/// the writer task, the VT sidecar, the ring, and the actor around them.
+fn start(
+    facts: Facts,
+    pty: Pty,
+    waiter: tokio::task::JoinHandle<i32>,
+    replay: Replay,
+    on_exit: mpsc::UnboundedSender<SessionEnded>,
+    events: broadcast::Sender<Event>,
+) -> anyhow::Result<SessionHandle> {
+    let pty = Arc::new(pty);
+    let pid = pty.pid;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let writer_pty = pty.clone();
@@ -1129,22 +1348,22 @@ pub fn spawn(
         }
     });
 
-    let sidecar = spawn_sidecar(rows, cols)?;
+    let sidecar = spawn_sidecar(facts.rows, facts.cols)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let termination_reason = Arc::new(Mutex::new(None));
-    let session = Session {
-        id: id.clone(),
-        name,
-        cwd,
-        command,
+    let mut session = Session {
+        id: facts.id.clone(),
+        name: facts.name,
+        cwd: facts.cwd,
+        command: facts.command,
         pid,
-        rows,
-        cols,
-        created_unix,
-        status: "unknown".to_string(),
-        title: None,
-        workstream,
+        rows: facts.rows,
+        cols: facts.cols,
+        created_unix: facts.created_unix,
+        status: facts.status,
+        title: facts.title,
+        workstream: facts.workstream,
         pty,
         input_tx,
         clients: HashMap::new(),
@@ -1153,21 +1372,32 @@ pub fn spawn(
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
+        ring_reconstructs_screen: true,
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
         foreground: Foreground::default(),
     };
-
-    let waiter = tokio::task::spawn_blocking(move || {
-        let mut child = child;
-        match child.wait() {
-            Ok(status) => status.code().unwrap_or_else(|| {
-                use std::os::unix::process::ExitStatusExt;
-                status.signal().map(|s| 128 + s).unwrap_or(-1)
-            }),
-            Err(_) => -1,
-        }
-    });
+    for chunk in replay.chunks {
+        // Through the same two paths a live byte takes, in the same order: the
+        // ring it will be replayed from, and the VT that answers snapshots.
+        session.send_sidecar(SidecarCommand::Write(chunk.clone()));
+        session.push_ring(chunk);
+    }
+    // `push_ring` may have set this itself, if what was carried no longer fits
+    // the cap; either way the previous actor's verdict still applies.
+    session.ring_reconstructs_screen &= replay.faithful;
+    if !session.ring_reconstructs_screen {
+        // The VT this actor started is blank plus a replay, and the replay does
+        // not draw the screen the program believes it is looking at — output
+        // older than the ring is gone, or was written into a different grid.
+        // Snapshots fall back to ring replay, which is wrong in exactly the
+        // same way but is the client's own terminal being wrong about bytes it
+        // was given, not this host asserting a screen it cannot know. The
+        // program repaints on its next output either way.
+        session.mark_vt_stale(
+            "the output that drew this screen did not survive the handoff".to_string(),
+        );
+    }
 
     tokio::spawn(run(
         session,
@@ -1179,7 +1409,7 @@ pub fn spawn(
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
-        id,
+        id: facts.id,
         pid,
         tx,
         termination_reason,
@@ -1392,6 +1622,40 @@ async fn run(
             }
             msg = rx.recv() => {
                 let Some(msg) = msg else { break };
+                if let SessionMsg::Carry { reply } = msg {
+                    let session_id = session.id.clone();
+                    // The one exit from this loop that is not an ending. No
+                    // reap, no `on_exit`, no tombstone: the child keeps running
+                    // and the daemon that reads it next is this same process
+                    // with different code in it. Returning here drops the
+                    // `Session` — and with it the original PTY descriptor,
+                    // which is why `into_carried` duplicated one first.
+                    session.send_sidecar(SidecarCommand::Shutdown);
+                    let carried = session.into_carried();
+                    // The parser is a few kilobytes of grid and a thread that
+                    // has already been told to stop; joining it here costs a
+                    // scheduler turn on a runtime that is about to cease to
+                    // exist, and skipping it would leave the thread running
+                    // into the exec.
+                    let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
+                    match carried {
+                        Ok(carried) => {
+                            let _ = reply.send(carried);
+                            return;
+                        }
+                        Err(error) => {
+                            // The descriptor could not be duplicated, so this
+                            // session cannot cross. Dropping `reply` is what
+                            // tells the daemon so, in time for it to name the
+                            // session in its report rather than lose it
+                            // silently at the exec.
+                            eprintln!(
+                                "termiod: session {session_id} cannot be carried across a handoff: {error:#}"
+                            );
+                            return;
+                        }
+                    }
+                }
                 if let Some(reason) = handle_msg(&mut session, msg) {
                     end_reason = reason;
                     break;
@@ -1636,6 +1900,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 }
                 session.rows = rows;
                 session.cols = cols;
+                // The bytes already in the ring were written into the old grid.
+                // Replaying them into this one would put them in the wrong
+                // places, which only matters where a replay is all there is —
+                // the far side of a handoff.
+                session.ring_reconstructs_screen = false;
                 session.send_sidecar(SidecarCommand::Resize { rows, cols });
                 session.begin_snapshot_barrier();
                 session.emit_event(Event::Resized {
@@ -1674,6 +1943,12 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::Info { reply } => {
             let _ = reply.send(session.info());
         }
+        // Intercepted in `run` before it reaches here: handing a session over
+        // ends the actor without ending the session, which is not something a
+        // handler returning `Option<EndReason>` can express. Dropping `reply`
+        // un-answered is the right degradation anyway — the daemon reads a
+        // dropped reply as a session that could not be carried, and names it.
+        SessionMsg::Carry { .. } => {}
         SessionMsg::Kill { reason } => {
             // The child is a session leader, so pgid == pid.
             unsafe {
@@ -1836,6 +2111,7 @@ mod tests {
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
+                ring_reconstructs_screen: true,
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
                 foreground: super::Foreground::default(),
@@ -2343,6 +2619,7 @@ mod tests {
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,
+            ring_reconstructs_screen: true,
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             foreground: super::Foreground::default(),
@@ -2437,6 +2714,119 @@ mod tests {
         )
         .expect("spawning a real session");
         (handle, events_rx, on_exit_rx)
+    }
+
+    /// A resize invalidates the ring as a source of truth for the screen: the
+    /// bytes already in it were written into a differently shaped grid, and
+    /// replaying them into this one puts them in the wrong places. Nothing in
+    /// this daemon cares — its VT was fed every byte as it arrived — but the far
+    /// side of a handoff has only the ring, and must be told not to trust it.
+    #[tokio::test]
+    async fn a_resize_makes_the_ring_stop_describing_the_screen() {
+        let untouched = attached_session().await;
+        let carried = carry(&untouched.handle).await;
+        assert!(
+            carried.info.ring_reconstructs_screen,
+            "a session nothing has resized should carry a usable ring"
+        );
+
+        let resized = attached_session().await;
+        resized.handle.send(SessionMsg::Resize {
+            id: ClientId::new("writer"),
+            rows: 40,
+            cols: 120,
+        });
+        let carried = carry(&resized.handle).await;
+        assert!(
+            !carried.info.ring_reconstructs_screen,
+            "a resized session must not claim its ring still draws its screen"
+        );
+    }
+
+    /// A session handed over with a ring that cannot draw its screen comes back
+    /// with its VT stale, so snapshots fall back to ring replay instead of the
+    /// host asserting a grid it reconstructed from bytes it was told are wrong.
+    #[tokio::test]
+    async fn an_unfaithful_ring_comes_back_with_a_vt_that_refuses_snapshots() {
+        let session = attached_session().await;
+        session.handle.send(SessionMsg::Resize {
+            id: ClientId::new("writer"),
+            rows: 40,
+            cols: 120,
+        });
+        let mut carried = carry(&session.handle).await;
+        assert!(!carried.info.ring_reconstructs_screen);
+
+        // Adopt it the way a new image would.
+        use std::os::fd::IntoRawFd as _;
+        carried.info.master_fd = carried.master.into_raw_fd();
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, mut events_rx) = broadcast::channel(64);
+        let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
+            .expect("adopting the carried session");
+
+        // The adopting actor declares its VT unusable rather than answering
+        // snapshots from a screen it reconstructed out of bytes it was told
+        // are wrong.
+        let stale = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events_rx.recv().await {
+                    Ok(Event::VtStale { reason, .. }) => return reason,
+                    Ok(_) => continue,
+                    Err(error) => panic!("event stream ended: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the adopted session declared its VT stale");
+        assert!(stale.contains("handoff"), "{stale}");
+
+        adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A live session with an interactive client holding the write token.
+    ///
+    /// The client's receiver is held for as long as the session is: dropping it
+    /// closes the channel, the actor removes the client on its next send, and
+    /// the write token goes with it — after which a `Resize` is refused as
+    /// coming from a stranger and the test silently stops testing anything.
+    struct Attached {
+        handle: SessionHandle,
+        _client: mpsc::UnboundedReceiver<ClientEvent>,
+        _events: broadcast::Receiver<Event>,
+        _on_exit: mpsc::UnboundedReceiver<super::SessionEnded>,
+    }
+
+    async fn attached_session() -> Attached {
+        let (handle, events, on_exit) = start_session(vec!["/bin/sh".to_string()], "/");
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        let granted = answer.await.expect("attached");
+        assert!(granted.writer, "the first interactive client takes the token");
+        Attached {
+            handle,
+            _client: client_rx,
+            _events: events,
+            _on_exit: on_exit,
+        }
+    }
+
+    async fn carry(handle: &SessionHandle) -> super::Carried {
+        let (reply, answer) = oneshot::channel();
+        assert!(handle.send(SessionMsg::Carry { reply }));
+        answer.await.expect("the session handed itself over")
     }
 
     /// The whole point: a live session can name the program in its terminal,

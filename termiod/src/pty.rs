@@ -432,6 +432,32 @@ impl Pty {
     /// master side is exempt from the "must be your controlling terminal" check
     /// that would otherwise refuse the daemon. `None` when the slave has no
     /// session (the child is gone, or has not exec'd yet).
+    /// Take over a PTY master that crossed an `execve` (see `crate::handoff`).
+    ///
+    /// There is no child to spawn and no `Child` to hand back: the process on
+    /// the far side of this descriptor has been running since before the
+    /// upgrade, and it is still this process's own child — `execve` keeps the
+    /// pid, so the parentage the kernel recorded at `fork` is untouched. What
+    /// is gone is every bit of userspace bookkeeping, which is why the pid
+    /// arrives as a number and is reaped with `waitpid` rather than through
+    /// `std::process::Child`.
+    pub fn adopt(master: RawFd, pid: i32) -> Result<Pty> {
+        let master = unsafe { OwnedFd::from_raw_fd(master) };
+        // Both flags are properties of the *descriptor*, not of the open file
+        // description, so neither survived the duplication that carried it
+        // here. Re-establish the pair `spawn` establishes.
+        set_cloexec(master.as_raw_fd())?;
+        set_nonblocking(master.as_raw_fd())?;
+        let master = AsyncFd::new(master)?;
+        Ok(Pty { master, pid })
+    }
+
+    /// The master descriptor, for the one caller that needs the number rather
+    /// than the I/O: packing this PTY into a handoff blob.
+    pub fn master_fd(&self) -> RawFd {
+        self.master.get_ref().as_raw_fd()
+    }
+
     pub fn foreground_pgid(&self) -> Option<i32> {
         let pgid = unsafe { libc::tcgetpgrp(self.master.get_ref().as_raw_fd()) };
         (pgid > 0).then_some(pgid)
