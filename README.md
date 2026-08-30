@@ -157,7 +157,7 @@ public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
 ## Architecture
 
-Termio is moving every session onto `termiod`, a small Rust daemon that owns the
+Every Termio session runs on `termiod`, a small Rust daemon that owns the
 PTY on whichever machine the work runs on. Each UI — the Mac app, the phone, a
 browser — is a client that attaches to it over one versioned protocol.
 
@@ -176,10 +176,11 @@ a session through another client, which is what stops the phone from being a
 satellite of the Mac — and what makes a session on a VPS the same object as one
 on your laptop.
 
-**Built:** the daemon and its protocol, the `unix` and `ssh` transports,
-snapshot-on-attach, scrollback, and the file and git planes — running behind a
-flag while the Mac app moves onto it. **Not built:** the WSS transport the
-browser and the phone need.
+**Built:** the daemon and its protocol; the `unix`, `ssh`, and `wss`
+transports; snapshot-on-attach; scrollback; the file and git planes; and
+launchd/systemd supervision. The Mac app runs every session through it, and the
+phone attaches to a Mac or a Linux box over WSS. **Not built:** the browser
+client.
 
 The reasoning is in [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) and the
 design notes under [`docs/`](docs/README.md).
