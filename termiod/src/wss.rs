@@ -684,8 +684,14 @@ fn start_rotation_watch() -> Rotation {
 }
 
 fn install_watch(sender: watch::Sender<u64>) -> Result<RecommendedWatcher> {
-    let directory = paths::state_dir()?;
-    let token_name = paths::pair_token_path()?
+    // Derived from the token's own path, not `state_dir`: the token lives in
+    // the durable dir, and a watch on the socket dir would never see a rotate.
+    let token_path = paths::pair_token_path()?;
+    let directory = token_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("the pairing token has no parent directory"))?;
+    let token_name = token_path
         .file_name()
         .map(std::ffi::OsString::from)
         .ok_or_else(|| anyhow::anyhow!("the pairing token has no file name"))?;

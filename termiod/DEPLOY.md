@@ -250,7 +250,9 @@ running both does not have them fight.
 ### The token
 
 `termiod pair` mints 24 random bytes as base64url and stores them `0600` at
-`pair.token`, beside `host.id`. `--wss` never mints one: a listener that cannot
+`pair.token`, beside `host.id` in the state dir (`~/.local/state/termio` on
+Linux), so both survive a reboot — the socket's tmpfs does not. `--wss` never
+mints one: a listener that cannot
 authenticate is not something to start by accident.
 
 | Command | What it does |
@@ -278,8 +280,8 @@ if you do, rotate.
 A flag that lives only on one foreground argv dies on the next crash restart —
 the daemon auto-starts as bare `termiod serve`, and so does the unit
 `termiod service install` writes. So an explicit `--wss` with a token in place
-writes `wss.bind` (`0600`) beside the socket, and every later bare start reads
-it back. That is the whole durable path; the generated unit deliberately puts
+writes `wss.bind` (`0600`) into the state dir, and every later bare start —
+including the first one after a reboot — reads it back. That is the whole durable path; the generated unit deliberately puts
 nothing about WSS on its command line.
 
 To pin the bind in the unit as well, use a drop-in rather than editing the
@@ -331,7 +333,7 @@ Session survives: SSH disconnects, laptop sleep, network drops. It ends only on
 | Listener | Unix socket under `$XDG_RUNTIME_DIR/termiod/` (or uid-tmp), mode 0600. **No public port.** The opt-in WebSocket binds loopback and nothing else; TLS and reachability are the proxy's job. |
 | Auth / ACL | **SSH.** Whoever can `ssh my-vps` as your user can reach your daemon — same trust as a shell. Over the WebSocket it is the `pair.token`, and anyone holding it has the same access. |
 | Credentials | Your ssh-agent / `~/.ssh` keys. termiod stores and transmits none. `pair.token` is the one secret it writes, `0600`, and it never leaves the box except in an invite you hand out. |
-| Multi-user | Socket is per-uid and 0600; another user on the box can't connect. A user who can read `pair.token` can, which is why it is `0600` beside the socket. |
+| Multi-user | Socket is per-uid and 0600; another user on the box can't connect. A user who can read `pair.token` can, which is why it is `0600` in a `0700` dir. |
 | Transport crypto | Entirely SSH's, or entirely the front proxy's. termiod adds no crypto and no bespoke protocol on the wire beyond the framed session stream inside the channel. |
 | Browser CSRF | An `Origin` allowlist (`--wss-origin`), defaulting to same-origin. It constrains pages; the token is what authenticates the pipe. There is no exemption for clients that "look native". |
 | Revocation | `termiod pair --rotate`. It drops every attached WebSocket and refuses the old secret from then on. Sessions keep running — a rotation is a detach, not a kill. |

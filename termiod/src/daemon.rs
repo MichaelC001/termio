@@ -541,6 +541,9 @@ pub async fn serve(
         }
         Err(error) => return Err(error),
     }
+    // Before anything reads identity, token, bind or graveyard: a box upgraded
+    // from a build that kept them beside the socket still has them there.
+    paths::adopt_runtime_state();
 
     let mut listener = match &inherited {
         Some((blob, _)) => adopt_listener(blob.listener_fd)?,
@@ -613,7 +616,7 @@ pub async fn serve(
         .flat_map(|(blob, _)| blob.sessions.iter().map(|session| session.id.clone()))
         .collect();
     let graveyard = Arc::new(
-        match paths::state_dir().and_then(|dir| Graveyard::open_retaining(&dir, &carried_ids)) {
+        match paths::durable_state_dir().and_then(|dir| Graveyard::open_retaining(&dir, &carried_ids)) {
             Ok(graveyard) => graveyard,
             Err(error) if adopted => {
                 eprintln!("termiod: the tombstone log did not open after the handoff: {error:#}");

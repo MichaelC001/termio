@@ -8,7 +8,7 @@ use crate::id::SessionId;
 use anyhow::{bail, Context, Result};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `"-dev"` for a side-by-side dev build, `""` for a release one.
 ///
@@ -63,9 +63,8 @@ pub fn runtime_dir() -> Result<PathBuf> {
 /// `RemoteTunnelPaths.daemonLog` names for a published Linux box.
 ///
 /// An explicit `TERMIOD_SOCK` overrides that and puts the log beside the socket,
-/// for the same reason `host_id_path` and the graveyard hang off `state_dir`: a
-/// daemon pointed at its own socket is its own daemon, and its files must not
-/// land on the real one's. Without this the test suite — which gives each daemon
+/// the same rule `durable_state_dir` follows: a daemon pointed at its own socket
+/// is its own daemon, and its files must not land on the real one's. Without this the test suite — which gives each daemon
 /// a temp socket but no channel — appends its runs to the installed app's log.
 /// That is the same accident `AppChannel.isRunningTests` exists to prevent on the
 /// Swift side, where it once overwrote a real user's session tree.
@@ -145,10 +144,10 @@ pub fn socket_path() -> Result<PathBuf> {
 }
 
 /// The directory the *configured* socket lives in — which is not always
-/// `runtime_dir()`, because `TERMIOD_SOCK` may point anywhere. Anything that
-/// belongs to one daemon (its identity, its graveyard) must hang off this, or
-/// two daemons on two sockets silently share one file and report each other's
-/// sessions as their own.
+/// `runtime_dir()`, because `TERMIOD_SOCK` may point anywhere. Everything with
+/// the socket's lifetime hangs off this: the serve lock, session scratch, the
+/// handoff blob. What must outlive the socket — identity, pairing secret,
+/// graveyard — hangs off `durable_state_dir` instead.
 pub fn state_dir() -> Result<PathBuf> {
     Ok(socket_path()?
         .parent()
@@ -156,22 +155,124 @@ pub fn state_dir() -> Result<PathBuf> {
         .unwrap_or_else(|| PathBuf::from(".")))
 }
 
-/// Stable host identity, persisted beside the configured socket.
+/// Durable per-daemon state: identity, pairing secret, WSS bind, graveyard.
+///
+/// **Not** beside the socket, unlike everything above. On Linux the canonical
+/// socket lives in `$XDG_RUNTIME_DIR`, a tmpfs a reboot empties — and the first
+/// reboot drill renamed a fifteen-week-old box and silently disarmed its WSS
+/// listener, because identity, secret and graveyard were all riding the
+/// socket's lifetime. sshd survives the same reboot because its host keys live
+/// in `/etc/ssh`; this is that split, per user: files with the socket's
+/// lifetime stay in `state_dir`, files with the *host's* lifetime live here,
+/// in the directory the log already proved durable (macOS: `Application
+/// Support`, where state belongs rather than `Logs`).
+///
+/// An explicit `TERMIOD_SOCK` keeps everything beside the socket — a daemon
+/// pointed at its own socket is its own daemon, and its identity must not land
+/// on the real one's. No `$HOME` falls back the same way rather than refusing
+/// to start.
+pub fn durable_state_dir() -> Result<PathBuf> {
+    if std::env::var_os("TERMIOD_SOCK").is_some() {
+        return state_dir();
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return state_dir();
+    };
+    let dir = durable_state_base(&home, std::env::var_os("XDG_STATE_HOME"), &channel_suffix());
+    if !dir.exists() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .with_context(|| format!("creating state dir {}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
+fn durable_state_base(home: &Path, xdg_state: Option<std::ffi::OsString>, suffix: &str) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library")
+            .join("Application Support")
+            .join(format!("termio{suffix}"))
+    } else if let Some(state) = xdg_state.filter(|value| !value.is_empty()) {
+        PathBuf::from(state).join(format!("termio{suffix}"))
+    } else {
+        home.join(".local").join("state").join(format!("termio{suffix}"))
+    }
+}
+
+/// Bring the files an older daemon kept beside the socket into the durable
+/// dir — at startup, before anything reads them, so an upgrade keeps the
+/// identity and the token the box already has. Copy then remove rather than
+/// rename: `/run` and `$HOME` are different filesystems. Best-effort per
+/// file; one that cannot move is left where the next start can try again.
+pub fn adopt_runtime_state() {
+    for name in [
+        "host.id",
+        "pair.token",
+        "wss.bind",
+        "wss.origin",
+        "tombstones.json",
+        "roster.json",
+    ] {
+        adopt_runtime_file(name);
+    }
+}
+
+fn adopt_runtime_file(name: &str) {
+    let (Ok(legacy_dir), Ok(durable)) = (state_dir(), durable_state_dir()) else {
+        return;
+    };
+    if legacy_dir == durable {
+        return;
+    }
+    let legacy = legacy_dir.join(name);
+    let target = durable.join(name);
+    if target.exists() || !legacy.exists() {
+        return;
+    }
+    let Ok(contents) = std::fs::read(&legacy) else {
+        return;
+    };
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&target)?;
+        file.write_all(&contents)?;
+        file.sync_all()
+    })();
+    if written.is_ok() {
+        let _ = std::fs::remove_file(&legacy);
+    }
+}
+
+/// Stable host identity. Durable on purpose: a host id that changes on every
+/// reboot is not an identity, and every pairing invite embeds it.
 pub fn host_id_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join("host.id"))
+    Ok(durable_state_dir()?.join("host.id"))
+}
+
+/// The persisted host identity, if any — for read-only callers (`status`).
+/// Only the daemon mints one.
+pub fn stored_host_id() -> Option<String> {
+    adopt_runtime_file("host.id");
+    read_host_id(&host_id_path().ok()?).ok()
 }
 
 /// The pairing secret that authenticates a WebSocket pipe — never the session
 /// write token, which arbitrates who may type into a PTY. Beside `host.id`
-/// because two daemons on two sockets must not share a secret.
+/// because two daemons on two sockets must not share a secret, and durable
+/// because losing it disarms the listener until the phone re-pairs.
 pub fn pair_token_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join("pair.token"))
+    Ok(durable_state_dir()?.join("pair.token"))
 }
 
-/// The durable WSS bind, so a crash restart or a `spawn_daemon` child that
-/// execs bare `termiod serve` keeps listening.
+/// The durable WSS bind, so a crash restart, a reboot, or a `spawn_daemon`
+/// child that execs bare `termiod serve` keeps listening.
 pub fn wss_bind_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join("wss.bind"))
+    Ok(durable_state_dir()?.join("wss.bind"))
 }
 
 /// The durable allowed origin. Not in the web-client RFC's file table, but
@@ -179,7 +280,7 @@ pub fn wss_bind_path() -> Result<PathBuf> {
 /// binds loopback by design, so without this the reachable name is knowable
 /// only to whoever typed the daemon's argv.
 pub fn wss_origin_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join("wss.origin"))
+    Ok(durable_state_dir()?.join("wss.origin"))
 }
 
 /// 24 random bytes as base64url. No padding: 24 is a multiple of 3.
@@ -244,6 +345,7 @@ pub fn replace_secret(path: &std::path::Path, value: &str) -> Result<()> {
 /// separate from minting on purpose: `serve --wss` must never mint one, or an
 /// operator who forgot to pair gets a listener with a secret nobody has seen.
 pub fn read_pair_token() -> Result<Option<String>> {
+    adopt_runtime_file("pair.token");
     let path = pair_token_path()?;
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
@@ -320,6 +422,7 @@ fn read_host_id(path: &std::path::Path) -> Result<String> {
 
 /// Load the daemon's stable random 128-bit identity, minting it on first run.
 pub fn load_or_create_host_id() -> Result<String> {
+    adopt_runtime_file("host.id");
     let path = host_id_path()?;
     if path.exists() {
         return read_host_id(&path);
@@ -389,5 +492,41 @@ mod serve_lock_tests {
         drop(held);
         super::flock_exclusive(&path).expect("claim after release");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::durable_state_base;
+    use std::path::Path;
+
+    /// One durable dir per channel, or the dev daemon's identity overwrites the
+    /// release one's — the same two-axis scoping the socket and the unit have.
+    #[test]
+    fn durable_state_is_scoped_by_channel() {
+        let home = Path::new("/home/u");
+        let release = durable_state_base(home, None, "");
+        let dev = durable_state_base(home, None, "-dev");
+        assert_ne!(release, dev);
+        assert!(dev.to_string_lossy().ends_with("termio-dev"), "{dev:?}");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn xdg_state_home_outranks_the_default() {
+        let dir = durable_state_base(Path::new("/home/u"), Some("/var/state".into()), "");
+        assert_eq!(dir, Path::new("/var/state/termio"));
+        let fallback = durable_state_base(Path::new("/home/u"), None, "");
+        assert_eq!(fallback, Path::new("/home/u/.local/state/termio"));
+        // An empty variable is unset, not a root-relative state dir.
+        let empty = durable_state_base(Path::new("/home/u"), Some("".into()), "");
+        assert_eq!(empty, fallback);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_state_lives_in_application_support() {
+        let dir = durable_state_base(Path::new("/Users/u"), None, "");
+        assert_eq!(dir, Path::new("/Users/u/Library/Application Support/termio"));
     }
 }
