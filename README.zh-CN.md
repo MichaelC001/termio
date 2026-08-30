@@ -144,7 +144,7 @@ esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转
 
 ## 架构
 
-Termio 正在把每个会话搬到 `termiod` 上——一个小小的 Rust daemon，在活儿实际跑的那台
+Termio 的每个会话都跑在 `termiod` 上——一个小小的 Rust daemon，在活儿实际跑的那台
 机器上持有 PTY。每个界面——Mac 应用、手机、浏览器——都是通过同一套带版本的协议附着
 上去的客户端。
 
@@ -161,9 +161,9 @@ Termio 正在把每个会话搬到 `termiod` 上——一个小小的 Rust daemo
 变的只有管道，每一段上的帧完全一样。没有哪个客户端要穿过另一个客户端才能拿到会话
 ——手机因此不是 Mac 的卫星，VPS 上的会话和笔记本上的会话也因此是同一种东西。
 
-**已经有的：** daemon 和它的协议、`unix` 与 `ssh` 两种传输、附着时的快照、回滚，
-以及文件和 git 平面——目前在一个开关后面跑，Mac 应用正在往上迁。
-**还没有的：** 浏览器和手机需要的 WSS 传输。
+**已经有的：** daemon 和它的协议、`unix`、`ssh`、`wss` 三种传输、附着时的快照、
+回滚、文件和 git 平面，以及 launchd/systemd 托管。Mac 应用的每个会话都跑在它上面，
+手机通过 WSS 附着到 Mac 或 Linux 机器。**还没有的：** 浏览器客户端。
 
 推导过程写在 [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) 和
 [`docs/`](docs/README.md) 下的设计笔记里。

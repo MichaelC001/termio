@@ -146,7 +146,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## 架構
 
-Termio 正在把每個工作階段搬到 `termiod` 上 — 一個小小的 Rust daemon，在活兒實際跑
+Termio 的每個工作階段都跑在 `termiod` 上 — 一個小小的 Rust daemon，在活兒實際跑
 的那台機器上持有 PTY。每個介面 — Mac 應用程式、手機、瀏覽器 — 都是透過同一套帶版本
 的協定附著上去的用戶端。
 
@@ -164,9 +164,9 @@ Termio 正在把每個工作階段搬到 `termiod` 上 — 一個小小的 Rust 
 階段 — 手機因此不是 Mac 的衛星，VPS 上的工作階段和筆電上的工作階段也因此是同一種
 東西。
 
-**已經有的：** daemon 和它的協定、`unix` 與 `ssh` 兩種傳輸、附著時的快照、回捲，
-以及檔案和 git 平面 — 目前在一個開關後面跑，Mac 應用程式正在往上搬。
-**還沒有的：** 瀏覽器和手機需要的 WSS 傳輸。
+**已經有的：** daemon 和它的協定、`unix`、`ssh`、`wss` 三種傳輸、附著時的快照、
+回捲、檔案和 git 平面，以及 launchd/systemd 託管。Mac 應用的每個工作階段都跑在
+它上面，手機透過 WSS 附著到 Mac 或 Linux 機器。**還沒有的：** 瀏覽器客戶端。
 
 推導過程寫在 [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) 和
 [`docs/`](docs/README.md) 底下的設計筆記裡。
