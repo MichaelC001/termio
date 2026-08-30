@@ -118,10 +118,10 @@ extension TermioStore {
         case "needs-you":
             event.prompt = promptExcerpt(for: id)
         case "done":
-            if let transcript = transcriptPaths[id] {
-                event.transcript = transcript
-                event.cursorEnd = Self.lineCount(of: transcript)
-            }
+            // Only the transcript address; `cursorEnd` is filled off the main
+            // thread where the event is written (SessionWatchHub), because the
+            // line count is an O(file) read and this runs on the main actor.
+            event.transcript = transcriptPaths[id]
         default:
             break
         }
@@ -354,7 +354,12 @@ extension TermioStore {
                 return controlError(request, "not_live",
                     "\(displayTitle(for: fresh)) has no live terminal yet — open it once in Termio.")
             }
-            let cursorAtSend = transcriptPaths[fresh.id].map(Self.lineCount)
+            let cursorAtSend: Int?
+            if let sendPath = transcriptPaths[fresh.id] {
+                cursorAtSend = await Self.lineCountOffMain(of: sendPath)
+            } else {
+                cursorAtSend = nil
+            }
             return await waitForReply(request, session: fresh,
                                       cursorAtSend: cursorAtSend, created: true)
         }
@@ -428,11 +433,16 @@ extension TermioStore {
             return controlError(request, "not_live",
                 "\(displayTitle(for: session)) has no live terminal yet — open it once in Termio.")
         }
-        guard request.wantsWait else { return sentReply(request, session) }
+        guard request.wantsWait else { return await sentReply(request, session) }
         // The cursor to read the reply from: wherever the transcript stands right
         // after submitting. A session's transcript often isn't known until a hook
         // fires mid-turn, so this can be nil and is re-read after the wait.
-        let cursorAtSend = transcriptPaths[session.id].map(Self.lineCount)
+        let cursorAtSend: Int?
+        if let sendPath = transcriptPaths[session.id] {
+            cursorAtSend = await Self.lineCountOffMain(of: sendPath)
+        } else {
+            cursorAtSend = nil
+        }
         return await waitForReply(request, session: session,
                                   cursorAtSend: cursorAtSend, created: false)
     }
@@ -670,8 +680,8 @@ extension TermioStore {
             // No status signal at all (a plain terminal): the screen changed, then stilled.
             if !sawWorking, changedSinceSend, screenQuiet { settled = current; break }
         }
-        return waitReply(request, session: session,
-                         cursorAtSend: cursorAtSend, created: created, settled: settled)
+        return await waitReply(request, session: session,
+                               cursorAtSend: cursorAtSend, created: created, settled: settled)
     }
 
     /// The reply for a completed (or timed-out) `--wait`. Every wait reply — `send`
@@ -684,7 +694,7 @@ extension TermioStore {
     private func waitReply(
         _ request: ControlRequest, session: Session,
         cursorAtSend: Int?, created: Bool, settled: SessionStatus?
-    ) -> Data {
+    ) async -> Data {
         let link = sessionLink(for: session)
         let statusToken = Self.statusToken(status(for: session.id))
         var json: [String: Any] = [
@@ -708,7 +718,7 @@ extension TermioStore {
         // send-time snapshot.
         if let transcript = transcriptPaths[session.id] {
             let start = cursorAtSend ?? 0
-            let end = Self.lineCount(of: transcript)
+            let end = await Self.lineCountOffMain(of: transcript)
             json["transcript"] = transcript
             json["cursor"] = start
             json["cursor_end"] = end
@@ -873,7 +883,7 @@ extension TermioStore {
     /// the session's transcript address and a cursor (its line count at send time), so
     /// the caller can read the agent's response straight from its own structured log —
     /// the caller's file tools resume from `cursor`.
-    private func sentReply(_ request: ControlRequest, _ session: Session) -> Data {
+    private func sentReply(_ request: ControlRequest, _ session: Session) async -> Data {
         let link = sessionLink(for: session)
         var json: [String: Any] = [
             "target": link,
@@ -881,7 +891,7 @@ extension TermioStore {
         ]
         var text = "sent to \(link)"
         if let transcript = transcriptPaths[session.id] {
-            let cursor = Self.lineCount(of: transcript)
+            let cursor = await Self.lineCountOffMain(of: transcript)
             json["transcript"] = transcript
             json["cursor"] = cursor
             text += "\n  transcript: \(transcript)\n  cursor: \(cursor)  (read the response from here on)"
@@ -912,12 +922,49 @@ extension TermioStore {
         return control(request, ok: true, text: text, json: json)
     }
 
-    /// Lines currently in a file, counted by newline bytes — the cursor a caller
-    /// resumes a transcript read from. Runs on the main thread from every `done`
-    /// transition and every `list`/`watch` snapshot, so it must not re-read the
-    /// file each time: see `TranscriptLineCounter`.
+    /// Newline count of a whole transcript — the cursor a caller resumes a read
+    /// from. The count must be exact (an off-by-one hands an agent the wrong
+    /// reply lines), so it is always the true count, never cached against a
+    /// mutable file. The cost is the read itself, which is why every caller runs
+    /// it off the main thread: the hot path (the `done` watch event) counts on
+    /// the hub's serial queue, and the request-reply paths await `lineCountOffMain`.
+    /// Reading it inline on the main actor stalled the UI once transcripts reached
+    /// tens of MB (a spinning cursor under memory pressure).
     nonisolated static func lineCount(of path: String) -> Int {
-        TranscriptLineCounter.shared.count(path)
+        guard let handle = FileHandle(forReadingAtPath: path) else { return 0 }
+        defer {
+            do { try handle.close() } catch {
+                Log.app.error("""
+                transcript close failed for \(path, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+        do {
+            var lines = 0
+            while let chunk = try handle.read(upToCount: 1 << 18), !chunk.isEmpty {
+                lines += chunk.withUnsafeBytes { buffer in
+                    buffer.reduce(into: 0) { if $1 == 0x0A { $0 += 1 } }
+                }
+            }
+            return lines
+        } catch {
+            Log.app.error("""
+            transcript line count failed for \(path, privacy: .public): \
+            \(error.localizedDescription, privacy: .public)
+            """)
+            return 0
+        }
+    }
+
+    /// `lineCount` on a utility queue. Awaited by every main-actor caller so the
+    /// O(file) read never runs on the main thread.
+    nonisolated static func lineCountOffMain(of path: String) async -> Int {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: lineCount(of: path))
+            }
+        }
     }
 
     private func closeTab(_ request: ControlRequest, in scope: ControlScope) -> Data {
@@ -1123,144 +1170,5 @@ extension TermioStore {
         case .done: return "done"
         case .needsAttention: return "needs-you"
         }
-    }
-}
-
-/// Counts a transcript's lines without re-reading the whole file each time.
-///
-/// The count is the cursor a supervising agent resumes a transcript read from,
-/// and it is taken on the main thread from every `done` transition and every
-/// `list`/`watch` snapshot. A whole-file read there stalls the UI once a
-/// transcript reaches tens of MB, so the count is cached and only newly
-/// appended bytes are scanned.
-///
-/// The hazard that buys is a stale count if the file is not a pure append. It
-/// is closed two ways: the cache is dropped when the inode changes (a transcript
-/// replaced by an atomic rename), and the remembered count is trusted only while
-/// a short anchor of the bytes at the counted boundary still matches — so a
-/// truncation or an in-place rewrite is caught by content, independent of the
-/// timestamp's resolution, and forces a full recount.
-final class TranscriptLineCounter: @unchecked Sendable {
-    static let shared = TranscriptLineCounter()
-
-    /// Bytes remembered at the counted boundary. A rewrite that reproduces this
-    /// many exact bytes ending at the same offset is not a real possibility, so a
-    /// match means the prefix was appended to, not changed.
-    private static let anchorLength = 64
-
-    private struct Known {
-        var inode: UInt64
-        /// The offset the line count covers — the bytes actually scanned, so a
-        /// concurrent mid-scan truncation records the extent it truly reached and
-        /// self-corrects on the next call rather than trusting a partial count.
-        var countedTo: UInt64
-        var anchor: [UInt8]
-        var lines: Int
-    }
-
-    private let lock = NSLock()
-    private var known: [String: Known] = [:]
-    private var scanned: UInt64 = 0
-
-    /// Bytes read by the line scan across every call — how a test tells an
-    /// incremental scan from a full one. The fixed-size anchor validation reads
-    /// are not scan work and are excluded.
-    var bytesScanned: UInt64 { lock.withLock { scanned } }
-
-    func count(_ path: String) -> Int {
-        guard let handle = FileHandle(forReadingAtPath: path) else {
-            lock.withLock { _ = known.removeValue(forKey: path) }
-            return 0
-        }
-        defer {
-            do { try handle.close() } catch {
-                Log.app.error("""
-                transcript close failed for \(path, privacy: .public): \
-                \(error.localizedDescription, privacy: .public)
-                """)
-            }
-        }
-        do {
-            var status = stat()
-            guard fstat(handle.fileDescriptor, &status) == 0 else {
-                let code = errno
-                Log.app.error("""
-                transcript fstat failed for \(path, privacy: .public): errno \(code, privacy: .public)
-                """)
-                lock.withLock { _ = known.removeValue(forKey: path) }
-                return 0
-            }
-            let inode = UInt64(status.st_ino)
-            let size = UInt64(status.st_size)
-
-            let resume = lock.withLock { known[path] }
-            var offset: UInt64 = 0
-            var lines = 0
-            if let resume, resume.inode == inode, size >= resume.countedTo,
-               try anchorHolds(handle, resume) {
-                offset = resume.countedTo
-                lines = resume.lines
-            }
-
-            var countedTo = offset
-            if offset < size {
-                try handle.seek(toOffset: offset)
-                let scan = try scanNewlines(handle, upTo: size - offset)
-                lines += scan.lines
-                countedTo += scan.read
-            }
-            let anchor = try readAnchor(handle, endingAt: countedTo)
-            lock.withLock {
-                known[path] = Known(
-                    inode: inode, countedTo: countedTo, anchor: anchor, lines: lines)
-            }
-            return lines
-        } catch {
-            Log.app.error("""
-            transcript line count failed for \(path, privacy: .public): \
-            \(error.localizedDescription, privacy: .public)
-            """)
-            lock.withLock { _ = known.removeValue(forKey: path) }
-            return 0
-        }
-    }
-
-    /// True when the bytes ending at the cached offset are still what they were
-    /// when it was counted — the prefix was appended to, not rewritten.
-    private func anchorHolds(_ handle: FileHandle, _ resume: Known) throws -> Bool {
-        guard resume.countedTo > 0 else { return true }
-        return try readAnchor(handle, endingAt: resume.countedTo) == resume.anchor
-    }
-
-    /// The last `anchorLength` bytes ending at `offset` (fewer if the file is
-    /// shorter). A fixed-size validation read, kept out of `scanned`.
-    private func readAnchor(_ handle: FileHandle, endingAt offset: UInt64) throws -> [UInt8] {
-        guard offset > 0 else { return [] }
-        let length = min(UInt64(Self.anchorLength), offset)
-        try handle.seek(toOffset: offset - length)
-        guard let data = try handle.read(upToCount: Int(length)) else { return [] }
-        return [UInt8](data)
-    }
-
-    /// Counts newlines in the next `budget` bytes from the handle's position,
-    /// reading in bounded chunks, and returns the newline count and the bytes it
-    /// actually read — fewer than `budget` if the file was truncated out from
-    /// under it, so the caller records the extent it truly covered.
-    private func scanNewlines(_ handle: FileHandle, upTo budget: UInt64) throws -> (lines: Int, read: UInt64) {
-        var remaining = budget
-        var lines = 0
-        var read: UInt64 = 0
-        while remaining > 0 {
-            let want = Int(min(remaining, 1 << 18))
-            guard let chunk = try handle.read(upToCount: want), !chunk.isEmpty else { break }
-            lines += chunk.withUnsafeBytes { buffer in
-                buffer.reduce(into: 0) { if $1 == 0x0A { $0 += 1 } }
-            }
-            let n = UInt64(chunk.count)
-            remaining -= n
-            read += n
-            lock.withLock { scanned += n }
-        }
-        return (lines, read)
     }
 }
