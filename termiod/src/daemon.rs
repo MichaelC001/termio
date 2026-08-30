@@ -1173,12 +1173,26 @@ async fn process_control(
         }
         Control::Kill { id, seq } => {
             let response = match manager.resolve(&id).await {
-                Some(handle) => {
-                    handle.send(SessionMsg::Kill {
+                // Same window as `Send`, and the same rule: a kill nobody
+                // received must not read as a kill that happened. The session
+                // is about to cross into the new image alive, and a caller told
+                // otherwise would stop watching something still running.
+                Some(handle)
+                    if handle.send(SessionMsg::Kill {
                         reason: EndReason::Killed,
-                    });
+                    }) =>
+                {
                     Control::Ok { re: seq }
                 }
+                Some(_) => error(
+                    seq,
+                    ErrorCode::Busy,
+                    format!(
+                        "session {id} is being handed to a new daemon; \
+                         it was not killed — reconnect and ask again"
+                    ),
+                    true,
+                ),
                 None => error(
                     seq,
                     ErrorCode::NoSuchSession,
@@ -1249,10 +1263,24 @@ async fn process_control(
         }
         Control::Send { id, data, seq } => {
             let response = match manager.resolve(&id).await {
-                Some(handle) => {
-                    handle.send(SessionMsg::Inject { data });
+                // A handle outlives the actor it addresses: `carry_all` makes
+                // each actor return, and the manager keeps its handle until the
+                // `execve`. A send in that window reaches nobody, and answering
+                // `ok` to it is the one failure this whole feature exists to
+                // prevent — an agent hook told its input landed when the bytes
+                // are gone. `Busy` says the same thing a reconnect will fix.
+                Some(handle) if handle.send(SessionMsg::Inject { data }) => {
                     Control::Ok { re: seq }
                 }
+                Some(_) => error(
+                    seq,
+                    ErrorCode::Busy,
+                    format!(
+                        "session {id} is being handed to a new daemon; \
+                         the write was not delivered — reconnect and send it again"
+                    ),
+                    true,
+                ),
                 None => error(
                     seq,
                     ErrorCode::NoSuchSession,
