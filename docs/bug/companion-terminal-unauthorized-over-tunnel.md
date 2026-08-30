@@ -1,6 +1,6 @@
 ---
 title: iOS terminal fails "unauthorized" while the session list works (companion over tunnel)
-status: resolved
+status: done
 type: bug
 created: 2026-07-04
 updated: 2026-07-04

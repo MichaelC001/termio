@@ -1,6 +1,6 @@
 ---
 title: Agent permission questions on the phone
-status: built, measured, shelved
+status: archived
 type: design
 created: 2026-08-03
 updated: 2026-08-03

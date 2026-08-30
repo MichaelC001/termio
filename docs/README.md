@@ -47,6 +47,7 @@ from the real front matter).
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
 | active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
+| active | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | active | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](design/20260704-push-to-talk-voice-dictation.md) |
 | active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](design/20260819-unify-server-plane.md) |
@@ -57,13 +58,17 @@ from the real front matter).
 | approved | design | [Worktree information architecture](design/20260628-worktree-information-architecture.md) |
 | approved | rfc | [Theme store — browse 50, install on demand, library is truth](design/20260814-theme-store.md) |
 | archived | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
+| archived | design | [Agent permission questions on the phone](design/20260803-agent-permission-questions.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/20260706-ios-scroll-renderer-health.md) |
 | archived | design | [Sandbox VM —— 原生 per-project 容器（Apple Containerization）](design/20260629-sandbox-vm.md) |
 | archived | essay | ["From IDE to ADE: Sixty Years of Development Environments, and Why the Era Is Ending"](essays/from-ide-to-ade.md) |
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
-| built, measured, shelved | design | [Agent permission questions on the phone](design/20260803-agent-permission-questions.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
+| done | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
+| done | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
+| done | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
+| done | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | done | design | ["Sandbox removal & restoration (Apple Seatbelt subsystem)"](design/20260718-sandbox-removal-and-restoration.md) |
 | done | design | [Agent Abstraction & Configuration](design/20260718-agent-abstraction-and-configuration.md) |
 | done | design | [Config-driven agent resume](design/20260720-config-driven-agent-resume.md) |
@@ -122,14 +127,9 @@ from the real front matter).
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
 | draft | rfc | [The tab strip is the collapsed sidebar](design/20260829-tab-strip-is-the-collapsed-sidebar.md) |
-| fixed | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
-| fixed | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
-| fixed | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
-| in-progress | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](design/20260814-remote-to-device.md) |
 | in-review | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](design/20260702-split-panes.md) |
 | in-review | rfc | [termiod lifecycle — install and update as one reconcile loop](design/20260827-termiod-lifecycle-reconcile.md) |
-| resolved | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 <!-- END docs-index -->
