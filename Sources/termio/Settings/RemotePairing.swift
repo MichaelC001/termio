@@ -60,10 +60,19 @@ enum RemotePairing {
     /// answer at all — the listener binds loopback on purpose, so nothing on the
     /// box can derive a public name it was not given.
     ///
+    /// `pair` is its own process, outside the unit, so the origin the unit
+    /// hands the daemon (`TERMIOD_WSS_ORIGIN` in its drop-in) is handed to
+    /// `pair` here too — the same value, read back through systemd, so the
+    /// address the invite prints and the origin the daemon pins cannot
+    /// disagree. A box with no drop-in falls through to the daemon's own
+    /// `wss.origin`, which is where a hand-run `--wss-origin` persisted it.
+    ///
     /// Runs on a detached task: this forks `ssh`, and a box that is asleep or
     /// behind a slow link would otherwise block whatever called it.
     static func invite(from alias: String, rotate: Bool = false) async throws -> Invite {
-        let command = "\(Termiod.remoteBinary()) pair --json\(rotate ? " --rotate" : "")"
+        let environment = await RemoteTunnelService.listenerOrigin(of: alias)
+            .map { "TERMIOD_WSS_ORIGIN=\(RemoteShell.quoted($0)) " } ?? ""
+        let command = "\(environment)\(Termiod.remoteBinary()) pair --json\(rotate ? " --rotate" : "")"
         let result = try await run(alias: alias, command: command)
         guard result.status == 0 else {
             throw Failure(message: message(from: result))

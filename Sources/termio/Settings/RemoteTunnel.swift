@@ -218,6 +218,9 @@ enum RemoteTunnelPaths {
     static let unitDirectory = "$HOME/.config/systemd/user"
     static let tuneloIdentity = "$HOME/.config/tunelo/termio.key"
     static var tunnelLog: String { "\(stateDirectory)/tunnel.log" }
+    /// Where the daemon writes its own log on Linux (`paths::log_path` in
+    /// termiod). Nothing here redirects to it; it is read back only to explain
+    /// a listener that never came up.
     static var daemonLog: String { "\(stateDirectory)/termiod.log" }
 }
 
@@ -265,8 +268,7 @@ extension RemoteTunnelProvider {
     }
 }
 
-/// The two long-running processes publishing a box needs, expressed as
-/// `systemd --user` units.
+/// The tunnel publishing a box, expressed as a `systemd --user` unit.
 ///
 /// A `setsid nohup` outlives the SSH session that started it and nothing else.
 /// That is the wrong lifetime for this: the point of publishing a VPS is that
@@ -279,23 +281,22 @@ extension RemoteTunnelProvider {
 /// command line on the box, including the `bash -c` that ssh spawned to run the
 /// pkill itself, so a pattern general enough to find the tunnel kills the shell
 /// looking for it. `systemctl --user restart` addresses a unit, not a string.
+///
+/// Only the tunnel is written this way. The daemon's unit belongs to
+/// `termiod service install`: this file once wrote its own `termiod.service`
+/// too, and two writers of one unit name with opposite restart policies left a
+/// box restarting a daemon every three seconds, forever, against the one a
+/// client had already autostarted.
 struct RemoteSystemdUnit {
     let name: String
     let title: String
     let executable: String
     let arguments: [String]
     let log: String
-    /// Whether to empty the log at every start.
-    ///
-    /// True for the tunnel, whose log is read as a *value* — the public address
-    /// it prints — so a stale line from the previous provider must never be
-    /// mistaken for this run's answer. False for the daemon, whose log is read
-    /// as *evidence* and is worth keeping across a restart loop.
-    let freshLog: Bool
 
     var text: String {
         let argv = ([executable] + arguments).map(Self.argument).joined(separator: " ")
-        var lines = [
+        let lines = [
             "[Unit]",
             "Description=\(title)",
             "After=network-online.target",
@@ -310,19 +311,19 @@ struct RemoteSystemdUnit {
             "[Service]",
             "Type=simple",
             "ExecStartPre=/bin/mkdir -p \(Self.argument(RemoteTunnelPaths.stateDirectory))",
-        ]
-        if freshLog {
-            // The raw path, not a converted one: `argument` does the conversion
-            // itself, and feeding it output that already says `%h` escapes the
-            // specifier into the literal `%%h` and the unit exits 2.
-            lines.append("ExecStartPre=/bin/sh -c \(Self.argument(": > \(log)"))")
-        }
-        lines += [
+            // The log is emptied at every start because it is read as a
+            // *value* — the public address the tunnel prints — and a stale
+            // line from the previous provider must never be mistaken for this
+            // run's answer. The raw path, not a converted one: `argument` does
+            // the conversion itself, and feeding it output that already says
+            // `%h` escapes the specifier into the literal `%%h` and the unit
+            // exits 2.
+            "ExecStartPre=/bin/sh -c \(Self.argument(": > \(log)"))",
             "ExecStart=\(argv)",
             "StandardOutput=append:\(Self.specifiers(log))",
             "StandardError=append:\(Self.specifiers(log))",
-            // The tunnel and the daemon are both things the user asked to keep
-            // running; a crash is a reason to come back, not to stay down.
+            // The tunnel is something the user asked to keep running; a crash
+            // is a reason to come back, not to stay down.
             "Restart=always",
             "RestartSec=3",
             "",
@@ -377,11 +378,11 @@ enum RemoteTunnelService {
     }
 
     static let tunnelUnit = "termio-tunnel.service"
-    /// The name the daemon already looks for. `termiod service` writes a launchd
-    /// agent and refuses on Linux, but `termiod status` still probes
-    /// `systemctl --user is-active termiod` to name its supervisor
-    /// (`lifecycle.rs`) — so this is the existing convention, not a second one,
-    /// and a box published from here reports `service: systemd --user`.
+    /// The unit `termiod service install` writes on the release channel
+    /// (`service.rs`, `unit_name_for`). Named here only to stop it, to reload
+    /// it, and to place the drop-in beside it — never to write it. The remote
+    /// daemon is always the release build: nothing this app runs over SSH sets
+    /// `TERMIO_CHANNEL`, so there is no `termiod-dev.service` to account for.
     static let daemonUnit = "termiod.service"
 
     /// `uname -m`, mapped to the builds we publish.
@@ -461,8 +462,7 @@ enum RemoteTunnelService {
             title: "Termio tunnel (\(provider.label))",
             executable: binary,
             arguments: provider.arguments(port: port, custom: custom),
-            log: RemoteTunnelPaths.tunnelLog,
-            freshLog: true)
+            log: RemoteTunnelPaths.tunnelLog)
         try await start(unit, on: alias, failing: localized("Couldn’t start \(provider.label) on \(alias)."))
 
         // Polled rather than slept on: a cold tunnel that has to dial a relay
@@ -570,38 +570,42 @@ extension RemoteTunnelService {
         return "\(webScheme)://\(host)\(port)"
     }
 
-    /// Points the daemon at the address the tunnel just published, and restarts
-    /// it so the listener actually exists.
+    /// Points the daemon at the address the tunnel just published and hands it
+    /// to `systemd --user`, so the listener exists now and comes back after a
+    /// crash, a logout and a reboot.
     ///
-    /// Both halves are needed and both need the restart: `--wss` is what opens
-    /// the loopback listener at all, and `--wss-origin` is what lets the phone's
-    /// `Origin` past the CSRF check. Running `serve` explicitly with the two
-    /// flags also *persists* them (`wss.bind`, `wss.origin`, 0600), so a
-    /// client-triggered autostart on a box whose unit was never installed still
-    /// comes back armed.
+    /// The unit is the daemon's own — `termiod service install` writes it,
+    /// with an absolute `ExecStart`, `Restart=on-failure`, and nothing about
+    /// WSS on its command line. The bind and the origin go in a drop-in beside
+    /// it, which is the durable place for them: `wss.bind` and `wss.origin`
+    /// sit in `$XDG_RUNTIME_DIR`, a tmpfs a reboot empties, and a later
+    /// `service install` overwrites the unit file but leaves
+    /// `termiod.service.d/` alone. The daemon reads `TERMIOD_WSS` and
+    /// `TERMIOD_WSS_ORIGIN` from its environment at every start, so a crash
+    /// restart is armed too.
     ///
     /// **This ends every session the daemon is hosting.** The caller asks first;
     /// this does not, because it cannot know whether the caller already did.
     static func arm(alias: String, origin: String, port: Int) async throws {
+        try await retireHandWrittenUnit(on: alias)
+        try await installListenerDropIn(on: alias, origin: origin, port: port)
+
         // `termiod stop`, never `pkill`: the daemon is found by the credential
         // on its socket, so this stops the one actually serving this user and
         // cannot stop anything else — including the ssh wrapper running the
         // command, which is what an unanchored pattern match reaches.
-        // `--force` because the caller has already named what will end.
+        // `--force` because the caller has already named what will end. It has
+        // to run before `service install`, which refuses while a daemon no unit
+        // owns holds the socket.
         _ = await RemoteShell.run(
             alias: alias,
             command: "\(Termiod.remoteBinary()) stop --force > /dev/null 2>&1 || true")
 
-        let unit = RemoteSystemdUnit(
-            name: daemonUnit,
-            title: "termiod session host",
-            executable: Termiod.remoteBinary(),
-            arguments: ["serve", "--wss", "127.0.0.1:\(port)", "--wss-origin", origin],
-            log: RemoteTunnelPaths.daemonLog,
-            freshLog: false)
-        try await start(
-            unit, on: alias,
-            failing: localized("Couldn’t start termiod on \(alias) with a listener."))
+        let installed = await RemoteShell.run(
+            alias: alias, command: "\(Termiod.remoteBinary()) service install")
+        guard installed.succeeded else {
+            throw Failure(message: localized("Couldn’t put termiod on \(alias) under systemd.\n\(installed.failure)"))
+        }
 
         // The daemon binds its socket before it serves; wait for it rather than
         // guessing, so the pair that follows is not answered by a corpse.
@@ -612,6 +616,107 @@ extension RemoteTunnelService {
             if up.stdout.contains("up") { return }
         }
         throw Failure(message: localized("termiod on \(alias) never opened its listener.\n\(await diagnosis(alias: alias, unit: daemonUnit, log: RemoteTunnelPaths.daemonLog))"))
+    }
+
+    /// Migrates a box this app published before the daemon owned its unit.
+    ///
+    /// Earlier versions wrote `termiod.service` themselves, with `--wss` baked
+    /// into `ExecStart` and `Restart=always`. On a box where a client had since
+    /// autostarted a daemon, that unit sat in `activating` forever: its daemon
+    /// exited "already running" every three seconds and systemd started it
+    /// again. `service install` overwrites the file, but a unit that is
+    /// mid-restart when it does keeps its old definition for that restart and
+    /// would beat the install to the socket — so the old unit is stopped first,
+    /// by name. Stopping a unit whose `MainPID` is 0 kills nothing; stopping one
+    /// that is running the daemon ends what the caller already agreed to end.
+    ///
+    /// `--wss` on the unit's own command line is the mark: the unit
+    /// `termiod service install` writes never carries it.
+    private static func retireHandWrittenUnit(on alias: String) async throws {
+        let path = "\(RemoteTunnelPaths.unitDirectory)/\(daemonUnit)"
+        let retired = await RemoteShell.run(
+            alias: alias,
+            command: """
+                if [ -f \(path) ] && grep -q -- --wss \(path); then \
+                systemctl --user stop \(daemonUnit); fi && \
+                { systemctl --user reset-failed \(daemonUnit) 2>/dev/null || true; }
+                """)
+        guard retired.succeeded else {
+            throw Failure(message: localized("Couldn’t stop the termiod unit an earlier Termio wrote on \(alias).\n\(retired.failure)"))
+        }
+    }
+
+    /// Where the bind and the origin live, beside the unit rather than in it.
+    static func listenerDropIn(unit: String) -> String {
+        "\(RemoteTunnelPaths.unitDirectory)/\(unit).d/override.conf"
+    }
+
+    /// The drop-in `systemctl --user edit termiod` would have written by hand,
+    /// as `termiod/DEPLOY.md` documents it. Values are quoted the way unit
+    /// files read words: `%` is a specifier everywhere, and `\` and `"` could
+    /// close the quotes they sit in. `$` is left alone — unlike `ExecStart=`,
+    /// `Environment=` expands no variables.
+    static func listenerDropInText(origin: String, port: Int) -> String {
+        let quote = { (value: String) -> String in
+            let escaped = value
+                .replacingOccurrences(of: "%", with: "%%")
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "\"\(escaped)\""
+        }
+        return [
+            "[Service]",
+            "Environment=\(quote("TERMIOD_WSS=127.0.0.1:\(port)"))",
+            "Environment=\(quote("TERMIOD_WSS_ORIGIN=\(origin)"))",
+            "",
+        ].joined(separator: "\n")
+    }
+
+    /// Writes the drop-in and reloads before anything starts the unit. The
+    /// reload is here rather than left to `service install`: with
+    /// `Restart=on-failure` the daemon `termiod stop` ends can be restarted by
+    /// systemd before the install runs, and a start that happened between the
+    /// write and a reload would run without the listener.
+    private static func installListenerDropIn(
+        on alias: String, origin: String, port: Int
+    ) async throws {
+        let path = listenerDropIn(unit: daemonUnit)
+        let written = await RemoteShell.run(
+            alias: alias,
+            command: """
+                mkdir -p \(RemoteTunnelPaths.unitDirectory)/\(daemonUnit).d && \
+                printf '%s' \(RemoteShell.quoted(listenerDropInText(origin: origin, port: port))) > \(path).new && \
+                mv \(path).new \(path) && \
+                systemctl --user daemon-reload
+                """)
+        guard written.succeeded else {
+            throw Failure(message: localized("Couldn’t point termiod on \(alias) at \(origin).\n\(written.failure)"))
+        }
+    }
+
+    /// The origin the unit hands the daemon, read from the drop-in through
+    /// systemd rather than from the file, so it is the value the daemon
+    /// actually sees. `nil` on a box with no drop-in — one armed by hand with
+    /// `--wss-origin`, whose daemon persisted the origin itself.
+    static func listenerOrigin(of alias: String) async -> String? {
+        let shown = await RemoteShell.run(
+            alias: alias,
+            command: "systemctl --user show \(daemonUnit) -p Environment --value 2>/dev/null")
+        return listenerOrigin(fromEnvironment: shown.stdout)
+    }
+
+    /// `KEY=value` words as `systemctl show -p Environment --value` prints
+    /// them, space-separated and double-quoted only when the value needs it.
+    static func listenerOrigin(fromEnvironment text: String) -> String? {
+        for word in text.split(whereSeparator: \.isWhitespace) {
+            guard word.hasPrefix("TERMIOD_WSS_ORIGIN=") else { continue }
+            var value = String(word.dropFirst("TERMIOD_WSS_ORIGIN=".count))
+            if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+                value = String(value.dropFirst().dropLast())
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 }
 
