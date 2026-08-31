@@ -20,6 +20,8 @@
 	<string>%@ 有回应，但回的不是 termiod 的握手。</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ 未能启动——请检查网络后重试</string>
+	<key>%@ exited — shell</key>
+	<string>%@ 已退出——已回到 shell</string>
 	<key>%@ has nothing to pair against</key>
 	<string>%@ 上没有可配对的目标</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
@@ -174,10 +176,6 @@
 	<string>允许访问钥匙串…</string>
 	<key>Allow Usage Access</key>
 	<string>允许访问用量</string>
-	<key>Also Running</key>
-	<string>其他运行中</string>
-	<key>Also Running on %@</key>
-	<string>%@ 上也在运行</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>旧的安装指向 %@。请将其更新到此版本的 Termio。</string>
 	<key>Anyone</key>

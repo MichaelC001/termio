@@ -81,6 +81,16 @@
         }
       }
     },
+    "%@ exited — shell": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 已退出——已回到 shell"
+          }
+        }
+      }
+    },
     "%@ has nothing to pair against": {
       "localizations": {
         "zh-Hans": {
@@ -807,26 +817,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "允许访问用量"
-          }
-        }
-      }
-    },
-    "Also Running": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "其他运行中"
-          }
-        }
-      }
-    },
-    "Also Running on %@": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ 上也在运行"
           }
         }
       }
