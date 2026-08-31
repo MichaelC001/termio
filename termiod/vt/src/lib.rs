@@ -13,7 +13,7 @@ use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, Screen};
 use libghostty_vt::style::{RgbColor, StyleColor};
-use libghostty_vt::terminal::{Point, PointCoordinate};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate};
 use libghostty_vt::{Error, Terminal, TerminalOptions};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -187,7 +187,49 @@ impl VtTerminal {
         self.terminal.vt_write(bytes);
     }
 
+    /// Resize the authoritative screen **without reflowing** it — tmux/xterm
+    /// semantics, not Ghostty.app's.
+    ///
+    /// Shells' SIGWINCH redisplay assumes the terminal did not rewrap the old
+    /// prompt: zsh moves the cursor up by a row count computed from the *old*
+    /// width and repaints from there. A reflowing resize rewraps the prompt
+    /// and moves the cursor down, so that repaint lands one row low and the
+    /// stale prompt copy above it survives — once per split, which is the
+    /// ⌘D duplicated-prompt report. Ghostty.app escapes this only because it
+    /// injects shell integration and clears OSC 133-marked prompt rows before
+    /// reflowing (and its engine's post-1.3.1 clear-after-reflow ordering,
+    /// dde3d4d6b, re-breaks the wrapped case even then). Sessions here carry
+    /// no integration, so the marks-free behaviour every shell is written
+    /// against — truncate, don't rewrap — is the correct one for the host.
+    ///
+    /// The engine gates reflow on DECAWM (mode ?7), so wraparound is parked
+    /// off across the resize and restored to whatever the program had chosen.
+    /// Every attachment repaints from the post-resize keyframe, so clients
+    /// converge on this screen regardless of what their own surfaces did.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        let wraparound = check(self.terminal.mode(Mode::WRAPAROUND), "mode(WRAPAROUND)")?;
+        if wraparound {
+            check(
+                self.terminal.set_mode(Mode::WRAPAROUND, false),
+                "set_mode(WRAPAROUND, false)",
+            )?;
+        }
+        let resized = self.resize_reflowing_for_tests(rows, cols);
+        if wraparound {
+            // Restore even when the resize failed: the mode belongs to the
+            // program, and a failed ioctl must not leave autowrap off.
+            check(
+                self.terminal.set_mode(Mode::WRAPAROUND, true),
+                "set_mode(WRAPAROUND, true)",
+            )?;
+        }
+        resized
+    }
+
+    /// The bare engine resize, which reflows whenever the screen's own DECAWM
+    /// is set. Public only so tests can reproduce the reflow duplicate this
+    /// crate's `resize` exists to prevent.
+    pub fn resize_reflowing_for_tests(&mut self, rows: u16, cols: u16) -> Result<()> {
         // Pixel dimensions are not used by the daemon snapshot sidecar; fixed
         // cell metrics still give libghostty-vt consistent total dimensions.
         check(self.terminal.resize(cols, rows, 8, 16), "Terminal::resize")
