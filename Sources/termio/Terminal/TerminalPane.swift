@@ -533,10 +533,13 @@ private struct ManagedTerminalSurface: View {
 ///
 /// The switch for that lives on the *view*, not the surface. `setSurfaceVisible`
 /// composes with the app-active state the surface coordinator already tracks, stops
-/// the display link, gates the PTY-output wakeups that would otherwise tick a hidden
-/// pane, and asks for an immediate frame on the way back in. Setting ghostty's
-/// occlusion flag directly does none of those, and is overwritten the next time the
-/// coordinator re-asserts its own answer.
+/// the display link, gates the *render* half of a PTY-output wakeup, and asks for an
+/// immediate frame on the way back in. The wakeup's `ghostty_app_tick` is never
+/// gated: it drains the app mailbox that ghostty's stream handler blocks on when
+/// full, and withholding it froze every hidden pane's byte stream — viewport, status
+/// tap and daemon events with it — seconds into a turn (issues #545/#546). Setting
+/// ghostty's occlusion flag directly does none of those, and is overwritten the next
+/// time the coordinator re-asserts its own answer.
 @MainActor
 private func applySurfaceVisibility(_ visible: Bool, for state: TerminalViewState) {
     guard let root = AppDelegate.mainWindow?.contentView,
