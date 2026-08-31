@@ -814,6 +814,8 @@
 	<string>No Base Branch</string>
 	<key>No Changes</key>
 	<string>No Changes</string>
+	<key>No Changes to Show</key>
+	<string>No Changes to Show</string>
 	<key>No Common History</key>
 	<string>No Common History</string>
 	<key>No Diff</key>
@@ -1332,6 +1334,8 @@
 	<string>The clone runs on %@ and opens as a project there.</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>The coding agents offered when you start a session</string>
+	<key>The device couldn’t read this checkout.</key>
+	<string>The device couldn’t read this checkout.</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>The devices in your ~/.ssh/config, and the keys that reach them</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
@@ -1408,6 +1412,8 @@
 	<string>This device’s termiod is too old to browse files.</string>
 	<key>This device’s termiod is too old to install agent integration.</key>
 	<string>This device’s termiod is too old to install agent integration.</string>
+	<key>This device’s termiod is too old to read git.</key>
+	<string>This device’s termiod is too old to read git.</string>
 	<key>This device’s termiod is too old to report its agents.</key>
 	<string>This device’s termiod is too old to report its agents.</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>

@@ -4004,6 +4004,16 @@
         }
       }
     },
+    "No Changes to Show": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可显示的更改"
+          }
+        }
+      }
+    },
     "No Common History": {
       "localizations": {
         "zh-Hans": {
@@ -6588,6 +6598,16 @@
         }
       }
     },
+    "The device couldn’t read this checkout.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备无法读取这个检出。"
+          }
+        }
+      }
+    },
     "The devices in your ~/.ssh/config, and the keys that reach them": {
       "localizations": {
         "zh-Hans": {
@@ -6964,6 +6984,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "该设备上的 termiod 版本过旧，无法安装 Agent 集成。"
+          }
+        }
+      }
+    },
+    "This device’s termiod is too old to read git.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法读取 git。"
           }
         }
       }
