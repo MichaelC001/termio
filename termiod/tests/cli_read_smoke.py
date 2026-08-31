@@ -92,9 +92,17 @@ def main():
              "printf 'hello from the daemon screen\\n'; sleep 60"],
         )
         check("create", code == 0, f"    {code} {out!r} {err!r}")
-        time.sleep(1.0)
 
-        code, out, err = run(TERMIO, ["sessions", "read", "8d0fbeef"])
+        # The shell needs a moment to print; poll rather than trust a fixed
+        # sleep on a loaded CI runner.
+        deadline = time.time() + 15
+        while True:
+            code, out, err = run(TERMIO, ["sessions", "read", "8d0fbeef"])
+            if code == 0 and "hello from the daemon screen" in out:
+                break
+            if time.time() > deadline:
+                break
+            time.sleep(0.3)
         check(
             "read by prefix, no app anywhere",
             code == 0 and "hello from the daemon screen" in out and err == "",

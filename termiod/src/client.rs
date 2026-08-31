@@ -937,11 +937,17 @@ pub async fn sessions_of_running_daemon() -> Result<Option<Vec<SessionInfo>>> {
 }
 
 /// One read-only look at a session's current screen: an observe-mode
-/// attachment negotiated with the snapshot capability, dropped as soon as the
-/// `S` frame lands. Observe mode never takes the write token and never
+/// attachment negotiated with the snapshot capability, dropped as soon as
+/// the screen is known. Observe mode never takes the write token and never
 /// resizes the PTY, so reading a screen is invisible to the session's real
 /// client. Never spawns a daemon, for the same reason as the roster above.
-pub async fn observe_screen(target: &str, rows: u16, cols: u16) -> Result<Snapshot> {
+///
+/// Two ways the screen arrives: the normal `S` frame, or — when the host's
+/// VT is stale and it explicitly falls back to ring replay — a run of `D`
+/// frames closed by `ready`, which this end replays into its own engine.
+/// Both paths sit under one deadline so a host that answers with neither
+/// can never hang the caller.
+pub async fn observe_screen_rows(target: &str, rows: u16, cols: u16) -> Result<Vec<String>> {
     let sock = paths::socket_path()?;
     let mut stream = UnixStream::connect(&sock)
         .await
@@ -981,14 +987,50 @@ pub async fn observe_screen(target: &str, rows: u16, cols: u16) -> Result<Snapsh
         },
     )
     .await?;
-    loop {
-        match read_frame(&mut stream).await? {
-            Some(Frame::Snapshot(snapshot)) => return Ok(snapshot),
-            Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
-            Some(_) => continue,
-            None => bail!("the daemon closed the stream before sending a snapshot"),
+    let collected = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut dimensions = (rows, cols);
+        let mut replay: Vec<u8> = Vec::new();
+        loop {
+            match read_frame(&mut stream).await? {
+                Some(Frame::Snapshot(snapshot)) => return Ok(Screen::Snapshot(snapshot)),
+                Some(Frame::Control(Control::Attached { rows, cols, .. })) => {
+                    dimensions = (rows, cols);
+                }
+                Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+                Some(Frame::Data(bytes)) => replay.extend_from_slice(&bytes),
+                Some(Frame::Event(Event::Ready { .. })) => {
+                    return Ok(Screen::Replay {
+                        rows: dimensions.0,
+                        cols: dimensions.1,
+                        bytes: replay,
+                    })
+                }
+                Some(_) => continue,
+                None => bail!("the daemon closed the stream before sending a screen"),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the session's screen"))??;
+    match collected {
+        Screen::Snapshot(snapshot) => snapshot_text_rows(&snapshot),
+        Screen::Replay { rows, cols, bytes } => {
+            let mut terminal = termiod_vt::VtTerminal::new(rows, cols)?;
+            terminal.vt_write(&bytes);
+            let grid = terminal.snapshot()?;
+            let mut lines =
+                text_rows(usize::from(grid.cols), grid.cells.iter().map(|cell| cell.codepoint));
+            while lines.last().is_some_and(|line| line.is_empty()) {
+                lines.pop();
+            }
+            Ok(lines)
         }
     }
+}
+
+enum Screen {
+    Snapshot(Snapshot),
+    Replay { rows: u16, cols: u16, bytes: Vec<u8> },
 }
 
 /// A snapshot's text rows the way the app's `read` renders a screen: each row

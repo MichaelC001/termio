@@ -464,11 +464,20 @@ async fn daemon_read(channel: &Channel, target: &str, lines: &str, format: &str)
         _ => return None,
     };
     let token_lower = token.to_lowercase();
+    // Daemon-first claims only the canonical app-created population:
+    // sessions whose daemon name is a UUID, matched by a hex/dash token. An
+    // adopted session keeps whatever name it had, which the app may scope
+    // and resolve differently — those targets stay with the app.
+    if token_lower.is_empty()
+        || !token_lower.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return None;
+    }
     let matches: Vec<&termiod::protocol::SessionInfo> = sessions
         .iter()
         .filter(|info| {
             let name = info.name.to_lowercase();
-            name == token_lower || name.starts_with(&token_lower)
+            uuid_shaped(&name) && (name == token_lower || name.starts_with(&token_lower))
         })
         .collect();
     match matches.len() {
@@ -486,19 +495,34 @@ async fn daemon_read(channel: &Channel, target: &str, lines: &str, format: &str)
 }
 
 /// The token to match against daemon session names: a bare id as-is, this
-/// channel's own `…://session/<id>` link stripped to the id. A foreign
-/// channel's link (and any other shape) stays with the app, which owns its
-/// error copy.
+/// channel's own `…://session/<id>` link stripped to the id the way the
+/// app's `addressedID` does — case-insensitively, taking the component
+/// after `session/` and stopping at `/` or `?`. A foreign channel's link
+/// (and any other shape) stays with the app, which owns its error copy.
 fn read_token(channel: &Channel, target: &str) -> Option<String> {
-    let Some(scheme_end) = target.find("://") else {
+    let lowered = target.to_lowercase();
+    let Some(scheme_end) = lowered.find("://") else {
         return Some(target.to_string());
     };
-    if target[..scheme_end] != channel.url_scheme() {
+    if lowered[..scheme_end] != channel.url_scheme() {
         return None;
     }
-    let rest = &target[scheme_end + 3..];
-    let id = rest.rsplit('/').next().unwrap_or_default();
-    (!id.is_empty()).then(|| id.to_string())
+    let rest = &lowered[scheme_end + 3..];
+    let after = rest.find("session/").map(|index| &rest[index + 8..])?;
+    let id: String = after
+        .chars()
+        .take_while(|character| *character != '/' && *character != '?')
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The 8-4-4-4-12 shape of an app-created session's daemon name.
+fn uuid_shaped(name: &str) -> bool {
+    name.len() == 36
+        && name.char_indices().all(|(index, character)| match index {
+            8 | 13 | 18 | 23 => character == '-',
+            _ => character.is_ascii_hexdigit(),
+        })
 }
 
 async fn serve_daemon_read(
@@ -507,20 +531,14 @@ async fn serve_daemon_read(
     lines: &str,
     format: &str,
 ) -> i32 {
-    let snapshot = match termiod::client::observe_screen(&info.name, info.rows, info.cols).await {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            control_error_reply(format, "daemon", &format!("{error:#}"));
-            return 1;
-        }
-    };
-    let mut rows = match termiod::client::snapshot_text_rows(&snapshot) {
-        Ok(rows) => rows,
-        Err(error) => {
-            control_error_reply(format, "daemon", &format!("{error:#}"));
-            return 1;
-        }
-    };
+    let mut rows =
+        match termiod::client::observe_screen_rows(&info.name, info.rows, info.cols).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                control_error_reply(format, "daemon", &format!("{error:#}"));
+                return 1;
+            }
+        };
     if let Ok(cap) = lines.parse::<usize>() {
         if cap > 0 && rows.len() > cap {
             rows = rows.split_off(rows.len() - cap);
@@ -908,5 +926,46 @@ line; any failure fails the whole command."#
 Select the session in the app and bring termio to the front."#
         }
         _ => USAGE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release() -> Channel {
+        Channel::from_program_name("termio")
+    }
+
+    #[test]
+    fn links_resolve_the_way_the_apps_addressed_id_does() {
+        let id = "8de0b387-485a-4016-8990-cbcbfff03199";
+        let link = format!("termio://session/{id}");
+        assert_eq!(read_token(&release(), &link).as_deref(), Some(id));
+        // Case-insensitive scheme and id, trailing slash, query suffix.
+        assert_eq!(
+            read_token(&release(), &format!("TERMIO://session/{}", id.to_uppercase())).as_deref(),
+            Some(id)
+        );
+        assert_eq!(read_token(&release(), &format!("{link}/")).as_deref(), Some(id));
+        assert_eq!(read_token(&release(), &format!("{link}?focus=1")).as_deref(), Some(id));
+        // A bare token passes through untouched.
+        assert_eq!(read_token(&release(), "8de0b387").as_deref(), Some("8de0b387"));
+    }
+
+    #[test]
+    fn foreign_and_malformed_links_stay_with_the_app() {
+        assert_eq!(read_token(&release(), "termio-dev://session/8de0b387"), None);
+        assert_eq!(read_token(&release(), "https://example.com/session/x"), None);
+        assert_eq!(read_token(&release(), "termio://nothing-here"), None);
+        assert_eq!(read_token(&release(), "termio://session/"), None);
+    }
+
+    #[test]
+    fn only_uuid_shaped_names_belong_to_the_daemon_first_path() {
+        assert!(uuid_shaped("8de0b387-485a-4016-8990-cbcbfff03199"));
+        assert!(!uuid_shaped("8de0b387"));
+        assert!(!uuid_shaped("deadbeef-server"));
+        assert!(!uuid_shaped("8de0b387-485a-4016-8990-cbcbfff0319g"));
     }
 }
