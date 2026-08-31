@@ -259,24 +259,29 @@ fn adopt_runtime_file(name: &str) {
         std::process::id(),
         ADOPTING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let published = (|| -> std::io::Result<()> {
+    // A leftover under this exact name is a crashed adopter on a since-reused
+    // pid — ours to clear, and no live adopter's, since live pids are unique.
+    let _ = std::fs::remove_file(&staged);
+    let staged_written = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&staged)?;
         file.write_all(&contents)?;
-        file.sync_all()?;
-        std::fs::hard_link(&staged, &target)
+        file.sync_all()
     })();
+    // `AlreadyExists` means "another adopter published a complete file" only
+    // when it comes from the link itself and the target is really there —
+    // conflating a staging failure with it would delete the legacy original
+    // without anything ever having been published.
+    let published = staged_written.and_then(|()| std::fs::hard_link(&staged, &target));
     let _ = std::fs::remove_file(&staged);
     match published {
         Ok(()) => {
             let _ = std::fs::remove_file(&legacy);
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Another adopter published first; its file is complete, so the
-            // legacy copy has served its purpose either way.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && target.exists() => {
             let _ = std::fs::remove_file(&legacy);
         }
         Err(_) => {}
