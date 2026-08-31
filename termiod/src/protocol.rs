@@ -1271,13 +1271,14 @@ pub enum Event {
         ahead_behind: Option<(u32, u32)>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         conflicts: Vec<String>,
-        /// The status list was cut at `git::STATUS_CAP` — a batch is
-        /// one frame, and an uncapped `--untracked-files=all` over a tree with
-        /// no `.gitignore` would exceed `MAX_FRAME_SIZE` and take the whole
-        /// connection with it. Carried so a partial list cannot read as a
-        /// complete one.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        truncated: bool,
+        /// How many paths the status run named, when the list was cut below
+        /// that (`git::STATUS_CAP`) — a batch is one frame, and an uncapped
+        /// `--untracked-files=all` over a tree with no `.gitignore` would
+        /// exceed `MAX_FRAME_SIZE` and take the whole connection with it.
+        /// Carried so a partial list cannot read as a complete one, and so the
+        /// pane can say how much of it is missing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// Roster delta used by control-channel `subscribe`.
     Roster {

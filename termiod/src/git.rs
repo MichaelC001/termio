@@ -104,10 +104,12 @@ pub struct GitSnapshot {
     pub branch: Option<String>,
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
-    /// The status run said more than [`STATUS_CAP`] and the list was
-    /// cut. Carried on every batch so the pane can say the list is partial
-    /// rather than let a cut list read as the whole truth.
-    pub truncated: bool,
+    /// How many paths the status run actually named, when the list was cut
+    /// below that (see [`STATUS_CAP`]). Carried on every batch so the pane can
+    /// say how much is missing rather than let a cut list read as the whole
+    /// truth — with five thousand conflicts, "first 5,000" and "first 5,000 of
+    /// 41,900" are different answers.
+    pub total: Option<u64>,
 }
 
 impl GitSnapshot {
@@ -138,7 +140,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
-            truncated: self.truncated,
+            total: self.total,
         }
     }
 
@@ -163,7 +165,7 @@ impl GitSnapshot {
         let metadata_moved = self.branch != previous.branch
             || self.head != previous.head
             || self.ahead_behind != previous.ahead_behind
-            || self.truncated != previous.truncated;
+            || self.total != previous.total;
         if updated.is_empty() && removed.is_empty() && !metadata_moved {
             return None;
         }
@@ -174,7 +176,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
-            truncated: self.truncated,
+            total: self.total,
         })
     }
 }
@@ -188,8 +190,9 @@ pub struct GitBatch {
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
     pub conflicts: Vec<String>,
-    /// The status list was cut — see [`STATUS_CAP`].
-    pub truncated: bool,
+    /// How many paths there really are, when the list was cut — see
+    /// [`STATUS_CAP`].
+    pub total: Option<u64>,
 }
 
 impl GitBatch {
@@ -203,7 +206,7 @@ impl GitBatch {
             head: self.head,
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts,
-            truncated: self.truncated,
+            total: self.total,
         }
     }
 }
@@ -245,11 +248,30 @@ pub async fn run_status(root: &str) -> Result<GitSnapshot> {
 pub const STATUS_CAP: usize = 5_000;
 
 /// And the most path bytes, because the entry count alone does not bound a
-/// frame — a deeply nested tree can carry very long paths. One batch spends
-/// its paths three times (updated, removed, conflicts) and JSON can double a
-/// path that is all quotes, so the headroom under `MAX_FRAME_SIZE` is what
-/// this number buys: 6 × 1 MiB, plus at most `STATUS_CAP` entry envelopes.
+/// frame — a deeply nested tree can carry very long paths.
+///
+/// Counted as *encoded* bytes, not raw ones: a byte a filename may legally
+/// hold and JSON may not — POSIX forbids only NUL and `/` — becomes six
+/// characters (`\u0001`), so a raw-byte budget is a sixth of the bound it
+/// looks like. One batch spends its paths three times (updated, removed,
+/// conflicts), which puts the worst frame at 3 MiB plus at most `STATUS_CAP`
+/// entry envelopes — clear of `MAX_FRAME_SIZE` with room that does not depend
+/// on what a path happens to contain.
 const STATUS_PATH_BYTES_CAP: usize = 1024 * 1024;
+
+/// What one string costs inside a JSON document. Control bytes escape to six
+/// characters, a quote or a backslash to two, and everything else — UTF-8
+/// included — passes through as itself.
+fn json_cost(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' => 2,
+            0x08 | 0x09 | 0x0a | 0x0c | 0x0d => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
 
 /// Cut an oversized status list down to what a batch may carry.
 ///
@@ -266,14 +288,14 @@ fn cap_statuses(snapshot: &mut GitSnapshot) {
     // A rename spends its budget twice — the row names where the file came
     // from as well as where it is.
     let cost = |state: &FileState, path: &String| {
-        path.len() + state.original_path.as_ref().map_or(0, String::len)
+        json_cost(path) + state.original_path.as_deref().map_or(0, json_cost)
     };
-    let total: usize = snapshot
+    let encoded: usize = snapshot
         .statuses
         .iter()
         .map(|(path, state)| cost(state, path))
         .sum();
-    if snapshot.statuses.len() <= STATUS_CAP && total <= STATUS_PATH_BYTES_CAP {
+    if snapshot.statuses.len() <= STATUS_CAP && encoded <= STATUS_PATH_BYTES_CAP {
         return;
     }
 
@@ -298,8 +320,8 @@ fn cap_statuses(snapshot: &mut GitSnapshot) {
     if keep.len() == snapshot.statuses.len() {
         return;
     }
+    snapshot.total = Some(snapshot.statuses.len() as u64);
     snapshot.statuses.retain(|path, _| keep.contains(path));
-    snapshot.truncated = true;
 }
 
 /// Above this many untracked files the per-file line counts are skipped
@@ -1257,7 +1279,7 @@ mod tests {
             head: None,
             ahead_behind: Some((1, 0)),
             conflicts: vec![],
-            truncated: false,
+            total: None,
         }
         .into_event("git:/repo".to_string(), 7);
         let json = serde_json::to_value(&event).unwrap();
@@ -1395,7 +1417,11 @@ mod tests {
         }
         cap_statuses(&mut snapshot);
 
-        assert!(snapshot.truncated, "a cut list must announce that it was cut");
+        assert_eq!(
+            snapshot.total,
+            Some(STATUS_CAP as u64 + 12),
+            "a cut list must name how many there really were"
+        );
         assert_eq!(snapshot.statuses.len(), STATUS_CAP);
         assert!(
             snapshot.statuses.contains_key("src/edited.rs"),
@@ -1429,7 +1455,11 @@ mod tests {
         assert!(snapshot.statuses.len() < STATUS_CAP, "the entry cap is clear");
         cap_statuses(&mut snapshot);
 
-        assert!(snapshot.truncated, "the byte budget has to bind on its own");
+        assert_eq!(
+            snapshot.total,
+            Some(600),
+            "the byte budget has to bind on its own, and still name the total"
+        );
         let spent: usize = snapshot
             .statuses
             .iter()
@@ -1457,7 +1487,7 @@ mod tests {
         };
         let first = build();
         let second = build();
-        assert!(first.truncated);
+        assert!(first.total.is_some());
         assert_eq!(first, second);
         assert_eq!(second.delta_from(&first), None, "an unchanged tree is quiet");
     }
@@ -1473,7 +1503,7 @@ mod tests {
             );
         }
         cap_statuses(&mut snapshot);
-        assert!(!snapshot.truncated);
+        assert_eq!(snapshot.total, None);
         assert_eq!(snapshot.statuses.len(), 10);
     }
 

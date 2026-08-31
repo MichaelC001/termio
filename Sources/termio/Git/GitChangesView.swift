@@ -282,12 +282,14 @@ struct GitChangesView: View {
             // The device cuts a flooded status list at its cap, so the count is
             // the head of the list rather than the whole of it. Said here
             // because this number is the one that would otherwise be a claim
-            // about the working tree that isn't true.
-            Text(model.deviceListTruncated
-                ? localized("first \(model.changes.count) files")
-                : (model.changes.count == 1
-                    ? localized("\(model.changes.count) file")
-                    : localized("\(model.changes.count) files")))
+            // about the working tree that isn't true — and said with the real
+            // total, since "first 5,000" and "first 5,000 of 41,900" are
+            // different answers.
+            Text(model.deviceListTotal.map {
+                localized("first \(model.changes.count) of \($0) files")
+            } ?? (model.changes.count == 1
+                ? localized("\(model.changes.count) file")
+                : localized("\(model.changes.count) files")))
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }

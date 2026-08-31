@@ -9,11 +9,11 @@ import TermioShared
 /// subscriber.
 final class DeviceGitWatchTests: XCTestCase {
 
-    private func batch(seq: UInt64, truncated: Bool = false) -> Termiod.GitChangedPayload {
+    private func batch(seq: UInt64, total: Int? = nil) -> Termiod.GitChangedPayload {
         Termiod.GitChangedPayload(
             seq: seq, updatedStatuses: [], removedPaths: [],
             branch: nil, head: nil, ahead: 0, behind: 0, conflicts: [],
-            truncated: truncated)
+            total: total)
     }
 
     // MARK: - DeviceWatchLedger

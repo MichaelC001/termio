@@ -134,10 +134,11 @@ final class GitPanelModel: ObservableObject {
     /// What the device says the checkout's branch is, for a pane that wants to
     /// name it. Absent until the first batch lands.
     @Published private(set) var deviceBranch: String?
-    /// The device cut the status list at its cap. The rows shown are real; the
-    /// list is not all of them, and the pane has to say so rather than let a
+    /// How many paths the device's checkout really has changed, when it cut
+    /// the list below that. The rows shown are real; the list is not all of
+    /// them, and the pane says how many are missing rather than let a
     /// head-of-list read as the working tree.
-    @Published private(set) var deviceListTruncated = false
+    @Published private(set) var deviceListTotal: Int?
 
     /// Starts (or resumes) the device subscription. Idempotent: the pane calls
     /// it on appear and whenever it becomes visible again.
@@ -188,7 +189,7 @@ final class GitPanelModel: ObservableObject {
                 // by its own gap reset.
                 if gap {
                     deviceStatuses = [:]
-                    deviceListTruncated = false
+                    deviceListTotal = nil
                     gitCursor = nil
                 } else {
                     gitCursor = max(gitCursor ?? 0, seq)
@@ -259,7 +260,7 @@ final class GitPanelModel: ObservableObject {
             }
         }
         deviceBranch = batch.branch
-        deviceListTruncated = batch.truncated
+        deviceListTotal = batch.total
         deviceProblem = nil
         changes = Self.sorted(Array(deviceStatuses.values))
         isLoading = false

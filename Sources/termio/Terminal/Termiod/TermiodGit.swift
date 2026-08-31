@@ -38,9 +38,10 @@ extension Termiod {
         let ahead: Int
         let behind: Int
         let conflicts: [String]
-        /// The device cut the status list at its cap (`git.rs` `STATUS_CAP`),
-        /// so what arrived is the head of the list and not the whole of it.
-        let truncated: Bool
+        /// How many paths the device's status run named, when it cut the list
+        /// below that (`git.rs` `STATUS_CAP`) — so the pane can say how much
+        /// of it is missing, not merely that some is.
+        let total: Int?
     }
 
     /// One changed path. The two-axis `status` is the porcelain-v2 vocabulary
@@ -178,11 +179,11 @@ extension Termiod {
         let head: String?
         let aheadBehind: [Int]?
         let conflicts: [String]
-        let truncated: Bool
+        let total: Int?
 
         private enum CodingKeys: String, CodingKey {
             case seq, updatedStatuses, removedPaths, branch, head, aheadBehind, conflicts
-            case truncated
+            case total
         }
 
         init(from decoder: Decoder) throws {
@@ -196,7 +197,7 @@ extension Termiod {
             head = try container.decodeIfPresent(String.self, forKey: .head)
             aheadBehind = try container.decodeIfPresent([Int].self, forKey: .aheadBehind)
             conflicts = try container.decodeIfPresent([String].self, forKey: .conflicts) ?? []
-            truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+            total = try container.decodeIfPresent(Int.self, forKey: .total)
         }
 
         var payload: GitChangedPayload {
@@ -209,7 +210,7 @@ extension Termiod {
                 ahead: aheadBehind?.first ?? 0,
                 behind: aheadBehind?.dropFirst().first ?? 0,
                 conflicts: conflicts,
-                truncated: truncated)
+                total: total)
         }
     }
 
