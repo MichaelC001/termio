@@ -1,9 +1,9 @@
 ---
 title: Review — One path, local sessions run through termiod too
-status: draft
+status: archived
 type: rfc
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-08-31
 related:
   - 20260817-one-path-local-through-termiod.md
   - 20260805-termiod-device-architecture.md

@@ -1,9 +1,9 @@
 ---
 title: Loose terminals as first-class entities
-status: draft
+status: done
 type: rfc
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-08-31
 related:
   - 20260628-worktree-information-architecture.md
   - 20260630-sandbox-seatbelt.md

@@ -1,9 +1,9 @@
 ---
 title: Sidebar scroll performance — per-session runtime state
-status: draft
+status: done
 type: design
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-08-31
 related:
   - 20260713-loose-terminal-entity.md
 ---

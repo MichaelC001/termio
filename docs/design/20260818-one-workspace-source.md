@@ -1,9 +1,9 @@
 ---
 title: A project carries its machine — delete the host container
-status: draft
+status: done
 type: rfc
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-31
 related:
   - 20260818-one-workspace-source.review-codex.md
   - 20260818-remote-git-plane.md

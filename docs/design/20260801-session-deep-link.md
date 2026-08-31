@@ -1,9 +1,9 @@
 ---
 title: Session deep links (termio:// addresses)
-status: draft
+status: done
 type: design
 created: 2026-08-01
-updated: 2026-08-01
+updated: 2026-08-31
 ---
 
 # Session deep links (termio:// addresses)

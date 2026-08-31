@@ -1,9 +1,9 @@
 ---
 title: Fork libghostty-spm — own the wrapper, rent the engine?
-status: draft
+status: done
 type: rfc
 created: 2026-07-03
-updated: 2026-07-03
+updated: 2026-08-31
 ---
 
 # Fork libghostty-spm — own the wrapper, rent the engine?

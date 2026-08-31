@@ -1,9 +1,9 @@
 ---
 title: Companion Wire Protocol
-status: draft
+status: done
 type: rfc
 created: 2026-08-10
-updated: 2026-08-10
+updated: 2026-08-31
 related:
   - mobile-agent-ui-protocol.md
   - termiod-session-protocol.md
