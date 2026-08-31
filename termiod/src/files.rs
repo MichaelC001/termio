@@ -636,8 +636,12 @@ pub fn search(
         // `.ignore` and `.rgignore` are ripgrep's own files, not git's.
         .ignore(false)
         .git_ignore(true)
-        .git_global(true)
+        // `.git/info/exclude` stays the crate's job: it resolves `.git` as a
+        // file too (a linked worktree's `commondir`), and its matcher is rooted
+        // at the repository, so an anchored `/target` still anchors.
         .git_exclude(true)
+        // The global excludes file is not: see `global_excludes`.
+        .git_global(false)
         .parents(true)
         .follow_links(false)
         // Deterministic order, which also means single-threaded. Results stream
@@ -645,6 +649,11 @@ pub fn search(
         // should not see a different pane on every keystroke.
         .sort_by_file_path(|a, b| a.cmp(b))
         .filter_entry(|entry| entry.file_name() != ".git");
+    // Lower precedence than every ignore file in the tree, which is where git
+    // puts it (`add_ignore` is the last matcher consulted).
+    if let Some(global) = global_excludes(root) {
+        walker.add_ignore(global);
+    }
 
     for entry in walker.build() {
         if cancel.load(Ordering::Relaxed) {
@@ -673,6 +682,60 @@ pub fn search(
     }
 
     collector.finish()
+}
+
+/// The global excludes file git would apply to `root`, or nothing.
+///
+/// Asked of git rather than parsed here, because `core.excludesFile` is not a
+/// value sitting in one file: it comes off a config stack — system, XDG,
+/// `~/.gitconfig`, the repository — that `[include]` and `[includeIf]` can
+/// redirect, and the value itself may be a quoted path with spaces in it
+/// (`"~/Library/Application Support/git/ignore"` is what a Mac writes). The
+/// `ignore` crate reads that with one regex and says so in its own source:
+/// "this is the lazy approach, and isn't technically correct". A path with a
+/// space in it comes back truncated, which silently drops every rule in the
+/// file. `git config --path` resolves the whole stack and expands `~`, and git
+/// is already the authority for the tree being searched.
+///
+/// A root outside a repository gets none: git applies no excludes to a
+/// directory it does not own, and neither does this. Same answer when git is
+/// missing altogether, which is a box this search still has to work on.
+fn global_excludes(root: &Path) -> Option<PathBuf> {
+    // Doubles as the repository test: outside one, `--git-path` fails.
+    git_says(root, &["rev-parse", "--git-dir"])?;
+    if let Some(configured) = git_says(root, &["config", "--path", "--get", "core.excludesFile"]) {
+        return Some(PathBuf::from(configured));
+    }
+    // git's documented default when the setting is absent. A fixed path, not a
+    // parsed value — naming it here reimplements nothing.
+    let home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(home.join("git/ignore"))
+}
+
+/// One line of output from git run inside `root`, or nothing if git refused,
+/// is not installed, or had nothing to say.
+fn git_says(root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // Nothing here may sit waiting for a human: this runs on a search
+        // thread, and a credential prompt would park it until the client's
+        // idle bound gave up.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text.trim_end_matches(['\n', '\r']);
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 /// Opens `path` only if it reads as text, positioned back at the start so the
@@ -1531,6 +1594,103 @@ mod tests {
         let paths: Vec<&str> = hits.iter().map(|hit| hit.path.as_str()).collect();
 
         assert_eq!(paths, vec![".hidden.txt", "keep.txt", "nested/keep.txt"]);
+    }
+
+    /// Runs `git grep --untracked` in a fixture repo and returns the files it
+    /// matched, or `None` when there is no git to ask.
+    fn git_grep_files(root: &Path, query: &str) -> Option<Vec<String>> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["grep", "-l", "-I", "--no-color", "--untracked", "--fixed-strings", "-e", query])
+            .output()
+            .ok()?;
+        let listed = String::from_utf8_lossy(&output.stdout);
+        let mut files: Vec<String> = listed.lines().map(str::to_string).collect();
+        files.sort();
+        Some(files)
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("run git");
+    }
+
+    /// The differential test: every ignore rule git honours, checked against
+    /// what git itself answers on the same tree rather than against what this
+    /// engine was expected to do.
+    ///
+    /// The global excludes file is the case that pays for the whole test. Its
+    /// path comes off a config stack with quoting rules, and the `ignore`
+    /// crate's own regex reads `excludesFile = "…/with a space/ignore"` as the
+    /// text up to the first space — dropping every rule in the file, silently.
+    /// The path here has spaces and is quoted for exactly that reason. Asking
+    /// git for the value is what makes both sides agree.
+    #[test]
+    fn the_ignore_rules_agree_with_git_grep_file_for_file() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = scratch("search-differential");
+        git(&root, &["init", "-q"]);
+
+        let excludes = root.join("config dir/global ignore");
+        std::fs::create_dir_all(excludes.parent().expect("a parent")).unwrap();
+        touch(&excludes, b"by-global.txt\n");
+        // Written straight into the config so the value keeps its quotes: this
+        // is the shape a Mac's `~/Library/Application Support/git/ignore` takes,
+        // and the shape the crate's parser truncates. Repo-local rather than
+        // global so the fixture cannot be perturbed by the machine it runs on.
+        let mut config = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".git/config"))
+            .unwrap();
+        writeln!(
+            config,
+            "[core]\n\texcludesFile = \"{}\"",
+            excludes.display()
+        )
+        .unwrap();
+        drop(config);
+
+        touch(&root.join(".git/info/exclude"), b"by-info-exclude.txt\n");
+        touch(&root.join(".gitignore"), b"*.log\n!keep.log\nbuilt/\n");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        touch(&root.join("sub/.gitignore"), b"*.tmp\n!ok.tmp\n");
+
+        for named in [
+            "plain.txt",
+            "by-global.txt",
+            "by-info-exclude.txt",
+            "drop.log",
+            "keep.log",
+            "sub/ok.tmp",
+            "sub/no.tmp",
+            ".dotfile.txt",
+        ] {
+            touch(&root.join(named), b"needle\n");
+        }
+        std::fs::create_dir_all(root.join("built")).unwrap();
+        touch(&root.join("built/out.txt"), b"needle\n");
+        // Tracked *and* ignored. `--untracked` implies `--exclude-standard`, so
+        // git skips it too — the case that looked like a divergence and is not.
+        git(&root, &["add", "-f", "drop.log"]);
+
+        let theirs = git_grep_files(&root, "needle").expect("git grep");
+        let (hits, _) = found(&root, "needle", 1000);
+        let mut ours: Vec<String> = hits.into_iter().map(|hit| hit.path).collect();
+        ours.dedup();
+
+        assert_eq!(ours, theirs, "the ignore rules must agree file for file");
+        assert_eq!(
+            theirs,
+            vec![".dotfile.txt", "keep.log", "plain.txt", "sub/ok.tmp"],
+            "and agree on the right answer, not on a shared mistake"
+        );
     }
 
     /// Where this parts ways with `git grep --untracked`, asserted against real

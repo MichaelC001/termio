@@ -63,6 +63,27 @@ pub struct Manager {
     /// the runtime, so replacing the image is its move to make; a connection
     /// task only vets the request and passes it along.
     handoff: mpsc::UnboundedSender<std::path::PathBuf>,
+    /// Slots for `fs.search` walks (§C.12). Daemon-wide: the thing being
+    /// rationed is the blocking pool, and every connection draws on the same
+    /// one.
+    searching: Arc<tokio::sync::Semaphore>,
+}
+
+/// How many `fs.search` walks may run at once.
+///
+/// A walk owns a blocking thread for as long as it takes to cross a tree, so
+/// this is a queue *in front of* tokio's blocking pool rather than a share of
+/// it. Unbounded, a handful of large searches fill the pool, and the next
+/// search sits in it holding a slot it cannot use — including the cancel flag
+/// it exists to notice, which is how an abandoned query turns into a client
+/// waiting out its idle bound. Sized to the machine, floored at two so a second
+/// query is never stuck behind the first, and capped because more concurrent
+/// tree walks than cores buys contention rather than answers.
+fn search_permits() -> usize {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get())
+        .unwrap_or(2)
+        .clamp(2, 8)
 }
 
 impl Manager {
@@ -89,6 +110,7 @@ impl Manager {
             graveyard,
             session_removed: Arc::new(Notify::new()),
             handoff,
+            searching: Arc::new(tokio::sync::Semaphore::new(search_permits())),
         }
     }
 
@@ -1726,6 +1748,7 @@ async fn process_control(
                 tokio::spawn(run_search(
                     out.clone(),
                     searches.clone(),
+                    manager.searching.clone(),
                     cancel_rx,
                     retained,
                     root,
@@ -2260,6 +2283,7 @@ async fn process_control(
 async fn run_search(
     out: mpsc::UnboundedSender<Outbound>,
     searches: SearchMap,
+    permits: Arc<tokio::sync::Semaphore>,
     mut cancel_rx: oneshot::Receiver<()>,
     _retained: Option<oneshot::Sender<()>>,
     root: String,
@@ -2286,6 +2310,41 @@ async fn run_search(
             )));
             return;
         }
+    };
+
+    // Wait for a slot before taking a blocking thread (see `search_permits`).
+    // A search cancelled while it is still queued answers *now*: it has walked
+    // nothing, and there is nothing to be gained by making the client wait out
+    // the searches ahead of it.
+    let permit = tokio::select! {
+        slot = permits.clone().acquire_owned() => slot,
+        _ = &mut cancel_rx => {
+            cleanup(&searches);
+            let _ = out.send(Outbound::Control(Control::FsSearched {
+                matches: 0,
+                limit_hit: false,
+                canceled: true,
+                re: seq,
+            }));
+            return;
+        }
+        // Nobody left to answer.
+        _ = out.closed() => {
+            cleanup(&searches);
+            return;
+        }
+    };
+    // The semaphore is never closed, so this cannot fail; refusing the search
+    // is still better than unwrapping if that ever stops being true.
+    let Ok(_permit) = permit else {
+        cleanup(&searches);
+        let _ = out.send(Outbound::Control(error(
+            seq,
+            ErrorCode::Internal,
+            "the host is no longer accepting searches",
+            true,
+        )));
+        return;
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -2738,5 +2797,79 @@ mod bind_probe_tests {
         assert!(!super::socket_is_stale(Some(libc::EPERM)));
         assert!(!super::socket_is_stale(Some(libc::EACCES)));
         assert!(!super::socket_is_stale(None));
+    }
+}
+
+#[cfg(test)]
+mod search_queue_tests {
+    use super::*;
+
+    /// The bound in front of the blocking pool must not swallow a `cancel`.
+    ///
+    /// Every permit is held here, so the search under test can only be queued —
+    /// which is the state the bound introduced and the one that would otherwise
+    /// make a cancel arrive whenever the searches ahead of it happened to
+    /// finish. It answers on the cancel instead, having walked nothing.
+    #[tokio::test]
+    async fn a_search_cancelled_while_queued_answers_without_waiting_for_a_slot() {
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = permits.clone().acquire_owned().await.expect("take the only slot");
+
+        let (out, mut replies) = mpsc::unbounded_channel();
+        let searches: SearchMap = Arc::new(Mutex::new(HashMap::new()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        searches.lock().unwrap().insert(7, cancel_tx);
+
+        // A directory of its own, not the temp root: if the queue ever stops
+        // holding this search back, the test should notice by failing rather
+        // than by walking everything under /tmp.
+        let root = std::env::temp_dir().join(format!("termiod-queue-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a root to search");
+        let root = root.to_string_lossy().into_owned();
+        let running = tokio::spawn(run_search(
+            out,
+            searches.clone(),
+            permits,
+            cancel_rx,
+            None,
+            root,
+            "needle".to_string(),
+            1000,
+            Some(7),
+        ));
+
+        // Queued means silent: nothing has been searched, so nothing is owed
+        // until the client says how it wants this to end.
+        tokio::task::yield_now().await;
+        assert!(replies.try_recv().is_err(), "a queued search reports nothing");
+
+        let cancel = searches.lock().unwrap().remove(&7).expect("the search registered itself");
+        let _ = cancel.send(());
+
+        let reply = tokio::time::timeout(Duration::from_secs(5), replies.recv())
+            .await
+            .expect("a queued search must answer its cancel without waiting for a slot")
+            .expect("a terminal reply");
+        match reply {
+            Outbound::Control(Control::FsSearched {
+                matches,
+                limit_hit,
+                canceled,
+                re,
+            }) => {
+                assert_eq!(matches, 0);
+                assert!(!limit_hit);
+                assert!(canceled);
+                assert_eq!(re, Some(7));
+            }
+            _ => panic!("a cancelled search ends with fs_searched"),
+        }
+        assert!(
+            searches.lock().unwrap().is_empty(),
+            "a cancelled search must not leave its slot in the map"
+        );
+
+        running.await.expect("the search task ends with its reply");
+        drop(held);
     }
 }
