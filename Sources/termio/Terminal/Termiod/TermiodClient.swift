@@ -622,7 +622,7 @@ extension Termiod {
             // sent (`termiod/0.1.0 linux-aarch64`) for one that predates it.
             let device = TermiodDeviceRegistry.shared.record(
                 hostID: payload.hostId, daemonVersion: payload.version ?? payload.host,
-                route: transport.route)
+                negotiatedProtocol: payload.proto, route: transport.route)
             // An offer the daemon dropped is not an error — negotiate, never
             // lockstep — but it does change what this connection can expect, so
             // it is worth saying out loud once per channel.

@@ -135,6 +135,7 @@ final class TermiodDeviceRegistryTests: XCTestCase {
         XCTAssertEqual(payload.host, macDaemon)
         XCTAssertEqual(payload.clientId, "c_1")
         XCTAssertEqual(payload.caps, ["snapshot"])
+        XCTAssertEqual(payload.proto, 1)
     }
 
     /// A daemon that predates a field must still shake hands — negotiate, never
@@ -163,5 +164,19 @@ final class TermiodDeviceRegistryTests: XCTestCase {
                               encoding: .utf8)
         XCTAssertTrue(text.contains("\"ssh:vps-lan\""), text)
         XCTAssertTrue(text.contains("\"unix\""), text)
+    }
+
+    /// What `termio version` reads for its remote rows: the negotiated protocol
+    /// and the observation time survive a relaunch, and a later handshake that
+    /// carries no protocol keeps the last one that did instead of unlearning it.
+    func testNegotiatedProtocolAndObservationTimePersist() {
+        let first = makeRegistry()
+        first.record(hostID: "h_aaaa", daemonVersion: linuxDaemon,
+                     negotiatedProtocol: 1, route: .ssh("vps"))
+        first.record(hostID: "h_aaaa", daemonVersion: linuxDaemon, route: .ssh("vps"))
+
+        let device = makeRegistry().device(id: "h_aaaa")
+        XCTAssertEqual(device?.negotiatedProtocol, 1)
+        XCTAssertNotNil(device?.observedAt)
     }
 }

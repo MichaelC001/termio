@@ -578,6 +578,10 @@ public enum Termiod {
         public let hostId: String
         public let host: String
         public let clientId: String
+        /// The protocol version the handshake settled on — the highest the two
+        /// ranges share (§C.3). Decoded tolerantly for replayed captures, but
+        /// every real daemon sends it.
+        public let proto: Int?
         /// Capabilities the daemon accepted. Absent on an older daemon, so it
         /// defaults rather than failing the handshake — negotiate, never lockstep.
         public let caps: [String]
@@ -596,7 +600,7 @@ public enum Termiod {
         public var homeDirectory: String { home.hasPrefix("/") ? home : "/" }
 
         private enum CodingKeys: String, CodingKey {
-            case hostId, host, clientId, caps, home, version
+            case hostId, host, clientId, proto, caps, home, version
         }
 
         public init(from decoder: Decoder) throws {
@@ -604,6 +608,7 @@ public enum Termiod {
             hostId = try container.decode(String.self, forKey: .hostId)
             host = try container.decode(String.self, forKey: .host)
             clientId = try container.decode(String.self, forKey: .clientId)
+            proto = try container.decodeIfPresent(Int.self, forKey: .proto)
             caps = try container.decodeIfPresent([String].self, forKey: .caps) ?? []
             home = try container.decodeIfPresent(String.self, forKey: .home) ?? ""
             version = try container.decodeIfPresent(String.self, forKey: .version)
