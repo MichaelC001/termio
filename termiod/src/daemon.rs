@@ -18,7 +18,7 @@ use crate::tombstone::{EndReason, Graveyard};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{UnixListener, UnixStream};
@@ -2246,19 +2246,16 @@ async fn process_control(
     Ok(ControlFlow::Continue)
 }
 
-/// Matches per `search_results` event — small enough to render as they
-/// arrive, large enough that a big result set is not one event per line.
-const SEARCH_BATCH: usize = 50;
-
-/// Lines of context on each side of a hit. Two is what reads as an excerpt
-/// without the results pane turning into the file.
-const SEARCH_CONTEXT_LINES: usize = 2;
-
-/// Stream one `fs.search` (§C.12): `git grep` under the workspace root,
-/// batched result events, one terminal `fs_searched` reply. Ends on
-/// completion, on the limit, on `cancel`, or on the connection going away
-/// (the cancel sender's map is dropped with it). Result events and the
-/// terminal reply share `out`, which is what guarantees the reply is last.
+/// Stream one `fs.search` (§C.12): ripgrep's own searcher over the workspace
+/// root, batched result events, one terminal `fs_searched` reply. Ends on
+/// completion, on the limit, on `cancel`, or on the connection going away (the
+/// cancel sender's map is dropped with it). Result events and the terminal
+/// reply share `out`, which is what guarantees the reply is last.
+///
+/// The walk itself is blocking and runs on its own thread, so neither a tree
+/// with a million files nor a file the searcher chokes on can stall the
+/// runtime. Cancellation is a flag that thread reads rather than a signal —
+/// there is no subprocess left to kill.
 #[allow(clippy::too_many_arguments)]
 async fn run_search(
     out: mpsc::UnboundedSender<Outbound>,
@@ -2290,183 +2287,48 @@ async fn run_search(
             return;
         }
     };
-    let mut command = tokio::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(&root)
-        .arg("grep")
-        .arg("-n")
-        .arg("-I")
-        .arg("--no-color")
-        .arg("--untracked")
-        .arg("--fixed-strings");
-    // Smart case, the fzf/ripgrep default every client already expects: an
-    // all-lowercase query matches insensitively, and one uppercase letter opts
-    // back into exactness. Decided from the query itself rather than a flag on
-    // the wire, so a client cannot ask two hosts for the same search and get two
-    // different answers.
-    let insensitive = query == query.to_lowercase();
-    if insensitive {
-        command.arg("--ignore-case");
-    }
-    // Context, so a client can draw an excerpt instead of a naked line. The
-    // separator between runs is what makes the output parseable back into runs.
-    command.arg(format!("-C{SEARCH_CONTEXT_LINES}"));
-    let spawned = command
-        .arg("-e")
-        .arg(&query)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(e) => {
-            cleanup(&searches);
-            let _ = out.send(Outbound::Control(error(
-                seq,
-                ErrorCode::Internal,
-                format!("spawning git grep: {e}"),
-                true,
-            )));
-            return;
-        }
-    };
-    let Some(stdout) = child.stdout.take() else {
-        cleanup(&searches);
-        let _ = out.send(Outbound::Control(error(
-            seq,
-            ErrorCode::Internal,
-            "git grep stdout unavailable",
-            true,
-        )));
-        return;
-    };
 
-    use tokio::io::AsyncBufReadExt;
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
-    let mut pending: Vec<crate::protocol::SearchMatch> = Vec::new();
-    // Context lines seen since the last match, and the match still collecting
-    // the lines after it. Both are indexes into `pending`, so a batch flush has
-    // to retire them — a match that has left is no longer collecting anything.
-    let mut before: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    let mut trailing: Option<usize> = None;
-    let mut streamed = 0u64;
-    let mut limit_hit = false;
-    let mut canceled = false;
-    loop {
-        tokio::select! {
-            // Err means the sender vanished without an explicit cancel — the
-            // connection is gone; stop doing work nobody can receive.
-            _ = &mut cancel_rx => {
-                canceled = true;
-                break;
-            }
-            // The connection itself going away. Not covered by `cancel_rx`: a
-            // search addressed by a request id parks its cancel sender in the
-            // shared map, and *this task* holds a reference to that map — so the
-            // sender outlives the connection that owned it and the receiver never
-            // resolves. Without this arm a client that hung up (a timeout, a
-            // keystroke abandoning the query) leaves its grep running to
-            // completion, writing into a channel nobody reads.
-            _ = out.closed() => {
-                canceled = true;
-                break;
-            }
-            line = lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        let Some(parsed) = crate::files::parse_grep_output_line(&line) else {
-                            continue;
-                        };
-                        use crate::files::GrepLine;
-                        match parsed {
-                            // A run ended: whatever context was banked belongs to
-                            // nothing that follows it.
-                            GrepLine::Separator => {
-                                before.clear();
-                                trailing = None;
-                                continue;
-                            }
-                            GrepLine::Context { line: number, text, .. } => {
-                                // Context after a match, and context before the
-                                // next one, are the same lines — bank them once
-                                // and let both sides read them.
-                                if let Some(index) = trailing {
-                                    let match_at: &mut crate::protocol::SearchMatch =
-                                        &mut pending[index];
-                                    if match_at.after.len() < SEARCH_CONTEXT_LINES {
-                                        match_at.after.push(text.clone());
-                                    } else {
-                                        trailing = None;
-                                    }
-                                }
-                                before.push_back(text);
-                                if before.len() > SEARCH_CONTEXT_LINES {
-                                    before.pop_front();
-                                }
-                                let _ = number;
-                                continue;
-                            }
-                            GrepLine::Match { path, line: number, text } => {
-                                let mut found = crate::files::match_from_line(
-                                    path, number, &text, &query, insensitive,
-                                );
-                                found.before = before.iter().cloned().collect();
-                                before.clear();
-                                trailing = Some(pending.len());
-                                pending.push(found);
-                            }
-                        }
-                        if streamed + pending.len() as u64 >= limit {
-                            limit_hit = true;
-                            break;
-                        }
-                        if pending.len() >= SEARCH_BATCH {
-                            streamed += pending.len() as u64;
-                            // The batch leaves, so nothing in it can still be
-                            // collecting its trailing context.
-                            trailing = None;
-                            let _ = out.send(Outbound::Event(Event::SearchResults {
-                                request,
-                                matches: std::mem::take(&mut pending),
-                            }));
-                        }
-                    }
-                    Ok(None) | Err(_) => break,
-                }
-            }
-        }
-    }
-    if !canceled && !pending.is_empty() {
-        streamed += pending.len() as u64;
-        let _ = out.send(Outbound::Event(Event::SearchResults {
-            request,
-            matches: std::mem::take(&mut pending),
-        }));
-    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let sink = out.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        crate::files::search(&root, &query, limit, &flag, &mut |matches| {
+            let _ = sink.send(Outbound::Event(Event::SearchResults { request, matches }));
+        })
+    });
 
-    let failure = if canceled || limit_hit {
-        let _ = child.kill().await;
-        None
-    } else {
-        // git grep exits 1 for "no matches" — a result, not a failure.
-        match child.wait().await {
-            Ok(status) if status.success() || status.code() == Some(1) => None,
-            Ok(status) => Some(format!("git grep exited with {status}")),
-            Err(e) => Some(format!("waiting for git grep: {e}")),
+    // Either end of the client's interest stops the walk: an explicit `cancel`,
+    // or the connection itself going away. The latter is not covered by
+    // `cancel_rx` — a search addressed by a request id parks its cancel sender
+    // in the shared map, and *this task* holds a reference to that map, so the
+    // sender outlives the connection that owned it and the receiver never
+    // resolves. Without this arm a client that hung up (a timeout, a keystroke
+    // abandoning the query) leaves its walk running to completion, writing into
+    // a channel nobody reads.
+    let outcome = tokio::select! {
+        finished = &mut worker => finished,
+        _ = &mut cancel_rx => {
+            cancel.store(true, Ordering::Relaxed);
+            worker.await
+        }
+        _ = out.closed() => {
+            cancel.store(true, Ordering::Relaxed);
+            worker.await
         }
     };
 
     cleanup(&searches);
-    let response = match failure {
-        Some(message) => error(seq, ErrorCode::Denied, message, false),
-        None => Control::FsSearched {
-            matches: streamed,
-            limit_hit,
-            canceled,
+    let response = match outcome {
+        Ok(outcome) => Control::FsSearched {
+            matches: outcome.matches,
+            limit_hit: outcome.limit_hit,
+            canceled: outcome.canceled,
             re: seq,
         },
+        // The search panicked. Nothing else on this connection is affected —
+        // that is what the separate thread bought — but the client is owed the
+        // failure rather than silence.
+        Err(e) => error(seq, ErrorCode::Internal, format!("search failed: {e}"), true),
     };
     let _ = out.send(Outbound::Control(response));
 }

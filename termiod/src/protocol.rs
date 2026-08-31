@@ -701,8 +701,9 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
-    /// Content search (§C.12, capability `files`): the host runs `git grep`
-    /// and streams `search_results` events tagged with this request's `seq`,
+    /// Content search (§C.12, capability `files`): the host walks the root
+    /// itself — ripgrep's searcher over the ignore rules, no subprocess and no
+    /// git — and streams `search_results` events tagged with this request's `seq`,
     /// then closes with one `fs_searched` reply. Cancellable mid-stream with
     /// `cancel {request: <seq>}`.
     FsSearch {

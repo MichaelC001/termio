@@ -46,6 +46,16 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # QR generation is pure data — a bit matrix, not crypto. Default features pull
 # image and svg renderers this never uses.
 qrcode = { version = "0.14", default-features = false }
+# `fs.search` is ripgrep's engine as libraries, not an `rg` subprocess: termiod
+# ships as one static binary to boxes that have neither ripgrep nor, in the
+# containers, git. `grep-searcher` is the line/context/encoding machinery,
+# `grep-matcher` the trait it searches through, `ignore` the gitignore-aware
+# parallel-capable walk, and `aho-corasick` the fixed-string matcher behind
+# that trait — no regex engine, because the wire has always promised literals.
+grep-searcher = "0.1"
+grep-matcher = "0.1"
+ignore = "0.4"
+aho-corasick = { version = "1", default-features = false, features = ["std", "perf-literal"] }
 
 [dev-dependencies]
 # `connect` only exists so the WSS acceptance test can dial its own listener.

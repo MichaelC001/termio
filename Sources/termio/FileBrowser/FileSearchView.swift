@@ -336,8 +336,8 @@ struct FileSearchView: View {
 
     /// Runs one query on whichever machine holds the root. The device's search is
     /// a network round trip, so its failures are shown rather than swallowed —
-    /// `git grep` outside a repo, a daemon too old for `fs.search`, a box that
-    /// stopped answering.
+    /// a root that no longer resolves, a daemon too old for `fs.search`, a box
+    /// that stopped answering.
     private func find(_ query: String, limit: Int) async -> [ContentMatch] {
         switch scope {
         case .thisMac(let root):

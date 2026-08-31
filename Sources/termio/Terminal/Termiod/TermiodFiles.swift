@@ -555,15 +555,15 @@ extension Termiod {
     }
 
     /// Searches file contents under `root` on the device `route` leads to: the
-    /// host runs `git grep` and streams `search_results` events, closing with one
-    /// `fs_searched` reply (§C.12).
+    /// host walks the root itself and streams `search_results` events, closing
+    /// with one `fs_searched` reply (§C.12).
     ///
     /// Unlike `fs.list` this is a stream, so the hits are collected here and
     /// handed over whole — the pane renders one result set per query, and a
     /// channel that lives only for this request cannot outlive it anyway.
     ///
-    /// Bounded by an idle deadline rather than an overall one: a grep that walks
-    /// a large checkout for a rare string is slow *and* correct, so what is
+    /// Bounded by an idle deadline rather than an overall one: a search that
+    /// walks a large checkout for a rare string is slow *and* correct, so what is
     /// waited on is the device saying nothing at all. That bound is what keeps a
     /// daemon too old to know `fs_search` — which drops the op silently instead
     /// of refusing it — from parking this thread and its connection forever.
@@ -584,8 +584,8 @@ extension Termiod {
                 root: root, query: query, limit: UInt64(limit), seq: call.seq)))
             // Armed the moment the request is on the wire: from here until the
             // host's terminal reply, every way out of this closure — the idle
-            // bound, a lost pipe, a thrown decode — is a `git grep` still
-            // walking a checkout on someone else's machine.
+            // bound, a lost pipe, a thrown decode — is a search still walking
+            // a checkout on someone else's machine.
             call.cancelIfAbandoned()
             var hits: [SearchHit] = []
             while true {

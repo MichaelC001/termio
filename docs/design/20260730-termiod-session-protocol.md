@@ -736,7 +736,7 @@ listing, and three mechanisms buy back the replica's perceived speed:
 | --- | --- | --- |
 | `fs.list` | `{root, paths[], page?}` → per-path `{entries[], next_page?, seq}` | entry = `{name, kind: file\|dir\|symlink\|unloaded_dir, size, mtime, symlink_target?}`; pages capped (~2,000 entries); ignored/external dirs are `unloaded_dir` stubs — never walked until explicitly listed (the one Zed lesson kept as invariant) |
 | `fs.read` | `{path, range?}` → chunked binary | 1 MiB soft cap for preview parity with the companion; `range` for the editor later |
-| `fs.search` | `{root, query, limit}` → streamed result events, terminal reply | host runs `git grep`; cancellable by request id (⇧⌘F) |
+| `fs.search` | `{root, query, limit}` → streamed result events, terminal reply | host walks the root with ripgrep's searcher over the ignore rules — no subprocess, no git; cancellable by request id (⇧⌘F) |
 | `fs.match` | `{root, query, limit}` → `{paths[], coverage}` | filename fuzzy (⌘⇧O); see index above |
 
 **Uploads** (capability `upload`) — one mechanism, three gestures (drag onto a
