@@ -236,6 +236,13 @@ fn adopt_runtime_file(name: &str) {
     if legacy_dir == durable {
         return;
     }
+    // Adoption's decision (legacy present, target absent) and `--wss-off`'s
+    // deletion must not interleave: an adopter that read the legacy bind
+    // before the deletion would publish it *after*, resurrecting the listener
+    // the operator just turned off. Both sides serialize on the same flock;
+    // losing the lock file falls back to unlocked best effort, which is the
+    // pre-lock behaviour, not a new failure mode.
+    let _lock = adoption_lock(&durable);
     let legacy = legacy_dir.join(name);
     let target = durable.join(name);
     if target.exists() || !legacy.exists() {
@@ -443,11 +450,34 @@ fn remove_legacy_runtime_file(name: &str) {
     let _ = std::fs::remove_file(legacy_dir.join(name));
 }
 
+/// The flock every adopter and every legacy-removing writer holds while it
+/// decides. The file itself is meaningless; only the lock matters, so it is
+/// created on demand in the durable dir and never removed. `None` (no durable
+/// dir, or flock failing) degrades to the unlocked behaviour.
+fn adoption_lock(durable: &Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(durable.join(".adopt.lock"))
+        .ok()?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return None;
+    }
+    Some(file)
+}
+
 /// Disarm the WSS listener durably: both the durable bind and any legacy copy
 /// beside the socket go. Removing only the durable file re-armed the listener
 /// on the next daemon start, because startup adoption dutifully promoted the
-/// legacy bind the operator thought they had turned off.
+/// legacy bind the operator thought they had turned off. Holding the adoption
+/// lock closes the other resurrection path: an adopter that read the legacy
+/// bind before this deletion but would have published it after.
 pub fn remove_wss_bind() -> Result<()> {
+    let lock_dir = durable_state_dir()?;
+    let _lock = adoption_lock(&lock_dir);
     let path = wss_bind_path()?;
     match std::fs::remove_file(&path) {
         Ok(()) => {}

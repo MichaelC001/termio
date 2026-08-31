@@ -137,3 +137,41 @@ fn invite_adopts_the_legacy_origin() {
         "the origin must have moved into durable state"
     );
 }
+
+/// The resurrection race: an adopter that read the legacy bind before
+/// `--wss-off` deleted it must not publish it afterwards. Both sides hold the
+/// adoption flock, so however the two processes interleave, off means off.
+/// (Probabilistic by nature — the unlocked code only loses this race in a
+/// narrow window — but it exercises the lock path on every round.)
+#[test]
+fn wss_off_wins_against_a_concurrent_adopter() {
+    let sandbox = Sandbox::new("race");
+    for round in 0..12 {
+        sandbox.seed_legacy("wss.bind", "127.0.0.1:8790");
+        let _ = fs::remove_file(sandbox.durable_dir().join("wss.bind"));
+
+        let adopter = {
+            let home = sandbox.home();
+            let runtime = sandbox.runtime();
+            std::thread::spawn(move || {
+                Command::new(BIN)
+                    .arg("pair")
+                    .env_clear()
+                    .env("HOME", home)
+                    .env("XDG_RUNTIME_DIR", runtime)
+                    .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                    .output()
+                    .expect("running the adopting pair")
+            })
+        };
+        let off = sandbox.pair(&["--wss-off"]);
+        assert!(off.status.success(), "round {round}: --wss-off failed: {off:?}");
+        let _ = adopter.join().expect("adopter thread");
+
+        assert!(
+            !sandbox.durable_dir().join("wss.bind").exists()
+                && !sandbox.legacy_dir().join("wss.bind").exists(),
+            "round {round}: wss.bind resurrected after --wss-off"
+        );
+    }
+}
