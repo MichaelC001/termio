@@ -729,16 +729,44 @@ fn resolve_global_excludes(
         // Absent, so git's own default applies.
         None => fallback(),
     }
+    // Both answers can come back relative — `git config --path` hands back what
+    // the config holds, and `XDG_CONFIG_HOME` may hold a relative path git will
+    // happily use. Relative to git's working directory, which is `root`: that
+    // is the `-C` this module runs git under. Anchoring it here is what keeps a
+    // relative path from resolving against wherever the daemon was launched.
+    // `join` leaves an absolute path alone, so this costs the normal case
+    // nothing.
+    .map(|path| root.join(path))
 }
 
 /// Where git looks when `core.excludesFile` is not set at all. A fixed path
 /// rather than a parsed value — naming it here reimplements nothing.
 fn default_excludes_file() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|base| base.join("git/ignore"))
+    excludes_default_from(
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// git's rule, with the environment handed in so it can be pinned without a
+/// test moving the process's own out from under every thread in it.
+///
+/// `XDG_CONFIG_HOME` wins whenever it is set and not empty — *including* when
+/// it holds a relative path, which the XDG spec says to ignore and git uses
+/// anyway (`path.c`, `xdg_config_home`: `if (config_home && *config_home)`,
+/// with no test for absoluteness). `HOME` is consulted only when it is not,
+/// and setting `XDG_CONFIG_HOME` to something relative therefore turns the
+/// `HOME` default off rather than falling back to it. Relative to what is the
+/// caller's problem: `resolve_global_excludes` anchors it where git had its
+/// working directory.
+fn excludes_default_from(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    match xdg_config_home {
+        Some(base) if !base.is_empty() => Some(PathBuf::from(base).join("git/ignore")),
+        _ => Some(PathBuf::from(home?).join(".config/git/ignore")),
+    }
 }
 
 /// What git printed, trimmed of its trailing newline, or nothing if git
@@ -1822,6 +1850,105 @@ mod tests {
             resolve_global_excludes(&outside, fallback),
             None,
             "outside a repository git applies none, and neither does this"
+        );
+    }
+
+    /// A relative `XDG_CONFIG_HOME` must not fall through to `$HOME/.config`.
+    ///
+    /// The premise is checked against git rather than read off the spec,
+    /// because the two disagree: XDG says a relative base directory is invalid
+    /// and must be ignored, and git uses it anyway — `xdg_config_home` in
+    /// `path.c` tests only that the variable is set and non-empty. So the
+    /// fixture proves what git does before anything asserts what this matches.
+    #[test]
+    fn a_relative_xdg_config_home_is_used_and_does_not_fall_back_to_home() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = scratch("search-xdg-relative");
+        git(&root, &["init", "-q"]);
+        touch(&root.join("plain.txt"), b"needle\n");
+        touch(&root.join("named-by-xdg.txt"), b"needle\n");
+        touch(&root.join("named-by-home.txt"), b"needle\n");
+        // Reachable only by resolving "relative-xdg" against the repository,
+        // which is the working directory git runs with here.
+        std::fs::create_dir_all(root.join("relative-xdg/git")).unwrap();
+        touch(&root.join("relative-xdg/git/ignore"), b"named-by-xdg.txt\n");
+        let home = scratch("search-xdg-home");
+        std::fs::create_dir_all(home.join(".config/git")).unwrap();
+        touch(&home.join(".config/git/ignore"), b"named-by-home.txt\n");
+
+        let grep = |xdg: Option<&str>| {
+            let mut command = std::process::Command::new("git");
+            command
+                .arg("-C")
+                .arg(&root)
+                .args(["grep", "-l", "-I", "--untracked", "--fixed-strings", "-e", "needle"])
+                .env("HOME", &home)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env_remove("XDG_CONFIG_HOME");
+            if let Some(xdg) = xdg {
+                command.env("XDG_CONFIG_HOME", xdg);
+            }
+            let output = command.output().expect("run git grep");
+            let listed = String::from_utf8_lossy(&output.stdout);
+            let mut files: Vec<String> = listed.lines().map(str::to_string).collect();
+            files.sort();
+            files
+        };
+
+        assert_eq!(
+            grep(None),
+            vec!["named-by-xdg.txt", "plain.txt"],
+            "with no XDG set, git reads $HOME/.config/git/ignore"
+        );
+        assert_eq!(
+            grep(Some("relative-xdg")),
+            vec!["named-by-home.txt", "plain.txt"],
+            "a relative XDG_CONFIG_HOME is used, and it displaces the HOME default"
+        );
+
+        // And that is the rule this resolves by.
+        let relative = excludes_default_from(
+            Some("relative-xdg".into()),
+            Some(home.clone().into_os_string()),
+        );
+        assert_eq!(relative, Some(PathBuf::from("relative-xdg/git/ignore")));
+        assert_eq!(
+            resolve_global_excludes(&root, || relative.clone()),
+            Some(root.join("relative-xdg/git/ignore")),
+            "a relative answer anchors where git had its working directory"
+        );
+    }
+
+    /// The rest of the table, which needs no repository to be true.
+    #[test]
+    fn the_default_excludes_path_follows_gits_own_rule() {
+        let home = std::ffi::OsString::from("/home/someone");
+        assert_eq!(
+            excludes_default_from(None, Some(home.clone())),
+            Some(PathBuf::from("/home/someone/.config/git/ignore")),
+            "unset falls back to HOME"
+        );
+        assert_eq!(
+            excludes_default_from(Some("".into()), Some(home.clone())),
+            Some(PathBuf::from("/home/someone/.config/git/ignore")),
+            "empty counts as unset, which is git's own test"
+        );
+        assert_eq!(
+            excludes_default_from(Some("/xdg".into()), Some(home.clone())),
+            Some(PathBuf::from("/xdg/git/ignore")),
+            "set wins over HOME"
+        );
+        assert_eq!(
+            excludes_default_from(Some("relative".into()), Some(home)),
+            Some(PathBuf::from("relative/git/ignore")),
+            "and wins even when relative — no fall back to HOME"
+        );
+        assert_eq!(
+            excludes_default_from(None, None),
+            None,
+            "with neither, git has nowhere to look and neither does this"
         );
     }
 
