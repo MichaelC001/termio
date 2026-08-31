@@ -190,11 +190,14 @@ pub enum OscSignal {
 /// `1`/`3` (normal/indeterminate) → working, `2`/`4` (error/paused) ignored.
 /// Grok emits `9;4;1;-1` while a turn runs and `9;4;0;` when it ends.
 ///
-/// Unlike the Swift scanner this **does** keep cross-chunk state, because it
-/// runs on the sidecar thread where the chunk boundary is an artifact of a
-/// `read()` and not a meaningful edge. Consecutive duplicate progress reports
-/// still collapse; the arbiter dedups again under the live-agent gate, exactly
-/// as `lastProgressActivity` did.
+/// It keeps parse state across chunks — a sequence split by a `read()` boundary
+/// reassembles — but it does **not** dedup: every completed report is returned,
+/// including a run of identical keepalives. The arbiter is where duplicates
+/// collapse (`note_progress`, on `last_progress_activity`), and it refreshes the
+/// liveness clock *before* that guard, so a keepalive is still evidence a turn
+/// is running even when it moves nothing. A scanner that deduped privately would
+/// swallow the keepalives a row promoted to a progress-emitting agent mid-stream
+/// needs, because its first `working` was rejected by the live-agent gate.
 #[derive(Default)]
 pub struct OscScanner {
     state: ScanState,
@@ -665,10 +668,13 @@ impl StatusEngine {
     /// said `working`, and the two would only agree again on the next
     /// transition.
     ///
-    /// Deliberately silent: nothing changed for a client, so nothing is
-    /// emitted. It seeds no liveness clock either — an adopted `working` whose
-    /// agent died during the handoff is swept by the stale rule on its own.
-    pub fn seed(&mut self, status: &str, now: Instant) {
+    /// `clocks` is what an `execve` handoff carries so the adopted session keeps
+    /// its *place* in both timers, not just its state. Absent — a fresh session,
+    /// or a blob from a daemon that predates the field — the clocks start now,
+    /// which is right for a session that has no history to keep.
+    ///
+    /// Deliberately silent: nothing changed for a client, so nothing is emitted.
+    pub fn seed(&mut self, status: &str, clocks: Option<&CarriedClocks>, now: Instant) {
         match status {
             "working" => {
                 self.session.state = State::Working;
@@ -689,6 +695,73 @@ impl StatusEngine {
                 self.session.opaque = Some(other.to_string());
             }
         }
+        if let Some(clocks) = clocks {
+            self.restore_clocks(clocks, now);
+        }
+    }
+
+    /// Re-anchor the carried clocks against this process's `now`.
+    ///
+    /// Everything crosses as an *elapsed* duration rather than an instant:
+    /// `Instant` has no serialisable form, and the value that matters is "how
+    /// long has this been true", which survives an exec and a clock the far
+    /// side cannot name. Without this, every handoff restarted both timers —
+    /// so a box upgrading its daemon on a timer could defer stale-working
+    /// cleanup, and the stall signal, indefinitely.
+    fn restore_clocks(&mut self, clocks: &CarriedClocks, now: Instant) {
+        if let Some(quiet) = clocks.working_quiet_seconds {
+            self.session.last_working_at =
+                Some(now.checked_sub(Duration::from_secs(quiet)).unwrap_or(now));
+        }
+        self.session.blocking_attention = clocks.blocking_attention;
+        let Some(stall) = clocks.stall.as_ref() else {
+            // Not working, or working with no window open. Either way there is
+            // no window to keep, and `begin_stall_watch` will open one when the
+            // next turn starts.
+            if self.session.state != State::Working {
+                self.session.stall = None;
+            }
+            return;
+        };
+        let Some(probe) = self.session.stall.as_mut() else {
+            return;
+        };
+        probe.working_since = now
+            .checked_sub(Duration::from_secs(stall.working_for_seconds))
+            .unwrap_or(now);
+        probe.window_start = now
+            .checked_sub(Duration::from_secs(stall.window_for_seconds))
+            .unwrap_or(now);
+        probe.streamed_bytes = stall.streamed_bytes;
+        probe.alerted = stall.alerted;
+        // The baseline deliberately does *not* cross. It describes a repo and a
+        // transcript as they were before the exec, and this process cannot
+        // vouch for either across the gap — so the next sweep re-captures
+        // against the world as of now. `window_start` is what carries the
+        // elapsed time, and a capture does not move it, so an already-elapsed
+        // window still probes on its next tick.
+    }
+
+    /// What this session's clocks are worth carrying across an `execve`, or
+    /// `None` when there is nothing running to keep time for.
+    pub fn carried_clocks(&self, now: Instant) -> Option<CarriedClocks> {
+        let quiet = self
+            .session
+            .last_working_at
+            .map(|at| now.saturating_duration_since(at).as_secs());
+        if quiet.is_none() && !self.session.blocking_attention && self.session.stall.is_none() {
+            return None;
+        }
+        Some(CarriedClocks {
+            working_quiet_seconds: quiet,
+            blocking_attention: self.session.blocking_attention,
+            stall: self.session.stall.as_ref().map(|probe| CarriedStall {
+                working_for_seconds: now.saturating_duration_since(probe.working_since).as_secs(),
+                window_for_seconds: now.saturating_duration_since(probe.window_start).as_secs(),
+                streamed_bytes: probe.streamed_bytes,
+                alerted: probe.alerted,
+            }),
+        })
     }
 
     pub fn set_facts(&mut self, facts: SessionFacts) {
@@ -1167,6 +1240,39 @@ impl StatusEngine {
     }
 }
 
+/// A session's status clocks, packed for an `execve` handoff.
+///
+/// Durations, not instants: what has to survive is *elapsed time*, and that is
+/// the one form both processes agree on. Every field is additive with a serde
+/// default, so a blob written by a daemon that predates this reads as "no
+/// clocks" and the adopted session starts them fresh — the behaviour before
+/// this existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CarriedClocks {
+    /// How long the session has been quiet, measured from the last liveness the
+    /// old process saw. This is the stale-working sweep's clock, and the reason
+    /// this struct exists: without it, a box that upgrades its daemon can never
+    /// sweep a turn that ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_quiet_seconds: Option<u64>,
+    #[serde(default)]
+    pub blocking_attention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall: Option<CarriedStall>,
+}
+
+/// The open stall window, as elapsed time. The baseline is not here on purpose
+/// — see `restore_clocks`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CarriedStall {
+    pub working_for_seconds: u64,
+    pub window_for_seconds: u64,
+    #[serde(default)]
+    pub streamed_bytes: u64,
+    #[serde(default)]
+    pub alerted: bool,
+}
+
 /// What one stall sweep tick asks the caller to do. The engine never touches
 /// the filesystem: it says what to measure and judges what comes back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1635,6 +1741,70 @@ mod tests {
         assert!(progress(b"\x1b]9;4;1\x07").is_empty());
     }
 
+    /// Keepalives are not collapsed here — not within a chunk and not across
+    /// one. The arbiter collapses them; this reports what the agent actually
+    /// said, which is what makes each one liveness evidence.
+    #[test]
+    fn every_keepalive_is_reported_within_a_chunk_and_across_them() {
+        assert_eq!(
+            progress(b"\x1b]9;4;1;-1\x07\x1b]9;4;1;-1\x07\x1b]9;4;1;-1\x07"),
+            vec![Activity::Working; 3]
+        );
+
+        let mut scanner = OscScanner::default();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.extend(scanner.scan(b"\x1b]9;4;1;-1\x07"));
+        }
+        assert_eq!(seen, vec![OscSignal::Progress(Activity::Working); 3]);
+    }
+
+    /// An overlong payload cannot be classified from its truncated prefix, so
+    /// it is rejected outright. The bound is a title's, not a progress
+    /// report's, because both ride this scanner now — a report is still a
+    /// handful of bytes, and nothing that long is one.
+    #[test]
+    fn an_overlong_payload_is_rejected_rather_than_truncated() {
+        let mut chunk = b"\x1b]9;4;1;".to_vec();
+        chunk.extend(std::iter::repeat(b'9').take(OscScanner::MAX_PAYLOAD + 8));
+        chunk.push(0x07);
+        assert!(progress(&chunk).is_empty());
+
+        // …and the scanner recovers: the next report in the same stream lands.
+        let mut scanner = OscScanner::default();
+        let _ = scanner.scan(&chunk);
+        assert_eq!(
+            scanner.scan(b"\x1b]9;4;0;\x07"),
+            vec![OscSignal::Progress(Activity::Idle)]
+        );
+    }
+
+    /// A report embedded in a burst of ordinary output still lands, and the
+    /// ordinary bytes do not become one.
+    #[test]
+    fn a_report_amidst_other_output_still_lands() {
+        assert_eq!(
+            progress(b"hello\r\nworld \x1b]9;4;1;-1\x07 more \x1b[32mgreen\x1b[0m"),
+            vec![Activity::Working]
+        );
+    }
+
+    /// The grammar, directly — the same table the Swift `classify` case pinned.
+    #[test]
+    fn classify_pins_the_grammar() {
+        assert_eq!(classify_progress(b"9;4;0;"), Some(Activity::Idle));
+        // Clear needs no progress field.
+        assert_eq!(classify_progress(b"9;4;0"), Some(Activity::Idle));
+        assert_eq!(classify_progress(b"9;4;1;-1"), Some(Activity::Working));
+        // Indeterminate with an empty field.
+        assert_eq!(classify_progress(b"9;4;3;"), Some(Activity::Working));
+        // A busy state needs the field.
+        assert_eq!(classify_progress(b"9;4;3"), None);
+        assert_eq!(classify_progress(b"9;4"), None);
+        assert_eq!(classify_progress(b"9;4;1;text"), None);
+        assert_eq!(classify_progress(b"9;9;cwd"), None);
+    }
+
     #[test]
     fn a_title_is_read_and_an_icon_name_is_not() {
         let mut scanner = OscScanner::default();
@@ -1815,7 +1985,7 @@ mod tests {
     #[test]
     fn an_adopted_status_seeds_the_engine() {
         let mut engine = StatusEngine::new(origin(), agent_facts());
-        engine.seed("working", at(0));
+        engine.seed("working", None, at(0));
         assert_eq!(engine.state(), State::Working);
         assert!(engine.stall_probe().is_some());
         // …and the stale sweep can still end it, so an agent that died during
@@ -1823,13 +1993,96 @@ mod tests {
         assert!(engine.sweep_stale_working(at(100)).is_some());
 
         let mut engine = StatusEngine::new(origin(), agent_facts());
-        engine.seed("unknown", at(0));
+        engine.seed("unknown", None, at(0));
         assert_eq!(engine.state(), State::Idle);
         assert_eq!(engine.wire_status(), "idle");
 
         let mut engine = StatusEngine::new(origin(), agent_facts());
-        engine.seed("failed", at(0));
+        engine.seed("failed", None, at(0));
         assert_eq!(engine.wire_status(), "failed");
+    }
+
+    /// The clocks cross an `execve`, or a box that upgrades its daemon on a
+    /// timer never sweeps a turn that ended: each handoff restarted the window
+    /// and pushed the deadline out by another full timeout.
+    #[test]
+    fn a_handoff_keeps_the_stale_working_clock_on_its_original_schedule() {
+        let mut before = StatusEngine::new(origin(), agent_facts());
+        before.note_hook("working", at(0));
+        // Eleven seconds of quiet — one short of the sweep's timeout.
+        let handoff = at(11);
+        assert_eq!(before.sweep_stale_working(handoff), None);
+
+        let clocks = before.carried_clocks(handoff).expect("a live turn carries");
+        assert_eq!(clocks.working_quiet_seconds, Some(11));
+
+        // The far side of the exec: a new engine, a new clock, the same turn.
+        let after_origin = origin() + Duration::from_secs(1_000);
+        let mut after = StatusEngine::new(after_origin, agent_facts());
+        after.seed("working", Some(&clocks), after_origin);
+        assert_eq!(after.state(), State::Working);
+
+        // One more second reaches the original 12s deadline, not a fresh one.
+        assert!(after
+            .sweep_stale_working(after_origin + Duration::from_secs(2))
+            .is_some());
+        assert_eq!(after.state(), State::Idle);
+    }
+
+    /// The stall window crosses too, and for the same reason: a 20-minute
+    /// window restarted by every upgrade is a signal that never fires.
+    #[test]
+    fn a_handoff_keeps_the_stall_window_and_its_latch() {
+        let mut before = StatusEngine::new(origin(), agent_facts());
+        before.note_hook("working", at(0));
+        let probe = before.stall_probe_mut().expect("working opens a window");
+        probe.streamed_bytes = 4_096;
+        probe.alerted = true;
+
+        let handoff = at(900);
+        let clocks = before.carried_clocks(handoff).expect("clocks");
+        let stall = clocks.stall.as_ref().expect("an open window");
+        assert_eq!(stall.window_for_seconds, 900);
+        assert_eq!(stall.streamed_bytes, 4_096);
+        assert!(stall.alerted);
+
+        let after_origin = origin() + Duration::from_secs(10_000);
+        let mut after = StatusEngine::new(after_origin, agent_facts());
+        after.seed("working", Some(&clocks), after_origin);
+
+        let restored = after.stall_probe().expect("the window survived");
+        assert_eq!(
+            after_origin.saturating_duration_since(restored.window_start),
+            Duration::from_secs(900)
+        );
+        assert!(restored.alerted, "the latch crosses, so one window alerts once");
+        // The baseline deliberately does not cross: this process cannot vouch
+        // for a repo it did not watch, so the next tick re-captures — and a
+        // capture does not move the window it is measured against.
+        assert!(restored.baseline.is_none());
+        assert!(matches!(
+            after.stall_step(after_origin),
+            StallStep::Capture { .. }
+        ));
+    }
+
+    /// A blob from a daemon that predates the field carries no clocks, and the
+    /// adopted session starts them fresh rather than failing to adopt.
+    #[test]
+    fn an_older_blob_with_no_clocks_still_adopts() {
+        let mut engine = StatusEngine::new(origin(), agent_facts());
+        engine.seed("working", None, at(0));
+        assert_eq!(engine.state(), State::Working);
+        assert_eq!(engine.sweep_stale_working(at(5)), None);
+        assert!(engine.sweep_stale_working(at(20)).is_some());
+    }
+
+    /// An idle session has no clocks worth carrying, so the blob does not grow
+    /// a field for every quiet row on the box.
+    #[test]
+    fn a_quiet_session_carries_nothing() {
+        let engine = StatusEngine::new(origin(), agent_facts());
+        assert!(engine.carried_clocks(at(10)).is_none());
     }
 
     #[test]

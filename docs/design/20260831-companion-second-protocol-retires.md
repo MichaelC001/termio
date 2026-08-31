@@ -247,10 +247,24 @@ trait. Status is the third:
 | **linger** | inherited (300 s). A phone that locks and comes back inside five minutes resumes at its cursor. |
 
 `E status` on the session channel is **kept, unchanged**. It is how an attached
-client learns about its own session without a second subscription, it is what
-`TermiodBackend` already consumes, and removing it would be a wire break for no
-gain. The resource is the roster-wide view; the event is the per-session one, and
-both are emitted from the one engine.
+client learns about its own session without a second subscription, and removing
+it would be a wire break for no gain. The resource is the roster-wide view; the
+event is the per-session one, and both are emitted from the one engine.
+
+**Both halves ship together, or neither does.** A resource nothing subscribes to
+is a ring nobody writes — `publish_status` returns early when no one has ever
+asked — so an unconsumed `status:` would be an advertised mechanism that has
+never once run. Stage 1 therefore also moves the phone onto it: `TermiodBackend`
+subscribes to `status:` with its last cursor in place of the `status` event
+name, so the two paths are one path with a cursor. The `stalled` signal rides
+the same batches, so nothing is lost by dropping the broadcast — and a device
+too old to know `status:` refuses, which the phone answers by falling back to
+the broadcast rather than going dark.
+
+The Mac stays on `E status`, deliberately. It attaches to each session it shows,
+so it already has the per-session channel; a roster-wide cursor is what a client
+that watches sessions it is *not* attached to needs, and on the Mac that is
+Stage 3's problem, not this one's.
 
 ### 3.7 The anti-100× invariant
 
@@ -376,25 +390,76 @@ Port the status engine into `termiod`, beside the sidecar VT: screen-rule
 classification, `OSC 0/2` title classification, `OSC 9;4` progress, screen-streak
 promotion with every guard, the stale-working sweep, and the four-probe stall
 detector. Publish it as the `status:` resource **and** through the existing
-`E status`. Delete the Swift engine in the same PR — no dual engines.
+`E status`, and move the phone onto the resource so the cursor is exercised
+rather than advertised (§3.6). Delete the Swift engine in the same PR — no dual
+engines.
+
+Two seams come with it, because both are only visible once a second viewer
+derives status from the same device:
+
+- **The viewer's own call.** `E status` and `status:` both carry `source` and
+  `turn_ended`, and the Mac and the phone each apply their own focus to a
+  derived turn end (§3.3). Without this the Mac shows `done` and a directly
+  attached phone shows `idle` for one session at one moment.
+- **The clocks cross a handoff** (§7.4).
 
 **Gates, as they actually ran:**
 
 | Gate | Result |
 | --- | --- |
-| `cargo test` — the Swift cases ported into `session::status::tests` | 320 passed, 0 failed (32 of them the ported status cases) |
-| `swift build && swift test` | 932 tests, 0 failures |
-| iOS still compiles against the changed payload | `xcodebuild … -sdk iphonesimulator` clean |
+| `cargo test` | **329 passed, 0 failed** — 274 lib (40 of them `session::status`), 3 bin, 52 integration |
+| `swift build && swift test` | 932 passed, 0 failed |
+| `python3 termiod/tests/cli_compat.py` | **93/93** — the hook and CLI surface is byte-identical |
+| iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 34 passed, 0 failed (8 new) |
+| iOS builds for the simulator | clean |
 | No second matcher: `grep -rn 'firstMatch\|NSRegularExpression' Sources/termio/Agents Sources/termio/TermioStore` | 0 |
 | The engine is gone, not disabled: `OSCProgressScanner.swift`, `StallProbe`, `StallMeasurement`, `applyScreenDetectedActivity`, `applyTitleActivity`, `applyProgressActivity`, `noteOutputActivity`, `sweepStaleWorking`, `sweepStalledSessions`, `makeStatusTap` | all deleted |
 | Every shipped manifest's patterns compile under `regex` | `bundled_status_patterns_compile` |
-| The hook contract is untouched | `agent_report` and `agent::install` unchanged; their tests unchanged and green |
+| The hook contract is untouched | `agent_report` and `agent::install` unchanged |
 
-**What is not verified, and why:** nothing here was run against a real phone.
-Stage 1 changes what the device *says*, not how the phone reaches it, and the
-phone's direct backend already subscribes to `status` — so the phone gains the
-three derived channels for free the day it attaches to a box running this. That
-claim is a build-time one until Stage 2 gives it a device to attach to.
+Two iOS **UI** tests fail — `testInspectorFileTreeShowsLanguageIcons` and
+`testScanEntryPresentsScanner`. Both fail identically on `origin/main` with this
+branch stashed; neither touches status. Recorded rather than folded into the
+count.
+
+#### Which Swift case became which Rust case
+
+The Swift tests are the spec, so the mapping has to be auditable rather than
+asserted. Nothing was dropped; three cases were merged where the Rust API made
+one assertion cover two, and each is named.
+
+| Swift case | Rust case |
+| --- | --- |
+| `StallProbeTests.testUnchangedEvidenceAlertsOnceThenHolds` | `unchanged_evidence_alerts_once_then_holds` |
+| `…testRepoChangeIsProgressAndReArms` | `repo_change_is_progress_and_rearms` |
+| `…testTranscriptBurstIsProgress` | `transcript_burst_is_progress` |
+| `…testStreamSuppressorReadsSustainedVolumeOnly` | `stream_suppressor_reads_sustained_volume_only` |
+| `…testSlideWindowWithoutBaselineForcesRecapture` | `slide_window_without_baseline_forces_recapture` |
+| `AgentTitleStatusTests.testEveryWorkingTitleFrameRefreshesLiveness` | `every_working_title_frame_refreshes_liveness` — **adapted**: the Swift version poked `lastWorkingAt` directly; the Rust field is private, so it asserts through the sweep, which is what that clock is *for* |
+| `…testACalmTitleEndsTheTurn` | `a_calm_title_ends_the_turn` |
+| `…testClaudeTitleRulesReadBothSpinnerAlphabets` | `claude_title_rules_read_both_spinner_alphabets` |
+| `OSCProgressScannerTests.testBusyThenIdle` · `testStringTerminatorClosesSequence` · `testIndeterminateStateIsWorking` | **merged** into `reads_both_terminators_and_both_busy_states` — one assertion per terminator × per busy state |
+| `…testBothTransitionsInOneChunkAreReported` | `both_edges_of_one_turn_arrive_in_order` |
+| `…testSequenceSplitAcrossChunks` | `a_sequence_split_across_reads_is_tolerated` |
+| `…testErrorAndPausedStatesAreIgnored` | `error_and_paused_states_are_not_transitions` |
+| `…testProgressLikeNotificationBodyIsRejected` · `testBusyStateValidatesProgressRange` | **merged** into `other_osc_nine_payloads_are_not_progress` |
+| `…testKeepalivesInOneChunkCollapse` · `…AcrossChunksAreEachReported` | `every_keepalive_is_reported_within_a_chunk_and_across_them` — **behaviour changed on purpose**: the Swift scanner collapsed duplicates inside one read, this one does not. The arbiter collapses them (`note_progress`), and it refreshes the liveness clock *before* that guard, so each keepalive stays evidence. The observable result is identical; the comment claiming a collapse was wrong and is fixed |
+| `…testOverlongPayloadIsRejected` | `an_overlong_payload_is_rejected_rather_than_truncated` — the bound moved from 24 to 1024 because titles now ride the same scanner, so the case also asserts the scanner *recovers* after one |
+| `…testProgressAmidstOtherOutput` | `a_report_amidst_other_output_still_lands` |
+| `…testClassifyDirect` | `classify_pins_the_grammar` |
+| `…testTitleAndNotificationAndPaletteAreIgnored` | `a_title_is_read_and_an_icon_name_is_not` — **narrowed on purpose**: OSC 7 and OSC 4 still fall through, but a title is no longer "ignored". It is read, as a title, and never as progress |
+
+New Rust cases with no Swift ancestor cover what only the daemon can now get
+wrong: the arbitration precedence rules, the promotion guards, the `status:`
+cursor, agent resolution from argv, and the handoff clocks (§7.4).
+
+**What is not verified, and why.** No device pair was run. The phone's
+subscription, its cursor and its focus rule are covered by unit tests against
+the daemon's own JSON, and the daemon's half by `cargo test`, but the two have
+not been in one room — CI builds the iOS app and does not run its tests. What
+that leaves unproven is the wiring between two things each proven separately,
+which is exactly what Stage 2's gate is for: a phone driving a session on a Mac
+with the app quit.
 
 `AgentStatusRules` stays in Swift **as a type and not as a matcher** — it now
 holds pattern *sources*, because the app still parses manifests to render the
@@ -589,18 +654,30 @@ So: no new field. The bound is a host constant, the phone is a snapshot client,
 and the question was about a class of client that no longer exists. Recorded here
 so the next reader does not add a `replay_bytes` field to solve it twice.
 
-### 7.2 `jiggleResize` — **deleted; the client repaints itself**
+### 7.2 `jiggleResize` — **deleted; there is a client verb, and no wipe**
 
 A resize to identical dimensions is a daemon no-op, so "make the child redraw"
 has no verb, and Stage 6 forbade inventing a host-side redraw op without
 argument. There is no argument to make: a host-side redraw is the host deciding
 what the client should be looking at.
 
-The mechanism already shipped. PR #517 added `request_snapshot` on the observer
-path for the grid-before-bytes race — a client that believes its screen is wrong
-asks for a fresh one. That is the same need. `jiggleResize` is a client-side
-wipe plus `request_snapshot`, and the symbol is gone from `Sources/` already;
-this records why it is not coming back.
+Split into the two halves, because only one of them exists and the earlier
+revision of this section blurred them:
+
+- **"Ask the device for a fresh screen" shipped, and is wired end to end.**
+  `request_snapshot` is sent by the Mac (`TermiodClient.requestResyncLocked`,
+  gated on `observerRepaintPending`) and by the phone
+  (`ios/Sources/TermiodSession.swift`, same flag), both from PR #517's
+  grid-before-bytes fix. A client that believes its screen is wrong asks, and
+  the device answers with an `S` at a FIFO boundary.
+- **"Wipe first" does not exist, and nothing needs it.** `jiggleResize`'s only
+  caller was `PTYBridge`, which went with Stage 6. A snapshot is a full repaint
+  from a known boundary, so a client that applies one has no stale rows to
+  clear first.
+
+So the verb is not coming back, and no stage owes a wipe. If a case ever turns
+up where a snapshot alone leaves a client wrong, it is a client-side clear plus
+the request that already exists — never a host-side redraw op.
 
 ### 7.3 Ownership reconciliation — **settled by PR #517; delete the claims**
 
@@ -622,6 +699,31 @@ authoritative grid, every non-writer laid out at that grid and fitted locally.
 The one thing Stage 2 adds is a third simultaneous client class — Mac, phone, and
 a browser — and the rule already generalises, because it is stated per-client and
 not per-pair.
+
+### 7.4 The status clocks survive an `execve` handoff
+
+Not inherited from Stage 6 — found while building Stage 1, and recorded here
+because it is the same class of question.
+
+The daemon upgrades itself in place (`termiod handoff`): same pid, same PTYs, a
+new image. The blob carries each session's *status string*, which was enough
+while status was derived on the Mac. It is not enough now: a status is a state
+plus how long it has been true, and only the second half tells the stale-working
+sweep whether a turn has gone quiet. Seeding an adopted session with
+`last_working_at = now` restarts that clock, so a box that upgrades its daemon
+on a timer defers stale cleanup — and the 20-minute stall window — indefinitely.
+
+`CarriedSession` therefore grows `status_clocks`: elapsed durations, not
+instants, because elapsed time is the one form both processes agree on.
+Additive with a serde default, so a blob from an older daemon reads as "no
+clocks" and starts them fresh, which is the behaviour before this existed.
+
+**The stall baseline deliberately does not cross.** It describes a repo and a
+transcript as they were before the exec, and the new process cannot vouch for
+either across the gap; the next sweep re-captures against the world as of now.
+The *window start* is what carries, and a capture does not move it — so an
+already-elapsed window still probes on its next tick rather than waiting out a
+second one.
 
 ---
 

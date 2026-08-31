@@ -467,6 +467,7 @@ impl Session {
                 master_fd: -1,
                 ring_len: self.ring_bytes as u64,
                 ring_reconstructs_screen: self.ring_reconstructs_screen,
+                status_clocks: self.status_engine.carried_clocks(std::time::Instant::now()),
             },
             master,
             ring,
@@ -1302,6 +1303,7 @@ pub fn spawn(
             status: "unknown".to_string(),
             title: None,
             workstream,
+            status_clocks: None,
         },
         pty,
         waiter,
@@ -1346,6 +1348,7 @@ pub fn adopt(
             status: carried.status,
             title: carried.title,
             workstream: carried.workstream,
+            status_clocks: carried.status_clocks,
         },
         pty,
         waiter,
@@ -1411,6 +1414,9 @@ struct Facts {
     status: String,
     title: Option<String>,
     workstream: Option<WorkstreamSpec>,
+    /// How long the carried status has been true. `None` for a fresh spawn,
+    /// which has no history to keep.
+    status_clocks: Option<crate::session::status::CarriedClocks>,
 }
 
 /// The half of session startup that a fresh spawn and a carried session share:
@@ -1444,6 +1450,7 @@ fn start(
         .workstream
         .as_ref()
         .map(|workstream| workstream.agent_id.clone());
+    let adopted_clocks = facts.status_clocks.clone();
     let mut session = Session {
         id: facts.id.clone(),
         name: facts.name,
@@ -1484,7 +1491,7 @@ fn start(
     let adopted = session.status.clone();
     session
         .status_engine
-        .seed(&adopted, std::time::Instant::now());
+        .seed(&adopted, adopted_clocks.as_ref(), std::time::Instant::now());
     session.sync_status_watch();
     for chunk in replay.chunks {
         // Through the same two paths a live byte takes, in the same order: the

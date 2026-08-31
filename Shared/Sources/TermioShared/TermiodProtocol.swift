@@ -49,7 +49,11 @@ public enum Termiod {
     /// channel: a pushed session list, the Files pane, and a save or a paste
     /// crossing over. `git` is absent because nothing on this side decodes its
     /// replies yet, and a capability with nothing behind it is worse than none.
-    public static let deviceCapabilities = ["events", "files", "upload"]
+    /// `resources` is here for the `status:` subscription and not for `fs:`:
+    /// agent status is the one thing a phone must be able to resume a cursor
+    /// into, because it is the one thing that keeps changing while the screen
+    /// is locked.
+    public static let deviceCapabilities = ["events", "files", "upload", "resources"]
 
     public static let protocolVersion: UInt32 = 1
 
@@ -1185,6 +1189,57 @@ public enum Termiod {
         public var isDerived: Bool { source != nil && source != "hook" }
     }
 
+    /// One batch of the `status:` resource (§C.10) — a session's status, with
+    /// the cursor a subscriber resumes from. The same facts `StatusPayload`
+    /// carries on an attached session's own channel, plus `seq`: a client
+    /// watching a whole roster gets one subscription and one cursor, and a
+    /// phone that locked mid-turn resumes where it left off instead of
+    /// rescanning.
+    public struct StatusChangedPayload: Decodable, Sendable {
+        public let resource: String
+        public let seq: UInt64
+        public let session: String
+        public let status: String
+        public let source: String?
+        public let turnEnded: Bool
+        public let blocking: Bool?
+        public let title: String?
+        /// Present only on the one `stalled` signal per quiet window. It rides
+        /// this resource rather than its own, so a client that wants agent state
+        /// does not have to subscribe twice.
+        public let stalledWorkingSeconds: UInt64?
+        public let stalledTranscriptLinesGrown: UInt64?
+
+        private enum CodingKeys: String, CodingKey {
+            case resource, seq, session, status, source, turnEnded, blocking, title
+            case stalledWorkingSeconds, stalledTranscriptLinesGrown
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            resource = try c.decode(String.self, forKey: .resource)
+            seq = try c.decodeIfPresent(UInt64.self, forKey: .seq) ?? 0
+            session = try c.decode(String.self, forKey: .session)
+            status = try c.decode(String.self, forKey: .status)
+            source = try c.decodeIfPresent(String.self, forKey: .source)
+            turnEnded = try c.decodeIfPresent(Bool.self, forKey: .turnEnded) ?? false
+            blocking = try c.decodeIfPresent(Bool.self, forKey: .blocking)
+            title = try c.decodeIfPresent(String.self, forKey: .title)
+            stalledWorkingSeconds =
+                try c.decodeIfPresent(UInt64.self, forKey: .stalledWorkingSeconds)
+            stalledTranscriptLinesGrown =
+                try c.decodeIfPresent(UInt64.self, forKey: .stalledTranscriptLinesGrown)
+        }
+
+        /// The same shape the session-channel event has, so a client applies one
+        /// interpretation to both rather than two that can drift.
+        public var report: StatusPayload {
+            StatusPayload(
+                session: session, status: status, title: title,
+                source: source, turnEnded: turnEnded, blocking: blocking)
+        }
+    }
+
     /// A session has been working a full window with no sign of progress
     /// (device architecture §4.7). Watch-plane only: the session's status stays
     /// `working`, because from outside an agent a quiet long build and a wedged
@@ -1223,6 +1278,7 @@ public enum Termiod {
     public enum IncomingEvent: Sendable {
         case ready(String)
         case status(StatusPayload)
+        case statusChanged(StatusChangedPayload)
         case stalled(StalledPayload)
         case writerChanged(WriterChangedPayload)
         case resized(ResizedPayload)
@@ -1473,6 +1529,8 @@ public enum Termiod {
             return .ready(try decoder.decode(SessionScopedPayload.self, from: payload).session)
         case "status":
             return .status(try decoder.decode(StatusPayload.self, from: payload))
+        case "status_changed":
+            return .statusChanged(try decoder.decode(StatusChangedPayload.self, from: payload))
         case "stalled":
             return .stalled(try decoder.decode(StalledPayload.self, from: payload))
         case "writer_changed":
@@ -1604,6 +1662,19 @@ public enum Termiod {
     /// Asks for the session-scoped events a roster is kept current by. Requires
     /// the `events` capability; `roster` also carries `writer_changed` and
     /// `session_exited`, which is why one name covers three.
+    /// `subscribe_resource`, for a client that has no control pool to route it
+    /// through — the phone opens one control channel and speaks it directly.
+    /// The device-wide agent-status resource. One per device, not one per
+    /// session: a client watching a roster wants every row, and one
+    /// subscription is one cursor to resume from.
+    public static let statusResource = "status:"
+
+    public static func subscribeResourcePayload(
+        resource: String, since: UInt64?, seq: UInt64
+    ) throws -> Data {
+        try encodeControl(SubscribeResourceOperation(resource: resource, since: since, seq: seq))
+    }
+
     public static func subscribePayload(events: [String], seq: UInt64 = 1) throws -> Data {
         try encodeControl(SubscribeOperation(events: events, seq: seq))
     }

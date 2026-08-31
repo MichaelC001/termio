@@ -1717,10 +1717,12 @@ final class TermiodSessionLink: @unchecked Sendable {
             // asked reads its own hits (`Termiod.searchContents`). Nothing on a
             // session's channel can have asked, so there is nobody to give it to.
             break
-        case .fsChanged:
+        case .fsChanged, .statusChanged:
             // Addressed to a *channel*, not to a session: only a channel
             // carrying a resource subscription can have asked, and a session's
-            // link never does (`Termiod.ResourceWatch`).
+            // link never does (`Termiod.ResourceWatch`). This link hears about
+            // its own session's status through `E status` on this very channel,
+            // which is what that event is for.
             break
         case .unknown(let name):
             Log.termiod.debug("""
