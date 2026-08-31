@@ -30,7 +30,10 @@ RUST = os.environ.get(
 
 HOME = f"/private/tmp/termio-compat-{os.getpid()}"
 SOCK_DIR = os.path.join(HOME, "Library/Application Support/termio")
-SOCK = os.path.join(SOCK_DIR, "session-control.sock")
+SOCK = os.path.join(SOCK_DIR, "app.sock")
+# The name the app bound before it was named for its binder. Both clients fall back
+# to it so a checkout CLI can drive an older app; they must agree on when.
+LEGACY_SOCK = os.path.join(SOCK_DIR, "session-control.sock")
 
 failures = []
 passes = 0
@@ -243,6 +246,17 @@ def main():
         handle.write("")
     compare("socket is a plain file", ["sessions", "list"], no_server=True)
     os.unlink(SOCK)
+    # An app older than the socket rename: both clients fall back to the name it
+    # binds, and both must name the same path when what sits there is not a socket.
+    legacy = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    legacy.bind(LEGACY_SOCK)
+    legacy.close()
+    compare("falls back to the pre-rename socket", ["sessions", "list"], no_server=True)
+    os.unlink(LEGACY_SOCK)
+    with open(LEGACY_SOCK, "w") as handle:
+        handle.write("")
+    compare("pre-rename plain file is not an older app", ["sessions", "list"], no_server=True)
+    os.unlink(LEGACY_SOCK)
     # A socket file whose listener is gone: connect refused.
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stale.bind(SOCK)

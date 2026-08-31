@@ -56,11 +56,11 @@ extension TermioStore {
         syncAgentIntegration()
     }
 
-    /// Brings up the control socket and aligns the agents' awareness note with the
-    /// current setting. Like the hook listener, the socket always runs; only the
-    /// note written into the agent instruction files is toggled.
-    func startSessionControl() {
-        let control = SessionControlListener(
+    /// Brings up the app socket and aligns the agents' awareness note with the
+    /// current setting. The socket always runs; only the note written into the agent
+    /// instruction files is toggled.
+    func startAppSocket() {
+        let control = AppSocketListener(
             onRequest: { [weak self] request in
                 await self?.handleSessionControl(request) ?? Data()
             },
@@ -68,7 +68,7 @@ extension TermioStore {
                 self?.resolveWatchScope(request) ?? (nil, nil, [])
             })
         control.start()
-        sessionControl = control
+        appSocket = control
         installedSessionControlEnabled = settings.sessionControlEnabled
         syncSessionControlInstallation()
     }
