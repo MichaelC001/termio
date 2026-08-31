@@ -1,6 +1,6 @@
 ---
 title: New terminal opens unfocused (hollow cursor, beeps until clicked)
-status: fixed
+status: done
 type: bug
 created: 2026-07-14
 updated: 2026-07-14

@@ -1,9 +1,9 @@
 ---
 title: "RFC: Per-project agent sandbox (Apple Seatbelt)"
-status: draft
+status: archived
 type: rfc
 created: 2026-06-30
-updated: 2026-06-30
+updated: 2026-08-31
 related:
   - 20260629-sandbox-vm.md
   - 20260707-agent-extensibility.md

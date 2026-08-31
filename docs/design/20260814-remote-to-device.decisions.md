@@ -1,9 +1,9 @@
 ---
 title: Device RFC blocking decisions
-status: draft
+status: archived
 type: rfc
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-31
 ---
 
 # Device RFC blocking decisions

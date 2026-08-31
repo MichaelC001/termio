@@ -1,6 +1,6 @@
 ---
 title: Terminal loses focus after window deactivation
-status: fixed
+status: done
 type: bug
 created: 2026-07-02
 updated: 2026-07-14

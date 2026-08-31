@@ -1,6 +1,6 @@
 ---
 title: Terminal loses focus while the window stays key — sibling-render trigger
-status: fixed
+status: done
 type: bug
 created: 2026-07-14
 updated: 2026-07-14

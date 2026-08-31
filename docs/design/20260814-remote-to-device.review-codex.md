@@ -1,9 +1,9 @@
 ---
 title: "Adversarial review: Retire remote — every machine is a device"
-status: draft
+status: archived
 type: rfc
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-31
 ---
 
 # Adversarial review: Retire remote — every machine is a device

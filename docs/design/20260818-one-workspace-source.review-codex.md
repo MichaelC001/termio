@@ -1,9 +1,9 @@
 ---
 title: "Adversarial review: One workspace source — the inspector reads the session's device"
-status: draft
+status: archived
 type: rfc
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-31
 ---
 
 # Adversarial review: One workspace source — the inspector reads the session's device

@@ -1,9 +1,9 @@
 ---
 title: Sessions CLI v3 — command design (better than tmux)
-status: draft
+status: done
 type: design
 created: 2026-08-08
-updated: 2026-08-08
+updated: 2026-08-31
 related:
   - 20260724-sessions-cli-v2.md
   - 20260730-termiod-session-protocol.md

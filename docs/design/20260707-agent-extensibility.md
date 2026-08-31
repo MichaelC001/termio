@@ -1,6 +1,6 @@
 ---
 title: 可扩展 Agent —— 配置化定义 + 配置化 Hook
-status: in-progress
+status: active
 type: rfc
 updated: 2026-07-07
 related:
