@@ -512,9 +512,23 @@ extension Termiod {
         private let lock = NSLock()
         private var cancelled = false
 
+        /// A subscription that is on no channel, and so retires nothing when it
+        /// is cancelled.
+        ///
+        /// Not a special case: `channel` is held weakly, so a live subscription
+        /// reaches this state on its own the moment the connection behind it is
+        /// released. What it is *for* is driving the subscribe handshake from a
+        /// test — the ordering it settles has now been got wrong once per
+        /// resource plane, and it cannot be provoked against a real daemon,
+        /// which always writes its ack first.
+        static func unattached(resource: String) -> ResourceSubscription {
+            ResourceSubscription(
+                resource: resource, channel: nil, onEvent: { _ in }, onInterrupted: {})
+        }
+
         fileprivate init(
             resource: String,
-            channel: PooledChannel,
+            channel: PooledChannel?,
             onEvent: @escaping @Sendable (Data) -> Void,
             onInterrupted: @escaping @Sendable () -> Void
         ) {
@@ -1048,5 +1062,95 @@ extension Termiod {
         default:
             return false
         }
+    }
+}
+
+/// The ordering ledger for one device resource watch, whatever it watches.
+///
+/// A subscribe handshake resolves on two paths: the ack — carrying the gap →
+/// reset-the-baseline decision, and the cursor the subscription starts at —
+/// comes back through the async call, while the first batches arrive through
+/// the subscription handler, which the channel arms *before* the request goes
+/// out. So a batch can be delivered while the caller is still awaiting the ack,
+/// against state the ack has not installed yet: on the `git:` plane that
+/// applied a batch before the gap reset that would erase it, rendering a
+/// changed checkout clean; on `fs:` it delivered a batch before the
+/// subscription — and so before the canonical resource id the tree translates
+/// paths by — leaving a root reached through a symlink matching nothing and a
+/// tree that never re-lists.
+///
+/// The ledger holds batches until the baseline decision has landed, and stamps
+/// every attempt with a generation so a watch that was stopped — or restarted —
+/// while its handshake was in flight can neither install its subscription nor
+/// apply its batches.
+///
+/// Generic over the batch because the two planes carry different payloads and
+/// nothing else about the ordering differs. A second copy of this reasoning is
+/// how the `fs:` half came to be missing it.
+struct DeviceWatchLedger<Batch> {
+    private(set) var generation = 0
+    private var awaitingBaseline = false
+    private var held: [Batch] = []
+    private var restartRequested = false
+
+    /// A new subscribe attempt begins; everything older is dead.
+    mutating func begin() -> Int {
+        generation += 1
+        awaitingBaseline = true
+        held = []
+        return generation
+    }
+
+    /// The watch was stopped; an in-flight attempt must not land.
+    mutating func stop() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+        restartRequested = false
+    }
+
+    /// A newer visible pane wants a watch while an older handshake is still
+    /// pending. The old acknowledgement must not install, but its cleanup is
+    /// responsible for starting the replacement once it has released the
+    /// in-flight slot.
+    mutating func requestRestart() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+        restartRequested = true
+    }
+
+    /// Returns whether the caller's generation still owns the watch.
+    func isCurrent(_ generation: Int) -> Bool {
+        generation == self.generation
+    }
+
+    /// Takes the one deferred replacement request after its predecessor has
+    /// completed its handshake.
+    mutating func consumeRestartRequest() -> Bool {
+        defer { restartRequested = false }
+        return restartRequested
+    }
+
+    /// Admits one arriving batch: returns it when the watch is settled and the
+    /// batch may apply now, or nil when it was held for `settle` or belongs to
+    /// a dead generation.
+    mutating func admit(_ batch: Batch, generation: Int) -> Batch? {
+        guard generation == self.generation else { return nil }
+        guard !awaitingBaseline else {
+            held.append(batch)
+            return nil
+        }
+        return batch
+    }
+
+    /// The ack landed and the caller is about to make the baseline decision.
+    /// Returns the batches that raced ahead, in arrival order, to apply after
+    /// that decision — or nil when the attempt is stale and must be abandoned.
+    mutating func settle(generation: Int) -> [Batch]? {
+        guard generation == self.generation else { return nil }
+        awaitingBaseline = false
+        defer { held = [] }
+        return held
     }
 }

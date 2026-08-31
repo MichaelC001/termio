@@ -436,15 +436,18 @@ public enum Termiod {
         public let op = "fs_list"
         public let root: String
         public let paths: [String]
-        /// Which page of each directory to serve, zero-based. Omitted asks for
-        /// the first; `PathListingPayload.nextPage` says whether more follow.
-        public let page: UInt64?
+        /// Resume each directory at the entry *after* this name — the keyset
+        /// cursor `PathListingPayload.nextAfter` hands back. Omitted asks from
+        /// the start. Not an offset: a directory written while it is read
+        /// shifts every offset behind the cursor, and the reply would repeat
+        /// one entry and drop another without saying so.
+        public let after: String?
         public let seq: UInt64
 
-        public init(root: String, paths: [String], page: UInt64? = nil, seq: UInt64) {
+        public init(root: String, paths: [String], after: String? = nil, seq: UInt64) {
             self.root = root
             self.paths = paths
-            self.page = page
+            self.after = after
             self.seq = seq
         }
     }
@@ -674,21 +677,24 @@ public enum Termiod {
     public struct PathListingPayload: Decodable, Sendable {
         public let path: String
         public let entries: [DirEntryPayload]
-        /// The page to ask for next, when this directory has more entries than
-        /// one page holds (`files.rs` `LIST_PAGE_SIZE`). Absent when the listing
-        /// is complete — which is every ordinary directory.
-        public let nextPage: UInt64?
+        /// The last name served, when this directory has more entries than one
+        /// page holds (`files.rs` `LIST_PAGE_SIZE`) — pass it back as `after`.
+        /// Absent when the listing is complete, which is every ordinary
+        /// directory, **and** from a host too old to continue one: a client
+        /// that never sees it must say the listing is short rather than pass a
+        /// single page off as the whole directory.
+        public let nextAfter: String?
         public let error: String?
 
         private enum CodingKeys: String, CodingKey {
-            case path, entries, nextPage, error
+            case path, entries, nextAfter, error
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             path = try container.decode(String.self, forKey: .path)
             entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
-            nextPage = try container.decodeIfPresent(UInt64.self, forKey: .nextPage)
+            nextAfter = try container.decodeIfPresent(String.self, forKey: .nextAfter)
             error = try container.decodeIfPresent(String.self, forKey: .error)
         }
     }

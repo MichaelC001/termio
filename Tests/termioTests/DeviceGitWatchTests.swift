@@ -19,7 +19,7 @@ final class DeviceGitWatchTests: XCTestCase {
     // MARK: - DeviceWatchLedger
 
     func testABatchRacingTheAckIsHeldUntilTheBaselineDecision() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let generation = ledger.begin()
         // The daemon queues the synthesized full batch right behind the ack;
         // applied immediately, the gap reset that follows would erase it.
@@ -31,7 +31,7 @@ final class DeviceGitWatchTests: XCTestCase {
     }
 
     func testHeldBatchesComeBackInArrivalOrder() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let generation = ledger.begin()
         XCTAssertNil(ledger.admit(batch(seq: 1), generation: generation))
         XCTAssertNil(ledger.admit(batch(seq: 2), generation: generation))
@@ -39,7 +39,7 @@ final class DeviceGitWatchTests: XCTestCase {
     }
 
     func testStoppingMidHandshakeAbandonsTheAttempt() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let generation = ledger.begin()
         ledger.stop()
         // The pane went away before the ack: the subscription must not install.
@@ -49,7 +49,7 @@ final class DeviceGitWatchTests: XCTestCase {
     }
 
     func testARestartedWatchDropsTheOldGenerationsBatches() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let old = ledger.begin()
         let current = ledger.begin()
         XCTAssertNil(ledger.admit(batch(seq: 4), generation: old))
@@ -59,7 +59,7 @@ final class DeviceGitWatchTests: XCTestCase {
     }
 
     func testAnInterruptedRetryCannotOutliveAStoppedWatch() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let interrupted = ledger.begin()
         ledger.stop()
 
@@ -67,7 +67,7 @@ final class DeviceGitWatchTests: XCTestCase {
     }
 
     func testAStartDuringAnOldHandshakeRequestsAReplacementWatch() {
-        var ledger = DeviceWatchLedger()
+        var ledger = DeviceWatchLedger<Termiod.GitChangedPayload>()
         let old = ledger.begin()
         ledger.stop()
 

@@ -243,8 +243,13 @@ pub struct PathListing {
     pub path: String,
     #[serde(default)]
     pub entries: Vec<DirEntry>,
+    /// The last name served, when more entries follow — pass it back as
+    /// `after`. Absent when the listing is complete, which is every ordinary
+    /// directory. A client that never sees this field is talking to a host too
+    /// old to continue a listing and must say so rather than treat one page as
+    /// the whole directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_page: Option<u64>,
+    pub next_after: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -674,8 +679,12 @@ pub enum Control {
     FsList {
         root: String,
         paths: Vec<String>,
+        /// Resume a directory larger than one page at the entry *after* this
+        /// name — a keyset cursor rather than an offset, so a directory being
+        /// written while it is read cannot serve one entry twice and skip
+        /// another (`files.rs` `list`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        page: Option<u64>,
+        after: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

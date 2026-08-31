@@ -209,19 +209,36 @@ final class DeviceFileTreeTests: XCTestCase {
         let tree = model()
         tree.apply([listing(root, [("src", .directory)])])
         XCTAssertTrue(
-            tree.needsReconcileOnEstablish,
+            tree.needsReconcile(atWatchCursor: 0),
             "nothing has stamped these rows, so they may already be stale")
     }
 
     /// The opposite, which is the common case and must not cost a second full
-    /// listing: the load happened while a watch was already running, so the
-    /// cursor on it proves what the rows include.
-    func testATreeListedUnderARunningWatchNeedsNoReconcile() {
+    /// listing: the load happened under this subscription's own cursor, so it
+    /// already reflects everything the watch could replay.
+    func testATreeListedUnderThisWatchNeedsNoReconcile() {
         let tree = model()
         tree.noteListed(at: 42)
         XCTAssertFalse(
-            tree.needsReconcileOnEstablish,
-            "a stamped listing already reflects everything up to its cursor")
+            tree.needsReconcile(atWatchCursor: 42),
+            "a listing at the watch's own cursor already reflects it")
+        XCTAssertFalse(
+            tree.needsReconcile(atWatchCursor: 7),
+            "and one taken after it is newer still")
+    }
+
+    /// A stamped listing is not automatically a *current* one. The `fs:` cursor
+    /// moves for any watcher on the device — another pane's, or one this pane
+    /// held a moment ago — so a listing can carry a real, nonzero stamp and
+    /// still sit behind the batches this subscription begins past. Reading the
+    /// stamp as "somebody was watching, so this is fresh" is what left the tree
+    /// permanently stale.
+    func testAListingOlderThanTheWatchsCursorStillReconciles() {
+        let tree = model()
+        tree.noteListed(at: 5)
+        XCTAssertTrue(
+            tree.needsReconcile(atWatchCursor: 9),
+            "batches 6…9 raised no event this watch will replay")
     }
 
     /// A tree with no subscription — a daemon too old to grant `resources` —

@@ -526,14 +526,8 @@ final class DeviceFileTreeModel: ObservableObject {
     /// whole-tree reload.
     func applyWatch(_ update: Termiod.ResourceWatch.Update) {
         switch update {
-        case .established:
-            // The rows on screen may predate the watch. A listing taken before
-            // the daemon had one carries `seq == 0` — nothing raised a batch for
-            // a change in that window, and the watch now starts at a cursor
-            // already past it, so no later event will ever repair the tree. One
-            // re-read closes the window; a listing that was already stamped by a
-            // running watch needs nothing.
-            guard needsReconcileOnEstablish else { return }
+        case .established(let cursor):
+            guard needsReconcile(atWatchCursor: cursor) else { return }
             refresh()
         case .reset:
             onCheckoutChanged?()
@@ -573,12 +567,29 @@ final class DeviceFileTreeModel: ObservableObject {
         watch?.noteListed(at: seq)
     }
 
-    /// Whether the rows on screen were listed before any watch existed, and so
-    /// have to be re-read now that one does.
+    /// Whether the rows on screen predate the subscription that has just been
+    /// established, and so have to be re-read.
+    ///
+    /// Two ways they can, and the tree cannot tell them apart afterwards:
+    ///
+    /// - **The listing carries no cursor at all** (`seq == 0`): it was taken
+    ///   while the device was running no watch, so nothing raised a batch for a
+    ///   change in that window and nothing ever will.
+    /// - **The listing is older than the cursor the watch starts at.** A
+    ///   listing is stamped with the resource's cursor as it was read, and that
+    ///   cursor moves for *any* watcher on the device — another pane's, a
+    ///   previous one's. So a listing can carry a real, nonzero stamp and still
+    ///   sit behind the batches this subscription will never replay: the watch
+    ///   begins already past them.
+    ///
+    /// Either way one re-read closes it, and a listing taken at or after the
+    /// watch's own cursor needs nothing.
     ///
     /// Reachable from a test: the window it closes is a race nothing can observe
     /// from the outside once it has been closed.
-    var needsReconcileOnEstablish: Bool { listedSeq == 0 }
+    func needsReconcile(atWatchCursor cursor: UInt64) -> Bool {
+        listedSeq == 0 || listedSeq < cursor
+    }
 
     /// Whether the device is telling this tree about changes.
     ///
