@@ -1570,6 +1570,8 @@
 	<string>台设备</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>例如 JetBrains Mono</string>
+	<key>first %lld files</key>
+	<string>前 %lld 个文件</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
 	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>

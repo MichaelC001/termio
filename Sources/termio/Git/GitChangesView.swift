@@ -279,9 +279,15 @@ struct GitChangesView: View {
         if !model.changes.isEmpty {
             let additions = model.changes.reduce(0) { $0 + $1.additions }
             let deletions = model.changes.reduce(0) { $0 + $1.deletions }
-            Text(model.changes.count == 1
-                ? localized("\(model.changes.count) file")
-                : localized("\(model.changes.count) files"))
+            // The device cuts a flooded status list at its cap, so the count is
+            // the head of the list rather than the whole of it. Said here
+            // because this number is the one that would otherwise be a claim
+            // about the working tree that isn't true.
+            Text(model.deviceListTruncated
+                ? localized("first \(model.changes.count) files")
+                : (model.changes.count == 1
+                    ? localized("\(model.changes.count) file")
+                    : localized("\(model.changes.count) files")))
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }

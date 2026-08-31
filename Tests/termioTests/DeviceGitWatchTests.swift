@@ -9,10 +9,11 @@ import TermioShared
 /// subscriber.
 final class DeviceGitWatchTests: XCTestCase {
 
-    private func batch(seq: UInt64) -> Termiod.GitChangedPayload {
+    private func batch(seq: UInt64, truncated: Bool = false) -> Termiod.GitChangedPayload {
         Termiod.GitChangedPayload(
             seq: seq, updatedStatuses: [], removedPaths: [],
-            branch: nil, head: nil, ahead: 0, behind: 0, conflicts: [])
+            branch: nil, head: nil, ahead: 0, behind: 0, conflicts: [],
+            truncated: truncated)
     }
 
     // MARK: - DeviceWatchLedger
@@ -91,8 +92,8 @@ final class DeviceGitWatchTests: XCTestCase {
         table.register(second, resource: "git:/repo", request: 2)
         // The daemon tracks interest per connection: an unsubscribe sent while
         // the second pane still reads would take its events too.
-        XCTAssertFalse(table.unregister(first))
-        XCTAssertTrue(table.unregister(second))
+        XCTAssertFalse(table.unregister(ObjectIdentifier(first)))
+        XCTAssertTrue(table.unregister(ObjectIdentifier(second)))
     }
 
     func testTwoSpellingsOfOneRepoConvergeAfterTheirAcks() {
@@ -104,8 +105,8 @@ final class DeviceGitWatchTests: XCTestCase {
         _ = table.acknowledged(request: 1, canonical: "git:/real/repo")
         _ = table.acknowledged(request: 2, canonical: "git:/real/repo")
         XCTAssertEqual(table.listeners(for: "git:/real/repo").count, 2)
-        XCTAssertFalse(table.unregister(first))
-        XCTAssertTrue(table.unregister(second))
+        XCTAssertFalse(table.unregister(ObjectIdentifier(first)))
+        XCTAssertTrue(table.unregister(ObjectIdentifier(second)))
     }
 
     func testASubscriberSweptByCloseReportsNotLast() {
@@ -115,16 +116,53 @@ final class DeviceGitWatchTests: XCTestCase {
         XCTAssertTrue(table.removeAll().first === subscriber)
         XCTAssertTrue(table.isEmpty)
         // A cancel arriving after the channel died has nothing to retire.
-        XCTAssertFalse(table.unregister(subscriber))
+        XCTAssertFalse(table.unregister(ObjectIdentifier(subscriber)))
     }
 
     func testAFailedSubscribeClearsItsPendingAck() {
         var table = Termiod.ResourceRoutingTable<Subscriber>()
         let subscriber = Subscriber()
         table.register(subscriber, resource: "git:/repo", request: 9)
-        XCTAssertTrue(table.unregister(subscriber))
+        XCTAssertTrue(table.unregister(ObjectIdentifier(subscriber)))
         XCTAssertFalse(table.isAwaiting(request: 9))
         // A late ack for the dead request must not resurrect anything.
         XCTAssertNil(table.acknowledged(request: 9, canonical: "git:/real"))
+    }
+
+    /// The table routes events; it does not own subscriptions. Owning them
+    /// would keep every one alive as long as the channel — and the channel
+    /// alive as long as the subscription, since a subscribed channel is never
+    /// reaped — so a pane released without an explicit cancel would leave a
+    /// `git status` loop running on the device with nobody reading it.
+    func testTheTableDoesNotKeepASubscriberAlive() {
+        var table = Termiod.ResourceRoutingTable<Subscriber>()
+        weak var released: Subscriber?
+        do {
+            let subscriber = Subscriber()
+            released = subscriber
+            table.register(subscriber, resource: "git:/repo", request: 1)
+            XCTAssertNotNil(released)
+        }
+        XCTAssertNil(released, "the routing table must hold subscribers weakly")
+        XCTAssertTrue(table.listeners(for: "git:/repo").isEmpty)
+    }
+
+    /// A subscriber that deallocated still has to be removable, because the
+    /// removal is what tells the device to retire the watch — and it runs from
+    /// `deinit`, by which point every weak reference to it already reads nil.
+    func testADeallocatedSubscriberStillUnregistersByIdentity() {
+        var table = Termiod.ResourceRoutingTable<Subscriber>()
+        let survivor = Subscriber()
+        var identity: ObjectIdentifier?
+        do {
+            let subscriber = Subscriber()
+            identity = ObjectIdentifier(subscriber)
+            table.register(subscriber, resource: "git:/repo", request: 1)
+            table.register(survivor, resource: "git:/repo", request: 2)
+        }
+        guard let identity else { return XCTFail("no identity recorded") }
+        XCTAssertFalse(table.unregister(identity), "the survivor still reads it")
+        XCTAssertTrue(table.unregister(ObjectIdentifier(survivor)))
+        XCTAssertTrue(table.isEmpty)
     }
 }

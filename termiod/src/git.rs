@@ -104,6 +104,10 @@ pub struct GitSnapshot {
     pub branch: Option<String>,
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
+    /// The status run said more than [`STATUS_CAP`] and the list was
+    /// cut. Carried on every batch so the pane can say the list is partial
+    /// rather than let a cut list read as the whole truth.
+    pub truncated: bool,
 }
 
 impl GitSnapshot {
@@ -134,6 +138,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
+            truncated: self.truncated,
         }
     }
 
@@ -157,7 +162,8 @@ impl GitSnapshot {
 
         let metadata_moved = self.branch != previous.branch
             || self.head != previous.head
-            || self.ahead_behind != previous.ahead_behind;
+            || self.ahead_behind != previous.ahead_behind
+            || self.truncated != previous.truncated;
         if updated.is_empty() && removed.is_empty() && !metadata_moved {
             return None;
         }
@@ -168,6 +174,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
+            truncated: self.truncated,
         })
     }
 }
@@ -181,6 +188,8 @@ pub struct GitBatch {
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
     pub conflicts: Vec<String>,
+    /// The status list was cut — see [`STATUS_CAP`].
+    pub truncated: bool,
 }
 
 impl GitBatch {
@@ -194,6 +203,7 @@ impl GitBatch {
             head: self.head,
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts,
+            truncated: self.truncated,
         }
     }
 }
@@ -219,8 +229,58 @@ pub async fn run_status(root: &str) -> Result<GitSnapshot> {
         );
     }
     let mut snapshot = parse_porcelain_v2(&output.stdout)?;
+    cap_statuses(&mut snapshot);
     apply_counts(root, &mut snapshot).await;
     Ok(snapshot)
+}
+
+/// The most changed paths one `git_changed` batch will ever carry.
+///
+/// A batch is one frame, and a frame over `protocol::MAX_FRAME_SIZE` is a write
+/// error that takes the whole connection down with it — the file tree and agent
+/// status ride the same channel. `--untracked-files=all` over a checkout with a
+/// missing `.gitignore` reaches that easily: a `node_modules` tree is hundreds
+/// of thousands of paths. So the list is cut here, at a size no reviewer reads
+/// past, and the batch says it was cut.
+pub const STATUS_CAP: usize = 5_000;
+
+/// And the most path bytes, because the entry count alone does not bound a
+/// frame — a deeply nested tree can carry very long paths.
+const STATUS_PATH_BYTES_CAP: usize = 2 * 1024 * 1024;
+
+/// Cut an oversized status list down to what a batch may carry.
+///
+/// Tracked changes are kept first and untracked ones fill what is left: the
+/// flood case is always untracked build output, and the edits a person is
+/// reviewing are the rows that must survive it. Within each half the order is
+/// by path, so the cut is deterministic — two consecutive runs of an unchanged
+/// flooded tree keep the same rows and produce no delta.
+fn cap_statuses(snapshot: &mut GitSnapshot) {
+    if snapshot.statuses.len() <= STATUS_CAP {
+        return;
+    }
+    let mut paths: Vec<&String> = snapshot.statuses.keys().collect();
+    paths.sort_by_key(|path| {
+        let untracked = matches!(
+            snapshot.statuses[*path].status,
+            Some(GitFileStatus::Untracked) | Some(GitFileStatus::Ignored)
+        );
+        (untracked, *path)
+    });
+    let mut bytes = 0usize;
+    let mut keep: HashSet<String> = HashSet::new();
+    for path in paths.into_iter().take(STATUS_CAP) {
+        bytes += path.len();
+        if bytes > STATUS_PATH_BYTES_CAP {
+            break;
+        }
+        keep.insert(path.clone());
+    }
+    if keep.len() == snapshot.statuses.len() {
+        return;
+    }
+    snapshot.statuses.retain(|path, _| keep.contains(path));
+    snapshot.truncated = true;
 }
 
 /// Above this many untracked files the per-file line counts are skipped
@@ -280,21 +340,52 @@ async fn apply_counts(root: &str, snapshot: &mut GitSnapshot) {
         > UNTRACKED_COUNT_LIMIT;
 
     for (path, state) in snapshot.statuses.iter_mut() {
-        if state.status == Some(GitFileStatus::Untracked) {
-            if untracked_flood {
-                continue;
-            }
-            match untracked_line_count(&Path::new(root).join(path)) {
-                UntrackedCount::Lines(lines) => state.additions = lines,
-                UntrackedCount::Binary => state.binary = true,
-                UntrackedCount::Skip => {}
-            }
-        } else {
+        if state.status != Some(GitFileStatus::Untracked) {
             if let Some((added, deleted)) = counts.get(path) {
                 state.additions = *added;
                 state.deletions = *deleted;
             }
             state.binary = binaries.contains(path);
+        }
+    }
+
+    if untracked_flood {
+        return;
+    }
+    let untracked: Vec<String> = snapshot
+        .statuses
+        .iter()
+        .filter(|(_, state)| state.status == Some(GitFileStatus::Untracked))
+        .map(|(path, _)| path.clone())
+        .collect();
+    if untracked.is_empty() {
+        return;
+    }
+    // Counting lines is bounded but blocking — up to `UNTRACKED_COUNT_LIMIT`
+    // files of `UNTRACKED_SIZE_LIMIT` each, read synchronously. Doing that on a
+    // runtime worker parks whatever else that worker was carrying, including a
+    // connection's writes; `files.rs` moves its directory reads off the runtime
+    // for the same reason, and this is the larger read of the two.
+    let root_path = Path::new(root).to_path_buf();
+    let counted = tokio::task::spawn_blocking(move || {
+        untracked
+            .into_iter()
+            .map(|path| {
+                let count = untracked_line_count(&root_path.join(&path));
+                (path, count)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let Ok(counted) = counted else { return };
+    for (path, count) in counted {
+        let Some(state) = snapshot.statuses.get_mut(&path) else {
+            continue;
+        };
+        match count {
+            UntrackedCount::Lines(lines) => state.additions = lines,
+            UntrackedCount::Binary => state.binary = true,
+            UntrackedCount::Skip => {}
         }
     }
 }
@@ -1147,6 +1238,7 @@ mod tests {
             head: None,
             ahead_behind: Some((1, 0)),
             conflicts: vec![],
+            truncated: false,
         }
         .into_event("git:/repo".to_string(), 7);
         let json = serde_json::to_value(&event).unwrap();
@@ -1254,6 +1346,72 @@ mod tests {
             snapshot.statuses["blob.bin"].binary,
             "a NUL in the first chunk is binary, and +N would be a lie"
         );
+    }
+
+    /// A batch is one frame, and a frame past `MAX_FRAME_SIZE` kills the whole
+    /// connection — the file tree and agent status ride the same channel. So a
+    /// flooded checkout is cut here, and the cut is announced.
+    #[test]
+    fn an_oversized_status_list_is_cut_and_says_so() {
+        let mut snapshot = GitSnapshot::default();
+        snapshot.statuses.insert(
+            "src/edited.rs".to_string(),
+            FileState::new(GitFileStatus::Tracked {
+                index_status: GitStatusCode::Unmodified,
+                worktree_status: GitStatusCode::Modified,
+            }),
+        );
+        for index in 0..STATUS_CAP + 10 {
+            snapshot.statuses.insert(
+                format!("node_modules/pkg/{index}.js"),
+                FileState::new(GitFileStatus::Untracked),
+            );
+        }
+        cap_statuses(&mut snapshot);
+
+        assert!(snapshot.truncated, "a cut list must announce that it was cut");
+        assert_eq!(snapshot.statuses.len(), STATUS_CAP);
+        assert!(
+            snapshot.statuses.contains_key("src/edited.rs"),
+            "the tracked edit is the row a person is reviewing; the flood is not"
+        );
+    }
+
+    /// The cut has to be deterministic, or two runs over an unchanged flooded
+    /// tree would keep different rows and publish a delta on every tick.
+    #[test]
+    fn the_cut_keeps_the_same_rows_across_runs() {
+        let build = || {
+            let mut snapshot = GitSnapshot::default();
+            for index in 0..STATUS_CAP + 50 {
+                snapshot.statuses.insert(
+                    format!("build/{index}.o"),
+                    FileState::new(GitFileStatus::Untracked),
+                );
+            }
+            cap_statuses(&mut snapshot);
+            snapshot
+        };
+        let first = build();
+        let second = build();
+        assert!(first.truncated);
+        assert_eq!(first, second);
+        assert_eq!(second.delta_from(&first), None, "an unchanged tree is quiet");
+    }
+
+    /// A list under the cap is untouched, and never claims to be partial.
+    #[test]
+    fn an_ordinary_status_list_is_not_cut() {
+        let mut snapshot = GitSnapshot::default();
+        for index in 0..10 {
+            snapshot.statuses.insert(
+                format!("src/{index}.rs"),
+                FileState::new(GitFileStatus::Untracked),
+            );
+        }
+        cap_statuses(&mut snapshot);
+        assert!(!snapshot.truncated);
+        assert_eq!(snapshot.statuses.len(), 10);
     }
 
     /// Every state a Changes row can be in has to produce a diff. `git diff --

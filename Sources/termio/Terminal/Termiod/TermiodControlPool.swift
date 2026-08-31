@@ -376,7 +376,7 @@ extension Termiod {
         /// Drops the subscription, and reports whether it was the last one filed
         /// under its resource — the only removal that may tell the device to
         /// retire the watch.
-        fileprivate func unregister(_ subscription: ResourceSubscription) -> Bool {
+        fileprivate func unregister(_ subscription: ObjectIdentifier) -> Bool {
             stateLock.lock()
             defer { stateLock.unlock() }
             lastUsed = .now
@@ -562,7 +562,13 @@ extension Termiod {
     ///
     /// Held by whoever is drawing from it; releasing the last reference drops
     /// the interest on the device, so a pane that goes away cannot leave a watch
-    /// running on someone's box.
+    /// running on someone's box. That is a real guarantee rather than a
+    /// convention: the channel's routing table files subscriptions *weakly*, so
+    /// the owner is the only strong reference and `deinit` is what retires the
+    /// watch. A strong entry there would make the two hold each other up —
+    /// a subscribed channel is never reaped — and the pane's `.onDisappear`
+    /// would be the only thing standing between a released pane and a `git
+    /// status` loop that ran on the box forever.
     final class ResourceSubscription: @unchecked Sendable {
         /// The resource id this subscription is filed under. Starts as the
         /// caller's spelling and is re-keyed to the device's canonical id when
@@ -624,7 +630,7 @@ extension Termiod {
             let currentResource = resource
             lock.unlock()
             guard !alreadyCancelled, let channel else { return }
-            guard channel.unregister(self) else { return }
+            guard channel.unregister(ObjectIdentifier(self)) else { return }
             // Best effort: a channel that is already gone has no watch left to
             // retire, and the device retires an unwatched resource on its own.
             let seq = channel.nextRequestID()
@@ -647,9 +653,20 @@ extension Termiod {
     /// the daemon canonicalises roots and stamps events with the canonical id
     /// only.
     struct ResourceRoutingTable<Subscriber: AnyObject> {
-        private var byResource: [String: [ObjectIdentifier: Subscriber]] = [:]
+        /// Subscribers are held **weakly**. The subscription is owned by
+        /// whoever is drawing from it, and its `deinit` is what retires the
+        /// watch on the device; a strong entry here would keep every
+        /// subscription — and, through `idleDuration`, the channel carrying it
+        /// — alive for as long as the connection did, so a pane released
+        /// without an explicit cancel would leave a `git status` loop running
+        /// on someone's box forever.
+        private struct WeakSubscriber {
+            weak var subscriber: Subscriber?
+        }
+        private var byResource: [String: [ObjectIdentifier: WeakSubscriber]] = [:]
         /// Each subscriber's current key, so unregistering never depends on
-        /// reading mutable state off the subscriber itself.
+        /// reading mutable state off the subscriber itself — and still works
+        /// from `deinit`, where the weak entry above has already been zeroed.
         private var keys: [ObjectIdentifier: String] = [:]
         /// Subscribers whose ack has not come back yet, by the request carrying
         /// them.
@@ -660,7 +677,7 @@ extension Termiod {
         mutating func register(_ subscriber: Subscriber, resource: String, request: UInt64) {
             let id = ObjectIdentifier(subscriber)
             keys[id] = resource
-            byResource[resource, default: [:]][id] = subscriber
+            byResource[resource, default: [:]][id] = WeakSubscriber(subscriber: subscriber)
             pendingAcks[request] = id
         }
 
@@ -674,7 +691,7 @@ extension Termiod {
         mutating func acknowledged(request: UInt64, canonical: String) -> Subscriber? {
             guard let id = pendingAcks.removeValue(forKey: request),
                   let previous = keys[id],
-                  let subscriber = byResource[previous]?[id],
+                  let subscriber = byResource[previous]?[id]?.subscriber,
                   previous != canonical
             else { return nil }
             byResource[previous]?.removeValue(forKey: id)
@@ -682,15 +699,18 @@ extension Termiod {
                 byResource.removeValue(forKey: previous)
             }
             keys[id] = canonical
-            byResource[canonical, default: [:]][id] = subscriber
+            byResource[canonical, default: [:]][id] = WeakSubscriber(subscriber: subscriber)
             return subscriber
         }
 
         /// Drops the subscriber, and reports whether it was the last one filed
         /// under its resource. Unknown subscribers — already swept by
         /// `removeAll` — report false, so a late cancel sends nothing.
-        mutating func unregister(_ subscriber: Subscriber) -> Bool {
-            let id = ObjectIdentifier(subscriber)
+        ///
+        /// Keyed by identity rather than by a strong reference so `deinit` can
+        /// call it: retaining a deinitializing object to pass it here is what
+        /// the identity is for.
+        mutating func unregister(_ id: ObjectIdentifier) -> Bool {
             if let request = pendingAcks.first(where: { $0.value == id })?.key {
                 pendingAcks.removeValue(forKey: request)
             }
@@ -701,8 +721,11 @@ extension Termiod {
             return true
         }
 
+        /// The live subscribers for a resource. A weak entry reads nil only
+        /// between the owner's release and the `deinit` that unregisters it —
+        /// a window an event may land in, and one that is not a listener.
         func listeners(for resource: String) -> [Subscriber] {
-            byResource[resource].map { Array($0.values) } ?? []
+            byResource[resource]?.values.compactMap(\.subscriber) ?? []
         }
 
         mutating func removeAll() -> [Subscriber] {
@@ -711,7 +734,7 @@ extension Termiod {
                 keys = [:]
                 pendingAcks = [:]
             }
-            return byResource.values.flatMap(\.values)
+            return byResource.values.flatMap { $0.values.compactMap(\.subscriber) }
         }
     }
 
@@ -1055,7 +1078,12 @@ extension Termiod {
                     }
                 }
             } catch {
-                _ = channel.unregister(subscription)
+                // `cancel`, not a bare unregister: the request may have reached
+                // a device that armed the watch and only the reply was lost, so
+                // the interest has to be retired over there too — otherwise a
+                // timed-out subscribe leaves a `git status` loop running for a
+                // subscriber that no longer exists.
+                subscription.cancel()
                 guard attempt == 0, reused, !call.hasDelivered, isConnectionLoss(error) else {
                     throw error
                 }

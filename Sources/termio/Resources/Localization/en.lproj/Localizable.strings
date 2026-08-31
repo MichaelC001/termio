@@ -1570,6 +1570,8 @@
 	<string>devices</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>e.g. JetBrains Mono</string>
+	<key>first %lld files</key>
+	<string>first %lld files</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git couldn’t check “%@” for changes, so it was not removed.</string>
 	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>
