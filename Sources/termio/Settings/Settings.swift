@@ -491,10 +491,10 @@ final class AppSettings: ObservableObject {
                 overrides[definition.isDark ? Key.darkThemeName : Key.lightThemeName] = definition.name
             }
         case .split(let light, let dark):
-            if let light, let definition = ThemeLibrary.catalogTheme(matching: light) {
+            if let definition = ThemeLibrary.catalogTheme(matching: light) {
                 overrides[Key.lightThemeName] = definition.name
             }
-            if let dark, let definition = ThemeLibrary.catalogTheme(matching: dark) {
+            if let definition = ThemeLibrary.catalogTheme(matching: dark) {
                 overrides[Key.darkThemeName] = definition.name
             }
         case nil:
