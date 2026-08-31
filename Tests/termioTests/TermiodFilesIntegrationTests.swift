@@ -188,6 +188,70 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertFalse(listing.entries.sortedForTree().contains { $0.name == ".git" })
     }
 
+    /// A symlinked folder browses as a folder, which is what the local tree
+    /// always did through `FileManager` and what it now has to get from the
+    /// wire. `.claude/skills → ../skills` is this repo's own case: reported as a
+    /// link and nothing else, it would draw as an inert greyed row.
+    ///
+    /// The host still never *follows* a link while listing — the entry's own
+    /// kind stays `symlink`. `target` is the separate fact, and it is absent for
+    /// a link the host would refuse to descend, so the tree cannot offer a
+    /// disclosure triangle that leads nowhere.
+    func testASymlinkedFolderBrowsesAsAFolderAndOneOutOfTheRootDoesNot() throws {
+        let manager = FileManager.default
+        try manager.createSymbolicLink(
+            atPath: root.appendingPathComponent("linked").path,
+            withDestinationPath: "sub")
+        try manager.createSymbolicLink(
+            atPath: root.appendingPathComponent("escape").path,
+            withDestinationPath: "/etc")
+
+        let listing = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path, paths: [root.path]).listings.first)
+        let byName = Dictionary(uniqueKeysWithValues: listing.entries.map { ($0.name, $0) })
+
+        let linked = try XCTUnwrap(byName["linked"])
+        XCTAssertEqual(linked.kind, .symlink, "the listing reports the link, not its target")
+        XCTAssertTrue(linked.isDirectory, "and a link to a directory expands like one")
+        XCTAssertTrue(linked.isSymbolicLink)
+        XCTAssertEqual(linked.symlinkTarget, "sub")
+
+        let escape = try XCTUnwrap(byName["escape"])
+        XCTAssertFalse(
+            escape.isDirectory,
+            "descending it would be refused by the root confinement, so it is not offered")
+
+        // The offer is honest: what the tree says it can expand, it can expand.
+        let followed = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path,
+            paths: [root.appendingPathComponent("linked").path]).listings.first)
+        XCTAssertNil(followed.error)
+        XCTAssertEqual(followed.entries.map(\.name), ["b.txt"])
+    }
+
+    /// A directory larger than the host's page reads whole. The tree used to
+    /// stop at the first page and say nothing about the rest — a `node_modules`
+    /// with more than 2,000 entries would have shown 2,000 of them and read as
+    /// the whole folder.
+    func testADirectoryPastOnePageIsReadToTheEnd() throws {
+        let big = root.appendingPathComponent("big")
+        try FileManager.default.createDirectory(at: big, withIntermediateDirectories: true)
+        // One past the host's page (`files.rs` LIST_PAGE_SIZE), so exactly one
+        // extra round is needed and the last page is a short one.
+        let count = 2_001
+        for index in 0 ..< count {
+            try Data("x".utf8).write(to: big.appendingPathComponent("f\(index)"))
+        }
+
+        let listing = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path, paths: [big.path]).listings.first)
+        XCTAssertNil(listing.error)
+        XCTAssertEqual(listing.entries.count, count, "every page, not just the first")
+        XCTAssertEqual(
+            Set(listing.entries.map(\.name)).count, count,
+            "pages partition rather than overlap")
+    }
+
     func testASubdirectoryListsUnderTheSameRoot() throws {
         let listings = try Termiod.listDirectories(
             route: .local, root: root.path,
@@ -766,15 +830,14 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     }
 
     /// A watch that loses its channel and comes back re-subscribes, and leaves
-    /// exactly one observer on the channel it lands on.
+    /// exactly one entry on the channel it lands on.
     ///
-    /// This covers the reconnect path, not the same-channel double-claim: a
-    /// hung-up channel is closed, so the retry necessarily opens a different one
-    /// and `claim` replaces the observer either way. It passes with and without
-    /// that guard, which is stated here rather than left for the next reader to
-    /// discover — a test that cannot fail for the reason its name suggests is
-    /// worse than no test.
-    func testAReconnectingWatchReplacesItsObserverRatherThanStackingOne() throws {
+    /// This covers the reconnect path: a hung-up channel is closed and its
+    /// subscriptions are swept, so the retry necessarily lands on a fresh one.
+    /// What the count pins is that the swept subscription did not survive
+    /// alongside its replacement — two entries would double every batch, and
+    /// would make the first close of the pane look like the last.
+    func testAReconnectingWatchReplacesItsSubscriptionRatherThanStackingOne() throws {
         let watch = Termiod.ResourceWatch(
             route: .local,
             caps: ["files", Termiod.ResourceWatch.capability],
@@ -792,12 +855,69 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         while !watch.isSubscribed, Date() < backAgain { usleep(200_000) }
         XCTAssertTrue(watch.isSubscribed, "the watch never re-established")
 
+        let resource = try XCTUnwrap(watch.watchedRoot.map { "fs:" + $0 })
         let channel = try Termiod.ControlPool.channel(
             route: .local, caps: ["files", Termiod.ResourceWatch.capability])
         XCTAssertEqual(
-            channel.observerCount, 1,
-            "one watch, one observer — a second would double every batch")
+            channel.subscriberCount(for: resource), 1,
+            "one watch, one subscription — a second would double every batch")
         withExtendedLifetime(watch) {}
+    }
+
+    /// Two panes on one checkout, and the first of them closes.
+    ///
+    /// The pool gives every request to a machine the same connection, and the
+    /// daemon tracks resource interest per *connection* (`resource.rs`
+    /// `subscribers`, keyed by `ClientId`). So an `unsubscribe_resource` sent
+    /// because one pane went away retires the watch the other pane is still
+    /// drawing from — its tree then goes quietly stale, with no error and no
+    /// refresh, which is the worst shape a bug of this kind can take.
+    ///
+    /// The fix is that a watch retires its interest through the channel's
+    /// routing table, which counts subscribers and tells the device only on the
+    /// last one. This is the test that fails without it.
+    func testClosingOnePaneLeavesASecondPanesWatchLive() throws {
+        let surviving = expectation(description: "the second watch still hears the device")
+        surviving.assertForOverFulfill = false
+        let batches = UncheckedBox<[Termiod.FsChangedPayload]>([])
+
+        var closing: Termiod.ResourceWatch? = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { _ in }
+        let staying = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { update in
+            guard case .batch(let batch) = update else { return }
+            batches.value.append(batch)
+            surviving.fulfill()
+        }
+
+        let armed = Date().addingTimeInterval(30)
+        while closing?.watchedRoot == nil || staying.watchedRoot == nil, Date() < armed {
+            usleep(20_000)
+        }
+        let resource = try XCTUnwrap(staying.watchedRoot.map { "fs:" + $0 })
+        let channel = try Termiod.ControlPool.channel(
+            route: .local, caps: ["files", Termiod.ResourceWatch.capability])
+        XCTAssertEqual(
+            channel.subscriberCount(for: resource), 2,
+            "two panes on one machine are two subscriptions on one connection")
+
+        closing = nil
+        XCTAssertEqual(
+            channel.subscriberCount(for: resource), 1,
+            "the pane that closed dropped its own interest and only its own")
+
+        try Data("survivor\n".utf8).write(to: root.appendingPathComponent("survivor.txt"))
+        wait(for: [surviving], timeout: 20)
+        XCTAssertFalse(
+            batches.value.isEmpty,
+            "the surviving pane's watch was retired by the pane that closed")
+        withExtendedLifetime(staying) {}
     }
 }
 

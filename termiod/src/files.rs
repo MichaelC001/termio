@@ -83,15 +83,58 @@ fn confine(root: &Path, requested: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// What a symlink resolves to, but only while the target stays under the root.
+///
+/// The listing itself never follows a link — `lstat`, not `stat`, because
+/// following is how a listing walks out of the workspace. This is the one fact
+/// about the target a tree still needs: the Finder and the VS Code explorer
+/// both draw a link to a directory as a directory, and a client that could not
+/// tell would draw this repo's own `.claude/skills` as an inert row.
+///
+/// Confined for the same reason the answer is useful: `confine` canonicalises
+/// before it lists, so a link pointing out of the root would be refused on the
+/// click that followed the disclosure triangle. Reporting `None` there is what
+/// keeps the tree from offering a control the device will not honour.
+fn confined_target_kind(root: &Path, link: &Path) -> Option<EntryKind> {
+    let resolved = std::fs::canonicalize(link).ok()?;
+    if !resolved.starts_with(root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(&resolved).ok()?;
+    if metadata.is_dir() {
+        let unloaded = resolved
+            .file_name()
+            .is_some_and(|name| is_unloaded_dir_name(&name.to_string_lossy()));
+        Some(if unloaded {
+            EntryKind::UnloadedDir
+        } else {
+            EntryKind::Dir
+        })
+    } else if metadata.is_file() {
+        Some(EntryKind::File)
+    } else {
+        None
+    }
+}
+
 /// List a batch of directories under `root`, one page per path.
-pub fn list(root: &str, paths: &[String], page: Option<u64>) -> Result<Vec<PathListing>> {
-    list_with_page_size(root, paths, page, LIST_PAGE_SIZE)
+///
+/// `after` resumes a directory too large for one page at the entry following
+/// that name — a **keyset** cursor, not an offset. A directory being written
+/// while it is read is the ordinary case here (an agent is working in it), and
+/// an offset shifts under every insert and delete before it: the client would
+/// see one entry twice and never see another, with nothing in the reply saying
+/// so. Resuming at a name cannot shift. What a concurrent write can still cost
+/// is an entry that appeared *behind* the cursor, and that is what the `fs:`
+/// batch the same write raises is for.
+pub fn list(root: &str, paths: &[String], after: Option<&str>) -> Result<Vec<PathListing>> {
+    list_with_page_size(root, paths, after, LIST_PAGE_SIZE)
 }
 
 fn list_with_page_size(
     root: &str,
     paths: &[String],
-    page: Option<u64>,
+    after: Option<&str>,
     page_size: usize,
 ) -> Result<Vec<PathListing>> {
     let root = canonical_root(root)?;
@@ -99,12 +142,12 @@ fn list_with_page_size(
     // that vanished between render and click fails alone.
     Ok(paths
         .iter()
-        .map(|requested| match list_one(&root, requested, page, page_size) {
+        .map(|requested| match list_one(&root, requested, after, page_size) {
             Ok(listing) => listing,
             Err(error) => PathListing {
                 path: requested.clone(),
                 entries: Vec::new(),
-                next_page: None,
+                next_after: None,
                 error: Some(format!("{error:#}")),
             },
         })
@@ -114,7 +157,7 @@ fn list_with_page_size(
 fn list_one(
     root: &Path,
     requested: &str,
-    page: Option<u64>,
+    after: Option<&str>,
     page_size: usize,
 ) -> Result<PathListing> {
     let dir = confine(root, requested)?;
@@ -135,19 +178,19 @@ fn list_one(
             continue;
         };
         let mtime = mtime_seconds(&metadata);
-        let (kind, symlink_target) = if metadata.file_type().is_symlink() {
+        let (kind, symlink_target, target_kind) = if metadata.file_type().is_symlink() {
             let target = std::fs::read_link(item.path())
                 .ok()
                 .map(|target| target.display().to_string());
-            (EntryKind::Symlink, target)
+            (EntryKind::Symlink, target, confined_target_kind(root, &item.path()))
         } else if metadata.is_dir() {
             if is_unloaded_dir_name(&name) {
-                (EntryKind::UnloadedDir, None)
+                (EntryKind::UnloadedDir, None, None)
             } else {
-                (EntryKind::Dir, None)
+                (EntryKind::Dir, None, None)
             }
         } else {
-            (EntryKind::File, None)
+            (EntryKind::File, None, None)
         };
         entries.push(DirEntry {
             name,
@@ -155,24 +198,31 @@ fn list_one(
             size: metadata.len(),
             mtime,
             symlink_target,
+            target_kind,
         });
     }
 
-    // A stable order is what makes pages meaningful across two requests.
+    // A stable order is what makes the keyset cursor meaningful across two
+    // requests: `after` names a point in this order, not a count into it.
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let page = usize::try_from(page.unwrap_or(0)).unwrap_or(usize::MAX);
-    let start = page.saturating_mul(page_size).min(entries.len());
+    // Everything strictly after the cursor. Strictly, so an entry can never be
+    // served twice; and by name, so a delete or an insert ahead of the cursor
+    // moves nothing that has already been read.
+    let start = match after {
+        Some(after) => entries.partition_point(|entry| entry.name.as_str() <= after),
+        None => 0,
+    };
     let end = start.saturating_add(page_size).min(entries.len());
-    let next_page = if end < entries.len() {
-        Some(page as u64 + 1)
+    let next_after = if end < entries.len() {
+        entries.get(end.saturating_sub(1)).map(|entry| entry.name.clone())
     } else {
         None
     };
     Ok(PathListing {
         path: requested.to_string(),
         entries: entries[start..end].to_vec(),
-        next_page,
+        next_after,
         error: None,
     })
 }
@@ -1025,7 +1075,48 @@ mod tests {
     }
 
     #[test]
-    fn pages_are_stable_and_chain_through_next_page() {
+    fn a_symlink_names_its_target_kind_only_inside_the_root() {
+        let root = scratch("symlink_target_kind");
+        std::fs::create_dir_all(root.join("skills")).unwrap();
+        touch(&root.join("skills/one.md"), b"x");
+        touch(&root.join("note.txt"), b"x");
+        std::os::unix::fs::symlink("skills", root.join("inside_dir")).unwrap();
+        std::os::unix::fs::symlink("note.txt", root.join("inside_file")).unwrap();
+        std::os::unix::fs::symlink("/etc", root.join("outside")).unwrap();
+        std::os::unix::fs::symlink("nowhere", root.join("dangling")).unwrap();
+
+        let listing = list(root.to_str().unwrap(), &[".".to_string()], None).unwrap();
+        let kind_of = |name: &str| {
+            listing[0]
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| (entry.kind, entry.target_kind))
+                .unwrap()
+        };
+        // A link is still reported as a link — the listing never follows one.
+        assert_eq!(
+            kind_of("inside_dir"),
+            (EntryKind::Symlink, Some(EntryKind::Dir)),
+            "a link to a directory under the root is one a tree may expand"
+        );
+        assert_eq!(kind_of("inside_file"), (EntryKind::Symlink, Some(EntryKind::File)));
+        assert_eq!(
+            kind_of("outside"),
+            (EntryKind::Symlink, None),
+            "descending it would be refused by confine, so it is not offered"
+        );
+        assert_eq!(kind_of("dangling"), (EntryKind::Symlink, None));
+
+        // And the offer is honest: the link that named a directory lists.
+        let followed = list(root.to_str().unwrap(), &["inside_dir".to_string()], None).unwrap();
+        assert!(followed[0].error.is_none());
+        assert_eq!(followed[0].entries[0].name, "one.md");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pages_are_stable_and_chain_through_next_after() {
         let root = scratch("pages");
         for index in 0..7 {
             touch(&root.join(format!("f{index}")), b"x");
@@ -1034,20 +1125,92 @@ mod tests {
         let paths = [".".to_string()];
         let first = list_with_page_size(root_str, &paths, None, 3).unwrap();
         assert_eq!(first[0].entries.len(), 3);
-        assert_eq!(first[0].next_page, Some(1));
-        let second = list_with_page_size(root_str, &paths, first[0].next_page, 3).unwrap();
+        assert_eq!(first[0].next_after.as_deref(), Some("f2"));
+        let second =
+            list_with_page_size(root_str, &paths, first[0].next_after.as_deref(), 3).unwrap();
         assert_eq!(second[0].entries.len(), 3);
-        assert_eq!(second[0].next_page, Some(2));
-        let last = list_with_page_size(root_str, &paths, second[0].next_page, 3).unwrap();
+        assert_eq!(second[0].next_after.as_deref(), Some("f5"));
+        let last =
+            list_with_page_size(root_str, &paths, second[0].next_after.as_deref(), 3).unwrap();
         assert_eq!(last[0].entries.len(), 1);
-        assert_eq!(last[0].next_page, None);
+        assert_eq!(last[0].next_after, None);
 
         let mut seen: Vec<String> = [&first, &second, &last]
             .iter()
             .flat_map(|page| page[0].entries.iter().map(|e| e.name.clone()))
             .collect();
+        seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 7, "pages must partition, not overlap");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The reason the cursor is a name and not an offset.
+    ///
+    /// A directory being written while it is read is the ordinary case here —
+    /// an agent is working in it. With an offset, deleting an entry behind the
+    /// cursor slides everything left: the next page repeats the entry at the
+    /// boundary and the last one falls off the end, and nothing in the reply
+    /// says so. Resuming at a name cannot slide.
+    #[test]
+    fn a_write_behind_the_cursor_neither_repeats_nor_drops_an_entry() {
+        let root = scratch("pages_racing");
+        for index in 0..7 {
+            touch(&root.join(format!("f{index}")), b"x");
+        }
+        let root_str = root.to_str().unwrap();
+        let paths = [".".to_string()];
+
+        let first = list_with_page_size(root_str, &paths, None, 3).unwrap();
+        assert_eq!(
+            first[0].entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["f0", "f1", "f2"]
+        );
+
+        // Two writes behind the cursor between the pages: one entry removed,
+        // one added. An offset of 3 would now point at "f4" and lose "f3".
+        std::fs::remove_file(root.join("f0")).unwrap();
+        touch(&root.join("early"), b"x");
+
+        let second =
+            list_with_page_size(root_str, &paths, first[0].next_after.as_deref(), 3).unwrap();
+        assert_eq!(
+            second[0].entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["f3", "f4", "f5"],
+            "the resume point is a name, so nothing behind it moved this page"
+        );
+        let last =
+            list_with_page_size(root_str, &paths, second[0].next_after.as_deref(), 3).unwrap();
+        assert_eq!(
+            last[0].entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["f6"]
+        );
+        assert_eq!(last[0].next_after, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A cursor naming an entry that has since been deleted still resumes at
+    /// the right place: `after` is a point in the order, not a row that has to
+    /// still exist.
+    #[test]
+    fn a_cursor_whose_entry_vanished_still_resumes_after_it() {
+        let root = scratch("pages_vanished");
+        for index in 0..5 {
+            touch(&root.join(format!("f{index}")), b"x");
+        }
+        let root_str = root.to_str().unwrap();
+        let paths = [".".to_string()];
+        let first = list_with_page_size(root_str, &paths, None, 2).unwrap();
+        assert_eq!(first[0].next_after.as_deref(), Some("f1"));
+
+        std::fs::remove_file(root.join("f1")).unwrap();
+
+        let second =
+            list_with_page_size(root_str, &paths, first[0].next_after.as_deref(), 2).unwrap();
+        assert_eq!(
+            second[0].entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["f2", "f3"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

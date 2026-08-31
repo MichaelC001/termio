@@ -436,11 +436,18 @@ public enum Termiod {
         public let op = "fs_list"
         public let root: String
         public let paths: [String]
+        /// Resume each directory at the entry *after* this name — the keyset
+        /// cursor `PathListingPayload.nextAfter` hands back. Omitted asks from
+        /// the start. Not an offset: a directory written while it is read
+        /// shifts every offset behind the cursor, and the reply would repeat
+        /// one entry and drop another without saying so.
+        public let after: String?
         public let seq: UInt64
 
-        public init(root: String, paths: [String], seq: UInt64) {
+        public init(root: String, paths: [String], after: String? = nil, seq: UInt64) {
             self.root = root
             self.paths = paths
+            self.after = after
             self.seq = seq
         }
     }
@@ -621,13 +628,48 @@ public enum Termiod {
     public struct DirEntryPayload: Decodable, Sendable {
         public let name: String
         public let kind: String
+        /// Where a `symlink` points, verbatim — the one fact about a link an
+        /// icon cannot carry, and what the row's tooltip shows.
+        public let symlinkTarget: String?
+        /// What a `symlink` resolves to, and only when the target stays inside
+        /// the workspace root (`files.rs` `confined_target_kind`). Absent for
+        /// everything else, for a dangling link, for one pointing out of the
+        /// root — which the host would refuse to list — and from a host too old
+        /// to say.
+        public let targetKind: String?
 
-        /// Whether this entry can be descended into. `unloaded_dir` counts —
-        /// it is a directory the host declines to *walk* (VCS internals), not
-        /// one it refuses to list when asked directly. Compared against the
-        /// daemon's snake_case wire value: `convertFromSnakeCase` rewrites
-        /// keys, never values.
-        public var isDirectory: Bool { kind == "dir" || kind == "unloaded_dir" }
+        private enum CodingKeys: String, CodingKey {
+            case name, kind, symlinkTarget, targetKind
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            kind = try container.decode(String.self, forKey: .kind)
+            symlinkTarget = try container.decodeIfPresent(String.self, forKey: .symlinkTarget)
+            targetKind = try container.decodeIfPresent(String.self, forKey: .targetKind)
+        }
+
+        public init(name: String, kind: String, symlinkTarget: String? = nil, targetKind: String? = nil) {
+            self.name = name
+            self.kind = kind
+            self.symlinkTarget = symlinkTarget
+            self.targetKind = targetKind
+        }
+
+        /// Whether this entry can be descended into, resolved *through* a
+        /// symlink the way the Finder and the VS Code explorer both do.
+        /// `unloaded_dir` counts — it is a directory the host declines to
+        /// *walk* (VCS internals), not one it refuses to list when asked
+        /// directly. Compared against the daemon's snake_case wire value:
+        /// `convertFromSnakeCase` rewrites keys, never values.
+        public var isDirectory: Bool {
+            Self.isDirectoryKind(kind) || Self.isDirectoryKind(targetKind)
+        }
+
+        private static func isDirectoryKind(_ kind: String?) -> Bool {
+            kind == "dir" || kind == "unloaded_dir"
+        }
     }
 
     /// One requested path's listing. A path that vanished or escaped the root
@@ -635,16 +677,40 @@ public enum Termiod {
     public struct PathListingPayload: Decodable, Sendable {
         public let path: String
         public let entries: [DirEntryPayload]
+        /// The last name served, when this directory has more entries than one
+        /// page holds (`files.rs` `LIST_PAGE_SIZE`) — pass it back as `after`.
+        /// Absent when the listing is complete, which is every ordinary
+        /// directory, **and** from a host too old to continue one: a client
+        /// that never sees it must say the listing is short rather than pass a
+        /// single page off as the whole directory.
+        public let nextAfter: String?
+        /// The offset-paged predecessor of `nextAfter`, from a host that has
+        /// not learned the keyset cursor yet.
+        ///
+        /// Decoded and never followed. Offset pages are the reason the cursor
+        /// changed — a directory written while it is read shifts every offset
+        /// behind them — so continuing by page would trade a truncated listing
+        /// for a wrong one. What this field is for is telling **"that was the
+        /// whole directory"** from **"that was its first two thousand entries"**,
+        /// which are otherwise the same reply. A client that dropped it could
+        /// only truncate in silence.
+        public let nextPage: UInt64?
         public let error: String?
 
+        /// Whether the host has more of this directory but no cursor to
+        /// continue from — an old host, and a listing that stops short.
+        public var isTruncatedByAnOldHost: Bool { nextAfter == nil && nextPage != nil }
+
         private enum CodingKeys: String, CodingKey {
-            case path, entries, error
+            case path, entries, nextAfter, nextPage, error
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             path = try container.decode(String.self, forKey: .path)
             entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
+            nextAfter = try container.decodeIfPresent(String.self, forKey: .nextAfter)
+            nextPage = try container.decodeIfPresent(UInt64.self, forKey: .nextPage)
             error = try container.decodeIfPresent(String.self, forKey: .error)
         }
     }
@@ -1697,6 +1763,11 @@ public enum TermiodClientError: LocalizedError {
     /// (publickey,password)" names the problem in the words the user can search
     /// for, and every paraphrase of it is worse than the line itself.
     case remoteFailed(String)
+    /// The daemon's handshake did not grant a capability the request needs —
+    /// too old, or built without it. Terminal by construction: a fresh
+    /// connection to the same binary would negotiate the same set, so a caller
+    /// stands its feature down rather than retrying.
+    case unsupportedCapability(String)
 
     public var errorDescription: String? {
         switch self {
@@ -1718,6 +1789,8 @@ public enum TermiodClientError: LocalizedError {
             return "the device stopped answering \(operation)"
         case .remoteFailed(let reason):
             return reason
+        case .unsupportedCapability(let capability):
+            return "the device does not serve \(capability)"
         }
     }
 }
