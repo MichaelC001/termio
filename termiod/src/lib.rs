@@ -20,6 +20,7 @@
 //! a `termiod-core` crate boundary, the same move as `termiod-vt`.
 
 pub mod agent;
+pub mod app_socket;
 pub mod channel;
 pub mod client;
 pub mod daemon;

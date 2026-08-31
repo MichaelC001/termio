@@ -138,6 +138,14 @@ jobs:
           pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
           python3 remote_smoke_test.py
 
+      # The Rust termio client against the shell client it replaces: request
+      # bytes, stdout, stderr, and exit codes must be identical on every verb
+      # (unify-server-plane Stage 10's freeze). macOS only — the shell client
+      # itself depends on macOS nc semantics, so a Linux run would diff the
+      # script's own platform drift, not the port.
+      - name: CLI compat harness
+        run: python3 tests/cli_compat.py
+
       # The Swift client's half of the files plane. These tests spawn a real
       # daemon on a private socket, so `swift test` skips them unless
       # TERMIO_TERMIOD_TEST_BIN names a binary — and the Swift workflow's runner
