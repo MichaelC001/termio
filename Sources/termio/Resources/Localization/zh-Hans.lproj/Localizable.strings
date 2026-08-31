@@ -224,6 +224,8 @@
 	<string>内置</string>
 	<key>Cancel</key>
 	<string>取消</string>
+	<key>Can’t Compare</key>
+	<string>无法对比</string>
 	<key>Can’t Search</key>
 	<string>无法搜索</string>
 	<key>Can’t browse %@</key>
@@ -1336,6 +1338,8 @@
 	<string>新建会话时可以选用的编程 Agent</string>
 	<key>The device couldn’t read this checkout.</key>
 	<string>该设备无法读取这个检出。</string>
+	<key>The device couldn’t read this comparison.</key>
+	<string>该设备无法读取这个对比。</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
