@@ -351,6 +351,19 @@ pub struct GitCommitFile {
     pub binary: bool,
 }
 
+/// Why a `git_compare` could not compare — each a different instruction to the
+/// user, so folding them into an empty file list (which reads as "this branch
+/// changes nothing") is the one thing this must never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitCompareProblem {
+    /// The base no longer resolves: its branch was deleted since it was picked.
+    MissingBase,
+    /// No merge base connects the two — unrelated histories, or a shallow
+    /// clone grafted above the divergence point.
+    NoCommonHistory,
+}
+
 /// One ref in a `git.branches` reply (§C.13 read tier).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitBranchEntry {
@@ -786,6 +799,19 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// The branch measured against a base (§C.13 read tier, capability `git`):
+    /// the three-dot file list and how far the base has moved on — the halves
+    /// of the Compare tab that `git.log`'s range cannot compose. `path` narrows
+    /// to one file's ranged diff, the row a compare entry expands to, exactly
+    /// as `git.show`'s `path` does for a commit.
+    GitCompare {
+        root: String,
+        base: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// Fuzzy filename lookup against the host-side name index (§C.12,
     /// capability `files`). The index is built lazily after the workspace's
     /// first `subscribe_resource` and kept incremental by the watcher, so
@@ -1036,6 +1062,26 @@ pub enum Control {
         default_branch: Option<String>,
         #[serde(default)]
         truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `git_compare`. `problem` set means no comparison could be made
+    /// and the other fields are empty — stated as its own field rather than an
+    /// `error`, because "this base is gone" is an answer about the checkout,
+    /// not a failed request. `behind` counts commits on the base this branch
+    /// lacks (two-dot, tips apart), while `files` is three-dot from the merge
+    /// base — the change a merge would introduce.
+    GitCompareResult {
+        files: Vec<GitCommitFile>,
+        #[serde(default)]
+        behind: u64,
+        diff: String,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default)]
+        files_truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<GitCompareProblem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },

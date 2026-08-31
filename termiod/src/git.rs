@@ -879,6 +879,135 @@ pub async fn run_branches(root: &str) -> Result<GitBranchList> {
     Ok(parse_refs(&String::from_utf8_lossy(&output.stdout)))
 }
 
+/// The branch against a base, as `git_compare` answers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCompareOutcome {
+    pub files: Vec<GitCommitFile>,
+    pub behind: u64,
+    pub diff: String,
+    pub truncated: bool,
+    pub files_truncated: bool,
+    pub problem: Option<crate::protocol::GitCompareProblem>,
+}
+
+/// `git.compare` (§C.13 read tier): the three-dot file list and behind count
+/// the Compare tab needs, plus one file's ranged diff when `path` narrows it.
+///
+/// The two problems are asked of git up front rather than inferred from a
+/// failed diff: without a merge base the three-dot diff exits non-zero and
+/// would degrade to an empty file list, while `base..HEAD` still lists
+/// commits — so the tab would show "no files, 40 commits" instead of what is
+/// actually wrong.
+pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<GitCompareOutcome> {
+    validate_revision(base)?;
+    let problem = |problem| {
+        Ok(GitCompareOutcome {
+            files: Vec::new(),
+            behind: 0,
+            diff: String::new(),
+            truncated: false,
+            files_truncated: false,
+            problem: Some(problem),
+        })
+    };
+    let resolved = git_command(root)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg("--quiet")
+        .arg(format!("{base}^{{commit}}"))
+        .output()
+        .await
+        .context("running git rev-parse")?;
+    if !resolved.status.success() {
+        return problem(crate::protocol::GitCompareProblem::MissingBase);
+    }
+    let merge_base = git_command(root)
+        .arg("merge-base")
+        .arg(base)
+        .arg("HEAD")
+        .output()
+        .await
+        .context("running git merge-base")?;
+    if !merge_base.status.success() {
+        return problem(crate::protocol::GitCompareProblem::NoCommonHistory);
+    }
+
+    // Three dots: from the merge base, so commits that landed on the base
+    // since this branch started don't show up inverted as changes the branch
+    // never made.
+    let range = format!("{base}...HEAD");
+    let listed = git_command(root)
+        .arg("diff")
+        .arg("--raw")
+        .arg("--numstat")
+        .arg("-z")
+        .arg("-M")
+        .arg(&range)
+        .output()
+        .await
+        .context("running git diff")?;
+    if !listed.status.success() {
+        bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        );
+    }
+    let mut fields = listed.stdout.split(|&byte| byte == 0).map(|field| {
+        String::from_utf8_lossy(field)
+            .trim_start_matches('\n')
+            .to_string()
+    });
+    let (files, files_truncated) = parse_diff_files(&mut fields);
+
+    // Two dots for the count — "how far apart are the tips", not "what would
+    // merge". Measured against the last fetched state; nothing here fetches.
+    let counted = git_command(root)
+        .arg("rev-list")
+        .arg("--count")
+        .arg(format!("HEAD..{base}"))
+        .output()
+        .await
+        .context("running git rev-list")?;
+    let behind = String::from_utf8_lossy(&counted.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    let (diff, truncated) = if let Some(path) = path {
+        let mut command = git_command(root);
+        command.arg("diff").arg("-M").arg(&range).arg("--").arg(path);
+        // A rename is limited to *both* paths: git applies the path limit
+        // before rename detection, so asking for the destination alone turns a
+        // pure rename into the whole file arriving as additions.
+        if let Some(original) = files
+            .iter()
+            .find(|file| file.path == path)
+            .and_then(|file| file.original_path.as_deref())
+        {
+            command.arg(original);
+        }
+        let patch = command.output().await.context("running git diff")?;
+        if !patch.status.success() {
+            bail!(
+                "git diff failed: {}",
+                String::from_utf8_lossy(&patch.stderr).trim()
+            );
+        }
+        cap_diff(String::from_utf8_lossy(&patch.stdout).into_owned())
+    } else {
+        (String::new(), false)
+    };
+
+    Ok(GitCompareOutcome {
+        files,
+        behind,
+        diff,
+        truncated,
+        files_truncated,
+        problem: None,
+    })
+}
+
 /// Commits the branch's upstream does not have. No upstream means a non-zero
 /// exit, which is an empty set — a purely local branch marks no rows rather
 /// than all of them.
@@ -959,7 +1088,13 @@ fn parse_commit_detail(bytes: &[u8]) -> Result<(GitCommitEntry, Vec<GitCommitFil
     let Some(entry) = parse_commit_record(&header, &HashSet::new()) else {
         bail!("git show did not describe a commit");
     };
+    let (files, truncated) = parse_diff_files(&mut fields);
+    Ok((entry, files, truncated))
+}
 
+/// Parse the `--raw --numstat -z` records of one diff — a commit's (after its
+/// header) or a range's (which has none) — into file rows.
+fn parse_diff_files(fields: &mut impl Iterator<Item = String>) -> (Vec<GitCommitFile>, bool) {
     let mut files: Vec<GitCommitFile> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut truncated = false;
@@ -1026,7 +1161,7 @@ fn parse_commit_detail(bytes: &[u8]) -> Result<(GitCommitEntry, Vec<GitCommitFil
         file.additions = additions.parse().unwrap_or(0);
         file.deletions = deletions.parse().unwrap_or(0);
     }
-    Ok((entry, files, truncated))
+    (files, truncated)
 }
 
 /// A commit's file carries one status letter, unlike a worktree file's two
@@ -1772,6 +1907,74 @@ mod tests {
         assert_eq!(
             detached.current, None,
             "a detached HEAD is on no branch, and says so rather than guessing"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compare_measures_a_branch_against_its_base() {
+        let dir = scratch_repo("compare");
+        write(&dir, "a.txt", "one\n");
+        commit(&dir, "first commit");
+        run_git(&dir, &["checkout", "-q", "-b", "feat"]);
+        write(&dir, "b.txt", "branch work\n");
+        commit(&dir, "branch commit");
+        // The base moves on after the branch forked: three-dot must not show
+        // main's change inverted, and `behind` must count it.
+        run_git(&dir, &["checkout", "-q", "main"]);
+        write(&dir, "a.txt", "one\ntwo\n");
+        commit(&dir, "trunk moved on");
+        run_git(&dir, &["checkout", "-q", "feat"]);
+
+        let root = dir.to_string_lossy().into_owned();
+        let outcome = run_compare(&root, "main", None).await.unwrap();
+        assert_eq!(outcome.problem, None);
+        assert_eq!(
+            outcome
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b.txt"],
+            "three dots: only the branch's own change, never the base's"
+        );
+        assert_eq!(outcome.behind, 1, "the base's new commit dates the compare");
+        assert!(outcome.diff.is_empty(), "no path asked, no diff sent");
+
+        let narrowed = run_compare(&root, "main", Some("b.txt")).await.unwrap();
+        assert!(
+            narrowed.diff.contains("branch work"),
+            "a path narrows to that file's ranged diff"
+        );
+        assert!(!narrowed.truncated);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn compare_states_its_problems_rather_than_answering_empty() {
+        let dir = scratch_repo("compare-problems");
+        write(&dir, "a.txt", "one\n");
+        commit(&dir, "first commit");
+
+        let root = dir.to_string_lossy().into_owned();
+        let gone = run_compare(&root, "deleted-branch", None).await.unwrap();
+        assert_eq!(
+            gone.problem,
+            Some(crate::protocol::GitCompareProblem::MissingBase)
+        );
+        assert!(gone.files.is_empty());
+
+        // An orphan branch shares no history with main: there is no merge base
+        // to diff from, and an empty file list would read as "changes nothing".
+        run_git(&dir, &["checkout", "-q", "--orphan", "rootless"]);
+        write(&dir, "c.txt", "unrelated\n");
+        commit(&dir, "unrelated root");
+        let unrelated = run_compare(&root, "main", None).await.unwrap();
+        assert_eq!(
+            unrelated.problem,
+            Some(crate::protocol::GitCompareProblem::NoCommonHistory)
         );
 
         let _ = std::fs::remove_dir_all(&dir);

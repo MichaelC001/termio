@@ -1840,6 +1840,34 @@ async fn process_control(
                 });
             }
         }
+        Control::GitCompare {
+            root,
+            base,
+            path,
+            seq,
+        } => {
+            if let Some(denied) = git_denied(connection, seq) {
+                send_response(out, response_cache, seq, denied);
+            } else {
+                let out = out.clone();
+                tokio::spawn(async move {
+                    let response =
+                        match crate::git::run_compare(&root, &base, path.as_deref()).await {
+                            Ok(outcome) => Control::GitCompareResult {
+                                files: outcome.files,
+                                behind: outcome.behind,
+                                diff: outcome.diff,
+                                truncated: outcome.truncated,
+                                files_truncated: outcome.files_truncated,
+                                problem: outcome.problem,
+                                re: seq,
+                            },
+                            Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
+                        };
+                    let _ = out.send(Outbound::Control(response));
+                });
+            }
+        }
         Control::FsList {
             root,
             paths,
@@ -2236,6 +2264,7 @@ async fn process_control(
         | Control::GitLogResult { .. }
         | Control::GitShowResult { .. }
         | Control::GitBranchesResult { .. }
+        | Control::GitCompareResult { .. }
         | Control::UploadOpened { .. }
         | Control::UploadAck { .. }
         | Control::UploadCommitted { .. }
