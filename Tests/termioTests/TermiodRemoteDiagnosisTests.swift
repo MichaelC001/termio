@@ -36,6 +36,14 @@ final class TermiodRemoteDiagnosisTests: XCTestCase {
         }
     }
 
+    func testDeniedDaemonPathIsNotCalledMissing() {
+        // The daemon's own path failing for a reason other than absence — a
+        // noexec mount, wrong permissions — must show that reason, not an
+        // install hint for a binary that is right there.
+        let stderr = "zsh: permission denied: /opt/bin/termiod"
+        XCTAssertEqual(Termiod.remoteFailureDiagnosis(stderr: stderr), stderr)
+    }
+
     func testAnotherMissingFileIsNotCalledAMissingDaemon() {
         // The daemon itself complaining about some other path must pass through
         // verbatim, not be rewritten into an install prompt.

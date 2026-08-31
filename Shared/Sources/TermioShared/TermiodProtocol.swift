@@ -1746,7 +1746,7 @@ extension Termiod {
         // some *other* missing file out of this arm.
         let missing = line.localizedCaseInsensitiveContains("no such file or directory")
             || line.localizedCaseInsensitiveContains("not found")
-        if missing, line.contains("/termiod: ") || line.hasSuffix("/termiod") {
+        if missing, (line.contains("/termiod: ") || line.hasSuffix("/termiod")) {
             return "termiod isn't installed on this machine yet — a new terminal on it sets it up"
         }
         return line
