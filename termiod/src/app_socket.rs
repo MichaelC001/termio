@@ -51,21 +51,26 @@ pub fn explicit_client_timeout() -> bool {
 /// keypress `send --no-enter` exists to deliver. Every other C0 byte
 /// (carriage returns included) is stripped outright: they are never
 /// intentional in a prompt, and one raw byte would make the whole request
-/// undecodable.
+/// undecodable. One trailing newline is dropped — the shell's awk join eats
+/// it — while interior newlines survive as escapes.
 pub fn json_escape(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
+    let mut kept = String::with_capacity(input.len());
     for character in input.chars() {
         match character {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\t' => escaped.push_str("\\t"),
-            '\u{1b}' => escaped.push_str("\\u001b"),
-            '\n' => escaped.push_str("\\n"),
+            '\\' => kept.push_str("\\\\"),
+            '"' => kept.push_str("\\\""),
+            '\t' => kept.push_str("\\t"),
+            '\u{1b}' => kept.push_str("\\u001b"),
+            '\n' => kept.push('\n'),
             '\u{00}'..='\u{1f}' => {}
-            _ => escaped.push(character),
+            _ => kept.push(character),
         }
     }
-    escaped
+    // The shell pipeline ends in awk joining records with \n, which eats
+    // exactly one trailing newline from the input; every interior newline
+    // survives as an escape.
+    let kept = kept.strip_suffix('\n').unwrap_or(&kept);
+    kept.replace('\n', "\\n")
 }
 
 /// Whether a token addresses a session rather than prompt text: a
@@ -267,24 +272,35 @@ pub fn watch(channel: &Channel, format: &str, states: &str, extra: &str) -> i32 
     if stream.write_all(request.as_bytes()).is_err() {
         return 2;
     }
-    let reader = std::io::BufReader::new(stream);
-    let mut first = true;
+    // First line via the shell's `read` semantics: a line is only a line
+    // once its newline arrives — an unterminated EOF fragment is not
+    // printed, and the stream still counts as closed by the app (2). The
+    // rest streams raw like `cat`, flushed per line so a supervisor sees
+    // events as they happen, with an unterminated final fragment passed
+    // through byte-for-byte.
+    let mut reader = std::io::BufReader::new(stream);
+    let mut stdout = std::io::stdout();
+    let mut line: Vec<u8> = Vec::new();
     use std::io::BufRead;
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        println!("{line}");
-        use std::io::Write as _;
-        let _ = std::io::stdout().flush();
-        if first {
-            first = false;
-            if line.starts_with("error:") || line.contains("\"ok\":false") {
-                return 1;
-            }
-        }
-    }
-    if first {
-        // EOF before any line: still the app closing the stream.
+    if reader.read_until(b'\n', &mut line).unwrap_or(0) == 0 || !line.ends_with(b"\n") {
         return 2;
+    }
+    let _ = stdout.write_all(&line);
+    let _ = stdout.flush();
+    let first_line = String::from_utf8_lossy(&line);
+    if first_line.starts_with("error:") || first_line.contains("\"ok\":false") {
+        return 1;
+    }
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let _ = stdout.write_all(&line);
+                let _ = stdout.flush();
+            }
+            Err(_) => break,
+        }
     }
     2
 }
@@ -301,6 +317,11 @@ mod tests {
         assert_eq!(json_escape("a\u{1b}[A"), r"a\u001b[A");
         // Other C0 bytes — carriage returns included — are stripped outright.
         assert_eq!(json_escape("a\rb\u{07}c"), "abc");
+        // awk's record join eats exactly one trailing newline.
+        assert_eq!(json_escape("hello\n"), "hello");
+        assert_eq!(json_escape("a\n\n"), r"a\n");
+        assert_eq!(json_escape("\n"), "");
+        assert_eq!(json_escape("a\nb\n"), r"a\nb");
     }
 
     #[test]

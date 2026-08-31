@@ -70,14 +70,20 @@ class MockApp:
                 return
             connection.settimeout(3)
             data = b""
-            try:
-                while not data.endswith(b"}"):
-                    chunk = connection.recv(65536)
-                    if not chunk:
+            while True:
+                if data:
+                    try:
+                        json.loads(data)
                         break
-                    data += chunk
-            except socket.timeout:
-                pass
+                    except ValueError:
+                        pass
+                try:
+                    chunk = connection.recv(65536)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                data += chunk
             self.requests.append(data)
             if self.hold:
                 time.sleep(3)
@@ -164,6 +170,16 @@ def main():
     compare("close two targets", ["sessions", "close", "8de0b387", "deadbeef"], [ok, ok])
     compare("close second fails", ["sessions", "close", "8de0b387", "deadbeef"], [ok, err])
     compare("notify", ["notify", "tests", "passed"], [ok])
+    compare("timeout leading plus", ["sessions", "send", "8de0b387", "x", "--timeout", "+5"], [ok])
+    compare("timeout negative", ["sessions", "send", "8de0b387", "x", "--timeout", "-5"], [ok])
+    compare("trailing newline eaten", ["sessions", "spawn", "hello\n"], [ok])
+    compare("interior newline survives", ["sessions", "spawn", "a\nb"], [ok])
+    compare("two trailing newlines keep one", ["sessions", "spawn", "a\n\n"], [ok])
+    compare("close splits one argument", ["sessions", "close", "one two"], [ok, ok])
+    compare("close whitespace-only argument", ["sessions", "close", "  "], [ok])
+    compare("send text then address is all text", ["sessions", "send", "fix", "8de0b387aa", "please"], [ok])
+    compare("json after positionals", ["sessions", "send", "8de0b387", "hi", "--json"], [ok])
+    compare("ok-false inside text reply", ["sessions", "list"], [b'something "ok":false something\n'])
     compare("notify with title", ["notify", "--title", "ci", "done", "--json"], [ok])
 
     print("== --wait ==")
@@ -172,12 +188,15 @@ def main():
     compare("wait settled", ["sessions", "send", "8de0b387", "go", "--wait", "--timeout", "5000", "--json"], [waited])
     compare("wait timeout exits 3 json", ["sessions", "send", "8de0b387", "go", "--wait", "--timeout", "5000", "--json"], [timed])
     compare("wait timeout exits 3 text", ["sessions", "spawn", "go", "--wait"], [b"working \xe2\x80\x94 timed out after 300s\ndetail\n"])
+    compare("wait timeout marker on later line", ["sessions", "spawn", "go", "--wait"], [b"working\nlater \xe2\x80\x94 timed out\n"])
 
     print("== watch ==")
     stream = b'{"snapshot":true,"session":"a"}\n{"session":"a","status":"done"}\n'
     compare("watch stream then eof", ["sessions", "watch", "--json"], [stream])
     compare("watch error first line", ["sessions", "watch"], [b'error: control disabled\n'])
     compare("watch no-snapshot state filter", ["sessions", "watch", "--state", "done,stalled", "--no-snapshot", "--json"], [stream])
+    compare("watch unterminated final line", ["sessions", "watch", "--json"], [b'{"snapshot":true}\n{"session":"a","status":"done"}'])
+    compare("watch unterminated first line", ["sessions", "watch", "--json"], [b'{"snapshot":true}'])
 
     print("== validation (no server contact) ==")
     for name, args in [
@@ -211,6 +230,8 @@ def main():
 
     print("== error taxonomy ==")
     compare("no socket at all", ["sessions", "list"], no_server=True)
+    compare("socket error before flag validation", ["sessions", "spawn", "x", "--ratio", "bad"], no_server=True)
+    compare("notify body error before socket check", ["notify"], no_server=True)
     compare("notify no socket", ["notify", "hi"], no_server=True)
     # A plain file where the socket should be: the -S pre-check refuses.
     with open(SOCK, "w") as handle:
@@ -249,7 +270,7 @@ def main():
             os.unlink(argv_log)
         code, out, err = run(
             client,
-            ["agent", "report", "working", "--transcript", "--tool-from", "tool_name", "--reply"],
+            ["agent", "report", "working", "--transcript", "--tool-from", "tool name", "--reply"],
             {"TERMIOD_SESSION_ID": "S1", "TERMIOD_BIN": recorder},
         )
         argv = open(argv_log).read() if os.path.exists(argv_log) else "(none)"

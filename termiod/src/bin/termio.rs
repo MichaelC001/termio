@@ -184,6 +184,11 @@ fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
             "--wait" => wait = true,
             "--timeout" => {
                 let raw = value("--timeout", "termio: --timeout needs a value in ms");
+                // Digits only, like the script's case pattern — `parse` alone
+                // would also take a leading `+`.
+                if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+                    fail("termio: --timeout needs whole milliseconds");
+                }
                 let Ok(parsed) = raw.parse::<u64>() else {
                     fail("termio: --timeout needs whole milliseconds");
                 };
@@ -366,9 +371,12 @@ fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
 
     if op == "close" {
         // One request per tab; any failure fails the whole command, but every
-        // target still gets its attempt and its own reply line.
+        // target still gets its attempt and its own reply line. The script
+        // expands its accumulated list unquoted, so the emptiness check reads
+        // the raw string while whitespace inside one argument splits into
+        // separate targets.
         let mut failed = 0;
-        for target in &targets {
+        for target in target.split_whitespace() {
             if app_socket::request_once(channel, client_timeout, "close", format, target, "", "", "")
                 != Outcome::Ok
             {
@@ -457,7 +465,11 @@ fn agent_report(channel: &Channel, arguments: &[String]) -> Result<()> {
                 }
                 forwarded.push(argument.to_string());
                 cursor += 1;
-                forwarded.push(rest[cursor].clone());
+                // The script accumulates these into one string and expands it
+                // unquoted, so whitespace inside a value word-splits into
+                // separate argv items. Kept for argv parity; the script's
+                // accidental glob expansion of such values is not.
+                forwarded.extend(rest[cursor].split_whitespace().map(str::to_string));
             }
             "working" | "attention" | "done" | "idle" => state = argument.to_string(),
             _ => fail(&format!("termio: unknown agent report argument '{argument}'")),
