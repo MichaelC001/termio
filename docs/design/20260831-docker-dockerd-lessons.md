@@ -10,7 +10,6 @@ related:
   - 20260817-one-path-local-through-termiod.md
   - 20260827-termiod-lifecycle-reconcile.md
   - 20260827-remote-access-dev-tunnels-model.md
-  - 20260831-docker-dockerd-lessons.review-codex.md
 ---
 
 # What ten years of docker/dockerd teach the termio/termiod split
@@ -19,9 +18,8 @@ related:
 > public. This RFC mines those scars for changes to the termio/termiod
 > architecture, and settles the one question the pair answers outright:
 > `termio` is the only command a person types; `termiod` is a daemon name,
-> like `dockerd`. Revised after the codex review: the first draft misstated
-> the protocol's negotiation, the WSS listener, and the CLI-migration
-> ordering; this version is written against the tree.
+> like `dockerd`. Every claim here is written against the tree; the document
+> survived two rounds of adversarial review, recorded in §9.
 
 ---
 
@@ -41,7 +39,7 @@ The shapes map almost one to one:
 | containerd/runc extraction | the accretion risk on termiod | §6 |
 | rootless mode (year ten) | systemd `--user` (day one) | already avoided |
 
-Three of their lessons we already banked without paying for them. This
+Four of their lessons we already banked without paying for them. This
 document exists partly to say so, so nobody re-argues them:
 
 1. An API over an exec'd stdio pipe is the right remote transport.
@@ -54,10 +52,8 @@ document exists partly to say so, so nobody re-argues them:
    `docker context` reinvents `~/.ssh/config` because docker predates
    caring about it. We read the ssh config as authoritative (§A) and need
    no second registry.
-
-A fourth lesson turned out, on audit, to be banked too: the version
-negotiation §2 of the first draft proposed already exists. What remains of
-it is policy, not mechanism.
+4. Version-range negotiation is already in the handshake (§C.3 and
+   `protocol.rs`). What remains of it is policy, not mechanism — §2.
 
 The rest of the document covers the places where the analogy still demands
 work. Each section ends with the change it proposes.
@@ -83,8 +79,8 @@ dispatch to a binary with its own name. Two binaries, two names.
 
 ### 1.1 The surface being migrated, in full
 
-The first draft treated `termiod remote …` as the whole person-facing
-surface. It is not. What people can type today:
+The migration has to start from the whole person-facing surface, not one
+namespace. What people can type today:
 
 - `scripts/termio` (the shell client): `open`, `sessions
   list/watch/spawn/run/send/read/close/focus`, `agent report`, `notify`.
@@ -98,8 +94,8 @@ surface. It is not. What people can type today:
   `remote` namespace (`main.rs:53-349`).
 - `termiod remote`: `deploy`, `list`, `attach`, `open`.
 
-The migration therefore needs a destination map for every row above, not
-a passthrough for one namespace. The map this RFC proposes:
+Every row above needs a destination, not just the `remote` namespace. The
+map this RFC proposes:
 
 | today | destination | notes |
 | --- | --- | --- |
@@ -125,23 +121,23 @@ is out of scope here.
 
 ### 1.3 Mechanics, costed honestly
 
-The first draft called a second `[[bin]]` "cheap because the crate
-already builds one bin from shared modules." Wrong: the modules are
-declared from the binary crate root (`main.rs`), so a second bin cannot
-import them. The real shape is a lib extraction (`src/lib.rs` declaring
-the module tree, two thin `src/bin/` entries), which is mechanical but is
-a refactor with a diff, not a one-line change.
+A second `[[bin]]` entry is not enough: the crate's modules are declared
+from the binary crate root (`main.rs`), so a second bin cannot import
+them. The real shape is a lib extraction (`src/lib.rs` declaring the
+module tree, two thin `src/bin/` entries) — mechanical, but a refactor
+with a diff, not a one-line change.
 
 Channel binding: today `build-app.sh` rewrites three variables at the top
-of the shell script so `termio-dev` drives the dev app. The Rust client
-selects the channel from argv[0] instead: the dev bundle installs the
-same binary under the name `termio-dev`, which selects the `.dev` bundle
-id, `~/.termio-dev`, and the dev socket. Two paths must be pinned down
-before this ships, because installed hooks name the support-copy path
-absolutely and end `2>/dev/null || true`, so a path mistake fails
-silently: the release app's support copy keeps the exact path
-`CommandLineTool.supportCopyURL` owns today, and the dev app keeps its
-own. The port lands behind the existing paths or it does not land.
+of the shell script so `termio-dev` drives the dev app
+(`scripts/build-app.sh:188-198`). The Rust client selects the channel
+from argv[0] instead: the dev bundle installs the same binary under the
+name `termio-dev`, which selects the `.dev` bundle id, `~/.termio-dev`,
+and the dev socket. Two paths must be pinned down before this ships,
+because installed hooks name the support-copy path absolutely and end
+`2>/dev/null || true`, so a path mistake fails silently: the release
+app's support copy keeps the exact path `CommandLineTool.supportCopyURL`
+owns today, and the dev app keeps its own. The port lands behind the
+existing paths or it does not land.
 
 ### 1.4 Migration order
 
@@ -171,14 +167,14 @@ own. The port lands behind the existing paths or it does not land.
 
 ## 2. Lesson: a support window is policy, and policy is the hard part
 
-The first draft proposed adding range negotiation to the handshake. It is
-already there in substance: the client's `hello` carries `proto` and
-`min_proto`, the session runs at the highest common version, and no
-overlap returns `hello_err {code:"incompatible", supported:[…]}` with
-immediate close (§C.3; `protocol.rs` `Control::Hello`/`HelloErr`). §C.3
-also already commits the compatibility matrix (old client × new host and
-the reverse, at the intersection, for all of proto:1) and names the test
-shape (golden-file codec tests plus replayed skew transcripts).
+Range negotiation is already in the handshake: the client's `hello`
+carries `proto` and `min_proto`, the session runs at the highest common
+version, and no overlap returns `hello_err {code:"incompatible",
+supported:[…]}` with immediate close (§C.3; `protocol.rs`
+`Control::Hello`/`HelloErr`). §C.3 also already commits the
+compatibility matrix (old client × new host and the reverse, at the
+intersection, for all of proto:1) and names the test shape (golden-file
+codec tests plus replayed skew transcripts).
 
 One implementation/document gap to record: §C.3 says host and client
 *each* advertise `[min_proto, proto]`, but the implemented `hello_ok`
@@ -229,16 +225,15 @@ plus the tests are what covers them.
 the first line of every docker bug report and the cheapest support tool
 they built.
 
-We are closer to this than the first draft claimed, but not as close as
-its second draft claimed either: `hello_ok` already returns the daemon's
-build (`version: <app version>+<build>`) exactly so "termiod 0.43 on
-ukvps; this app needs 0.44" can be said, and `termiod status --json`
-already reports local binary and daemon state. But the Mac's device
-registry keeps less than the handshake learns: `TermiodDevice` persists
-`id`, `daemonVersion`, and routes, and the handshake path drops `proto`
-on the floor (`TermiodDevice.swift:62-80`, `TermiodClient.swift:615-634`).
-The remote rows are the Mac client's last-handshake observations, not
-daemon history, and today they contain no protocol number.
+Most of the data already exists: `hello_ok` returns the daemon's build
+(`version: <app version>+<build>`) exactly so "termiod 0.43 on ukvps;
+this app needs 0.44" can be said, and `termiod status --json` already
+reports local binary and daemon state. But the Mac's device registry
+keeps less than the handshake learns: `TermiodDevice` persists `id`,
+`daemonVersion`, and routes, and the handshake path drops `proto` on the
+floor (`TermiodDevice.swift:62-80`, `TermiodClient.swift:615-634`). The
+remote rows are the Mac client's last-handshake observations, not daemon
+history, and today they contain no protocol number.
 
 So the change is presentation plus one small persistence fix, still no
 new probe: the device registry also records the negotiated `proto` and
@@ -303,9 +298,10 @@ of tooling depends on the socket being all-powerful, so scoping it now
 would break the world. It is the canonical case of a security boundary
 defined by accident and frozen by adoption.
 
-The first draft described a scoped-token tier as if it existed and could
-be documented for free. The tree says otherwise, so this section now does
-the honest half first and prices the second half as engineering.
+The lesson lands in two halves: state the current model honestly before
+tools shape themselves around an undocumented one (§5.1, prose only),
+and price the scoped tier as the protocol-and-daemon work it actually is
+(§5.2, deferred until someone needs it).
 
 ### 5.1 What is true today, and should be written down as a promise
 
@@ -320,10 +316,10 @@ the honest half first and prices the second half as engineering.
   a TCP listener that refuses non-loopback binds, carries the same framed
   protocol onto the daemon socket, and DEPLOY.md already says it plainly:
   whoever holds the token has full access to the daemon until it is
-  rotated. So the first draft's "No TCP listener, ever" was false against
-  the tree; the true invariants are **no non-loopback bind** (the flag
-  parses the address and refuses otherwise) and **no embedded TLS** (§H
-  #3; TLS belongs to the tunnel in front).
+  rotated. The invariants worth stating are therefore **no non-loopback
+  bind** (the flag parses the address and refuses otherwise) and **no
+  embedded TLS** (§H #3; TLS belongs to the tunnel in front) — not "no
+  TCP listener," which the tree already contradicts.
 
 Writing 5.1 into the protocol doc is the prose-only work, and its value
 is docker's negative example: the promise must exist before third-party
@@ -402,8 +398,8 @@ contradict §4.1. The lesson is to keep the runtime core extractable:
 
 ## 8. Order of work
 
-Rebased on unify-server-plane's stage order after review; this RFC
-schedules nothing ahead of a stage that RFC already gates.
+Rebased on unify-server-plane's stage order; this RFC schedules nothing
+ahead of a stage that RFC already gates.
 
 | # | Change | Cost | When |
 | --- | --- | --- | --- |
@@ -414,3 +410,54 @@ schedules nothing ahead of a stage that RFC already gates.
 | 5 | Core-vs-planes import discipline (§6) + single-API policy with its named exceptions (§4) | review discipline | standing, from now |
 | 6 | P2 Rust `termio` client: lib extraction, argv[0] channels, frozen contracts (§1.3) | the real port | **started 2026-08-31** — Stage 10 pulled forward after the one-backend gate was met early (unify-server-plane, restamp of that date); its gates unchanged |
 | 7 | §5.2 scoped token tier | protocol + daemon + tests | when a non-owner token holder exists; not scheduled |
+
+---
+
+## 9. Review record
+
+This document went through two rounds of adversarial (codex) review; the
+body above is the corrected result. The record stays here so the failure
+modes it caught are not re-argued and not repeated.
+
+**Round 1 — request changes.** The first draft failed its own
+against-the-tree standard in four places, each now fixed in the body:
+
+- It proposed adding version-range negotiation that already existed:
+  `Control::Hello` carries `proto`/`min_proto`, and §C.3 already
+  specifies highest-common selection and the incompatible error. The
+  real gap is policy, tests, and error shape (§2).
+- It declared "No TCP listener, ever" and described the pairing token as
+  a bounded session-plane credential. Both were false: `serve --wss` is
+  a shipped loopback-only TCP listener, and DEPLOY.md documents the
+  token as full daemon access. §5 now states the true invariants
+  (loopback-only bind, no embedded TLS) and prices scoped tokens as real
+  protocol/daemon work.
+- It scheduled the Rust CLI port ahead of unify-server-plane Stage 10,
+  which deliberately gates the CLI move on having one session backend so
+  no verb is ported twice. §1.4 and §8 now defer to that stage.
+- It called a second `[[bin]]` cheap; the modules are declared from the
+  binary crate root, so the real cost is a lib extraction (§1.3). It
+  also treated `termiod remote …` as the whole person-facing surface and
+  assumed `termio` exists on the VPS; §1.1 now inventories every
+  top-level verb and §1.2 separates Mac-side from on-box documentation.
+
+**Round 2 — three residual defects, all fixed in the body:**
+
+- The "full" verb inventory still omitted `serve`, `handoff`, `stop`,
+  `set-status`, and `agent install/uninstall` — exactly the commands
+  whose deprecation story is most delicate (the upgrade path, the hook
+  target, host integration). §1.1's table now maps each one.
+- The prose claimed both sides of the handshake advertise ranges; the
+  implemented `hello_ok` carries only the chosen `proto`
+  (`protocol.rs:528-550`), and the daemon accepts protocol 1 only. §2
+  now records this as an implementation/document gap to resolve with the
+  window work.
+- The `termio version` design claimed remote rows come from stored
+  `hello_ok` results, but `TermiodDevice` persists no protocol number
+  and the handshake path drops `proto` (`TermiodClient.swift:615-634`).
+  §3 now includes the persistence fix and stamps every remote row with
+  its observation time.
+
+Round 2 also confirmed P1 is not shippable without a bundled-daemon
+locator (the script's only daemon lookup can select a different
+channel's daemon); §1.4 makes the locator P1's first deliverable.

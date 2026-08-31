@@ -67,7 +67,6 @@ from the real front matter).
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
 | archived | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](design/20260818-one-workspace-source.review-codex.md) |
 | archived | rfc | ["Adversarial review: Retire remote — every machine is a device"](design/20260814-remote-to-device.review-codex.md) |
-| archived | rfc | ["Adversarial review: What ten years of docker/dockerd teach the termio/termiod split"](design/20260831-docker-dockerd-lessons.review-codex.md) |
 | archived | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | archived | rfc | [Adversarial review — Retire "remote", every machine is a device](design/20260814-remote-to-device.review-claude.md) |
 | archived | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
