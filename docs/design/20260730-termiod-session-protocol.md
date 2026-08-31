@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-30
+updated: 2026-08-31
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -61,7 +61,12 @@ mutate".
 2026-08-22: reserved the `tunnel` capability name (§C.3, new §C.14 — VS Code
 Remote's raw-pipe tunnel shape, deferred until a non-SSH pipe needs it) and
 added §H #11 (never require agent cooperation), from a design pass against VS
-Code Remote's public architecture record. -->
+Code Remote's public architecture record.
+2026-08-31: wrote the stated security model into §C.8 (Unix socket = full
+authority by design; the pairing token is daemon-equivalent until rotated; the
+invariants are no non-loopback bind and no embedded TLS — not "no TCP ever"),
+per the docker-dockerd-lessons RFC §5.1, and aligned §D's WSS auth cell with
+it. -->
 
 
 # Design: termiod Session Protocol
@@ -527,6 +532,33 @@ Baseline stance (unchanged from the mux doc): default listen is **Unix socket
 only**, `0700` runtime dir; no TCP bind by default; relays are optional and
 blind (§D.4).
 
+**The stated security model** (recorded here per the docker-dockerd-lessons
+RFC §5.1, before third-party tools shape themselves around an undocumented
+one):
+
+- **The Unix socket is full authority, by design.** Anything that can open it
+  can inject keystrokes into any session, which is user-equivalent code
+  execution. That is the point — `termio sessions send` driving sibling agents
+  is a feature — and AF_UNIX plus filesystem permissions is the right fence
+  for same-user-same-box (§A: the OS is the security team). No per-verb ACL
+  on the socket will ever be added; a caller you don't trust with your shell
+  must not reach the socket at all.
+- **The pairing token is currently daemon-equivalent too.** `serve --wss` is a
+  TCP listener that refuses non-loopback binds and carries the same framed
+  protocol onto the daemon socket, and DEPLOY.md says it plainly: whoever
+  holds the token has full access to the daemon until it is rotated. Do not
+  hand the token to a party you would not trust with the daemon.
+- **The invariants are precise.** They are **no non-loopback bind** (the
+  `--wss` flag parses its address and refuses anything not loopback) and
+  **no embedded TLS** (§H #3: TLS belongs to the tunnel in front) — not
+  "no TCP ever".
+- A scoped token tier — one that reaches the session planes but never
+  `deploy`, `service`, or hook installation — is protocol and daemon work
+  with tests, not a documentation pass. It gets scheduled when a token holder
+  exists who should not be daemon-equivalent (pairing beyond the owner's own
+  phone); until then, the statements above are the security model
+  (docker-dockerd-lessons RFC §5.2).
+
 ### C.9 Wire example — same messages, three pipes
 
 ```
@@ -819,7 +851,7 @@ output parsing as the Remote-SSH default.
 
 | | Unix socket | SSH stdio | QUIC (later) | WSS + relay (later) |
 | --- | --- | --- | --- | --- |
-| **Auth** | Filesystem perms on `$XDG_RUNTIME_DIR/termiod/` (0700); peer-cred check optional | ssh-agent / `~/.ssh/config` — user's existing identity, keys never touch Termio | Borrowed identity only: Tailscale tailnet, or pairing-pinned host cert (TOFU like SSH). **No DIY PKI** | Pairing token (companion model), scoped per device; tokens gate every connection |
+| **Auth** | Filesystem perms on `$XDG_RUNTIME_DIR/termiod/` (0700); peer-cred check optional | ssh-agent / `~/.ssh/config` — user's existing identity, keys never touch Termio | Borrowed identity only: Tailscale tailnet, or pairing-pinned host cert (TOFU like SSH). **No DIY PKI** | Pairing token (companion model) — today daemon-equivalent until rotated (§C.8); tokens gate every connection |
 | **Channel mapping** | 1 connection = 1 channel | 1 exec (`termiod stdio`) = 1 channel; ControlMaster **would** multiplex execs over one TCP+auth session — **not implemented**, see the note below the table | 1 QUIC connection per (client, host); stream 0 = control, one bidi stream per attach — the roles were designed for this | 1 WebSocket = 1 channel (matches today's companion shape) |
 | **Failure / reconnect** | Retry connect; host down = launchd/systemd restarts it | TCP drop = detach, never kill; reattach replays ring / snapshot; ControlMaster + `ServerAliveInterval` for fast resume | Connection migration = roaming survives network flips; 0-RTT resume | Relay drop = detach; client re-pairs/reconnects; tiered ReconnectPolicy already exists on iOS |
 | **When (product)** | Local, always — the default | Remote VPS/devbox — the default remote through v1 | Only after measured pain: the §D p95 criterion, or a supersedable plane the browser needs | **The web client's transport** (a Replica over WSS), plus a phone with no tailnet behind hostile NAT |
