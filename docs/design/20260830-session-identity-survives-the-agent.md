@@ -1,9 +1,9 @@
 ---
 title: Session identity survives the agent
-status: draft
+status: done
 type: rfc
 created: 2026-08-30
-updated: 2026-08-30
+updated: 2026-08-31
 related:
   - 20260829-tab-strip-is-the-collapsed-sidebar.md
   - 20260827-termiod-lifecycle-reconcile.md
