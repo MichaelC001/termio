@@ -71,7 +71,7 @@ final class ExternalSessionResolutionTests: XCTestCase {
     func testAJournaledNameIsKilledOnSight() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "orphan", attachedClients: 0, journaledNames: ["orphan"]),
+                name: "orphan", attachedClients: 0, isLocal: true, journaledNames: ["orphan"]),
             .killOnSight)
     }
 
@@ -80,21 +80,34 @@ final class ExternalSessionResolutionTests: XCTestCase {
     func testTheJournalOutranksAnAttachedClient() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "orphan", attachedClients: 1, journaledNames: ["orphan"]),
+                name: "orphan", attachedClients: 1, isLocal: true, journaledNames: ["orphan"]),
             .killOnSight)
     }
 
-    func testAnAttachedStrangerIsLeftAlone() {
+    /// The local socket is per-uid, so an attached unknown on this Mac is a
+    /// second install's live session — the one place attachment proves
+    /// foreign ownership.
+    func testAnAttachedStrangerIsLeftAloneOnThisMac() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "theirs", attachedClients: 1, journaledNames: []),
+                name: "theirs", attachedClients: 1, isLocal: true, journaledNames: []),
             .leaveAlone)
+    }
+
+    /// On a remote device the roster is that box's whole sidebar, and
+    /// attachment is read-many by design — a session the phone has open is
+    /// still one of the box's own sessions, so it gets a row like any other.
+    func testAnAttachedStrangerIsAdoptedOnARemoteDevice() {
+        XCTAssertEqual(
+            TermioStore.resolveExternalSession(
+                name: "phones", attachedClients: 1, isLocal: false, journaledNames: []),
+            .adopt)
     }
 
     func testADetachedStrangerIsAdopted() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "cli-started", attachedClients: 0, journaledNames: []),
+                name: "cli-started", attachedClients: 0, isLocal: true, journaledNames: []),
             .adopt)
     }
 
@@ -193,7 +206,7 @@ final class ExternalSessionSweepTests: XCTestCase {
             "the stranger belongs in the workspace's loose terminals")
     }
 
-    func testAnAttachedStrangerGetsNoRow() throws {
+    func testAnAttachedStrangerGetsNoRowOnThisMac() throws {
         let (store, _, _) = makeStore()
 
         let before = store.allSessions.count
@@ -201,7 +214,24 @@ final class ExternalSessionSweepTests: XCTestCase {
             [information(name: "theirs", attached: 1)], from: .thisMac, route: .local)
 
         XCTAssertEqual(store.allSessions.count, before,
-                       "another client's live session is not ours to claim")
+                       "a second install's live session is not ours to claim")
+    }
+
+    /// The guard is local-only: on a remote device an attached session is still
+    /// one of that box's own sessions — read-many is the design — and hiding it
+    /// would hide the box's work from the Mac.
+    func testAnAttachedStrangerIsAdoptedOnARemoteDevice() throws {
+        let (store, _, _) = makeStore()
+        let device = KnownDevice(alias: "vps", deviceID: nil)
+
+        let before = store.allSessions.count
+        try store.reconcileExternalSessions(
+            [information(name: "phones", attached: 1)], from: device, route: .ssh("vps"))
+
+        XCTAssertEqual(store.allSessions.count, before + 1,
+                       "the box's own attached session never got a row")
+        let adopted = store.allSessions.first { $0.termiodSessionName == "phones" }
+        XCTAssertEqual(adopted?.termiodRemoteHost, "vps")
     }
 
     func testASpentJournalRecordIsDropped() throws {

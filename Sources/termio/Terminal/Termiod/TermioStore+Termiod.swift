@@ -872,29 +872,38 @@ extension TermioStore {
         /// The name is in the closed-session journal: this app's own orphan —
         /// D1 should have killed it, so kill it now.
         case killOnSight
-        /// Another client is attached: its live session, not ours to claim.
+        /// Attached, unknown, **on this Mac**: a second install's live session,
+        /// not ours to claim.
         case leaveAlone
-        /// Unknown and detached: give it a row.
+        /// Unknown and adoptable: give it a row.
         case adopt
     }
 
     /// The §D3 verdict for a roster row no current row accounts for. Pure so the
     /// resolution is testable without a daemon or a roster.
+    ///
+    /// The attached-client guard is local-only, deliberately: the local socket
+    /// is per-uid, so an attached unknown here is another install's session.
+    /// Attachment itself is read-many by design (single writer, many readers),
+    /// so on a remote device it is no evidence of foreign ownership — the
+    /// roster is that box's whole sidebar, and a session the phone has open is
+    /// still one of the box's own sessions; skipping it would hide its work.
     nonisolated static func resolveExternalSession(
-        name: String, attachedClients: Int, journaledNames: Set<String>
+        name: String, attachedClients: Int, isLocal: Bool, journaledNames: Set<String>
     ) -> ExternalSessionResolution {
         if journaledNames.contains(name) { return .killOnSight }
-        if attachedClients > 0 { return .leaveAlone }
+        if isLocal, attachedClients > 0 { return .leaveAlone }
         return .adopt
     }
 
     /// Settles every live daemon session against this app's rows, once per
     /// successful roster refresh: journaled names are killed on sight (the
     /// belt-and-braces that makes D1's close hold across crashes and offline
-    /// routes), unknown detached sessions are adopted into ordinary rows, and
-    /// another client's attached sessions are left alone. Journal records whose
-    /// name no longer appears on their route have done their job and are
-    /// dropped; records for other routes are untouched.
+    /// routes), unknown sessions are adopted into ordinary rows, and — on this
+    /// Mac only — an attached unknown is left alone as a second install's live
+    /// session. Journal records whose name no longer appears on their route
+    /// have done their job and are dropped; records for other routes are
+    /// untouched.
     func reconcileExternalSessions(
         _ live: [Termiod.SessionInformation], from device: KnownDevice, route: TermiodRoute
     ) {
@@ -913,7 +922,7 @@ extension TermioStore {
             let name = Self.daemonKey(information)
             switch Self.resolveExternalSession(
                 name: name, attachedClients: information.attachedClients,
-                journaledNames: journaledNames) {
+                isLocal: device.isLocal, journaledNames: journaledNames) {
             case .killOnSight:
                 journaledStillLive.insert(name)
                 Log.termiod.info("""
