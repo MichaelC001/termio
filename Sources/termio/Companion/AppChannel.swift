@@ -16,22 +16,33 @@ import Foundation
 enum AppChannel {
     /// `"-dev"` for a `*.dev` bundle id, `""` for a release build.
     ///
-    /// `TERMIO_CHANNEL` overrides the bundle reading — the same switch
-    /// `build-app.sh` takes at build time, now honoured at runtime. It exists for
-    /// the unbundled case: `swift run` has no bundle identifier, so without it a
-    /// bare binary falls into the *release* channel and shares the shipped app's
-    /// state directory, control socket and companion port.
+    /// A termio `.app` reads its channel off its own bundle identifier, and
+    /// nothing overrides that: every termio session carries the channel of
+    /// the app that spawned it in `TERMIO_CHANNEL`, and macOS `open`
+    /// propagates the caller's environment — so launching the dev app from a
+    /// release session (or the reverse) would otherwise rebind the app to
+    /// the *other* channel's state directory, control socket, and companion
+    /// port. The `TERMIO_CHANNEL` override exists for the unbundled case
+    /// only: `swift run` has no bundle identifier, so without it a bare
+    /// binary falls into the release channel and shares the shipped app's
+    /// state.
     static let suffix: String = {
         let requested = ProcessInfo.processInfo.environment["TERMIO_CHANNEL"]?
             .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
-        // Only a plain name becomes a path component — anything else is a typo we
-        // must not turn into a stray directory next to the real ones.
-        if !requested.isEmpty, requested != "release",
+        // A custom probe channel is always deliberate — only a test harness
+        // sets one — and only a plain name becomes a path component: anything
+        // else is a typo we must not turn into a stray directory.
+        if !requested.isEmpty, requested != "release", requested != "dev",
            requested.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) {
             return "-" + requested
         }
-        if requested == "release" { return "" }
-        return (Bundle.main.bundleIdentifier?.hasSuffix(".dev") ?? false) ? "-dev" : ""
+        // The two real channel names are the ones a session's environment
+        // carries, so for them the app's own identity wins.
+        if let identifier = Bundle.main.bundleIdentifier,
+           identifier == "sh.termio.app" || identifier.hasSuffix(".dev") {
+            return identifier.hasSuffix(".dev") ? "-dev" : ""
+        }
+        return requested == "dev" ? "-dev" : ""
     }()
 
     /// True for the side-by-side dev build. Use this to gate diagnostics that must

@@ -180,23 +180,30 @@ shopt -u nullglob
 
 # Ship the command-line tool inside the bundle. The app installs it onto the user's
 # PATH by symlinking to this copy, so it version-updates with the app. A dev build
-# ships it as `termio-dev`, rebound to the dev socket + bundle id, so it drives the
-# dev app without clobbering the release `termio`.
+# ships it as `termio-dev`: the Rust client reads its channel off its own program
+# name, so one binary drives the dev app without clobbering the release `termio`.
+# Bundled after the daemon build below, from the same cargo slices — `cargo build`
+# compiles every bin in the crate, so the client costs no second build. A dev
+# build without the Rust toolchain falls back to the shell client, rebound by sed
+# the way every build used to be.
 cli_name="termio"
 [[ "$channel" == "dev" ]] && cli_name="termio-dev"
-echo "==> Bundling $cli_name command-line tool"
-cp "$repo_root/scripts/termio" "$resources_dir/$cli_name"
-if [[ "$channel" == "dev" ]]; then
-    /usr/bin/sed -i '' \
-        -e 's/^SUPPORT_DIR_NAME="termio"/SUPPORT_DIR_NAME="termio-dev"/' \
-        -e 's/^BUNDLE_ID="sh.termio.app"/BUNDLE_ID="sh.termio.app.dev"/' \
-        "$resources_dir/$cli_name"
-fi
-if [[ -n "${TERMIO_VERSION:-}" ]]; then
-    /usr/bin/sed -i '' -e "s/^VERSION=\"dev\"/VERSION=\"$TERMIO_VERSION\"/" \
-        "$resources_dir/$cli_name"
-fi
-chmod +x "$resources_dir/$cli_name"
+
+bundle_shell_client() {
+    echo "==> Bundling $cli_name command-line tool (shell fallback)"
+    cp "$repo_root/scripts/termio" "$resources_dir/$cli_name"
+    if [[ "$channel" == "dev" ]]; then
+        /usr/bin/sed -i '' \
+            -e 's/^SUPPORT_DIR_NAME="termio"/SUPPORT_DIR_NAME="termio-dev"/' \
+            -e 's/^BUNDLE_ID="sh.termio.app"/BUNDLE_ID="sh.termio.app.dev"/' \
+            "$resources_dir/$cli_name"
+    fi
+    if [[ -n "${TERMIO_VERSION:-}" ]]; then
+        /usr/bin/sed -i '' -e "s/^VERSION=\"dev\"/VERSION=\"$TERMIO_VERSION\"/" \
+            "$resources_dir/$cli_name"
+    fi
+    chmod +x "$resources_dir/$cli_name"
+}
 
 # Ship the session daemon inside the bundle, beside the CLI. `termiod` owns the
 # PTY for every session the app opens through it, and the app resolves it out of
@@ -238,6 +245,7 @@ if [[ -n "$daemon_toolchain_missing" ]]; then
         exit 1
     fi
     echo "==> Skipping termiod: $daemon_toolchain_missing not found — this dev build cannot start a daemon"
+    bundle_shell_client
 else
     # Xcode 26's libSystem.tbd advertises arm64e only and Zig cannot link against
     # it (the build dies in a wall of "undefined symbol: _malloc"); the Command
@@ -277,6 +285,29 @@ else
         fi
     done
     echo "==> Bundled $daemon_name architectures: $daemon_archs"
+
+    # The Rust termio client, from the slices the daemon build just produced.
+    # Its name is load-bearing twice: the support copy and PATH symlink keep
+    # the exact per-channel paths installed hooks already reference, and
+    # argv[0] is what binds the binary to this bundle id, support directory,
+    # and daemon socket.
+    echo "==> Bundling $cli_name command-line tool (Rust client)"
+    cli_slices=()
+    for arch in "${architectures[@]}"; do
+        rust_target="$arch-apple-darwin"
+        [[ "$arch" == "arm64" ]] && rust_target="aarch64-apple-darwin"
+        cli_slices+=("$repo_root/termiod/target/$rust_target/release/termio")
+    done
+    lipo -create "${cli_slices[@]}" -output "$resources_dir/$cli_name"
+    chmod +x "$resources_dir/$cli_name"
+    cli_archs="$(lipo -archs "$resources_dir/$cli_name")"
+    for required_arch in "${architectures[@]}"; do
+        if [[ " $cli_archs " != *" $required_arch "* ]]; then
+            echo "error: bundled $cli_name is missing the $required_arch slice — has [$cli_archs]" >&2
+            exit 1
+        fi
+    done
+    echo "==> Bundled $cli_name architectures: $cli_archs"
 
     # The daemons that ship *to* a Linux box. `termiod remote deploy` used to
     # cross-compile one on demand, which needs cargo, the musl target, and this
@@ -398,6 +429,11 @@ codesign "${sign_args[@]}" "$sparkle"
 # outer app for the same reason — and with the same hardened runtime, because
 # notarization rejects any executable inside the bundle that lacks it.
 [[ -e "$daemon_dest" ]] && codesign "${sign_args[@]}" "$daemon_dest"
+# The Rust client is the same shape when it shipped (the shell-script fallback
+# is covered by the outer seal like any other resource file).
+if [[ -e "$resources_dir/$cli_name" ]] && file "$resources_dir/$cli_name" | grep -q "Mach-O"; then
+    codesign "${sign_args[@]}" "$resources_dir/$cli_name"
+fi
 # Seal the outer app last so CodeResources covers the embedded framework. NOT
 # --deep: the framework's components are already individually signed above.
 codesign "${sign_args[@]}" "$app_dir"
