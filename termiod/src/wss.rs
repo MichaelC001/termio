@@ -747,6 +747,12 @@ pub struct PairOptions {
 /// a terminal on the box runs `--qr` and scans the screen in front of them.
 pub fn run_pair(options: PairOptions) -> Result<()> {
     paths::ensure_runtime_dir()?;
+    // `pair` runs in its own process, usually before the upgraded daemon has
+    // restarted — so the files an older build kept beside the socket may not
+    // have been adopted yet. Reading (`--json`/`--qr` needs `wss.origin`) or
+    // writing around them here would answer from, or leave behind, state the
+    // next daemon start will contradict.
+    paths::adopt_runtime_state();
 
     let token = if options.rotate {
         let token = paths::rotate_pair_token()?;
@@ -757,14 +763,7 @@ pub fn run_pair(options: PairOptions) -> Result<()> {
     };
 
     if options.wss_off {
-        let path = paths::wss_bind_path()?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("removing {}", path.display()))
-            }
-        }
+        paths::remove_wss_bind()?;
         eprintln!("termiod: wss off — the next `termiod serve` binds the Unix socket only");
     }
 

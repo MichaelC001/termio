@@ -422,7 +422,40 @@ pub fn load_or_create_pair_token() -> Result<String> {
 pub fn rotate_pair_token() -> Result<String> {
     let token = encode_base64url(&random_bytes(24)?);
     replace_secret(&pair_token_path()?, &token)?;
+    // Rotation is revocation, and the legacy copy beside the socket is still a
+    // live credential: a pre-split daemon reads it per handshake, and it would
+    // keep admitting the old secret until a restart while `--rotate` reports
+    // everyone signed out. Removing it is part of the rotation, not cleanup.
+    remove_legacy_runtime_file("pair.token");
     Ok(token)
+}
+
+/// Best-effort removal of the copy an older daemon kept beside the socket.
+/// Only for writers that must not leave a stale twin behind (`--rotate`,
+/// `--wss-off`); readers go through adoption instead.
+fn remove_legacy_runtime_file(name: &str) {
+    let (Ok(legacy_dir), Ok(durable)) = (state_dir(), durable_state_dir()) else {
+        return;
+    };
+    if legacy_dir == durable {
+        return;
+    }
+    let _ = std::fs::remove_file(legacy_dir.join(name));
+}
+
+/// Disarm the WSS listener durably: both the durable bind and any legacy copy
+/// beside the socket go. Removing only the durable file re-armed the listener
+/// on the next daemon start, because startup adoption dutifully promoted the
+/// legacy bind the operator thought they had turned off.
+pub fn remove_wss_bind() -> Result<()> {
+    let path = wss_bind_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+    remove_legacy_runtime_file("wss.bind");
+    Ok(())
 }
 
 /// Root of the per-session upload scratch dirs (§C.12 `temp:` dests). Lives
