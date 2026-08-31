@@ -64,17 +64,21 @@ lands (see the protocol doc's roadmap).
 ## The one-liner
 
 ```sh
-termiod remote open my-vps            # deploy if needed, create a session, attach
+termio remote open my-vps             # deploy if needed, create a session, attach
 ```
 
-`my-vps` is any `~/.ssh/config` alias (or `user@host`). Behind that:
+`termio remote …` is the spelling on a machine that has the client — the
+script execs the daemon bundled beside it, so it always matches the app's
+channel. On the box itself there is only `termiod`, which is why the SSH
+examples below keep that name. `my-vps` is any `~/.ssh/config` alias (or
+`user@host`). Behind that:
 
 1. `ssh my-vps test -x ~/.local/bin/termiod` — installed? If not, deploy.
 2. `ssh my-vps termiod create …` — create a durable session; capture its id.
 3. `ssh -t my-vps termiod attach <id>` — attach over an SSH PTY.
 
 Close your laptop mid-session; the daemon on the VPS owns the PTY, so the agent
-keeps running. Reconnect with `termiod remote attach my-vps <id>` (or `open`).
+keeps running. Reconnect with `termio remote attach my-vps <id>` (or `open`).
 
 ## Cross-compiling on the Mac
 
@@ -101,7 +105,7 @@ rustup target add aarch64-unknown-linux-musl   # ARM VPS (Graviton, Ampere, Pi)
 rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 ```
 
-`termiod deploy --host <host>` runs `uname -sm` on the host, picks the matching
+`termio remote deploy <host>` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
 otherwise — and installs. Manual build:
 
@@ -116,7 +120,7 @@ install one and override `linker` in `.cargo/config.toml`, or build on the host
 and deploy the prebuilt binary:
 
 ```sh
-termiod remote deploy my-vps --bin path/to/linux/termiod
+termio remote deploy my-vps --bin path/to/linux/termiod
 ```
 
 ## What deploy does
@@ -125,7 +129,7 @@ One reconcile loop (`src/lifecycle.rs`; the design is
 `docs/design/20260827-termiod-lifecycle-reconcile.md`):
 
 ```sh
-termiod deploy --host my-vps
+termio remote deploy my-vps
 #  ssh  my-vps ~/.local/bin/termiod status --json   # observe: binary, daemon, sessions
 #  scp  <bundled slice>  my-vps:.local/bin/termiod.new
 #  ssh  my-vps 'chmod +x … && mv termiod termiod.prev && mv termiod.new termiod'   # stage
@@ -316,9 +320,9 @@ Missing `pair.token` splits by where the bind came from:
 ## Reconnect workflow
 
 ```sh
-termiod remote list my-vps               # what's running on the VPS
-termiod remote attach my-vps <id|name>   # reattach; Ctrl-\ detaches
-termiod remote attach my-vps build -- npm run dev   # attach-or-create by name
+termio remote list my-vps               # what's running on the VPS
+termio remote attach my-vps <id|name>   # reattach; Ctrl-\ detaches
+termio remote attach my-vps build -- npm run dev   # attach-or-create by name
 ```
 
 Session survives: SSH disconnects, laptop sleep, network drops. It ends only on

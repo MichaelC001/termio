@@ -70,6 +70,14 @@ struct TermiodDevice: Codable, Identifiable, Hashable {
     var daemonVersion: String
     /// Every route this device has been seen on, most recently used first.
     var routes: [TermiodRoute]
+    /// The protocol version the last handshake with the device negotiated —
+    /// `hello_ok.proto`. `nil` for a device recorded before the field existed.
+    var negotiatedProtocol: Int? = nil
+    /// When the last handshake completed, persisted. Unlike `lastSeen` this
+    /// never claims reachability: it stamps *when the facts above were learned*,
+    /// so `termio version` can say "as of last connect, 2h ago" instead of
+    /// presenting a stale row as live state.
+    var observedAt: Date? = nil
     /// When *this run* of the app last completed a handshake with the device.
     /// Deliberately not persisted: a timestamp restored from disk would claim
     /// reachability the app has not verified since launch.
@@ -77,6 +85,8 @@ struct TermiodDevice: Codable, Identifiable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case id, daemonVersion, routes
+        case negotiatedProtocol = "proto"
+        case observedAt
     }
 }
 
@@ -111,7 +121,10 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
     /// Records what a completed handshake just revealed. Returns the merged
     /// device so the caller can log or act on the identity it actually reached.
     @discardableResult
-    func record(hostID: String, daemonVersion: String, route: TermiodRoute) -> TermiodDevice {
+    func record(
+        hostID: String, daemonVersion: String, negotiatedProtocol: Int? = nil,
+        route: TermiodRoute
+    ) -> TermiodDevice {
         lock.lock()
         defer { lock.unlock() }
 
@@ -125,10 +138,16 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
         var device = devicesByID[hostID]
             ?? TermiodDevice(id: hostID, daemonVersion: daemonVersion, routes: [], lastSeen: nil)
         device.daemonVersion = daemonVersion
+        // A handshake that did not carry the version keeps the last one that
+        // did: overwriting a known protocol with `nil` would only unlearn it.
+        if let negotiatedProtocol {
+            device.negotiatedProtocol = negotiatedProtocol
+        }
         // Most recently used first: the route that just worked is the one to try
         // again before probing the others.
         device.routes.removeAll { $0 == route }
         device.routes.insert(route, at: 0)
+        device.observedAt = Date()
         device.lastSeen = Date()
         devicesByID[hostID] = device
 
@@ -182,6 +201,9 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            // ISO 8601, not the Foundation reference-date float: `devices.json`
+            // reads like configuration, and `termio version` parses it in shell.
+            encoder.dateEncodingStrategy = .iso8601
             let devices = devicesByID.values.sorted { $0.id < $1.id }
             try encoder.encode(devices).write(to: fileURL, options: .atomic)
         } catch {
@@ -192,8 +214,10 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
     }
 
     private func load() {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: fileURL),
-              let devices = try? JSONDecoder().decode([TermiodDevice].self, from: data)
+              let devices = try? decoder.decode([TermiodDevice].self, from: data)
         else { return }
         for device in devices {
             devicesByID[device.id] = device

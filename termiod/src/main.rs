@@ -546,6 +546,12 @@ async fn main() -> Result<()> {
             host,
             no_local,
         } => {
+            // The top-level `--host` twins of the `remote` namespace retire
+            // (docker-dockerd-lessons RFC §1.1): one spelling, announced
+            // rather than dropped, on stderr so `--json` consumers never see it.
+            if !host.is_empty() {
+                eprintln!("warning: `termiod list --host` is deprecated — use `termio remote list <host>`");
+            }
             // A cloud fleet is many hosts. Sweep them concurrently so the view
             // costs one slow host, not the sum of all of them.
             let mut fleet: Vec<(String, anyhow::Result<Vec<_>>)> = Vec::new();
@@ -697,6 +703,9 @@ async fn main() -> Result<()> {
             host,
             argv,
         } => {
+            if host.is_some() {
+                eprintln!("warning: `termiod attach --host` is deprecated — use `termio remote attach <host> <session>`");
+            }
             // Raw stays the default on every transport, including remote.
             // Measured against a real VPS (2026-08-05, 300-line burst): raw
             // 50 KB vs grid 436 KB — 8.6× *worse* for grid. Scrolling output
@@ -772,7 +781,10 @@ async fn main() -> Result<()> {
         } => {
             let options = lifecycle::Options { force, stage_only };
             let report = match host {
-                Some(host) => remote::reconcile(&remote::SshNode::new(host), options).await,
+                Some(host) => {
+                    eprintln!("warning: `termiod deploy --host` is deprecated — use `termio remote deploy <host>`");
+                    remote::reconcile(&remote::SshNode::new(host), options).await
+                }
                 None => {
                     lifecycle::reconcile(&lifecycle::LocalNode, lifecycle::BUILD_VERSION, options)
                         .await
