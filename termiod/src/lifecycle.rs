@@ -82,6 +82,8 @@ pub struct DaemonHello {
     /// Absent on a daemon that predates the field — older than anything that
     /// reports one, which is how the loop reads it.
     pub version: Option<String>,
+    /// The protocol version this handshake negotiated (`hello_ok.proto`).
+    pub proto: u32,
     pub host_id: String,
     /// What the daemon can do, from its own `hello_ok`. Read for one thing: a
     /// daemon that does not list `handoff` has to be stopped to be upgraded,
@@ -123,12 +125,14 @@ where
     .await?;
     match read_frame(reader).await? {
         Some(Frame::Control(Control::HelloOk {
+            proto,
             version,
             host_id,
             caps,
             ..
         })) => Ok(DaemonHello {
             version: version.filter(|value| !value.is_empty()),
+            proto,
             host_id,
             caps,
         }),
@@ -244,6 +248,11 @@ pub struct DaemonStatus {
     /// is the state the loop most needs to see. `None` on a daemon too old to
     /// say, or none running.
     pub version: Option<String>,
+    /// The protocol version this probe's own handshake with the daemon
+    /// negotiated — what `termio version` reports for the local daemon.
+    /// `None` when no daemon is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proto: Option<u32>,
     pub pid: Option<i32>,
     pub socket: String,
 }
@@ -324,6 +333,7 @@ pub async fn status() -> Result<NodeStatus> {
     let mut daemon = DaemonStatus {
         running: false,
         version: None,
+        proto: None,
         pid: None,
         socket: socket.display().to_string(),
     };
@@ -339,7 +349,10 @@ pub async fn status() -> Result<NodeStatus> {
         })
         .await;
         if let Ok((hello, list)) = asked {
-            daemon.version = hello.ok().and_then(|hello| hello.version);
+            if let Ok(hello) = hello {
+                daemon.version = hello.version;
+                daemon.proto = Some(hello.proto);
+            }
             sessions = list
                 .unwrap_or_default()
                 .into_iter()
@@ -1316,6 +1329,7 @@ mod tests {
             daemon: DaemonStatus {
                 running,
                 version: daemon.map(str::to_string),
+                proto: running.then_some(1),
                 pid: running.then_some(4242),
                 socket: "/run/user/1001/termiod/termiod.sock".to_string(),
             },
@@ -1329,6 +1343,7 @@ mod tests {
     fn hello(version: Option<&str>) -> Result<DaemonHello> {
         Ok(DaemonHello {
             version: version.map(str::to_string),
+            proto: 1,
             host_id: "h_1".to_string(),
             caps: vec![HANDOFF_CAPABILITY.to_string()],
         })
