@@ -148,6 +148,64 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
         XCTAssertNil(store.termiodLinks[session.id], "the attachment leaked")
     }
 
+    /// #528's exact shape: the row exists but its link is gone — restored after
+    /// an app relaunch and never selected, closed from the CLI or the phone for
+    /// a row never viewed this run, or torn down after the exit /
+    /// connection-lost paths nil'd the link. The close must kill by name; the
+    /// link is a live attachment, never the destroy capability.
+    func testClosingARowWithoutALinkKillsItInTheDaemon() throws {
+        let (store, session, _, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.closeSession(session.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "a link-less close left the process running in the daemon (#528)")
+        XCTAssertTrue(
+            store.closedSessionJournal.contains { $0.name == name },
+            "the close was not journaled, so a crash or an offline route would leak it")
+    }
+
+    /// The same hole on the project verb: every session of a removed project
+    /// must die whether or not a pane ever rendered it this run.
+    func testRemovingAProjectWithLinklessRowsKillsItsSessions() throws {
+        let (store, session, project, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.removeProject(project.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "removing the project left a link-less session running in the daemon")
+    }
+
+    /// The respawn-in-place case its own comment promises: the old daemon-side
+    /// process must not survive under the same name, or the fresh surface
+    /// reattaches to it instead of spawning the replacement. On the
+    /// revert-to-shell path this always ran link-less — `applyTermiodExit`
+    /// nils the link first — so the kill was always a no-op before D1.
+    func testRelaunchWithoutALinkReplacesTheDaemonSession() throws {
+        let (store, session, _, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.relaunchSession(session.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "the old daemon session survived the respawn under the same name")
+        XCTAssertFalse(
+            store.closedSessionJournal.contains { $0.name == name },
+            "a respawn-in-place journaled the name it is about to reuse — the roster "
+                + "sweep would kill the replacement on sight")
+    }
+
     /// The counterpart, and the reason the daemon exists: quitting the app is
     /// not a destroy verb. Every session must survive it.
     func testQuittingDetachesRatherThanKilling() throws {
