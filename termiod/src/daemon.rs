@@ -1293,6 +1293,17 @@ async fn run_connection(
             frame = read_frame(&mut rd) => {
                 match frame {
                     Ok(Some(Frame::Control(control))) => pending = Some(control),
+                    // A verb from a newer client is version skew, not a broken
+                    // pipe: that request fails, the connection — and every
+                    // subscription riding it — lives on.
+                    Ok(Some(Frame::UnknownControl { op, seq })) => {
+                        let _ = out.send(Outbound::Control(error(
+                            seq,
+                            ErrorCode::ProtoError,
+                            format!("unknown op: {op}"),
+                            false,
+                        )));
+                    }
                     Ok(Some(Frame::Event(event))) => {
                         // Events are host-authored. Unknown/inapplicable event
                         // types are ignored by the additive-evolution rule.
@@ -1855,10 +1866,12 @@ async fn process_control(
                         match crate::git::run_compare(&root, &base, path.as_deref()).await {
                             Ok(outcome) => Control::GitCompareResult {
                                 files: outcome.files,
+                                commits: outcome.commits,
                                 behind: outcome.behind,
                                 diff: outcome.diff,
                                 truncated: outcome.truncated,
                                 files_truncated: outcome.files_truncated,
+                                commits_truncated: outcome.commits_truncated,
                                 problem: outcome.problem,
                                 re: seq,
                             },
@@ -2757,6 +2770,16 @@ async fn run_attach(
                     rows,
                     cols,
                 });
+            }
+            // Version skew, not a broken pipe: the request fails, the
+            // attachment lives on.
+            Ok(Some(Frame::UnknownControl { op, seq })) => {
+                let _ = out.send(Outbound::Control(error(
+                    seq,
+                    ErrorCode::ProtoError,
+                    format!("unknown op: {op}"),
+                    false,
+                )));
             }
             Ok(Some(Frame::Snapshot(_))) => {
                 let _ = out.send(Outbound::Control(error(

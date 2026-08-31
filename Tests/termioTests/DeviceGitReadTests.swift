@@ -108,12 +108,19 @@ final class DeviceGitReadTests: XCTestCase {
         XCTAssertNil(try problem("{\"files\": [], \"behind\": 2}"))
     }
 
-    func testACompareResultCarriesFilesAndBehind() throws {
+    func testACompareResultCarriesFilesCommitsAndBehind() throws {
         let result = try decode(Termiod.WireGitCompareResult.self, """
         {"files": [{"path": "b.txt", "status": "added", "additions": 1}],
+         "commits": [{"sha": "cccc3333", "short_sha": "cccc333",
+                      "subject": "branch commit", "author": "Dev",
+                      "author_email": "dev@example.com",
+                      "relative_date": "now", "timestamp": 1700000000}],
          "behind": 4, "diff": ""}
         """)
         XCTAssertEqual(result.files.compactMap(\.change).map(\.path), ["b.txt"])
+        // One reply carries the whole comparison, so files and commits can
+        // never describe two different heads.
+        XCTAssertEqual(result.commits.map(\.sha), ["cccc3333"])
         XCTAssertEqual(result.behind, 4)
         XCTAssertNil(result.compareProblem)
     }

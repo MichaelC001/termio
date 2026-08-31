@@ -78,6 +78,11 @@ pub const MAX_UPLOAD_FRAME_SIZE: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum Frame {
     Control(Control),
+    /// A control frame whose `op` this build has never heard of. Kept apart
+    /// from `Control` so an op from a newer peer degrades to a per-request
+    /// error instead of killing the connection — before this, one unknown verb
+    /// tore down the channel and every subscription riding it.
+    UnknownControl { op: String, seq: Option<u64> },
     Data(Vec<u8>),
     Resize { rows: u16, cols: u16 },
     Event(Event),
@@ -1073,6 +1078,11 @@ pub enum Control {
     /// base — the change a merge would introduce.
     GitCompareResult {
         files: Vec<GitCommitFile>,
+        /// The commits the merge would bring, newest first — carried here
+        /// rather than composed from a separate `git_log` so the file list,
+        /// the commits and the behind count all describe one pinned head.
+        #[serde(default)]
+        commits: Vec<GitCommitEntry>,
         #[serde(default)]
         behind: u64,
         diff: String,
@@ -1080,6 +1090,8 @@ pub enum Control {
         truncated: bool,
         #[serde(default)]
         files_truncated: bool,
+        #[serde(default)]
+        commits_truncated: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         problem: Option<GitCompareProblem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1949,9 +1961,28 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
     r.read_exact(&mut payload).await?;
     match kind {
         KIND_CONTROL => {
-            let ctrl: Control = serde_json::from_slice(&payload)
-                .map_err(|e| anyhow::anyhow!("invalid control JSON: {e}"))?;
-            Ok(Some(Frame::Control(ctrl)))
+            match serde_json::from_slice::<Control>(&payload) {
+                Ok(ctrl) => Ok(Some(Frame::Control(ctrl))),
+                Err(decode_error) => {
+                    // An op this build doesn't know is version skew, not a
+                    // broken pipe: answer it, don't hang up on it. Only a frame
+                    // that names an op qualifies — anything else really is
+                    // malformed JSON and keeps failing the read.
+                    #[derive(serde::Deserialize)]
+                    struct Tagged {
+                        op: String,
+                        #[serde(default)]
+                        seq: Option<u64>,
+                    }
+                    match serde_json::from_slice::<Tagged>(&payload) {
+                        Ok(tagged) => Ok(Some(Frame::UnknownControl {
+                            op: tagged.op,
+                            seq: tagged.seq,
+                        })),
+                        Err(_) => Err(anyhow::anyhow!("invalid control JSON: {decode_error}")),
+                    }
+                }
+            }
         }
         KIND_DATA => Ok(Some(Frame::Data(payload))),
         KIND_RESIZE => {

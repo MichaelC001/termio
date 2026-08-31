@@ -366,19 +366,33 @@ final class GitPanelModel: ObservableObject {
         }
     }
 
+    /// Monotonic tickets for the three read loaders below: only the newest
+    /// pass may publish. Two refreshes can overlap — a burst of device head
+    /// changes, a git-dir event landing during a forced reload — and without
+    /// the ticket the slower, older read wins and the pane shows a checkout
+    /// the repository has already left.
+    private var historyGeneration = 0
+    private var compareContextGeneration = 0
+    private var compareGeneration = 0
+
     /// Loads the commit history on demand (first time the History tab opens); re-run
     /// with `force` when the git dir reports a change.
     func loadHistory(force: Bool = false) async {
         guard force || !didLoadHistory else { return }
         didLoadHistory = true
+        historyGeneration += 1
+        let generation = historyGeneration
         isLoadingHistory = commits.isEmpty
+        let loaded: [GitCommit]
         if let device {
             // A failed read degrades to an empty list, exactly as the local
             // path does when `git log` exits non-zero.
-            commits = (try? await Termiod.gitLog(route: device, root: repoRoot).commits) ?? []
+            loaded = (try? await Termiod.gitLog(route: device, root: repoRoot).commits) ?? []
         } else {
-            commits = await GitService.log(in: repoRoot)
+            loaded = await GitService.log(in: repoRoot)
         }
+        guard generation == historyGeneration else { return }
+        commits = loaded
         isLoadingHistory = false
     }
 
@@ -387,11 +401,16 @@ final class GitPanelModel: ObservableObject {
     /// Re-reads the branch and the bases it can be compared against. Cheap enough to run
     /// on every history refresh: three `git` reads of refs, no diff.
     func loadCompareContext() async {
+        compareContextGeneration += 1
+        let generation = compareContextGeneration
+        let loaded: GitService.CompareContext?
         if let device {
-            compareContext = try? await Termiod.gitBranches(route: device, root: repoRoot)
+            loaded = try? await Termiod.gitBranches(route: device, root: repoRoot)
         } else {
-            compareContext = await GitService.compareContext(in: repoRoot)
+            loaded = await GitService.compareContext(in: repoRoot)
         }
+        guard generation == compareContextGeneration else { return }
+        compareContext = loaded
     }
 
     /// Points the Compare tab at a base branch (or `nil` for none) and loads the
@@ -413,13 +432,17 @@ final class GitPanelModel: ObservableObject {
             compareProblem = nil
             return
         }
+        compareGeneration += 1
+        let generation = compareGeneration
         let outcome: GitService.CompareOutcome
         if let device {
             outcome = await Self.deviceBranchCompare(route: device, root: repoRoot, base: base)
         } else {
             outcome = await GitService.branchCompare(base: base, in: repoRoot)
         }
-        guard compareBase == base else { return }
+        // The base check catches a re-pick; the generation catches a same-base
+        // refresh overtaken by a newer one.
+        guard compareBase == base, generation == compareGeneration else { return }
         switch outcome {
         case .ready(let loaded):
             compare = loaded
@@ -430,21 +453,18 @@ final class GitPanelModel: ObservableObject {
         }
     }
 
-    /// The device's comparison, composed the way the RFC intended: the file
-    /// list and behind count from `git.compare`, the commits from `git.log`
-    /// over the same range — two requests on the one pooled channel.
+    /// The device's comparison: one `git.compare` reply carrying files,
+    /// commits, and behind — all walked from the one head the device pinned,
+    /// so the three can never describe different checkouts.
     private static func deviceBranchCompare(
         route: TermiodRoute, root: String, base: String
     ) async -> GitService.CompareOutcome {
         do {
-            async let comparison = Termiod.gitCompare(route: route, root: root, base: base)
-            async let logged = Termiod.gitLog(
-                route: route, root: root, limit: 200, range: "\(base)..HEAD")
-            let (compared, ranged) = try await (comparison, logged)
+            let compared = try await Termiod.gitCompare(route: route, root: root, base: base)
             if let problem = compared.problem { return .problem(problem) }
             return .ready(GitService.BranchCompare(
                 base: base, files: compared.files,
-                commits: ranged.commits, behind: compared.behind))
+                commits: compared.commits, behind: compared.behind))
         } catch {
             Log.termiod.error("""
             device compare against \(base, privacy: .public) failed: \

@@ -883,15 +883,26 @@ pub async fn run_branches(root: &str) -> Result<GitBranchList> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCompareOutcome {
     pub files: Vec<GitCommitFile>,
+    pub commits: Vec<GitCommitEntry>,
     pub behind: u64,
     pub diff: String,
     pub truncated: bool,
     pub files_truncated: bool,
+    pub commits_truncated: bool,
     pub problem: Option<crate::protocol::GitCompareProblem>,
 }
 
-/// `git.compare` (§C.13 read tier): the three-dot file list and behind count
-/// the Compare tab needs, plus one file's ranged diff when `path` narrows it.
+/// How many commits one comparison carries — the local pane's own limit.
+const COMPARE_LOG_CAP: u64 = 200;
+
+/// `git.compare` (§C.13 read tier): the three-dot file list, the commits the
+/// merge would bring, and the behind count — the whole Compare tab in one
+/// reply, plus one file's ranged diff when `path` narrows it.
+///
+/// One reply on purpose: `HEAD` is resolved to a sha once and every walk uses
+/// the sha, so a commit or checkout landing between the child processes cannot
+/// hand back a file list from one head and commits from another. Composed
+/// client-side from `git_log` + `git_compare`, that tear was reachable.
 ///
 /// The two problems are asked of git up front rather than inferred from a
 /// failed diff: without a merge base the three-dot diff exits non-zero and
@@ -903,10 +914,12 @@ pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<G
     let problem = |problem| {
         Ok(GitCompareOutcome {
             files: Vec::new(),
+            commits: Vec::new(),
             behind: 0,
             diff: String::new(),
             truncated: false,
             files_truncated: false,
+            commits_truncated: false,
             problem: Some(problem),
         })
     };
@@ -931,11 +944,24 @@ pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<G
     if !merge_base.status.success() {
         return problem(crate::protocol::GitCompareProblem::NoCommonHistory);
     }
+    let pinned = git_command(root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .await
+        .context("running git rev-parse")?;
+    if !pinned.status.success() {
+        bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&pinned.stderr).trim()
+        );
+    }
+    let head = String::from_utf8_lossy(&pinned.stdout).trim().to_string();
 
     // Three dots: from the merge base, so commits that landed on the base
     // since this branch started don't show up inverted as changes the branch
     // never made.
-    let range = format!("{base}...HEAD");
+    let range = format!("{base}...{head}");
     let listed = git_command(root)
         .arg("diff")
         .arg("--raw")
@@ -964,7 +990,7 @@ pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<G
     let counted = git_command(root)
         .arg("rev-list")
         .arg("--count")
-        .arg(format!("HEAD..{base}"))
+        .arg(format!("{head}..{base}"))
         .output()
         .await
         .context("running git rev-list")?;
@@ -972,6 +998,9 @@ pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<G
         .trim()
         .parse()
         .unwrap_or(0);
+
+    // The commits the merge would bring, walked from the same pinned head.
+    let log = run_log(root, COMPARE_LOG_CAP, Some(&format!("{base}..{head}"))).await?;
 
     let (diff, truncated) = if let Some(path) = path {
         let mut command = git_command(root);
@@ -1000,10 +1029,12 @@ pub async fn run_compare(root: &str, base: &str, path: Option<&str>) -> Result<G
 
     Ok(GitCompareOutcome {
         files,
+        commits: log.commits,
         behind,
         diff,
         truncated,
         files_truncated,
+        commits_truncated: log.truncated,
         problem: None,
     })
 }
@@ -1940,6 +1971,16 @@ mod tests {
             "three dots: only the branch's own change, never the base's"
         );
         assert_eq!(outcome.behind, 1, "the base's new commit dates the compare");
+        assert_eq!(
+            outcome
+                .commits
+                .iter()
+                .map(|entry| entry.subject.as_str())
+                .collect::<Vec<_>>(),
+            vec!["branch commit"],
+            "the commits ride the same reply, walked from the same pinned head"
+        );
+        assert!(!outcome.commits_truncated);
         assert!(outcome.diff.is_empty(), "no path asked, no diff sent");
 
         let narrowed = run_compare(&root, "main", Some("b.txt")).await.unwrap();

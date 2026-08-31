@@ -175,18 +175,22 @@ extension Termiod {
         return compareContext(from: result)
     }
 
-    /// The branch against a base: the three-dot file list and the behind count.
-    /// The commits ride `gitLog` with a range; a `problem` means the checkout
-    /// could not be compared and says why.
+    /// The branch against a base — files, commits, and behind count in one
+    /// reply, all describing the one head the device pinned before walking. A
+    /// `problem` means the checkout could not be compared and says why.
     static func gitCompare(
         route: TermiodRoute, root: String, base: String
-    ) async throws -> (files: [GitChange], behind: Int, problem: GitService.CompareProblem?) {
+    ) async throws -> (
+        files: [GitChange], commits: [GitCommit], behind: Int,
+        problem: GitService.CompareProblem?
+    ) {
         let result = try await readTier(
             route: route, WireGitCompareResult.self, operation: "git compare \(base)"
         ) { seq in
             try encodeControl(GitCompareOperation(root: root, base: base, path: nil, seq: seq))
         }
-        return (result.files.compactMap(\.change), result.behind, result.compareProblem)
+        return (result.files.compactMap(\.change), commits(from: result.commits),
+                result.behind, result.compareProblem)
     }
 
     /// One file's three-dot diff across `base...HEAD` — what a Compare file
@@ -438,15 +442,20 @@ extension Termiod {
 
     struct WireGitCompareResult: Decodable, Sendable {
         let files: [WireGitCommitFile]
+        let commits: [WireGitCommit]
         let behind: Int
         let diff: String
         let problem: String?
 
-        private enum CodingKeys: String, CodingKey { case files, behind, diff, problem }
+        private enum CodingKeys: String, CodingKey {
+            case files, commits, behind, diff, problem
+        }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             files = try container.decodeIfPresent([WireGitCommitFile].self, forKey: .files) ?? []
+            commits = try container.decodeIfPresent(
+                [WireGitCommit].self, forKey: .commits) ?? []
             behind = try container.decodeIfPresent(Int.self, forKey: .behind) ?? 0
             diff = try container.decodeIfPresent(String.self, forKey: .diff) ?? ""
             problem = try container.decodeIfPresent(String.self, forKey: .problem)
