@@ -1010,7 +1010,9 @@ extension TermioStore {
                 state: .failed,
                 message: "The termiod binary to deploy wasn't found at \(localBinary)."))
         }
-        var arguments = ["deploy", "--host", host, "--json"]
+        // The `remote` spelling, not `deploy --host`: the top-level twin is
+        // deprecated and warns on stderr, which this side reads as a diagnosis.
+        var arguments = ["remote", "deploy", host, "--json"]
         if force { arguments.append("--force") }
         guard let run = runProcess(localBinary, arguments) else {
             return .failure(RemoteSetupError(

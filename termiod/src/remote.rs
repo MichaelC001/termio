@@ -78,7 +78,7 @@ fn batch_args() -> Vec<String> {
 
 #[derive(Subcommand)]
 pub enum RemoteCmd {
-    /// Install or update `termiod` on a host over SSH — `termiod deploy --host`.
+    /// Install or update `termiod` on a host over SSH.
     Deploy {
         /// SSH host alias from `~/.ssh/config` (or user@host).
         host: String,
