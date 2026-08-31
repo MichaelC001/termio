@@ -1062,6 +1062,16 @@
         }
       }
     },
+    "Can’t Compare": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法对比"
+          }
+        }
+      }
+    },
     "Can’t Search": {
       "localizations": {
         "zh-Hans": {
@@ -6604,6 +6614,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "该设备无法读取这个检出。"
+          }
+        }
+      }
+    },
+    "The device couldn’t read this comparison.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备无法读取这个对比。"
           }
         }
       }

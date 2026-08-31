@@ -224,6 +224,8 @@
 	<string>Built-in</string>
 	<key>Cancel</key>
 	<string>Cancel</string>
+	<key>Can’t Compare</key>
+	<string>Can’t Compare</string>
 	<key>Can’t Search</key>
 	<string>Can’t Search</string>
 	<key>Can’t browse %@</key>
@@ -1336,6 +1338,8 @@
 	<string>The coding agents offered when you start a session</string>
 	<key>The device couldn’t read this checkout.</key>
 	<string>The device couldn’t read this checkout.</string>
+	<key>The device couldn’t read this comparison.</key>
+	<string>The device couldn’t read this comparison.</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>The devices in your ~/.ssh/config, and the keys that reach them</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>

@@ -1095,11 +1095,11 @@ final class TermioStore: ObservableObject {
     /// unrelated appearance change that also fires `objectWillChange`.
     var installedHooksEnabled: Bool?
 
-    /// The control socket the `termio sessions` CLI drives sibling sessions through.
-    /// Runs for the app's lifetime (harmless when the feature is off — the handler
-    /// refuses with "disabled"); only the awareness note installed into the agent
-    /// instruction files is toggled.
-    var sessionControl: SessionControlListener?
+    /// The socket the `termio` CLI drives the app through. Runs for the app's
+    /// lifetime (harmless when the feature is off — the handler refuses with
+    /// "disabled"); only the awareness note installed into the agent instruction
+    /// files is toggled.
+    var appSocket: AppSocketListener?
     var installedSessionControlEnabled: Bool?
 
     /// The agent's own conversation log per session, learned from the hook stream
@@ -1318,7 +1318,7 @@ final class TermioStore: ObservableObject {
         CommandLineTool.refreshSupportCopy()
 
         startHookMonitoring()
-        startSessionControl()
+        startAppSocket()
     }
 
     /// The live branch label for a folder (a project checkout or a session

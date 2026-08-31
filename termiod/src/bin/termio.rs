@@ -360,6 +360,168 @@ struct NotifyArgs {
     output: Output,
 }
 
+/// `read`'s daemon half. `None` means the target is not a session the local
+/// daemon owns and the app should answer instead; `Some(code)` means the
+/// reply (success or error) was printed here.
+async fn daemon_read(
+    channel: &Channel,
+    target: &str,
+    lines: Option<u64>,
+    format: &str,
+) -> Option<i32> {
+    let token = read_token(channel, target)?;
+    let sessions = match termiod::client::sessions_of_running_daemon().await {
+        Ok(Some(sessions)) => sessions,
+        _ => return None,
+    };
+    let token_lower = token.to_lowercase();
+    // Daemon-first claims only the canonical app-created population:
+    // sessions whose daemon name is a UUID, matched by a hex/dash token. An
+    // adopted session keeps whatever name it had, which the app may scope
+    // and resolve differently — those targets stay with the app.
+    if token_lower.is_empty()
+        || !token_lower.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return None;
+    }
+    let matches: Vec<&termiod::protocol::SessionInfo> = sessions
+        .iter()
+        .filter(|info| {
+            let name = info.name.to_lowercase();
+            uuid_shaped(&name) && (name == token_lower || name.starts_with(&token_lower))
+        })
+        .collect();
+    match matches.len() {
+        0 => None,
+        1 => Some(serve_daemon_read(channel, matches[0], lines, format).await),
+        _ => {
+            control_error_reply(
+                format,
+                "ambiguous",
+                &format!("'{target}' matches more than one session; use a longer id."),
+            );
+            Some(1)
+        }
+    }
+}
+
+/// The token to match against daemon session names: a bare id as-is, this
+/// channel's own `…://session/<id>` link stripped to the id the way the
+/// app's `addressedID` does — case-insensitively, taking the component
+/// after `session/` and stopping at `/` or `?`. A foreign channel's link
+/// (and any other shape) stays with the app, which owns its error copy.
+fn read_token(channel: &Channel, target: &str) -> Option<String> {
+    let lowered = target.to_lowercase();
+    let Some(scheme_end) = lowered.find("://") else {
+        return Some(target.to_string());
+    };
+    if lowered[..scheme_end] != channel.url_scheme() {
+        return None;
+    }
+    let rest = &lowered[scheme_end + 3..];
+    let after = rest.find("session/").map(|index| &rest[index + 8..])?;
+    let id: String = after
+        .chars()
+        .take_while(|character| *character != '/' && *character != '?')
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The 8-4-4-4-12 shape of an app-created session's daemon name.
+fn uuid_shaped(name: &str) -> bool {
+    name.len() == 36
+        && name.char_indices().all(|(index, character)| match index {
+            8 | 13 | 18 | 23 => character == '-',
+            _ => character.is_ascii_hexdigit(),
+        })
+}
+
+async fn serve_daemon_read(
+    channel: &Channel,
+    info: &termiod::protocol::SessionInfo,
+    lines: Option<u64>,
+    format: &str,
+) -> i32 {
+    let mut rows =
+        match termiod::client::observe_screen_rows(&info.name, info.rows, info.cols).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                control_error_reply(format, "daemon", &format!("{error:#}"));
+                return 1;
+            }
+        };
+    if let Some(cap) = lines.map(|cap| cap as usize).filter(|cap| *cap > 0) {
+        if rows.len() > cap {
+            rows = rows.split_off(rows.len() - cap);
+        }
+    }
+    let screen = rows.join("\n");
+    if format == "json" {
+        let mut object = std::collections::BTreeMap::new();
+        object.insert("ok", serde_json::Value::Bool(true));
+        object.insert("schema_version", serde_json::Value::from(1));
+        object.insert("screen", serde_json::Value::from(screen));
+        object.insert(
+            "target",
+            serde_json::Value::from(format!(
+                "{}://session/{}",
+                channel.url_scheme(),
+                info.name.to_lowercase()
+            )),
+        );
+        object.insert("title", serde_json::Value::from(read_title(info)));
+        match serde_json::to_string(&object) {
+            Ok(reply) => println!("{reply}"),
+            Err(error) => {
+                control_error_reply(format, "daemon", &format!("{error}"));
+                return 1;
+            }
+        }
+    } else {
+        println!("{}", if screen.is_empty() { "(blank screen)" } else { &screen });
+    }
+    0
+}
+
+/// The best name the daemon knows: the agent-reported title, else the live
+/// foreground program, else the spawned command, else the placeholder every
+/// bare shell gets. The app's own `read` answers with its richer display
+/// title; the daemon plane reports what the roster carries.
+fn read_title(info: &termiod::protocol::SessionInfo) -> String {
+    if let Some(title) = info.title.as_deref().filter(|title| !title.is_empty()) {
+        return title.to_string();
+    }
+    let program = info
+        .foreground_argv
+        .as_ref()
+        .and_then(|argv| argv.first())
+        .map(String::as_str)
+        .or_else(|| info.command.split_whitespace().next())
+        .unwrap_or("");
+    let program = program.rsplit('/').next().unwrap_or(program);
+    if program.is_empty() {
+        "Terminal".to_string()
+    } else {
+        program.to_string()
+    }
+}
+
+/// An error in the app's own reply shape, so both halves of the router speak
+/// one contract to scripts.
+fn control_error_reply(format: &str, code: &str, message: &str) {
+    if format == "json" {
+        let mut object = std::collections::BTreeMap::new();
+        object.insert("error", serde_json::Value::from(code));
+        object.insert("message", serde_json::Value::from(message));
+        object.insert("ok", serde_json::Value::Bool(false));
+        object.insert("schema_version", serde_json::Value::from(1));
+        if let Ok(reply) = serde_json::to_string(&object) {
+            println!("{reply}");
+        }
+    } else {
+        println!("error: {message}");
+    }
+}
 /// The public hook contract: the flags keep their names because users
 /// hand-write hooks against them. Every one forwards to `termiod set-status`,
 /// which declares the same names and reads the same stdin blob, so the payload
@@ -462,12 +624,15 @@ async fn main() -> Result<()> {
             agent_report(&channel, args)
         }
         Some(Verb::Notify(args)) => notify(&channel, args),
-        Some(Verb::Sessions { verb }) => sessions(
-            &channel,
-            verb.unwrap_or(SessionVerb::List(ListArgs {
-                output: Output { json: false },
-            })),
-        ),
+        Some(Verb::Sessions { verb }) => {
+            sessions(
+                &channel,
+                verb.unwrap_or(SessionVerb::List(ListArgs {
+                    output: Output { json: false },
+                })),
+            )
+            .await
+        }
     }
 }
 
@@ -493,7 +658,7 @@ fn join(words: &[String]) -> String {
 
 /// One request per verb. Everything that decides *what* goes on the wire lives
 /// here; clap has already decided that the flags are spellable at all.
-fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
+async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
     // The app is contacted only once argv is fully diagnosed. clap has already
     // rejected what it can see; the checks below are the ones that need to
     // know which verb they are on, and they run before `require_socket` for
@@ -570,6 +735,18 @@ fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
         SessionVerb::Focus(args) => ("focus", args.output, args.session, String::new()),
 
         SessionVerb::Read(args) => {
+            // Device verb, daemon first (unify-server-plane Stage 10): a
+            // session the local daemon hosts answers from its authoritative
+            // VT — including sessions no window ever opened, and boxes with
+            // no app at all. A target the daemon does not own (a session on
+            // a remote device, an app-side title match, a foreign-channel
+            // link) falls through to the app, which keeps its coverage.
+            if let Some(code) =
+                daemon_read(channel, &args.session, args.lines, args.output.format()).await
+            {
+                std::process::exit(code);
+            }
+            app_socket::require_socket(channel);
             if let Some(lines) = args.lines {
                 extra = format!("\"lines\":{lines}");
             }
@@ -948,3 +1125,44 @@ line; any failure fails the whole command.";
 
 const FOCUS_HELP: &str = "\
 Select the session in the app and bring termio to the front.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release() -> Channel {
+        Channel::from_program_name("termio")
+    }
+
+    #[test]
+    fn links_resolve_the_way_the_apps_addressed_id_does() {
+        let id = "8de0b387-485a-4016-8990-cbcbfff03199";
+        let link = format!("termio://session/{id}");
+        assert_eq!(read_token(&release(), &link).as_deref(), Some(id));
+        // Case-insensitive scheme and id, trailing slash, query suffix.
+        assert_eq!(
+            read_token(&release(), &format!("TERMIO://session/{}", id.to_uppercase())).as_deref(),
+            Some(id)
+        );
+        assert_eq!(read_token(&release(), &format!("{link}/")).as_deref(), Some(id));
+        assert_eq!(read_token(&release(), &format!("{link}?focus=1")).as_deref(), Some(id));
+        // A bare token passes through untouched.
+        assert_eq!(read_token(&release(), "8de0b387").as_deref(), Some("8de0b387"));
+    }
+
+    #[test]
+    fn foreign_and_malformed_links_stay_with_the_app() {
+        assert_eq!(read_token(&release(), "termio-dev://session/8de0b387"), None);
+        assert_eq!(read_token(&release(), "https://example.com/session/x"), None);
+        assert_eq!(read_token(&release(), "termio://nothing-here"), None);
+        assert_eq!(read_token(&release(), "termio://session/"), None);
+    }
+
+    #[test]
+    fn only_uuid_shaped_names_belong_to_the_daemon_first_path() {
+        assert!(uuid_shaped("8de0b387-485a-4016-8990-cbcbfff03199"));
+        assert!(!uuid_shaped("8de0b387"));
+        assert!(!uuid_shaped("deadbeef-server"));
+        assert!(!uuid_shaped("8de0b387-485a-4016-8990-cbcbfff0319g"));
+    }
+}
