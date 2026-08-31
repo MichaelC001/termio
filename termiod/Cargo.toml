@@ -3,6 +3,7 @@ name = "termiod"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "termiod"
 description = "termiod — durable PTY session host (POC). Detach ≠ kill."
 license = "MIT"
 
@@ -20,6 +21,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "termiod"
 path = "src/bin/termiod.rs"
+
+[[bin]]
+name = "termio"
+path = "src/bin/termio.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "io-std", "sync", "macros", "signal", "time", "process"] }
