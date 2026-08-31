@@ -3,7 +3,7 @@ title: 零前置远程访问：把 dev tunnels 的形状搬到 termio
 status: draft
 type: rfc
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-08-30
 related:
   - 20260705-remote-access-relay-strategy.md
   - 20260827-termiod-lifecycle-reconcile.md
@@ -34,6 +34,64 @@ related:
 | tunelo 的 relay 与客户端共用 `crates/protocol`，两端都已用 `quinn` + `rustls` | `jiweiyuan/tunelo` 三个 `Cargo.toml` |
 | `ukvps` 上的 tunelo 是 **0.2.0** —— `--identity` 是 0.3.0 才有的 | `tunelo --version` |
 | `*.tunelo.net` 通配 DNS 已解析，证书含 `*.tunelo.net` | `getent hosts`、`/etc/nginx/sites-enabled/tunelo.net` |
+
+## 0.1 写完之后（2026-08-30 复核）
+
+这份 RFC 是 8-27 写的。到 8-30，§4.2 整条和 §6 里的两条已经落地了。下面每一行都是
+当场在 `ukvps` 上复核过的现状，**不是计划**。
+
+| 原文说 | 现在 | 出处 |
+| --- | --- | --- |
+| §4.2 步骤 6「两者都挂 `systemctl --user`」是计划 | 已实现。Publish 一下写两个 unit、`loginctl enable-linger`，`kill -9` 两个进程后 8 秒内都回来且地址不变 | `RemoteTunnel.swift` `RemoteSystemdUnit`；`feb228c` / `d3691a0` |
+| §4.3「三处必须逐字节相同」靠人守 | 地址由 Mac 从隧道日志**读回**再写进守护进程，`RemotePairing.invite` 的 `--url` 参数已删除 | 同上 |
+| `pair` 成功 ≠ 可达（§0 已列）——但没人管 | 画二维码之前先按手机的规则拨一次号，比对 `host_id`；不通就退回「尚未发布」 | `RemoteTunnelService.handshake` |
+| §6.1 tunelo 需要 0.3.0 `--identity` | 已满足，稳定子域名跨重启与 `kill -9` 复核过 | `4a6c5284842fef36.tunelo.net` |
+| §6.5 Linux systemd user unit「lifecycle RFC 明确 defer 了」 | **已发布**（`a1a8cdc` / PR #522），且 app 侧那份重复的 unit 也已经拆掉（PR #530） | `termiod/src/service.rs` `systemd::unit`；`RemoteTunnel.swift` `arm` |
+
+### 一个必须记下来的冲突（已修，保留经过）
+
+`termiod.service` 现在有**两个写者**，策略不同：
+
+| | `termiod service install`（#522） | `RemoteTunnel.swift`（本 RFC 这条线） |
+| --- | --- | --- |
+| `ExecStart` | `termiod serve` | `termiod serve --wss … --wss-origin …` |
+| 重启 | `Restart=on-failure` | `Restart=always` + `StartLimitIntervalSec=0` |
+| WSS 从哪来 | 磁盘上的 `wss.bind`，或 `TERMIOD_WSS` drop-in | 焊在命令行里 |
+
+后写的覆盖先写的。`ukvps` 上现在是 app 写的那份，而客户端 autostart 起来的
+`termiod serve` 占着 socket，于是 unit 每 3 秒起一次、每次绑不上就退出 ——
+**`NRestarts=74377`**，`termiod status` 报 `service: none`。
+
+盒子今天仍然可达，但**不是靠这个 unit**：`wss.bind` / `wss.origin` 在磁盘上，
+autostart 起来的那个守护进程从磁盘把自己武装好了。也就是说这条线目前**没有**在
+兑现它自己写下的「扛重启」。
+
+`service.rs` 的注释已经把出口指明了：*"WSS is deliberately not on the command
+line: the bind survives in `wss.bind` beside the socket, or in a `TERMIOD_WSS`
+drop-in."* 守护进程侧把 `Restart=on-failure` 的理由也写清楚了 ——
+`termiod stop` 发 `SIGTERM` 后要等 socket 排空，`always` 会和那次排空抢。
+
+**已收敛（2026-08-30，PR #530 `614a00c`）。** app 不再自己写 `termiod.service`，
+`arm` 改成四步：停掉命令行里带 `--wss` 的旧 unit（那是 app 写的标志，`service
+install` 写的从不带）→ 写
+`~/.config/systemd/user/termiod.service.d/override.conf`，只有
+`Environment="TERMIOD_WSS=…"` / `TERMIOD_WSS_ORIGIN=…` → `termiod stop --force`
+→ `termiod service install`。`Restart` 策略回到守护进程自己说了算。
+
+**为什么是 drop-in 而不是 `wss.bind`。** `wss.bind` / `wss.origin` / `pair.token`
+都在 `state_dir()` = `$XDG_RUNTIME_DIR/termiod/`，那是 tmpfs —— 重启就没了。而
+`service install` 只覆盖 unit 文件，不动 `.d/`。守护进程每次启动都读环境变量
+（`wss.rs` 的优先级：`--wss` > `TERMIOD_WSS` > `wss.bind`），所以 drop-in 是唯一
+一份跨重启还在、又不会被 `service install` 冲掉的武装记录。
+
+**代价记一笔**：环境变量武装起来的监听器**不会**把 origin 回写到 `wss.origin`，
+而 `pair` 是另一个进程 —— 所以 `RemotePairing.invite` 现在得先
+`systemctl --user show termiod -p Environment` 把 origin 读回来，再用
+`TERMIOD_WSS_ORIGIN='…' termiod pair --json` 出邀请。§4.3「三处逐字节相同」这条
+约束因此多了一个必须对齐的地方，不是少了一个。
+
+隧道那个 unit（`termio-tunnel.service`）没有第二个写者，保持现状 —— 它的
+`Restart=always` + `StartLimitIntervalSec=0` 是对的：隧道掉了就该一直重连。
 
 ## 1. 问题
 
@@ -165,7 +223,9 @@ Mac ──ssh──▶ 用户机器            控制面：部署、配对、验
 5. origin 钉住该子域名 → `termiod pair --json` → 二维码
 6. 两者都挂 `systemctl --user`，配 `loginctl enable-linger`
 
-用户做的事：点一下。
+用户做的事：点一下。**1–6 已经实现**（`RemoteTunnel.swift`），但第 6 步的守护进程
+那一半写法是错的 —— 见 §0.1 的冲突：隧道 unit 归 app 写，`termiod.service` 应该归
+`termiod service install` 写。
 
 **全程不需要 root。** `~/.local/bin` + `systemctl --user` + linger。nginx 那条路必须
 sudo，而很多人的 VPS 账号没有 sudo，或不愿在安装流程里交出去。这一条本身就足以
@@ -182,6 +242,14 @@ sudo，而很多人的 VPS 账号没有 sudo，或不愿在安装流程里交出
 
 三处必须**逐字节相同**，否则 403。所以 URL 只能有一个来源：**Mac 把 origin 写到机器上，
 `pair` 从机器自己的 `wss.origin` 派生邀请** —— 绝不在配对时传 `--url`。
+
+**这条现在由代码守，不由人守**：地址是 Mac 从隧道日志读回来的（读回来的值没法手打错），
+`RemotePairing.invite` 的 `--url` 参数已经删掉 —— 它只改邀请上**印**的地址，不改守护
+进程**接受**的 origin，留着就是一个「扫得进、连不上」的陷阱。
+
+但读回来也只证明隧道说过这个地址。`pair` 从不接触守护进程（§0），所以邀请一律先按
+手机的规则拨一次号、比对 `host_id`，通了才画二维码；不通就退回「尚未发布」并给出
+重新发布的入口 —— 对拿着手机的人来说，「连不上的盒子」和「没发布的盒子」是同一件事。
 
 ### 4.4 分层：按"用户已经有什么"，不按"我们想卖什么"
 
@@ -217,17 +285,26 @@ tunelo 的 QUIC**（它讲 HTTP/3，tunelo 是 quinn 上的自定义协议）。
 
 ## 6. 公开之前必须先修
 
-1. **tunelo 0.3.0 的 `--identity`。** 现场是 0.2.0，子域名每次重启都变 → 钉住的 origin
-   失效 → 手机被甩掉（`address`/`origin` 是持久化在手机上的）。稳定名字是整条路的地基。
+1. ~~**tunelo 0.3.0 的 `--identity`。**~~ **已解决**（2026-08-30）。`ukvps` 上是 0.3.0，
+   `4a6c5284842fef36.tunelo.net` 跨进程重启、`kill -9`、换 provider 都没变。稳定名字
+   是整条路的地基，这块地基现在有了。
 2. **抢注 / DoS。** `crates/relay/src/router.rs::resolve_subdomain` 在 owner 断线时把
    子域名交给下一个来者；password 只 gate `Attach`，不 gate `Register` 回收。修法 =
    owner 用私钥自证回收。带着这个上线等于谁都能顶掉别人的机器。
 3. **Register 准入。** 用已有的 Lemon Squeezy 后端签短期 Ed25519 token，relay 内嵌
    公钥验签 —— 私钥在后端，**开源不泄密**。
-4. **`--max-session 0`。** `crates/tunelo/src/main.rs:100` 默认 86400 秒；常驻 companion
-   必须关掉，否则每天断一次。
-5. **Linux systemd user unit。** 零前置路径必须扛重启。lifecycle RFC §4 目前明确 defer
-   了它，这条依赖要显式提出来。
+4. **`--max-session 0`。** `crates/tunelo/src/main.rs:100` 默认 86400 秒；`ukvps` 的
+   relay unit 命令行上没写这个 flag，所以吃的就是这个默认 —— 隧道每 24 小时被切一次。
+   **未解决**，而且这是别人生产服务的策略，不是本 RFC 能顺手改的。
+   隧道 unit 的 `Restart=always` + 稳定 `--identity` *应该*让客户端被切之后自己回来
+   并夺回同一个子域名 —— 但这只在 `kill -9` 下验证过，没有跨过一个真实的 24 小时窗口，
+   也没验证客户端被 relay 切断时是**退出**还是**挂在一条死连接上**。后者的话重启永远
+   不触发。
+5. ~~**Linux systemd user unit。**~~ **已发布**（2026-08-29，`a1a8cdc` / PR #522）：
+   `termiod service install` 在 Linux 上写 `termiod.service`，`Restart=on-failure`，
+   `spawn_daemon` 在 unit 持有 socket 时改走 `systemctl --user start`。
+   app 侧一度又写了一份同名 unit，两个写者策略不同，在 `ukvps` 上空转了
+   `NRestarts≈74000` 次；PR #530 已收敛成 drop-in（见 §0.1）。
 6. **滥用预案。** 一个公开的、能把任意本地端口暴露到公网的服务**一定**会被拿去做 C2
    和钓鱼 —— dev tunnels 的逆向分析文章标题就叫 "The Accidental C2"，微软的反钓鱼插页
    就是为此而设。上线前要有：滥用举报入口、按 Register token 吊销的能力、以及速率限制。
@@ -296,7 +373,10 @@ termiod，由 termiod 自己出站连官方 relay，直接在那条连接上跑�
 3. **配对由谁经手。** 现在是 Mac 通过 SSH 代跑 `termiod pair --json`（控制面在 Mac）。
    要不要允许手机直接向 relay 报到？前者不需要新协议，后者能去掉"必须有一台 Mac"。
 4. **`upgrading` 与本 RFC 的耦合。** 武装监听器和钉 origin 都需要重启守护进程，也就是
-   lifecycle RFC §5.2 的 `stop --if-idle`。本 RFC **依赖**那一条先落地。
+   lifecycle RFC §5.2 的 `stop --if-idle`。实现时走的是 `termiod stop --force`，并在
+   点下去之前把会被结束的会话**按命令行逐条列出来**让人确认 —— 「是不是该结束」取决于
+   那是个跑到一半的 agent 还是一个停在提示符的登录 shell，只报个数字答不了这个问题。
+   `--if-idle` 落地后这里可以退回到「空闲就不问」。
 
 ## 9. 出处
 

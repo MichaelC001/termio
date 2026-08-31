@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-08-29
+updated: 2026-08-30
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -1030,8 +1030,8 @@ announced has `needs_you` on the wire.
 | 7 | **Event flood vs UI** | Protocol allows high-rate `E`; client discipline (per-session `SessionRuntime`, no roster replace per tick) is already law — see sidebar-scroll-performance. Host also coalesces status transitions (≤ ~10/s per session). |
 | 8 | **Superlogical ships first and defines expectations** | Their step 1 is an incredible mux (**Announced**). Our counter is not feature racing; it's landing #170–#172 so agents *survive the app* this quarter, with agent events they haven't announced. |
 | 9 | **No pipe-mode (non-tty) attach client** | The CLI `attach` assumes an interactive tty; driven non-interactively over a bare SSH channel it delivers **0 bytes** (confirmed 2026-07-31 on `ukvps`), which blocks scripting, piping, and honest WAN-throughput measurement. The protocol already has `mode:"observe"`; the fix is a CLI surface for it (`attach --observe`/`pipe` → raw `D` to stdout, no raw-mode, no stdin capture). Small, and needed before the Mac/iOS clients rely on the same read path. Note the sharper framing (Codex review 2026-07-31): today `remote attach` runs `ssh -t host termiod attach`, so the framed protocol lives *between the remote CLI and the remote socket* and never crosses SSH from a native client — the "same bytes over every transport" claim (§C.9) is **not yet exercised end-to-end**; a non-tty `termiod stdio` bridge is what makes it real. |
-| 10 | **Unbounded per-client backlog (the non-blocking hot path's shadow cost)** | The anti-100× invariant makes `fan_out` never block on a slow consumer — but per-client and outbound channels are **unbounded** (`daemon.rs`), so a stalled socket (a wedged phone, a paused SSH client) accumulates raw output without limit until it threatens the daemon. The fix pairs with the `bytes::Bytes` fan-out (single shared chunk, refcounted): give each client a **byte budget / sequence cursor**; when a client falls behind the retained window, **drop it (v0) or resnapshot it (v1)** rather than grow forever. One change closes both the (C+2)×n copy cost and this memory risk. |
-| 11 | **Resize is not a barrier; `pty.resize` errors ignored** | `handle_msg(Resize)` (`session.rs`) updates stored dims + emits `Resized` even if the `TIOCSWINSZ` ioctl failed, and a promoted writer after failover keeps stale dims and is not told to reclaim size. v1 must make resize the quiesce → resize → fresh `S` → resume barrier (§C.5) and surface ioctl failure. |
+| 10 | ~~**Unbounded per-client backlog**~~ **Closed** (verified in code 2026-08-30) | Both halves of the recorded fix landed: `fan_out` takes a shared `Bytes`, and each client holds a metered backlog (`session/backlog.rs`, `CLIENT_BACKLOG_CAP` = 4 MiB). Over the cap, a snapshot-capable client is resynced once; a second strike drops it with a named log line (`session.rs:692`). The `(C+2)×n` copy cost and the memory risk closed together, as predicted. |
+| 11 | ~~**Resize is not a barrier; `pty.resize` errors ignored**~~ **Closed** (verified in code 2026-08-30) | `session.rs:1887` implements §C.5's quiesce → resize → fresh `S` → resume barrier, and `pty.rs:33` surfaces `TIOCSWINSZ` failure as an error instead of swallowing it — asserted by a test (`session.rs:2655`). |
 
 ## G. Phased roadmap
 

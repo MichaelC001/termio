@@ -96,10 +96,6 @@ tmux가 가르쳐 줬을 나머지는 Mac 단축키거나, 이미 알고 있는 
 - 스크립트는 `termio sessions`(아래 참고)가 `send-keys` 역할을 하고, 에이전트
   상태는 화면을 긁는 게 아니라 프로토콜 객체예요.
 
-프리픽스 키도, `.tmux.conf`도, 세션 복원 플러그인도 없어요 — 지속성이 동작하기
-전에 설정할 게 하나도 없어요. tmux가 이미 손에 익었다면, 다른 프로그램처럼 세션
-안에서 그대로 돌아가요.
-
 ## 쓰던 에이전트 그대로 동작해요
 
 Claude Code, Codex, Gemini CLI, Grok, Cursor Agent, Copilot, Amp, OpenCode,
