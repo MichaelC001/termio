@@ -343,14 +343,14 @@ final class TermiodBackend: DeviceClient {
             return
         }
         // `fs_match` and not `fs_search`: this field searches *names*, and
-        // `fs_search` is the device's content search (`git grep`).
+        // `fs_search` is the device's content search.
         //
         // Nothing is cancelled when a query is abandoned, and nothing needs to
         // be: `fs_match` is one reply off an index the host already holds, and
         // only `fs_search` registers a cancellable request (`daemon.rs`, the
         // `Control::Cancel` arm). That changes the day this pane gains content
-        // search — an abandoned `fs_search` leaves `git grep` running until the
-        // connection drops, and `Termiod.CancelOperation` is what stops it.
+        // search — an abandoned `fs_search` keeps walking the checkout until
+        // the connection drops, and `Termiod.CancelOperation` is what stops it.
         let request = nextSeq()
         pendingSearches[request] = query
         do {
