@@ -20,6 +20,7 @@
 //! a `termiod-core` crate boundary, the same move as `termiod-vt`.
 
 pub mod agent;
+pub mod channel;
 pub mod client;
 pub mod daemon;
 pub mod files;
@@ -38,4 +39,5 @@ pub mod resource;
 pub mod service;
 pub mod session;
 pub mod tombstone;
+pub mod version;
 pub mod wss;
