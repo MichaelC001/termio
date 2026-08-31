@@ -17,6 +17,27 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.48.0",
+    date: "2026-08-31",
+    title: "A session off screen keeps reporting",
+    changes: {
+      new: [
+        "The Mac stays awake while any session is busy. An agent stopped at a permission prompt no longer lets the machine idle into sleep before your phone can answer.",
+        "termio version prints one table — this client, the app, this Mac's session host, and every known remote's — so version skew is visible before it bites.",
+      ],
+      improved: [
+        "When a machine can't be reached, its dot now carries ssh's own last words — \"Permission denied (publickey)\" instead of \"the connection closed\" — and a box without the session host installed says exactly that. Fix the network, switch back to the app, and it reconnects by itself.",
+      ],
+      fixed: [
+        "A session whose pane wasn't on screen could freeze mid-turn: its screen served the same stale frame for minutes, watch missed the moment an agent finished, and send --wait came back while the target was still working. Hidden panes now keep processing their output; only the drawing pauses.",
+        "An agent that exited back to its shell no longer loses its row to Also Running — the row demotes in place, and closing a session that never rendered a pane really closes it.",
+        "Reattaching could land the screen a line off and eat the bottom row; the repaint now puts everything back exactly where it was.",
+        "Linux: a reboot no longer renames the box or disarms its phone listener — the session host's identity and pairing state moved to a directory that survives restarts, and pair --rotate really revokes the old token everywhere.",
+        "Font and theme inheritance reads Ghostty's config the way Ghostty does: the config.ghostty filenames, light:/dark: theme pairs, and CRLF-saved files all parse now.",
+      ],
+    },
+  },
+  {
     version: "0.47.0",
     date: "2026-08-30",
     title: "Upgrading the session host no longer costs you your sessions",
