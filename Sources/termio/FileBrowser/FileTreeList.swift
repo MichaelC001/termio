@@ -153,6 +153,27 @@ private struct FileRow: View {
     }
 
     var body: some View {
+        if let notice = node.notice {
+            // Not a file: no icon column, no highlight, no affordance. A quiet
+            // line in the folder it belongs to, which is where a listing that
+            // stopped short has to say so — the rows above it look complete.
+            Text(notice)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .padding(.vertical, 2)
+                .padding(.leading, -6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(OutlineViewFixups())
+                .background(OutlineViewCapture(onFound: captureOutline))
+                .listRowBackground(Color.clear)
+        } else {
+            row
+        }
+    }
+
+    @ViewBuilder
+    private var row: some View {
         // One explicit HStack for both kinds (not `Label`, whose internal insets shift
         // the title): a folder leads with the same folder glyph the left sidebar's
         // project headers use; a file leads with its type icon. Because both occupy

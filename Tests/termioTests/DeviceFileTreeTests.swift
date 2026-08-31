@@ -39,12 +39,14 @@ final class DeviceFileTreeTests: XCTestCase {
     }
 
     private func listing(
-        _ path: String, _ entries: [(String, FileEntry.Kind)], error: String? = nil
+        _ path: String, _ entries: [(String, FileEntry.Kind)], error: String? = nil,
+        isShortened: Bool = false
     ) -> Termiod.DirectoryListing {
         Termiod.DirectoryListing(
             path: path,
             entries: entries.map { FileEntry(name: $0.0, kind: $0.1) },
-            error: error)
+            error: error,
+            isShortened: isShortened)
     }
 
     /// The ask: the root plus every directory whose contents the tree is holding,
@@ -334,5 +336,48 @@ final class DeviceFileTreeTests: XCTestCase {
             ],
             error: nil)])
         XCTAssertEqual(tree.rootNodes.map(\.name), ["zlink", "a.txt"])
+    }
+
+    // MARK: - A listing that stopped short
+
+    /// A directory the device could only answer part of says so, in itself.
+    ///
+    /// Only an old daemon produces one — it pages by offset, which the keyset
+    /// cursor replaced, so the listing stops at its first page. Logging that was
+    /// not enough: the flag died at the client boundary and the tree drew two
+    /// thousand entries as a folder. On screen a prefix of a directory is a
+    /// directory, and the rows themselves can never say otherwise.
+    func testAShortenedListingCarriesANoteIntoTheTree() {
+        let tree = localModel(root: "/r")
+        tree.apply([listing(
+            "/r", [("a", .file), ("b", .file)], isShortened: true)])
+
+        let rows = tree.rootNodes
+        XCTAssertEqual(rows.map(\.name).prefix(2).map { $0 }, ["a", "b"])
+        let note = try? XCTUnwrap(rows.last)
+        XCTAssertNotNil(note?.notice, "the folder has to say its listing stopped short")
+        XCTAssertEqual(note?.isDirectory, false)
+        XCTAssertEqual(note?.canPreview, false)
+        XCTAssertNil(note?.localURL, "there is no file here to drag, reveal or open")
+    }
+
+    /// The ordinary complete listing carries no note — every row is a real one.
+    func testACompleteListingCarriesNoNote() {
+        let tree = localModel(root: "/r")
+        tree.apply([listing("/r", [("a", .file)])])
+        XCTAssertEqual(tree.rootNodes.count, 1)
+        XCTAssertNil(tree.rootNodes.first?.notice)
+    }
+
+    /// And the note goes away once the device can answer the whole directory —
+    /// a re-list must not leave the previous answer's note behind.
+    func testTheNoteClearsWhenTheListingComesBackWhole() {
+        let tree = localModel(root: "/r")
+        tree.apply([listing("/r", [("a", .file)], isShortened: true)])
+        XCTAssertNotNil(tree.rootNodes.last?.notice)
+
+        tree.apply([listing("/r", [("a", .file), ("b", .file)])])
+        XCTAssertEqual(tree.rootNodes.map(\.name), ["a", "b"])
+        XCTAssertTrue(tree.rootNodes.allSatisfy { $0.notice == nil })
     }
 }

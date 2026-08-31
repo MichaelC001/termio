@@ -387,6 +387,20 @@ extension Termiod {
         let path: String
         let entries: [FileEntry]
         let error: String?
+        /// The host has more of this directory and no cursor to continue from —
+        /// an old daemon, paging by offset (`PathListingPayload.nextPage`).
+        ///
+        /// Carried to the tree rather than only logged: `entries` is a prefix,
+        /// and a prefix of a directory looks exactly like a directory. Whoever
+        /// draws these rows is the only one who can say otherwise.
+        let isShortened: Bool
+
+        init(path: String, entries: [FileEntry], error: String?, isShortened: Bool = false) {
+            self.path = path
+            self.entries = entries
+            self.error = error
+            self.isShortened = isShortened
+        }
     }
 
     /// A batch of listings and the `fs:` cursor they were taken at — what a
@@ -623,7 +637,8 @@ extension Termiod {
             DirectoryListings(
                 listings: paths.map { path in
                     DirectoryListing(
-                        path: path, entries: entries[path] ?? [], error: failure[path])
+                        path: path, entries: entries[path] ?? [], error: failure[path],
+                        isShortened: truncated.contains(path))
                 },
                 seq: stamp ?? 0)
         }
@@ -872,13 +887,18 @@ struct DeviceFileProvider: Sendable {
     /// (`files.rs` `confine`), and passing the tree's own root is what arms that.
     let root: String
 
-    func list(_ path: String) async throws -> [FileEntry] {
+    /// One directory, as the whole listing rather than its entries alone —
+    /// `isShortened` is part of the answer, and a caller that took only the
+    /// rows would draw a prefix as a directory.
+    func list(_ path: String) async throws -> Termiod.DirectoryListing {
         let listings = try await list([path])
-        guard let listing = listings.first else { return [] }
+        guard let listing = listings.first else {
+            return Termiod.DirectoryListing(path: path, entries: [], error: nil)
+        }
         if let error = listing.error {
             throw TermiodClientError.requestFailed(error)
         }
-        return listing.entries
+        return listing
     }
 
     /// Several directories in **one** request, which is the shape `fs.list` was

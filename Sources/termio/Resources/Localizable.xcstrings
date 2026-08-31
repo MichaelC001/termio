@@ -4537,6 +4537,16 @@
         }
       }
     },
+    "Only the first %lld items are shown — update termio on this device to list them all.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅显示前 %lld 项——请更新此设备上的 termio 以列出全部。"
+          }
+        }
+      }
+    },
     "Opacity": {
       "localizations": {
         "zh-Hans": {

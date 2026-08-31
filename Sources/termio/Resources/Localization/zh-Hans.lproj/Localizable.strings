@@ -920,6 +920,8 @@
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。</string>
 	<key>Only regular files can be previewed.</key>
 	<string>只能预览普通文件。</string>
+	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
+	<string>仅显示前 %lld 项——请更新此设备上的 termio 以列出全部。</string>
 	<key>Opacity</key>
 	<string>不透明度</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>

@@ -255,6 +255,10 @@ final class DeviceFileNode: Identifiable {
     /// decides whether `url` addresses a file the Finder, the editor, a drag
     /// and the row menu may touch.
     let isOnThisMac: Bool
+    /// Set on the one synthetic row a directory may carry: the note saying its
+    /// listing stopped short. Not a file — it opens nothing, drags nowhere, and
+    /// is the only row in the tree that is not something on the device.
+    let notice: String?
     // Nonisolated: `Identifiable.id` is a nonisolated requirement, and the path
     // is immutable — no main-actor state involved.
     nonisolated var id: String { path }
@@ -275,6 +279,7 @@ final class DeviceFileNode: Identifiable {
         isSymbolicLink: Bool,
         symbolicLinkTarget: String?,
         isOnThisMac: Bool,
+        notice: String? = nil,
         model: DeviceFileTreeModel
     ) {
         self.path = path
@@ -284,6 +289,7 @@ final class DeviceFileNode: Identifiable {
         self.isSymbolicLink = isSymbolicLink
         self.symbolicLinkTarget = symbolicLinkTarget
         self.isOnThisMac = isOnThisMac
+        self.notice = notice
         self.model = model
     }
 
@@ -380,7 +386,7 @@ final class DeviceFileTreeModel: ObservableObject {
     /// a guess held aside. Adopting one still asks the device for real, so a
     /// guess that went stale is corrected within one round trip and never
     /// survives longer than the first look at it.
-    private var prefetched: [String: [FileEntry]] = [:]
+    private var prefetched: [String: Termiod.DirectoryListing] = [:]
     /// Directories per prefetch, and in total. A checkout with 400 folders under
     /// one parent must not turn one expand into a listing of the whole tree; the
     /// cap is generous enough to cover the folders actually on screen.
@@ -679,7 +685,7 @@ final class DeviceFileTreeModel: ObservableObject {
                 : Dictionary(
                     uniqueKeysWithValues: (nodesByPath[listing.path]?.loadedChildren ?? [])
                         .map { ($0.path, $0) })
-            let rebuilt = nodes(for: listing.entries, under: listing.path, reusing: previous)
+            let rebuilt = children(of: listing, reusing: previous)
             if listing.path == root {
                 rootNodes = rebuilt
             } else {
@@ -717,7 +723,7 @@ final class DeviceFileTreeModel: ObservableObject {
             // that.
             guard let listings = try? await provider.list(paths) else { return }
             for listing in listings where listing.error == nil {
-                prefetched[listing.path] = listing.entries
+                prefetched[listing.path] = listing
             }
         }
     }
@@ -745,7 +751,7 @@ final class DeviceFileTreeModel: ObservableObject {
     /// outline. The device is asked either way: a guess is shown, never trusted.
     fileprivate func loadChildren(of node: DeviceFileNode) {
         if let ready = prefetched.removeValue(forKey: node.path) {
-            node.loadedChildren = nodes(for: ready, under: node.path)
+            node.loadedChildren = children(of: ready)
         }
         guard !loadsInFlight.contains(node.path) else { return }
         loadsInFlight.insert(node.path)
@@ -765,13 +771,12 @@ final class DeviceFileTreeModel: ObservableObject {
                 }
             }
             do {
-                let entries = try await provider.list(node.path)
+                let listing = try await provider.list(node.path)
                 // Reusing the nodes already there keeps whatever is expanded
                 // underneath a prefetched folder when its real listing lands.
                 let previous = Dictionary(
                     uniqueKeysWithValues: (node.loadedChildren ?? []).map { ($0.path, $0) })
-                node.loadedChildren = nodes(
-                    for: entries, under: node.path, reusing: previous)
+                node.loadedChildren = children(of: listing, reusing: previous)
                 revision &+= 1
                 prefetchChildren(of: node.loadedChildren ?? [])
             } catch {
@@ -809,6 +814,41 @@ final class DeviceFileTreeModel: ObservableObject {
     /// would throw away every loaded subtree under it and make the tree fetch
     /// them all again, one at a time, which is the cost this refresh exists to
     /// remove.
+    /// One directory's rows: its entries, and — when the device could not give
+    /// the whole directory — the note saying so, last.
+    ///
+    /// Every path that fills a folder goes through here (the refresh graft, a
+    /// lazy expand, an adopted prefetch), because the note is not decoration:
+    /// without it a listing the host cut at its page size draws as a complete
+    /// folder, and there is nothing on screen to tell the difference.
+    private func children(
+        of listing: Termiod.DirectoryListing,
+        reusing existing: [String: DeviceFileNode] = [:]
+    ) -> [DeviceFileNode] {
+        var rows = nodes(for: listing.entries, under: listing.path, reusing: existing)
+        guard listing.isShortened else { return rows }
+        let path = Self.noticePath(under: listing.path)
+        let sentence = localized(
+            "Only the first \(listing.entries.count) items are shown — update termio on this device to list them all.")
+        let note = DeviceFileNode(
+            path: path, name: sentence,
+            isDirectory: false, canPreview: false,
+            isSymbolicLink: false, symbolicLinkTarget: nil,
+            // Never this Mac's, whatever the checkout is: there is no file here
+            // to drag, reveal, rename or open.
+            isOnThisMac: false, notice: sentence, model: self)
+        nodesByPath[path] = note
+        rows.append(note)
+        return rows
+    }
+
+    /// The identity of a directory's note row. A unit separator cannot be part
+    /// of a name the host would list, so the outline can key on it like any
+    /// other row without colliding with a real one.
+    private static func noticePath(under directory: String) -> String {
+        directory + "\u{1f}shortened"
+    }
+
     private func nodes(
         for entries: [FileEntry], under parent: String,
         reusing existing: [String: DeviceFileNode] = [:]

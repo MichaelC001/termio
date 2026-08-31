@@ -920,6 +920,8 @@
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
 	<key>Only regular files can be previewed.</key>
 	<string>Only regular files can be previewed.</string>
+	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
+	<string>Only the first %lld items are shown — update termio on this device to list them all.</string>
 	<key>Opacity</key>
 	<string>Opacity</string>
 	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
