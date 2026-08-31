@@ -245,27 +245,33 @@ pub async fn run_status(root: &str) -> Result<GitSnapshot> {
 pub const STATUS_CAP: usize = 5_000;
 
 /// And the most path bytes, because the entry count alone does not bound a
-/// frame — a deeply nested tree can carry very long paths.
-const STATUS_PATH_BYTES_CAP: usize = 2 * 1024 * 1024;
+/// frame — a deeply nested tree can carry very long paths. One batch spends
+/// its paths three times (updated, removed, conflicts) and JSON can double a
+/// path that is all quotes, so the headroom under `MAX_FRAME_SIZE` is what
+/// this number buys: 6 × 1 MiB, plus at most `STATUS_CAP` entry envelopes.
+const STATUS_PATH_BYTES_CAP: usize = 1024 * 1024;
 
 /// Cut an oversized status list down to what a batch may carry.
 ///
-/// Tracked changes are kept first and untracked ones fill what is left: the
+/// Conflicts survive first — the one status that must be acted on — then the
+/// rest of the tracked changes, and untracked paths fill what is left: the
 /// flood case is always untracked build output, and the edits a person is
-/// reviewing are the rows that must survive it. Within each half the order is
-/// by path, so the cut is deterministic — two consecutive runs of an unchanged
-/// flooded tree keep the same rows and produce no delta.
+/// reviewing are the rows that must outlive it. That is the order the pane
+/// already sorts rows in. Within each tier the order is by path, so the cut is
+/// deterministic — two consecutive runs over an unchanged flooded tree keep the
+/// same rows and produce no delta.
 fn cap_statuses(snapshot: &mut GitSnapshot) {
     if snapshot.statuses.len() <= STATUS_CAP {
         return;
     }
     let mut paths: Vec<&String> = snapshot.statuses.keys().collect();
     paths.sort_by_key(|path| {
-        let untracked = matches!(
-            snapshot.statuses[*path].status,
-            Some(GitFileStatus::Untracked) | Some(GitFileStatus::Ignored)
-        );
-        (untracked, *path)
+        let tier = match snapshot.statuses[*path].status {
+            Some(GitFileStatus::Unmerged { .. }) => 0,
+            Some(GitFileStatus::Untracked) | Some(GitFileStatus::Ignored) => 2,
+            _ => 1,
+        };
+        (tier, *path)
     });
     let mut bytes = 0usize;
     let mut keep: HashSet<String> = HashSet::new();
@@ -1361,6 +1367,13 @@ mod tests {
                 worktree_status: GitStatusCode::Modified,
             }),
         );
+        snapshot.statuses.insert(
+            "zzz/conflicted.rs".to_string(),
+            FileState::new(GitFileStatus::Unmerged {
+                first_head: GitUnmergedCode::Updated,
+                second_head: GitUnmergedCode::Updated,
+            }),
+        );
         for index in 0..STATUS_CAP + 10 {
             snapshot.statuses.insert(
                 format!("node_modules/pkg/{index}.js"),
@@ -1375,6 +1388,11 @@ mod tests {
             snapshot.statuses.contains_key("src/edited.rs"),
             "the tracked edit is the row a person is reviewing; the flood is not"
         );
+        assert!(
+            snapshot.statuses.contains_key("zzz/conflicted.rs"),
+            "a conflict must act on outlives everything, whatever it sorts as"
+        );
+        assert_eq!(snapshot.conflicts(), vec!["zzz/conflicted.rs".to_string()]);
     }
 
     /// The cut has to be deterministic, or two runs over an unchanged flooded
