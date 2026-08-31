@@ -105,17 +105,24 @@ final class ExternalSessionResolutionTests: XCTestCase {
     }
 
     /// The identity gate, arm by arm: the daemon never reuses an id, so a
-    /// matching id is the closed session itself, a different id is a new one —
-    /// and a record without an id (closed before any attach or roster revealed
-    /// one) matches by name, which is safe because such names are this app's
-    /// own session UUIDs that nothing else mints.
+    /// matching id is the closed session itself and a different id is a new
+    /// one. A record without an id may claim by name only when the name is
+    /// app-authored — a UUID, which nothing else mints. An id-less record with
+    /// a device-given name proves nothing about which same-named session it
+    /// meant, so it never kills.
     func testJournalClaimsMatchesByDaemonID() {
         XCTAssertTrue(TermioStore.journalClaims(
             record("n", daemonID: "aaaa1111"), rowID: "aaaa1111"))
         XCTAssertFalse(TermioStore.journalClaims(
             record("n", daemonID: "aaaa1111"), rowID: "bbbb2222"))
-        XCTAssertTrue(TermioStore.journalClaims(record("n", daemonID: nil), rowID: "bbbb2222"),
-                      "an id-less record still claims its name")
+        XCTAssertTrue(
+            TermioStore.journalClaims(
+                record(UUID().uuidString, daemonID: nil), rowID: "bbbb2222"),
+            "an id-less record for an app-authored (UUID) name still claims it")
+        XCTAssertFalse(
+            TermioStore.journalClaims(record("build", daemonID: nil), rowID: "bbbb2222"),
+            "an id-less record for a device-given name must never kill — "
+                + "identity unproven means safety over kill")
     }
 
     /// The local socket is per-uid, so an attached unknown on this Mac is a
@@ -206,15 +213,18 @@ final class ExternalSessionSweepTests: XCTestCase {
 
     func testAJournaledNameIsNotAdopted() throws {
         let (store, _, _) = makeStore()
-        store.journalClosedSession(named: "orphan", sshAlias: nil)
+        // An app-authored (UUID) name, closed before anything revealed its id —
+        // the shape a restored row's close leaves behind.
+        let orphan = UUID().uuidString
+        store.journalClosedSession(named: orphan, sshAlias: nil)
 
         let before = store.allSessions.count
         try store.reconcileExternalSessions(
-            [information(name: "orphan")], from: .thisMac, route: .local)
+            [information(name: orphan)], from: .thisMac, route: .local)
 
         XCTAssertEqual(store.allSessions.count, before,
                        "this app's own orphan was adopted instead of killed")
-        XCTAssertTrue(store.closedSessionJournal.contains { $0.name == "orphan" },
+        XCTAssertTrue(store.closedSessionJournal.contains { $0.name == orphan },
                       "the record must survive until the roster stops naming it")
     }
 
@@ -340,6 +350,61 @@ final class ExternalSessionSweepTests: XCTestCase {
                        "a spent record left behind would kill the new session later")
     }
 
+    /// A respawn-in-place reuses its name but never its daemon id, and the new
+    /// id is unknown until the fresh attach or roster answers — so the respawn
+    /// must clear the stale one. A close inside that window then journals an
+    /// id-less record, and because the name is app-authored (a UUID) that
+    /// record still claims and kills the respawned session. With the stale id
+    /// left in place, the sweep would read the respawn's fresh id as
+    /// legitimate reuse and adopt the very orphan the close meant to end.
+    func testACloseInTheRelaunchWindowStillClaimsTheRespawn() throws {
+        let (store, _, _) = makeStore()
+        let session = Session(title: "agent", agent: .terminal)
+        store.projects[0].sessions = [session]
+        store.updateSession(session.id) { $0.termiodDaemonID = "aaaa1111" }
+
+        store.relaunchSession(session.id)
+        XCTAssertNil(store.session(session.id)?.termiodDaemonID,
+                     "the old id died with the old daemon session")
+
+        store.closeSession(session.id)
+        let name = session.id.uuidString
+        let recorded = store.closedSessionJournal.first { $0.name == name }
+        XCTAssertNotNil(recorded, "the close was not journaled")
+        XCTAssertNil(recorded?.daemonID,
+                     "a stale id in the record would spare the respawned orphan")
+
+        let before = store.allSessions.count
+        try store.reconcileExternalSessions(
+            [information(name: name, id: "bbbb2222")], from: .thisMac, route: .local)
+
+        XCTAssertEqual(store.allSessions.count, before,
+                       "the respawned orphan was adopted instead of killed")
+        XCTAssertTrue(store.closedSessionJournal.contains { $0.name == name },
+                      "the record must survive until the roster stops naming the orphan")
+    }
+
+    /// The upgrade corner: an adopted row persisted by a build before
+    /// `termiodDaemonID` existed decodes with no id, and closing it before the
+    /// first roster answers writes an id-less record for a device-given name.
+    /// Such a record proves nothing about which same-named session it meant,
+    /// so it never kills — the row is resolved normally and the record dropped.
+    /// A true orphan resurfacing is re-adopted, and *that* row's close
+    /// journals with the id, so the miss converges.
+    func testAnIDLessRecordWithADeviceGivenNameNeverKills() throws {
+        let (store, _, _) = makeStore()
+        store.journalClosedSession(named: "build", sshAlias: nil)
+
+        let before = store.allSessions.count
+        try store.reconcileExternalSessions(
+            [information(name: "build")], from: .thisMac, route: .local)
+
+        XCTAssertEqual(store.allSessions.count, before + 1,
+                       "identity unproven means safety over kill — the row gets a row")
+        XCTAssertFalse(store.closedSessionJournal.contains { $0.name == "build" },
+                       "a record that can never claim again must be dropped")
+    }
+
     /// The counterpart: the same name under the **same** id is the very orphan
     /// the close named — killed, never adopted, and the record kept until the
     /// roster stops naming it (the kill just issued may still fail).
@@ -363,11 +428,12 @@ final class ExternalSessionSweepTests: XCTestCase {
     /// the box is reached as `prod-new`.
     func testARecordMatchesByDeviceIDUnderADifferentAlias() throws {
         let (store, _, _) = makeStore()
-        store.journalClosedSession(named: "orphan", sshAlias: "prod-old", deviceID: "h_1")
+        store.journalClosedSession(
+            named: "orphan", sshAlias: "prod-old", deviceID: "h_1", daemonID: "aaaa1111")
 
         let before = store.allSessions.count
         try store.reconcileExternalSessions(
-            [information(name: "orphan")],
+            [information(name: "orphan", id: "aaaa1111")],
             from: KnownDevice(alias: "prod-new", deviceID: "h_1"), route: .ssh("prod-new"))
 
         XCTAssertEqual(store.allSessions.count, before,

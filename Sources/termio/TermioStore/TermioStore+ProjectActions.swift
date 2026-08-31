@@ -1072,6 +1072,13 @@ extension TermioStore {
         // but never journaled: the respawn reuses this very name, and a
         // journaled name is killed on sight by the roster sweep.
         destroyDaemonSession(for: session, rememberClosed: false)
+        // The old daemon session's id dies with it, and the respawn's is not
+        // known until its attach or roster answers. Left in place, a close in
+        // that window would journal the stale id, and the sweep would read the
+        // respawned session's fresh id as legitimate reuse — sparing the very
+        // orphan the close meant to end. Nil is honest: an id-less record for
+        // an app-authored (UUID) name still claims by name.
+        updateSession(id) { $0.termiodDaemonID = nil }
         surfaces[id] = nil
         monitors[id] = nil
         processSpawnedAt[id] = nil

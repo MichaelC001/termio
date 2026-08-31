@@ -108,6 +108,15 @@ extension TermioStore {
             // pending kill is still owed.
             self?.forgetClosedSession(named: link.sessionName, sshAlias: session.termiodRemoteHost)
         }
+        // The attach reply names the daemon session it resolved to, which is
+        // the earliest the row can learn its identity — a respawn under the
+        // same name gets its fresh id here rather than a roster refresh later,
+        // shrinking the window in which a close would journal a stale one.
+        link.onDaemonSessionID = { [weak self] daemonID in
+            guard let self, !daemonID.isEmpty,
+                  self.session(session.id)?.termiodDaemonID != daemonID else { return }
+            self.updateSession(session.id) { $0.termiodDaemonID = daemonID }
+        }
         // The `events` half of the negotiated capabilities. Status is the one
         // that matters: an agent running on a VPS reports to the daemon that
         // owns its PTY, and this is the only path by which that reaches the Mac
@@ -926,15 +935,23 @@ extension TermioStore {
     /// reuses the name. The daemon mints a fresh id per creation and never
     /// reuses one, so identity — not any clock — is the gate: a matching id is
     /// the very session the close named; a different id under the same name is
-    /// a new session the close never promised to end. A record without an id
-    /// (the app closed the row before any attach or roster revealed one)
-    /// matches by name alone, which is safe because those names are this app's
-    /// own session UUIDs — nothing else mints them, and the app's own
-    /// respawn-in-place path doesn't journal.
+    /// a new session the close never promised to end.
+    ///
+    /// A record without an id (the app closed the row before any attach or
+    /// roster revealed one) may match by name **only when the name is
+    /// app-authored — a UUID**. Nothing else mints those, and the app's own
+    /// respawn-in-place path doesn't journal, so a UUID name-match cannot hit
+    /// anyone else's session. An id-less record with a device-given name
+    /// ("build") proves nothing about which same-named session it meant, so it
+    /// never claims: safety over kill when identity is unproven. The sweep then
+    /// drops the record, and if a true orphan resurfaces it is re-adopted —
+    /// whose close journals *with* the id, so the miss converges.
     nonisolated static func journalClaims(
         _ record: ClosedDaemonSession, rowID: String
     ) -> Bool {
-        guard let daemonID = record.daemonID else { return true }
+        guard let daemonID = record.daemonID else {
+            return UUID(uuidString: record.name) != nil
+        }
         return daemonID == rowID
     }
 

@@ -29,10 +29,11 @@ struct ClosedDaemonSession: Codable, Hashable {
     /// per creation, so a reused *name* never reuses the id. The sweep kills a
     /// roster row only when its id matches; a same-named row with a different
     /// id is a new session the close never promised to end. Absent when no
-    /// attach or roster revealed the id before the close; those records match
-    /// by name alone, which is safe for app-authored rows — their names are
-    /// this app's session UUIDs, which the CLI and other installs never mint,
-    /// and the app's own respawn-in-place path doesn't journal.
+    /// attach or roster revealed the id before the close; such a record matches
+    /// by name only when the name is app-authored — a UUID, which nothing else
+    /// mints. An id-less record with a device-given name ("build") never kills:
+    /// it proves nothing about which same-named session it meant, so the sweep
+    /// drops it instead (`journalClaims`).
     var daemonID: String?
 }
 
