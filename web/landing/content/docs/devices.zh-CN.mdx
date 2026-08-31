@@ -3,8 +3,8 @@ title: 设备
 description: 把 Agent 跑在你自己的机器上——本机、桌上的 Mac mini、一台 VPS。Termio 通过 SSH 把一个二进制复制过去、把 Agent 配好，会话是否附着都照跑不误。
 x-i18n:
   source_path: devices.mdx
-  source_hash: 33e0ed05804e74f4b2542f967e3e9589b4ffb1a354641ef408a59f58012a872f
-  generated_at: 2026-08-30
+  source_hash: 1004b813f7f03391591670237b504241cde900fe7ccfce9df9ff4fbc074b9226
+  generated_at: 2026-08-31
 ---
 
 Termio 把 Agent 跑在你自己的机器上：本机、同一张桌子上的 Mac mini、你自己付钱的
@@ -80,8 +80,8 @@ daemon 中。应用只是一个负责附着和分离的查看器。
   作用域，正是因为一个 Agent 的 CLI 装在哪儿，是关于某一台机器的事实。
 - **粘贴图片**给跑在那台机器上的 Agent，Termio 会把文件送过去。
 
-侧栏还有一个**其他运行中**：那是机器自己声明它正在跑什么，包括不是 Termio 起的会话——
-你 `ssh` 上去开的，`termiod` 看得见，你也能在这儿打开它。
+不是 Termio 起的会话会自己露面——`ssh` 上去、用 `termiod` 起个东西，侧栏就把它
+归档成一个普通会话。数据源是机器自己的名册，箱子上跑着的东西不会被漏掉。
 
 <Cards>
   <Card href="/zh-CN/docs/workspaces" title="工作区">
