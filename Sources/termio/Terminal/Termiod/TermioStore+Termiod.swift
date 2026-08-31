@@ -103,8 +103,10 @@ extension TermioStore {
             // roster arrives — the app disagreeing with the terminal beside it.
             self?.termiodTombstones[link.sessionName] = nil
             // The same proof outranks a close recorded before it: a name attached
-            // under again must not be killed on sight by the roster sweep.
-            self?.forgetClosedSession(named: link.sessionName)
+            // under again must not be killed on sight by the roster sweep. On
+            // this session's own route only — another machine's same-named
+            // pending kill is still owed.
+            self?.forgetClosedSession(named: link.sessionName, sshAlias: session.termiodRemoteHost)
         }
         // The `events` half of the negotiated capabilities. Status is the one
         // that matters: an agent running on a VPS reports to the daemon that
@@ -227,6 +229,12 @@ extension TermioStore {
         // precise signal outranks the heuristic that exists in its absence.
         if ["working", "idle", "needs_you", "done", "failed"].contains(report.status) {
             lastHookReportAt[id] = Date()
+            // Any addressed report is the agent speaking — an agent that came
+            // back and finished a turn reports done/idle without ever passing
+            // through working — which outranks whatever the foreground sampler
+            // concluded about its exit (§D2).
+            agentExitStreaks[id] = nil
+            if runtimes[id]?.agentExitNotice != nil { runtimes[id]?.agentExitNotice = nil }
         }
         switch report.status {
         case "working":
@@ -242,10 +250,6 @@ extension TermioStore {
             // (the agent crashed and never sent `done`) can be swept back to calm
             // instead of spinning forever.
             lastWorkingAt[id] = Date()
-            // An addressed working report is the agent speaking, which outranks
-            // whatever the foreground sampler concluded about its exit (§D2).
-            agentExitStreaks[id] = nil
-            if runtimes[id]?.agentExitNotice != nil { runtimes[id]?.agentExitNotice = nil }
         case "needs_you":
             // The agent is blocked waiting on the user. This is an observable
             // blocking condition, so its dot survives a click.
@@ -827,7 +831,8 @@ extension TermioStore {
     func destroyDaemonSession(for session: Session, rememberClosed: Bool) {
         let name = daemonSessionName(for: session)
         if rememberClosed {
-            journalClosedSession(named: name, sshAlias: session.termiodRemoteHost)
+            journalClosedSession(
+                named: name, sshAlias: session.termiodRemoteHost, deviceID: session.deviceID)
         }
         if let link = termiodLinks[session.id] {
             link.killAndClose()
@@ -844,11 +849,14 @@ extension TermioStore {
     private static let closedSessionJournalCapacity = 200
 
     /// Records a destroyed daemon session, newest last, evicting the oldest
-    /// past capacity. One record per name — re-closing replaces rather than
-    /// duplicates.
-    func journalClosedSession(named name: String, sshAlias: String?) {
-        closedSessionJournal.removeAll { $0.name == name }
-        closedSessionJournal.append(ClosedDaemonSession(name: name, sshAlias: sshAlias))
+    /// past capacity. One record per `(name, sshAlias)` — re-closing on the
+    /// same route replaces rather than duplicates, and a same-named session on
+    /// another machine keeps its own record.
+    func journalClosedSession(named name: String, sshAlias: String?, deviceID: String? = nil) {
+        closedSessionJournal.removeAll { $0.name == name && $0.sshAlias == sshAlias }
+        closedSessionJournal.append(ClosedDaemonSession(
+            name: name, sshAlias: sshAlias, deviceID: deviceID,
+            closedAtUnix: UInt64(Date().timeIntervalSince1970)))
         if closedSessionJournal.count > Self.closedSessionJournalCapacity {
             closedSessionJournal.removeFirst(
                 closedSessionJournal.count - Self.closedSessionJournalCapacity)
@@ -856,12 +864,13 @@ extension TermioStore {
         persistSoon()
     }
 
-    /// Clears a name from the closed-session journal — a session attached (or
-    /// respawned) under a name is proof the name is live again, which outranks
-    /// a close recorded before it.
-    func forgetClosedSession(named name: String) {
+    /// Clears a name from the closed-session journal, on its own route only —
+    /// a session attached (or respawned) under a name is proof the name is
+    /// live again on that machine, which outranks a close recorded before it.
+    /// Another machine's same-named record still describes *its* close.
+    func forgetClosedSession(named name: String, sshAlias: String?) {
         let before = closedSessionJournal.count
-        closedSessionJournal.removeAll { $0.name == name }
+        closedSessionJournal.removeAll { $0.name == name && $0.sshAlias == sshAlias }
         if closedSessionJournal.count != before { persistSoon() }
     }
 
@@ -882,6 +891,11 @@ extension TermioStore {
     /// The §D3 verdict for a roster row no current row accounts for. Pure so the
     /// resolution is testable without a daemon or a roster.
     ///
+    /// `journaled` is this route's record for the row's name, if one exists —
+    /// and it claims the row only when the row was created at or before the
+    /// close (`journalClaims`). A row created after the close is legitimate
+    /// name reuse, resolved like any other stranger.
+    ///
     /// The attached-client guard is local-only, deliberately: the local socket
     /// is per-uid, so an attached unknown here is another install's session.
     /// Attachment itself is read-many by design (single writer, many readers),
@@ -889,11 +903,28 @@ extension TermioStore {
     /// roster is that box's whole sidebar, and a session the phone has open is
     /// still one of the box's own sessions; skipping it would hide its work.
     nonisolated static func resolveExternalSession(
-        name: String, attachedClients: Int, isLocal: Bool, journaledNames: Set<String>
+        name: String, createdUnix: UInt64, attachedClients: Int, isLocal: Bool,
+        journaled: ClosedDaemonSession?
     ) -> ExternalSessionResolution {
-        if journaledNames.contains(name) { return .killOnSight }
+        if let journaled, journalClaims(journaled, rowCreatedUnix: createdUnix) {
+            return .killOnSight
+        }
         if isLocal, attachedClients > 0 { return .leaveAlone }
         return .adopt
+    }
+
+    /// Whether a journal record describes this roster row, or the row merely
+    /// reuses the name. A row created at or before the close is the very
+    /// session the close named; one created after it is a new session someone
+    /// started under the same name, which the close never promised to end.
+    /// A record without a timestamp predates the field and keeps kill-on-sight;
+    /// a row without one (`createdUnix == 0`, an older daemon) reads as old,
+    /// which is the same conservative answer.
+    nonisolated static func journalClaims(
+        _ record: ClosedDaemonSession, rowCreatedUnix: UInt64
+    ) -> Bool {
+        guard let closedAt = record.closedAtUnix else { return true }
+        return rowCreatedUnix <= closedAt
     }
 
     /// Settles every live daemon session against this app's rows, once per
@@ -901,9 +932,17 @@ extension TermioStore {
     /// belt-and-braces that makes D1's close hold across crashes and offline
     /// routes), unknown sessions are adopted into ordinary rows, and — on this
     /// Mac only — an attached unknown is left alone as a second install's live
-    /// session. Journal records whose name no longer appears on their route
-    /// have done their job and are dropped; records for other routes are
-    /// untouched.
+    /// session.
+    ///
+    /// A journal record belongs to this sweep when its alias matches the route
+    /// **or** its device matches the machine the route resolved to — the alias
+    /// half is how records written before a handshake settle, the device half
+    /// is how a close made via `prod-old` still lands when the box is reached
+    /// as `prod-new`. A record is dropped once it stops claiming anything on
+    /// its machine: its name left the roster (the kill held, or the session
+    /// died), or the name lives on in a session created after the close (name
+    /// reuse — not ours, and killing it would murder someone else's session).
+    /// Records for other machines are untouched.
     func reconcileExternalSessions(
         _ live: [Termiod.SessionInformation], from device: KnownDevice, route: TermiodRoute
     ) {
@@ -915,16 +954,20 @@ extension TermioStore {
         let device = KnownDevice(
             alias: device.alias,
             deviceID: device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route))
-        let journaledNames = Set(
-            closedSessionJournal.filter { $0.sshAlias == route.sshAlias }.map(\.name))
-        var journaledStillLive = Set<String>()
+        let sweepRecords = closedSessionJournal.filter { record in
+            record.sshAlias == route.sshAlias
+                || (record.deviceID != nil && record.deviceID == device.deviceID)
+        }
+        var claimingRecords = Set<ClosedDaemonSession>()
         for information in deviceOnlySessions(in: live, for: device) {
             let name = Self.daemonKey(information)
+            let record = sweepRecords.first { $0.name == name }
             switch Self.resolveExternalSession(
-                name: name, attachedClients: information.attachedClients,
-                isLocal: device.isLocal, journaledNames: journaledNames) {
+                name: name, createdUnix: information.createdUnix,
+                attachedClients: information.attachedClients,
+                isLocal: device.isLocal, journaled: record) {
             case .killOnSight:
-                journaledStillLive.insert(name)
+                if let record { claimingRecords.insert(record) }
                 Log.termiod.info("""
                 killing journaled session \(name, privacy: .public) still live on \
                 \(route.description, privacy: .public)
@@ -936,14 +979,13 @@ extension TermioStore {
                 adoptDeviceSession(information, on: device)
             }
         }
-        // A record is kept while its name is still live — the kill above may
-        // fail — and dropped once the roster stops naming it, which is the only
-        // proof the close finally held.
-        let spent = journaledNames.subtracting(journaledStillLive)
+        // A record is kept only while it still claims a live row — the kill
+        // above may fail and must be retried. Everything else this sweep could
+        // see has done its job: the name is gone, or it names a session the
+        // close never promised to end.
+        let spent = Set(sweepRecords).subtracting(claimingRecords)
         if !spent.isEmpty {
-            closedSessionJournal.removeAll {
-                $0.sshAlias == route.sshAlias && spent.contains($0.name)
-            }
+            closedSessionJournal.removeAll { spent.contains($0) }
             persistSoon()
         }
     }

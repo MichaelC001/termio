@@ -8,12 +8,29 @@ import Foundation
 /// orphan, to be killed on sight rather than adopted. The journal, not name
 /// shape, decides "mine": two installs share one per-uid daemon roster, so a
 /// UUID-shaped name alone proves nothing about whose session it is.
-struct ClosedDaemonSession: Codable, Equatable {
+///
+/// A record's identity is the `(name, sshAlias)` pair, never the bare name:
+/// adopted sessions keep device-given names ("build"), so the same name can
+/// legitimately exist on several machines at once, and one route's close must
+/// not erase another's pending kill.
+struct ClosedDaemonSession: Codable, Hashable {
     /// The daemon-side session name (the app session's uuid, or the name an
     /// adopted session already had on the device).
     var name: String
     /// The SSH alias of the route the session lived on; `nil` for this Mac.
     var sshAlias: String?
+    /// The machine the session lived on, when a handshake had revealed it. The
+    /// sweep matches a record by this **or** by alias, so a box whose
+    /// `~/.ssh/config` alias was renamed after the close still settles its
+    /// pending kill. Absent from records written before the field existed,
+    /// which then match by alias alone.
+    var deviceID: String?
+    /// When the close happened (Unix seconds). The sweep kills a roster row
+    /// only when the row was created at or before this moment — a row created
+    /// *after* the close is legitimate name reuse (a `termiod` CLI session
+    /// recreated under the same name), not this app's orphan. Absent from
+    /// records written before the field existed, which keep kill-on-sight.
+    var closedAtUnix: UInt64?
 }
 
 /// The session tree's on-disk home: it owns the file location and the JSON

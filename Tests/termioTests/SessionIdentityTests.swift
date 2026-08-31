@@ -68,10 +68,17 @@ final class AgentExitStreakTests: XCTestCase {
 /// The roster sweep's verdict for a session no row accounts for (RFC 20260830
 /// §D3), and the path containment its project filing rests on.
 final class ExternalSessionResolutionTests: XCTestCase {
+    private func record(
+        _ name: String, alias: String? = nil, closedAt: UInt64? = 100
+    ) -> ClosedDaemonSession {
+        ClosedDaemonSession(name: name, sshAlias: alias, deviceID: nil, closedAtUnix: closedAt)
+    }
+
     func testAJournaledNameIsKilledOnSight() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "orphan", attachedClients: 0, isLocal: true, journaledNames: ["orphan"]),
+                name: "orphan", createdUnix: 50, attachedClients: 0, isLocal: true,
+                journaled: record("orphan")),
             .killOnSight)
     }
 
@@ -80,8 +87,33 @@ final class ExternalSessionResolutionTests: XCTestCase {
     func testTheJournalOutranksAnAttachedClient() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "orphan", attachedClients: 1, isLocal: true, journaledNames: ["orphan"]),
+                name: "orphan", createdUnix: 50, attachedClients: 1, isLocal: true,
+                journaled: record("orphan")),
             .killOnSight)
+    }
+
+    /// A row created *after* the close is legitimate name reuse — someone
+    /// recreated `build` from the CLI — and killing it would murder a session
+    /// the close never promised to end. It resolves like any other stranger.
+    func testARowCreatedAfterTheCloseIsSparedTheKill() {
+        XCTAssertEqual(
+            TermioStore.resolveExternalSession(
+                name: "build", createdUnix: 150, attachedClients: 0, isLocal: true,
+                journaled: record("build", closedAt: 100)),
+            .adopt)
+    }
+
+    /// The boundary and the two compatibility shapes: created exactly at the
+    /// close is the closed session; a record without a timestamp (written
+    /// before the field) and a row without one (an older daemon reports 0)
+    /// both keep the conservative kill.
+    func testJournalClaimsBoundaries() {
+        XCTAssertTrue(TermioStore.journalClaims(record("n", closedAt: 100), rowCreatedUnix: 100))
+        XCTAssertFalse(TermioStore.journalClaims(record("n", closedAt: 100), rowCreatedUnix: 101))
+        XCTAssertTrue(TermioStore.journalClaims(record("n", closedAt: nil), rowCreatedUnix: 999),
+                      "a record predating the timestamp keeps kill-on-sight")
+        XCTAssertTrue(TermioStore.journalClaims(record("n", closedAt: 100), rowCreatedUnix: 0),
+                      "an older daemon that reports no creation time reads as old")
     }
 
     /// The local socket is per-uid, so an attached unknown on this Mac is a
@@ -90,7 +122,8 @@ final class ExternalSessionResolutionTests: XCTestCase {
     func testAnAttachedStrangerIsLeftAloneOnThisMac() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "theirs", attachedClients: 1, isLocal: true, journaledNames: []),
+                name: "theirs", createdUnix: 0, attachedClients: 1, isLocal: true,
+                journaled: nil),
             .leaveAlone)
     }
 
@@ -100,14 +133,16 @@ final class ExternalSessionResolutionTests: XCTestCase {
     func testAnAttachedStrangerIsAdoptedOnARemoteDevice() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "phones", attachedClients: 1, isLocal: false, journaledNames: []),
+                name: "phones", createdUnix: 0, attachedClients: 1, isLocal: false,
+                journaled: nil),
             .adopt)
     }
 
     func testADetachedStrangerIsAdopted() {
         XCTAssertEqual(
             TermioStore.resolveExternalSession(
-                name: "cli-started", attachedClients: 0, isLocal: true, journaledNames: []),
+                name: "cli-started", createdUnix: 0, attachedClients: 0, isLocal: true,
+                journaled: nil),
             .adopt)
     }
 
@@ -139,12 +174,12 @@ final class ExternalSessionSweepTests: XCTestCase {
     }
 
     private func information(
-        name: String, cwd: String = "", attached: Int = 0
+        name: String, cwd: String = "", attached: Int = 0, createdUnix: UInt64 = 0
     ) throws -> Termiod.SessionInformation {
         let json = """
         {"id": "\(name)-id", "name": "\(name)", "pid": 1, "alive": true,
          "cwd": "\(cwd)", "command": "", "status": "unknown",
-         "createdUnix": 0, "attachedClients": \(attached)}
+         "createdUnix": \(createdUnix), "attachedClients": \(attached)}
         """
         return try JSONDecoder().decode(Termiod.SessionInformation.self, from: Data(json.utf8))
     }
@@ -254,6 +289,66 @@ final class ExternalSessionSweepTests: XCTestCase {
 
         XCTAssertTrue(store.closedSessionJournal.contains { $0.name == "remote-orphan" })
     }
+
+    /// A record's identity is `(name, sshAlias)`: adopted sessions keep
+    /// device-given names, so `build` can exist on several machines at once —
+    /// journaling or forgetting it on one route must not touch another's
+    /// pending kill.
+    func testSameNamedRecordsOnDifferentRoutesAreIndependent() {
+        let (store, _, _) = makeStore()
+        store.journalClosedSession(named: "build", sshAlias: "vps-a")
+
+        store.journalClosedSession(named: "build", sshAlias: nil)
+        XCTAssertTrue(
+            store.closedSessionJournal.contains { $0.name == "build" && $0.sshAlias == "vps-a" },
+            "a local close of \"build\" erased vps-a's pending kill")
+
+        store.forgetClosedSession(named: "build", sshAlias: nil)
+        XCTAssertTrue(
+            store.closedSessionJournal.contains { $0.name == "build" && $0.sshAlias == "vps-a" },
+            "a local reattach under \"build\" erased vps-a's pending kill")
+        XCTAssertFalse(
+            store.closedSessionJournal.contains { $0.name == "build" && $0.sshAlias == nil })
+    }
+
+    /// The close only ever promised to end the session that existed when it
+    /// happened. A row recreated under the same name *after* the close — the
+    /// kill landed, then someone ran `termiod` with the same name again before
+    /// the next refresh — is a fresh stranger: adopted, and the spent record
+    /// dropped rather than left to murder it on a later sweep.
+    func testANameReusedAfterTheCloseIsAdoptedNotKilled() throws {
+        let (store, _, _) = makeStore()
+        store.journalClosedSession(named: "build", sshAlias: nil)
+        let closedAt = try XCTUnwrap(store.closedSessionJournal.last?.closedAtUnix)
+
+        let before = store.allSessions.count
+        try store.reconcileExternalSessions(
+            [information(name: "build", createdUnix: closedAt + 100)],
+            from: .thisMac, route: .local)
+
+        XCTAssertEqual(store.allSessions.count, before + 1,
+                       "the recreated session never got a row")
+        XCTAssertFalse(store.closedSessionJournal.contains { $0.name == "build" },
+                       "a spent record left behind would kill the new session later")
+    }
+
+    /// An alias rename must not orphan a pending kill: the record carries the
+    /// machine's identity, so a close made via `prod-old` still settles when
+    /// the box is reached as `prod-new`.
+    func testARecordMatchesByDeviceIDUnderADifferentAlias() throws {
+        let (store, _, _) = makeStore()
+        store.journalClosedSession(named: "orphan", sshAlias: "prod-old", deviceID: "h_1")
+
+        let before = store.allSessions.count
+        try store.reconcileExternalSessions(
+            [information(name: "orphan")],
+            from: KnownDevice(alias: "prod-new", deviceID: "h_1"), route: .ssh("prod-new"))
+
+        XCTAssertEqual(store.allSessions.count, before,
+                       "the orphan was adopted instead of matched to its pending kill")
+        XCTAssertTrue(store.closedSessionJournal.contains { $0.name == "orphan" },
+                      "the record must survive until the roster stops naming the orphan")
+    }
 }
 
 /// The §D2 demotion through the store: the row transitions in place — status,
@@ -295,6 +390,25 @@ final class DeclaredAgentDemotionTests: XCTestCase {
         store.noteDeclaredAgentForeground(["claude"], for: session.id)
 
         XCTAssertNil(store.agentExitNotice(for: session.id))
+    }
+
+    /// An agent that came back can finish a turn without ever passing through
+    /// `working` from this side's view — its first addressed report may be
+    /// `done` or `idle`. Any addressed report proves the agent alive, so every
+    /// one of them must clear the stale "exited — shell" notice.
+    func testANonWorkingStatusReportClearsTheNotice() {
+        let session = Session(title: "agent", agent: .claudeCode)
+        let store = makeStore(with: session)
+        store.noteDeclaredAgentForeground(["-zsh"], for: session.id)
+        store.noteDeclaredAgentForeground(["-zsh"], for: session.id)
+        XCTAssertNotNil(store.agentExitNotice(for: session.id), "the fixture never demoted")
+
+        store.applyTermiodStatus(
+            Termiod.StatusPayload(session: session.id.uuidString, status: "done", title: nil),
+            for: session.id)
+
+        XCTAssertNil(store.agentExitNotice(for: session.id),
+                     "a done report left the row claiming the agent exited")
     }
 
     /// The agent's own subprocess (`rg`, a build) holding the foreground is a
