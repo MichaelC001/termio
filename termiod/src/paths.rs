@@ -377,6 +377,15 @@ fn write_new_secret(path: &std::path::Path, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether a failure is "the file was already there" rather than a real IO
+/// fault. The context layers `publish_new_secret` adds are transparent to
+/// `downcast_ref`, so the original `io::Error` is still the one asked.
+fn is_already_exists(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+}
+
 /// Create a 0600 file that must not already exist, publishing it atomically.
 ///
 /// `write_new_secret` alone is not enough for a file other processes read by
@@ -448,7 +457,13 @@ pub fn load_or_create_pair_token() -> Result<String> {
         Ok(()) => Ok(token),
         // Another `pair` won the race; its token is the one on disk, and it was
         // published whole, so reading it back cannot see a half-written secret.
-        Err(_) if path.exists() => read_pair_token()?
+        //
+        // Only that one failure is recoverable. Testing `path.exists()` alone
+        // would also swallow a full disk or a read-only state dir and answer
+        // with whatever happens to sit at the path, so the error has to say
+        // `AlreadyExists` — which, now that the contents are staged, only the
+        // publishing link can raise.
+        Err(error) if is_already_exists(&error) => read_pair_token()?
             .ok_or_else(|| anyhow::anyhow!("pairing token vanished during minting")),
         Err(error) => Err(error),
     }
@@ -627,8 +642,38 @@ mod serve_lock_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{durable_state_base, publish_new_secret};
+    use super::{durable_state_base, is_already_exists, publish_new_secret};
     use std::path::Path;
+
+    /// Losing the minting race is recoverable; a full disk is not. Both arrive
+    /// as an `Err` from the same call, so only the kind separates them — and
+    /// answering a write fault with whatever sits at the path would hand back
+    /// someone else's file as this host's pairing token.
+    #[test]
+    fn only_a_lost_race_counts_as_already_existing() {
+        let directory =
+            std::env::temp_dir().join(format!("termiod-mint-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("test directory");
+        let path = directory.join("pair.token");
+        let _ = std::fs::remove_file(&path);
+
+        publish_new_secret(&path, "first").expect("first mint");
+        let lost_race = publish_new_secret(&path, "second").expect_err("second mint");
+        assert!(
+            is_already_exists(&lost_race),
+            "a lost minting race was not recognised: {lost_race:#}"
+        );
+
+        // A write that cannot happen at all must not read as a lost race.
+        let missing = directory.join("absent").join("pair.token");
+        let fault = publish_new_secret(&missing, "third").expect_err("mint into a missing dir");
+        assert!(
+            !is_already_exists(&fault),
+            "an IO fault was mistaken for a lost race: {fault:#}"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     /// A secret is published whole or not at all. `create_new` followed by a
     /// write leaves the name visible and empty in between, and a reader that
