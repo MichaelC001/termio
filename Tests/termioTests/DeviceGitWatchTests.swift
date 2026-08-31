@@ -58,6 +58,31 @@ final class DeviceGitWatchTests: XCTestCase {
         XCTAssertNil(ledger.settle(generation: old))
     }
 
+    func testAnInterruptedRetryCannotOutliveAStoppedWatch() {
+        var ledger = DeviceWatchLedger()
+        let interrupted = ledger.begin()
+        ledger.stop()
+
+        XCTAssertFalse(ledger.isCurrent(interrupted))
+    }
+
+    func testAStartDuringAnOldHandshakeRequestsAReplacementWatch() {
+        var ledger = DeviceWatchLedger()
+        let old = ledger.begin()
+        ledger.stop()
+
+        // `startDeviceWatch()` cannot open another subscription until the old
+        // async call leaves its defer, so it invalidates the old one and asks
+        // that cleanup to begin the visible pane's replacement.
+        ledger.requestRestart()
+        XCTAssertNil(ledger.settle(generation: old))
+        XCTAssertTrue(ledger.consumeRestartRequest())
+        XCTAssertFalse(ledger.consumeRestartRequest())
+
+        let replacement = ledger.begin()
+        XCTAssertNotNil(ledger.settle(generation: replacement))
+    }
+
     // MARK: - ResourceRoutingTable
 
     private final class Subscriber {}

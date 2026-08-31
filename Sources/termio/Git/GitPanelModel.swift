@@ -142,11 +142,23 @@ final class GitPanelModel: ObservableObject {
     /// Starts (or resumes) the device subscription. Idempotent: the pane calls
     /// it on appear and whenever it becomes visible again.
     func startDeviceWatch() {
-        guard let device, gitWatch == nil, !resubscribing else { return }
+        guard let device, gitWatch == nil else { return }
+        guard !resubscribing else {
+            // A stop followed immediately by an appear can land while the old
+            // subscribe still awaits its acknowledgement. Supersede that
+            // handshake and have its cleanup begin the new one.
+            watchLedger.requestRestart()
+            return
+        }
         resubscribing = true
         let generation = watchLedger.begin()
         Task { [repoRoot] in
-            defer { resubscribing = false }
+            defer {
+                resubscribing = false
+                if watchLedger.consumeRestartRequest() {
+                    startDeviceWatch()
+                }
+            }
             do {
                 let (subscription, gap, seq) = try await Termiod.watchGit(
                     route: device,
@@ -227,6 +239,7 @@ final class GitPanelModel: ObservableObject {
         Task {
             // Let the drop settle before the next request reopens the channel.
             try? await Task.sleep(for: .seconds(1))
+            guard watchLedger.isCurrent(generation) else { return }
             startDeviceWatch()
         }
     }
@@ -471,6 +484,7 @@ struct DeviceWatchLedger {
     private(set) var generation = 0
     private var awaitingBaseline = false
     private var held: [Termiod.GitChangedPayload] = []
+    private var restartRequested = false
 
     /// A new subscribe attempt begins; everything older is dead.
     mutating func begin() -> Int {
@@ -485,6 +499,30 @@ struct DeviceWatchLedger {
         generation += 1
         awaitingBaseline = false
         held = []
+        restartRequested = false
+    }
+
+    /// A newer visible pane wants a watch while an older handshake is still
+    /// pending. The old acknowledgement must not install, but its cleanup is
+    /// responsible for starting the replacement once it has released the
+    /// in-flight slot.
+    mutating func requestRestart() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+        restartRequested = true
+    }
+
+    /// Returns whether the caller's generation still owns the watch.
+    func isCurrent(_ generation: Int) -> Bool {
+        generation == self.generation
+    }
+
+    /// Takes the one deferred replacement request after its predecessor has
+    /// completed its handshake.
+    mutating func consumeRestartRequest() -> Bool {
+        defer { restartRequested = false }
+        return restartRequested
     }
 
     /// Admits one arriving batch: returns it when the watch is settled and the
