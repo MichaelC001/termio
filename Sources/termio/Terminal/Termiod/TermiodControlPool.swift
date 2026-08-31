@@ -270,6 +270,9 @@ extension Termiod {
                 self.route = route
                 self.capabilities = handshake.capabilities
                 self.home = handshake.home
+            } catch let error as TermiodClientError {
+                transport.close()
+                throw transport.explained(error)
             } catch {
                 transport.close()
                 throw error

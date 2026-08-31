@@ -511,6 +511,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         false
     }
 
+    /// Coming back to the app is the retry a failed roster never had. A machine
+    /// that refused while the user was away — asleep laptop, network change, an
+    /// ssh problem they just went and fixed — stayed refused on screen until
+    /// something else happened to re-ask (issue #498: the only manual path was
+    /// switching devices). Scoped to the failed state on another machine, so
+    /// ordinary app switching never spawns an ssh.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if case .failed = store.deviceSessions, !store.currentDevice.isLocal {
+            store.refreshDeviceSessions()
+        }
+    }
+
     /// Dock click (or `open -b sh.termio.app`) with the window closed. The window
     /// survived its close, so it is re-shown rather than rebuilt — the sessions kept
     /// running in its view tree the whole time.

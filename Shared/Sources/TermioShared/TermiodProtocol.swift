@@ -1692,6 +1692,11 @@ public enum TermiodClientError: LocalizedError {
     /// exactly what a daemon too old for the op does, since unknown ops are
     /// dropped rather than refused (`daemon.rs`, the `Control::Unknown` arm).
     case timedOut(String)
+    /// The pipe to the device closed before the protocol got a word in, and
+    /// `ssh`'s stderr says why. Carries that line verbatim: "Permission denied
+    /// (publickey,password)" names the problem in the words the user can search
+    /// for, and every paraphrase of it is worse than the line itself.
+    case remoteFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -1711,7 +1716,45 @@ public enum TermiodClientError: LocalizedError {
             return message
         case .timedOut(let operation):
             return "the device stopped answering \(operation)"
+        case .remoteFailed(let reason):
+            return reason
         }
+    }
+}
+
+extension Termiod {
+    /// The one line of an `ssh` child's stderr worth showing when its pipe
+    /// closed without a handshake, or `nil` when nothing there explains it.
+    ///
+    /// A connection that dies before `hello_ok` collapses every real cause —
+    /// `BatchMode=yes` refusing to prompt for a password, `termiod` missing on
+    /// the box, a host key mismatch — into the same EOF, and the only witness
+    /// is what ssh or the remote shell printed. The last line is the verdict
+    /// (OpenSSH prints its failure last); lines that narrate rather than
+    /// explain — known-hosts warnings, the "Connection closed" echo of the EOF
+    /// itself — are skipped so they cannot shadow it.
+    ///
+    /// A missing `termiod` is the one cause worth translating: the remote
+    /// shell's "No such file or directory" names a path, not the fix, and the
+    /// fix is this app's to know (opening a terminal on the machine deploys
+    /// the daemon).
+    public static func remoteFailureDiagnosis(stderr: String) -> String? {
+        let verdicts = stderr.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .filter { !$0.hasPrefix("Warning:") }
+            .filter { !($0.hasPrefix("Connection to ") && $0.hasSuffix("closed.")) }
+        guard let line = verdicts.last else { return nil }
+        // The remote shell failing to exec the daemon's own path — "/…/termiod:
+        // No such file or directory" (bash, path first) or "…: /…/termiod"
+        // (zsh, path last). The path check keeps the daemon complaining about
+        // some *other* missing file out of this arm.
+        let missing = line.localizedCaseInsensitiveContains("no such file or directory")
+            || line.localizedCaseInsensitiveContains("not found")
+        if missing, (line.contains("/termiod: ") || line.hasSuffix("/termiod")) {
+            return "termiod isn't installed on this machine yet — a new terminal on it sets it up"
+        }
+        return line
     }
 }
 
