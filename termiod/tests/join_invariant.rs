@@ -63,6 +63,7 @@ fn start_daemon(tag: &str) -> Daemon {
     let child = Command::new(BIN)
         .arg("serve")
         .env("TERMIOD_SOCK", &socket)
+        .env("TERMIOD_KEEP_AWAKE", "off")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

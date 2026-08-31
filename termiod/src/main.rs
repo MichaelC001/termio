@@ -14,6 +14,7 @@ mod files;
 mod git;
 mod handoff;
 mod id;
+mod keep_awake;
 mod lifecycle;
 mod log;
 mod paths;
@@ -90,6 +91,17 @@ enum Cmd {
         /// `execve`.
         #[arg(long = "handoff", value_name = "FD", hide = true)]
         handoff_fd: Option<std::os::fd::RawFd>,
+
+        /// Let the machine idle-sleep even while an agent is working or
+        /// waiting on its user.
+        ///
+        /// By default (macOS, on AC power only) the daemon renews a short
+        /// `caffeinate` assertion while any session is busy, so the box stays
+        /// reachable for the phone that has to answer a waiting agent. The
+        /// display sleeps either way. `TERMIOD_KEEP_AWAKE=off` in the daemon's
+        /// environment does the same as this flag.
+        #[arg(long)]
+        no_keep_awake: bool,
     },
 
     /// Print the pairing token that lets a phone or a browser attach.
@@ -494,7 +506,15 @@ async fn main() -> Result<()> {
             wss,
             wss_origin,
             handoff_fd,
-        } => daemon::serve(wss, wss_origin, handoff_fd).await,
+            no_keep_awake,
+        } => {
+            let keep_awake = !no_keep_awake
+                && !matches!(
+                    std::env::var("TERMIOD_KEEP_AWAKE").as_deref(),
+                    Ok("off") | Ok("false") | Ok("0")
+                );
+            daemon::serve(wss, wss_origin, handoff_fd, keep_awake).await
+        }
 
         Cmd::Handoff {
             json,

@@ -313,6 +313,10 @@ impl Manager {
         let _ = self.events.send(event);
     }
 
+    pub(crate) fn subscribe_events(&self) -> broadcast::Receiver<Event> {
+        self.events.subscribe()
+    }
+
     async fn info(&self, handle: &SessionHandle) -> Option<SessionInfo> {
         let (tx, rx) = oneshot::channel();
         if handle.send(SessionMsg::Info { reply: tx }) {
@@ -347,7 +351,7 @@ impl Manager {
         });
     }
 
-    async fn list(&self) -> Vec<SessionInfo> {
+    pub(crate) async fn list(&self) -> Vec<SessionInfo> {
         let handles = self.handles();
         let mut infos = Vec::new();
         for handle in handles {
@@ -493,6 +497,7 @@ pub async fn serve(
     wss_bind: Option<std::net::SocketAddr>,
     wss_origins: Vec<crate::wss::Origin>,
     handoff_fd: Option<std::os::fd::RawFd>,
+    keep_awake: bool,
 ) -> Result<()> {
     // First, before anything that can fail: whoever spawned this daemon most
     // likely pointed its stderr at /dev/null, and a startup error is exactly the
@@ -709,6 +714,12 @@ pub async fn serve(
             }
             Err(error) => return Err(error),
         }
+    }
+
+    // Other platforms never spawn this: the boxes termiod serves there are
+    // servers that do not idle-sleep, and the mechanism is caffeinate anyway.
+    if keep_awake && cfg!(target_os = "macos") {
+        tokio::spawn(crate::keep_awake::run(manager.clone()));
     }
 
     let mut terminate =

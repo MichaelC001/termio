@@ -98,6 +98,7 @@ fn start_daemon(tag: &str, token: Option<&str>, inherited: bool) -> Daemon {
     }
     let mut command = Command::new(BIN);
     command.arg("serve").env("TERMIOD_SOCK", &socket);
+    command.env("TERMIOD_KEEP_AWAKE", "off");
     if inherited {
         command.env("TERMIOD_WSS", format!("127.0.0.1:{port}"));
     } else {
