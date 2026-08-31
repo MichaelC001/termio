@@ -92,6 +92,58 @@ final class TermiodWatchOrderingTests: XCTestCase {
         withExtendedLifetime(watch) {}
     }
 
+    /// The batch that raced the ack, and a live one that lands while it is
+    /// still being handed over, must both apply — in order.
+    ///
+    /// The release calls out to the pane, so it cannot happen under the watch's
+    /// lock, and the channel's reader thread is free to deliver during it. If
+    /// the live batch is let through first the cursor moves to *its* seq, and
+    /// the older batch still waiting is then discarded as already-reflected —
+    /// so a directory only that batch named goes stale with nothing to repair
+    /// it. The reader being serial does not help: the drain runs on the watch's
+    /// own queue, not the reader's.
+    func testALiveBatchDuringTheDrainQueuesBehindTheOneStillWaiting() throws {
+        let seen = SeenBox()
+        let settled = expectation(description: "the watch handed over all three")
+        settled.assertForOverFulfill = false
+        let early = try fsChanged(resource: asked, seq: 8)
+        let live = try fsChanged(resource: canonical, seq: 9)
+        // Captured from the handshake so the test can deliver a batch *after*
+        // the subscribe returns — which is where the reader thread would.
+        let reader = EventReader()
+
+        let watch = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: asked,
+            subscribing: { _, _, onEvent, _ in
+                reader.source = onEvent
+                onEvent(early)
+                return (.unattached(resource: self.canonical), false, 7)
+            }
+        ) { update in
+            switch update {
+            case .established(let cursor):
+                seen.append(.established(cursor))
+                // Raised after `settle` and before the queue has drained: the
+                // exact window a batch may overtake one already waiting in.
+                reader.deliver(live)
+            case .reset:
+                seen.append(.reset)
+            case .batch(let payload):
+                seen.append(.batch(payload.seq, watching: nil))
+            }
+            if seen.value.count == 3 { settled.fulfill() }
+        }
+
+        wait(for: [settled], timeout: 5)
+        XCTAssertEqual(
+            seen.value,
+            [.established(7), .batch(8, watching: nil), .batch(9, watching: nil)],
+            "the batch that was already waiting must be handed over first")
+        withExtendedLifetime(watch) {}
+    }
+
     /// A subscribe that fails takes its held batches with it: the retry
     /// re-subscribes from the cursor it had *before* the attempt, so a batch the
     /// caller never saw must not have moved it.
@@ -160,4 +212,18 @@ private final class WatchedRootReader: @unchecked Sendable {
     }
 
     func read() -> String? { source?() }
+}
+
+/// Holds the event handler the watch armed, so a test can deliver a batch after
+/// the subscribe has returned — where the channel's reader thread would.
+private final class EventReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _source: (@Sendable (Data) -> Void)?
+
+    var source: (@Sendable (Data) -> Void)? {
+        get { lock.withLock { _source } }
+        set { lock.withLock { _source = newValue } }
+    }
+
+    func deliver(_ payload: Data) { source?(payload) }
 }

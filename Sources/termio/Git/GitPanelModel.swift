@@ -173,7 +173,7 @@ final class GitPanelModel: ObservableObject {
                             self?.deviceWatchInterrupted(generation: generation)
                         }
                     })
-                guard let earlyBatches = watchLedger.settle(generation: generation) else {
+                guard watchLedger.settle(generation: generation) else {
                     // The pane stopped (or restarted) the watch while this
                     // handshake was in flight; the subscription must not
                     // outlive the interest that asked for it.
@@ -194,7 +194,12 @@ final class GitPanelModel: ObservableObject {
                 } else {
                     gitCursor = max(gitCursor ?? 0, seq)
                 }
-                for batch in earlyBatches { apply(batch) }
+                // Drained one at a time rather than as an array: a batch that
+                // arrives during this loop queues behind what is left of it
+                // instead of overtaking it (`DeviceWatchLedger.releaseNext`).
+                while let batch = watchLedger.releaseNext(generation: generation) {
+                    apply(batch)
+                }
                 // The ack only says the device accepted the subscription; the
                 // baseline follows a beat later (measured at 2 ms behind it).
                 // Waiting for it is what keeps a repo with changes from flashing

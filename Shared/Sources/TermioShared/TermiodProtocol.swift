@@ -684,10 +684,25 @@ public enum Termiod {
         /// that never sees it must say the listing is short rather than pass a
         /// single page off as the whole directory.
         public let nextAfter: String?
+        /// The offset-paged predecessor of `nextAfter`, from a host that has
+        /// not learned the keyset cursor yet.
+        ///
+        /// Decoded and never followed. Offset pages are the reason the cursor
+        /// changed — a directory written while it is read shifts every offset
+        /// behind them — so continuing by page would trade a truncated listing
+        /// for a wrong one. What this field is for is telling **"that was the
+        /// whole directory"** from **"that was its first two thousand entries"**,
+        /// which are otherwise the same reply. A client that dropped it could
+        /// only truncate in silence.
+        public let nextPage: UInt64?
         public let error: String?
 
+        /// Whether the host has more of this directory but no cursor to
+        /// continue from — an old host, and a listing that stops short.
+        public var isTruncatedByAnOldHost: Bool { nextAfter == nil && nextPage != nil }
+
         private enum CodingKeys: String, CodingKey {
-            case path, entries, nextAfter, error
+            case path, entries, nextAfter, nextPage, error
         }
 
         public init(from decoder: Decoder) throws {
@@ -695,6 +710,7 @@ public enum Termiod {
             path = try container.decode(String.self, forKey: .path)
             entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
             nextAfter = try container.decodeIfPresent(String.self, forKey: .nextAfter)
+            nextPage = try container.decodeIfPresent(UInt64.self, forKey: .nextPage)
             error = try container.decodeIfPresent(String.self, forKey: .error)
         }
     }

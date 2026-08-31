@@ -309,17 +309,14 @@ extension Termiod {
                 // Installed and settled in one step: the batches the ledger held
                 // are interpreted against this subscription — `watchedRoot` is
                 // read off it — so nothing may be released before it is in place.
-                let landed: (held: [FsChangedPayload], first: Bool)? = lock.withLock {
-                    guard !stopped, let held = ledger.settle(generation: generation) else {
-                        return nil
-                    }
+                let first: Bool? = lock.withLock {
+                    guard !stopped, ledger.settle(generation: generation) else { return nil }
                     self.subscription = subscription
                     failures = 0
-                    let first = !hasEstablished
-                    hasEstablished = true
-                    return (held, first)
+                    defer { hasEstablished = true }
+                    return !hasEstablished
                 }
-                guard let landed else {
+                guard let first else {
                     // Stopped, or superseded, while the handshake was in flight:
                     // the subscription must not outlive the interest that asked
                     // for it.
@@ -331,13 +328,18 @@ extension Termiod {
                 // with two full listings instead of one. What the caller does
                 // need is the cursor the watch starts at, so a listing taken
                 // before it can be reconsidered.
-                if landed.first {
+                if first {
                     onUpdate(.established(at: cursor))
                 } else if gap {
                     onUpdate(.reset)
                 }
-                // After the baseline decision, in arrival order.
-                for batch in landed.held { deliver(batch) }
+                // After the baseline decision, in arrival order — and one at a
+                // time under the lock, so a batch the reader delivers during
+                // this loop queues behind what is left rather than overtaking
+                // it and taking the cursor with it.
+                while let batch = lock.withLock({ ledger.releaseNext(generation: generation) }) {
+                    deliver(batch)
+                }
             } catch {
                 retry(after: error, generation: generation)
             }
@@ -526,6 +528,13 @@ extension Termiod {
                 }
             }
 
+            for path in paged.shortened {
+                Log.files.error("""
+                fs.list stopped at \(paged.count(of: path), privacy: .public) entries of \
+                \(path, privacy: .public): the device pages by offset and has no cursor \
+                to continue from — update termiod on it to see the whole directory
+                """)
+            }
             return paged.listings
         }
     }
@@ -551,12 +560,27 @@ extension Termiod {
         private var seen: [String: Set<String>] = [:]
         private var failure: [String: String] = [:]
         private var resume: [String: String] = [:]
+        private var truncated: Set<String> = []
         /// The first answer's cursor, and nothing later.
         private var stamp: UInt64?
 
-        /// Where a directory's next request resumes, or nil when it is complete
-        /// — which includes a host too old to say, since it sends no cursor.
+        /// Where a directory's next request resumes, or nil when there is
+        /// nothing to continue — which includes a host too old to hand back a
+        /// cursor. `shortened` is what tells those two apart.
         func resumePoint(of path: String) -> String? { resume[path] }
+
+        /// The directories the host has more of and cannot be asked for.
+        ///
+        /// Only an old host produces these: it answers `next_page`, and
+        /// following an offset is what the keyset cursor exists to stop
+        /// (`PathListingPayload.nextPage`). So the listing stops, and this is
+        /// what keeps it from stopping quietly — a tree showing the first two
+        /// thousand entries of a folder is indistinguishable, on screen, from
+        /// one showing all of it.
+        private(set) var shortened: [String] = []
+
+        /// How much of a directory was read, for saying how short it stopped.
+        func count(of path: String) -> Int { entries[path]?.count ?? 0 }
 
         /// Gives up on continuing a directory, leaving what has been read.
         mutating func stopResuming(_ path: String) { resume[path] = nil }
@@ -590,6 +614,9 @@ extension Termiod {
                 failure[listing.path] = error
             }
             resume[listing.path] = listing.nextAfter
+            if listing.isTruncatedByAnOldHost, truncated.insert(listing.path).inserted {
+                shortened.append(listing.path)
+            }
         }
 
         var listings: DirectoryListings {

@@ -14,7 +14,8 @@ final class TermiodPagedListingTests: XCTestCase {
     /// decoded the way the client does — so the field names are covered too.
     private func reply(
         seq: UInt64,
-        _ listings: [(path: String, names: [String], nextAfter: String?)]
+        _ listings: [(path: String, names: [String], nextAfter: String?)],
+        legacyNextPage: UInt64? = nil
     ) throws -> Termiod.FsListedPayload {
         let payload: [String: Any] = [
             "ev": "fs_listed",
@@ -25,6 +26,7 @@ final class TermiodPagedListingTests: XCTestCase {
                     "entries": listing.names.map { ["name": $0, "kind": "file"] },
                 ]
                 if let next = listing.nextAfter { one["next_after"] = next }
+                if let page = legacyNextPage { one["next_page"] = page }
                 return one
             },
         ]
@@ -80,13 +82,38 @@ final class TermiodPagedListingTests: XCTestCase {
             "an entry served twice is still one row")
     }
 
-    /// A host too old to continue a listing sends no cursor at all, so there is
-    /// nothing to resume from — the listing is short, and the caller says so
-    /// rather than passing one page off as the whole directory.
-    func testAHostThatSendsNoCursorEndsTheListing() throws {
+    /// A host too old to continue a listing sends the offset it would page by
+    /// and no cursor. The listing stops there — following an offset is the bug
+    /// the cursor replaced — but it must be *known* to have stopped short.
+    ///
+    /// This is the field a client is tempted to drop once it no longer follows
+    /// it, and dropping it makes the two replies that matter identical: "here
+    /// is the directory" and "here are its first two thousand entries".
+    func testAnOldHostsFirstPageIsRecordedAsShortRatherThanComplete() throws {
+        var paged = Termiod.PagedListings()
+        paged.absorb(try reply(seq: 1, [("/r", ["a", "b"], nil)], legacyNextPage: 1))
+
+        XCTAssertNil(paged.resumePoint(of: "/r"), "there is no cursor to continue from")
+        XCTAssertEqual(paged.shortened, ["/r"], "and the listing knows it stopped short")
+        XCTAssertEqual(paged.count(of: "/r"), 2, "which is how far it got")
+    }
+
+    /// The ordinary complete listing, which must not be reported as short: no
+    /// cursor *and* no offset means the host said everything it had.
+    func testACompleteListingIsNotReportedAsShort() throws {
         var paged = Termiod.PagedListings()
         paged.absorb(try reply(seq: 1, [("/r", ["a", "b"], nil)]))
         XCTAssertNil(paged.resumePoint(of: "/r"))
+        XCTAssertEqual(paged.shortened, [])
+    }
+
+    /// A host that pages by name is never reported as short, even though it
+    /// also has more to give: it handed back a cursor, so the listing continues.
+    func testAContinuableListingIsNotReportedAsShort() throws {
+        var paged = Termiod.PagedListings()
+        paged.absorb(try reply(seq: 1, [("/r", ["a", "b"], "b")]))
+        XCTAssertEqual(paged.resumePoint(of: "/r"), "b")
+        XCTAssertEqual(paged.shortened, [])
     }
 
     /// Continuations are per directory; the batched first request is what

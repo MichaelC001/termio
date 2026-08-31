@@ -1088,15 +1088,26 @@ extension Termiod {
 /// nothing else about the ordering differs. A second copy of this reasoning is
 /// how the `fs:` half came to be missing it.
 struct DeviceWatchLedger<Batch> {
+    /// Where an arriving batch goes.
+    private enum Phase: Equatable {
+        /// The ack has not landed: hold everything.
+        case awaitingBaseline
+        /// The ack landed and the queue is being handed back. Arrivals keep
+        /// queueing — behind what is already held, never ahead of it.
+        case draining
+        /// Nothing is waiting; a batch applies as it arrives.
+        case settled
+    }
+
     private(set) var generation = 0
-    private var awaitingBaseline = false
+    private var phase = Phase.settled
     private var held: [Batch] = []
     private var restartRequested = false
 
     /// A new subscribe attempt begins; everything older is dead.
     mutating func begin() -> Int {
         generation += 1
-        awaitingBaseline = true
+        phase = .awaitingBaseline
         held = []
         return generation
     }
@@ -1104,7 +1115,7 @@ struct DeviceWatchLedger<Batch> {
     /// The watch was stopped; an in-flight attempt must not land.
     mutating func stop() {
         generation += 1
-        awaitingBaseline = false
+        phase = .settled
         held = []
         restartRequested = false
     }
@@ -1115,7 +1126,7 @@ struct DeviceWatchLedger<Batch> {
     /// in-flight slot.
     mutating func requestRestart() {
         generation += 1
-        awaitingBaseline = false
+        phase = .settled
         held = []
         restartRequested = true
     }
@@ -1132,25 +1143,55 @@ struct DeviceWatchLedger<Batch> {
         return restartRequested
     }
 
-    /// Admits one arriving batch: returns it when the watch is settled and the
-    /// batch may apply now, or nil when it was held for `settle` or belongs to
-    /// a dead generation.
+    /// Admits one arriving batch: returns it when the batch may apply now, or
+    /// nil when it was queued for `releaseNext` or belongs to a dead generation.
+    ///
+    /// A batch arriving *during* the drain queues too. Letting it through would
+    /// let it overtake one already waiting, and the cursor moves with whatever
+    /// applies first: batch 8 held, batch 9 let past, cursor at 9, and 8 then
+    /// discarded as old news. If 8 named a directory 9 did not, that directory
+    /// is stale for good.
     mutating func admit(_ batch: Batch, generation: Int) -> Batch? {
         guard generation == self.generation else { return nil }
-        guard !awaitingBaseline else {
+        switch phase {
+        case .awaitingBaseline, .draining:
             held.append(batch)
             return nil
+        case .settled:
+            return batch
         }
-        return batch
     }
 
     /// The ack landed and the caller is about to make the baseline decision.
-    /// Returns the batches that raced ahead, in arrival order, to apply after
-    /// that decision — or nil when the attempt is stale and must be abandoned.
-    mutating func settle(generation: Int) -> [Batch]? {
-        guard generation == self.generation else { return nil }
-        awaitingBaseline = false
-        defer { held = [] }
-        return held
+    /// `false` when the attempt is stale and must be abandoned.
+    ///
+    /// Leaves the ledger *draining*: the batches that raced the ack come back
+    /// one at a time from `releaseNext`, and anything arriving meanwhile queues
+    /// behind them. Handing the whole queue over as an array instead would put
+    /// the release outside whatever lock guards the ledger, which is the window
+    /// a live batch overtook it in.
+    mutating func settle(generation: Int) -> Bool {
+        guard generation == self.generation else { return false }
+        phase = .draining
+        return true
+    }
+
+    /// The next batch to hand over, in arrival order, or nil once the queue is
+    /// empty — at which point the ledger settles and later arrivals apply as
+    /// they come.
+    ///
+    /// Called under the same lock `admit` takes, one batch at a time, so a
+    /// batch arriving mid-drain is either already in the queue or lands behind
+    /// what is left of it. There is no bound on the loop by design: each turn
+    /// removes one, and the host debounces its batches (`resource.rs`
+    /// `DEBOUNCE`), so "drain until empty" terminates for the same reason the
+    /// pane is worth updating at all.
+    mutating func releaseNext(generation: Int) -> Batch? {
+        guard generation == self.generation, phase == .draining else { return nil }
+        guard !held.isEmpty else {
+            phase = .settled
+            return nil
+        }
+        return held.removeFirst()
     }
 }
