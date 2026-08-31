@@ -234,14 +234,22 @@ fn adopt_runtime_file(name: &str) {
     let Ok(contents) = std::fs::read(&legacy) else {
         return;
     };
+    // Through a staged name and a rename, so the durable file only ever
+    // appears complete: a crash mid-copy would otherwise leave a torn
+    // `target` that the `target.exists()` check above then treats as the
+    // adopted value forever. A stale staged file from such a crash is
+    // overwritten on the next attempt.
+    let staged = durable.join(format!("{name}.adopting"));
+    let _ = std::fs::remove_file(&staged);
     let written = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&target)?;
+            .open(&staged)?;
         file.write_all(&contents)?;
-        file.sync_all()
+        file.sync_all()?;
+        std::fs::rename(&staged, &target)
     })();
     if written.is_ok() {
         let _ = std::fs::remove_file(&legacy);

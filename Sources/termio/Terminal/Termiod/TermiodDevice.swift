@@ -57,7 +57,7 @@ enum TermiodRoute: Hashable, Codable, CustomStringConvertible {
 
 /// One machine running one `termiod`. Its identity is the daemon's `host_id` —
 /// a stable random 128-bit value minted on the daemon's first run and persisted
-/// beside its socket (termiod/src/paths.rs). Everything else about a device,
+/// in its durable state dir (termiod/src/paths.rs). Everything else about a device,
 /// routes included, is discovered by connecting and can change underneath it.
 struct TermiodDevice: Codable, Identifiable, Hashable {
     /// The daemon's `host_id`, e.g. `h_3f0a…`.

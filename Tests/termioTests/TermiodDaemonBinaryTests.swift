@@ -144,4 +144,25 @@ final class TermiodDaemonBinaryTests: XCTestCase {
     func testTheReleaseChannelIsNamedNotOmitted() {
         XCTAssertFalse(Termiod.channelName.isEmpty)
     }
+
+    /// The durable-state mirror of termiod/src/paths.rs: per channel, under
+    /// Application Support — and back beside the socket the moment
+    /// `TERMIOD_SOCK` pins one, so a test daemon's token never shadows the
+    /// real one's.
+    func testDurableStateDirectoryIsChannelScoped() {
+        let release = Termiod.durableStateDirectory(
+            channelSuffix: "", environment: [:], home: "/Users/u")
+        let dev = Termiod.durableStateDirectory(
+            channelSuffix: "-dev", environment: [:], home: "/Users/u")
+        XCTAssertEqual(release, "/Users/u/Library/Application Support/termio")
+        XCTAssertEqual(dev, "/Users/u/Library/Application Support/termio-dev")
+    }
+
+    func testPinnedSocketKeepsDurableStateBesideIt() {
+        let pinned = Termiod.durableStateDirectory(
+            channelSuffix: "",
+            environment: ["TERMIOD_SOCK": "/tmp/test-daemon/termiod.sock"],
+            home: "/Users/u")
+        XCTAssertEqual(pinned, "/tmp/test-daemon")
+    }
 }

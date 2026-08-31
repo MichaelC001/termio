@@ -143,7 +143,7 @@ Host 1 ──< Workspace 1 ──< Session 1 ──? Workstream   (workstream = 
 
 | Noun | What it is | Identity | Lifetime |
 | --- | --- | --- | --- |
-| **Host** | One `termiod` process on one machine; owns every PTY and the session table | `host_id`: stable random 128-bit, minted on first run, stored beside the socket | Daemon process (launchd/systemd `--user`); survives all clients |
+| **Host** | One `termiod` process on one machine; owns every PTY and the session table | `host_id`: stable random 128-bit, minted on first run, stored in durable per-user state | Daemon process (launchd/systemd `--user`); survives all clients |
 | **Session** | Durable runtime: PTY + process + (v1) vt state + ring/scrollback | `session_id`: host-scoped ULID; `name` is a mutable human alias, never an identity | From `create` until process exit or `kill`. **Detach never ends it** |
 | **Workstream** | Agent metadata over a session: `agent_id`, project/worktree, `status` (`working·idle·needs_you·done·failed·unknown`), pending approval, title | Same `session_id`; workstream fields are session attributes, not a second object to address | Attached at create or promoted later (agent detection); removed on demotion to plain shell |
 | **Workspace** | A directory root on the host that sessions and non-terminal state are scoped to (a project or worktree). Not a container for processes — a *scope* for filesystem, git, and watch state | Canonicalised absolute path; two spellings of one root are one workspace | Implicit: exists while anything references it. Never created or destroyed explicitly |

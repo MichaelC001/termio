@@ -56,11 +56,28 @@ extension Termiod {
 
     /// The directory the daemon keeps everything that belongs to *one host* in
     /// — `host.id`, the pairing token, the durable wss settings. Mirrors
-    /// `state_dir()` in termiod/src/paths.rs, which is the configured socket's
-    /// own directory precisely so a channel-scoped socket takes its identity
-    /// with it.
-    static func stateDirectory() -> String {
-        (socketPath() as NSString).deletingLastPathComponent
+    /// `durable_state_dir()` in termiod/src/paths.rs: on macOS that is
+    /// `~/Library/Application Support/termio<suffix>`, deliberately not the
+    /// socket's temp directory, which the OS may clear and a reboot forgets.
+    /// A `TERMIOD_SOCK` override keeps it beside the socket — the same
+    /// isolation rule the Rust side follows for a daemon pointed at its own
+    /// socket.
+    static func durableStateDirectory() -> String {
+        durableStateDirectory(channelSuffix: AppChannel.suffix,
+                              environment: ProcessInfo.processInfo.environment,
+                              home: NSHomeDirectory())
+    }
+
+    /// Separate from the caller above for the same reason as `socketPath`:
+    /// the mirror to termiod/src/paths.rs drifts silently, so it has to be
+    /// testable without a bundle.
+    static func durableStateDirectory(channelSuffix: String,
+                                      environment: [String: String],
+                                      home: String) -> String {
+        if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
+            return (explicit as NSString).deletingLastPathComponent
+        }
+        return home + "/Library/Application Support/termio" + channelSuffix
     }
 
     /// The pairing secret that authenticates a WebSocket pipe to this daemon —
@@ -71,8 +88,17 @@ extension Termiod {
     /// on their next dial, and a cached copy would keep letting them in until
     /// the app was relaunched. nil means nothing has ever paired with this
     /// daemon.
+    /// The socket-side path is a fallback, not a second home: a daemon from
+    /// before the durable split keeps its token beside the socket until its
+    /// next start adopts it, and pairing must keep working across that window.
     static func pairToken() -> String? {
-        let path = stateDirectory() + "/pair.token"
+        if let token = readToken(at: durableStateDirectory() + "/pair.token") {
+            return token
+        }
+        return readToken(at: (socketPath() as NSString).deletingLastPathComponent + "/pair.token")
+    }
+
+    private static func readToken(at path: String) -> String? {
         guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
             return nil
         }
