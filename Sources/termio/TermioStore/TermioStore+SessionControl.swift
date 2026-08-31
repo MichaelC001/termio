@@ -614,12 +614,17 @@ extension TermioStore {
         // every status channel missed the turn, and there 1.5s of stillness is
         // weak evidence: both Codex and Claude Code sit visually still for
         // spells early in a turn (issue #545 settled on exactly that, seconds
-        // after the send). An agent occupant therefore needs the screen still
-        // for long enough that the promotion path would have flipped the
-        // status to `working` first if a turn were painting anything: past
-        // `userInputQuietWindow` (3s, the send itself counts as input) plus
-        // the two-tick promotion streak. A plain terminal keeps the short
-        // window — a shell prompt going quiet after output *is* the turn end.
+        // after the send). An agent occupant therefore holds for a longer
+        // still window — past `userInputQuietWindow` (3s, the send itself
+        // counts as input) plus the promotion streak's two 1s samples, so a
+        // turn that *keeps repainting* is promoted to `working` before this
+        // fallback can settle. That is a trade, not a proof: a turn that goes
+        // screen-silent mid-turn (a long tool call with no spinner repaint)
+        // can still settle early, and no finite window closes that — the
+        // alternative is burning the caller's whole timeout for every
+        // status-less turn that finished quietly. A plain terminal keeps the
+        // short window — a shell prompt going quiet after output *is* the
+        // turn end.
         let agentSettleWindow = 6.0
         let stallWindow = 5.0
 
