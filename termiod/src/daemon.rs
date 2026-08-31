@@ -1888,7 +1888,7 @@ async fn process_control(
         Control::FsList {
             root,
             paths,
-            page,
+            after,
             seq,
         } => {
             if !connection.capabilities.contains("files") {
@@ -1902,13 +1902,16 @@ async fn process_control(
             } else {
                 // Stamp with the resource cursor *before* walking, so a change
                 // landing mid-listing makes the stamp stale (client re-lists)
-                // rather than falsely fresh.
+                // rather than falsely fresh. Every request carries its own
+                // stamp, so a client continuing a large directory must keep the
+                // *first* one: a listing is only as fresh as its earliest read.
                 let stamp = manager.resources.fs_seq(&root);
                 let out = out.clone();
                 tokio::spawn(async move {
-                    let listed =
-                        tokio::task::spawn_blocking(move || crate::files::list(&root, &paths, page))
-                            .await;
+                    let listed = tokio::task::spawn_blocking(move || {
+                        crate::files::list(&root, &paths, after.as_deref())
+                    })
+                    .await;
                     let response = match listed {
                         Ok(Ok(listings)) => Control::FsListed {
                             seq: stamp,
