@@ -584,8 +584,10 @@ extension TermioStore {
     /// animating after the reply. A 300ms poll always catches the `working` span of a real
     /// turn (an LLM round-trip is far longer). Only a session with no status signal at all
     /// — a plain terminal driven by `send --wait` — falls back to the screen first changing
-    /// and then going still. Each poll awaits off the actor, so a long wait never blocks
-    /// other control requests (§4.2 stays true even mid-wait).
+    /// and then going still; an agent session reaching that fallback (every status channel
+    /// missed the turn) must sit still for the longer `agentSettleWindow` first. Each poll
+    /// awaits off the actor, so a long wait never blocks other control requests (§4.2
+    /// stays true even mid-wait).
     ///
     /// Two failure modes end the wait early instead of burning the whole timeout,
     /// both adopted from herdr's agent-wait design:
@@ -607,6 +609,23 @@ extension TermioStore {
         let started = Date()
         let deadline = started.addingTimeInterval(Double(cap) / 1_000)
         let settleWindow = 1.5
+        // The screen-only settle below is meant for a session with *no status
+        // signal at all* — but it is reached by an agent session too whenever
+        // every status channel missed the turn, and there 1.5s of stillness is
+        // weak evidence: both Codex and Claude Code sit visually still for
+        // spells early in a turn (issue #545 settled on exactly that, seconds
+        // after the send). An agent occupant therefore holds for a longer
+        // still window — past `userInputQuietWindow` (3s, the send itself
+        // counts as input) plus the promotion streak's two 1s samples, so a
+        // turn that *keeps repainting* is promoted to `working` before this
+        // fallback can settle. That is a trade, not a proof: a turn that goes
+        // screen-silent mid-turn (a long tool call with no spinner repaint)
+        // can still settle early, and no finite window closes that — the
+        // alternative is burning the caller's whole timeout for every
+        // status-less turn that finished quietly. A plain terminal keeps the
+        // short window — a shell prompt going quiet after output *is* the
+        // turn end.
+        let agentSettleWindow = 6.0
         let stallWindow = 5.0
 
         let statusAtSend = status(for: session.id)
@@ -673,11 +692,13 @@ extension TermioStore {
 
             guard current != .working else { continue }
             let rested = restingSince.map { now.timeIntervalSince($0) >= settleWindow } ?? false
-            let screenQuiet = now.timeIntervalSince(lastChangeAt) >= settleWindow
+            let quietWindow = occupant == .terminal ? settleWindow : agentSettleWindow
+            let screenQuiet = now.timeIntervalSince(lastChangeAt) >= quietWindow
             // Status-tracked agent: seen working, now rested. (Footer animation can't
             // fool this — it doesn't touch status.)
             if sawWorking, rested { settled = current; break }
-            // No status signal at all (a plain terminal): the screen changed, then stilled.
+            // No status signal at all: the screen changed, then stilled — for the
+            // window the occupant earns (see `agentSettleWindow`).
             if !sawWorking, changedSinceSend, screenQuiet { settled = current; break }
         }
         return await waitReply(request, session: session,
