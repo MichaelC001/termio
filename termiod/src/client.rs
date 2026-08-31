@@ -898,3 +898,142 @@ mod autostart_tests {
         assert!(!super::absent_daemon(None));
     }
 }
+
+/// The daemon's roster over a connection that never spawns one. A daemon this
+/// call would have to start hosts no sessions, so an absent daemon simply
+/// answers `None` — and from the `termio` client binary, `current_exe()` is
+/// not the daemon anyway (see the crate-root seam note in `lib.rs`). Errors
+/// only when a live daemon answers badly.
+pub async fn sessions_of_running_daemon() -> Result<Option<Vec<SessionInfo>>> {
+    let sock = paths::socket_path()?;
+    let mut stream = match UnixStream::connect(&sock).await {
+        Ok(stream) => stream,
+        Err(_) => return Ok(None),
+    };
+    write_control(
+        &mut stream,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role: ChannelRole::Control,
+            caps: vec!["events".to_string()],
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    match read_frame(&mut stream).await? {
+        Some(Frame::Control(Control::HelloOk { .. })) => {}
+        _ => return Ok(None),
+    }
+    write_control(&mut stream, &Control::List { seq: Some(1) }).await?;
+    loop {
+        match read_frame(&mut stream).await? {
+            Some(Frame::Control(Control::Sessions { sessions, .. })) => return Ok(Some(sessions)),
+            Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+            Some(_) => continue,
+            None => bail!("the daemon closed the connection before answering list"),
+        }
+    }
+}
+
+/// One read-only look at a session's current screen: an observe-mode
+/// attachment negotiated with the snapshot capability, dropped as soon as the
+/// `S` frame lands. Observe mode never takes the write token and never
+/// resizes the PTY, so reading a screen is invisible to the session's real
+/// client. Never spawns a daemon, for the same reason as the roster above.
+pub async fn observe_screen(target: &str, rows: u16, cols: u16) -> Result<Snapshot> {
+    let sock = paths::socket_path()?;
+    let mut stream = UnixStream::connect(&sock)
+        .await
+        .with_context(|| format!("connecting to termiod at {}", sock.display()))?;
+    write_control(
+        &mut stream,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role: ChannelRole::Attach,
+            caps: vec![
+                "events".to_string(),
+                "send_wait".to_string(),
+                "snapshot".to_string(),
+                "scrollback".to_string(),
+            ],
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    match read_frame(&mut stream).await? {
+        Some(Frame::Control(Control::HelloOk { .. })) => {}
+        Some(Frame::Control(Control::HelloErr { code, supported })) => {
+            bail!("protocol negotiation failed ({code:?}); host supports {supported:?}")
+        }
+        _ => bail!("this daemon cannot answer snapshot reads"),
+    }
+    write_control(
+        &mut stream,
+        &Control::Attach {
+            target: target.to_string(),
+            create_if_missing: None,
+            rows,
+            cols,
+            mode: AttachMode::Observe,
+            seq: Some(2),
+        },
+    )
+    .await?;
+    loop {
+        match read_frame(&mut stream).await? {
+            Some(Frame::Snapshot(snapshot)) => return Ok(snapshot),
+            Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+            Some(_) => continue,
+            None => bail!("the daemon closed the stream before sending a snapshot"),
+        }
+    }
+}
+
+/// A snapshot's text rows the way the app's `read` renders a screen: each row
+/// right-trimmed, trailing blank rows dropped. A v2 payload is VT sequences
+/// replayed into a fresh engine — self-contained by design, proven by
+/// `snapshot_prologue.rs` — and the packed-cell form reads straight off the
+/// grid.
+pub fn snapshot_text_rows(snapshot: &Snapshot) -> Result<Vec<String>> {
+    let mut rows = if let Some(vt) = &snapshot.vt {
+        let mut terminal = termiod_vt::VtTerminal::new(snapshot.rows, snapshot.cols)?;
+        terminal.vt_write(vt);
+        let grid = terminal.snapshot()?;
+        text_rows(usize::from(grid.cols), grid.cells.iter().map(|cell| cell.codepoint))
+    } else {
+        text_rows(
+            usize::from(snapshot.cols),
+            snapshot.cells.iter().map(|cell| cell.codepoint),
+        )
+    };
+    while rows.last().is_some_and(|row| row.is_empty()) {
+        rows.pop();
+    }
+    Ok(rows)
+}
+
+fn text_rows(cols: usize, codepoints: impl Iterator<Item = u32>) -> Vec<String> {
+    if cols == 0 {
+        return Vec::new();
+    }
+    let cells: Vec<u32> = codepoints.collect();
+    cells
+        .chunks(cols)
+        .map(|row| {
+            row.iter()
+                .map(|&codepoint| {
+                    let character = char::from_u32(codepoint).unwrap_or(' ');
+                    if character == '\0' {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}

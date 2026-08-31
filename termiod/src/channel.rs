@@ -75,6 +75,16 @@ impl Channel {
             None => Channel::release(),
         }
     }
+
+    /// The deep-link scheme this channel's app claims (`termio` /
+    /// `termio-dev`), mirroring `AppChannel.urlScheme`.
+    pub fn url_scheme(&self) -> String {
+        if self.name == "release" {
+            "termio".to_string()
+        } else {
+            format!("termio-{}", self.name)
+        }
+    }
 }
 
 fn program_name() -> String {

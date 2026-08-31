@@ -108,6 +108,11 @@ def run(client, args, env_extra=None):
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "PWD": HOME,
         "TERMIO_SESSION": "TEST-SESSION",
+        # A dead daemon socket: the Rust client answers `read` from a local
+        # daemon when one owns the target, and this harness diffs the
+        # app-socket halves — so pin the daemon side to a path nothing serves
+        # for both clients alike.
+        "TERMIOD_SOCK": os.path.join(HOME, "no-daemon.sock"),
     }
     if env_extra:
         env.update(env_extra)

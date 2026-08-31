@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
         }
         Some("version") => version::print_table(&channel, provenance).await,
         Some("remote") => remote_passthrough(&channel, &arguments[1..]),
-        Some("sessions") => sessions(&channel, &arguments[1..]),
+        Some("sessions") => sessions(&channel, &arguments[1..]).await,
         Some("agent") => agent_report(&channel, &arguments[1..]),
         Some("notify") => notify(&channel, &arguments[1..]),
         Some("open") => {
@@ -119,7 +119,7 @@ fn exit_outcome(outcome: Outcome) -> ! {
     })
 }
 
-fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
+async fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
     let op = arguments.first().map(String::as_str).unwrap_or("list");
     let rest = if arguments.is_empty() { &[][..] } else { &arguments[1..] };
 
@@ -142,7 +142,9 @@ fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
         std::process::exit(0);
     }
 
-    app_socket::require_socket(channel);
+    if op != "read" {
+        app_socket::require_socket(channel);
+    }
 
     let mut format = "text";
     let mut agent = String::new();
@@ -405,6 +407,16 @@ fn sessions(channel: &Channel, arguments: &[String]) -> Result<()> {
             "send"
         }
         "read" => {
+            // Device verb, daemon first (unify-server-plane Stage 10): a
+            // session the local daemon hosts answers from its authoritative
+            // VT — including sessions no window ever opened, and boxes with
+            // no app at all. A target the daemon does not own (a session on
+            // a remote device, an app-side title match, a foreign-channel
+            // link) falls through to the app, which keeps its coverage.
+            if let Some(code) = daemon_read(channel, &target, &lines, format).await {
+                std::process::exit(code);
+            }
+            app_socket::require_socket(channel);
             if !lines.is_empty() {
                 extra_json = format!("\"lines\":{lines}");
             }
@@ -440,6 +452,146 @@ fn push_extra(extra: &mut String, fragment: &str) {
         extra.push(',');
     }
     extra.push_str(fragment);
+}
+
+/// `read`'s daemon half. `None` means the target is not a session the local
+/// daemon owns and the app should answer instead; `Some(code)` means the
+/// reply (success or error) was printed here.
+async fn daemon_read(channel: &Channel, target: &str, lines: &str, format: &str) -> Option<i32> {
+    let token = read_token(channel, target)?;
+    let sessions = match termiod::client::sessions_of_running_daemon().await {
+        Ok(Some(sessions)) => sessions,
+        _ => return None,
+    };
+    let token_lower = token.to_lowercase();
+    let matches: Vec<&termiod::protocol::SessionInfo> = sessions
+        .iter()
+        .filter(|info| {
+            let name = info.name.to_lowercase();
+            name == token_lower || name.starts_with(&token_lower)
+        })
+        .collect();
+    match matches.len() {
+        0 => None,
+        1 => Some(serve_daemon_read(channel, matches[0], lines, format).await),
+        _ => {
+            control_error_reply(
+                format,
+                "ambiguous",
+                &format!("'{target}' matches more than one session; use a longer id."),
+            );
+            Some(1)
+        }
+    }
+}
+
+/// The token to match against daemon session names: a bare id as-is, this
+/// channel's own `…://session/<id>` link stripped to the id. A foreign
+/// channel's link (and any other shape) stays with the app, which owns its
+/// error copy.
+fn read_token(channel: &Channel, target: &str) -> Option<String> {
+    let Some(scheme_end) = target.find("://") else {
+        return Some(target.to_string());
+    };
+    if target[..scheme_end] != channel.url_scheme() {
+        return None;
+    }
+    let rest = &target[scheme_end + 3..];
+    let id = rest.rsplit('/').next().unwrap_or_default();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+async fn serve_daemon_read(
+    channel: &Channel,
+    info: &termiod::protocol::SessionInfo,
+    lines: &str,
+    format: &str,
+) -> i32 {
+    let snapshot = match termiod::client::observe_screen(&info.name, info.rows, info.cols).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            control_error_reply(format, "daemon", &format!("{error:#}"));
+            return 1;
+        }
+    };
+    let mut rows = match termiod::client::snapshot_text_rows(&snapshot) {
+        Ok(rows) => rows,
+        Err(error) => {
+            control_error_reply(format, "daemon", &format!("{error:#}"));
+            return 1;
+        }
+    };
+    if let Ok(cap) = lines.parse::<usize>() {
+        if cap > 0 && rows.len() > cap {
+            rows = rows.split_off(rows.len() - cap);
+        }
+    }
+    let screen = rows.join("\n");
+    if format == "json" {
+        let mut object = std::collections::BTreeMap::new();
+        object.insert("ok", serde_json::Value::Bool(true));
+        object.insert("schema_version", serde_json::Value::from(1));
+        object.insert("screen", serde_json::Value::from(screen));
+        object.insert(
+            "target",
+            serde_json::Value::from(format!(
+                "{}://session/{}",
+                channel.url_scheme(),
+                info.name.to_lowercase()
+            )),
+        );
+        object.insert("title", serde_json::Value::from(read_title(info)));
+        match serde_json::to_string(&object) {
+            Ok(reply) => println!("{reply}"),
+            Err(error) => {
+                control_error_reply(format, "daemon", &format!("{error}"));
+                return 1;
+            }
+        }
+    } else {
+        println!("{}", if screen.is_empty() { "(blank screen)" } else { &screen });
+    }
+    0
+}
+
+/// The best name the daemon knows: the agent-reported title, else the live
+/// foreground program, else the spawned command, else the placeholder every
+/// bare shell gets. The app's own `read` answers with its richer display
+/// title; the daemon plane reports what the roster carries.
+fn read_title(info: &termiod::protocol::SessionInfo) -> String {
+    if let Some(title) = info.title.as_deref().filter(|title| !title.is_empty()) {
+        return title.to_string();
+    }
+    let program = info
+        .foreground_argv
+        .as_ref()
+        .and_then(|argv| argv.first())
+        .map(String::as_str)
+        .or_else(|| info.command.split_whitespace().next())
+        .unwrap_or("");
+    let program = program.rsplit('/').next().unwrap_or(program);
+    if program.is_empty() {
+        "Terminal".to_string()
+    } else {
+        program.to_string()
+    }
+}
+
+/// An error in the app's own reply shape, so both halves of the router speak
+/// one contract to scripts.
+fn control_error_reply(format: &str, code: &str, message: &str) {
+    if format == "json" {
+        let mut object = std::collections::BTreeMap::new();
+        object.insert("error", serde_json::Value::from(code));
+        object.insert("message", serde_json::Value::from(message));
+        object.insert("ok", serde_json::Value::Bool(false));
+        object.insert("schema_version", serde_json::Value::from(1));
+        if let Ok(reply) = serde_json::to_string(&object) {
+            println!("{reply}");
+        }
+    } else {
+        println!("error: {message}");
+    }
 }
 
 /// The public hook contract: `termio agent report <state> …` keeps its name,

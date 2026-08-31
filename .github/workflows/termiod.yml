@@ -138,6 +138,13 @@ jobs:
           pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
           python3 remote_smoke_test.py
 
+      # The daemon half of `sessions read` against a real daemon — the Stage 10
+      # gate that a never-opened session answers, with no app socket anywhere.
+      - name: Read smoke test
+        run: |
+          pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
+          python3 tests/cli_read_smoke.py
+
       # The Rust termio client against the shell client it replaces: request
       # bytes, stdout, stderr, and exit codes must be identical on every verb
       # (unify-server-plane Stage 10's freeze). macOS only — the shell client
@@ -233,3 +240,8 @@ jobs:
         run: |
           pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
           python3 remote_smoke_test.py
+
+      - name: Read smoke test
+        run: |
+          pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
+          python3 tests/cli_read_smoke.py
