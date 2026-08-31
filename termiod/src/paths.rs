@@ -41,6 +41,12 @@ pub fn channel_suffix() -> String {
 /// whole session table, so sharing one between the release app and a dev build
 /// beside it makes them one device: each is handed the other's entire roster,
 /// draws every row of it as a session nothing accounts for, and can kill it.
+/// Whether the caller pinned its own socket — the axis every "beside the
+/// socket or not" decision in this file turns on. Empty counts as unset.
+fn socket_is_pinned() -> bool {
+    std::env::var_os("TERMIOD_SOCK").is_some_and(|value| !value.is_empty())
+}
+
 pub fn runtime_dir() -> Result<PathBuf> {
     let suffix = channel_suffix();
     let base = if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
@@ -75,7 +81,7 @@ pub fn log_path() -> Result<PathBuf> {
     if let Some(explicit) = std::env::var_os("TERMIOD_LOG") {
         return Ok(PathBuf::from(explicit));
     }
-    if std::env::var_os("TERMIOD_SOCK").is_some() {
+    if socket_is_pinned() {
         return Ok(state_dir()?.join("termiod.log"));
     }
     durable_log_dir(&channel_suffix())?.map_or_else(
@@ -137,7 +143,11 @@ fn flock_exclusive(path: &std::path::Path) -> Result<std::fs::File> {
 }
 
 pub fn socket_path() -> Result<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TERMIOD_SOCK") {
+    // An empty value is unset, not a socket in the current directory — the
+    // Swift mirror (`Termiod.socketPath`) already reads it that way, and the
+    // two sides deriving different sockets from one environment is the drift
+    // this file exists to prevent.
+    if let Some(explicit) = std::env::var_os("TERMIOD_SOCK").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(explicit));
     }
     Ok(runtime_dir()?.join("termiod.sock"))
@@ -172,7 +182,7 @@ pub fn state_dir() -> Result<PathBuf> {
 /// on the real one's. No `$HOME` falls back the same way rather than refusing
 /// to start.
 pub fn durable_state_dir() -> Result<PathBuf> {
-    if std::env::var_os("TERMIOD_SOCK").is_some() {
+    if socket_is_pinned() {
         return state_dir();
     }
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
@@ -234,14 +244,22 @@ fn adopt_runtime_file(name: &str) {
     let Ok(contents) = std::fs::read(&legacy) else {
         return;
     };
-    // Through a staged name and a rename, so the durable file only ever
-    // appears complete: a crash mid-copy would otherwise leave a torn
-    // `target` that the `target.exists()` check above then treats as the
-    // adopted value forever. A stale staged file from such a crash is
-    // overwritten on the next attempt.
-    let staged = durable.join(format!("{name}.adopting"));
-    let _ = std::fs::remove_file(&staged);
-    let written = (|| -> std::io::Result<()> {
+    // Staged under a name unique to this adopter, then published with
+    // `hard_link`, which refuses an existing target. Both halves matter. A
+    // shared staged name lets two concurrent adopters (`serve()` and a
+    // client's lazy read) unlink each other's staging and `rename` would then
+    // publish whatever half-written file the *pathname* resolves to. And
+    // `rename` replaces, so even unique staging could clobber a finished
+    // target with a slower copy. With link-as-publish the durable file only
+    // ever appears complete, and losing the race is success: the winner's
+    // file is whole, because only whole files get published.
+    static ADOPTING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staged = durable.join(format!(
+        "{name}.adopting.{}.{}",
+        std::process::id(),
+        ADOPTING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let published = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -249,10 +267,19 @@ fn adopt_runtime_file(name: &str) {
             .open(&staged)?;
         file.write_all(&contents)?;
         file.sync_all()?;
-        std::fs::rename(&staged, &target)
+        std::fs::hard_link(&staged, &target)
     })();
-    if written.is_ok() {
-        let _ = std::fs::remove_file(&legacy);
+    let _ = std::fs::remove_file(&staged);
+    match published {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&legacy);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another adopter published first; its file is complete, so the
+            // legacy copy has served its purpose either way.
+            let _ = std::fs::remove_file(&legacy);
+        }
+        Err(_) => {}
     }
 }
 
@@ -469,11 +496,8 @@ pub fn load_or_create_host_id() -> Result<String> {
 
 /// Create the runtime dir with 0700 permissions if it does not exist.
 pub fn ensure_runtime_dir() -> Result<PathBuf> {
-    let dir = if let Some(explicit) = std::env::var_os("TERMIOD_SOCK") {
-        PathBuf::from(explicit)
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
+    let dir = if socket_is_pinned() {
+        state_dir()?
     } else {
         runtime_dir()?
     };
