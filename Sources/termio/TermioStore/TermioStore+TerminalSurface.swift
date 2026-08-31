@@ -251,7 +251,7 @@ extension TermioStore {
         let argv = Self.launchArgv(command: agentCommand)
         var env = Self.sanitizedEnvironment()
         // Stamp the session id so any agent hook running inside can echo it back,
-        // letting `HookListener` correlate events to this exact session.
+        // letting `termio agent report` name this exact session.
         env["TERMIO_SESSION"] = session.id.uuidString
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
