@@ -848,14 +848,16 @@ extension TermioStore {
     func removeProject(_ id: Project.ID) {
         guard let projectIndex = projects.firstIndex(where: { $0.id == id }) else { return }
 
-        let removedSessionIDs = Set(projects[projectIndex].sessions.map(\.id))
-        for sessionID in removedSessionIDs {
+        let removedSessions = projects[projectIndex].sessions
+        let removedSessionIDs = Set(removedSessions.map(\.id))
+        for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
-            // be told — the same verb Close Session uses. Detaching instead
-            // would leave every agent of a removed project running with nothing
-            // left on this side that can reach it.
-            termiodLinks[sessionID]?.killAndClose()
-            termiodLinks[sessionID] = nil
+            // be told — the same verb Close Session uses, and like it, by name:
+            // a restored row that was never selected has no link, and detaching
+            // instead would leave every agent of a removed project running with
+            // nothing left on this side that can reach it.
+            destroyDaemonSession(for: session, rememberClosed: true)
+            let sessionID = session.id
             surfaces[sessionID] = nil
             monitors[sessionID] = nil
             removeRuntime(for: sessionID)
@@ -996,12 +998,17 @@ extension TermioStore {
     /// may hold uncommitted agent work, so cleanup is the user's call, not ours.
     func closeSession(_ id: Session.ID) {
         guard let slot = locate(id) else { return }
+        // The daemon name and route are read off the session **before** the tree
+        // mutation below removes it — after that, nothing on this side can say
+        // which daemon session the row named.
+        let session = self[slot]
         let sessionIndex = slot.sessionIndex
         removeSession(at: slot)
         // Close Session is the destroy verb, so a termiod-backed session is
         // killed in the daemon too — unlike quit/detach, which keeps it alive.
-        termiodLinks[id]?.killAndClose()
-        termiodLinks[id] = nil
+        // By name, not through the link: a link exists only while a pane has
+        // rendered, and a close must land whether or not one ever did (#528).
+        destroyDaemonSession(for: session, rememberClosed: true)
         surfaces[id] = nil
         monitors[id] = nil
         removeRuntime(for: id)
@@ -1056,12 +1063,22 @@ extension TermioStore {
     /// binary-replaced check): the "restart Codex" the agent asks for, done for the
     /// user, conversation resumed.
     func relaunchSession(_ id: Session.ID) {
-        guard session(id) != nil else { return }
+        guard let session = session(id) else { return }
         // A respawn-in-place must not leave the old daemon-side process
         // running under the same name, or the fresh surface would reattach to
-        // it instead of spawning the replacement.
-        termiodLinks[id]?.killAndClose()
-        termiodLinks[id] = nil
+        // it instead of spawning the replacement. Killed by name — the
+        // revert-to-shell path reaches here *after* `applyTermiodExit` already
+        // nil'd the link, so a link-addressed kill was always a no-op there —
+        // but never journaled: the respawn reuses this very name, and a
+        // journaled name is killed on sight by the roster sweep.
+        destroyDaemonSession(for: session, rememberClosed: false)
+        // The old daemon session's id dies with it, and the respawn's is not
+        // known until its attach or roster answers. Left in place, a close in
+        // that window would journal the stale id, and the sweep would read the
+        // respawned session's fresh id as legitimate reuse — sparing the very
+        // orphan the close meant to end. Nil is honest: an id-less record for
+        // an app-authored (UUID) name still claims by name.
+        updateSession(id) { $0.termiodDaemonID = nil }
         surfaces[id] = nil
         monitors[id] = nil
         processSpawnedAt[id] = nil
@@ -1071,6 +1088,9 @@ extension TermioStore {
         // sessions present in `lastWorkingAt` — could never correct it).
         setStatus(.idle, for: id)
         setCurrentTool(nil, for: id)
+        // The respawn puts a live process back in the pane, so a "exited —
+        // shell" notice no longer describes it.
+        runtimes[id]?.agentExitNotice = nil
         clearActivityTracking(for: id)
         // `transcriptPaths` deliberately survives: the respawn resumes the same
         // conversation, so the Info pane's trace should keep pointing at it.

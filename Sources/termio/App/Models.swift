@@ -545,6 +545,14 @@ struct Session: Identifiable, Hashable, Codable {
     /// `nil` for every session this app created, which is nearly all of them.
     var termiodSessionName: String?
 
+    /// The daemon's own id for the running session behind this row — minted
+    /// fresh per creation, so a reused *name* never reuses the id. Learned from
+    /// the first roster row or information event that answers for this session,
+    /// and written into the closed-session journal on destroy, where it is what
+    /// tells this app's orphan from a new session someone recreated under the
+    /// same name. `nil` until a daemon has answered for the row.
+    var termiodDaemonID: String?
+
     /// Adopt another session's machine — both halves of it.
     ///
     /// A device has two identities during its life (device architecture §9.5):
@@ -611,7 +619,7 @@ struct Session: Identifiable, Hashable, Codable {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
              liveTitle, promptTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
              termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName,
-             givenTitle
+             termiodDaemonID, givenTitle
     }
 
     /// The name to recover from a state file written before `givenTitle` existed,
@@ -661,6 +669,7 @@ struct Session: Identifiable, Hashable, Codable {
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
         termiodSessionName = try container.decodeIfPresent(
             String.self, forKey: .termiodSessionName)
+        termiodDaemonID = try container.decodeIfPresent(String.self, forKey: .termiodDaemonID)
         givenTitle = try container.decodeIfPresent(String.self, forKey: .givenTitle)
             ?? Self.recoveredGivenTitle(title, agent: agent, remoteHost: termiodRemoteHost)
     }

@@ -123,7 +123,6 @@ struct SidebarView: View {
     @State private var projectsCollapsed = false
     @State private var terminalsCollapsed = false
     @State private var chatsCollapsed = false
-    @State private var alsoRunningCollapsed = false
 
     // Chrome colors borrowed from the selected terminal theme; `nil` keeps the
     // default system look untouched.
@@ -312,9 +311,10 @@ struct SidebarView: View {
                     ForEach(others) { projectBlock($0, marksDevice: marksDevice) }
                 }
             }
-            // What the device itself says is running that no row above accounts for.
-            alsoRunningSection(isFirstSection: !hasPinned && !hasTerminals && !hasChats
-                && others.isEmpty)
+            // A session the device reports that no row accounts for gets a row
+            // of its own automatically (`reconcileExternalSessions`) — there is
+            // no second list to learn. The "Also Running" section that used to
+            // sit here is gone with #528.
         }
         // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
         // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
@@ -322,71 +322,6 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
-    }
-
-    /// The current device's own roster: the sessions **that machine** reports,
-    /// under a header that names it.
-    ///
-    /// This is the list `list` returned, not a local array narrowed by alias. The
-    /// difference shows the moment a session was started somewhere else — from the
-    /// `termiod` CLI on the box, or by a phone — because such a session appears
-    /// here and could not appear in anything derived from this Mac's state file.
-    ///
-    /// On this Mac the sections above already draw the app's own rows, so only the
-    /// sessions they do not account for are listed; on any other device this is
-    /// the entire sidebar.
-    @ViewBuilder
-    private func alsoRunningSection(isFirstSection: Bool) -> some View {
-        let device = store.currentDevice
-        // Deliberately not scoped by workspace: this is the machine's own claim
-        // about what is running, and it is the only place a session started
-        // outside Termio can appear at all.
-        let rows = store.deviceOnlySessions()
-        // Shown for a machine that has not answered, not only for one with rows
-        // to show. `deviceOnlySessions` returns nothing while a device is being
-        // reached and nothing when it refused, so this whole section used to
-        // vanish at exactly the moment it had something to say — and "no
-        // sessions" and "no machine" looked identical. `DeviceSessionsState`
-        // has carried the difference all along, including the daemon's own
-        // words; nothing rendered it.
-        //
-        // Only for a machine, never for this Mac: a local roster is a Unix
-        // socket away, so there is no reaching to watch and no failure that
-        // outlives a blink.
-        let unanswered = !device.isLocal && store.deviceSessions.isUnanswered
-        if !rows.isEmpty || unanswered {
-            SidebarSectionHeader(
-                title: device.isLocal
-                    ? localized("Also Running")
-                    : localized("Also Running on \(device.name)"),
-                chrome: chrome,
-                isCollapsed: alsoRunningCollapsed,
-                isFirstSection: isFirstSection,
-                toggleCollapsed: {
-                    withAnimation(.easeInOut(duration: 0.18)) { alsoRunningCollapsed.toggle() }
-                },
-                menuItems: alsoRunningMenuItems(device)
-            )
-            if !alsoRunningCollapsed {
-                if case .failed(let message) = store.deviceSessions {
-                    // The device's own words, verbatim: ssh says why in one line
-                    // ("Operation timed out", "Permission denied"), and every
-                    // paraphrase of that is worse than the line itself.
-                    SidebarNoticeRow(
-                        title: localized("Can’t reach \(device.name)"),
-                        detail: message,
-                        chrome: chrome)
-                } else if case .loading = store.deviceSessions, rows.isEmpty {
-                    SidebarNoticeRow(
-                        title: localized("Reaching \(device.name)…"), detail: nil, chrome: chrome)
-                }
-                // Opening one of these is adoption, not creation: it keeps the
-                // name the device gave it so the attach lands on that PTY.
-                ForEach(rows, id: \.id) { information in
-                    DeviceOnlySessionRow(information: information, chrome: chrome)
-                }
-            }
-        }
     }
 
     /// Agents blocked on the user outside the workspace on screen. Sorted by the
@@ -401,18 +336,6 @@ struct SidebarView: View {
                 .filter { store.status(for: $0.id) == .needsAttention }
                 .map { WaitingElsewhereEntry(workspaceName: workspace.name, session: $0) }
         }
-    }
-
-    private func alsoRunningMenuItems(_ device: KnownDevice) -> [SidebarMenuItem] {
-        var items: [SidebarMenuItem] = []
-        if let alias = device.alias {
-            items.append(.action(localized("New Terminal")) { store.addRemoteTerminal(host: alias) })
-            items.append(.separator)
-        }
-        items.append(.action(localized("Refresh")) { store.refreshDeviceSessions() })
-        items.append(.separator)
-        items.append(.action(localized("Close All")) { store.requestCloseAllDeviceSessions() })
-        return items
     }
 
     /// One project's rows: its header, then (unless folded) its primary-checkout
@@ -1467,11 +1390,23 @@ private struct SessionRow: View {
             // row's layout, and it sits *around* the brand glyph so the vendor color stays intact.
             .overlay { StatusRing(status: status) }
             .help(store.statusDescription(for: session.id))
-            Text(store.displayTitle(for: session))
-                .font(settings.interfaceFont)
-                .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(store.displayTitle(for: session))
+                    .font(settings.interfaceFont)
+                    .foregroundStyle(chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.primary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // The agent left but its wrapped shell survives ("Claude Code
+                // exited — shell"): the row says what happened in its own place
+                // instead of changing identity (#528).
+                if let notice = store.agentExitNotice(for: session.id) {
+                    Text(notice)
+                        .font(settings.interfaceFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
             // The origin trail on a pinned shortcut row, so a session lifted to the top
             // working set still says which project/branch it belongs to. Muted and
             // shrink-last so the title keeps priority when the row is tight.
@@ -1576,156 +1511,6 @@ private struct SessionRow: View {
                 .animation(nil, value: isDropTarget)
         )
         .animation(.easeInOut(duration: 0.12), value: isHovering)
-    }
-}
-
-/// A session the **device** reports that this app has no row for — started from
-/// the `termiod` CLI on that machine, or by another client.
-///
-/// Its existence is the proof the list is the device's and not this Mac's: no
-/// amount of filtering a local array can produce a row for a session this app
-/// never created. Everything shown comes off the wire — the daemon's title, its
-/// command, its directory on that machine.
-///
-/// Clicking it adopts it (see `TermioStore.adoptDeviceSession`), which gives the
-/// session a row here and attaches to the PTY that is already running rather
-/// than starting a second one beside it.
-/// A line in place of the rows that are not there: a machine being reached, or
-/// one that refused and said why.
-///
-/// Shaped like the rows it stands in for — same leading inset, same two-line
-/// title/detail — so the section keeps its rhythm whether it is holding sessions
-/// or an explanation. Not selectable and not an error dialog: it is the section's
-/// content while there is no content, and it goes away when the rows arrive.
-private struct SidebarNoticeRow: View {
-    @EnvironmentObject var settings: AppSettings
-    let title: String
-    let detail: String?
-    let chrome: ChromeTheme?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            HugeIconView(icon: .serverStack, size: 15, color: .secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title)
-                    .font(settings.interfaceFont)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(settings.interfaceFont)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                        .truncationMode(.tail)
-                }
-            }
-            Spacer(minLength: 4)
-        }
-        .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, 16 - sidebarLeadingTrim)
-        .contentShape(Rectangle())
-        .help(detail ?? title)
-    }
-}
-
-private struct DeviceOnlySessionRow: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    let information: Termiod.SessionInformation
-    let chrome: ChromeTheme?
-    @State private var isHovering = false
-
-    private var title: String { information.displayLabel }
-
-    /// Where the device says the row is running. Just the directory: the command
-    /// is the login-shell wrapper Termio spawns through
-    /// (`/bin/zsh -ilc exec claude --dangerously-skip-permissions --session-id …`),
-    /// which is scaffolding wrapped around a uuid, and `title` has already
-    /// lifted the one word of it worth reading onto the line above. Printing the
-    /// rest put a flag the user never typed in the sidebar and truncated away
-    /// the directory, which is the part that says *which* of three claudes this
-    /// is. The whole string stays one hover away.
-    private var detail: String {
-        information.cwd.isEmpty ? "" : URL(fileURLWithPath: information.cwd).lastPathComponent
-    }
-
-    /// Where the row came from, and — since the row itself no longer prints it —
-    /// the command it was started with, for the one case that needs the whole
-    /// string: telling two sessions of the same agent in the same directory apart.
-    private var helpText: String {
-        let origin = information.cwd.isEmpty
-            ? localized("Opened outside Termio on this device")
-            : localized("Opened outside Termio, in \(information.cwd)")
-        guard !information.command.isEmpty else { return origin }
-        return origin + "\n" + information.command
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            HugeIconView(icon: .terminal, size: 15, color: .secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title)
-                    .font(settings.interfaceFont)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if !detail.isEmpty {
-                    Text(detail)
-                        .font(settings.interfaceFont)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            Spacer(minLength: 4)
-            // Someone else is watching this session. Worth saying out loud — the
-            // write token is single-holder, so opening it may not hand over the
-            // keyboard. It yields the trailing edge to the close button on hover,
-            // which is where every other row in the sidebar puts that action.
-            if information.attachedClients > 0, !isHovering {
-                HugeIconView(icon: .view, size: 13, color: .secondary)
-            }
-        }
-        .padding(.vertical, settings.interfaceRowPadding)
-        .padding(.leading, 16 - sidebarLeadingTrim)
-        .contentShape(Rectangle())
-        .help(helpText)
-        .simultaneousGesture(TapGesture().onEnded { store.adoptDeviceSession(information) })
-        // The same hover-reveal close as a session row. Without it the only way
-        // to end one of these was to adopt it into the sidebar first and close
-        // it there — backwards for the rows this section mostly holds, which are
-        // sessions no Termio on this Mac has a record of any more.
-        //
-        // Layered *outside* the row's tap, or the click that closes a session
-        // would also adopt it: a simultaneous gesture fires for every tap its
-        // own subtree receives, button or not. Hover is read outside both, so
-        // moving onto the button doesn't count as leaving the row and blink it
-        // back out from under the cursor.
-        .overlay(alignment: .trailing) {
-            SessionRowActionButton(
-                systemImage: "xmark.circle.fill",
-                help: localized("Close session"),
-                chrome: chrome
-            ) {
-                store.requestCloseDeviceSession(information)
-            }
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
-        }
-        .onHover { isHovering = $0 }
-        .background(SidebarRowContextMenu(items: {
-            [
-                .action(localized("Open")) { store.adoptDeviceSession(information) },
-                .separator,
-                .action(localized("Close Session")) { store.requestCloseDeviceSession(information) },
-            ]
-        }))
-        .listRowBackground(
-            SidebarRowHighlight(isSelected: false, isHovering: isHovering, chrome: chrome)
-                .animation(.easeInOut(duration: 0.12), value: isHovering))
     }
 }
 

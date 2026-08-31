@@ -953,6 +953,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// session actually runs on. A session knows its *route* from the start but
     /// cannot know its *device* until something answers — this is that moment.
     var onDevice: ((TermiodDevice) -> Void)?
+    /// Fired on the main queue with the daemon's own id for the session this
+    /// attach resolved to — minted fresh per creation, never reused. Captured
+    /// off the attach reply so a respawn learns its new identity the moment the
+    /// attach lands, not a roster refresh later: the closed-session journal
+    /// records this id on destroy, and the window in which a close would
+    /// journal a stale or missing one should be as small as the protocol allows.
+    var onDaemonSessionID: ((String) -> Void)?
     /// Fired once on the main queue when the daemon **answered and refused** —
     /// a cwd that does not exist, a rejected handshake, a spawn it would not
     /// perform. Distinct from `onConnectionLost` because the daemon is right
@@ -1048,6 +1055,9 @@ final class TermiodSessionLink: @unchecked Sendable {
                 attached = true
                 isWriter = attachedPayload.writer
                 publishRenderWriter(attachedPayload.writer)
+                DispatchQueue.main.async { [self] in
+                    onDaemonSessionID?(attachedPayload.sessionId)
+                }
                 // The initial state has to be announced too, not just later
                 // changes: a client that attaches as an observer, or that opens
                 // a session a phone is already holding, is read-only from its

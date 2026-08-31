@@ -20,6 +20,8 @@
 	<string>%@ answered, but not with the handshake termiod sends.</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ didn’t come up — check the network and retry</string>
+	<key>%@ exited — shell</key>
+	<string>%@ exited — shell</string>
 	<key>%@ has nothing to pair against</key>
 	<string>%@ has nothing to pair against</string>
 	<key>%@ is a dark theme in the %@ slot.</key>
@@ -174,10 +176,6 @@
 	<string>Allow Keychain Access…</string>
 	<key>Allow Usage Access</key>
 	<string>Allow Usage Access</string>
-	<key>Also Running</key>
-	<string>Also Running</string>
-	<key>Also Running on %@</key>
-	<string>Also Running on %@</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>An older install points at %@. Update it to this version of Termio.</string>
 	<key>Anyone</key>

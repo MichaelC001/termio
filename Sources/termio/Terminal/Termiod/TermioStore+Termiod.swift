@@ -102,6 +102,18 @@ extension TermioStore {
             // was buried and then reopened keeps reading "ended" until the next
             // roster arrives — the app disagreeing with the terminal beside it.
             self?.termiodTombstones[link.sessionName] = nil
+            // The same proof outranks a close recorded before it: a name attached
+            // under again must not be killed on sight by the roster sweep. On
+            // this session's own route only — another machine's same-named
+            // pending kill is still owed.
+            self?.forgetClosedSession(named: link.sessionName, sshAlias: session.termiodRemoteHost)
+        }
+        // The attach reply names the daemon session it resolved to, which is
+        // the earliest the row can learn its identity — a respawn under the
+        // same name gets its fresh id here rather than a roster refresh later,
+        // shrinking the window in which a close would journal a stale one.
+        link.onDaemonSessionID = { [weak self] daemonID in
+            self?.recordDaemonSessionID(daemonID, for: session.id)
         }
         // The `events` half of the negotiated capabilities. Status is the one
         // that matters: an agent running on a VPS reports to the daemon that
@@ -224,6 +236,12 @@ extension TermioStore {
         // precise signal outranks the heuristic that exists in its absence.
         if ["working", "idle", "needs_you", "done", "failed"].contains(report.status) {
             lastHookReportAt[id] = Date()
+            // Any addressed report is the agent speaking — an agent that came
+            // back and finished a turn reports done/idle without ever passing
+            // through working — which outranks whatever the foreground sampler
+            // concluded about its exit (§D2).
+            agentExitStreaks[id] = nil
+            if runtimes[id]?.agentExitNotice != nil { runtimes[id]?.agentExitNotice = nil }
         }
         switch report.status {
         case "working":
@@ -290,11 +308,21 @@ extension TermioStore {
                                  identifiesAgent: Bool,
                                  followsWorkingDirectory: Bool) {
         guard session(id) != nil else { return }
+        // The daemon's own id for the process behind this row, remembered so a
+        // later close can journal it — the identity the roster sweep matches a
+        // pending kill by (`journalClaims`).
+        recordDaemonSessionID(information.id, for: id)
         // `nil` argv is *unanswered*, so it never reaches `noteForegroundAgent` —
         // which reads its own `nil` as "a shell is in front now" and demotes.
         // An answered argv that matches nothing is that demotion, correctly.
         if identifiesAgent, let argv = information.foregroundArgv {
             noteForegroundAgent(AgentCatalog.shared.agent(forForegroundArguments: argv), for: id)
+        } else if !identifiesAgent {
+            // A declared row's identity never follows its foreground, but its
+            // *liveness* does (§D2): an agent that ran as a child of a shell that
+            // didn't exec leaves no exit event when it quits, and the foreground
+            // sampler reporting that shell is the only signal the agent is gone.
+            noteDeclaredAgentForeground(information.foregroundArgv, for: id)
         }
         // The daemon's equivalent of the local kernel poll, landing in the same
         // place it does. (The shell's own OSC 7 reaches `noteWorkingDirectory`
@@ -302,6 +330,33 @@ extension TermioStore {
         // where it is, which is a different thing from termio going and looking.)
         if followsWorkingDirectory, let cwd = information.childCwd, !cwd.isEmpty {
             noteWorkingDirectory(cwd, for: id)
+        }
+    }
+
+    /// The wrapped-tree half of agent exit (RFC 20260830 §D2). A declared agent
+    /// launched as `zsh -ilc "exec claude"` whose `exec` didn't replace the
+    /// shell (a function or alias shim is enough) leaves the daemon session
+    /// alive when the agent quits, so `applyTermiodExit` never fires. The
+    /// foreground sampler reporting the login shell for a stable streak is that
+    /// exit: the row transitions **in place** to idle with a notice saying what
+    /// happened — tmux's `remain-on-exit` with a live shell. Identity is
+    /// untouched: the row stays its declared agent and never re-files, and the
+    /// promotion asymmetry (`identifiesAgent`) is unchanged.
+    func noteDeclaredAgentForeground(_ argv: [String]?, for id: Session.ID) {
+        guard let session = session(id), session.agent != .terminal, !session.isSSH else { return }
+        var streak = agentExitStreaks[id] ?? AgentExitStreak()
+        let verdict = streak.observe(foregroundArgv: argv)
+        agentExitStreaks[id] = streak
+        switch verdict {
+        case .hold:
+            break
+        case .agentReturned:
+            runtime(for: id).agentExitNotice = nil
+        case .demote:
+            clearWorking(id)
+            setStatus(.idle, for: id)
+            runtime(for: id).agentExitNotice =
+                localized("\(session.agent.displayName) exited — shell")
         }
     }
 
@@ -596,6 +651,10 @@ extension TermioStore {
             // `termiodEndReason` is populated by the time the sidebar asks why a
             // row it restored has no session behind it.
             recordTombstones(payload.tombstones, live: live, persisted: persisted)
+            // Settled on every successful refresh, before the unchanged guard: a
+            // pending kill whose first attempt failed leaves the roster looking
+            // exactly as it did, and that is precisely when it must be retried.
+            reconcileExternalSessions(live, from: device, route: route)
             // Published only when it would say something different. The sidebar
             // rebuilds on every publish, and a device that answers what it
             // answered last time — a switch back into a machine nothing has
@@ -680,27 +739,36 @@ extension TermioStore {
 
     // MARK: - Adopting a session the device already had
 
+    /// The daemon handle a roster row is addressed by — its name, or its id for
+    /// the rare row without one.
+    nonisolated static func daemonKey(_ information: Termiod.SessionInformation) -> String {
+        information.name.isEmpty ? information.id : information.name
+    }
+
     /// Takes a session the **device** reports but this app has no row for, and
-    /// gives it one.
+    /// gives it one — unprompted, from the roster sweep (§D3). A session started
+    /// from `termiod` on the box, or left behind by another install that quit,
+    /// is a session on that device, and a viewer of that device should reach it
+    /// as an ordinary row. The row keeps the name the device gave it
+    /// (`termiodSessionName`) instead of being renamed to a fresh uuid, because
+    /// the name is how the daemon is asked for that exact PTY.
     ///
-    /// This is what makes the roster more than a read-only display: a session
-    /// started from `termiod` on the box, or by a phone, is a session on that
-    /// device, and a viewer of that device should be able to open it. The row
-    /// keeps the name the device gave it (`termiodSessionName`) instead of being
-    /// renamed to a fresh uuid, because the name is how the daemon is asked for
-    /// that exact PTY.
-    func adoptDeviceSession(_ information: Termiod.SessionInformation) {
-        let device = currentDevice
+    /// Filed in the project whose checkout on this device contains its cwd, else
+    /// as a loose terminal — the machine's fallback workspace for another
+    /// device, the current workspace's Terminals for this Mac. The selection is
+    /// deliberately not moved: nobody clicked anything.
+    func adoptDeviceSession(_ information: Termiod.SessionInformation, on device: KnownDevice) {
         var session = Session(title: information.displayLabel, agent: .terminal)
         session.givenTitle = information.givenName
-        session.termiodSessionName = information.name.isEmpty ? information.id : information.name
+        session.termiodSessionName = Self.daemonKey(information)
+        session.termiodDaemonID = information.id.isEmpty ? nil : information.id
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
         session.termiodRemoteCwd = information.cwd.isEmpty ? nil : information.cwd
-        // Filed in the machine's fallback workspace for another device, in the
-        // current workspace's Terminals for this Mac. Which workspace a session
-        // really belongs to is the device's to say, and it cannot say it yet
-        // (device architecture §2.2), so the viewer files it where it is reachable.
+        if let projectIndex = adoptionProjectIndex(forCwd: information.cwd, on: device) {
+            projects[projectIndex].sessions.append(session)
+            return
+        }
         let workspaceID = device.alias.map { deviceWorkspace(for: $0, deviceID: device.deviceID) }
             ?? currentWorkspace.id
         guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else {
@@ -710,82 +778,270 @@ extension TermioStore {
             return
         }
         workspaces[index].terminals.append(session)
-        selectedSessionID = session.id
     }
 
-    /// Ends a session the **device** reports and this app has no row for.
-    ///
-    /// Adoption alone left the roster one-way: the only route to a stranger row
-    /// was to take it into the sidebar first, which is backwards for the case
-    /// that produces most of them — a Termio whose state file was reset or
-    /// replaced, leaving its PTYs alive under names nothing here will ever
-    /// claim. Closing one is a device operation, so nothing local is touched:
-    /// there is no record, no surface and no link to tear down.
-    ///
-    /// It asks first, every time, and not on `requestCloseSession`'s terms —
-    /// that one can look at the PTY to see whether the close loses anything,
-    /// and this one cannot, because the process belongs to something that isn't
-    /// this app. Unknown is not the same as harmless.
-    func requestCloseDeviceSession(_ information: Termiod.SessionInformation) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Close “\(information.displayLabel)”?"
-        alert.informativeText = information.attachedClients > 0
-            ? "Another client is attached to this session. Closing it stops the "
-                + "process running on \(deviceDescription)."
-            : "This session isn't open in Termio. Closing it stops the process "
-                + "running on \(deviceDescription)."
-        alert.addButton(withTitle: "Close Session")
-        alert.addButton(withTitle: "Cancel")
-        Self.applyConfirmationKeys(to: alert)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        closeDeviceSessions([information])
-    }
-
-    /// The whole stranger list at once. One question for the lot: a state-file
-    /// reset leaves them by the dozen, and answering the same alert twenty times
-    /// is not a safeguard.
-    func requestCloseAllDeviceSessions() {
-        let rows = deviceOnlySessions()
-        guard !rows.isEmpty else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Close \(rows.count) session\(rows.count == 1 ? "" : "s")?"
-        alert.informativeText = "These sessions aren't open in Termio. Closing them "
-            + "stops every one of their processes on \(deviceDescription)."
-        alert.addButton(withTitle: "Close Sessions")
-        alert.addButton(withTitle: "Cancel")
-        Self.applyConfirmationKeys(to: alert)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        closeDeviceSessions(rows)
-    }
-
-    private func closeDeviceSessions(_ rows: [Termiod.SessionInformation]) {
-        let route = currentDevice.route
-        // The roster is asked once, after the last kill has been answered:
-        // re-asking mid-sweep would only fetch the rows that haven't died yet.
-        let kills = DispatchGroup()
-        for information in rows {
-            kills.enter()
-            Termiod.killSession(target: information.name.isEmpty ? information.id : information.name,
-                                route: route) { kills.leave() }
-        }
-        kills.notify(queue: .main) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                // The kills changed the answer, so a reply that settled moments
-                // ago is stale by construction — clearing the coalescing window
-                // is what keeps `refreshDeviceSessions` from standing down and
-                // leaving the closed rows on screen.
-                self.rosterFetches[route.description]?.settledAt = nil
-                self.refreshDeviceSessions()
+    /// The project an adopted session files under: the one whose root **on the
+    /// adopting device** contains the session's cwd, deepest root winning when
+    /// checkouts nest. Roots are read per device — a local project answers with
+    /// its path and worktrees, a project cloned to the device with its recorded
+    /// checkout — because matching a device's cwd against another machine's
+    /// paths is how a row lands in the wrong repo.
+    private func adoptionProjectIndex(forCwd cwd: String, on device: KnownDevice) -> Int? {
+        guard !cwd.isEmpty else { return nil }
+        var best: (index: Int, rootLength: Int)?
+        for (index, project) in projects.enumerated() {
+            let projectWorkspace = workspaces.first { $0.id == project.workspaceID }
+            var roots: [String] = []
+            if device.isLocal {
+                // A project filed under a machine's workspace names a path over
+                // there, not here.
+                guard projectWorkspace?.deviceAlias == nil else { continue }
+                roots.append(project.path)
+                roots.append(contentsOf: project.worktrees.map(\.path))
+            } else if let alias = device.alias {
+                if let checkout = project.remoteCheckout(device: device.deviceID, alias: alias) {
+                    roots.append(checkout)
+                }
+                if projectWorkspace?.deviceAlias == alias {
+                    roots.append(project.path)
+                }
+            }
+            for root in roots where Self.path(cwd, isInside: root) {
+                if root.count > (best?.rootLength ?? -1) {
+                    best = (index, root.count)
+                }
             }
         }
+        return best?.index
     }
 
-    /// How to name the machine in a sentence a person reads.
-    private var deviceDescription: String {
-        currentDevice.alias ?? "this Mac"
+    /// Whether `path` is `root` itself or lives under it, by whole path
+    /// components — `/code/termio-worktrees` is not inside `/code/termio`.
+    nonisolated static func path(_ path: String, isInside root: String) -> Bool {
+        guard !root.isEmpty, !path.isEmpty else { return false }
+        let standardizedPath = (path as NSString).standardizingPath
+        let standardizedRoot = (root as NSString).standardizingPath
+        if standardizedPath == standardizedRoot { return true }
+        let prefix = standardizedRoot.hasSuffix("/") ? standardizedRoot : standardizedRoot + "/"
+        return standardizedPath.hasPrefix(prefix)
+    }
+
+    // MARK: - Name-addressed destroy (RFC 20260830 §D1)
+
+    /// Destroys a session's daemon side. The `(daemon name, route)` pair is the
+    /// destroy capability; the link is a live attachment — an optimization,
+    /// never a prerequisite — so a row restored after relaunch, closed from the
+    /// CLI or the phone without ever rendering, or torn down after the exit /
+    /// connection-lost paths nil'd its link, still kills the process it names.
+    ///
+    /// `rememberClosed` writes the name into the closed-session journal first,
+    /// which is what makes the kill durable: an unreachable route or a crash
+    /// between the journal write and the kill is settled by the next roster
+    /// sweep for that route (`reconcileExternalSessions`). A respawn-in-place
+    /// passes `false` — it reuses the same daemon name, and a journaled name
+    /// would have the sweep kill the replacement.
+    func destroyDaemonSession(for session: Session, rememberClosed: Bool) {
+        let name = daemonSessionName(for: session)
+        if rememberClosed {
+            journalClosedSession(
+                named: name, sshAlias: session.termiodRemoteHost, deviceID: session.deviceID,
+                daemonID: session.termiodDaemonID)
+        }
+        if let link = termiodLinks[session.id] {
+            link.killAndClose()
+        } else {
+            Termiod.killSession(
+                target: name, route: TermiodRoute(sshAlias: session.termiodRemoteHost))
+        }
+        termiodLinks[session.id] = nil
+    }
+
+    /// How many closed-session records are kept. Far above what a session tree
+    /// can hold; the bound only stops a pathological state file from growing
+    /// without limit.
+    private static let closedSessionJournalCapacity = 200
+
+    /// Records a destroyed daemon session, newest last, evicting the oldest
+    /// past capacity. One record per `(name, sshAlias)` — re-closing on the
+    /// same route replaces rather than duplicates, and a same-named session on
+    /// another machine keeps its own record.
+    func journalClosedSession(
+        named name: String, sshAlias: String?, deviceID: String? = nil, daemonID: String? = nil
+    ) {
+        closedSessionJournal.removeAll { $0.name == name && $0.sshAlias == sshAlias }
+        closedSessionJournal.append(ClosedDaemonSession(
+            name: name, sshAlias: sshAlias, deviceID: deviceID, daemonID: daemonID))
+        if closedSessionJournal.count > Self.closedSessionJournalCapacity {
+            closedSessionJournal.removeFirst(
+                closedSessionJournal.count - Self.closedSessionJournalCapacity)
+        }
+        persistSoon()
+    }
+
+    /// Clears a name from the closed-session journal, on its own route only —
+    /// a session attached (or respawned) under a name is proof the name is
+    /// live again on that machine, which outranks a close recorded before it.
+    /// Another machine's same-named record still describes *its* close.
+    func forgetClosedSession(named name: String, sshAlias: String?) {
+        let before = closedSessionJournal.count
+        closedSessionJournal.removeAll { $0.name == name && $0.sshAlias == sshAlias }
+        if closedSessionJournal.count != before { persistSoon() }
+    }
+
+    // MARK: - External sessions (RFC 20260830 §D3)
+
+    /// What becomes of one live daemon session this app has no row for.
+    enum ExternalSessionResolution: Equatable {
+        /// The name is in the closed-session journal: this app's own orphan —
+        /// D1 should have killed it, so kill it now.
+        case killOnSight
+        /// Attached, unknown, **on this Mac**: a second install's live session,
+        /// not ours to claim.
+        case leaveAlone
+        /// Unknown and adoptable: give it a row.
+        case adopt
+    }
+
+    /// The §D3 verdict for a roster row no current row accounts for. Pure so the
+    /// resolution is testable without a daemon or a roster.
+    ///
+    /// `journaled` is this route's record for the row's name, if one exists —
+    /// and it claims the row only when the daemon ids agree (`journalClaims`).
+    /// A same-named row with a different id is legitimate name reuse, resolved
+    /// like any other stranger.
+    ///
+    /// The attached-client guard is local-only, deliberately: the local socket
+    /// is per-uid, so an attached unknown here is another install's session.
+    /// Attachment itself is read-many by design (single writer, many readers),
+    /// so on a remote device it is no evidence of foreign ownership — the
+    /// roster is that box's whole sidebar, and a session the phone has open is
+    /// still one of the box's own sessions; skipping it would hide its work.
+    nonisolated static func resolveExternalSession(
+        name: String, rowID: String, attachedClients: Int, isLocal: Bool,
+        journaled: ClosedDaemonSession?
+    ) -> ExternalSessionResolution {
+        if let journaled, journalClaims(journaled, rowID: rowID) {
+            return .killOnSight
+        }
+        if isLocal, attachedClients > 0 { return .leaveAlone }
+        return .adopt
+    }
+
+    /// Whether a journal record describes this roster row, or the row merely
+    /// reuses the name. The daemon mints a fresh id per creation and never
+    /// reuses one, so identity — not any clock — is the gate: a matching id is
+    /// the very session the close named; a different id under the same name is
+    /// a new session the close never promised to end.
+    ///
+    /// A record without an id (the app closed the row before any attach or
+    /// roster revealed one) may match by name **only when the name is
+    /// app-authored — a UUID**. Nothing else mints those, and the app's own
+    /// respawn-in-place path doesn't journal, so a UUID name-match cannot hit
+    /// anyone else's session. An id-less record with a device-given name
+    /// ("build") proves nothing about which same-named session it meant, so it
+    /// never claims: safety over kill when identity is unproven. The sweep then
+    /// drops the record, and if a true orphan resurfaces it is re-adopted —
+    /// whose close journals *with* the id, so the miss converges.
+    nonisolated static func journalClaims(
+        _ record: ClosedDaemonSession, rowID: String
+    ) -> Bool {
+        guard let daemonID = record.daemonID else {
+            return UUID(uuidString: record.name) != nil
+        }
+        return daemonID == rowID
+    }
+
+    /// Settles every live daemon session against this app's rows, once per
+    /// successful roster refresh: journaled names are killed on sight (the
+    /// belt-and-braces that makes D1's close hold across crashes and offline
+    /// routes), unknown sessions are adopted into ordinary rows, and — on this
+    /// Mac only — an attached unknown is left alone as a second install's live
+    /// session.
+    ///
+    /// A journal record belongs to this sweep when its alias matches the route
+    /// **or** its device matches the machine the route resolved to — the alias
+    /// half is how records written before a handshake settle, the device half
+    /// is how a close made via `prod-old` still lands when the box is reached
+    /// as `prod-new`. A record is dropped once it stops claiming anything on
+    /// its machine: its name left the roster (the kill held, or the session
+    /// died), or the name lives on under a different daemon id (name reuse —
+    /// not ours, and killing it would murder someone else's session; the
+    /// record's own id is gone for good, so it can never claim again).
+    /// Records for other machines are untouched.
+    func reconcileExternalSessions(
+        _ live: [Termiod.SessionInformation], from device: KnownDevice, route: TermiodRoute
+    ) {
+        // The identity is re-read, not taken from the captured device: on the
+        // first refresh through a new alias the capture predates the handshake
+        // this very roster performed, and matching rows by the stale identity
+        // would read every session authored under the machine's other aliases
+        // as strangers — and adopt duplicates of them.
+        let device = KnownDevice(
+            alias: device.alias,
+            deviceID: device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route))
+        let sweepRecords = closedSessionJournal.filter { record in
+            record.sshAlias == route.sshAlias
+                || (record.deviceID != nil && record.deviceID == device.deviceID)
+        }
+        recordDaemonIDs(from: live, for: device)
+        var claimingRecords = Set<ClosedDaemonSession>()
+        for information in deviceOnlySessions(in: live, for: device) {
+            let name = Self.daemonKey(information)
+            let record = sweepRecords.first { $0.name == name }
+            switch Self.resolveExternalSession(
+                name: name, rowID: information.id,
+                attachedClients: information.attachedClients,
+                isLocal: device.isLocal, journaled: record) {
+            case .killOnSight:
+                if let record { claimingRecords.insert(record) }
+                Log.termiod.info("""
+                killing journaled session \(name, privacy: .public) still live on \
+                \(route.description, privacy: .public)
+                """)
+                Termiod.killSession(target: name, route: route)
+            case .leaveAlone:
+                break
+            case .adopt:
+                adoptDeviceSession(information, on: device)
+            }
+        }
+        // A record is kept only while it still claims a live row — the kill
+        // above may fail and must be retried. Everything else this sweep could
+        // see has done its job: the name is gone, or it names a session the
+        // close never promised to end.
+        let spent = Set(sweepRecords).subtracting(claimingRecords)
+        if !spent.isEmpty {
+            closedSessionJournal.removeAll { spent.contains($0) }
+            persistSoon()
+        }
+    }
+
+    /// Records the daemon's own id for a row — the identity the closed-session
+    /// journal matches a pending kill by (`journalClaims`). The one seam every
+    /// channel that reveals the id lands on: the attach reply, the information
+    /// events, and the roster pass below.
+    func recordDaemonSessionID(_ daemonID: String, for id: Session.ID) {
+        guard !daemonID.isEmpty, let session = session(id),
+              session.termiodDaemonID != daemonID else { return }
+        updateSession(id) { $0.termiodDaemonID = daemonID }
+    }
+
+    /// Writes the daemon's own id onto every row the roster answers for, so a
+    /// later close can journal it. This is what arms the sweep's identity gate
+    /// for rows that are never surfaced this run — a restored row closed
+    /// without ever being selected has no link to learn the id from, and the
+    /// roster is the one channel that still names it.
+    private func recordDaemonIDs(from live: [Termiod.SessionInformation], for device: KnownDevice) {
+        let mine = sessions(authoredFor: device)
+        guard !mine.isEmpty else { return }
+        var idsByName: [String: String] = [:]
+        for information in live where !information.id.isEmpty {
+            idsByName[Self.daemonKey(information)] = information.id
+        }
+        for session in mine {
+            guard let daemonID = idsByName[daemonSessionName(for: session)] else { continue }
+            recordDaemonSessionID(daemonID, for: session.id)
+        }
     }
 
     // MARK: - Remote terminals (per-session SSH host)
@@ -1262,6 +1518,61 @@ extension TermioStore {
             guard let path = clonedPath else { return nil }
             return addRemoteProject(name: name, at: path, on: alias, device: deviceID)
         }
+    }
+}
+
+/// Evidence that a declared agent's wrapped shell has outlived it (RFC 20260830
+/// §D2): consecutive foreground samples showing a login shell where the agent
+/// should be. The same evidence bar as the status-promotion streak
+/// (`noteOutputActivity`) — two consecutive samples, ~4s at the sampler's 2s
+/// cadence — and the same stand-down rule as every other host-reported fact: an
+/// unanswered sample (`nil` argv) is not evidence and leaves the streak alone.
+/// A plain value type so the verdict logic is testable without the store.
+struct AgentExitStreak: Equatable {
+    private(set) var shellSamples = 0
+    /// Latches after one demotion so a shell that stays in front doesn't re-fire
+    /// every sample; reset by anything that isn't the shell taking the
+    /// foreground back.
+    private(set) var fired = false
+
+    static let demotionThreshold = 2
+
+    /// The login shells a session wrapper can leave behind. Matched by leaf name
+    /// with the login `-` stripped, the same normalization the agent catalog
+    /// applies to its own commands.
+    private static let shellNames: Set<String> = [
+        "zsh", "bash", "sh", "fish", "dash", "csh", "tcsh", "ksh", "nu",
+    ]
+
+    static func isShell(_ argv: [String]) -> Bool {
+        guard let first = argv.first(where: { !$0.isEmpty }) else { return false }
+        var name = (first as NSString).lastPathComponent.lowercased()
+        if name.hasPrefix("-") { name.removeFirst() }
+        return shellNames.contains(name)
+    }
+
+    enum Verdict: Equatable {
+        /// Nothing to act on — evidence still gathering, unanswered, or already acted on.
+        case hold
+        /// Something other than the shell took the foreground back after a
+        /// demotion: the notice is stale.
+        case agentReturned
+        /// The shell has held the foreground long enough — demote the row now.
+        case demote
+    }
+
+    mutating func observe(foregroundArgv: [String]?) -> Verdict {
+        guard let argv = foregroundArgv else { return .hold }
+        guard Self.isShell(argv) else {
+            let hadFired = fired
+            shellSamples = 0
+            fired = false
+            return hadFired ? .agentReturned : .hold
+        }
+        shellSamples += 1
+        guard shellSamples >= Self.demotionThreshold, !fired else { return .hold }
+        fired = true
+        return .demote
     }
 }
 

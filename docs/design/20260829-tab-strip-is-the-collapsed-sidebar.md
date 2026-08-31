@@ -3,7 +3,7 @@ title: The tab strip is the collapsed sidebar
 status: draft
 type: rfc
 created: 2026-08-29
-updated: 2026-08-29
+updated: 2026-08-31
 related:
   - 20260702-split-panes.md
   - 20260628-worktree-information-architecture.md
@@ -396,8 +396,8 @@ session in another project and that project unfolds while the one you left
 folds, with no click spent on folding. This is Vivaldi's accordion tab stack
 rule — "expand automatically when viewing a tab in the stack and collapse when
 viewing other tabs" — and what *Auto Collapse for Tab Groups* bolts onto
-Chrome. Terminals, Chats, worktrees and *Also running* are groups like any
-other, so the rule has no special cases.
+Chrome. Terminals, Chats and worktrees are groups like any other, so the rule
+has no special cases.
 
 ```
  selected: Claude Code in termio
@@ -497,10 +497,11 @@ workspaces. In the strip that becomes a dot on the workspace switcher — the
 Chrome answer, where one window shows one window and the taskbar tells you
 another wants you — and the sidebar keeps lifting the rows as it does.
 
-**Also running** — sessions the device reports that no row accounts for — is the
-last group, drawn from the same `deviceSessions` the sidebar reads, so a session
-someone started from the `termiod` CLI shows in the strip and adopts on click
-exactly as its row does.
+A session the device reports that no row accounts for needs no group of its
+own: the roster sweep (#528, RFC 20260830) auto-adopts it as an ordinary row,
+so a session someone started from the `termiod` CLI shows in the strip exactly
+as any other session does. This supersedes the *Also running* group an earlier
+revision of this RFC placed last in the strip.
 
 ## What changes in code
 

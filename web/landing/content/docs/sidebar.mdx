@@ -34,12 +34,12 @@ The sidebar groups your sessions by what they are:
 
 Empty sections stay hidden, so the list only shows what you’re actually using.
 
-One more section appears when the machine has something Termio didn’t start:
-**Also Running** is that machine’s own claim about what it is hosting, including
-sessions you began over plain `ssh`. It is the one place a session started
-outside Termio shows up, and you can open it here. On another machine the header
-names it, and if the machine can’t be reached the section says so in `ssh`’s own
-words rather than going quiet.
+Sessions the machine is hosting that Termio didn’t start — one you began over
+plain `ssh`, or launched with `termiod` on the box — appear in the list
+automatically as ordinary sessions, filed into the project whose folder they run
+in, or under **Terminals** otherwise. There is no separate section to learn: a
+session is a session, wherever it came from. If a machine can’t be reached, the
+device switcher says so in `ssh`’s own words rather than going quiet.
 
 <DocsImage
   src="/screenshots/docs/04-project-session-hierarchy.png"

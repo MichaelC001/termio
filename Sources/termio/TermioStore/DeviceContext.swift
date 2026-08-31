@@ -193,35 +193,23 @@ extension TermioStore {
         refreshDeviceSessions()
     }
 
-    /// What the current device says is running that this app has no row for —
-    /// a session started from the `termiod` CLI on that machine, or by another
-    /// client. Every session this app authored already draws in its own
-    /// workspace, so anything with a record here would be a duplicate.
+    /// What a device says is running that this app has no row for — a session
+    /// started from the `termiod` CLI on that machine, left behind by a reset
+    /// state file, or orphaned by a close that never reached the daemon. Every
+    /// session this app authored already draws in its own workspace, so
+    /// anything listed here is unaccounted for.
     ///
-    /// The device's own ordering is kept: it is the authority for this list, so
-    /// its order is the list's order. Its existence is also the proof the list is
-    /// the device's and not this Mac's — no amount of filtering a local array can
-    /// produce a row for a session this app never created.
-    func deviceOnlySessions() -> [Termiod.SessionInformation] {
-        let mine = sessions(authoredFor: currentDevice)
-        let isLocal = currentDevice.isLocal
-        return (deviceSessions.sessions?.live ?? []).filter { information in
-            guard information.alive else { return false }
-            guard !mine.contains(where: { daemonSessionName(for: $0) == information.name })
-            else { return false }
-            // On this Mac, a session someone is already attached to belongs to
-            // another Termio. The daemon socket is per user, not per app, so a
-            // second copy on the same login — a dev build beside the release
-            // one — is handed the first one's entire roster, and every row of
-            // it arrives here looking like a session nothing accounts for.
-            // They are neither lost nor takeable (single writer), so they are
-            // not this list's business.
-            //
-            // Only on this Mac. On another device the roster *is* the sidebar,
-            // and a session the phone has open is still one of that machine's
-            // sessions — dropping it there would hide the box's own work.
-            if isLocal, information.attachedClients > 0 { return false }
-            return true
+    /// This used to feed the sidebar's "Also Running" section; it is now the
+    /// roster sweep's candidate list (RFC 20260830 §D3), which resolves each row
+    /// to a kill (a journaled close), an auto-adopted ordinary row, or
+    /// another client's business — see `reconcileExternalSessions`. The device's
+    /// own ordering is kept: it is the authority for this list.
+    func deviceOnlySessions(
+        in live: [Termiod.SessionInformation], for device: KnownDevice
+    ) -> [Termiod.SessionInformation] {
+        let mine = Set(sessions(authoredFor: device).map(daemonSessionName(for:)))
+        return live.filter { information in
+            information.alive && !mine.contains(Self.daemonKey(information))
         }
     }
 

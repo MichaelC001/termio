@@ -148,6 +148,117 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
         XCTAssertNil(store.termiodLinks[session.id], "the attachment leaked")
     }
 
+    /// #528's exact shape: the row exists but its link is gone — restored after
+    /// an app relaunch and never selected, closed from the CLI or the phone for
+    /// a row never viewed this run, or torn down after the exit /
+    /// connection-lost paths nil'd the link. The close must kill by name; the
+    /// link is a live attachment, never the destroy capability.
+    func testClosingARowWithoutALinkKillsItInTheDaemon() throws {
+        let (store, session, _, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.closeSession(session.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "a link-less close left the process running in the daemon (#528)")
+        XCTAssertTrue(
+            store.closedSessionJournal.contains { $0.name == name },
+            "the close was not journaled, so a crash or an offline route would leak it")
+    }
+
+    /// The same hole on the project verb: every session of a removed project
+    /// must die whether or not a pane ever rendered it this run.
+    func testRemovingAProjectWithLinklessRowsKillsItsSessions() throws {
+        let (store, session, project, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.removeProject(project.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "removing the project left a link-less session running in the daemon")
+    }
+
+    /// The respawn-in-place case its own comment promises: the old daemon-side
+    /// process must not survive under the same name, or the fresh surface
+    /// reattaches to it instead of spawning the replacement. On the
+    /// revert-to-shell path this always ran link-less — `applyTermiodExit`
+    /// nils the link first — so the kill was always a no-op before D1.
+    func testRelaunchWithoutALinkReplacesTheDaemonSession() throws {
+        let (store, session, _, name) = makeStoreWithLiveSession()
+        XCTAssertTrue(daemonHoldsSession(named: name), "the fixture never reached the daemon")
+        store.termiodLinks[session.id]?.detach()
+        store.termiodLinks[session.id] = nil
+
+        store.relaunchSession(session.id)
+
+        XCTAssertTrue(
+            waitUntilDaemonDrops(name),
+            "the old daemon session survived the respawn under the same name")
+        XCTAssertFalse(
+            store.closedSessionJournal.contains { $0.name == name },
+            "a respawn-in-place journaled the name it is about to reuse — the roster "
+                + "sweep would kill the replacement on sight")
+    }
+
+    /// The attach reply is the earliest channel that names the daemon's own id
+    /// for a row (`AttachedPayload.sessionId` → `onDaemonSessionID`), and that
+    /// id is what the closed-session journal matches a pending kill by. Against
+    /// a real daemon: a `create_if_missing` attach must teach the row the same
+    /// id the daemon's roster reports for it.
+    func testTheAttachReplyTeachesTheRowItsDaemonID() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "termiod-attach-id-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        let name = session.id.uuidString
+        let link = TermiodSessionLink(
+            sessionName: name,
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(),
+                argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
+                env: [], rows: 24, cols: 80),
+            rows: 24, cols: 80)
+        // Wired before `start()`, exactly as `attachTermiodLink` wires it —
+        // the reply fires once, on the heels of the handshake.
+        link.onDaemonSessionID = { [weak store] daemonID in
+            MainActor.assumeIsolated {
+                store?.recordDaemonSessionID(daemonID, for: session.id)
+            }
+        }
+        link.start()
+        store.termiodLinks[session.id] = link
+
+        let deadline = Date().addingTimeInterval(5)
+        while store.session(session.id)?.termiodDaemonID == nil, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        let learned = try XCTUnwrap(
+            store.session(session.id)?.termiodDaemonID,
+            "the attach reply never taught the row its daemon id")
+
+        // The daemon's own roster is the authority on what the id should be.
+        let reported = try Termiod.roster(route: .local).sessions
+            .first { $0.name == name }?.id
+        XCTAssertEqual(learned, reported,
+                       "the row learned an id the daemon does not report for it")
+
+        store.closeSession(session.id)
+        XCTAssertEqual(
+            store.closedSessionJournal.first { $0.name == name }?.daemonID, learned,
+            "the close must journal the id the attach taught — the sweep's identity gate")
+        XCTAssertTrue(waitUntilDaemonDrops(name), "the close left the process running")
+    }
+
     /// The counterpart, and the reason the daemon exists: quitting the app is
     /// not a destroy verb. Every session must survive it.
     func testQuittingDetachesRatherThanKilling() throws {

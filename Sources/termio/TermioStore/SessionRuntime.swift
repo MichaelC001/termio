@@ -32,6 +32,11 @@ final class SessionRuntime {
     /// The live working directory (shell `OSC 7`); for loose terminals this *is* the
     /// entity's path — it labels the row and roots the inspector.
     var workingDirectory: String?
+    /// The row's second line while a declared agent has exited but its wrapped
+    /// login shell survives ("Claude Code exited — shell"). Set by the
+    /// foreground-demotion streak (RFC 20260830 §D2), cleared the moment the
+    /// foreground stops being the shell or the agent reports working again.
+    var agentExitNotice: String?
     /// Whether this Mac's attachment holds the session's write token. `true`
     /// until the daemon says otherwise, so a session nothing else is watching
     /// behaves exactly as it always has.
