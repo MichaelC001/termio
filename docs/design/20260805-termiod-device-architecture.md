@@ -121,7 +121,7 @@ the target; today the phone still reaches sessions through the Mac.
 
 | Concept | What it is | Source of truth |
 | --- | --- | --- |
-| **Device** | A machine running `termiod` | `host_id`, minted on the daemon's first run, persisted beside its socket |
+| **Device** | A machine running `termiod` | `host_id`, minted on the daemon's first run, persisted in its durable state dir |
 | **Route** | A way to reach that device | `~/.ssh/config` for SSH routes; the socket path for local |
 | **Readiness** | Reachable? `termiod` installed? version? | Runtime probe, never configuration |
 

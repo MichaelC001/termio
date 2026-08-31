@@ -325,11 +325,7 @@ pub async fn status() -> Result<NodeStatus> {
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
     };
-    let host_id = paths::host_id_path()
-        .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
+    let host_id = paths::stored_host_id();
     let mut daemon = DaemonStatus {
         running: false,
         version: None,

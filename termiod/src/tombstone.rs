@@ -7,7 +7,8 @@
 //! rather than "everything was lost".
 //!
 //! Sessions cannot be resurrected; the PTYs are gone. They must not vanish
-//! silently either. So two records are kept beside the socket:
+//! silently either. So two records are kept in the daemon's durable state
+//! dir — not beside the socket, whose tmpfs a reboot empties:
 //!
 //! - a **roster** of the sessions currently alive, rewritten as they come and
 //!   go. It exists solely so the *next* daemon can see what the last one was
@@ -241,8 +242,9 @@ impl State {
     }
 }
 
-/// The on-disk record of what died. One per daemon, living beside the socket so
-/// it shares the socket's lifetime and permissions.
+/// The on-disk record of what died. One per daemon, in `durable_state_dir` —
+/// a record whose whole purpose is to explain a loss must survive the reboot
+/// that caused it.
 pub struct Graveyard {
     graves_path: PathBuf,
     roster_path: PathBuf,

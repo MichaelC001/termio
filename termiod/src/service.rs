@@ -394,7 +394,7 @@ mod systemd {
     /// exit would race that drain. The next client contact starts the unit
     /// again (`client::spawn_daemon`), which is the bounce path an update
     /// takes. WSS is deliberately not on the command line: the bind survives in
-    /// `wss.bind` beside the socket, or in a `TERMIOD_WSS` drop-in.
+    /// `wss.bind` in the daemon's durable state, or in a `TERMIOD_WSS` drop-in.
     pub fn unit(binary: &str, socket_override: Option<&str>, channel: Option<&str>) -> String {
         let mut environment = String::new();
         if let Some(channel) = channel {
