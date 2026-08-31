@@ -113,9 +113,7 @@ extension TermioStore {
         // same name gets its fresh id here rather than a roster refresh later,
         // shrinking the window in which a close would journal a stale one.
         link.onDaemonSessionID = { [weak self] daemonID in
-            guard let self, !daemonID.isEmpty,
-                  self.session(session.id)?.termiodDaemonID != daemonID else { return }
-            self.updateSession(session.id) { $0.termiodDaemonID = daemonID }
+            self?.recordDaemonSessionID(daemonID, for: session.id)
         }
         // The `events` half of the negotiated capabilities. Status is the one
         // that matters: an agent running on a VPS reports to the daemon that
@@ -309,13 +307,11 @@ extension TermioStore {
                                  for id: Session.ID,
                                  identifiesAgent: Bool,
                                  followsWorkingDirectory: Bool) {
-        guard let session = session(id) else { return }
+        guard session(id) != nil else { return }
         // The daemon's own id for the process behind this row, remembered so a
         // later close can journal it — the identity the roster sweep matches a
         // pending kill by (`journalClaims`).
-        if !information.id.isEmpty, session.termiodDaemonID != information.id {
-            updateSession(id) { $0.termiodDaemonID = information.id }
-        }
+        recordDaemonSessionID(information.id, for: id)
         // `nil` argv is *unanswered*, so it never reaches `noteForegroundAgent` —
         // which reads its own `nil` as "a shell is in front now" and demotes.
         // An answered argv that matches nothing is that demotion, correctly.
@@ -1020,6 +1016,16 @@ extension TermioStore {
         }
     }
 
+    /// Records the daemon's own id for a row — the identity the closed-session
+    /// journal matches a pending kill by (`journalClaims`). The one seam every
+    /// channel that reveals the id lands on: the attach reply, the information
+    /// events, and the roster pass below.
+    func recordDaemonSessionID(_ daemonID: String, for id: Session.ID) {
+        guard !daemonID.isEmpty, let session = session(id),
+              session.termiodDaemonID != daemonID else { return }
+        updateSession(id) { $0.termiodDaemonID = daemonID }
+    }
+
     /// Writes the daemon's own id onto every row the roster answers for, so a
     /// later close can journal it. This is what arms the sweep's identity gate
     /// for rows that are never surfaced this run — a restored row closed
@@ -1033,9 +1039,8 @@ extension TermioStore {
             idsByName[Self.daemonKey(information)] = information.id
         }
         for session in mine {
-            guard let daemonID = idsByName[daemonSessionName(for: session)],
-                  session.termiodDaemonID != daemonID else { continue }
-            updateSession(session.id) { $0.termiodDaemonID = daemonID }
+            guard let daemonID = idsByName[daemonSessionName(for: session)] else { continue }
+            recordDaemonSessionID(daemonID, for: session.id)
         }
     }
 

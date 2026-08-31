@@ -206,6 +206,59 @@ final class TermiodDestroyIntegrationTests: XCTestCase {
                 + "sweep would kill the replacement on sight")
     }
 
+    /// The attach reply is the earliest channel that names the daemon's own id
+    /// for a row (`AttachedPayload.sessionId` → `onDaemonSessionID`), and that
+    /// id is what the closed-session journal matches a pending kill by. Against
+    /// a real daemon: a `create_if_missing` attach must teach the row the same
+    /// id the daemon's roster reports for it.
+    func testTheAttachReplyTeachesTheRowItsDaemonID() throws {
+        let session = Session(title: "agent", agent: .terminal)
+        let workspace = Workspace(name: "Sessions")
+        let project = Project(workspaceID: workspace.id, name: "termio", path: "/code/termio",
+                              branch: "main", sessions: [session])
+        let defaults = UserDefaults(suiteName: "termiod-attach-id-\(UUID().uuidString)")
+        let store = TermioStore(workspaces: [workspace], projects: [project],
+                                settings: AppSettings(defaults: defaults ?? .standard))
+
+        let name = session.id.uuidString
+        let link = TermiodSessionLink(
+            sessionName: name,
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(),
+                argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"],
+                env: [], rows: 24, cols: 80),
+            rows: 24, cols: 80)
+        // Wired before `start()`, exactly as `attachTermiodLink` wires it —
+        // the reply fires once, on the heels of the handshake.
+        link.onDaemonSessionID = { [weak store] daemonID in
+            MainActor.assumeIsolated {
+                store?.recordDaemonSessionID(daemonID, for: session.id)
+            }
+        }
+        link.start()
+        store.termiodLinks[session.id] = link
+
+        let deadline = Date().addingTimeInterval(5)
+        while store.session(session.id)?.termiodDaemonID == nil, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        let learned = try XCTUnwrap(
+            store.session(session.id)?.termiodDaemonID,
+            "the attach reply never taught the row its daemon id")
+
+        // The daemon's own roster is the authority on what the id should be.
+        let reported = try Termiod.roster(route: .local).sessions
+            .first { $0.name == name }?.id
+        XCTAssertEqual(learned, reported,
+                       "the row learned an id the daemon does not report for it")
+
+        store.closeSession(session.id)
+        XCTAssertEqual(
+            store.closedSessionJournal.first { $0.name == name }?.daemonID, learned,
+            "the close must journal the id the attach taught — the sweep's identity gate")
+        XCTAssertTrue(waitUntilDaemonDrops(name), "the close left the process running")
+    }
+
     /// The counterpart, and the reason the daemon exists: quitting the app is
     /// not a destroy verb. Every session must survive it.
     func testQuittingDetachesRatherThanKilling() throws {
