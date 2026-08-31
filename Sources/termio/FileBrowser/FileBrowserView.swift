@@ -271,7 +271,19 @@ struct FileBrowserView: View {
                 noProject
             }
         case .changes:
-            if let deviceCheckout {
+            if let deviceCheckout, let root = deviceCheckout.root {
+                // The device runs git on its own checkout with its own config and
+                // credentials, and publishes status as it moves; this pane
+                // subscribes. Fresh identity per (machine, root) so no state
+                // leaks between boxes.
+                GitChangesView(
+                    repoRoot: root,
+                    device: deviceCheckout.device.route,
+                    changeCount: $store.gitChangeCount,
+                    isPaneVisible: { [weak store] in store?.inspectorVisible ?? true }
+                )
+                .id(deviceCheckout.deviceIdentity + "\u{1f}" + root)
+            } else if let deviceCheckout {
                 unavailable(pane: localized("Changes"), on: deviceCheckout)
             } else if let repoRoot = projectPath {
                 // Fresh identity per repo, so the panel model (selection, draft message,

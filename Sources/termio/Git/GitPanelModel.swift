@@ -1,3 +1,4 @@
+import TermioShared
 import AppKit
 import Combine
 import SwiftUI
@@ -15,6 +16,13 @@ import SwiftUI
 @MainActor
 final class GitPanelModel: ObservableObject {
     let repoRoot: String
+    /// The machine `repoRoot` lives on, when it is not this Mac. A device
+    /// checkout is driven the other way round from a local one: the box already
+    /// watches its own workspace and publishes status deltas, so the pane
+    /// subscribes and applies them instead of running `git status` on a timer.
+    /// This is the shape Zed pushes as `UpdateRepository` and VS Code gets by
+    /// running the git extension on the remote — nobody polls a remote checkout.
+    let device: TermiodRoute?
 
     @Published var changes: [GitChange] = []
     @Published var isLoading = true
@@ -93,17 +101,193 @@ final class GitPanelModel: ObservableObject {
         return false
     }
 
-    init(repoRoot: String, isPaneVisible: (() -> Bool)? = nil) {
+    init(repoRoot: String, device: TermiodRoute? = nil, isPaneVisible: (() -> Bool)? = nil) {
         self.repoRoot = repoRoot
+        self.device = device
         self.isPaneVisible = isPaneVisible
         // Re-activation catches whatever happened while termio was in the background
         // (a rebase in another app, a pull on another machine's shared folder…).
+        // A device checkout needs no such catch-all: its watch runs on the box
+        // and kept publishing while this app was not even in front.
+        guard device == nil else { return }
         appActiveObserver = NotificationCenter.default
             .publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.scheduleRefresh(includeHistory: true) }
     }
 
     deinit { refreshDebounce?.cancel() }
+
+    // MARK: The device's own status
+
+    /// The subscription to `git:<root>` on the device, and the cursor into its
+    /// batches — so a dropped channel resumes from the replay ring rather than
+    /// re-reading a whole status.
+    private var gitWatch: Termiod.ResourceSubscription?
+    private var gitCursor: UInt64?
+    private var resubscribing = false
+    /// Orders the pieces of a subscribe handshake that reach the main actor on
+    /// different paths — see `DeviceWatchLedger`.
+    private var watchLedger = DeviceWatchLedger()
+    /// The status the device has published so far, keyed by path. The batches
+    /// are **deltas**, so the pane holds the baseline they apply to.
+    private var deviceStatuses: [String: GitChange] = [:]
+    /// What the device says the checkout's branch is, for a pane that wants to
+    /// name it. Absent until the first batch lands.
+    @Published private(set) var deviceBranch: String?
+    /// How many paths the device's checkout really has changed, when it cut
+    /// the list below that. The rows shown are real; the list is not all of
+    /// them, and the pane says how many are missing rather than let a
+    /// head-of-list read as the working tree.
+    @Published private(set) var deviceListTotal: Int?
+
+    /// Starts (or resumes) the device subscription. Idempotent: the pane calls
+    /// it on appear and whenever it becomes visible again.
+    func startDeviceWatch() {
+        guard let device, gitWatch == nil else { return }
+        guard !resubscribing else {
+            // A stop followed immediately by an appear can land while the old
+            // subscribe still awaits its acknowledgement. Supersede that
+            // handshake and have its cleanup begin the new one.
+            watchLedger.requestRestart()
+            return
+        }
+        resubscribing = true
+        let generation = watchLedger.begin()
+        Task { [repoRoot] in
+            defer {
+                resubscribing = false
+                if watchLedger.consumeRestartRequest() {
+                    startDeviceWatch()
+                }
+            }
+            do {
+                let (subscription, gap, seq) = try await Termiod.watchGit(
+                    route: device,
+                    root: repoRoot,
+                    since: gitCursor,
+                    onBatch: { [weak self] batch in
+                        Task { @MainActor in self?.receive(batch, generation: generation) }
+                    },
+                    onInterrupted: { [weak self] in
+                        Task { @MainActor in
+                            self?.deviceWatchInterrupted(generation: generation)
+                        }
+                    })
+                guard let earlyBatches = watchLedger.settle(generation: generation) else {
+                    // The pane stopped (or restarted) the watch while this
+                    // handshake was in flight; the subscription must not
+                    // outlive the interest that asked for it.
+                    subscription.cancel()
+                    return
+                }
+                gitWatch = subscription
+                // A gap means the ring could not replay from this cursor, so the
+                // baseline is not trustworthy: drop it and let the device's
+                // synthesized full batch rebuild it. The reset lands *before*
+                // any batch applies — batches that raced the ack sat in the
+                // ledger and apply below, so the full batch can never be erased
+                // by its own gap reset.
+                if gap {
+                    deviceStatuses = [:]
+                    deviceListTotal = nil
+                    gitCursor = nil
+                } else {
+                    gitCursor = max(gitCursor ?? 0, seq)
+                }
+                for batch in earlyBatches { apply(batch) }
+                // The ack only says the device accepted the subscription; the
+                // baseline follows a beat later (measured at 2 ms behind it).
+                // Waiting for it is what keeps a repo with changes from flashing
+                // "No Changes" — but a checkout that has nothing to say sends no
+                // batch at all, and a spinner that never stops would be the
+                // pane's answer to a clean tree. So: wait briefly, then settle.
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, self.watchLedger.generation == generation else { return }
+                    self.isLoading = false
+                }
+            } catch {
+                guard watchLedger.generation == generation else { return }
+                isLoading = false
+                deviceProblem = Self.message(for: error)
+            }
+        }
+    }
+
+    func stopDeviceWatch() {
+        watchLedger.stop()
+        gitWatch?.cancel()
+        gitWatch = nil
+    }
+
+    /// Routes one arriving batch through the ledger: applied when the watch is
+    /// settled, held when the handshake's baseline decision is still in
+    /// flight, dropped when it belongs to a watch that was stopped.
+    private func receive(_ batch: Termiod.GitChangedPayload, generation: Int) {
+        guard let ready = watchLedger.admit(batch, generation: generation) else { return }
+        apply(ready)
+    }
+
+    /// Why the device's git pane is empty, when it is empty for a reason. Held
+    /// apart from the list so "no changes" and "not a git repository" cannot
+    /// read as the same thing.
+    @Published private(set) var deviceProblem: String?
+
+    private func deviceWatchInterrupted(generation: Int) {
+        guard watchLedger.generation == generation else { return }
+        gitWatch = nil
+        guard !resubscribing else { return }
+        Task {
+            // Let the drop settle before the next request reopens the channel.
+            try? await Task.sleep(for: .seconds(1))
+            guard watchLedger.isCurrent(generation) else { return }
+            startDeviceWatch()
+        }
+    }
+
+    /// Applies one `git_changed` delta to the baseline the pane holds.
+    private func apply(_ batch: Termiod.GitChangedPayload) {
+        gitCursor = max(gitCursor ?? 0, batch.seq)
+        for path in batch.removedPaths {
+            deviceStatuses.removeValue(forKey: path)
+        }
+        for entry in batch.updatedStatuses {
+            if let change = GitChange(device: entry) {
+                deviceStatuses[entry.path] = change
+            } else {
+                // Ignored, or a status this build cannot draw: not a row.
+                deviceStatuses.removeValue(forKey: entry.path)
+            }
+        }
+        deviceBranch = batch.branch
+        deviceListTotal = batch.total
+        deviceProblem = nil
+        changes = Self.sorted(Array(deviceStatuses.values))
+        isLoading = false
+    }
+
+    /// Conflicts first — the one status that must be acted on — then by path, so
+    /// siblings cluster the way the file tree shows them. The same order
+    /// `GitService.loadChanges` puts a local list in.
+    private static func sorted(_ changes: [GitChange]) -> [GitChange] {
+        changes.sorted { first, second in
+            if (first.status == .conflicted) != (second.status == .conflicted) {
+                return first.status == .conflicted
+            }
+            return first.path.localizedCaseInsensitiveCompare(second.path) == .orderedAscending
+        }
+    }
+
+    private static func message(for error: Error) -> String {
+        switch error {
+        case DeviceGitError.unsupported:
+            return localized("This device’s termiod is too old to read git.")
+        case TermiodClientError.requestFailed(let detail) where !detail.isEmpty:
+            return detail
+        default:
+            return localized("The device couldn’t read this checkout.")
+        }
+    }
 
     // MARK: Loading
 
@@ -122,6 +306,13 @@ final class GitPanelModel: ObservableObject {
     /// we publish anyway and hand off to a debounced refresh instead of looping here,
     /// so the pane can never livelock (spinning `git status`, `isLoading` stuck on).
     func load() async {
+        // A device checkout is not loaded, it is subscribed to: running `git` here
+        // against a path on another machine would either fail or — worse — answer
+        // about a same-named directory on this one.
+        if device != nil {
+            startDeviceWatch()
+            return
+        }
         if loading {
             loadReentered = true
             loadGeneration += 1   // supersede the in-flight pass's stale snapshot
@@ -154,6 +345,10 @@ final class GitPanelModel: ObservableObject {
     /// Loads the commit history on demand (first time the History tab opens); re-run
     /// with `force` when the git dir reports a change.
     func loadHistory(force: Bool = false) async {
+        // History and Compare are the device's read tier (`git.log`,
+        // `git.branches`), which this pane does not ask for yet — so for a
+        // device checkout their tabs are hidden rather than shown empty.
+        guard device == nil else { return }
         guard force || !didLoadHistory else { return }
         didLoadHistory = true
         isLoadingHistory = commits.isEmpty
@@ -166,6 +361,7 @@ final class GitPanelModel: ObservableObject {
     /// Re-reads the branch and the bases it can be compared against. Cheap enough to run
     /// on every history refresh: three `git` reads of refs, no diff.
     func loadCompareContext() async {
+        guard device == nil else { return }
         compareContext = await GitService.compareContext(in: repoRoot)
     }
 
@@ -217,6 +413,7 @@ final class GitPanelModel: ObservableObject {
     /// git dirs are watched separately because a linked worktree's metadata lives
     /// outside the checkout — see `GitService.watchPaths`.
     private func armWatcher() async {
+        guard device == nil else { return }
         let (tree, gitDirs) = await GitService.watchPaths(for: repoRoot)
         guard watcher == nil, !gitDirs.isEmpty else { return }
         // The primary checkout's `.git` sits inside the tree and needs no second watch.
@@ -268,5 +465,88 @@ final class GitPanelModel: ObservableObject {
                 await self.loadCompare()
             }
         }
+    }
+}
+
+// MARK: - Device-watch ordering
+
+/// The ordering ledger for one device git watch.
+///
+/// A subscribe handshake resolves on two paths that both land on the main
+/// actor: the ack (with its gap → reset-the-baseline decision) comes back
+/// through the async call, while the first batches arrive through the
+/// subscription handler — and the daemon queues the synthesized full batch
+/// right behind the ack, so a batch can be applied *before* the gap reset that
+/// would erase it, rendering a changed checkout clean. The ledger holds batches
+/// until the baseline decision has landed, and stamps every attempt with a
+/// generation so a watch that was stopped — or restarted — while its handshake
+/// was in flight can neither install its subscription nor apply its batches.
+struct DeviceWatchLedger {
+    private(set) var generation = 0
+    private var awaitingBaseline = false
+    private var held: [Termiod.GitChangedPayload] = []
+    private var restartRequested = false
+
+    /// A new subscribe attempt begins; everything older is dead.
+    mutating func begin() -> Int {
+        generation += 1
+        awaitingBaseline = true
+        held = []
+        return generation
+    }
+
+    /// The watch was stopped; an in-flight attempt must not land.
+    mutating func stop() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+        restartRequested = false
+    }
+
+    /// A newer visible pane wants a watch while an older handshake is still
+    /// pending. The old acknowledgement must not install, but its cleanup is
+    /// responsible for starting the replacement once it has released the
+    /// in-flight slot.
+    mutating func requestRestart() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+        restartRequested = true
+    }
+
+    /// Returns whether the caller's generation still owns the watch.
+    func isCurrent(_ generation: Int) -> Bool {
+        generation == self.generation
+    }
+
+    /// Takes the one deferred replacement request after its predecessor has
+    /// completed its handshake.
+    mutating func consumeRestartRequest() -> Bool {
+        defer { restartRequested = false }
+        return restartRequested
+    }
+
+    /// Admits one arriving batch: returns it when the watch is settled and the
+    /// batch may apply now, or nil when it was held for `settle` or belongs to
+    /// a dead generation.
+    mutating func admit(
+        _ batch: Termiod.GitChangedPayload, generation: Int
+    ) -> Termiod.GitChangedPayload? {
+        guard generation == self.generation else { return nil }
+        guard !awaitingBaseline else {
+            held.append(batch)
+            return nil
+        }
+        return batch
+    }
+
+    /// The ack landed and the caller is about to make the baseline decision.
+    /// Returns the batches that raced ahead, in arrival order, to apply after
+    /// that decision — or nil when the attempt is stale and must be abandoned.
+    mutating func settle(generation: Int) -> [Termiod.GitChangedPayload]? {
+        guard generation == self.generation else { return nil }
+        awaitingBaseline = false
+        defer { held = [] }
+        return held
     }
 }

@@ -281,10 +281,28 @@ pub enum GitFileStatus {
     },
 }
 
+/// One changed path in a `git_changed` batch (§C.13).
+///
+/// The line counts ride the status rather than waiting for a diff, because the
+/// row that shows the path shows `+N −M` beside it — a client that had to ask
+/// per file would need one round trip per row to draw one list. Zed carries the
+/// same numbers on the same message (`git.proto` `StatusEntry.diff_stat_added`),
+/// for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitStatusEntry {
     pub path: String,
     pub status: GitFileStatus,
+    /// Where a renamed file came from, for the row that says `old → new`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_path: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub additions: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub deletions: u64,
+    /// The counts are not numbers for this file — git reported `-`, or it is an
+    /// untracked file that sniffs as binary. `+0 −0` would be a lie, not a zero.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
 }
 
 /// One commit row (§C.13 read tier), as `git.log` and `git.show` report it.
@@ -729,6 +747,11 @@ pub enum Control {
         path: String,
         #[serde(default)]
         staged: bool,
+        /// The `-U` the client wants. A pane that folds unchanged runs into
+        /// expandable bands needs the whole file, not git's default three lines
+        /// of context; absent means git's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -1248,6 +1271,14 @@ pub enum Event {
         ahead_behind: Option<(u32, u32)>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         conflicts: Vec<String>,
+        /// How many paths the status run named, when the list was cut below
+        /// that (`git::STATUS_CAP`) — a batch is one frame, and an uncapped
+        /// `--untracked-files=all` over a tree with no `.gitignore` would
+        /// exceed `MAX_FRAME_SIZE` and take the whole connection with it.
+        /// Carried so a partial list cannot read as a complete one, and so the
+        /// pane can say how much of it is missing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// Roster delta used by control-channel `subscribe`.
     Roster {

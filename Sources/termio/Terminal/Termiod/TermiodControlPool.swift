@@ -239,6 +239,11 @@ extension Termiod {
         /// request on it, which is why they need a second delivery path rather
         /// than a long-lived fake request.
         private var eventObservers: [UUID: ChannelObserver] = [:]
+        /// Live resource subscriptions, by resource id. A `fs:`/`git:` event is
+        /// addressed to a *resource*, not to a request, so it cannot ride an
+        /// inbox: the reply that armed the subscription is long finished by the
+        /// time the batches arrive.
+        private var subscriptions = ResourceRoutingTable<ResourceSubscription>()
         private var nextSeq: UInt64 = 1
         private var dead = false
         private var lastUsed = ContinuousClock.now
@@ -253,10 +258,16 @@ extension Termiod {
             return dead
         }
 
+        /// A channel is idle only when nothing is riding it. A subscription is
+        /// riding it — that is the whole point of holding the connection — so a
+        /// subscribed channel is never reaped, however long since its last
+        /// request. Hanging one up would silently stop the updates the pane is
+        /// drawing from, which reads as "the device stopped changing".
         fileprivate var idleDuration: Duration {
             stateLock.lock()
             defer { stateLock.unlock() }
-            return inboxes.isEmpty ? lastUsed.duration(to: .now) : .zero
+            guard inboxes.isEmpty, subscriptions.isEmpty else { return .zero }
+            return lastUsed.duration(to: .now)
         }
 
         fileprivate init(route: TermiodRoute, caps: [String]) throws {
@@ -350,6 +361,28 @@ extension Termiod {
             return eventObservers.count
         }
 
+        /// Files the subscription under the resource id the caller asked for,
+        /// remembering the request that carries it — the ack to that request is
+        /// what names the canonical id to re-key under.
+        fileprivate func register(_ subscription: ResourceSubscription, request: UInt64) -> Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard !dead else { return false }
+            subscriptions.register(
+                subscription, resource: subscription.resource, request: request)
+            return true
+        }
+
+        /// Drops the subscription, and reports whether it was the last one filed
+        /// under its resource — the only removal that may tell the device to
+        /// retire the watch.
+        fileprivate func unregister(_ subscription: ObjectIdentifier) -> Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            lastUsed = .now
+            return subscriptions.unregister(subscription)
+        }
+
         fileprivate func release(_ seq: UInt64) {
             stateLock.lock()
             inboxes.removeValue(forKey: seq)
@@ -385,6 +418,7 @@ extension Termiod {
             inboxes.removeAll()
             let observers = eventObservers
             eventObservers.removeAll()
+            let orphaned = subscriptions.removeAll()
             stateLock.unlock()
             // `dead` is set before this lock is taken, so no further write can
             // start; taking it waits out the one that may already be running.
@@ -398,6 +432,9 @@ extension Termiod {
             // cannot land on this same corpse: `dead` is already set, so its
             // request for a channel opens a fresh one.
             for observer in observers.values { observer(.closed) }
+            // The device keeps the resource and its replay ring, so a subscriber
+            // told the pipe died can resume from its cursor rather than rebuild.
+            for subscription in orphaned { subscription.interrupted() }
         }
 
         /// Dedicated blocking-read thread, the same shape a session link uses:
@@ -415,7 +452,11 @@ extension Termiod {
                     }
                     guard let seq = Self.requestID(of: frame) else {
                         deliverUnaddressed(frame)
+                        deliverResourceEvent(frame)
                         continue
+                    }
+                    if frame.kind == .control {
+                        rekeyOnAcknowledgement(seq, frame.payload)
                     }
                     stateLock.lock()
                     let inbox = inboxes[seq]
@@ -445,6 +486,55 @@ extension Termiod {
             for observer in observers.values { observer(.event(event)) }
         }
 
+        /// Re-keys a pending subscription under the canonical id the device
+        /// acknowledged. The daemon canonicalises the root (resource.rs
+        /// `resource_id`) and stamps every event with the canonical id, so a
+        /// subscription left under the caller's spelling — a symlinked
+        /// checkout, a trailing slash — would never hear a single event.
+        ///
+        /// Done on the reader thread, not by the caller: the daemon writes the
+        /// ack before any replayed batch, so re-keying here, before the ack is
+        /// even handed to the caller's inbox, means no event carrying the
+        /// canonical id can arrive ahead of the re-key.
+        private func rekeyOnAcknowledgement(_ seq: UInt64, _ payload: Data) {
+            stateLock.lock()
+            let awaited = subscriptions.isAwaiting(request: seq)
+            stateLock.unlock()
+            guard awaited,
+                  case .subscribed(let ack) = try? decodeControl(payload)
+            else { return }
+            stateLock.lock()
+            let rekeyed = subscriptions.acknowledged(request: seq, canonical: ack.resource)
+            stateLock.unlock()
+            rekeyed?.adopt(resource: ack.resource)
+        }
+
+        /// Fans one resource event out to whoever subscribed to that resource.
+        ///
+        /// Run on the reader thread, like the inbox delivery beside it — but a
+        /// subscriber's handler *is* caller code, which the inbox path
+        /// deliberately never runs. So a handler must do nothing but hand the
+        /// payload on; the two consumers here hop to the main actor immediately.
+        /// The alternative, a queue per subscription, buys nothing while that
+        /// holds and costs a hop on every batch.
+        private func deliverResourceEvent(_ frame: (kind: FrameKind, payload: Data)) {
+            guard frame.kind == .event,
+                  let resource = Self.resourceID(of: frame.payload)
+            else { return }
+            stateLock.lock()
+            let listeners = subscriptions.listeners(for: resource)
+            stateLock.unlock()
+            for subscription in listeners { subscription.deliver(frame.payload) }
+        }
+
+        /// The resource a `fs_changed` / `git_changed` event belongs to. Decoded
+        /// off the one field they share rather than through the event enum, so a
+        /// resource kind this build has never heard of still routes.
+        private static func resourceID(of payload: Data) -> String? {
+            struct Tagged: Decodable { let resource: String? }
+            return (try? JSONDecoder().decode(Tagged.self, from: payload))?.resource
+        }
+
         /// Which request a frame answers, or `nil` for one that answers nobody.
         ///
         /// Three shapes, because the protocol has three: a control reply carries
@@ -465,6 +555,186 @@ extension Termiod {
             default:
                 return nil
             }
+        }
+    }
+
+    /// A live subscription to one device resource (`fs:<root>`, `git:<root>`).
+    ///
+    /// Held by whoever is drawing from it; releasing the last reference drops
+    /// the interest on the device, so a pane that goes away cannot leave a watch
+    /// running on someone's box. That is a real guarantee rather than a
+    /// convention: the channel's routing table files subscriptions *weakly*, so
+    /// the owner is the only strong reference and `deinit` is what retires the
+    /// watch. A strong entry there would make the two hold each other up —
+    /// a subscribed channel is never reaped — and the pane's `.onDisappear`
+    /// would be the only thing standing between a released pane and a `git
+    /// status` loop that ran on the box forever.
+    final class ResourceSubscription: @unchecked Sendable {
+        /// The resource id this subscription is filed under. Starts as the
+        /// caller's spelling and is re-keyed to the device's canonical id when
+        /// the ack names one — the id every event carries.
+        private(set) var resource: String
+        private let onEvent: @Sendable (Data) -> Void
+        /// Fired when the channel underneath dies. The device keeps the resource
+        /// and its replay ring for its linger window, so the owner re-subscribes
+        /// with the last `seq` it applied rather than rebuilding from nothing.
+        private let onInterrupted: @Sendable () -> Void
+        private weak var channel: PooledChannel?
+        private let lock = NSLock()
+        private var cancelled = false
+
+        fileprivate init(
+            resource: String,
+            channel: PooledChannel,
+            onEvent: @escaping @Sendable (Data) -> Void,
+            onInterrupted: @escaping @Sendable () -> Void
+        ) {
+            self.resource = resource
+            self.channel = channel
+            self.onEvent = onEvent
+            self.onInterrupted = onInterrupted
+        }
+
+        fileprivate func deliver(_ payload: Data) {
+            lock.lock()
+            let stopped = cancelled
+            lock.unlock()
+            guard !stopped else { return }
+            onEvent(payload)
+        }
+
+        fileprivate func interrupted() {
+            lock.lock()
+            let stopped = cancelled
+            lock.unlock()
+            guard !stopped else { return }
+            onInterrupted()
+        }
+
+        fileprivate func adopt(resource: String) {
+            lock.lock()
+            self.resource = resource
+            lock.unlock()
+        }
+
+        /// Drops the interest, and tells the device so it can retire the watch —
+        /// but only when this was the channel's last subscription to the
+        /// resource. The daemon tracks interest per *connection*, so an
+        /// unsubscribe sent while another pane still reads the same resource on
+        /// this pooled channel would take that pane's events with it.
+        /// Idempotent, and safe on a channel that has already died.
+        func cancel() {
+            lock.lock()
+            let alreadyCancelled = cancelled
+            cancelled = true
+            let currentResource = resource
+            lock.unlock()
+            guard !alreadyCancelled, let channel else { return }
+            guard channel.unregister(ObjectIdentifier(self)) else { return }
+            // Best effort: a channel that is already gone has no watch left to
+            // retire, and the device retires an unwatched resource on its own.
+            let seq = channel.nextRequestID()
+            try? channel.write(
+                kind: .control,
+                payload: encodeControl(
+                    UnsubscribeResourceOperation(resource: currentResource, seq: seq)))
+        }
+
+        deinit { cancel() }
+    }
+
+    /// A pooled channel's index of live resource subscriptions: which
+    /// subscribers an event's resource id routes to, and when a removal is the
+    /// last interest in a resource. Pure bookkeeping, kept apart from the
+    /// channel so both decisions stay pinned by tests without a connection.
+    ///
+    /// A subscription is filed under the caller's spelling of the resource
+    /// until the device's ack names the canonical id (`acknowledged`), because
+    /// the daemon canonicalises roots and stamps events with the canonical id
+    /// only.
+    struct ResourceRoutingTable<Subscriber: AnyObject> {
+        /// Subscribers are held **weakly**. The subscription is owned by
+        /// whoever is drawing from it, and its `deinit` is what retires the
+        /// watch on the device; a strong entry here would keep every
+        /// subscription — and, through `idleDuration`, the channel carrying it
+        /// — alive for as long as the connection did, so a pane released
+        /// without an explicit cancel would leave a `git status` loop running
+        /// on someone's box forever.
+        private struct WeakSubscriber {
+            weak var subscriber: Subscriber?
+        }
+        private var byResource: [String: [ObjectIdentifier: WeakSubscriber]] = [:]
+        /// Each subscriber's current key, so unregistering never depends on
+        /// reading mutable state off the subscriber itself — and still works
+        /// from `deinit`, where the weak entry above has already been zeroed.
+        private var keys: [ObjectIdentifier: String] = [:]
+        /// Subscribers whose ack has not come back yet, by the request carrying
+        /// them.
+        private var pendingAcks: [UInt64: ObjectIdentifier] = [:]
+
+        var isEmpty: Bool { byResource.isEmpty }
+
+        mutating func register(_ subscriber: Subscriber, resource: String, request: UInt64) {
+            let id = ObjectIdentifier(subscriber)
+            keys[id] = resource
+            byResource[resource, default: [:]][id] = WeakSubscriber(subscriber: subscriber)
+            pendingAcks[request] = id
+        }
+
+        func isAwaiting(request: UInt64) -> Bool {
+            pendingAcks[request] != nil
+        }
+
+        /// Re-keys the subscriber awaiting `request` under the canonical id,
+        /// returning it so the caller can update the subscriber's own label —
+        /// or nil when nothing needed to move.
+        mutating func acknowledged(request: UInt64, canonical: String) -> Subscriber? {
+            guard let id = pendingAcks.removeValue(forKey: request),
+                  let previous = keys[id],
+                  let subscriber = byResource[previous]?[id]?.subscriber,
+                  previous != canonical
+            else { return nil }
+            byResource[previous]?.removeValue(forKey: id)
+            if byResource[previous]?.isEmpty == true {
+                byResource.removeValue(forKey: previous)
+            }
+            keys[id] = canonical
+            byResource[canonical, default: [:]][id] = WeakSubscriber(subscriber: subscriber)
+            return subscriber
+        }
+
+        /// Drops the subscriber, and reports whether it was the last one filed
+        /// under its resource. Unknown subscribers — already swept by
+        /// `removeAll` — report false, so a late cancel sends nothing.
+        ///
+        /// Keyed by identity rather than by a strong reference so `deinit` can
+        /// call it: retaining a deinitializing object to pass it here is what
+        /// the identity is for.
+        mutating func unregister(_ id: ObjectIdentifier) -> Bool {
+            if let request = pendingAcks.first(where: { $0.value == id })?.key {
+                pendingAcks.removeValue(forKey: request)
+            }
+            guard let key = keys.removeValue(forKey: id) else { return false }
+            byResource[key]?.removeValue(forKey: id)
+            guard byResource[key]?.isEmpty == true else { return false }
+            byResource.removeValue(forKey: key)
+            return true
+        }
+
+        /// The live subscribers for a resource. A weak entry reads nil only
+        /// between the owner's release and the `deinit` that unregisters it —
+        /// a window an event may land in, and one that is not a listener.
+        func listeners(for resource: String) -> [Subscriber] {
+            byResource[resource]?.values.compactMap(\.subscriber) ?? []
+        }
+
+        mutating func removeAll() -> [Subscriber] {
+            defer {
+                byResource = [:]
+                keys = [:]
+                pendingAcks = [:]
+            }
+            return byResource.values.flatMap { $0.values.compactMap(\.subscriber) }
         }
     }
 
@@ -747,6 +1017,76 @@ extension Termiod {
                 pooled \(caps.joined(separator: ","), privacy: .public) channel to \
                 \(route.description, privacy: .public) was stale; reconnecting
                 """)
+                stale = channel
+            }
+        }
+        throw TermiodClientError.connectionClosed
+    }
+
+    /// Subscribes to a device resource over the pooled channel, and returns once
+    /// the device has acknowledged.
+    ///
+    /// The handler is registered *before* the request goes out, because the
+    /// first batch can arrive before the ack is read — measured at 2 ms behind
+    /// it against a real device. Registering after would drop the baseline and
+    /// leave the pane empty until something next changed.
+    ///
+    /// `since` resumes an interrupted subscription from the last `seq` applied;
+    /// the reply's `gap` says whether the device could replay from there.
+    ///
+    /// Blocking; call it off the main thread.
+    static func subscribeResource(
+        route: TermiodRoute,
+        caps: [String],
+        resource: String,
+        since: UInt64? = nil,
+        onEvent: @escaping @Sendable (Data) -> Void,
+        onInterrupted: @escaping @Sendable () -> Void = {}
+    ) throws -> (subscription: ResourceSubscription, gap: Bool, seq: UInt64) {
+        var stale: PooledChannel?
+        for attempt in 0 ... 1 {
+            let channel = try ControlPool.channel(route: route, caps: caps, discarding: stale)
+            let subscription = ResourceSubscription(
+                resource: resource, channel: channel,
+                onEvent: onEvent, onInterrupted: onInterrupted)
+            guard let call = channel.begin() else {
+                stale = channel
+                continue
+            }
+            guard channel.register(subscription, request: call.seq) else {
+                call.finish()
+                stale = channel
+                continue
+            }
+            let reused = call.wasReused
+            defer { call.finish() }
+            do {
+                try call.send(payload: encodeControl(SubscribeResourceOperation(
+                    resource: resource, since: since, seq: call.seq)))
+                while true {
+                    let frame = try call.next(
+                        timeoutSeconds: connectTimeoutSeconds,
+                        operation: "subscribe \(resource)")
+                    guard frame.kind == .control else { continue }
+                    switch try decodeControl(frame.payload) {
+                    case .subscribed(let ack):
+                        return (subscription, ack.gap, ack.seq)
+                    case .error(let failure):
+                        throw TermiodClientError.requestFailed(failure.message)
+                    default:
+                        continue
+                    }
+                }
+            } catch {
+                // `cancel`, not a bare unregister: the request may have reached
+                // a device that armed the watch and only the reply was lost, so
+                // the interest has to be retired over there too — otherwise a
+                // timed-out subscribe leaves a `git status` loop running for a
+                // subscriber that no longer exists.
+                subscription.cancel()
+                guard attempt == 0, reused, !call.hasDelivered, isConnectionLoss(error) else {
+                    throw error
+                }
                 stale = channel
             }
         }

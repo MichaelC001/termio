@@ -16,6 +16,11 @@ struct GitChangesView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     let repoRoot: String
+    /// The machine `repoRoot` is a path on, when it is not this Mac. A device
+    /// checkout reads: the pane subscribes to that box's git status and asks it
+    /// for diffs, and offers no action it cannot honestly perform there (see
+    /// `docs/rfcs/remote-git-plane.md` — the mutation tier is staged separately).
+    var device: TermiodRoute? = nil
     /// Lifted up to `FileBrowserView` so the switcher's Changes badge stays in step.
     @Binding var changeCount: Int
 
@@ -49,11 +54,18 @@ struct GitChangesView: View {
     /// it was (the Issues list's rule).
     @State private var lastOpenedPath: String?
 
-    init(repoRoot: String, changeCount: Binding<Int>, isPaneVisible: (() -> Bool)? = nil) {
+    init(
+        repoRoot: String,
+        device: TermiodRoute? = nil,
+        changeCount: Binding<Int>,
+        isPaneVisible: (() -> Bool)? = nil
+    ) {
         self.repoRoot = repoRoot
+        self.device = device
         self._changeCount = changeCount
         self._model = StateObject(
-            wrappedValue: GitPanelModel(repoRoot: repoRoot, isPaneVisible: isPaneVisible))
+            wrappedValue: GitPanelModel(
+                repoRoot: repoRoot, device: device, isPaneVisible: isPaneVisible))
     }
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
@@ -100,8 +112,17 @@ struct GitChangesView: View {
         // moment the pane is actually shown again (either signal can fire first
         // depending on how the view was re-attached).
         .onAppear { model.flushDeferredRefresh() }
+        .onDisappear { model.stopDeviceWatch() }
         .onChange(of: store.inspectorVisible) { _, visible in
-            if visible { model.flushDeferredRefresh() }
+            if visible {
+                model.flushDeferredRefresh()
+                model.startDeviceWatch()
+            } else {
+                // A hidden pane stops watching: the device retires an unwatched
+                // resource on its own, so nothing keeps running over there for a
+                // pane nobody can see.
+                model.stopDeviceWatch()
+            }
         }
         .onChange(of: model.changes.count) { _, count in changeCount = count }
         .onChange(of: selection) { _, selected in
@@ -191,8 +212,14 @@ struct GitChangesView: View {
     private var modeSwitch: some View {
         HStack(spacing: 0) {
             segment(localized("Changes"), .changes)
-            segment(localized("Compare"), .compare)
-            segment(localized("History"), .history)
+            // Compare and History are the device's read tier (`git.log`,
+            // `git.branches`), which this pane does not ask for yet. Hidden
+            // rather than shown empty: a tab that answers nothing is worse than
+            // a tab that isn't there.
+            if device == nil {
+                segment(localized("Compare"), .compare)
+                segment(localized("History"), .history)
+            }
         }
         // The selection pill rides behind the active segment and slides across on switch.
         .background { selectionPill }
@@ -252,9 +279,17 @@ struct GitChangesView: View {
         if !model.changes.isEmpty {
             let additions = model.changes.reduce(0) { $0 + $1.additions }
             let deletions = model.changes.reduce(0) { $0 + $1.deletions }
-            Text(model.changes.count == 1
+            // The device cuts a flooded status list at its cap, so the count is
+            // the head of the list rather than the whole of it. Said here
+            // because this number is the one that would otherwise be a claim
+            // about the working tree that isn't true — and said with the real
+            // total, since "first 5,000" and "first 5,000 of 41,900" are
+            // different answers.
+            Text(model.deviceListTotal.map {
+                localized("first \(model.changes.count) of \($0) files")
+            } ?? (model.changes.count == 1
                 ? localized("\(model.changes.count) file")
-                : localized("\(model.changes.count) files"))
+                : localized("\(model.changes.count) files")))
                 .foregroundStyle(.secondary)
             if additions > 0 { Text("+\(additions)").foregroundStyle(.green) }
             if deletions > 0 { Text("−\(deletions)").foregroundStyle(.red) }
@@ -269,6 +304,16 @@ struct GitChangesView: View {
             ProgressView()
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let problem = model.deviceProblem {
+            // The device's own words. "No Changes" would be a different claim
+            // from "that directory isn't a repository", and the pane must not
+            // make the second look like the first.
+            PaneEmptyState(
+                localized("No Changes to Show"),
+                icon: .serverStack,
+                message: problem
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.changes.isEmpty {
             // Fill the pane (like the loading state) rather than sizing to the compact empty
             // view — otherwise the enclosing `VStack` shrinks to content height and the host
@@ -300,7 +345,9 @@ struct GitChangesView: View {
                 // multi-selection takes over the moment one exists.
                 isSelected: selection.contains(change.path)
                     || (selection.isEmpty && lastOpenedPath == change.path),
-                onDiscard: { pendingDiscard = [change] }
+                // Discard writes to the checkout, which a device's file plane
+                // does not do. The button is absent there rather than inert.
+                onDiscard: device == nil ? { pendingDiscard = [change] } : nil
             )
             .contextMenu { contextMenu(for: change) }
         }
@@ -326,15 +373,20 @@ struct GitChangesView: View {
         let targets = targets(for: change)
         let fileExtension = (change.path as NSString).pathExtension.lowercased()
         if targets.count == 1 {
-            Button(localized("Open in Editor")) { openInEditor(change) }
-            Button(localized("Reveal in Finder")) { revealInFinder(change) }
-            Divider()
-            Button(localized("Copy Path")) { copyPath(change) }
+            // Opening in the editor and revealing in the Finder are both about a
+            // file on *this* Mac; for a device checkout the path names a file
+            // this machine does not have.
+            if device == nil {
+                Button(localized("Open in Editor")) { openInEditor(change) }
+                Button(localized("Reveal in Finder")) { revealInFinder(change) }
+                Divider()
+                Button(localized("Copy Path")) { copyPath(change) }
+            }
             Button(localized("Copy Relative Path")) { copyToPasteboard(change.path) }
             Button(localized("Copy Diff")) { copyDiff(targets) }
             // GitHub Desktop's two ignore actions, verbatim — the by-extension form is
             // what clears a build-products flood one file type at a time.
-            if change.isUntracked {
+            if change.isUntracked, device == nil {
                 Divider()
                 Button(localized("Ignore File (Add to .gitignore)")) { addToGitignore(paths: [change.path]) }
                 if !fileExtension.isEmpty {
@@ -343,8 +395,10 @@ struct GitChangesView: View {
                     }
                 }
             }
-            Divider()
-            Button(localized("Discard Changes…"), role: .destructive) { pendingDiscard = targets }
+            if device == nil {
+                Divider()
+                Button(localized("Discard Changes…"), role: .destructive) { pendingDiscard = targets }
+            }
         } else {
             Button(localized("Copy Paths")) {
                 copyToPasteboard(targets.map { fileURL(for: $0).path }.joined(separator: "\n"))
@@ -355,14 +409,16 @@ struct GitChangesView: View {
             Button(localized("Copy Diff")) { copyDiff(targets) }
             // GitHub Desktop acts on the whole selection here too.
             let untracked = targets.filter(\.isUntracked)
-            if !untracked.isEmpty {
+            if !untracked.isEmpty, device == nil {
                 Divider()
                 Button(localized("Ignore \(untracked.count) Selected Files (Add to .gitignore)")) {
                     addToGitignore(paths: untracked.map(\.path))
                 }
             }
-            Divider()
-            Button(localized("Discard \(targets.count) Files…"), role: .destructive) { pendingDiscard = targets }
+            if device == nil {
+                Divider()
+                Button(localized("Discard \(targets.count) Files…"), role: .destructive) { pendingDiscard = targets }
+            }
         }
     }
 
@@ -412,7 +468,8 @@ struct GitChangesView: View {
         if FileActivation.previewsRatherThanDiff(url), FileManager.default.fileExists(atPath: url.path) {
             store.openFileInEditor(url)
         } else {
-            store.openDiff = GitDiffRequest(repoRoot: repoRoot, change: change, siblings: model.changes)
+            store.openDiff = GitDiffRequest(
+                repoRoot: repoRoot, device: device, change: change, siblings: model.changes)
         }
     }
 
@@ -438,7 +495,8 @@ struct GitChangesView: View {
         Task {
             var parts: [String] = []
             for change in changes {
-                parts.append(await GitService.diffText(for: change, in: repoRoot))
+                parts.append(await DiffSource.text(
+                    for: change, in: repoRoot, device: device))
             }
             copyToPasteboard(parts.joined())
         }
@@ -506,7 +564,9 @@ private struct GitChangeRow: View {
     let chrome: ChromeTheme?
     let isSelected: Bool
     /// Fires the discard confirmation for this row (owned by `GitChangesView`).
-    let onDiscard: () -> Void
+    /// `nil` where discarding is not on offer — a checkout on another machine,
+    /// whose file plane reads and does not write.
+    let onDiscard: (() -> Void)?
 
     @State private var isHovering = false
 
@@ -533,7 +593,7 @@ private struct GitChangeRow: View {
             // On hover the trailing counts give way to a single discard button — the
             // one destructive action worth a one-click affordance (everything else lives
             // in the right-click menu). The counts return when the pointer leaves.
-            if isHovering {
+            if isHovering, let onDiscard {
                 Button(action: onDiscard) {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 11, weight: .medium))

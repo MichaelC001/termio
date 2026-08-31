@@ -20,6 +20,7 @@ use crate::protocol::{
 };
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// A `git.diff` reply is cut here — the same preview budget as `fs.read`.
 pub const DIFF_CAP: usize = 1024 * 1024;
@@ -65,12 +66,50 @@ fn validate_revision(revision: &str) -> Result<()> {
 /// Everything one status run said. The live copy backs the synthetic
 /// full-state batch a gap subscriber receives — only the host can "rescan"
 /// git status, so on gap it does the scan for the client.
+/// What one status run said about one path. Kept apart from the wire entry so
+/// the snapshot can be diffed by value: a file whose line counts moved has
+/// changed as far as the row is concerned, even when its status letter did not.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileState {
+    pub status: Option<GitFileStatus>,
+    pub original_path: Option<String>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub binary: bool,
+}
+
+impl FileState {
+    fn new(status: GitFileStatus) -> FileState {
+        FileState {
+            status: Some(status),
+            ..FileState::default()
+        }
+    }
+
+    fn entry(&self, path: &str) -> Option<GitStatusEntry> {
+        Some(GitStatusEntry {
+            path: path.to_string(),
+            status: self.status?,
+            original_path: self.original_path.clone(),
+            additions: self.additions,
+            deletions: self.deletions,
+            binary: self.binary,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GitSnapshot {
-    pub statuses: HashMap<String, GitFileStatus>,
+    pub statuses: HashMap<String, FileState>,
     pub branch: Option<String>,
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
+    /// How many paths the status run actually named, when the list was cut
+    /// below that (see [`STATUS_CAP`]). Carried on every batch so the pane can
+    /// say how much is missing rather than let a cut list read as the whole
+    /// truth — with five thousand conflicts, "first 5,000" and "first 5,000 of
+    /// 41,900" are different answers.
+    pub total: Option<u64>,
 }
 
 impl GitSnapshot {
@@ -78,7 +117,7 @@ impl GitSnapshot {
         let mut paths: Vec<String> = self
             .statuses
             .iter()
-            .filter(|(_, status)| matches!(status, GitFileStatus::Unmerged { .. }))
+            .filter(|(_, state)| matches!(state.status, Some(GitFileStatus::Unmerged { .. })))
             .map(|(path, _)| path.clone())
             .collect();
         paths.sort();
@@ -91,10 +130,7 @@ impl GitSnapshot {
         let mut updated: Vec<GitStatusEntry> = self
             .statuses
             .iter()
-            .map(|(path, status)| GitStatusEntry {
-                path: path.clone(),
-                status: *status,
-            })
+            .filter_map(|(path, state)| state.entry(path))
             .collect();
         updated.sort_by(|a, b| a.path.cmp(&b.path));
         GitBatch {
@@ -104,6 +140,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
+            total: self.total,
         }
     }
 
@@ -113,11 +150,8 @@ impl GitSnapshot {
         let mut updated: Vec<GitStatusEntry> = self
             .statuses
             .iter()
-            .filter(|(path, status)| previous.statuses.get(*path) != Some(status))
-            .map(|(path, status)| GitStatusEntry {
-                path: path.clone(),
-                status: *status,
-            })
+            .filter(|(path, state)| previous.statuses.get(*path) != Some(state))
+            .filter_map(|(path, state)| state.entry(path))
             .collect();
         updated.sort_by(|a, b| a.path.cmp(&b.path));
         let mut removed: Vec<String> = previous
@@ -130,7 +164,8 @@ impl GitSnapshot {
 
         let metadata_moved = self.branch != previous.branch
             || self.head != previous.head
-            || self.ahead_behind != previous.ahead_behind;
+            || self.ahead_behind != previous.ahead_behind
+            || self.total != previous.total;
         if updated.is_empty() && removed.is_empty() && !metadata_moved {
             return None;
         }
@@ -141,6 +176,7 @@ impl GitSnapshot {
             head: self.head.clone(),
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts(),
+            total: self.total,
         })
     }
 }
@@ -154,6 +190,9 @@ pub struct GitBatch {
     pub head: Option<String>,
     pub ahead_behind: Option<(u32, u32)>,
     pub conflicts: Vec<String>,
+    /// How many paths there really are, when the list was cut — see
+    /// [`STATUS_CAP`].
+    pub total: Option<u64>,
 }
 
 impl GitBatch {
@@ -167,6 +206,7 @@ impl GitBatch {
             head: self.head,
             ahead_behind: self.ahead_behind,
             conflicts: self.conflicts,
+            total: self.total,
         }
     }
 }
@@ -191,7 +231,252 @@ pub async fn run_status(root: &str) -> Result<GitSnapshot> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    parse_porcelain_v2(&output.stdout)
+    let mut snapshot = parse_porcelain_v2(&output.stdout)?;
+    cap_statuses(&mut snapshot);
+    apply_counts(root, &mut snapshot).await;
+    Ok(snapshot)
+}
+
+/// The most changed paths one `git_changed` batch will ever carry.
+///
+/// A batch is one frame, and a frame over `protocol::MAX_FRAME_SIZE` is a write
+/// error that takes the whole connection down with it — the file tree and agent
+/// status ride the same channel. `--untracked-files=all` over a checkout with a
+/// missing `.gitignore` reaches that easily: a `node_modules` tree is hundreds
+/// of thousands of paths. So the list is cut here, at a size no reviewer reads
+/// past, and the batch says it was cut.
+pub const STATUS_CAP: usize = 5_000;
+
+/// And the most path bytes, because the entry count alone does not bound a
+/// frame — a deeply nested tree can carry very long paths.
+///
+/// Counted as *encoded* bytes, not raw ones: a byte a filename may legally
+/// hold and JSON may not — POSIX forbids only NUL and `/` — becomes six
+/// characters (`\u0001`), so a raw-byte budget is a sixth of the bound it
+/// looks like. One batch spends its paths three times (updated, removed,
+/// conflicts), which puts the worst frame at 3 MiB plus at most `STATUS_CAP`
+/// entry envelopes — clear of `MAX_FRAME_SIZE` with room that does not depend
+/// on what a path happens to contain.
+const STATUS_PATH_BYTES_CAP: usize = 1024 * 1024;
+
+/// What one string costs inside a JSON document. Control bytes escape to six
+/// characters, a quote or a backslash to two, and everything else — UTF-8
+/// included — passes through as itself.
+fn json_cost(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' => 2,
+            0x08 | 0x09 | 0x0a | 0x0c | 0x0d => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Cut an oversized status list down to what a batch may carry.
+///
+/// Conflicts survive first — the one status that must be acted on — then the
+/// rest of the tracked changes, and untracked paths fill what is left: the
+/// flood case is always untracked build output, and the edits a person is
+/// reviewing are the rows that must outlive it. That is the order the pane
+/// already sorts rows in. Within each tier the order is by path, so the cut is
+/// deterministic — two consecutive runs over an unchanged flooded tree keep the
+/// same rows and produce no delta.
+fn cap_statuses(snapshot: &mut GitSnapshot) {
+    // Both bounds are checked before the fast path: five thousand entries is
+    // not the only way past a frame, and neither is a million bytes of path.
+    // A rename spends its budget twice — the row names where the file came
+    // from as well as where it is.
+    let cost = |state: &FileState, path: &String| {
+        json_cost(path) + state.original_path.as_deref().map_or(0, json_cost)
+    };
+    let encoded: usize = snapshot
+        .statuses
+        .iter()
+        .map(|(path, state)| cost(state, path))
+        .sum();
+    if snapshot.statuses.len() <= STATUS_CAP && encoded <= STATUS_PATH_BYTES_CAP {
+        return;
+    }
+
+    let mut paths: Vec<&String> = snapshot.statuses.keys().collect();
+    paths.sort_by_key(|path| {
+        let tier = match snapshot.statuses[*path].status {
+            Some(GitFileStatus::Unmerged { .. }) => 0,
+            Some(GitFileStatus::Untracked) | Some(GitFileStatus::Ignored) => 2,
+            _ => 1,
+        };
+        (tier, *path)
+    });
+    let mut bytes = 0usize;
+    let mut keep: HashSet<String> = HashSet::new();
+    for path in paths.into_iter().take(STATUS_CAP) {
+        bytes += cost(&snapshot.statuses[path], path);
+        if bytes > STATUS_PATH_BYTES_CAP {
+            break;
+        }
+        keep.insert(path.clone());
+    }
+    if keep.len() == snapshot.statuses.len() {
+        return;
+    }
+    snapshot.total = Some(snapshot.statuses.len() as u64);
+    snapshot.statuses.retain(|path, _| keep.contains(path));
+}
+
+/// Above this many untracked files the per-file line counts are skipped
+/// wholesale — the flood case, almost always a missing `.gitignore` over a
+/// build directory. The Mac client degrades at the same number for the same
+/// reason, and so does VS Code at its `git.statusLimit`.
+const UNTRACKED_COUNT_LIMIT: usize = 500;
+
+/// An untracked file bigger than this is never line-counted: nobody reviews a
+/// multi-megabyte file by its `+N` badge.
+const UNTRACKED_SIZE_LIMIT: u64 = 4_000_000;
+
+/// Fills each changed path's `+N −M`: `git diff --numstat` merged with
+/// `--cached` for tracked files, and a line count for untracked ones.
+///
+/// This mirrors the Mac client's local pass field for field, deliberately — the
+/// Changes pane must read the same whether the checkout is on this box or
+/// another one, and "the same" includes what the numbers mean and when they are
+/// withheld.
+async fn apply_counts(root: &str, snapshot: &mut GitSnapshot) {
+    let mut counts: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut binaries: HashSet<String> = HashSet::new();
+    for cached in [false, true] {
+        let mut command = git_command(root);
+        command.arg("diff").arg("--numstat");
+        if cached {
+            command.arg("--cached");
+        }
+        let Ok(output) = command.output().await else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut fields = line.splitn(3, '\t');
+            let (Some(added), Some(deleted), Some(path)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if added == "-" {
+                binaries.insert(path.to_string());
+                continue;
+            }
+            let entry = counts.entry(path.to_string()).or_insert((0, 0));
+            entry.0 += added.parse::<u64>().unwrap_or(0);
+            entry.1 += deleted.parse::<u64>().unwrap_or(0);
+        }
+    }
+
+    let untracked_flood = snapshot
+        .statuses
+        .values()
+        .filter(|state| state.status == Some(GitFileStatus::Untracked))
+        .count()
+        > UNTRACKED_COUNT_LIMIT;
+
+    for (path, state) in snapshot.statuses.iter_mut() {
+        if state.status != Some(GitFileStatus::Untracked) {
+            if let Some((added, deleted)) = counts.get(path) {
+                state.additions = *added;
+                state.deletions = *deleted;
+            }
+            state.binary = binaries.contains(path);
+        }
+    }
+
+    if untracked_flood {
+        return;
+    }
+    let untracked: Vec<String> = snapshot
+        .statuses
+        .iter()
+        .filter(|(_, state)| state.status == Some(GitFileStatus::Untracked))
+        .map(|(path, _)| path.clone())
+        .collect();
+    if untracked.is_empty() {
+        return;
+    }
+    // Counting lines is bounded but blocking — up to `UNTRACKED_COUNT_LIMIT`
+    // files of `UNTRACKED_SIZE_LIMIT` each, read synchronously. Doing that on a
+    // runtime worker parks whatever else that worker was carrying, including a
+    // connection's writes; `files.rs` moves its directory reads off the runtime
+    // for the same reason, and this is the larger read of the two.
+    let root_path = Path::new(root).to_path_buf();
+    let counted = tokio::task::spawn_blocking(move || {
+        untracked
+            .into_iter()
+            .map(|path| {
+                let count = untracked_line_count(&root_path.join(&path));
+                (path, count)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let Ok(counted) = counted else { return };
+    for (path, count) in counted {
+        let Some(state) = snapshot.statuses.get_mut(&path) else {
+            continue;
+        };
+        match count {
+            UntrackedCount::Lines(lines) => state.additions = lines,
+            UntrackedCount::Binary => state.binary = true,
+            UntrackedCount::Skip => {}
+        }
+    }
+}
+
+enum UntrackedCount {
+    Lines(u64),
+    Binary,
+    Skip,
+}
+
+/// The `+N` for one untracked file: bounded chunked reads counting newlines,
+/// never a whole-file decode. A NUL in the first chunk marks it binary, which
+/// is git's own sniff; crossing the size cap gives up rather than paying for it.
+fn untracked_line_count(path: &Path) -> UntrackedCount {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return UntrackedCount::Skip;
+    };
+    let mut buffer = vec![0u8; 262_144];
+    let mut lines = 0u64;
+    let mut total = 0u64;
+    let mut last_byte = b'\n';
+    let mut first_chunk = true;
+    loop {
+        let read = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => return UntrackedCount::Skip,
+        };
+        let chunk = &buffer[..read];
+        if first_chunk {
+            if chunk[..chunk.len().min(8000)].contains(&0) {
+                return UntrackedCount::Binary;
+            }
+            first_chunk = false;
+        }
+        total += read as u64;
+        if total > UNTRACKED_SIZE_LIMIT {
+            return UntrackedCount::Skip;
+        }
+        lines += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
+        last_byte = *chunk.last().unwrap_or(&last_byte);
+    }
+    if first_chunk {
+        return UntrackedCount::Skip; // empty, or vanished mid-read: no badge
+    }
+    if last_byte != b'\n' {
+        lines += 1;
+    }
+    UntrackedCount::Lines(lines)
 }
 
 /// Parse `--porcelain=v2 -z` output. Records are NUL-terminated; a rename
@@ -219,7 +504,9 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitSnapshot> {
                 let xy = columns.next().unwrap_or_default();
                 let path = columns.nth(6).unwrap_or_default();
                 if let (Some(status), false) = (tracked_status(xy), path.is_empty()) {
-                    snapshot.statuses.insert(path.to_string(), status);
+                    snapshot
+                        .statuses
+                        .insert(path.to_string(), FileState::new(status));
                 }
             }
             "2" => {
@@ -227,10 +514,17 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitSnapshot> {
                 let mut columns = rest.splitn(9, ' ');
                 let xy = columns.next().unwrap_or_default();
                 let path = columns.nth(7).unwrap_or_default();
-                // Consume the origPath field so it is not read as a record.
-                let _orig = fields.next();
+                // The origPath field must be consumed either way, or it is read
+                // as the next record. It is also what the row's `old → new`
+                // tooltip is made of, so it is kept rather than dropped.
+                let original = fields
+                    .next()
+                    .map(|field| String::from_utf8_lossy(field).into_owned())
+                    .filter(|field| !field.is_empty());
                 if let (Some(status), false) = (tracked_status(xy), path.is_empty()) {
-                    snapshot.statuses.insert(path.to_string(), status);
+                    let mut state = FileState::new(status);
+                    state.original_path = original;
+                    snapshot.statuses.insert(path.to_string(), state);
                 }
             }
             "u" => {
@@ -239,18 +533,20 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitSnapshot> {
                 let xy = columns.next().unwrap_or_default();
                 let path = columns.nth(8).unwrap_or_default();
                 if let (Some(status), false) = (unmerged_status(xy), path.is_empty()) {
-                    snapshot.statuses.insert(path.to_string(), status);
+                    snapshot
+                        .statuses
+                        .insert(path.to_string(), FileState::new(status));
                 }
             }
             "?" => {
                 snapshot
                     .statuses
-                    .insert(rest.to_string(), GitFileStatus::Untracked);
+                    .insert(rest.to_string(), FileState::new(GitFileStatus::Untracked));
             }
             "!" => {
                 snapshot
                     .statuses
-                    .insert(rest.to_string(), GitFileStatus::Ignored);
+                    .insert(rest.to_string(), FileState::new(GitFileStatus::Ignored));
             }
             _ => {}
         }
@@ -329,21 +625,86 @@ fn unmerged_status(xy: &str) -> Option<GitFileStatus> {
 
 /// `git.diff` (§C.13): a unified diff for one path, worktree-vs-index by
 /// default, index-vs-HEAD with `staged`. Capped at [`DIFF_CAP`].
-pub async fn run_diff(root: &str, path: &str, staged: bool) -> Result<(String, bool)> {
-    let mut command = git_command(root);
-    command.arg("diff");
-    if staged {
-        command.arg("--cached");
+/// `git.diff` (§C.13): the unified diff for one working-tree path.
+///
+/// `git diff -- <path>` alone answers for exactly one of the four cases a
+/// Changes row can be in, and empty for the rest — an untracked file has no
+/// diff at all, and a fully-staged change lives in the index. So this walks the
+/// same ladder the Mac's local `GitService.loadDiffText` walks, in the same
+/// order, because a row must show the same diff whichever machine the checkout
+/// is on. Measured against a real device before it did: 44 rows, every one of
+/// them an empty diff.
+///
+/// `context` is the `-U` the client wants. The overlay asks for a very large one
+/// so it holds the whole file and can fold unchanged runs into bands the reader
+/// expands; without it a remote diff renders with git's default three lines and
+/// silently loses that.
+pub async fn run_diff(
+    root: &str,
+    path: &str,
+    staged: bool,
+    context: Option<u64>,
+) -> Result<(String, bool)> {
+    let unified: Vec<String> = context
+        .map(|lines| vec![format!("-U{lines}")])
+        .unwrap_or_default();
+
+    // An untracked file is not in the index and not in HEAD, so every ordinary
+    // form of `git diff` says nothing about it. `--no-index` against /dev/null
+    // is what makes it read as one big addition — and it exits non-zero when the
+    // two differ, which is the normal case, so its status is not an error.
+    let mut against_nothing = git_command(root);
+    against_nothing.arg("diff").arg("--no-index");
+    for argument in &unified {
+        against_nothing.arg(argument);
     }
-    command.arg("--").arg(path);
-    let output = command.output().await.context("running git diff")?;
-    if !output.status.success() {
+    against_nothing.arg("--").arg("/dev/null").arg(path);
+
+    // `diff HEAD` shows staged and unstaged together, which is what the row is
+    // about; the split forms are the fallback for a repo with no commit yet and
+    // for a change that is entirely in the index.
+    let mut ladder: Vec<Vec<String>> = Vec::new();
+    if staged {
+        ladder.push(vec!["--cached".into()]);
+    }
+    ladder.push(vec!["HEAD".into()]);
+    ladder.push(vec![]);
+    ladder.push(vec!["--cached".into()]);
+
+    for revision in ladder {
+        let mut command = git_command(root);
+        command.arg("diff");
+        for argument in &unified {
+            command.arg(argument);
+        }
+        for argument in &revision {
+            command.arg(argument);
+        }
+        command.arg("--").arg(path);
+        let output = command.output().await.context("running git diff")?;
+        // A form that does not apply here (no HEAD yet, a path git will not
+        // diff that way) is not a failure — it is the reason there is a ladder.
+        if !output.status.success() {
+            continue;
+        }
+        let diff = String::from_utf8_lossy(&output.stdout).into_owned();
+        if !diff.is_empty() {
+            return Ok(cap_diff(diff));
+        }
+    }
+
+    let output = against_nothing
+        .output()
+        .await
+        .context("running git diff --no-index")?;
+    let diff = String::from_utf8_lossy(&output.stdout).into_owned();
+    if diff.is_empty() && !output.status.success() {
         bail!(
             "git diff failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(cap_diff(String::from_utf8_lossy(&output.stdout).into_owned()))
+    Ok(cap_diff(diff))
 }
 
 /// Cut a diff at [`DIFF_CAP`] on a character boundary, reporting that it was
@@ -770,7 +1131,7 @@ mod tests {
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert_eq!(snapshot.head.as_deref(), Some("1234567890abcdef"));
         assert_eq!(snapshot.ahead_behind, Some((2, 1)));
-        let status = |path: &str| snapshot.statuses[path];
+        let status = |path: &str| snapshot.statuses[path].status.unwrap();
         assert_eq!(
             status("staged.rs"),
             GitFileStatus::Tracked {
@@ -809,6 +1170,11 @@ mod tests {
         assert!(
             !snapshot.statuses.contains_key("old-name.rs"),
             "a rename's origin path is a field, not a record"
+        );
+        assert_eq!(
+            snapshot.statuses["new-name.rs"].original_path.as_deref(),
+            Some("old-name.rs"),
+            "the origin is kept: it is what the row's `old → new` is made of"
         );
         assert_eq!(
             status("conflicted.rs"),
@@ -894,10 +1260,18 @@ mod tests {
                         index_status: GitStatusCode::Modified,
                         worktree_status: GitStatusCode::Unmodified,
                     },
+                    original_path: None,
+                    additions: 12,
+                    deletions: 3,
+                    binary: false,
                 },
                 GitStatusEntry {
                     path: "b.rs".to_string(),
                     status: GitFileStatus::Untracked,
+                    original_path: None,
+                    additions: 0,
+                    deletions: 0,
+                    binary: false,
                 },
             ],
             removed_paths: vec![],
@@ -905,6 +1279,7 @@ mod tests {
             head: None,
             ahead_behind: Some((1, 0)),
             conflicts: vec![],
+            total: None,
         }
         .into_event("git:/repo".to_string(), 7);
         let json = serde_json::to_value(&event).unwrap();
@@ -916,6 +1291,12 @@ mod tests {
         );
         assert_eq!(json["updated_statuses"][1]["status"], "untracked");
         assert_eq!(json["ahead_behind"][0], 1);
+        assert_eq!(json["updated_statuses"][0]["additions"], 12);
+        assert_eq!(json["updated_statuses"][0]["deletions"], 3);
+        assert!(
+            json["updated_statuses"][1].get("additions").is_none(),
+            "a zero count is left off the wire, not sent as 0"
+        );
     }
 
     // The read tier is tested against a real repository built here, not
@@ -965,6 +1346,204 @@ mod tests {
         run_git(dir, &["add", "-A"]);
         run_git(dir, &["commit", "-q", "-m", message]);
         run_git(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// The Changes row shows `+N −M` beside the path, so the status run has to
+    /// carry those numbers — for a tracked edit, for a staged one, and for an
+    /// untracked file, which has no diff to count and is measured by its lines.
+    #[tokio::test]
+    async fn status_carries_the_line_counts_the_row_shows() {
+        let dir = scratch_repo("counts");
+        write(&dir, "tracked.txt", "one\ntwo\nthree\n");
+        commit(&dir, "first");
+        write(&dir, "tracked.txt", "one\ntwo\nthree\nfour\n");
+        write(&dir, "staged.txt", "a\nb\n");
+        run_git(&dir, &["add", "staged.txt"]);
+        write(&dir, "fresh.txt", "x\ny\nz\n");
+        std::fs::write(dir.join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+
+        let root = dir.to_string_lossy().into_owned();
+        let snapshot = run_status(&root).await.unwrap();
+
+        let tracked = &snapshot.statuses["tracked.txt"];
+        assert_eq!((tracked.additions, tracked.deletions), (1, 0));
+        assert!(!tracked.binary);
+
+        let staged = &snapshot.statuses["staged.txt"];
+        assert_eq!(
+            (staged.additions, staged.deletions),
+            (2, 0),
+            "a staged file's numbers come from --cached"
+        );
+
+        let untracked = &snapshot.statuses["fresh.txt"];
+        assert_eq!(
+            (untracked.additions, untracked.deletions),
+            (3, 0),
+            "an untracked file is counted by its lines"
+        );
+
+        assert!(
+            snapshot.statuses["blob.bin"].binary,
+            "a NUL in the first chunk is binary, and +N would be a lie"
+        );
+    }
+
+    /// A batch is one frame, and a frame past `MAX_FRAME_SIZE` kills the whole
+    /// connection — the file tree and agent status ride the same channel. So a
+    /// flooded checkout is cut here, and the cut is announced.
+    #[test]
+    fn an_oversized_status_list_is_cut_and_says_so() {
+        let mut snapshot = GitSnapshot::default();
+        snapshot.statuses.insert(
+            "src/edited.rs".to_string(),
+            FileState::new(GitFileStatus::Tracked {
+                index_status: GitStatusCode::Unmodified,
+                worktree_status: GitStatusCode::Modified,
+            }),
+        );
+        snapshot.statuses.insert(
+            "zzz/conflicted.rs".to_string(),
+            FileState::new(GitFileStatus::Unmerged {
+                first_head: GitUnmergedCode::Updated,
+                second_head: GitUnmergedCode::Updated,
+            }),
+        );
+        for index in 0..STATUS_CAP + 10 {
+            snapshot.statuses.insert(
+                format!("node_modules/pkg/{index}.js"),
+                FileState::new(GitFileStatus::Untracked),
+            );
+        }
+        cap_statuses(&mut snapshot);
+
+        assert_eq!(
+            snapshot.total,
+            Some(STATUS_CAP as u64 + 12),
+            "a cut list must name how many there really were"
+        );
+        assert_eq!(snapshot.statuses.len(), STATUS_CAP);
+        assert!(
+            snapshot.statuses.contains_key("src/edited.rs"),
+            "the tracked edit is the row a person is reviewing; the flood is not"
+        );
+        assert!(
+            snapshot.statuses.contains_key("zzz/conflicted.rs"),
+            "a conflict must act on outlives everything, whatever it sorts as"
+        );
+        assert_eq!(snapshot.conflicts(), vec!["zzz/conflicted.rs".to_string()]);
+    }
+
+    /// The entry count is not the only way past a frame. Few enough rows to
+    /// clear `STATUS_CAP` can still carry megabytes of path — and a rename
+    /// spends its budget twice, for where the file came from as well as where
+    /// it is.
+    #[test]
+    fn a_short_list_of_very_long_paths_is_cut_too() {
+        let mut snapshot = GitSnapshot::default();
+        let long = "d".repeat(3_000);
+        for index in 0..600 {
+            let mut state = FileState::new(GitFileStatus::Tracked {
+                index_status: GitStatusCode::Renamed,
+                worktree_status: GitStatusCode::Unmodified,
+            });
+            state.original_path = Some(format!("{long}/was-{index}.rs"));
+            snapshot
+                .statuses
+                .insert(format!("{long}/now-{index}.rs"), state);
+        }
+        assert!(snapshot.statuses.len() < STATUS_CAP, "the entry cap is clear");
+        cap_statuses(&mut snapshot);
+
+        assert_eq!(
+            snapshot.total,
+            Some(600),
+            "the byte budget has to bind on its own, and still name the total"
+        );
+        let spent: usize = snapshot
+            .statuses
+            .iter()
+            .map(|(path, state)| {
+                path.len() + state.original_path.as_ref().map_or(0, String::len)
+            })
+            .sum();
+        assert!(spent <= STATUS_PATH_BYTES_CAP, "spent {spent}");
+    }
+
+    /// The cut has to be deterministic, or two runs over an unchanged flooded
+    /// tree would keep different rows and publish a delta on every tick.
+    #[test]
+    fn the_cut_keeps_the_same_rows_across_runs() {
+        let build = || {
+            let mut snapshot = GitSnapshot::default();
+            for index in 0..STATUS_CAP + 50 {
+                snapshot.statuses.insert(
+                    format!("build/{index}.o"),
+                    FileState::new(GitFileStatus::Untracked),
+                );
+            }
+            cap_statuses(&mut snapshot);
+            snapshot
+        };
+        let first = build();
+        let second = build();
+        assert!(first.total.is_some());
+        assert_eq!(first, second);
+        assert_eq!(second.delta_from(&first), None, "an unchanged tree is quiet");
+    }
+
+    /// A list under the cap is untouched, and never claims to be partial.
+    #[test]
+    fn an_ordinary_status_list_is_not_cut() {
+        let mut snapshot = GitSnapshot::default();
+        for index in 0..10 {
+            snapshot.statuses.insert(
+                format!("src/{index}.rs"),
+                FileState::new(GitFileStatus::Untracked),
+            );
+        }
+        cap_statuses(&mut snapshot);
+        assert_eq!(snapshot.total, None);
+        assert_eq!(snapshot.statuses.len(), 10);
+    }
+
+    /// Every state a Changes row can be in has to produce a diff. `git diff --
+    /// <path>` alone answers for one of them and returns empty for the rest,
+    /// which shipped as a pane full of rows that all opened blank.
+    #[tokio::test]
+    async fn every_kind_of_working_tree_change_has_a_diff() {
+        let dir = scratch_repo("diff");
+        write(&dir, "tracked.txt", "one\ntwo\n");
+        commit(&dir, "first");
+        let root = dir.to_string_lossy().into_owned();
+
+        write(&dir, "fresh.txt", "brand\nnew\n");
+        let (untracked, _) = run_diff(&root, "fresh.txt", false, None).await.unwrap();
+        assert!(
+            untracked.contains("+brand"),
+            "an untracked file reads as one big addition, not as nothing: {untracked:?}"
+        );
+
+        write(&dir, "tracked.txt", "one\ntwo\nthree\n");
+        let (unstaged, _) = run_diff(&root, "tracked.txt", false, None).await.unwrap();
+        assert!(unstaged.contains("+three"), "a worktree edit: {unstaged:?}");
+
+        run_git(&dir, &["add", "tracked.txt"]);
+        let (staged, _) = run_diff(&root, "tracked.txt", true, None).await.unwrap();
+        assert!(
+            staged.contains("+three"),
+            "a change that is entirely in the index still has a diff: {staged:?}"
+        );
+
+        // The overlay folds unchanged runs into expandable bands, which needs the
+        // whole file rather than git's three lines of context.
+        let (wide, _) = run_diff(&root, "tracked.txt", true, Some(999_999))
+            .await
+            .unwrap();
+        assert!(
+            wide.contains(" one") && wide.contains(" two"),
+            "a large -U carries the unchanged lines too: {wide:?}"
+        );
     }
 
     #[tokio::test]

@@ -814,6 +814,8 @@
 	<string>未选择基础分支</string>
 	<key>No Changes</key>
 	<string>没有更改</string>
+	<key>No Changes to Show</key>
+	<string>没有可显示的更改</string>
 	<key>No Common History</key>
 	<string>没有共同历史</string>
 	<key>No Diff</key>
@@ -1332,6 +1334,8 @@
 	<string>克隆在 %@ 上执行，并作为那台机器上的项目打开。</string>
 	<key>The coding agents offered when you start a session</key>
 	<string>新建会话时可以选用的编程 Agent</string>
+	<key>The device couldn’t read this checkout.</key>
+	<string>该设备无法读取这个检出。</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
 	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
@@ -1408,6 +1412,8 @@
 	<string>该设备上的 termiod 版本过旧，无法浏览文件。</string>
 	<key>This device’s termiod is too old to install agent integration.</key>
 	<string>该设备上的 termiod 版本过旧，无法安装 Agent 集成。</string>
+	<key>This device’s termiod is too old to read git.</key>
+	<string>该设备上的 termiod 版本过旧，无法读取 git。</string>
 	<key>This device’s termiod is too old to report its agents.</key>
 	<string>该设备上的 termiod 版本过旧，无法查询其 Agent。</string>
 	<key>This diff is too large to show here — open the file on GitHub.</key>
@@ -1564,6 +1570,8 @@
 	<string>台设备</string>
 	<key>e.g. JetBrains Mono</key>
 	<string>例如 JetBrains Mono</string>
+	<key>first %1$lld of %2$lld files</key>
+	<string>%2$lld 个文件中的前 %1$lld 个</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
 	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>

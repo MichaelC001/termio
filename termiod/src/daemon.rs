@@ -1748,6 +1748,7 @@ async fn process_control(
             root,
             path,
             staged,
+            context,
             seq,
         } => {
             if let Some(denied) = git_denied(connection, seq) {
@@ -1755,7 +1756,8 @@ async fn process_control(
             } else {
                 let out = out.clone();
                 tokio::spawn(async move {
-                    let response = match crate::git::run_diff(&root, &path, staged).await {
+                    let response = match crate::git::run_diff(&root, &path, staged, context).await
+                    {
                         Ok((diff, truncated)) => Control::GitDiffResult {
                             diff,
                             truncated,
