@@ -1235,6 +1235,33 @@ pub enum Event {
     Status {
         session: String,
         status: String,
+        /// Which channel produced this status: `hook`, `title`, `progress`,
+        /// `screen`, or `streak`. Additive, and absent from an older daemon —
+        /// which a client reads as `hook`, because that is the only channel an
+        /// older daemon had.
+        ///
+        /// A client needs it for exactly one decision: `done` from a hook is the
+        /// agent's own word and reads `done` everywhere, while a turn this host
+        /// concluded on its own is judged against the viewer's own selection
+        /// (§3.3 of the retirement RFC). Nothing else about presentation is
+        /// carried here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        /// This status is the end of a turn that the host derived rather than
+        /// was told about. The one bit a viewer needs to apply its own focus.
+        #[serde(default, skip_serializing_if = "is_false")]
+        turn_ended: bool,
+        /// The session is blocked on a person, from an observable condition with
+        /// a matching resolved transition — not a one-shot bell. A viewer keeps
+        /// the dot through a selection change, because reading a permission
+        /// prompt is not answering it.
+        ///
+        /// Always serialized, unlike the other additive fields: absent means an
+        /// older daemon, and every `needs_you` such a daemon sent was blocking.
+        /// A client reads a missing field as `true`, so the field can only ever
+        /// *narrow* the claim — which is what makes it safe to add.
+        #[serde(default)]
+        blocking: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1245,6 +1272,19 @@ pub enum Event {
         tool: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_title: Option<String>,
+    },
+    /// A session has been working for a full window with no sign of progress
+    /// (device architecture §4.7). Watch-plane only: the session's status stays
+    /// `working`, because from outside an agent a quiet long build and a wedged
+    /// loop are indistinguishable — which is exactly why this plane signals and
+    /// never kills. Edge-triggered: one event per quiet window, re-armed by
+    /// progress.
+    Stalled {
+        session: String,
+        /// How long the turn has been running, for the evidence line a client
+        /// words itself.
+        working_seconds: u64,
+        transcript_lines_grown: u64,
     },
     WriterChanged {
         session: String,
@@ -1309,6 +1349,33 @@ pub enum Event {
     SearchResults {
         request: u64,
         matches: Vec<SearchMatch>,
+    },
+    /// A status delta for the `status:` resource — the third consumer of
+    /// §C.10's one mechanism, and the one whose producer is the host's own
+    /// status engine rather than a filesystem watch.
+    ///
+    /// Carries the same facts as `Event::Status` plus the cursor. Both exist on
+    /// purpose: the event is how an attached client hears about its *own*
+    /// session without a second subscription; the resource is how a roster
+    /// hears about every session and can resume at a cursor after a reconnect.
+    StatusChanged {
+        resource: String,
+        seq: u64,
+        session: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        turn_ended: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        blocking: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// Present only on the one `stalled` signal per quiet window.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stalled_working_seconds: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stalled_transcript_lines_grown: Option<u64>,
     },
     /// A status delta for a `git:` resource (§C.13) — the second consumer of
     /// §C.10's one mechanism. `updated_statuses` and `removed_paths` are a

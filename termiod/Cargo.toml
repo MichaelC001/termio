@@ -38,6 +38,13 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 frizbee = "0.13.0"
+# Agent status rules are regex, and after
+# `docs/design/20260831-companion-second-protocol-retires.md` §3 the daemon is
+# the only side that matches them. `default-features` off drops the
+# `perf-dfa-full` and Unicode tables this never needs; `unicode-case` and
+# `unicode-perl` stay because shipped manifests match spinner code-point ranges
+# case-insensitively.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl", "unicode-gencat"] }
 # WebSocket framing for the opt-in loopback listener — the handshake and the
 # frame codec, nothing else. No `connect`, no `native-tls`, no `rustls`: TLS
 # belongs in Tailscale Serve or Caddy, and §H #3 forbids embedding crypto.

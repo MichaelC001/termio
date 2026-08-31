@@ -635,6 +635,10 @@ pub async fn serve(
     let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
     let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel::<std::path::PathBuf>();
     let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx);
+    tokio::spawn(pump_status_resource(
+        manager.events.subscribe(),
+        manager.resources.clone(),
+    ));
 
     if let Some((blob, rings)) = inherited {
         let from = blob.from_build.clone();
@@ -2602,9 +2606,82 @@ fn send_response(
     let _ = out.send(Outbound::Control(response));
 }
 
+/// Copy every status the session actors emit into the `status:` resource ring.
+///
+/// One task, so the resource has one writer and its `seq` is an order rather
+/// than a race between actors. It runs whether or not anyone has subscribed:
+/// the ring is written regardless, because that is what a client resumes from
+/// after it locked its phone (`resource.rs`, §C.10 linger).
+///
+/// A lagged broadcast receiver is the one case worth naming. The channel is
+/// bounded, so a pump that fell behind has genuinely lost transitions — and
+/// silently skipping them would leave a subscriber's cursor claiming a
+/// continuity it does not have. Publishing nothing is right: the missed
+/// transitions age out of nobody's ring, and the next real status re-states the
+/// session's state anyway.
+async fn pump_status_resource(
+    mut events: broadcast::Receiver<Event>,
+    resources: crate::resource::Registry,
+) {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                eprintln!("termiod: status resource pump missed {missed} event(s)");
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let batch = match event {
+            Event::Status {
+                session,
+                status,
+                source,
+                turn_ended,
+                blocking,
+                title,
+                ..
+            } => crate::resource::StatusBatch {
+                session,
+                status,
+                source,
+                turn_ended,
+                blocking,
+                title,
+                stalled: None,
+            },
+            Event::Stalled {
+                session,
+                working_seconds,
+                transcript_lines_grown,
+            } => crate::resource::StatusBatch {
+                session,
+                // A stall never moves the status: from outside an agent a quiet
+                // long build and a wedged loop look the same, which is why this
+                // plane signals and never kills.
+                status: "working".to_string(),
+                source: None,
+                turn_ended: false,
+                blocking: false,
+                title: None,
+                stalled: Some(crate::resource::StatusStall {
+                    working_seconds,
+                    transcript_lines_grown,
+                }),
+            },
+            _ => continue,
+        };
+        resources.publish_status(batch);
+    }
+}
+
 fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
     match event {
-        Event::Status { .. } => subscriptions.contains("status"),
+        // A stall is status the roster reads the same way it reads any other:
+        // it is about a session, not about one attachment's stream. It rides
+        // the `status` subscription rather than its own so a client that wants
+        // agent state does not have to ask twice.
+        Event::Status { .. } | Event::Stalled { .. } => subscriptions.contains("status"),
         Event::Roster { .. } | Event::WriterChanged { .. } | Event::SessionExited { .. } => {
             subscriptions.contains("roster")
         }
@@ -2616,7 +2693,10 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         Event::Resynced { .. } | Event::VtStale { .. } => false,
         // Resource events are delivered on the subscriber's own channel, not
         // through the roster broadcast, so they never match here.
-        Event::FsChanged { .. } | Event::GitChanged { .. } | Event::SearchResults { .. } => false,
+        Event::FsChanged { .. }
+        | Event::GitChanged { .. }
+        | Event::StatusChanged { .. }
+        | Event::SearchResults { .. } => false,
         Event::Unknown => false,
     }
 }

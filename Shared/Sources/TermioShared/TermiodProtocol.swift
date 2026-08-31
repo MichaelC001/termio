@@ -1103,6 +1103,28 @@ public enum Termiod {
         public let session: String
         public let status: String
         public let title: String?
+        /// Which channel on the device produced this status — `hook`, `title`,
+        /// `progress`, `screen`, `streak` — or nil from a daemon that predates
+        /// the status engine moving there, which a client reads as `hook`
+        /// because that is the only channel such a daemon had.
+        ///
+        /// Exactly one decision needs it: a `done` the agent itself reported is
+        /// `done` on every client, while a turn the device concluded on its own
+        /// is judged against *this* viewer's selection. That call is the
+        /// viewer's — see `20260831-companion-second-protocol-retires.md` §3.3.
+        public let source: String?
+        /// This status ends a turn the device derived rather than was told
+        /// about. The one bit needed to apply the rule above.
+        public let turnEnded: Bool
+        /// The session is blocked on a person, from a condition with a matching
+        /// resolved transition — not a one-shot bell. The dot survives a
+        /// selection change, because reading a permission prompt is not
+        /// answering it.
+        ///
+        /// nil from a daemon that predates the field, and every `needs_you`
+        /// such a daemon sent was blocking — so absent reads as `true` and the
+        /// field can only narrow the claim.
+        public let blocking: Bool?
         /// The agent's own conversation log for this session, so the Info pane
         /// can address the raw Q&A instead of scraping the screen.
         public let transcriptPath: String?
@@ -1120,23 +1142,58 @@ public enum Termiod {
         // converts to `conversationId`, and Swift's own capitalisation of an
         // initialism does not match it.
         private enum CodingKeys: String, CodingKey {
-            case session, status, title, transcriptPath, tool, promptTitle
+            case session, status, title, source, turnEnded, blocking
+            case transcriptPath, tool, promptTitle
             case conversationID = "conversationId"
         }
 
         public init(
             session: String, status: String, title: String?,
+            source: String? = nil, turnEnded: Bool = false, blocking: Bool? = nil,
             transcriptPath: String? = nil, conversationID: String? = nil,
             tool: String? = nil, promptTitle: String? = nil
         ) {
             self.session = session
             self.status = status
             self.title = title
+            self.source = source
+            self.turnEnded = turnEnded
+            self.blocking = blocking
             self.transcriptPath = transcriptPath
             self.conversationID = conversationID
             self.tool = tool
             self.promptTitle = promptTitle
         }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            session = try container.decode(String.self, forKey: .session)
+            status = try container.decode(String.self, forKey: .status)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            source = try container.decodeIfPresent(String.self, forKey: .source)
+            turnEnded = try container.decodeIfPresent(Bool.self, forKey: .turnEnded) ?? false
+            blocking = try container.decodeIfPresent(Bool.self, forKey: .blocking)
+            transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+            conversationID = try container.decodeIfPresent(String.self, forKey: .conversationID)
+            tool = try container.decodeIfPresent(String.self, forKey: .tool)
+            promptTitle = try container.decodeIfPresent(String.self, forKey: .promptTitle)
+        }
+
+        /// Whether this status is the device's own conclusion rather than the
+        /// agent's word. A daemon too old to say reports nothing, and everything
+        /// it reported was a hook.
+        public var isDerived: Bool { source != nil && source != "hook" }
+    }
+
+    /// A session has been working a full window with no sign of progress
+    /// (device architecture §4.7). Watch-plane only: the session's status stays
+    /// `working`, because from outside an agent a quiet long build and a wedged
+    /// loop are indistinguishable — which is why this plane signals and never
+    /// kills. Edge-triggered: one per quiet window, re-armed by progress.
+    public struct StalledPayload: Decodable, Sendable {
+        public let session: String
+        public let workingSeconds: UInt64
+        public let transcriptLinesGrown: UInt64
     }
 
     /// The device revising what it knows about a session — pushed on change, on
@@ -1166,6 +1223,7 @@ public enum Termiod {
     public enum IncomingEvent: Sendable {
         case ready(String)
         case status(StatusPayload)
+        case stalled(StalledPayload)
         case writerChanged(WriterChangedPayload)
         case resized(ResizedPayload)
         case roster(RosterPayload)
@@ -1415,6 +1473,8 @@ public enum Termiod {
             return .ready(try decoder.decode(SessionScopedPayload.self, from: payload).session)
         case "status":
             return .status(try decoder.decode(StatusPayload.self, from: payload))
+        case "stalled":
+            return .stalled(try decoder.decode(StalledPayload.self, from: payload))
         case "writer_changed":
             return .writerChanged(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "resized":

@@ -1141,6 +1141,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// names the state and nothing more — which dot, which words, and whether a
     /// notification fires stay entirely on this side.
     var onStatus: ((Termiod.StatusPayload) -> Void)?
+    /// The device's one `stalled` signal for this session. Watch-plane only —
+    /// the status stays `working`, and the sidebar and menu bar are untouched.
+    var onStalled: ((Termiod.StalledPayload) -> Void)?
     /// Whether this client currently holds the write token, on the main queue,
     /// on every genuine change. The link already gates its own `R` frames on
     /// this; the callback is for the UI that has to say "read-only" out loud.
@@ -1680,6 +1683,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         switch event {
         case .status(let status):
             DispatchQueue.main.async { [self] in onStatus?(status) }
+        case .stalled(let stall):
+            DispatchQueue.main.async { [self] in onStalled?(stall) }
         case .writerChanged(let change):
             applyWriter(change.writer)
         case .resized(let size):

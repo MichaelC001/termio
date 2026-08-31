@@ -56,6 +56,12 @@ const IDLE_TICK: Duration = Duration::from_secs(30);
 /// The `fs:` resource id prefix. Ids are `fs:<canonical absolute path>`.
 pub const FS_PREFIX: &str = "fs:";
 
+/// The `status:` resource id — one per device, not one per session. A client
+/// watching a roster wants every row, and one subscription is one cursor to
+/// resume from. Specified by
+/// `docs/design/20260831-companion-second-protocol-retires.md` §3.6.
+pub const STATUS_ID: &str = "status:";
+
 /// The `git:` resource id prefix (§C.13). Ids are `git:<canonical repo root>`.
 pub const GIT_PREFIX: &str = "git:";
 
@@ -98,6 +104,49 @@ impl ResourceBatch for FsBatch {
             paths: self.paths,
             full_rescan: self.full_rescan,
             git_meta: self.git_meta,
+        }
+    }
+}
+
+/// One session's status, as the `status:` resource carries it. A batch is one
+/// session because that is the granularity the engine decides at; the ring
+/// makes a burst of them replayable as a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusBatch {
+    pub session: String,
+    pub status: String,
+    pub source: Option<String>,
+    pub turn_ended: bool,
+    pub blocking: bool,
+    pub title: Option<String>,
+    /// Set on the one `stalled` signal, which rides this resource rather than
+    /// its own: it is evidence about a session's status, and a client that
+    /// wants agent state should not have to subscribe twice.
+    pub stalled: Option<StatusStall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusStall {
+    pub working_seconds: u64,
+    pub transcript_lines_grown: u64,
+}
+
+impl ResourceBatch for StatusBatch {
+    fn into_event(self, resource: String, seq: u64) -> Event {
+        Event::StatusChanged {
+            resource,
+            seq,
+            session: self.session,
+            status: self.status,
+            source: self.source,
+            turn_ended: self.turn_ended,
+            blocking: self.blocking,
+            title: self.title,
+            stalled_working_seconds: self.stalled.as_ref().map(|s| s.working_seconds),
+            stalled_transcript_lines_grown: self
+                .stalled
+                .as_ref()
+                .map(|s| s.transcript_lines_grown),
         }
     }
 }
@@ -220,10 +269,18 @@ struct GitEntry {
     snapshot: Arc<Mutex<crate::git::GitSnapshot>>,
 }
 
+/// The `status:` resource. Like `git:` it owns no watcher — the session actors
+/// produce its batches — but unlike `git:` it cannot rescan on gap: a status is
+/// a history of transitions, and only the roster says what is true *now*. A gap
+/// subscriber is told to re-read `list`, which carries each session's current
+/// status. That is the honest answer, and it is one round trip.
+type StatusEntry = Arc<Mutex<ResourceState<StatusBatch>>>;
+
 #[derive(Clone)]
 enum ResourceEntry {
     Fs(WatchEntry),
     Git(GitEntry),
+    Status(StatusEntry),
 }
 
 #[derive(Clone, Default)]
@@ -254,8 +311,12 @@ impl Registry {
 
     /// Resolve what a client passed as `resource` to a canonical id. A bare
     /// path (the v1 wire shape) is the `fs:` kind; explicit `fs:`/`git:`
-    /// prefixes pick the kind (§C.13 adds `git:`).
+    /// prefixes pick the kind (§C.13 adds `git:`), and `status:` names the one
+    /// device-wide resource, which takes no root.
     pub fn resource_id(spec: &str) -> Result<String> {
+        if spec == STATUS_ID {
+            return Ok(STATUS_ID.to_string());
+        }
         if let Some(root) = spec.strip_prefix(GIT_PREFIX) {
             let canonical = Registry::fs_resource_id(root)?;
             let canonical = canonical.trim_start_matches(FS_PREFIX);
@@ -303,6 +364,9 @@ impl Registry {
         tx: mpsc::UnboundedSender<Event>,
         since: Option<u64>,
     ) -> Result<SubscribeReply> {
+        if resource == STATUS_ID {
+            return self.subscribe_status(client, tx, since);
+        }
         if resource.starts_with(GIT_PREFIX) {
             return self.subscribe_git(resource, client, tx, since);
         }
@@ -339,7 +403,9 @@ impl Registry {
     ) -> Result<WatchEntry> {
         match watches.get(resource) {
             Some(ResourceEntry::Fs(existing)) => Ok(existing.clone()),
-            Some(ResourceEntry::Git(_)) => Err(anyhow!("resource id kind collision: {resource}")),
+            Some(ResourceEntry::Git(_)) | Some(ResourceEntry::Status(_)) => {
+                Err(anyhow!("resource id kind collision: {resource}"))
+            }
             None => {
                 let created = self.start_watch(resource.to_string(), root)?;
                 watches.insert(resource.to_string(), ResourceEntry::Fs(created.clone()));
@@ -352,6 +418,54 @@ impl Registry {
     /// every resource. A gap subscriber whose cursor cannot replay is served
     /// the full current state at the current seq — the host-side form of
     /// "rescan before applying".
+    /// Subscribe to the device's agent status. No watcher to start and nothing
+    /// to canonicalise: the resource exists as soon as anyone asks for it, and
+    /// the session actors publish into it whether or not anyone is listening —
+    /// which is what a client that locked its phone resumes from.
+    fn subscribe_status(
+        &self,
+        client: ClientId,
+        tx: mpsc::UnboundedSender<Event>,
+        since: Option<u64>,
+    ) -> Result<SubscribeReply> {
+        let entry = {
+            let mut watches = self.watches.lock().unwrap();
+            match watches.get(STATUS_ID) {
+                Some(ResourceEntry::Status(existing)) => existing.clone(),
+                Some(_) => return Err(anyhow!("resource id kind collision: {STATUS_ID}")),
+                None => {
+                    let created: StatusEntry = Arc::new(Mutex::new(ResourceState::new(None)));
+                    watches.insert(STATUS_ID.to_string(), ResourceEntry::Status(created.clone()));
+                    created
+                }
+            }
+        };
+        let mut guard = entry.lock().unwrap();
+        guard.subscribers.insert(client, tx);
+        guard.idle_since = None;
+        let (gap, replay) = guard.resume(STATUS_ID, since);
+        Ok(SubscribeReply {
+            seq: guard.seq,
+            gap,
+            replay,
+        })
+    }
+
+    /// Publish one session's status. Called from the daemon's own event pump
+    /// rather than from a session actor, so a session never has to hold the
+    /// registry — and so the resource has exactly one writer, which is what
+    /// makes its `seq` an order rather than a race.
+    pub fn publish_status(&self, batch: StatusBatch) {
+        let entry = match self.watches.lock().unwrap().get(STATUS_ID) {
+            Some(ResourceEntry::Status(existing)) => existing.clone(),
+            // Nobody has ever subscribed, so there is no ring to write and
+            // nothing to resume from. The status still reached every attached
+            // client on its own channel.
+            _ => return,
+        };
+        entry.lock().unwrap().publish(STATUS_ID, batch);
+    }
+
     fn subscribe_git(
         &self,
         resource: &str,
@@ -368,7 +482,7 @@ impl Registry {
             let mut watches = self.watches.lock().unwrap();
             match watches.get(resource) {
                 Some(ResourceEntry::Git(existing)) => existing.clone(),
-                Some(ResourceEntry::Fs(_)) => {
+                Some(ResourceEntry::Fs(_)) | Some(ResourceEntry::Status(_)) => {
                     return Err(anyhow!("resource id kind collision: {resource}"))
                 }
                 None => {
@@ -457,6 +571,7 @@ impl Registry {
         match watches.get(resource) {
             Some(ResourceEntry::Fs(entry)) => drop_interest(&entry.state, client),
             Some(ResourceEntry::Git(entry)) => drop_interest(&entry.state, client),
+            Some(ResourceEntry::Status(state)) => drop_interest(state, client),
             None => false,
         }
     }
@@ -882,5 +997,81 @@ mod tests {
             vec![2, 3],
             "both detached batches must replay"
         );
+    }
+
+    fn status_batch(session: &str, status: &str) -> StatusBatch {
+        StatusBatch {
+            session: session.to_string(),
+            status: status.to_string(),
+            source: Some("hook".to_string()),
+            turn_ended: false,
+            blocking: false,
+            title: None,
+            stalled: None,
+        }
+    }
+
+    /// The `status:` resource is the same cursor/ring/gap machinery `fs:` and
+    /// `git:` ride, which is the point of §C.10's one mechanism: a phone that
+    /// locked mid-turn resumes where it left off instead of rescanning.
+    #[tokio::test]
+    async fn status_resumes_at_a_cursor_and_reports_a_gap_when_it_cannot() {
+        let registry = Registry::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let client = ClientId::new("phone");
+
+        // Nothing published yet, so a first subscribe is honestly a gap.
+        let first = registry
+            .subscribe(STATUS_ID, client.clone(), tx.clone(), None)
+            .expect("status takes no root to canonicalise");
+        assert_eq!(first.seq, 0);
+        assert!(first.gap);
+
+        registry.publish_status(status_batch("s_1", "working"));
+        registry.publish_status(status_batch("s_1", "done"));
+        assert!(matches!(
+            rx.recv().await,
+            Some(Event::StatusChanged { seq: 1, .. })
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(Event::StatusChanged { seq: 2, .. })
+        ));
+
+        // The phone locks: its subscription goes, the ring keeps filling.
+        registry.unsubscribe(STATUS_ID, &client);
+        registry.publish_status(status_batch("s_2", "needs_you"));
+
+        let (resumed_tx, _resumed_rx) = mpsc::unbounded_channel();
+        let resumed = registry
+            .subscribe(STATUS_ID, client.clone(), resumed_tx, Some(2))
+            .expect("resume");
+        assert!(!resumed.gap, "a cursor inside the ring is not a gap");
+        assert_eq!(resumed.seq, 3);
+        assert_eq!(resumed.replay.len(), 1, "only what it missed");
+
+        // A cursor ahead of the host is nonsense, and says so rather than
+        // silently replaying nothing.
+        let (ahead_tx, _ahead_rx) = mpsc::unbounded_channel();
+        let ahead = registry
+            .subscribe(STATUS_ID, ClientId::new("other"), ahead_tx, Some(99))
+            .expect("subscribe");
+        assert!(ahead.gap);
+    }
+
+    /// Publishing before anyone has ever asked must not conjure a ring: there is
+    /// no cursor to resume from, and the status reached every attached client on
+    /// its own channel regardless.
+    #[test]
+    fn publishing_with_no_subscriber_ever_is_a_no_op() {
+        let registry = Registry::new();
+        registry.publish_status(status_batch("s_1", "working"));
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let reply = registry
+            .subscribe(STATUS_ID, ClientId::new("late"), tx, None)
+            .expect("subscribe");
+        assert_eq!(reply.seq, 0);
+        assert!(reply.gap);
     }
 }
