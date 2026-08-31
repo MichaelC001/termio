@@ -78,6 +78,11 @@ pub const MAX_UPLOAD_FRAME_SIZE: usize = 64 * 1024;
 #[derive(Debug)]
 pub enum Frame {
     Control(Control),
+    /// A control frame whose `op` this build has never heard of. Kept apart
+    /// from `Control` so an op from a newer peer degrades to a per-request
+    /// error instead of killing the connection — before this, one unknown verb
+    /// tore down the channel and every subscription riding it.
+    UnknownControl { op: String, seq: Option<u64> },
     Data(Vec<u8>),
     Resize { rows: u16, cols: u16 },
     Event(Event),
@@ -349,6 +354,19 @@ pub struct GitCommitFile {
     /// lie rather than a zero.
     #[serde(default)]
     pub binary: bool,
+}
+
+/// Why a `git_compare` could not compare — each a different instruction to the
+/// user, so folding them into an empty file list (which reads as "this branch
+/// changes nothing") is the one thing this must never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitCompareProblem {
+    /// The base no longer resolves: its branch was deleted since it was picked.
+    MissingBase,
+    /// No merge base connects the two — unrelated histories, or a shallow
+    /// clone grafted above the divergence point.
+    NoCommonHistory,
 }
 
 /// One ref in a `git.branches` reply (§C.13 read tier).
@@ -786,6 +804,19 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// The branch measured against a base (§C.13 read tier, capability `git`):
+    /// the three-dot file list and how far the base has moved on — the halves
+    /// of the Compare tab that `git.log`'s range cannot compose. `path` narrows
+    /// to one file's ranged diff, the row a compare entry expands to, exactly
+    /// as `git.show`'s `path` does for a commit.
+    GitCompare {
+        root: String,
+        base: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// Fuzzy filename lookup against the host-side name index (§C.12,
     /// capability `files`). The index is built lazily after the workspace's
     /// first `subscribe_resource` and kept incremental by the watcher, so
@@ -1036,6 +1067,33 @@ pub enum Control {
         default_branch: Option<String>,
         #[serde(default)]
         truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `git_compare`. `problem` set means no comparison could be made
+    /// and the other fields are empty — stated as its own field rather than an
+    /// `error`, because "this base is gone" is an answer about the checkout,
+    /// not a failed request. `behind` counts commits on the base this branch
+    /// lacks (two-dot, tips apart), while `files` is three-dot from the merge
+    /// base — the change a merge would introduce.
+    GitCompareResult {
+        files: Vec<GitCommitFile>,
+        /// The commits the merge would bring, newest first — carried here
+        /// rather than composed from a separate `git_log` so the file list,
+        /// the commits and the behind count all describe one pinned head.
+        #[serde(default)]
+        commits: Vec<GitCommitEntry>,
+        #[serde(default)]
+        behind: u64,
+        diff: String,
+        #[serde(default)]
+        truncated: bool,
+        #[serde(default)]
+        files_truncated: bool,
+        #[serde(default)]
+        commits_truncated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<GitCompareProblem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -1903,9 +1961,28 @@ pub async fn read_frame<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<Option<Fra
     r.read_exact(&mut payload).await?;
     match kind {
         KIND_CONTROL => {
-            let ctrl: Control = serde_json::from_slice(&payload)
-                .map_err(|e| anyhow::anyhow!("invalid control JSON: {e}"))?;
-            Ok(Some(Frame::Control(ctrl)))
+            match serde_json::from_slice::<Control>(&payload) {
+                Ok(ctrl) => Ok(Some(Frame::Control(ctrl))),
+                Err(decode_error) => {
+                    // An op this build doesn't know is version skew, not a
+                    // broken pipe: answer it, don't hang up on it. Only a frame
+                    // that names an op qualifies — anything else really is
+                    // malformed JSON and keeps failing the read.
+                    #[derive(serde::Deserialize)]
+                    struct Tagged {
+                        op: String,
+                        #[serde(default)]
+                        seq: Option<u64>,
+                    }
+                    match serde_json::from_slice::<Tagged>(&payload) {
+                        Ok(tagged) => Ok(Some(Frame::UnknownControl {
+                            op: tagged.op,
+                            seq: tagged.seq,
+                        })),
+                        Err(_) => Err(anyhow::anyhow!("invalid control JSON: {decode_error}")),
+                    }
+                }
+            }
         }
         KIND_DATA => Ok(Some(Frame::Data(payload))),
         KIND_RESIZE => {

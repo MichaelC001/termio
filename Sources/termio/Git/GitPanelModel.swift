@@ -264,6 +264,30 @@ final class GitPanelModel: ObservableObject {
         deviceProblem = nil
         changes = Self.sorted(Array(deviceStatuses.values))
         isLoading = false
+        refreshDeviceReads(head: batch.head)
+    }
+
+    /// The head this pane last read History and Compare at. A batch whose head
+    /// moved means a commit, a checkout, or a fetch happened on the box — the
+    /// same signals the local pane's git-dir watch reloads on.
+    private var deviceReadHead: String?
+
+    /// Re-reads whatever device History and Compare state has already been
+    /// loaded, when the checkout moved under it. Nothing is fetched that a tab
+    /// has not asked for: an unopened History tab stays unloaded.
+    private func refreshDeviceReads(head: String?) {
+        guard let head, head != deviceReadHead else { return }
+        let firstReading = deviceReadHead == nil
+        deviceReadHead = head
+        // The first batch only establishes the head; the tabs load themselves.
+        guard !firstReading else { return }
+        Task {
+            if didLoadHistory { await loadHistory(force: true) }
+            if compareContext != nil {
+                await loadCompareContext()
+                await loadCompare()
+            }
+        }
     }
 
     /// Conflicts first — the one status that must be acted on — then by path, so
@@ -342,17 +366,33 @@ final class GitPanelModel: ObservableObject {
         }
     }
 
+    /// Monotonic tickets for the three read loaders below: only the newest
+    /// pass may publish. Two refreshes can overlap — a burst of device head
+    /// changes, a git-dir event landing during a forced reload — and without
+    /// the ticket the slower, older read wins and the pane shows a checkout
+    /// the repository has already left.
+    private var historyGeneration = 0
+    private var compareContextGeneration = 0
+    private var compareGeneration = 0
+
     /// Loads the commit history on demand (first time the History tab opens); re-run
     /// with `force` when the git dir reports a change.
     func loadHistory(force: Bool = false) async {
-        // History and Compare are the device's read tier (`git.log`,
-        // `git.branches`), which this pane does not ask for yet — so for a
-        // device checkout their tabs are hidden rather than shown empty.
-        guard device == nil else { return }
         guard force || !didLoadHistory else { return }
         didLoadHistory = true
+        historyGeneration += 1
+        let generation = historyGeneration
         isLoadingHistory = commits.isEmpty
-        commits = await GitService.log(in: repoRoot)
+        let loaded: [GitCommit]
+        if let device {
+            // A failed read degrades to an empty list, exactly as the local
+            // path does when `git log` exits non-zero.
+            loaded = (try? await Termiod.gitLog(route: device, root: repoRoot).commits) ?? []
+        } else {
+            loaded = await GitService.log(in: repoRoot)
+        }
+        guard generation == historyGeneration else { return }
+        commits = loaded
         isLoadingHistory = false
     }
 
@@ -361,8 +401,16 @@ final class GitPanelModel: ObservableObject {
     /// Re-reads the branch and the bases it can be compared against. Cheap enough to run
     /// on every history refresh: three `git` reads of refs, no diff.
     func loadCompareContext() async {
-        guard device == nil else { return }
-        compareContext = await GitService.compareContext(in: repoRoot)
+        compareContextGeneration += 1
+        let generation = compareContextGeneration
+        let loaded: GitService.CompareContext?
+        if let device {
+            loaded = try? await Termiod.gitBranches(route: device, root: repoRoot)
+        } else {
+            loaded = await GitService.compareContext(in: repoRoot)
+        }
+        guard generation == compareContextGeneration else { return }
+        compareContext = loaded
     }
 
     /// Points the Compare tab at a base branch (or `nil` for none) and loads the
@@ -384,8 +432,17 @@ final class GitPanelModel: ObservableObject {
             compareProblem = nil
             return
         }
-        let outcome = await GitService.branchCompare(base: base, in: repoRoot)
-        guard compareBase == base else { return }
+        compareGeneration += 1
+        let generation = compareGeneration
+        let outcome: GitService.CompareOutcome
+        if let device {
+            outcome = await Self.deviceBranchCompare(route: device, root: repoRoot, base: base)
+        } else {
+            outcome = await GitService.branchCompare(base: base, in: repoRoot)
+        }
+        // The base check catches a re-pick; the generation catches a same-base
+        // refresh overtaken by a newer one.
+        guard compareBase == base, generation == compareGeneration else { return }
         switch outcome {
         case .ready(let loaded):
             compare = loaded
@@ -393,6 +450,29 @@ final class GitPanelModel: ObservableObject {
         case .problem(let problem):
             compare = nil
             compareProblem = problem
+        }
+    }
+
+    /// The device's comparison: one `git.compare` reply carrying files,
+    /// commits, and behind — all walked from the one head the device pinned,
+    /// so the three can never describe different checkouts.
+    private static func deviceBranchCompare(
+        route: TermiodRoute, root: String, base: String
+    ) async -> GitService.CompareOutcome {
+        do {
+            let compared = try await Termiod.gitCompare(route: route, root: root, base: base)
+            if let problem = compared.problem { return .problem(problem) }
+            return .ready(GitService.BranchCompare(
+                base: base, files: compared.files,
+                commits: compared.commits, behind: compared.behind))
+        } catch {
+            Log.termiod.error("""
+            device compare against \(base, privacy: .public) failed: \
+            \(String(describing: error), privacy: .public)
+            """)
+            // Stated, never folded into an empty list — an empty comparison
+            // reads as "this branch changes nothing".
+            return .problem(.unreadable)
         }
     }
 
