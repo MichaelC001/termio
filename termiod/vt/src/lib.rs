@@ -155,6 +155,21 @@ const SNAPSHOT_PROLOGUE: &[u8] = concat!(
 )
 .as_bytes();
 
+/// Mouse format is last-writer-wins, but the formatter re-emits mode bits in
+/// enum order — SGR (`?1006h`) before urxvt (`?1015h`). crossterm enables
+/// urxvt then SGR, so replaying its payload flips a client into urxvt, which
+/// crossterm TUIs don't parse (#441). The engine's API can't read the resolved
+/// winner back out, so `format_vt` re-asserts SGR whenever both were emitted:
+/// `?1015h` only ever appears as the fallback written before `?1006h`.
+const SGR_MOUSE_FORMAT: &[u8] = b"\x1b[?1006h";
+const URXVT_MOUSE_FORMAT: &[u8] = b"\x1b[?1015h";
+
+fn last_occurrence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
+}
+
 /// A terminal plus reusable render iterators. This type is deliberately
 /// `!Send`/`!Sync`; construct and use it on the sidecar thread that owns it.
 pub struct VtTerminal {
@@ -291,6 +306,17 @@ impl VtTerminal {
             )?;
             let bytes = check(formatter.format_alloc(None), "Formatter::format_alloc")?;
             formatted.extend_from_slice(&bytes);
+        }
+
+        // See SGR_MOUSE_FORMAT. Guarded on the actual order so this becomes
+        // a no-op the day the formatter restates the winner itself.
+        if let (Some(sgr), Some(urxvt)) = (
+            last_occurrence(&formatted, SGR_MOUSE_FORMAT),
+            last_occurrence(&formatted, URXVT_MOUSE_FORMAT),
+        ) {
+            if urxvt > sgr {
+                formatted.extend_from_slice(SGR_MOUSE_FORMAT);
+            }
         }
 
         let pending_wrap = check(
