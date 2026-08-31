@@ -261,9 +261,22 @@ const STATUS_PATH_BYTES_CAP: usize = 1024 * 1024;
 /// deterministic — two consecutive runs over an unchanged flooded tree keep the
 /// same rows and produce no delta.
 fn cap_statuses(snapshot: &mut GitSnapshot) {
-    if snapshot.statuses.len() <= STATUS_CAP {
+    // Both bounds are checked before the fast path: five thousand entries is
+    // not the only way past a frame, and neither is a million bytes of path.
+    // A rename spends its budget twice — the row names where the file came
+    // from as well as where it is.
+    let cost = |state: &FileState, path: &String| {
+        path.len() + state.original_path.as_ref().map_or(0, String::len)
+    };
+    let total: usize = snapshot
+        .statuses
+        .iter()
+        .map(|(path, state)| cost(state, path))
+        .sum();
+    if snapshot.statuses.len() <= STATUS_CAP && total <= STATUS_PATH_BYTES_CAP {
         return;
     }
+
     let mut paths: Vec<&String> = snapshot.statuses.keys().collect();
     paths.sort_by_key(|path| {
         let tier = match snapshot.statuses[*path].status {
@@ -276,7 +289,7 @@ fn cap_statuses(snapshot: &mut GitSnapshot) {
     let mut bytes = 0usize;
     let mut keep: HashSet<String> = HashSet::new();
     for path in paths.into_iter().take(STATUS_CAP) {
-        bytes += path.len();
+        bytes += cost(&snapshot.statuses[path], path);
         if bytes > STATUS_PATH_BYTES_CAP {
             break;
         }
@@ -1393,6 +1406,38 @@ mod tests {
             "a conflict must act on outlives everything, whatever it sorts as"
         );
         assert_eq!(snapshot.conflicts(), vec!["zzz/conflicted.rs".to_string()]);
+    }
+
+    /// The entry count is not the only way past a frame. Few enough rows to
+    /// clear `STATUS_CAP` can still carry megabytes of path — and a rename
+    /// spends its budget twice, for where the file came from as well as where
+    /// it is.
+    #[test]
+    fn a_short_list_of_very_long_paths_is_cut_too() {
+        let mut snapshot = GitSnapshot::default();
+        let long = "d".repeat(3_000);
+        for index in 0..600 {
+            let mut state = FileState::new(GitFileStatus::Tracked {
+                index_status: GitStatusCode::Renamed,
+                worktree_status: GitStatusCode::Unmodified,
+            });
+            state.original_path = Some(format!("{long}/was-{index}.rs"));
+            snapshot
+                .statuses
+                .insert(format!("{long}/now-{index}.rs"), state);
+        }
+        assert!(snapshot.statuses.len() < STATUS_CAP, "the entry cap is clear");
+        cap_statuses(&mut snapshot);
+
+        assert!(snapshot.truncated, "the byte budget has to bind on its own");
+        let spent: usize = snapshot
+            .statuses
+            .iter()
+            .map(|(path, state)| {
+                path.len() + state.original_path.as_ref().map_or(0, String::len)
+            })
+            .sum();
+        assert!(spent <= STATUS_PATH_BYTES_CAP, "spent {spent}");
     }
 
     /// The cut has to be deterministic, or two runs over an unchanged flooded
