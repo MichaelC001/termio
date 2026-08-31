@@ -398,14 +398,48 @@ extension Termiod {
         /// wrong route — the pipe knows where it went.
         let route: TermiodRoute
         private let sshPid: pid_t?
+        /// What the ssh child said on stderr, for the moment its stdout closes
+        /// without explanation. `nil` on the local socket, which has no child
+        /// and no stderr to keep.
+        private let stderrTail: StderrTail?
 
         private init(readDescriptor: Int32, writeDescriptor: Int32,
-                     route: TermiodRoute, sshPid: pid_t?) {
+                     route: TermiodRoute, sshPid: pid_t?,
+                     stderrTail: StderrTail? = nil) {
             self.readDescriptor = readDescriptor
             self.writeDescriptor = writeDescriptor
             self.route = route
             self.sshPid = sshPid
+            self.stderrTail = stderrTail
             Transport.suppressSignalOnBrokenPipe(writeDescriptor)
+        }
+
+        /// The same failure, explained when it can be. A connection that closed
+        /// or lost frame alignment on the SSH road usually means the child
+        /// exited with its reason on stderr — "Permission denied", "No such
+        /// file or directory" — and the generic error is what issue #498 looks
+        /// like from the outside: "my ssh works, Termio says the connection
+        /// closed". Every other error already names its cause and passes
+        /// through untouched.
+        ///
+        /// For a closed connection the child has (all but) exited, so this
+        /// waits briefly for its stderr to finish; a torn frame leaves the
+        /// child alive, so only what has already arrived is consulted.
+        func explained(_ error: TermiodClientError) -> TermiodClientError {
+            guard let stderrTail else { return error }
+            let words: String
+            switch error {
+            case .connectionClosed:
+                words = stderrTail.contents(waitingUpTo: .milliseconds(500))
+            case .malformedFrame:
+                words = stderrTail.contents(waitingUpTo: .zero)
+            default:
+                return error
+            }
+            guard let reason = Termiod.remoteFailureDiagnosis(stderr: words) else {
+                return error
+            }
+            return .remoteFailed(reason)
         }
 
         /// Makes a write to a hung-up peer return `EPIPE` instead of raising
@@ -452,14 +486,23 @@ extension Termiod {
         static func ssh(host: String) throws -> Transport {
             var toChild = [Int32](repeating: -1, count: 2) // app writes [1] → child stdin [0]
             var fromChild = [Int32](repeating: -1, count: 2) // child stdout [1] → app reads [0]
+            var errorPipe = [Int32](repeating: -1, count: 2) // child stderr [1] → tail reads [0]
             guard pipe(&toChild) == 0 else {
                 throw TermiodClientError.daemonUnreachable("ssh:\(host)")
             }
-            // Close the first pair before bailing, or a second-pipe failure (most
-            // likely under fd exhaustion — exactly when it happens) leaks two fds.
+            // Close the earlier pairs before bailing, or a later-pipe failure
+            // (most likely under fd exhaustion — exactly when it happens) leaks
+            // their fds.
             guard pipe(&fromChild) == 0 else {
                 Darwin.close(toChild[0])
                 Darwin.close(toChild[1])
+                throw TermiodClientError.daemonUnreachable("ssh:\(host)")
+            }
+            guard pipe(&errorPipe) == 0 else {
+                Darwin.close(toChild[0])
+                Darwin.close(toChild[1])
+                Darwin.close(fromChild[0])
+                Darwin.close(fromChild[1])
                 throw TermiodClientError.daemonUnreachable("ssh:\(host)")
             }
 
@@ -468,10 +511,14 @@ extension Termiod {
             defer { posix_spawn_file_actions_destroy(&fileActions) }
             posix_spawn_file_actions_adddup2(&fileActions, toChild[0], 0)
             posix_spawn_file_actions_adddup2(&fileActions, fromChild[1], 1)
-            // Child inherits stderr for SSH diagnostics; close the pipe ends it
-            // must not keep open.
+            // stderr is captured, not inherited: it is the only witness when
+            // ssh dies before the handshake, and inherited it went to a console
+            // nobody reads while the UI showed a generic "connection closed".
+            posix_spawn_file_actions_adddup2(&fileActions, errorPipe[1], 2)
+            // Close the pipe ends the child must not keep open.
             posix_spawn_file_actions_addclose(&fileActions, toChild[1])
             posix_spawn_file_actions_addclose(&fileActions, fromChild[0])
+            posix_spawn_file_actions_addclose(&fileActions, errorPipe[0])
 
             let command = "\(remoteBinary()) stdio"
             let arguments = ["ssh", "-o", "ServerAliveInterval=15"]
@@ -484,13 +531,16 @@ extension Termiod {
             let status = posix_spawnp(&pid, "ssh", &fileActions, nil, argv, environ)
             Darwin.close(toChild[0])
             Darwin.close(fromChild[1])
+            Darwin.close(errorPipe[1])
             guard status == 0 else {
                 Darwin.close(toChild[1])
                 Darwin.close(fromChild[0])
+                Darwin.close(errorPipe[0])
                 throw TermiodClientError.daemonSpawnFailed(status)
             }
             return Transport(readDescriptor: fromChild[0], writeDescriptor: toChild[1],
-                             route: .ssh(host), sshPid: pid)
+                             route: .ssh(host), sshPid: pid,
+                             stderrTail: StderrTail(descriptor: errorPipe[0]))
         }
 
         /// Detach: closing the pipe/socket ends the attach without killing the
@@ -520,6 +570,70 @@ extension Termiod {
                 var ignored: Int32 = 0
                 _ = waitpid(sshPid, &ignored, WNOHANG)
             }
+        }
+    }
+
+    /// The last of what an ssh child wrote to stderr, kept so a pipe that
+    /// closes without a handshake can say why.
+    ///
+    /// A dedicated reader thread drains the pipe for the child's whole life —
+    /// draining is not optional, since a child blocked on a full stderr pipe
+    /// would wedge the connection it narrates — but only the newest 4KB are
+    /// kept: the diagnosis is the last line, not the transcript.
+    ///
+    /// `@unchecked Sendable` because every access to the buffer goes through
+    /// `condition`; the lock, not the type system, is what makes this safe.
+    final class StderrTail: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var buffer = Data()
+        private var finished = false
+
+        private static let keep = 4096
+
+        init(descriptor: Int32) {
+            let thread = Thread {
+                var chunk = [UInt8](repeating: 0, count: 1024)
+                while true {
+                    let count = read(descriptor, &chunk, chunk.count)
+                    if count > 0 {
+                        self.condition.lock()
+                        self.buffer.append(contentsOf: chunk[0 ..< count])
+                        if self.buffer.count > Self.keep {
+                            self.buffer.removeFirst(self.buffer.count - Self.keep)
+                        }
+                        self.condition.unlock()
+                    } else if count < 0, errno == EINTR {
+                        continue
+                    } else {
+                        break
+                    }
+                }
+                Darwin.close(descriptor)
+                self.condition.lock()
+                self.finished = true
+                self.condition.broadcast()
+                self.condition.unlock()
+            }
+            thread.name = "sh.termio.termiod.stderr"
+            thread.stackSize = 128 * 1024
+            thread.start()
+        }
+
+        /// Everything kept so far, after giving the child up to `patience` to
+        /// finish saying it. The wait matters on the closed-connection path:
+        /// stdout's EOF and stderr's last line race out of a dying ssh, and
+        /// asking at the instant of the EOF would routinely read an empty pipe
+        /// that is one scheduler tick from holding the answer.
+        func contents(waitingUpTo patience: Duration) -> String {
+            condition.lock()
+            defer { condition.unlock() }
+            if !finished, patience > .zero {
+                let deadline = Date().addingTimeInterval(
+                    Double(patience.components.seconds)
+                        + Double(patience.components.attoseconds) / 1e18)
+                while !finished, condition.wait(until: deadline) {}
+            }
+            return String(decoding: buffer, as: UTF8.self)
         }
     }
 
@@ -660,8 +774,12 @@ extension Termiod {
     ) throws -> Result {
         let transport = try Transport.open(route)
         defer { transport.close() }
-        let handshake = try performHello(transport, role: "control", caps: caps)
-        return try body(transport, handshake)
+        do {
+            let handshake = try performHello(transport, role: "control", caps: caps)
+            return try body(transport, handshake)
+        } catch let error as TermiodClientError {
+            throw transport.explained(error)
+        }
     }
 
     /// Connect, shake hands, hang up: the cheapest question you can ask a route,
@@ -671,7 +789,11 @@ extension Termiod {
     static func probeDevice(route: TermiodRoute) throws -> TermiodDevice {
         let transport = try Transport.open(route)
         defer { transport.close() }
-        return try performHello(transport, role: "control").device
+        do {
+            return try performHello(transport, role: "control").device
+        } catch let error as TermiodClientError {
+            throw transport.explained(error)
+        }
     }
 
     /// The capability the agent plane rides on. A daemon that predates it
