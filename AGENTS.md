@@ -54,6 +54,7 @@ swift test                                 # run the unit tests
 ./scripts/build-app.sh                     # ad-hoc-signed .app → ./termio.app
 TERMIO_CHANNEL=dev ./scripts/build-app.sh  # side-by-side dev app → ./termio-dev.app
 ./ios/dev-run.sh                           # build + install iOS app on the device
+cargo build --bin termio                   # (in termiod/) the Rust CLI, for checkout use
 ```
 
 termio is a real foreground AppKit app bootstrapped by an explicit

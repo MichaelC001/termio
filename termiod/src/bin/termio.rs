@@ -74,6 +74,12 @@ Every one-shot command times out after ${TERMIO_CLI_TIMEOUT:-15}s (TERMIO_CLI_TI
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Rust ignores SIGPIPE and turns a closed pipe into a stdout panic; a CLI
+    // whose output feeds `head` must die silently there, like the shell
+    // client it replaces.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let (channel, provenance) = channel::resolve();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {

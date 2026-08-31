@@ -1310,6 +1310,13 @@ final class TermioStore: ObservableObject {
             }
         reconcileWorktrees()
 
+        // The support copy exists to version-update with the app, but the
+        // hook-sync paths refresh it only when a toggle changes or on refocus
+        // with hooks on. Refresh unconditionally here: hooks and the PATH
+        // symlink exec this copy directly, and after an app update it must
+        // carry the new build's client.
+        CommandLineTool.refreshSupportCopy()
+
         startHookMonitoring()
         startSessionControl()
     }
