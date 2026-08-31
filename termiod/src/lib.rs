@@ -1,8 +1,17 @@
 //! Internal library for the `termiod` and `termio` binaries.
 //!
-//! This is not a public API: every module is exported so the two binaries in
-//! `src/bin/` can share one implementation, and nothing here carries a
-//! stability promise. Downstream code lives in this repository only.
+//! Nothing here is a supported interface: every module is exported so the
+//! binaries in `src/bin/` can share one implementation, and nothing carries
+//! a stability promise. `publish = false` keeps the crate off the registry;
+//! it does not stop a path dependency, so the visibility is convenience for
+//! this repository, not a contract.
+//!
+//! One seam to respect when adding a binary: several paths assume the
+//! current executable IS the daemon — `client::connect`'s auto-start spawns
+//! `current_exe()` with `serve`, `lifecycle`'s handoff defaults to it,
+//! `service` installs it, and `remote::shipped_binary()` deploys it to Mac
+//! targets. A client binary must resolve the daemon binary explicitly
+//! before reaching any of them.
 //!
 //! Dependency discipline (docker-lessons RFC §6): the runtime core — PTY
 //! host, session lifecycle, framed protocol — must not import from the
