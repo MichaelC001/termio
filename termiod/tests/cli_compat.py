@@ -190,13 +190,21 @@ def diagnoses(name, args, needle):
     )
 
 
-def helps(name, args, needle):
-    """`--help` reaches stdout, exits 0, and still carries the verb's prose."""
+def helps(name, args, needle, usage=None):
+    """`--help` reaches stdout, exits 0, and still carries the verb's prose.
+
+    `usage` additionally pins the rendered usage line. The prose alone is too
+    weak a check on its own: it would still pass if the verb lost its arguments
+    or its name, which is the one part of help a caller actually copies.
+    """
     code, out, err = run(RUST, args)
+    ok = code == 0 and needle in out and err == ""
+    if usage is not None:
+        ok = ok and usage in out
     check(
         name,
-        code == 0 and needle in out and err == "",
-        f"    exit={code} needle={needle!r} stdout={out!r} stderr={err!r}",
+        ok,
+        f"    exit={code} needle={needle!r} usage={usage!r} stdout={out!r} stderr={err!r}",
     )
 
 
@@ -376,6 +384,13 @@ def main():
         ("remote -h reaches the daemon", ["remote", "-h"], ["remote", "-h"]),
         ("remote flags pass through", ["remote", "deploy", "--host", "box"],
          ["remote", "deploy", "--host", "box"]),
+        # clap claims the first `--` after a subcommand as its own
+        # end-of-options marker. For a passthrough that marker is the daemon's
+        # argument, not ours.
+        ("remote keeps a leading separator", ["remote", "--", "deploy"],
+         ["remote", "--", "deploy"]),
+        ("remote keeps a later separator", ["remote", "deploy", "--", "--host", "box"],
+         ["remote", "deploy", "--", "--host", "box"]),
     ]:
         if os.path.exists(argv_log):
             os.unlink(argv_log)
@@ -387,23 +402,33 @@ def main():
     # The per-verb prose is the shell client's, carried as clap `long_about`;
     # the frame around it (Usage, Options) is clap's. Assert the prose, not the
     # frame.
-    for name, args, needle in [
-        ("usage", ["--help"], "sessions"),
-        ("usage via help", ["help"], "sessions"),
-        ("sessions usage", ["sessions", "--help"], "spawn"),
-        ("list help", ["sessions", "list", "--help"], "live status"),
-        ("watch help", ["sessions", "watch", "--help"], "unattended-runaway pattern"),
-        ("spawn help", ["sessions", "spawn", "--help"], "prompt_undelivered"),
-        ("run help", ["sessions", "run", "--help"], "no LLM involved"),
-        ("send help", ["sessions", "send", "--help"], "application mode"),
-        ("answer help", ["sessions", "answer", "--help"], "application mode"),
-        ("read help", ["sessions", "read", "--help"], "Scrollback is not included"),
-        ("close help", ["sessions", "close", "--help"], "its own attempt and reply"),
-        ("focus help", ["sessions", "focus", "--help"], "bring termio to the front"),
-        ("notify help", ["notify", "--help"], "need a decision"),
-        ("version flag names the channel", ["--version"], "(release)"),
+    for name, args, needle, usage in [
+        ("usage", ["--help"], "sessions", "Usage: termio"),
+        ("usage via help", ["help"], "sessions", "Usage: termio"),
+        ("sessions usage", ["sessions", "--help"], "spawn", "Usage: termio sessions"),
+        ("list help", ["sessions", "list", "--help"], "live status",
+         "Usage: termio sessions list"),
+        ("watch help", ["sessions", "watch", "--help"], "unattended-runaway pattern",
+         "Usage: termio sessions watch"),
+        ("spawn help", ["sessions", "spawn", "--help"], "prompt_undelivered",
+         "Usage: termio sessions spawn"),
+        ("run help", ["sessions", "run", "--help"], "no LLM involved",
+         "Usage: termio sessions run"),
+        ("send help", ["sessions", "send", "--help"], "application mode",
+         "Usage: termio sessions send"),
+        ("answer help", ["sessions", "answer", "--help"], "application mode",
+         "Usage: termio sessions answer"),
+        ("read help", ["sessions", "read", "--help"], "Scrollback is not included",
+         "Usage: termio sessions read [OPTIONS] <SESSION>"),
+        ("close help", ["sessions", "close", "--help"], "its own attempt and reply",
+         "Usage: termio sessions close [OPTIONS] <SESSION>..."),
+        ("focus help", ["sessions", "focus", "--help"], "bring termio to the front",
+         "Usage: termio sessions focus [OPTIONS] <SESSION>"),
+        ("notify help", ["notify", "--help"], "need a decision",
+         "Usage: termio notify"),
+        ("version flag names the channel", ["--version"], "(release)", None),
     ]:
-        helps(name, args, needle)
+        helps(name, args, needle, usage)
 
     print("== open ==")
     compare("not a directory", ["/nonexistent-dir"], no_server=True)

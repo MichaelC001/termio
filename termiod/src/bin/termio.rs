@@ -315,6 +315,7 @@ struct SendArgs {
 
 #[derive(Args)]
 struct ReadArgs {
+    /// The session to read, as a termio://session link or a bare id.
     #[arg(value_name = "SESSION")]
     session: String,
 
@@ -328,6 +329,7 @@ struct ReadArgs {
 
 #[derive(Args)]
 struct CloseArgs {
+    /// The sessions to close, as termio://session links or bare ids.
     #[arg(value_name = "SESSION", required = true)]
     sessions: Vec<String>,
 
@@ -337,6 +339,7 @@ struct CloseArgs {
 
 #[derive(Args)]
 struct FocusArgs {
+    /// The session to select, as a termio://session link or a bare id.
     #[arg(value_name = "SESSION")]
     session: String,
 
@@ -446,7 +449,14 @@ async fn main() -> Result<()> {
             open_project(&channel, Path::new(directory))
         }
         Some(Verb::Version) => version::print_table(&channel, provenance).await,
-        Some(Verb::Remote { args }) => remote_passthrough(&channel, &args),
+        // The parsed vector cannot be forwarded: clap claims the first `--`
+        // after the subcommand as its own end-of-options marker and drops it,
+        // so `termio remote -- deploy` reached the daemon as `remote deploy`.
+        // Every argument past the literal `remote` belongs to the daemon,
+        // including that separator, so they are taken from argv directly.
+        Some(Verb::Remote { .. }) => {
+            remote_passthrough(&channel, &std::env::args().skip(2).collect::<Vec<String>>())
+        }
         Some(Verb::Agent { verb }) => {
             let AgentVerb::Report(args) = verb;
             agent_report(&channel, args)
