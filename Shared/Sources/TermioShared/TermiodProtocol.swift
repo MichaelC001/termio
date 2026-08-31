@@ -1697,6 +1697,11 @@ public enum TermiodClientError: LocalizedError {
     /// (publickey,password)" names the problem in the words the user can search
     /// for, and every paraphrase of it is worse than the line itself.
     case remoteFailed(String)
+    /// The daemon's handshake did not grant a capability the request needs —
+    /// too old, or built without it. Terminal by construction: a fresh
+    /// connection to the same binary would negotiate the same set, so a caller
+    /// stands its feature down rather than retrying.
+    case unsupportedCapability(String)
 
     public var errorDescription: String? {
         switch self {
@@ -1718,6 +1723,8 @@ public enum TermiodClientError: LocalizedError {
             return "the device stopped answering \(operation)"
         case .remoteFailed(let reason):
             return reason
+        case .unsupportedCapability(let capability):
+            return "the device does not serve \(capability)"
         }
     }
 }

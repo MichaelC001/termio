@@ -766,15 +766,14 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     }
 
     /// A watch that loses its channel and comes back re-subscribes, and leaves
-    /// exactly one observer on the channel it lands on.
+    /// exactly one entry on the channel it lands on.
     ///
-    /// This covers the reconnect path, not the same-channel double-claim: a
-    /// hung-up channel is closed, so the retry necessarily opens a different one
-    /// and `claim` replaces the observer either way. It passes with and without
-    /// that guard, which is stated here rather than left for the next reader to
-    /// discover — a test that cannot fail for the reason its name suggests is
-    /// worse than no test.
-    func testAReconnectingWatchReplacesItsObserverRatherThanStackingOne() throws {
+    /// This covers the reconnect path: a hung-up channel is closed and its
+    /// subscriptions are swept, so the retry necessarily lands on a fresh one.
+    /// What the count pins is that the swept subscription did not survive
+    /// alongside its replacement — two entries would double every batch, and
+    /// would make the first close of the pane look like the last.
+    func testAReconnectingWatchReplacesItsSubscriptionRatherThanStackingOne() throws {
         let watch = Termiod.ResourceWatch(
             route: .local,
             caps: ["files", Termiod.ResourceWatch.capability],
@@ -792,12 +791,69 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         while !watch.isSubscribed, Date() < backAgain { usleep(200_000) }
         XCTAssertTrue(watch.isSubscribed, "the watch never re-established")
 
+        let resource = try XCTUnwrap(watch.watchedRoot.map { "fs:" + $0 })
         let channel = try Termiod.ControlPool.channel(
             route: .local, caps: ["files", Termiod.ResourceWatch.capability])
         XCTAssertEqual(
-            channel.observerCount, 1,
-            "one watch, one observer — a second would double every batch")
+            channel.subscriberCount(for: resource), 1,
+            "one watch, one subscription — a second would double every batch")
         withExtendedLifetime(watch) {}
+    }
+
+    /// Two panes on one checkout, and the first of them closes.
+    ///
+    /// The pool gives every request to a machine the same connection, and the
+    /// daemon tracks resource interest per *connection* (`resource.rs`
+    /// `subscribers`, keyed by `ClientId`). So an `unsubscribe_resource` sent
+    /// because one pane went away retires the watch the other pane is still
+    /// drawing from — its tree then goes quietly stale, with no error and no
+    /// refresh, which is the worst shape a bug of this kind can take.
+    ///
+    /// The fix is that a watch retires its interest through the channel's
+    /// routing table, which counts subscribers and tells the device only on the
+    /// last one. This is the test that fails without it.
+    func testClosingOnePaneLeavesASecondPanesWatchLive() throws {
+        let surviving = expectation(description: "the second watch still hears the device")
+        surviving.assertForOverFulfill = false
+        let batches = UncheckedBox<[Termiod.FsChangedPayload]>([])
+
+        var closing: Termiod.ResourceWatch? = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { _ in }
+        let staying = Termiod.ResourceWatch(
+            route: .local,
+            caps: ["files", Termiod.ResourceWatch.capability],
+            resource: "fs:" + root.path
+        ) { update in
+            guard case .batch(let batch) = update else { return }
+            batches.value.append(batch)
+            surviving.fulfill()
+        }
+
+        let armed = Date().addingTimeInterval(30)
+        while closing?.watchedRoot == nil || staying.watchedRoot == nil, Date() < armed {
+            usleep(20_000)
+        }
+        let resource = try XCTUnwrap(staying.watchedRoot.map { "fs:" + $0 })
+        let channel = try Termiod.ControlPool.channel(
+            route: .local, caps: ["files", Termiod.ResourceWatch.capability])
+        XCTAssertEqual(
+            channel.subscriberCount(for: resource), 2,
+            "two panes on one machine are two subscriptions on one connection")
+
+        closing = nil
+        XCTAssertEqual(
+            channel.subscriberCount(for: resource), 1,
+            "the pane that closed dropped its own interest and only its own")
+
+        try Data("survivor\n".utf8).write(to: root.appendingPathComponent("survivor.txt"))
+        wait(for: [surviving], timeout: 20)
+        XCTAssertFalse(
+            batches.value.isEmpty,
+            "the surviving pane's watch was retired by the pane that closed")
+        withExtendedLifetime(staying) {}
     }
 }
 
