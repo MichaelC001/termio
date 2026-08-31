@@ -6218,6 +6218,16 @@
         }
       }
     },
+    "Special files can’t be previewed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "特殊文件无法预览"
+          }
+        }
+      }
+    },
     "Split Down": {
       "localizations": {
         "zh-Hans": {

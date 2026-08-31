@@ -1258,6 +1258,8 @@
 	<string>载入该仓库时出错。请稍后重试。</string>
 	<key>Sort</key>
 	<string>排序</string>
+	<key>Special files can’t be previewed</key>
+	<string>特殊文件无法预览</string>
 	<key>Split Down</key>
 	<string>向下拆分</string>
 	<key>Split Left</key>
