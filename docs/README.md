@@ -65,6 +65,7 @@ from the real front matter).
 | archived | plan | [Fix — defer the PTY spawn to the first real layout size so the agent banner boots at pane width](plan/terminal-narrow-grid-frozen-banner-fix.md) |
 | archived | rfc | ["Adversarial review: One workspace source — the inspector reads the session's device"](design/20260818-one-workspace-source.review-codex.md) |
 | archived | rfc | ["Adversarial review: Retire remote — every machine is a device"](design/20260814-remote-to-device.review-codex.md) |
+| archived | rfc | ["Adversarial review: What ten years of docker/dockerd teach the termio/termiod split"](design/20260831-docker-dockerd-lessons.review-codex.md) |
 | archived | rfc | ["RFC: Per-project agent sandbox (Apple Seatbelt)"](design/20260630-sandbox-seatbelt.md) |
 | archived | rfc | [Adversarial review — Retire "remote", every machine is a device](design/20260814-remote-to-device.review-claude.md) |
 | archived | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
@@ -99,6 +100,7 @@ from the real front matter).
 | done | rfc | [Fork libghostty-spm — own the wrapper, rent the engine?](design/20260703-fork-libghostty-spm.md) |
 | done | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | done | rfc | [Remote git — the pane's verbs run on the device](design/20260818-remote-git-plane.md) |
+| done | rfc | [Session identity survives the agent](design/20260830-session-identity-survives-the-agent.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
@@ -124,10 +126,10 @@ from the real front matter).
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
 | draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
-| draft | rfc | [Session identity survives the agent](design/20260830-session-identity-survives-the-agent.md) |
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
 | draft | rfc | [The tab strip is the collapsed sidebar](design/20260829-tab-strip-is-the-collapsed-sidebar.md) |
+| draft | rfc | [What ten years of docker/dockerd teach the termio/termiod split](design/20260831-docker-dockerd-lessons.md) |
 | in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](design/20260814-remote-to-device.md) |
 | in-review | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
