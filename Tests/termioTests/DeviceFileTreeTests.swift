@@ -2,23 +2,26 @@ import XCTest
 import TermioShared
 @testable import termio
 
-/// What a refresh of a device's file tree asks for, and what it does with the
-/// answer.
+/// What the file tree asks a device for, and what it does with the answer —
+/// pinned without a device, because every claim here is about the model's own
+/// bookkeeping.
 ///
 /// The tree used to drop every node it held and re-list the root alone, leaving
 /// each still-expanded folder to fetch itself from the `children` getter — one
 /// SSH round trip per open folder, on every app focus. It now names them all in
-/// one `fs.list` and grafts the replies onto the nodes already on screen. Both
-/// halves are checkable without a device: the paths it asks for, and whether the
-/// subtree under an open folder survives.
+/// one `fs.list` and grafts the replies onto the nodes already on screen.
+///
+/// One model serves every machine, this Mac included. What still divides is
+/// what may be *written*, and that divides on one fact per node — whether it
+/// has a URL this process can open.
 @MainActor
-final class RemoteFileTreeRefreshTests: XCTestCase {
+final class DeviceFileTreeTests: XCTestCase {
     private let root = "/srv/api"
 
-    private func model() -> RemoteFileBrowserModel {
+    private func model() -> DeviceFileTreeModel {
         // A route nothing will answer on: every assertion here is about what the
         // model does with listings it is handed, never about fetching them.
-        RemoteFileBrowserModel(
+        DeviceFileTreeModel(
             checkout: Checkout(
                 device: KnownDevice(alias: "test-box", deviceID: nil), root: root),
             root: root)
@@ -28,7 +31,7 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
     /// which titled every project on one box with the box's name.
     func testHeaderNamesTheRootFolderNotTheDevice() {
         XCTAssertEqual(model().rootName, "api")
-        let home = RemoteFileBrowserModel(
+        let home = DeviceFileTreeModel(
             checkout: Checkout(
                 device: KnownDevice(alias: "test-box", deviceID: nil), root: "/"),
             root: "/")
@@ -245,5 +248,74 @@ final class RemoteFileTreeRefreshTests: XCTestCase {
         XCTAssertTrue(
             tree.refreshQueued,
             "the second refresh is held for after the first, not discarded")
+    }
+
+    // MARK: - Which rows this Mac may write
+
+    private func localModel(root: String) -> DeviceFileTreeModel {
+        DeviceFileTreeModel(
+            checkout: Checkout(device: .thisMac, root: root), root: root)
+    }
+
+    /// The gate every write-shaped control hangs off. A checkout on this Mac
+    /// addresses real files, so a row drags, opens in the editor and carries the
+    /// row menu; one on another device has no URL this process could act on, and
+    /// the controls are absent rather than present and refusing (Stage 9's gate:
+    /// unsupported controls hidden, not inert).
+    func testOnlyACheckoutOnThisMacGivesItsRowsAURL() {
+        let here = localModel(root: "/Users/me/code/api")
+        here.apply([listing("/Users/me/code/api", [("README.md", .file)])])
+        let local = here.node(at: "/Users/me/code/api/README.md")
+        XCTAssertEqual(local?.localURL?.path, "/Users/me/code/api/README.md")
+
+        let there = model()
+        there.apply([listing(root, [("README.md", .file)])])
+        let device = there.node(at: "\(root)/README.md")
+        XCTAssertNil(device?.localURL, "this Mac has no such file to drag, reveal or rename")
+        XCTAssertEqual(
+            device?.url.lastPathComponent, "README.md",
+            "the name still reaches the icon, which is all the synthetic URL is for")
+    }
+
+    /// A link to a directory browses as the directory it points at — the Finder's
+    /// and the VS Code explorer's rule, and what this repo's own
+    /// `.claude/skills → ../skills` needs. The row still knows it is a link, which
+    /// is what swaps its glyph and arms its tooltip.
+    func testASymlinkedFolderIsAFolderAndStillReadsAsALink() {
+        let tree = localModel(root: "/Users/me/code/api")
+        tree.apply([Termiod.DirectoryListing(
+            path: "/Users/me/code/api",
+            entries: [
+                FileEntry(
+                    name: "skills", kind: .symlink,
+                    target: .directory, symlinkTarget: "../skills"),
+                FileEntry(name: "loose", kind: .symlink, target: nil, symlinkTarget: "/etc"),
+            ],
+            error: nil)])
+
+        let linked = tree.node(at: "/Users/me/code/api/skills")
+        XCTAssertEqual(linked?.isDirectory, true, "it expands like what it points at")
+        XCTAssertEqual(linked?.isSymbolicLink, true)
+        XCTAssertEqual(linked?.symbolicLinkTarget, "../skills")
+
+        let loose = tree.node(at: "/Users/me/code/api/loose")
+        XCTAssertEqual(
+            loose?.isDirectory, false,
+            "a link the device would refuse to list offers no disclosure triangle")
+    }
+
+    /// Folders sort above files, and a symlinked folder sorts with the folders —
+    /// the ordering follows what a row *browses as*, not what kind the host
+    /// stamped on it.
+    func testASymlinkedFolderSortsWithTheFolders() {
+        let tree = localModel(root: "/r")
+        tree.apply([Termiod.DirectoryListing(
+            path: "/r",
+            entries: [
+                FileEntry(name: "a.txt", kind: .file),
+                FileEntry(name: "zlink", kind: .symlink, target: .directory),
+            ],
+            error: nil)])
+        XCTAssertEqual(tree.rootNodes.map(\.name), ["zlink", "a.txt"])
     }
 }

@@ -224,6 +224,15 @@ pub struct DirEntry {
     pub mtime: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symlink_target: Option<String>,
+    /// For a `symlink`, what it resolves to — and only when the target stays
+    /// inside the workspace root. A tree draws a link to a directory as a
+    /// directory (the Finder's and the VS Code explorer's rule), and it may
+    /// only offer that when descending would actually be answered: `confine`
+    /// canonicalises before it lists, so a link out of the root is refused.
+    /// `None` means "do not descend this" — dangling, outside the root, or a
+    /// host too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<EntryKind>,
 }
 
 /// The listing for one requested path inside an `fs_listed` reply. A path

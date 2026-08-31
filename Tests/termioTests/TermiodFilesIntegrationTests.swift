@@ -188,6 +188,70 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertFalse(listing.entries.sortedForTree().contains { $0.name == ".git" })
     }
 
+    /// A symlinked folder browses as a folder, which is what the local tree
+    /// always did through `FileManager` and what it now has to get from the
+    /// wire. `.claude/skills → ../skills` is this repo's own case: reported as a
+    /// link and nothing else, it would draw as an inert greyed row.
+    ///
+    /// The host still never *follows* a link while listing — the entry's own
+    /// kind stays `symlink`. `target` is the separate fact, and it is absent for
+    /// a link the host would refuse to descend, so the tree cannot offer a
+    /// disclosure triangle that leads nowhere.
+    func testASymlinkedFolderBrowsesAsAFolderAndOneOutOfTheRootDoesNot() throws {
+        let manager = FileManager.default
+        try manager.createSymbolicLink(
+            atPath: root.appendingPathComponent("linked").path,
+            withDestinationPath: "sub")
+        try manager.createSymbolicLink(
+            atPath: root.appendingPathComponent("escape").path,
+            withDestinationPath: "/etc")
+
+        let listing = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path, paths: [root.path]).listings.first)
+        let byName = Dictionary(uniqueKeysWithValues: listing.entries.map { ($0.name, $0) })
+
+        let linked = try XCTUnwrap(byName["linked"])
+        XCTAssertEqual(linked.kind, .symlink, "the listing reports the link, not its target")
+        XCTAssertTrue(linked.isDirectory, "and a link to a directory expands like one")
+        XCTAssertTrue(linked.isSymbolicLink)
+        XCTAssertEqual(linked.symlinkTarget, "sub")
+
+        let escape = try XCTUnwrap(byName["escape"])
+        XCTAssertFalse(
+            escape.isDirectory,
+            "descending it would be refused by the root confinement, so it is not offered")
+
+        // The offer is honest: what the tree says it can expand, it can expand.
+        let followed = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path,
+            paths: [root.appendingPathComponent("linked").path]).listings.first)
+        XCTAssertNil(followed.error)
+        XCTAssertEqual(followed.entries.map(\.name), ["b.txt"])
+    }
+
+    /// A directory larger than the host's page reads whole. The tree used to
+    /// stop at the first page and say nothing about the rest — a `node_modules`
+    /// with more than 2,000 entries would have shown 2,000 of them and read as
+    /// the whole folder.
+    func testADirectoryPastOnePageIsReadToTheEnd() throws {
+        let big = root.appendingPathComponent("big")
+        try FileManager.default.createDirectory(at: big, withIntermediateDirectories: true)
+        // One past the host's page (`files.rs` LIST_PAGE_SIZE), so exactly one
+        // extra round is needed and the last page is a short one.
+        let count = 2_001
+        for index in 0 ..< count {
+            try Data("x".utf8).write(to: big.appendingPathComponent("f\(index)"))
+        }
+
+        let listing = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path, paths: [big.path]).listings.first)
+        XCTAssertNil(listing.error)
+        XCTAssertEqual(listing.entries.count, count, "every page, not just the first")
+        XCTAssertEqual(
+            Set(listing.entries.map(\.name)).count, count,
+            "pages partition rather than overlap")
+    }
+
     func testASubdirectoryListsUnderTheSameRoot() throws {
         let listings = try Termiod.listDirectories(
             route: .local, root: root.path,

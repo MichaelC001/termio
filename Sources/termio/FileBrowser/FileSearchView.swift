@@ -12,7 +12,7 @@ enum SearchScope {
     /// Another machine: that device's own `fs.search`, and a hit opens the
     /// read-only preview the device's file tree already uses. `root` is a path on
     /// **that** box, so it is carried as a string; the `URL`s the rows build from
-    /// it are synthetic (names and icons only), exactly like `RemoteFileNode`.
+    /// it are synthetic (names and icons only), exactly like `DeviceFileNode`.
     case device(DeviceFileProvider, host: String, root: String)
 }
 

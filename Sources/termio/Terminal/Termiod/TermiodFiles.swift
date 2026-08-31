@@ -379,27 +379,75 @@ extension Termiod {
     /// echoes each one back, so the caller can key its tree by the string it
     /// asked with.
     ///
+    /// A directory larger than one page (`files.rs` `LIST_PAGE_SIZE`, 2,000
+    /// entries) is served a page at a time, and this reads to the end of it: a
+    /// tree that stopped at the first page would show 2,000 of a `node_modules`
+    /// and say nothing about the rest, which is the one failure a file browser
+    /// must not have. Pages are asked for in lockstep — the host's `next_page` is
+    /// always the one after the page served, so every directory still going is at
+    /// the same page — and only the directories that reported more are re-asked.
+    ///
     /// Blocking; call it off the main thread (`DeviceFileProvider` does).
     static func listDirectories(
         route: TermiodRoute, root: String, paths: [String]
     ) throws -> DirectoryListings {
         try withFilesChannel(route: route) { call in
-            let listed = try requestFiles(call, operation: "fs.list") { seq in
-                FsListOperation(root: root, paths: paths, seq: seq)
-            } match: { control in
-                if case .fsListed(let payload) = control { return payload }
-                return nil
+            var order: [String] = []
+            var listings: [String: DirectoryListing] = [:]
+            var wanted = paths
+            var page: UInt64?
+            var seq: UInt64 = 0
+            var rounds = 0
+            while !wanted.isEmpty {
+                let listed = try requestFiles(call, operation: "fs.list") { requestSeq in
+                    FsListOperation(root: root, paths: wanted, page: page, seq: requestSeq)
+                } match: { control in
+                    if case .fsListed(let payload) = control { return payload }
+                    return nil
+                }
+                // The cursor of the *last* page read: a listing is only as fresh
+                // as its final request, and claiming the first page's cursor for
+                // the whole would drop batches raised while the rest was read.
+                seq = listed.seq
+                var more: [String] = []
+                for listing in listed.listings {
+                    let entries = listing.entries.map(FileEntry.init(wire:))
+                    if var held = listings[listing.path] {
+                        held = DirectoryListing(
+                            path: held.path,
+                            entries: held.entries + entries,
+                            error: held.error ?? listing.error)
+                        listings[listing.path] = held
+                    } else {
+                        order.append(listing.path)
+                        listings[listing.path] = DirectoryListing(
+                            path: listing.path, entries: entries, error: listing.error)
+                    }
+                    if listing.nextPage != nil { more.append(listing.path) }
+                }
+                rounds += 1
+                guard rounds < listPageCeiling else {
+                    // Never silently: a directory this large is either pathological
+                    // or growing under the read, and a tree that quietly stopped
+                    // would read as the whole answer.
+                    Log.files.error("""
+                    fs.list stopped after \(listPageCeiling, privacy: .public) pages \
+                    with \(more.count, privacy: .public) directories still unfinished
+                    """)
+                    break
+                }
+                wanted = more
+                page = (page ?? 0) + 1
             }
-            return DirectoryListings(
-                listings: listed.listings.map { listing in
-                    DirectoryListing(
-                        path: listing.path,
-                        entries: listing.entries.map(FileEntry.init(wire:)),
-                        error: listing.error)
-                },
-                seq: listed.seq)
+            return DirectoryListings(listings: order.compactMap { listings[$0] }, seq: seq)
         }
     }
+
+    /// How many pages of one `fs.list` are read before giving up. 100 pages is
+    /// 200,000 entries in a single directory — far past anything real, and a
+    /// bound only so a directory being written faster than it is read cannot
+    /// loop forever.
+    static let listPageCeiling = 100
 
     /// Reads a whole file from the device, for preview. Throws
     /// `DeviceFileError.tooLarge` rather than returning a prefix: a preview of
@@ -603,14 +651,25 @@ extension FileEntry {
     /// its own (VCS internals) — still a directory to the tree, which filters
     /// those names anyway (`FileEntry.ignoredNames`).
     init(wire entry: Termiod.DirEntryPayload) {
-        let kind: Kind
-        switch entry.kind {
-        case "dir", "unloaded_dir": kind = .directory
-        case "file": kind = .file
-        case "symlink": kind = .symlink
-        default: kind = .other
+        self.init(
+            name: entry.name,
+            kind: Kind(wire: entry.kind) ?? .other,
+            target: entry.targetKind.flatMap(Kind.init(wire:)),
+            symlinkTarget: entry.symlinkTarget)
+    }
+}
+
+extension FileEntry.Kind {
+    /// The wire's `EntryKind`. `unloaded_dir` is still a directory to the tree,
+    /// which filters those names anyway (`FileEntry.ignoredNames`); a kind this
+    /// build has never heard of is `nil` rather than a guess.
+    init?(wire kind: String) {
+        switch kind {
+        case "dir", "unloaded_dir": self = .directory
+        case "file": self = .file
+        case "symlink": self = .symlink
+        default: return nil
         }
-        self.init(name: entry.name, kind: kind)
     }
 }
 

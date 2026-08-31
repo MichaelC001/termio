@@ -436,11 +436,15 @@ public enum Termiod {
         public let op = "fs_list"
         public let root: String
         public let paths: [String]
+        /// Which page of each directory to serve, zero-based. Omitted asks for
+        /// the first; `PathListingPayload.nextPage` says whether more follow.
+        public let page: UInt64?
         public let seq: UInt64
 
-        public init(root: String, paths: [String], seq: UInt64) {
+        public init(root: String, paths: [String], page: UInt64? = nil, seq: UInt64) {
             self.root = root
             self.paths = paths
+            self.page = page
             self.seq = seq
         }
     }
@@ -621,13 +625,48 @@ public enum Termiod {
     public struct DirEntryPayload: Decodable, Sendable {
         public let name: String
         public let kind: String
+        /// Where a `symlink` points, verbatim — the one fact about a link an
+        /// icon cannot carry, and what the row's tooltip shows.
+        public let symlinkTarget: String?
+        /// What a `symlink` resolves to, and only when the target stays inside
+        /// the workspace root (`files.rs` `confined_target_kind`). Absent for
+        /// everything else, for a dangling link, for one pointing out of the
+        /// root — which the host would refuse to list — and from a host too old
+        /// to say.
+        public let targetKind: String?
 
-        /// Whether this entry can be descended into. `unloaded_dir` counts —
-        /// it is a directory the host declines to *walk* (VCS internals), not
-        /// one it refuses to list when asked directly. Compared against the
-        /// daemon's snake_case wire value: `convertFromSnakeCase` rewrites
-        /// keys, never values.
-        public var isDirectory: Bool { kind == "dir" || kind == "unloaded_dir" }
+        private enum CodingKeys: String, CodingKey {
+            case name, kind, symlinkTarget, targetKind
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            kind = try container.decode(String.self, forKey: .kind)
+            symlinkTarget = try container.decodeIfPresent(String.self, forKey: .symlinkTarget)
+            targetKind = try container.decodeIfPresent(String.self, forKey: .targetKind)
+        }
+
+        public init(name: String, kind: String, symlinkTarget: String? = nil, targetKind: String? = nil) {
+            self.name = name
+            self.kind = kind
+            self.symlinkTarget = symlinkTarget
+            self.targetKind = targetKind
+        }
+
+        /// Whether this entry can be descended into, resolved *through* a
+        /// symlink the way the Finder and the VS Code explorer both do.
+        /// `unloaded_dir` counts — it is a directory the host declines to
+        /// *walk* (VCS internals), not one it refuses to list when asked
+        /// directly. Compared against the daemon's snake_case wire value:
+        /// `convertFromSnakeCase` rewrites keys, never values.
+        public var isDirectory: Bool {
+            Self.isDirectoryKind(kind) || Self.isDirectoryKind(targetKind)
+        }
+
+        private static func isDirectoryKind(_ kind: String?) -> Bool {
+            kind == "dir" || kind == "unloaded_dir"
+        }
     }
 
     /// One requested path's listing. A path that vanished or escaped the root
@@ -635,16 +674,21 @@ public enum Termiod {
     public struct PathListingPayload: Decodable, Sendable {
         public let path: String
         public let entries: [DirEntryPayload]
+        /// The page to ask for next, when this directory has more entries than
+        /// one page holds (`files.rs` `LIST_PAGE_SIZE`). Absent when the listing
+        /// is complete — which is every ordinary directory.
+        public let nextPage: UInt64?
         public let error: String?
 
         private enum CodingKeys: String, CodingKey {
-            case path, entries, error
+            case path, entries, nextPage, error
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             path = try container.decode(String.self, forKey: .path)
             entries = try container.decodeIfPresent([DirEntryPayload].self, forKey: .entries) ?? []
+            nextPage = try container.decodeIfPresent(UInt64.self, forKey: .nextPage)
             error = try container.decodeIfPresent(String.self, forKey: .error)
         }
     }

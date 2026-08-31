@@ -83,6 +83,40 @@ fn confine(root: &Path, requested: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// What a symlink resolves to, but only while the target stays under the root.
+///
+/// The listing itself never follows a link — `lstat`, not `stat`, because
+/// following is how a listing walks out of the workspace. This is the one fact
+/// about the target a tree still needs: the Finder and the VS Code explorer
+/// both draw a link to a directory as a directory, and a client that could not
+/// tell would draw this repo's own `.claude/skills` as an inert row.
+///
+/// Confined for the same reason the answer is useful: `confine` canonicalises
+/// before it lists, so a link pointing out of the root would be refused on the
+/// click that followed the disclosure triangle. Reporting `None` there is what
+/// keeps the tree from offering a control the device will not honour.
+fn confined_target_kind(root: &Path, link: &Path) -> Option<EntryKind> {
+    let resolved = std::fs::canonicalize(link).ok()?;
+    if !resolved.starts_with(root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(&resolved).ok()?;
+    if metadata.is_dir() {
+        let unloaded = resolved
+            .file_name()
+            .is_some_and(|name| is_unloaded_dir_name(&name.to_string_lossy()));
+        Some(if unloaded {
+            EntryKind::UnloadedDir
+        } else {
+            EntryKind::Dir
+        })
+    } else if metadata.is_file() {
+        Some(EntryKind::File)
+    } else {
+        None
+    }
+}
+
 /// List a batch of directories under `root`, one page per path.
 pub fn list(root: &str, paths: &[String], page: Option<u64>) -> Result<Vec<PathListing>> {
     list_with_page_size(root, paths, page, LIST_PAGE_SIZE)
@@ -135,19 +169,19 @@ fn list_one(
             continue;
         };
         let mtime = mtime_seconds(&metadata);
-        let (kind, symlink_target) = if metadata.file_type().is_symlink() {
+        let (kind, symlink_target, target_kind) = if metadata.file_type().is_symlink() {
             let target = std::fs::read_link(item.path())
                 .ok()
                 .map(|target| target.display().to_string());
-            (EntryKind::Symlink, target)
+            (EntryKind::Symlink, target, confined_target_kind(root, &item.path()))
         } else if metadata.is_dir() {
             if is_unloaded_dir_name(&name) {
-                (EntryKind::UnloadedDir, None)
+                (EntryKind::UnloadedDir, None, None)
             } else {
-                (EntryKind::Dir, None)
+                (EntryKind::Dir, None, None)
             }
         } else {
-            (EntryKind::File, None)
+            (EntryKind::File, None, None)
         };
         entries.push(DirEntry {
             name,
@@ -155,6 +189,7 @@ fn list_one(
             size: metadata.len(),
             mtime,
             symlink_target,
+            target_kind,
         });
     }
 
@@ -1021,6 +1056,47 @@ mod tests {
         let explicit = list(root.to_str().unwrap(), &[".git".to_string()], None).unwrap();
         assert!(explicit[0].error.is_none());
         assert_eq!(explicit[0].entries[0].name, "config");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_symlink_names_its_target_kind_only_inside_the_root() {
+        let root = scratch("symlink_target_kind");
+        std::fs::create_dir_all(root.join("skills")).unwrap();
+        touch(&root.join("skills/one.md"), b"x");
+        touch(&root.join("note.txt"), b"x");
+        std::os::unix::fs::symlink("skills", root.join("inside_dir")).unwrap();
+        std::os::unix::fs::symlink("note.txt", root.join("inside_file")).unwrap();
+        std::os::unix::fs::symlink("/etc", root.join("outside")).unwrap();
+        std::os::unix::fs::symlink("nowhere", root.join("dangling")).unwrap();
+
+        let listing = list(root.to_str().unwrap(), &[".".to_string()], None).unwrap();
+        let kind_of = |name: &str| {
+            listing[0]
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| (entry.kind, entry.target_kind))
+                .unwrap()
+        };
+        // A link is still reported as a link — the listing never follows one.
+        assert_eq!(
+            kind_of("inside_dir"),
+            (EntryKind::Symlink, Some(EntryKind::Dir)),
+            "a link to a directory under the root is one a tree may expand"
+        );
+        assert_eq!(kind_of("inside_file"), (EntryKind::Symlink, Some(EntryKind::File)));
+        assert_eq!(
+            kind_of("outside"),
+            (EntryKind::Symlink, None),
+            "descending it would be refused by confine, so it is not offered"
+        );
+        assert_eq!(kind_of("dangling"), (EntryKind::Symlink, None));
+
+        // And the offer is honest: the link that named a directory lists.
+        let followed = list(root.to_str().unwrap(), &["inside_dir".to_string()], None).unwrap();
+        assert!(followed[0].error.is_none());
+        assert_eq!(followed[0].entries[0].name, "one.md");
         let _ = std::fs::remove_dir_all(&root);
     }
 

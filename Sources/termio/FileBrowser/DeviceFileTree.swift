@@ -227,51 +227,91 @@ enum RemotePreviewStorage {
     }
 }
 
-/// A node in the remote file tree — the SSH counterpart of `FileNode`. Same
-/// lazy shape: SwiftUI's `List(_:children:)` realizes a folder on first expand.
-/// But a remote listing can't block the getter, so an unloaded folder answers
-/// an empty list and kicks the model's async fetch; when the entries land the
-/// model publishes and the rows appear. Identity is the remote path, so the
-/// outline keeps its expansion state across a refresh even though the nodes
-/// are rebuilt (and a refreshed-but-still-expanded folder re-fetches lazily).
+/// A node in the file tree, on whichever device the checkout lives — this Mac
+/// included, since the local tree reads the same `fs.list` over the unix socket.
+///
+/// Lazy: SwiftUI's `List(_:children:)` realizes a folder on first expand. A
+/// listing cannot block the getter, so an unloaded folder answers an empty list
+/// and kicks the model's async fetch; when the entries land the model publishes
+/// and the rows appear. Identity is the path, so the outline keeps its expansion
+/// state across a refresh even though the nodes are rebuilt (and a
+/// refreshed-but-still-expanded folder re-fetches lazily).
 @MainActor
-final class RemoteFileNode: Identifiable {
+final class DeviceFileNode: Identifiable {
     let path: String
     let name: String
+    /// Whether this browses as a folder — resolved *through* a symlink, so a
+    /// link to a directory expands like the directory it points at.
     let isDirectory: Bool
     let canPreview: Bool
+    /// Whether the entry itself is a symlink, so the row can mark it.
+    /// Independent of `isDirectory`: a link can point at either kind.
+    let isSymbolicLink: Bool
+    /// Where a symlink points, for the row's tooltip — the one fact about a
+    /// link an icon can't carry. As the device read it: relative when the
+    /// target sits beside the link, absolute when it escapes.
+    let symbolicLinkTarget: String?
+    /// Whether the checkout this node belongs to is on this Mac, which is what
+    /// decides whether `url` addresses a file the Finder, the editor, a drag
+    /// and the row menu may touch.
+    let isOnThisMac: Bool
     // Nonisolated: `Identifiable.id` is a nonisolated requirement, and the path
     // is immutable — no main-actor state involved.
     nonisolated var id: String { path }
 
-    fileprivate var loadedChildren: [RemoteFileNode]?
+    fileprivate var loadedChildren: [DeviceFileNode]?
     /// Whether a listing for this folder is on the wire with nothing to show
     /// yet. An unloaded folder answers `[]`, which draws as a folder that is
     /// genuinely empty — the one thing it is not. The row shows a spinner
-    /// instead, the way the local tree never has to because its answer is
-    /// already there.
+    /// instead, on the folders slow enough to need one.
     fileprivate(set) var isLoading = false
-    private weak var model: RemoteFileBrowserModel?
+    private weak var model: DeviceFileTreeModel?
 
     fileprivate init(
         path: String,
         name: String,
         isDirectory: Bool,
         canPreview: Bool,
-        model: RemoteFileBrowserModel
+        isSymbolicLink: Bool,
+        symbolicLinkTarget: String?,
+        isOnThisMac: Bool,
+        model: DeviceFileTreeModel
     ) {
         self.path = path
         self.name = name
         self.isDirectory = isDirectory
         self.canPreview = canPreview
+        self.isSymbolicLink = isSymbolicLink
+        self.symbolicLinkTarget = symbolicLinkTarget
+        self.isOnThisMac = isOnThisMac
         self.model = model
     }
 
-    /// A synthetic local-form URL for the pieces that only look at the name —
-    /// `FileIconView` keys icons off `lastPathComponent`. Never touched on disk.
-    var iconURL: URL { URL(fileURLWithPath: path) }
+    /// The path in local-URL form. On a checkout on this Mac it addresses the
+    /// real file; on any other device it is synthetic and only the name is
+    /// meaningful — `FileIconView` keys icons off `lastPathComponent`. Use
+    /// `localURL` for anything that touches disk.
+    var url: URL { URL(fileURLWithPath: path) }
 
-    var children: [RemoteFileNode]? {
+    /// The file this row *is*, when the row is on this Mac — what a drag, the
+    /// row menu, Quick Look and the editor need, and `nil` for every checkout
+    /// on another device, which is what keeps those controls hidden rather
+    /// than pointed at a path this Mac does not have.
+    var localURL: URL? { isOnThisMac ? url : nil }
+
+    /// Where a symlink actually lands, absolute — for the row menu's Show
+    /// Original. Nil when this isn't a link, when the link dangles, or when
+    /// the checkout is on another machine, where there is nothing to reveal.
+    var resolvedSymbolicLinkTarget: URL? {
+        guard isSymbolicLink, let url = localURL else { return nil }
+        let resolved = url.resolvingSymlinksInPath()
+        guard resolved != url, FileManager.default.fileExists(atPath: resolved.path) else {
+            return nil
+        }
+        return resolved
+    }
+
+    var children: [DeviceFileNode]? {
         guard isDirectory else { return nil }
         if let loadedChildren { return loadedChildren }
         // `loadChildren` adopts a prefetched listing synchronously, so a folder
@@ -283,8 +323,15 @@ final class RemoteFileNode: Identifiable {
     }
 }
 
-/// Drives the tree for a checkout on another machine, over that device's
-/// `fs.list`/`fs.read` (`TermiodFiles.swift`).
+/// Drives the file tree for a checkout, over its device's `fs.list`/`fs.read`
+/// (`TermiodFiles.swift`).
+///
+/// **One model, every machine.** This Mac is a device like any other and its
+/// tree reads the same way — `fs.list` over the unix socket rather than over
+/// `ssh` — so nothing above this branches on where a checkout lives. The local
+/// tree used to be `FileManager` plus an FSEvents watcher of its own, which is
+/// two implementations of one pane and two sets of bugs; the device plane
+/// already answered both halves.
 ///
 /// The tree is **live**: it subscribes to the device's `fs:` resource
 /// (`Termiod.ResourceWatch`) and re-lists only the directories a batch names and
@@ -298,7 +345,7 @@ final class RemoteFileNode: Identifiable {
 /// to run on every app focus, which on a box where an agent is writing files
 /// meant re-listing everything each time you came back to the window.
 @MainActor
-final class RemoteFileBrowserModel: ObservableObject {
+final class DeviceFileTreeModel: ObservableObject {
     enum Phase {
         case connecting
         case ready
@@ -310,7 +357,18 @@ final class RemoteFileBrowserModel: ObservableObject {
     let checkout: Checkout
     let root: String
     @Published private(set) var phase: Phase = .connecting
-    @Published private(set) var rootNodes: [RemoteFileNode] = []
+    @Published private(set) var rootNodes: [DeviceFileNode] = []
+    /// Bumped whenever a graft changed rows in place. `rootNodes` compares
+    /// unchanged after an incremental re-list — same node references — so this
+    /// is what tells the outline there is an update pass worth running.
+    @Published private(set) var revision = 0
+
+    /// Raised when the device reports the checkout moved: a batch, or a reset
+    /// that says what is held may be stale. The Changes badge is seeded off it,
+    /// which is the one thing outside this tree that has to re-read on a write —
+    /// including a write to git's own metadata, which arrives as `gitMeta` and
+    /// names no directory the tree is showing.
+    var onCheckoutChanged: (() -> Void)?
 
     /// Listings fetched before anything asked for them: when a folder opens, the
     /// folders inside it are the ones about to be clicked, and asking for them
@@ -330,7 +388,7 @@ final class RemoteFileBrowserModel: ObservableObject {
     static let prefetchCeiling = 256
 
     private let provider: DeviceFileProvider
-    private var nodesByPath: [String: RemoteFileNode] = [:]
+    private var nodesByPath: [String: DeviceFileNode] = [:]
     private var loadsInFlight: Set<String> = []
     private var prefetchesInFlight: Set<String> = []
     private var refreshing = false
@@ -397,7 +455,7 @@ final class RemoteFileBrowserModel: ObservableObject {
         return name.isEmpty || name == "/" || name == "~" ? host : name
     }
 
-    func node(at path: String) -> RemoteFileNode? { nodesByPath[path] }
+    func node(at path: String) -> DeviceFileNode? { nodesByPath[path] }
 
     /// Re-lists the tree from the device. Existing rows stay up while the
     /// listing is in flight (no flash to a spinner on an app-focus reconcile);
@@ -478,8 +536,13 @@ final class RemoteFileBrowserModel: ObservableObject {
             guard needsReconcileOnEstablish else { return }
             refresh()
         case .reset:
+            onCheckoutChanged?()
             refresh()
         case .batch(let batch):
+            // Before the on-screen test below: a batch that names only git
+            // metadata, or only directories nobody has expanded, still moved
+            // the working tree and still moves the badge.
+            onCheckoutChanged?()
             guard !batch.fullRescan else {
                 refresh()
                 return
@@ -616,7 +679,7 @@ final class RemoteFileBrowserModel: ObservableObject {
         // dictionary — and the paths `loadedDirectories` asks for — growing for
         // the life of the pane.
         pruneUnreachableNodes()
-        objectWillChange.send()
+        revision &+= 1
     }
 
     /// Asks the device for the contents of the folders in `nodes`, one level
@@ -626,7 +689,7 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// skipped, so a refresh that re-lists a tree eight folders deep does not
     /// re-prefetch what it prefetched the last time. One `fs.list` for the whole
     /// batch — the same array the refresh uses, for the same reason.
-    private func prefetchChildren(of nodes: [RemoteFileNode]) {
+    private func prefetchChildren(of nodes: [DeviceFileNode]) {
         guard prefetched.count < Self.prefetchCeiling else { return }
         let wanted = nodes
             .filter { $0.isDirectory && $0.loadedChildren == nil }
@@ -650,7 +713,7 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     /// Drops every node the tree can no longer reach from its roots.
     private func pruneUnreachableNodes() {
-        var reachable: [String: RemoteFileNode] = [:]
+        var reachable: [String: DeviceFileNode] = [:]
         var frontier = rootNodes
         while let node = frontier.popLast() {
             reachable[node.path] = node
@@ -669,7 +732,7 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// A folder that was prefetched fills in **synchronously**, before this
     /// returns, so the getter that called it can hand the rows straight to the
     /// outline. The device is asked either way: a guess is shown, never trusted.
-    fileprivate func loadChildren(of node: RemoteFileNode) {
+    fileprivate func loadChildren(of node: DeviceFileNode) {
         if let ready = prefetched.removeValue(forKey: node.path) {
             node.loadedChildren = nodes(for: ready, under: node.path)
         }
@@ -682,12 +745,12 @@ final class RemoteFileBrowserModel: ObservableObject {
             // reporting work the user has no reason to know about.
             if node.loadedChildren == nil {
                 node.isLoading = true
-                objectWillChange.send()
+                revision &+= 1
             }
             defer {
                 if node.isLoading {
                     node.isLoading = false
-                    objectWillChange.send()
+                    revision &+= 1
                 }
             }
             do {
@@ -698,7 +761,7 @@ final class RemoteFileBrowserModel: ObservableObject {
                     uniqueKeysWithValues: (node.loadedChildren ?? []).map { ($0.path, $0) })
                 node.loadedChildren = nodes(
                     for: entries, under: node.path, reusing: previous)
-                objectWillChange.send()
+                revision &+= 1
                 prefetchChildren(of: node.loadedChildren ?? [])
             } catch {
                 // Settle the folder as empty rather than leaving it unloaded —
@@ -737,8 +800,8 @@ final class RemoteFileBrowserModel: ObservableObject {
     /// remove.
     private func nodes(
         for entries: [FileEntry], under parent: String,
-        reusing existing: [String: RemoteFileNode] = [:]
-    ) -> [RemoteFileNode] {
+        reusing existing: [String: DeviceFileNode] = [:]
+    ) -> [DeviceFileNode] {
         let base = parent.hasSuffix("/") ? parent : parent + "/"
         // The same order and the same hidden names as the local explorer
         // (`FileEntry.sortedForTree`): the host sorts by name alone, which put
@@ -746,14 +809,22 @@ final class RemoteFileBrowserModel: ObservableObject {
         // two ways depending on which machine the checkout is on.
         return entries.sortedForTree().map { entry in
             let path = base + entry.name
-            let node: RemoteFileNode
-            if let kept = existing[path], kept.isDirectory == entry.isDirectory {
+            let node: DeviceFileNode
+            // Same path but a different kind — a file replaced by a folder, a
+            // real folder replaced by a link to one — is a new entry: both
+            // flags are immutable on the node.
+            if let kept = existing[path],
+               kept.isDirectory == entry.isDirectory,
+               kept.isSymbolicLink == entry.isSymbolicLink {
                 node = kept
             } else {
-                node = RemoteFileNode(
+                node = DeviceFileNode(
                     path: path, name: entry.name,
                     isDirectory: entry.isDirectory,
                     canPreview: entry.isPreviewable,
+                    isSymbolicLink: entry.isSymbolicLink,
+                    symbolicLinkTarget: entry.symlinkTarget,
+                    isOnThisMac: checkout.device.isLocal,
                     model: self)
             }
             nodesByPath[path] = node
@@ -763,146 +834,6 @@ final class RemoteFileBrowserModel: ObservableObject {
 
     private static func message(for error: Error) -> String {
         RemoteFileFailure.message(for: error, fallback: localized("The listing failed."))
-    }
-}
-
-/// The inspector's Files pane for a checkout on another machine: a read-only
-/// disclosure tree served by that device's own daemon. Clicking a file stages it
-/// locally and opens the read-only preview overlay; folders open on click like
-/// the local tree. No drops, no create/rename/delete — the device's file plane
-/// is read-only by design, and the user writes in the terminal, which is the
-/// same app.
-struct RemoteFileTreeView: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-
-    @StateObject private var model: RemoteFileBrowserModel
-    @State private var selection: String?
-    @State private var outlineView: NSOutlineView?
-
-    init(checkout: Checkout, root: String) {
-        _model = StateObject(
-            wrappedValue: RemoteFileBrowserModel(checkout: checkout, root: root))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            content
-        }
-        .onAppear {
-            model.startWarming()
-            model.refresh()
-        }
-        .onDisappear { model.stopWarming() }
-        // The app-focus reload, now only when nothing is watching. A live
-        // subscription kept running while the window was in the back, so coming
-        // back to the front is not news — and re-listing every open directory on
-        // it was this tree's largest recurring cost against a box where an agent
-        // is writing files. But a daemon too old to grant `resources` never gets
-        // a subscription at all, and dropping this unconditionally would leave
-        // those trees with nothing but the refresh button.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if store.inspectorVisible, !model.isLive { model.refresh() }
-        }
-        .onChange(of: store.inspectorVisible) { _, visible in
-            if visible {
-                model.startWarming()
-                model.refresh()
-            } else {
-                // A hidden pane is not worth a connection to somebody's VPS, and
-                // the download behind a click nobody can see is not worth
-                // finishing.
-                model.stopWarming()
-                store.cancelRemoteFileOpen()
-            }
-        }
-        .onChange(of: selection) {
-            // Selection IS the click handler, exactly like the local tree: a
-            // folder toggles open/closed, a file opens the preview.
-            guard let path = selection, let node = model.node(at: path) else { return }
-            if node.isDirectory {
-                toggleSelectedFolder()
-            } else if node.canPreview {
-                store.openRemoteFile(
-                    path: node.path, name: node.name,
-                    provider: model.files, host: model.host)
-                // Every click should be observable, including reopening the same
-                // file after the overlay was dismissed.
-                selection = nil
-            } else {
-                selection = nil
-            }
-        }
-    }
-
-    /// The explorer-style header: the root folder's name, and a Refresh that
-    /// re-roots the tree.
-    private var header: some View {
-        HStack(spacing: 2) {
-            Text(model.rootName)
-                .font(.system(size: 11, weight: .semibold))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
-            TreeHeaderButton(codicon: .refresh, help: "Refresh") {
-                model.refresh()
-            }
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, 8)
-        .padding(.vertical, 3)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch model.phase {
-        case .connecting:
-            ProgressView()
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .failed(let message):
-            PaneEmptyState(
-                localized("Can’t browse \(model.host)"),
-                icon: .serverStack,
-                message: message
-            )
-        case .ready:
-            List(model.rootNodes, children: \.children, selection: $selection) { node in
-                RemoteFileRow(node: node, font: settings.interfaceFont,
-                              isSelected: selection == node.id,
-                              captureOutline: { outlineView = $0 })
-                    .listRowSeparator(.hidden)
-            }
-            .listStyle(.plain)
-            .padding(.leading, 12)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 1)
-        }
-    }
-
-    /// Same gesture as the local tree (see `FileBrowserView.toggleSelectedFolder`):
-    /// the click that selected a folder row is the only signal, so it toggles the
-    /// row and clears the selection so the next click registers too.
-    private func toggleSelectedFolder(attempt: Int = 0) {
-        guard let outline = outlineView else { return }
-        let row = outline.selectedRow
-        guard row >= 0, let item = outline.item(atRow: row) else {
-            if attempt < 3 {
-                DispatchQueue.main.async { toggleSelectedFolder(attempt: attempt + 1) }
-            }
-            return
-        }
-        guard outline.isExpandable(item) else { return }
-        if outline.isItemExpanded(item) {
-            outline.animator().collapseItem(item)
-        } else {
-            outline.animator().expandItem(item)
-        }
-        selection = nil
     }
 }
 
@@ -960,68 +891,5 @@ struct RemoteFileOpeningView: View {
             }
         }
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
-    }
-}
-
-/// A remote tree row: the local `FileRow`'s look (shared icon column, hover and
-/// selection lift) minus everything write-shaped — no drag, no drop, no context
-/// menu.
-private struct RemoteFileRow: View {
-    @EnvironmentObject var settings: AppSettings
-    @Environment(\.colorScheme) private var colorScheme
-
-    let node: RemoteFileNode
-    let font: Font
-    let isSelected: Bool
-    let captureOutline: (NSOutlineView?) -> Void
-
-    @State private var isHovering = false
-
-    private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            if node.isDirectory {
-                HugeIconView(icon: .folder, size: 15, color: chrome?.foreground ?? .primary)
-                    .frame(width: 16, alignment: .leading)
-            } else {
-                FileIconView(url: node.iconURL, size: 12, symbolSize: 11, ink: chrome?.foreground ?? .primary)
-                    .frame(width: 16, alignment: .leading)
-            }
-            Text(node.name)
-                .font(font)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            // A folder waiting on its listing draws as an empty folder, which is
-            // the one thing it is not. Only while there is nothing to show:
-            // a folder opened from a prefetch has its rows and says nothing.
-            if node.isLoading {
-                // No `scaleEffect`: a continuously animating layer under a
-                // transform re-rasterizes every frame, which is how the working
-                // indicator beachballed the sidebar once already.
-                ProgressView()
-                    .controlSize(.mini)
-                    .padding(.leading, 2)
-            }
-        }
-        .padding(.vertical, 2)
-        .padding(.leading, -6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onHover { isHovering = $0 }
-        .opacity(node.isDirectory || node.canPreview ? 1 : 0.55)
-        .help(node.isDirectory || node.canPreview ? "" : "Special files can't be previewed")
-        .background(OutlineViewFixups())
-        .background(OutlineViewCapture(onFound: captureOutline))
-        .listRowBackground(
-            SidebarRowHighlight(
-                isSelected: isSelected,
-                isHovering: isHovering,
-                chrome: chrome
-            )
-            .padding(.leading, -6)
-            .animation(.easeInOut(duration: 0.12), value: isSelected)
-            .animation(.easeInOut(duration: 0.12), value: isHovering)
-        )
     }
 }
