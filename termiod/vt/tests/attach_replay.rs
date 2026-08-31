@@ -60,6 +60,39 @@ fn replayed_stream_keeps_the_hosts_scroll_position() {
     );
 }
 
+/// A long burst of bare newlines — more than any small fixed cap would allow —
+/// still converges: the search bound is the live screen's trailing blank run,
+/// not a constant.
+#[test]
+fn replayed_stream_recovers_a_screenful_of_dropped_scrolls() {
+    let mut host = VtTerminal::new(20, 40).expect("host terminal");
+    for i in 1..=30 {
+        host.vt_write(format!("line {i}\r\n").as_bytes());
+    }
+    host.vt_write(&b"\r\n".repeat(12));
+    let mut client = replay(&mut host, 20, 40);
+    assert_eq!(screen(&mut client), screen(&mut host));
+
+    host.vt_write(b"after");
+    client.vt_write(b"after");
+    assert_eq!(screen(&mut client), screen(&mut host));
+}
+
+/// A screen scrolled fully blank (the cursor parked below a wall of newlines)
+/// is the extreme of the same case.
+#[test]
+fn fully_blank_scrolled_screen_replays_exactly() {
+    let mut host = VtTerminal::new(10, 40).expect("host terminal");
+    host.vt_write(b"only line\r\n");
+    host.vt_write(&b"\r\n".repeat(15));
+    let mut client = replay(&mut host, 10, 40);
+    assert_eq!(screen(&mut client), screen(&mut host));
+
+    host.vt_write(b"back");
+    client.vt_write(b"back");
+    assert_eq!(screen(&mut client), screen(&mut host));
+}
+
 /// A burst of bare newlines leaves several blank rows above the cursor; the
 /// replay has to make up every one of those scroll steps, not just one.
 #[test]

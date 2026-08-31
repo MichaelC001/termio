@@ -455,19 +455,24 @@ impl VtTerminal {
     /// could fix; the payload ships as-is, which is the pre-existing
     /// behaviour).
     ///
-    /// The bound exists because each probe re-reads the scratch grid through
-    /// FFI. A genuine shortfall is the run of blank rows the host's cursor has
-    /// scrolled past — one for a program streaming lines, a handful after a
-    /// burst of bare newlines — so a small cap covers the real cases without
-    /// letting a pathological screen turn a snapshot into a grid crawl.
+    /// The bound is not a tuning knob: each padding newline scrolls one more
+    /// blank row onto the scratch screen's bottom, so a padded replay can only
+    /// equal the live screen if the live screen ends in at least that many
+    /// blank rows. Probing past the live screen's trailing blank run can
+    /// therefore never converge, and probing up to it costs exactly as much as
+    /// the shortfall that actually exists.
     fn replay_scroll_shortfall(&self, formatted: &[u8]) -> Result<Option<Vec<u8>>> {
-        const MAX_SCROLL_SHORTFALL: usize = 8;
         let rows = check(self.terminal.rows(), "Terminal::rows")?;
         let cols = check(self.terminal.cols(), "Terminal::cols")?;
         let live = self.active_codepoints()?;
         let mut scratch = Self::new(rows, cols)?;
         scratch.vt_write(formatted);
-        let bound = MAX_SCROLL_SHORTFALL.min(usize::from(rows));
+        let blank = |cell: &u32| *cell == 0 || *cell == u32::from(b' ');
+        let bound = live
+            .chunks(usize::from(cols).max(1))
+            .rev()
+            .take_while(|row| row.iter().all(blank))
+            .count();
         for shortfall in 0..=bound {
             if scratch.active_codepoints()? == live {
                 if shortfall == 0 {
