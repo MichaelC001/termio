@@ -7,31 +7,11 @@
 //!
 //! See `ARCHITECTURE.md` and `README.md`.
 
-mod agent;
-mod client;
-mod daemon;
-mod files;
-mod git;
-mod handoff;
-mod id;
-mod keep_awake;
-mod lifecycle;
-mod log;
-mod paths;
-mod proc;
-mod protocol;
-mod pty;
-mod remote;
-mod resource;
-mod service;
-mod session;
-mod tombstone;
-mod wss;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use protocol::CreateSpec;
 use std::net::SocketAddr;
+use termiod::protocol::CreateSpec;
+use termiod::{agent, client, daemon, handoff, lifecycle, log, protocol, remote, service, wss};
 
 #[derive(Parser)]
 #[command(

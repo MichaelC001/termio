@@ -29,13 +29,13 @@ pub(crate) fn cap_description() -> String {
 /// reservation that let it through, so a forced resync can discard everything
 /// already queued for that client without corrupting the count.
 #[derive(Clone)]
-pub(crate) struct Metered {
+pub struct Metered {
     pub(crate) bytes: Bytes,
     epoch: u64,
 }
 
 /// Counts PTY bytes queued anywhere between a session and its socket writer.
-pub(crate) struct ClientBacklog {
+pub struct ClientBacklog {
     outstanding: AtomicUsize,
     /// Bumped by a forced resync. Everything reserved under an older epoch is
     /// stale: it precedes a snapshot that supersedes it, so it is dropped
