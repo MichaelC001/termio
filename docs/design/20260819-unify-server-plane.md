@@ -112,11 +112,14 @@ follows replaces §1 of that revision wholesale.
 > - **Stage 6 is done.** `grep -rn 'PTYProcess' Sources/termio/Companion/` → 0;
 >   `PTYBridge` no longer exists (PR #404 and follow-ups #490, #495, #517).
 > - **Stage 5** items 2 and 3 are done differently than written: Linux systemd
->   `--user` landed in PR #530; `feat/termiod-remote-install` was superseded by
->   the reconcile loop (PRs #499, #522, #543). Item 1 (local launchctl
+>   `--user` supervision landed inside PR #522 (`a1a8cdc`), and PR #530 made
+>   termiod own the unit; `feat/termiod-remote-install` was superseded by the
+>   reconcile loop (PRs #499, #522, #543) and deleted. Item 1 (local launchctl
 >   supervision) is still open.
 > - **Stage 3** is half done: `fs.search` shipped and is consumed
->   (`TermiodFiles.swift:559-644`); the `git.diff` half is untouched.
+>   (`TermiodFiles.swift:559-644`). The daemon's `git.diff` shipped long ago
+>   (`d38f50c`, §2 table below); what is untouched is its Swift consumer —
+>   `grep -rn '"git\.' Sources/` → 0.
 > - **Stage 10 is pulled forward, starting 2026-08-31.** Its gate was never
 >   "Stages 3–9 finished"; it was the reason behind the ordering — do not move
 >   the CLI while two session backends exist. That condition has been met since
@@ -153,6 +156,9 @@ grep -rc 'op = "fs_list"' Sources/                                              
 grep -rn 'PTYProcess(' Sources/ | wc -l                                                                     → 1
 grep -rn 'TermiodConnection' Sources/ | wc -l                                                               → 0
 ```
+
+(Restamp 2026-08-31: the `PTYProcess(` row is now 0 — the constructor went
+with `a8b15bd`. The others are unchanged.)
 
 `FileBrowserView.swift:77-84` now has exactly two branches plus an honest empty
 state: `RemoteFileTreeView` for any checkout with a root on another device, the
@@ -199,10 +205,10 @@ moment it matters and cannot reach any client by either route. This is a
 delivery gap, not a mechanism gap — `proc::ExecutableIdentity::was_replaced()`
 is right and tested (`proc.rs:44-58`, `notices_a_replaced_executable`).
 
-**Half answered.** The event route is built (Stage 2); the tombstone route is
-not. `Tombstone::from_info` still drops the field, so a client that was not
-attached when the session died still cannot learn it. That remains a Stage 2
-gate.
+**Half answered** at the stamp; closed since. `Tombstone::from_info` dropped
+the field then, so a client that was not attached when the session died could
+not learn it. It carries the field now (`tombstone.rs:123`) — the gate closed
+with the rest of Stage 2 (§2 restamp).
 
 **(c) Linux has no live-process-group-member scan.**
 `sample_foreground` reads argv straight off the pgid
@@ -219,9 +225,17 @@ per-platform and belongs with the rest of `proc.rs`'s cfg-gating.
 
 **Answered on both targets** (Stage 2), with the macOS path additionally
 re-checking `pbi_pgid` per candidate so a recycled pid cannot be reported. The
-Linux path has still never been compiled or run — that is a Stage 2 gate.
+Linux path had never been compiled or run at the stamp; the
+`ubuntu-24.04-arm` job closed that gate with the rest of Stage 2 (§2
+restamp).
 
 ### 2.4 Unmerged branches that bear on this plan
+
+(Restamp 2026-08-31: the two `feat/termiod-session-facts` rows merged as
+PR #400 the same afternoon this table was written; `feat/termiod-remote-install`
+was superseded by the reconcile loop and deleted. Only `feat/termiod-wss` is
+still an unmerged branch; `feat/foreground-parity` remains a dead worktree.
+The rows stand as the record of what was measured.)
 
 | Branch | Size | Standing |
 | --- | --- | --- |
@@ -233,8 +247,9 @@ Linux path has still never been compiled or run — that is a Stage 2 gate.
 
 The two completion worktrees were committed separately, then cherry-picked onto
 `feat/termiod-session-facts` at `c69c022` with this RFC. That integration branch
-is the only branch to review or merge for Stage 2. `feat/foreground-parity`
-remains a superseded, uncommitted worktree and must not be combined with it.
+was the only branch to review or merge for Stage 2 (merged as PR #400).
+`feat/foreground-parity` remains a superseded, uncommitted worktree and must
+not be combined with it.
 
 ---
 
@@ -312,7 +327,7 @@ Ordered by how ready the daemon already is. "Daemon state" is measured today.
 | Responsibility | Swift today | Daemon state | Stage |
 | --- | --- | --- | --- |
 | Directory listing, file read | — (deleted) | **Shipped and consumed** | **1 — done** |
-| Foreground job / argv / cwd / executable identity | `PTYProcess.swift:864-930` | **Shipped** (`proc.rs`, `pty.rs:258`); group-member resolution and the client decode written but **unmerged** (§2.4) | **2** |
+| Foreground job / argv / cwd / executable identity | `PTYProcess.swift:864-930` (deleted in `a8b15bd`) | **Shipped** (`proc.rs`, `pty.rs:258`); group-member resolution and the client decode merged as PR #400 | **2 — done** |
 | Content search | `ContentSearch.swift` 144 (`git grep` via `Process`) | **Shipped**, streamed + cancellable | 3 |
 | Git diff for one path | `GitService.diffText` | **Shipped** (`git.diff`) | 3 |
 | Filename fuzzy finder | local walk | **Shipped** (`fs.match`, frizbee scorer); needs a subscription for coverage | 9 (gated on 4b) |
@@ -326,7 +341,7 @@ Ordered by how ready the daemon already is. "Daemon state" is measured today.
 | Fetch / pull / push, askpass | absent | **Absent** — new scope | 11 |
 | Session roster, `read`, `send`, `watch`, `spawn`, `close` | `TermioStore+SessionControl.swift` 1,040 | Verbs exist; the CLI talks to the Swift socket | 10 |
 | Agent hook sink | `HookListener.swift` 944, `agent-status.sock` on this Mac | `set_status` exists; nothing routes a hook into it | 10 |
-| PTY ownership | `PTYProcess.swift` 996 | **Shipped** (`pty.rs`) | 8 |
+| PTY ownership | `PTYProcess.swift` 996 (deleted in `a8b15bd`) | **Shipped** (`pty.rs`) | **8 — done** |
 
 ### 4.3 Deleted outright
 
@@ -593,10 +608,12 @@ byte path.
 
 ### Stage 5 — the daemon is supervised, on both platforms
 
-Items 1 and 2 of the last revision landed in `1746593`. Three remained when
-this was written; by 2026-08-31 items 2 and 3 are done (PR #530; the reconcile
-loop of PRs #499/#522/#543 superseding `feat/termiod-remote-install`) and only
-item 1 is open — see the §2 restamp.
+Items 1 and 2 of the *last revision's* list landed in `1746593`; the three
+numbered below are what remained when this was written. Of those, items 2 and
+3 are done as of 2026-08-31 (systemd inside PR #522, unit ownership in
+PR #530; the reconcile loop of PRs #499/#522/#543 superseding
+`feat/termiod-remote-install`). Item 1 — nothing calls `launchctl` on the
+local Mac — is the one still open. See the §2 restamp.
 
 1. **The app installs or repairs the launchd job on launch.** Nothing calls
    `launchctl` — `grep -rn 'launchctl' Sources/` → **0**. Until it does,
