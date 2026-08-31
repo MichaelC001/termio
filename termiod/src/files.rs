@@ -648,6 +648,12 @@ pub fn search(
         // as they are found, and a client that renders them in arrival order
         // should not see a different pane on every keystroke.
         .sort_by_file_path(|a, b| a.cmp(b))
+        // What `add_ignore` roots its matcher at. Without it the crate reaches
+        // for the *process's* working directory, and a global `/root-only.txt`
+        // would anchor wherever the daemon happened to be launched instead of
+        // at the tree being searched. git anchors it at the top of the working
+        // tree; so does this.
+        .current_dir(root)
         .filter_entry(|entry| entry.file_name() != ".git");
     // Lower precedence than every ignore file in the tree, which is where git
     // puts it (`add_ignore` is the last matcher consulted).
@@ -701,22 +707,45 @@ pub fn search(
 /// directory it does not own, and neither does this. Same answer when git is
 /// missing altogether, which is a box this search still has to work on.
 fn global_excludes(root: &Path) -> Option<PathBuf> {
-    // Doubles as the repository test: outside one, `--git-path` fails.
-    git_says(root, &["rev-parse", "--git-dir"])?;
-    if let Some(configured) = git_says(root, &["config", "--path", "--get", "core.excludesFile"]) {
-        return Some(PathBuf::from(configured));
-    }
-    // git's documented default when the setting is absent. A fixed path, not a
-    // parsed value — naming it here reimplements nothing.
-    let home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(home.join("git/ignore"))
+    resolve_global_excludes(root, default_excludes_file)
 }
 
-/// One line of output from git run inside `root`, or nothing if git refused,
-/// is not installed, or had nothing to say.
+/// `global_excludes` with git's default path handed in, so all three answers
+/// can be pinned without a test having to move the process's environment out
+/// from under every other thread in it.
+fn resolve_global_excludes(
+    root: &Path,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    // Doubles as the repository test: outside one, `rev-parse` fails.
+    git_says(root, &["rev-parse", "--git-dir"])?;
+    match git_says(root, &["config", "--path", "--get", "core.excludesFile"]).as_deref() {
+        // Set to the empty string. git reads that as "no global excludes at
+        // all" and does *not* fall back to its default — the setting exists to
+        // be turned off. `git config` reports it as success with empty output,
+        // which is the only thing separating it from the key being absent.
+        Some("") => None,
+        Some(configured) => Some(PathBuf::from(configured)),
+        // Absent, so git's own default applies.
+        None => fallback(),
+    }
+}
+
+/// Where git looks when `core.excludesFile` is not set at all. A fixed path
+/// rather than a parsed value — naming it here reimplements nothing.
+fn default_excludes_file() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|base| base.join("git/ignore"))
+}
+
+/// What git printed, trimmed of its trailing newline, or nothing if git
+/// refused, is not installed, or was not asked from inside a repository.
+///
+/// An empty string is a real answer here rather than an absence — see
+/// `resolve_global_excludes`, where the difference is the whole point.
 fn git_says(root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -734,8 +763,7 @@ fn git_says(root: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
-    let line = text.trim_end_matches(['\n', '\r']);
-    (!line.is_empty()).then(|| line.to_string())
+    Some(text.trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// Opens `path` only if it reads as text, positioned back at the start so the
@@ -1640,7 +1668,11 @@ mod tests {
 
         let excludes = root.join("config dir/global ignore");
         std::fs::create_dir_all(excludes.parent().expect("a parent")).unwrap();
-        touch(&excludes, b"by-global.txt\n");
+        // The anchored pattern is the second half of the point: git matches it
+        // against the top of the working tree, so `root-only.txt` goes and
+        // `sub/root-only.txt` stays. A matcher rooted at the daemon's own
+        // working directory would drop the rule instead.
+        touch(&excludes, b"by-global.txt\n/root-only.txt\n");
         // Written straight into the config so the value keeps its quotes: this
         // is the shape a Mac's `~/Library/Application Support/git/ignore` takes,
         // and the shape the crate's parser truncates. Repo-local rather than
@@ -1671,6 +1703,8 @@ mod tests {
             "sub/ok.tmp",
             "sub/no.tmp",
             ".dotfile.txt",
+            "root-only.txt",
+            "sub/root-only.txt",
         ] {
             touch(&root.join(named), b"needle\n");
         }
@@ -1688,8 +1722,106 @@ mod tests {
         assert_eq!(ours, theirs, "the ignore rules must agree file for file");
         assert_eq!(
             theirs,
-            vec![".dotfile.txt", "keep.log", "plain.txt", "sub/ok.tmp"],
+            vec![
+                ".dotfile.txt",
+                "keep.log",
+                "plain.txt",
+                "sub/ok.tmp",
+                "sub/root-only.txt",
+            ],
             "and agree on the right answer, not on a shared mistake"
+        );
+    }
+
+    /// `core.excludesFile` has three states, not two, and the difference is
+    /// invisible in `git config`'s output alone: absent exits non-zero, set to
+    /// a path exits zero with the path, set to the empty string exits zero with
+    /// nothing. The last one means "no global excludes", *not* "use the
+    /// default" — treating it as absent turns a setting someone deliberately
+    /// switched off back on.
+    #[test]
+    fn an_empty_excludes_setting_disables_global_excludes_like_git() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = scratch("search-excludes-off");
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "core.excludesFile", ""]);
+
+        // git's default location, populated. Neither side may reach it.
+        let xdg = root.join("xdg");
+        std::fs::create_dir_all(xdg.join("git")).unwrap();
+        touch(&xdg.join("git/ignore"), b"named-by-the-default-file.txt\n");
+        touch(&root.join("plain.txt"), b"needle\n");
+        touch(&root.join("named-by-the-default-file.txt"), b"needle\n");
+
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["grep", "-l", "-I", "--untracked", "--fixed-strings", "-e", "needle"])
+            .env("XDG_CONFIG_HOME", &xdg)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("run git grep");
+        let text = String::from_utf8_lossy(&listed.stdout);
+        let mut theirs: Vec<String> = text.lines().map(str::to_string).collect();
+        theirs.sort();
+
+        let (hits, _) = found(&root, "needle", 1000);
+        let ours: Vec<String> = hits.into_iter().map(|hit| hit.path).collect();
+
+        assert_eq!(ours, theirs);
+        assert_eq!(ours, vec!["named-by-the-default-file.txt", "plain.txt"]);
+        // The walk above cannot prove *why* it agreed: this daemon's own home
+        // is not the fixture's, so a wrong fallback would have reached a file
+        // with none of these names in it and the sets would have matched
+        // anyway. The rule itself is what has to be pinned.
+        assert_eq!(
+            resolve_global_excludes(&root, || Some(xdg.join("git/ignore"))),
+            None,
+            "an empty setting must not reach for the default git would skip"
+        );
+    }
+
+    /// The same three states, pinned at the resolver so the empty case cannot
+    /// be read as the absent one. The default is handed in rather than read
+    /// from the environment: a test that moved `HOME` would move it for every
+    /// other thread in the process too.
+    #[test]
+    fn the_three_states_of_the_excludes_setting_resolve_apart() {
+        if std::process::Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = scratch("search-excludes-states");
+        git(&root, &["init", "-q"]);
+        let default = PathBuf::from("/somewhere/git/ignore");
+        let fallback = || Some(default.clone());
+
+        assert_eq!(
+            resolve_global_excludes(&root, fallback),
+            Some(default.clone()),
+            "absent means git's own default"
+        );
+
+        git(&root, &["config", "core.excludesFile", "/named/ignore"]);
+        assert_eq!(
+            resolve_global_excludes(&root, fallback),
+            Some(PathBuf::from("/named/ignore")),
+            "a path means that path"
+        );
+
+        git(&root, &["config", "core.excludesFile", ""]);
+        assert_eq!(
+            resolve_global_excludes(&root, fallback),
+            None,
+            "empty means off, and must not reach for the default"
+        );
+
+        let outside = scratch("search-excludes-no-repo");
+        assert_eq!(
+            resolve_global_excludes(&outside, fallback),
+            None,
+            "outside a repository git applies none, and neither does this"
         );
     }
 
