@@ -1,5 +1,21 @@
 import Foundation
 
+/// One daemon session this app destroyed, remembered by the name the daemon
+/// knows it by and the route it lived on. The record is both halves of the
+/// closed-session journal (RFC 20260830 §D1/§D3): a **pending kill** when the
+/// route was unreachable at close time — retried on the next successful roster
+/// refresh — and the proof that a roster row of this name is this app's own
+/// orphan, to be killed on sight rather than adopted. The journal, not name
+/// shape, decides "mine": two installs share one per-uid daemon roster, so a
+/// UUID-shaped name alone proves nothing about whose session it is.
+struct ClosedDaemonSession: Codable, Equatable {
+    /// The daemon-side session name (the app session's uuid, or the name an
+    /// adopted session already had on the device).
+    var name: String
+    /// The SSH alias of the route the session lived on; `nil` for this Mac.
+    var sshAlias: String?
+}
+
 /// The session tree's on-disk home: it owns the file location and the JSON
 /// (de)serialization, so `TermioStore` only ever hands it values. Live state
 /// (terminal surfaces, per-session activity) is intentionally never written —
@@ -35,6 +51,11 @@ struct StateFile {
         /// `id.uuidString` (see `TermioStore.workspaceSelections`). Optional so older
         /// state files still decode.
         var workspaceSelections: [String: Session.ID]?
+        /// The closed-session journal (see `ClosedDaemonSession`). Persisted so a
+        /// close made while a route was offline — or right before a crash — is
+        /// still honored by the next launch's roster sweep. Optional so older
+        /// state files still decode.
+        var closedDaemonSessions: [ClosedDaemonSession]?
 
         init(
             workspaces: [Workspace]?,
@@ -44,7 +65,8 @@ struct StateFile {
             splitRoot: SplitNode? = nil,
             splitGroups: [SplitNode]?,
             inspectorLayouts: [String: InspectorLayout]?,
-            workspaceSelections: [String: Session.ID]? = nil
+            workspaceSelections: [String: Session.ID]? = nil,
+            closedDaemonSessions: [ClosedDaemonSession]? = nil
         ) {
             self.workspaces = workspaces
             self.currentWorkspaceID = currentWorkspaceID
@@ -54,11 +76,12 @@ struct StateFile {
             self.splitGroups = splitGroups
             self.inspectorLayouts = inspectorLayouts
             self.workspaceSelections = workspaceSelections
+            self.closedDaemonSessions = closedDaemonSessions
         }
 
         private enum CodingKeys: String, CodingKey {
             case workspaces, currentWorkspaceID, projects, selectedSessionID, splitRoot,
-                 splitGroups, inspectorLayouts, workspaceSelections
+                 splitGroups, inspectorLayouts, workspaceSelections, closedDaemonSessions
         }
 
         /// `projects` is decoded twice on an upgrade — once as the live shape, once
@@ -80,6 +103,8 @@ struct StateFile {
                 [String: InspectorLayout].self, forKey: .inspectorLayouts)
             workspaceSelections = try c.decodeIfPresent(
                 [String: UUID].self, forKey: .workspaceSelections)
+            closedDaemonSessions = try c.decodeIfPresent(
+                [ClosedDaemonSession].self, forKey: .closedDaemonSessions)
         }
 
         /// `legacyProjects` never round-trips: it is the same `projects` array read
@@ -93,6 +118,7 @@ struct StateFile {
             try c.encodeIfPresent(splitGroups, forKey: .splitGroups)
             try c.encodeIfPresent(inspectorLayouts, forKey: .inspectorLayouts)
             try c.encodeIfPresent(workspaceSelections, forKey: .workspaceSelections)
+            try c.encodeIfPresent(closedDaemonSessions, forKey: .closedDaemonSessions)
         }
     }
 

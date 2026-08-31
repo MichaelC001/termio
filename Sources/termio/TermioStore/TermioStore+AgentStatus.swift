@@ -150,6 +150,7 @@ extension TermioStore {
         lastProgressActivity[id] = nil
         lastScreenActivity[id] = nil
         stallProbes[id] = nil
+        agentExitStreaks[id] = nil
         blockingAttention.remove(id)
     }
 
@@ -412,6 +413,9 @@ extension TermioStore {
         setLiveTitle(nil, for: id)
         lastTitleActivity[id] = nil
         lastProgressActivity[id] = nil
+        // The row is a terminal now; an "agent exited" notice would describe an
+        // identity it no longer has.
+        runtimes[id]?.agentExitNotice = nil
         clearWorking(id)
         let current = status(for: id)
         if current == .working || current == .done { setStatus(.idle, for: id) }

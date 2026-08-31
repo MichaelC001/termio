@@ -984,6 +984,19 @@ final class TermioStore: ObservableObject {
     /// `termiodEndReason(for:)`.
     var termiodTombstones: [String: Termiod.SessionTombstone] = [:]
 
+    /// Daemon sessions this app has destroyed, remembered by daemon name — the
+    /// closed-session journal (RFC 20260830). Written **before** every
+    /// name-addressed kill so a close survives an unreachable route or a crash:
+    /// the roster sweep (`reconcileExternalSessions`) kills a journaled name on
+    /// sight and drops a record once its name stops appearing. Bounded by
+    /// `journalClosedSession`; persisted through `StateFile`.
+    var closedSessionJournal: [ClosedDaemonSession] = []
+
+    /// Per-session evidence that a declared agent's wrapped shell has outlived
+    /// it (RFC 20260830 §D2), fed by the daemon's foreground sampler. Cleared
+    /// with the rest of the activity trackers.
+    var agentExitStreaks: [Session.ID: AgentExitStreak] = [:]
+
     /// Which device the app is looking at, as the alias that reaches it (`nil` is
     /// this Mac). **The** context: the sidebar, the window chrome, and every panel
     /// added later read `currentDevice` rather than deciding for themselves.
@@ -1484,6 +1497,9 @@ final class TermioStore: ObservableObject {
         // whose rows a since-ungrouped session still sits between; heal it on load
         // rather than waiting for the next group edit.
         store.gatherSplitRuns()
+        // Closes made while a route was offline (or right before a crash) come
+        // back as pending kills; the first roster refresh per route settles them.
+        store.closedSessionJournal = snapshot.closedDaemonSessions ?? []
         return store
     }
 
@@ -1514,12 +1530,19 @@ final class TermioStore: ObservableObject {
             selectedSessionID: selectedSessionID,
             splitGroups: splitGroups,
             inspectorLayouts: layouts.isEmpty ? nil : layouts,
-            workspaceSelections: selections.isEmpty ? nil : selections
+            workspaceSelections: selections.isEmpty ? nil : selections,
+            closedDaemonSessions: closedSessionJournal.isEmpty ? nil : closedSessionJournal
         ))
     }
 
     func status(for sessionID: Session.ID) -> SessionStatus {
         runtimes[sessionID]?.status ?? .idle
+    }
+
+    /// Why a declared agent row is idle over a live shell ("Claude Code exited —
+    /// shell"), or `nil` while the agent runs. See `noteDeclaredAgentForeground`.
+    func agentExitNotice(for sessionID: Session.ID) -> String? {
+        runtimes[sessionID]?.agentExitNotice
     }
 
     /// The live working directory a session last reported (shell `OSC 7`), or `nil`.
