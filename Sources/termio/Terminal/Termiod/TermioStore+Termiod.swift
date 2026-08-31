@@ -300,7 +300,13 @@ extension TermioStore {
                                  for id: Session.ID,
                                  identifiesAgent: Bool,
                                  followsWorkingDirectory: Bool) {
-        guard session(id) != nil else { return }
+        guard let session = session(id) else { return }
+        // The daemon's own id for the process behind this row, remembered so a
+        // later close can journal it — the identity the roster sweep matches a
+        // pending kill by (`journalClaims`).
+        if !information.id.isEmpty, session.termiodDaemonID != information.id {
+            updateSession(id) { $0.termiodDaemonID = information.id }
+        }
         // `nil` argv is *unanswered*, so it never reaches `noteForegroundAgent` —
         // which reads its own `nil` as "a shell is in front now" and demotes.
         // An answered argv that matches nothing is that demotion, correctly.
@@ -750,6 +756,7 @@ extension TermioStore {
         var session = Session(title: information.displayLabel, agent: .terminal)
         session.givenTitle = information.givenName
         session.termiodSessionName = Self.daemonKey(information)
+        session.termiodDaemonID = information.id.isEmpty ? nil : information.id
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
         session.termiodRemoteCwd = information.cwd.isEmpty ? nil : information.cwd
@@ -832,7 +839,8 @@ extension TermioStore {
         let name = daemonSessionName(for: session)
         if rememberClosed {
             journalClosedSession(
-                named: name, sshAlias: session.termiodRemoteHost, deviceID: session.deviceID)
+                named: name, sshAlias: session.termiodRemoteHost, deviceID: session.deviceID,
+                daemonID: session.termiodDaemonID)
         }
         if let link = termiodLinks[session.id] {
             link.killAndClose()
@@ -852,11 +860,12 @@ extension TermioStore {
     /// past capacity. One record per `(name, sshAlias)` — re-closing on the
     /// same route replaces rather than duplicates, and a same-named session on
     /// another machine keeps its own record.
-    func journalClosedSession(named name: String, sshAlias: String?, deviceID: String? = nil) {
+    func journalClosedSession(
+        named name: String, sshAlias: String?, deviceID: String? = nil, daemonID: String? = nil
+    ) {
         closedSessionJournal.removeAll { $0.name == name && $0.sshAlias == sshAlias }
         closedSessionJournal.append(ClosedDaemonSession(
-            name: name, sshAlias: sshAlias, deviceID: deviceID,
-            closedAtUnix: UInt64(Date().timeIntervalSince1970)))
+            name: name, sshAlias: sshAlias, deviceID: deviceID, daemonID: daemonID))
         if closedSessionJournal.count > Self.closedSessionJournalCapacity {
             closedSessionJournal.removeFirst(
                 closedSessionJournal.count - Self.closedSessionJournalCapacity)
@@ -892,9 +901,9 @@ extension TermioStore {
     /// resolution is testable without a daemon or a roster.
     ///
     /// `journaled` is this route's record for the row's name, if one exists —
-    /// and it claims the row only when the row was created at or before the
-    /// close (`journalClaims`). A row created after the close is legitimate
-    /// name reuse, resolved like any other stranger.
+    /// and it claims the row only when the daemon ids agree (`journalClaims`).
+    /// A same-named row with a different id is legitimate name reuse, resolved
+    /// like any other stranger.
     ///
     /// The attached-client guard is local-only, deliberately: the local socket
     /// is per-uid, so an attached unknown here is another install's session.
@@ -903,10 +912,10 @@ extension TermioStore {
     /// roster is that box's whole sidebar, and a session the phone has open is
     /// still one of the box's own sessions; skipping it would hide its work.
     nonisolated static func resolveExternalSession(
-        name: String, createdUnix: UInt64, attachedClients: Int, isLocal: Bool,
+        name: String, rowID: String, attachedClients: Int, isLocal: Bool,
         journaled: ClosedDaemonSession?
     ) -> ExternalSessionResolution {
-        if let journaled, journalClaims(journaled, rowCreatedUnix: createdUnix) {
+        if let journaled, journalClaims(journaled, rowID: rowID) {
             return .killOnSight
         }
         if isLocal, attachedClients > 0 { return .leaveAlone }
@@ -914,17 +923,19 @@ extension TermioStore {
     }
 
     /// Whether a journal record describes this roster row, or the row merely
-    /// reuses the name. A row created at or before the close is the very
-    /// session the close named; one created after it is a new session someone
-    /// started under the same name, which the close never promised to end.
-    /// A record without a timestamp predates the field and keeps kill-on-sight;
-    /// a row without one (`createdUnix == 0`, an older daemon) reads as old,
-    /// which is the same conservative answer.
+    /// reuses the name. The daemon mints a fresh id per creation and never
+    /// reuses one, so identity — not any clock — is the gate: a matching id is
+    /// the very session the close named; a different id under the same name is
+    /// a new session the close never promised to end. A record without an id
+    /// (the app closed the row before any attach or roster revealed one)
+    /// matches by name alone, which is safe because those names are this app's
+    /// own session UUIDs — nothing else mints them, and the app's own
+    /// respawn-in-place path doesn't journal.
     nonisolated static func journalClaims(
-        _ record: ClosedDaemonSession, rowCreatedUnix: UInt64
+        _ record: ClosedDaemonSession, rowID: String
     ) -> Bool {
-        guard let closedAt = record.closedAtUnix else { return true }
-        return rowCreatedUnix <= closedAt
+        guard let daemonID = record.daemonID else { return true }
+        return daemonID == rowID
     }
 
     /// Settles every live daemon session against this app's rows, once per
@@ -940,8 +951,9 @@ extension TermioStore {
     /// is how a close made via `prod-old` still lands when the box is reached
     /// as `prod-new`. A record is dropped once it stops claiming anything on
     /// its machine: its name left the roster (the kill held, or the session
-    /// died), or the name lives on in a session created after the close (name
-    /// reuse — not ours, and killing it would murder someone else's session).
+    /// died), or the name lives on under a different daemon id (name reuse —
+    /// not ours, and killing it would murder someone else's session; the
+    /// record's own id is gone for good, so it can never claim again).
     /// Records for other machines are untouched.
     func reconcileExternalSessions(
         _ live: [Termiod.SessionInformation], from device: KnownDevice, route: TermiodRoute
@@ -958,12 +970,13 @@ extension TermioStore {
             record.sshAlias == route.sshAlias
                 || (record.deviceID != nil && record.deviceID == device.deviceID)
         }
+        recordDaemonIDs(from: live, for: device)
         var claimingRecords = Set<ClosedDaemonSession>()
         for information in deviceOnlySessions(in: live, for: device) {
             let name = Self.daemonKey(information)
             let record = sweepRecords.first { $0.name == name }
             switch Self.resolveExternalSession(
-                name: name, createdUnix: information.createdUnix,
+                name: name, rowID: information.id,
                 attachedClients: information.attachedClients,
                 isLocal: device.isLocal, journaled: record) {
             case .killOnSight:
@@ -987,6 +1000,25 @@ extension TermioStore {
         if !spent.isEmpty {
             closedSessionJournal.removeAll { spent.contains($0) }
             persistSoon()
+        }
+    }
+
+    /// Writes the daemon's own id onto every row the roster answers for, so a
+    /// later close can journal it. This is what arms the sweep's identity gate
+    /// for rows that are never surfaced this run — a restored row closed
+    /// without ever being selected has no link to learn the id from, and the
+    /// roster is the one channel that still names it.
+    private func recordDaemonIDs(from live: [Termiod.SessionInformation], for device: KnownDevice) {
+        let mine = sessions(authoredFor: device)
+        guard !mine.isEmpty else { return }
+        var idsByName: [String: String] = [:]
+        for information in live where !information.id.isEmpty {
+            idsByName[Self.daemonKey(information)] = information.id
+        }
+        for session in mine {
+            guard let daemonID = idsByName[daemonSessionName(for: session)],
+                  session.termiodDaemonID != daemonID else { continue }
+            updateSession(session.id) { $0.termiodDaemonID = daemonID }
         }
     }
 

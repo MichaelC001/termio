@@ -25,12 +25,15 @@ struct ClosedDaemonSession: Codable, Hashable {
     /// pending kill. Absent from records written before the field existed,
     /// which then match by alias alone.
     var deviceID: String?
-    /// When the close happened (Unix seconds). The sweep kills a roster row
-    /// only when the row was created at or before this moment — a row created
-    /// *after* the close is legitimate name reuse (a `termiod` CLI session
-    /// recreated under the same name), not this app's orphan. Absent from
-    /// records written before the field existed, which keep kill-on-sight.
-    var closedAtUnix: UInt64?
+    /// The daemon's own id for the session that was destroyed — minted fresh
+    /// per creation, so a reused *name* never reuses the id. The sweep kills a
+    /// roster row only when its id matches; a same-named row with a different
+    /// id is a new session the close never promised to end. Absent when no
+    /// attach or roster revealed the id before the close; those records match
+    /// by name alone, which is safe for app-authored rows — their names are
+    /// this app's session UUIDs, which the CLI and other installs never mint,
+    /// and the app's own respawn-in-place path doesn't journal.
+    var daemonID: String?
 }
 
 /// The session tree's on-disk home: it owns the file location and the JSON
