@@ -49,8 +49,10 @@ from the real front matter).
 | active | research | ["Reading list: PTYs, SSH, and detachable remote terminals"](READING.md) |
 | active | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | active | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
+| active | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](design/20260704-push-to-talk-voice-dictation.md) |
 | active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](design/20260819-unify-server-plane.md) |
+| active | rfc | [What ten years of docker/dockerd teach the termio/termiod split](design/20260831-docker-dockerd-lessons.md) |
 | approved | design | [会话历史 · 搜索 · 恢复（Session History / Search / Resume）](design/20260628-session-history-search-resume.md) |
 | approved | design | [Agent Resume Identity — keeping the resume pin on the live conversation](design/20260716-agent-resume-identity.md) |
 | approved | design | [Git worktree creation & lifecycle (Codex-aligned)](design/20260706-worktree-creation-lifecycle.md) |
@@ -129,10 +131,8 @@ from the real front matter).
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
 | draft | rfc | [The tab strip is the collapsed sidebar](design/20260829-tab-strip-is-the-collapsed-sidebar.md) |
-| draft | rfc | [What ten years of docker/dockerd teach the termio/termiod split](design/20260831-docker-dockerd-lessons.md) |
 | in-review | design | [Workspace switch latency](design/20260819-workspace-switch-latency.md) |
 | in-review | rfc | [Every machine is a device, every place you work is a project](design/20260814-remote-to-device.md) |
-| in-review | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
 | in-review | rfc | [Split panes — Ghostty-style splits in the terminal column](design/20260702-split-panes.md) |
 | in-review | rfc | [termiod lifecycle — install and update as one reconcile loop](design/20260827-termiod-lifecycle-reconcile.md) |
 <!-- END docs-index -->

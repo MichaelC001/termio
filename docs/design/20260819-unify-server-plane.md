@@ -3,8 +3,9 @@ title: Unify the server plane in Rust, reduce the Mac app to a viewer
 status: active
 type: rfc
 created: 2026-08-19
-updated: 2026-08-22
+updated: 2026-08-31
 related:
+  - 20260831-docker-dockerd-lessons.md
   - 20260817-one-path-local-through-termiod.md
   - 20260817-one-path-local-through-termiod.review-claude.md
   - 20260818-one-workspace-source.md
@@ -89,6 +90,40 @@ inherited; none is new here.
 The first revision of this document was cut at `7fedc72`. Thirteen commits have
 landed under `termiod/` since, and they move three of its eight stages. What
 follows replaces §1 of that revision wholesale.
+
+> **Restamp, 2026-08-31.** The tree outran this section within hours of the
+> 2026-08-22 stamp, and the doc went nine days without recording it. What is
+> true now:
+>
+> - **Stage 2 is done.** `feat/termiod-session-facts` merged as PR #400 the
+>   same afternoon (2026-08-22T14:46Z); all four of its gates closed —
+>   `termiod.yml` has the ubuntu-24.04-arm job, the wire-order integration
+>   test exists (`TermiodWireOrderIntegrationTests.swift`),
+>   `Tombstone::from_info` carries `child_executable_replaced`
+>   (`tombstone.rs:123`), and `displayLabel` reads `foregroundArgv` first
+>   (`TermiodProtocol.swift:966-977`).
+> - **Stages 7 and 8 collapsed into one step, and the soak was served
+>   retroactively.** `a8b15bd` (2026-08-22, two hours after PR #400) deleted
+>   `PTYProcess.swift` and every `TERMIO_TERMIOD` branch without the
+>   flag-default-on release Stage 7 specified. The sequencing risk was taken,
+>   not mitigated — and then paid off empirically: the daemon-only backend
+>   shipped in every tag from v0.41.0 onward with no rollback. Stage 8's greps
+>   pass on main today.
+> - **Stage 6 is done.** `grep -rn 'PTYProcess' Sources/termio/Companion/` → 0;
+>   `PTYBridge` no longer exists (PR #404 and follow-ups #490, #495, #517).
+> - **Stage 5** items 2 and 3 are done differently than written: Linux systemd
+>   `--user` landed in PR #530; `feat/termiod-remote-install` was superseded by
+>   the reconcile loop (PRs #499, #522, #543). Item 1 (local launchctl
+>   supervision) is still open.
+> - **Stage 3** is half done: `fs.search` shipped and is consumed
+>   (`TermiodFiles.swift:559-644`); the `git.diff` half is untouched.
+> - **Stage 10 is pulled forward, starting 2026-08-31.** Its gate was never
+>   "Stages 3–9 finished"; it was the reason behind the ordering — do not move
+>   the CLI while two session backends exist. That condition has been met since
+>   `a8b15bd`. The still-open stages (3's git half, 4b/4c, 5 item 1, 9) are
+>   orthogonal to CLI verbs and continue independently. Stage 10's own gates —
+>   one-path Stage 6's criteria, plus `20260831-docker-dockerd-lessons.md`
+>   §1.3's additions — are unchanged.
 
 ### 2.1 Landed since the last stamp
 
@@ -369,13 +404,12 @@ One verification remains open and is recorded as open, not claimed: the device
 branch of the pane has not been seen on screen against a second machine running
 `termiod`.
 
-### Stage 2 — foreground parity: the client half
+### Stage 2 — foreground parity: the client half — **done**
 
-Rust's first half shipped in `c4934c2`. The rest — the client decode, the two
-delivery gaps in §2.3, and the group-member scan — is **implemented across two
-worktrees, reviewed and approved, and neither committed nor merged** (§2.4):
-99 Rust tests and 483 Swift tests pass locally. **This stage has not landed**,
-and the gates at the end of this section are what stands between the two.
+Rust's first half shipped in `c4934c2`; the rest merged as **PR #400**
+(2026-08-22), and all four gates below closed since (§2 restamp). The section
+is kept as written because it records the decisions, two of which contradict
+one-path §3.2 and won.
 
 Nothing below is a proposal. It is the shape the implementation settled on,
 recorded because two of the decisions contradict what `20260817-one-path-local-through-termiod.md`
@@ -479,7 +513,7 @@ Two guards make the split safe:
   question. When the group changes, the cached pid and argv are cleared rather
   than carried, so the gap is honest until the next resolution fills it.
 
-#### Remaining gates — all four are open
+#### Remaining gates — all four closed by 2026-08-31 (kept as the record of what they were)
 
 - **Linux `cfg` compilation and runtime.** The `/proc` path has never been
   compiled or run; it waits on `termiod.yml`'s ubuntu-24.04-arm job. Behaviourally:
@@ -559,8 +593,10 @@ byte path.
 
 ### Stage 5 — the daemon is supervised, on both platforms
 
-Items 1 and 2 of the last revision landed in `1746593`. Three remain, and each is
-a release blocker on its own.
+Items 1 and 2 of the last revision landed in `1746593`. Three remained when
+this was written; by 2026-08-31 items 2 and 3 are done (PR #530; the reconcile
+loop of PRs #499/#522/#543 superseding `feat/termiod-remote-install`) and only
+item 1 is open — see the §2 restamp.
 
 1. **The app installs or repairs the launchd job on launch.** Nothing calls
    `launchctl` — `grep -rn 'launchctl' Sources/` → **0**. Until it does,
@@ -589,7 +625,7 @@ or replace it, but do not ship Stage 7 without an answer.
 both slices (true today); a fresh Linux box reachable by alias goes from nothing
 installed to an open session without a terminal, and survives a logout.
 
-### Stage 6 — the companion stops depending on `PTYProcess`
+### Stage 6 — the companion stops depending on `PTYProcess` — **done** (PR #404; gate grep → 0)
 
 one-path §5 Stage 4, and the biggest single stage here. **Not** "extract a
 protocol both types satisfy": `PTYBridge` uses thirteen `PTYProcess` members
@@ -623,7 +659,7 @@ Exit fan-out is inherited from 4b rather than solved here.
 `grep -rn 'PTYProcess' Sources/termio/Companion/` → 0. Verified on a real device,
 not the simulator.
 
-### Stage 7 — default on, for one full release
+### Stage 7 — default on, for one full release — **collapsed into Stage 8; soak served retroactively** (§2 restamp)
 
 Ship with `Termiod.isEnabled` defaulting to **true** and `TERMIO_TERMIOD=0`
 able to force it off. Then run one release and change nothing else in this list.
@@ -640,7 +676,7 @@ by default and no rollback. Concretely: local sessions survive an app quit and
 relaunch reattaching to the same pid; the companion, agent status, and task
 notifications behave as they did with the flag off.
 
-### Stage 8 — delete the local PTY fork
+### Stage 8 — delete the local PTY fork — **done** (`a8b15bd`, 2026-08-22; gates pass on main)
 
 Only now. Remove `Termiod.isEnabled` and every branch on it, the in-process
 `PTYProcess` construction (`TermioStore+TerminalSurface.swift:253`), the flag-off
@@ -686,7 +722,7 @@ bounded before this ships** — a recursive watch plus a full BFS name-index wal
 over `$HOME` or a large monorepo, alive five minutes past the last subscriber, is
 not obviously authorized by "the user let us read this machine" (open question 3).
 
-### Stage 10 — the CLI moves, verb by verb
+### Stage 10 — the CLI moves, verb by verb — **in progress since 2026-08-31, pulled forward** (§2 restamp; gates unchanged)
 
 one-path §7 and its Stage 6, unchanged in content and in internal order: `read`,
 `send`/`answer`, `watch`, `list`, `spawn`/`run`/`close`, then
