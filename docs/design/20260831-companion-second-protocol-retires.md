@@ -407,8 +407,8 @@ derives status from the same device:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test` | **329 passed, 0 failed** — 274 lib (40 of them `session::status`), 3 bin, 52 integration |
-| `swift build && swift test` | 932 passed, 0 failed |
+| `cargo test` | **336 passed, 0 failed** — 278 lib (40 of them `session::status`), 3 bin, 55 integration |
+| `swift build && swift test` | 950 passed, 0 failed |
 | `python3 termiod/tests/cli_compat.py` | **93/93** — the hook and CLI surface is byte-identical |
 | iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 34 passed, 0 failed (8 new) |
 | iOS builds for the simulator | clean |
