@@ -15,7 +15,7 @@ struct GhosttyUserConfig {
     /// (termio honors both slots verbatim, even when the two names are equal).
     enum ThemeSetting: Equatable {
         case bare(String)
-        case split(light: String?, dark: String?)
+        case split(light: String, dark: String)
     }
 
     /// `font-family` values in declaration order — Ghostty treats repeats as a fallback chain
@@ -26,31 +26,50 @@ struct GhosttyUserConfig {
 
     var isEmpty: Bool { fontFamilies.isEmpty && fontSize == nil && themeSetting == nil }
 
-    static func parseThemeSetting(_ value: String) -> ThemeSetting {
+    /// Mirrors Ghostty's `Theme.parseCLI`: a comma, colon, or equals sign switches to the
+    /// light/dark pair form, and the pair form is all-or-nothing — every part must be a
+    /// `light:`/`dark:` pair and both slots must end up named, or Ghostty rejects the whole
+    /// line as a config error. Returning nil mirrors that rejection, and it matters as much
+    /// as the parse: a line Ghostty errors on paints nothing there, so termio must not
+    /// inherit it either.
+    static func parseThemeSetting(_ value: String) -> ThemeSetting? {
+        guard value.contains(",") || value.contains(":") || value.contains("=") else {
+            return .bare(value)
+        }
         var light: String?
         var dark: String?
-        var sawSplitForm = false
         for part in value.split(separator: ",") {
             let pair = part.split(separator: ":", maxSplits: 1)
-            guard pair.count == 2 else { continue }
-            let mode = pair[0].trimmingCharacters(in: .whitespaces).lowercased()
-            let name = pair[1].trimmingCharacters(in: .whitespaces)
-            if mode == "light" { light = name; sawSplitForm = true }
-            if mode == "dark" { dark = name; sawSplitForm = true }
+            guard pair.count == 2 else { return nil }
+            let mode = pair[0].trimmingCharacters(in: .whitespaces)
+            var name = pair[1].trimmingCharacters(in: .whitespaces)
+            if name.count >= 2, name.hasPrefix("\""), name.hasSuffix("\"") {
+                name = String(name.dropFirst().dropLast())
+            }
+            switch mode {
+            case "light": light = name
+            case "dark": dark = name
+            default: return nil
+            }
         }
-        return sawSplitForm ? .split(light: light, dark: dark) : .bare(value)
+        guard let light, let dark else { return nil }
+        return .split(light: light, dark: dark)
     }
 
-    /// Reads the files Ghostty itself loads on macOS, in Ghostty's order — the XDG file first,
-    /// the Application Support file after, so the latter wins for single-value keys while
-    /// `font-family` keeps accumulating across both.
+    /// Reads the files Ghostty itself loads on macOS, in Ghostty's order — XDG before
+    /// Application Support, and in each place the legacy `config` before the `config.ghostty`
+    /// name Ghostty prefers since 1.3 — so later files win for single-value keys while
+    /// `font-family` keeps accumulating across all of them.
     static func load(home: URL = FileManager.default.homeDirectoryForCurrentUser,
                      environment: [String: String] = ProcessInfo.processInfo.environment) -> GhosttyUserConfig {
         let xdgBase = environment["XDG_CONFIG_HOME"].map { URL(fileURLWithPath: $0) }
             ?? home.appendingPathComponent(".config")
+        let appSupportBase = home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty")
         let paths = [
             xdgBase.appendingPathComponent("ghostty/config"),
-            home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"),
+            xdgBase.appendingPathComponent("ghostty/config.ghostty"),
+            appSupportBase.appendingPathComponent("config"),
+            appSupportBase.appendingPathComponent("config.ghostty"),
         ]
         var config = GhosttyUserConfig()
         for path in paths {
@@ -63,11 +82,14 @@ struct GhosttyUserConfig {
     /// Folds one config file's text into the receiver: later lines win for single-value keys,
     /// `font-family` accumulates, comments and unknown keys are skipped.
     mutating func merge(parsing text: String) {
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+        // Split on `isNewline`, not "\n": Swift folds "\r\n" into one grapheme cluster, so a
+        // CRLF-saved config would otherwise never split into lines at all.
+        for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            // Keys stay case-sensitive because Ghostty's are.
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
             guard let equals = line.firstIndex(of: "=") else { continue }
-            let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
+            let key = line[..<equals].trimmingCharacters(in: .whitespaces)
             var value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
             if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
                 value = String(value.dropFirst().dropLast())
@@ -84,7 +106,13 @@ struct GhosttyUserConfig {
             case "font-size":
                 fontSize = Double(value)
             case "theme":
-                themeSetting = value.isEmpty ? nil : Self.parseThemeSetting(value)
+                if value.isEmpty {
+                    themeSetting = nil
+                } else if let setting = Self.parseThemeSetting(value) {
+                    themeSetting = setting
+                }
+                // An unparsable value keeps the previous one: Ghostty rejects the bad
+                // line as a config error and the earlier setting stays in effect.
             default:
                 break
             }
