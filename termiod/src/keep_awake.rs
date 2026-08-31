@@ -11,7 +11,7 @@
 //! see that method for why attachment is deliberately not the test.
 //!
 //! The assertion is a lease, not a held lock. While any session is busy, a
-//! short-lived `caffeinate -i -s -t LEASE` child is renewed on a timer; when
+//! short-lived `caffeinate -i -t LEASE` process is renewed on a timer; when
 //! nothing is busy the last lease simply runs out, which is also the grace
 //! period. Nothing is ever released, so every exit path is covered by the same
 //! non-mechanism: a crash, `termiod stop`, and the `execve` handoff (which
@@ -77,6 +77,7 @@ impl Renewal {
 pub async fn run(manager: Manager) {
     let mut events = manager.subscribe_events();
     let mut renewal = Renewal::new();
+    let mut failure_reported = false;
     let mut tick = tokio::time::interval(RENEW);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -106,8 +107,18 @@ pub async fn run(manager: Manager) {
         if busy && !on_alternating_current().await {
             continue;
         }
-        if renewal.should_renew(busy, Instant::now()) && !renew_lease() {
-            return;
+        if renewal.should_renew(busy, Instant::now()) {
+            // A failed spawn is not the end of keep-awake: the clock it just
+            // recorded makes the next due wake — the tick at the latest —
+            // retry, and a transient fork failure will have cleared by then.
+            // Reported only on the transition into failure, so a machine
+            // where it never recovers logs once, not once a minute.
+            if renew_lease().await {
+                failure_reported = false;
+            } else if !failure_reported {
+                eprintln!("termiod: keep-awake lease did not start; will keep retrying");
+                failure_reported = true;
+            }
         }
     }
 }
@@ -132,25 +143,27 @@ async fn on_alternating_current() -> bool {
     }
 }
 
-/// Spawn one lease. The child is dropped, not awaited: tokio reaps dropped
-/// children in the background, and `-t` bounds its life without any release
-/// path here. Returns false when spawning failed — a machine where
-/// `/usr/bin/caffeinate` cannot run gets the failure reported once, not once
-/// a minute for as long as an agent works.
-fn renew_lease() -> bool {
-    let spawned = tokio::process::Command::new("/usr/bin/caffeinate")
-        .args(["-i", "-t"])
-        .arg(LEASE.as_secs().to_string())
+/// Spawn one lease, detached from this process tree. `caffeinate` must not be
+/// this daemon's child: the `execve` handoff keeps the pid but replaces every
+/// in-memory child handle, so a lease inherited across it would sit unreaped
+/// as a zombie until the daemon exits. Backgrounding it from a shell that
+/// exits immediately reparents it to launchd, which reaps everything, and the
+/// shell itself is waited on right here. `-t` bounds the lease's life either
+/// way.
+async fn renew_lease() -> bool {
+    let spawned = tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "/usr/bin/caffeinate -i -t {} >/dev/null 2>&1 &",
+            LEASE.as_secs()
+        ))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
     match spawned {
-        Ok(_) => true,
-        Err(error) => {
-            eprintln!("termiod: keep-awake disabled: caffeinate did not start: {error:#}");
-            false
-        }
+        Ok(mut shell) => matches!(shell.wait().await, Ok(status) if status.success()),
+        Err(_) => false,
     }
 }
 
