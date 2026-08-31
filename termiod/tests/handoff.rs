@@ -67,6 +67,7 @@ impl Daemon {
         let mut child = command
             .arg("serve")
             .env("TERMIOD_SOCK", socket)
+            .env("TERMIOD_KEEP_AWAKE", "off")
             .stdout(Stdio::null())
             .stderr(errors)
             .spawn()
