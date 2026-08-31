@@ -13,7 +13,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use termiod::channel::{self, Channel};
 use termiod::{lifecycle, version};
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
             println!("{USAGE}");
             Ok(())
         }
-        Some("-V") | Some("--version") => {
+        Some("--version") => {
             println!("termio {} ({})", lifecycle::BUILD_VERSION, channel.name);
             Ok(())
         }
@@ -83,61 +83,10 @@ fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
 /// daemon-sibling fix, not here. `channel::resolve` already pinned
 /// `TERMIO_CHANNEL`, which the exec inherits.
 fn remote_passthrough(channel: &Channel, rest: &[String]) -> Result<()> {
-    let Some(daemon) = locate_termiod(channel) else {
+    let Some(daemon) = channel::daemon_binary(channel) else {
         eprintln!("termio: no termiod binary found — install the termio app, or set TERMIOD_BIN");
         std::process::exit(1);
     };
     let error = Command::new(&daemon).arg("remote").args(rest).exec();
     Err(error).with_context(|| format!("running {}", daemon.display()))
-}
-
-/// The shell client's `locate_termiod()`, same rungs in the same order: the
-/// explicit `TERMIOD_BIN` override; the daemon bundled beside this binary
-/// (`Contents/Resources` in the app, `target/{debug,release}` in a
-/// checkout); the running app's bundle via `lsappinfo`, which only answers
-/// for a live process so it can never name a stale bundle; then the
-/// standalone install locations.
-fn locate_termiod(channel: &Channel) -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("TERMIOD_BIN") {
-        let path = PathBuf::from(explicit);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    if let Ok(own) = std::env::current_exe() {
-        if let Some(sibling) = own.canonicalize().ok().and_then(|resolved| {
-            let candidate = resolved.parent()?.join("termiod");
-            candidate.is_file().then_some(candidate)
-        }) {
-            return Some(sibling);
-        }
-    }
-    if cfg!(target_os = "macos") {
-        if let Ok(info) = Command::new("lsappinfo")
-            .args(["info", "-only", "bundlepath", &channel.bundle_id])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&info.stdout);
-            if let Some(bundle) = stdout
-                .lines()
-                .find_map(|line| line.strip_prefix("\"LSBundlePath\"=\""))
-                .and_then(|rest| rest.strip_suffix('"'))
-            {
-                let candidate = Path::new(bundle).join("Contents/Resources/termiod");
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let candidate = Path::new(&home).join(".local/bin/termiod");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    let path_variable = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_variable)
-        .map(|directory| directory.join("termiod"))
-        .find(|candidate| candidate.is_file())
 }

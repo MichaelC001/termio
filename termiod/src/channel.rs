@@ -106,6 +106,73 @@ pub fn resolve() -> (Channel, Provenance) {
     (channel, provenance)
 }
 
+/// The shell client's `locate_termiod()`, same rungs in the same order: the
+/// explicit `TERMIOD_BIN` override; the daemon beside this binary, but only
+/// when this binary itself runs out of a bundle's `Contents/Resources` (a
+/// checkout's `target/debug/termio` must not quietly prefer its sibling over
+/// the live app); the running app's bundle via `lsappinfo`, which only
+/// answers for a live process so it can never name a stale bundle; then the
+/// standalone install locations. Every rung requires an executable file,
+/// like the shell's `-x` and `command -v`.
+pub fn daemon_binary(channel: &Channel) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    if let Some(explicit) = std::env::var_os("TERMIOD_BIN") {
+        let path = PathBuf::from(explicit);
+        if executable(&path) {
+            return Some(path);
+        }
+    }
+    if let Some(resolved) = std::env::current_exe()
+        .ok()
+        .and_then(|own| own.canonicalize().ok())
+    {
+        if let Some(parent) = resolved.parent() {
+            if parent.ends_with("Contents/Resources") {
+                let candidate = parent.join("termiod");
+                if executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if let Ok(info) = std::process::Command::new("lsappinfo")
+            .args(["info", "-only", "bundlepath", &channel.bundle_id])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&info.stdout);
+            if let Some(bundle) = stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("\"LSBundlePath\"=\""))
+                .and_then(|rest| rest.strip_suffix('"'))
+            {
+                let candidate = Path::new(bundle).join("Contents/Resources/termiod");
+                if executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let candidate = Path::new(&home).join(".local/bin/termiod");
+        if executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    let path_variable = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_variable)
+        .map(|directory| directory.join("termiod"))
+        .find(|candidate| executable(candidate))
+}
+
+fn executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.is_file()
+        && std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

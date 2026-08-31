@@ -6,12 +6,15 @@
 //! spoken to is absent, and nothing here touches the network.
 //!
 //! Ported from the shell client's `version_table()`, with two deliberate
-//! deviations: the local daemon rows come from `lifecycle::status()`
-//! in-process instead of awk over pretty-printed JSON, and a final line
-//! names the resolved socket and which rung chose it (`TERMIOD_SOCK` or the
-//! program name), so a surprising socket names its own cause.
+//! deviations: the located daemon's `status --json` is parsed into the typed
+//! `lifecycle::NodeStatus` instead of awk over its pretty printing, and a
+//! final line names the resolved socket and which rung chose it
+//! (`TERMIOD_SOCK` or the program name), so a surprising socket names its
+//! own cause. Like the shell client, the daemon rows come from the *located
+//! daemon binary*, not this process — a staged daemon/client skew must show
+//! in this table, and asking ourselves would hide it.
 
-use crate::channel::{Channel, Provenance};
+use crate::channel::{self, Channel, Provenance};
 use crate::{lifecycle, paths};
 use anyhow::Result;
 use std::process::Command;
@@ -35,26 +38,31 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         None => row("termio.app", "-", "", "(not running)"),
     }
 
-    match lifecycle::status().await {
-        Ok(status) if status.daemon.running => {
-            let version = status.daemon.version.unwrap_or(status.binary.version);
-            let proto = status
-                .daemon
-                .proto
-                .map(|proto| format!("proto {proto}"))
-                .unwrap_or_default();
-            row("termiod local", &version, &proto, "");
-        }
-        // This binary and the daemon build from one crate, so its own stamp
-        // is the installed daemon's version — the shell client had to locate
-        // and exec the daemon binary to learn the same thing.
-        Ok(status) => row(
-            "termiod local",
-            &status.binary.version,
-            "",
-            "(binary; daemon not running)",
-        ),
-        Err(_) => row("termiod local", "-", "", "(no answer)"),
+    match channel::daemon_binary(channel) {
+        None => row("termiod local", "-", "", "(not installed)"),
+        Some(daemon) => match daemon_status(&daemon) {
+            Some(status) if status.daemon.running => {
+                let version = status.daemon.version.unwrap_or(status.binary.version);
+                let proto = status
+                    .daemon
+                    .proto
+                    .map(|proto| format!("proto {proto}"))
+                    .unwrap_or_default();
+                row("termiod local", &version, &proto, "");
+            }
+            Some(status) if !status.binary.version.is_empty() => row(
+                "termiod local",
+                &status.binary.version,
+                "",
+                "(binary; daemon not running)",
+            ),
+            _ => row(
+                "termiod local",
+                "-",
+                "",
+                &format!("(no answer from {})", daemon.display()),
+            ),
+        },
     }
 
     for remote in remote_rows(&channel.support_dir_name) {
@@ -70,6 +78,19 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         println!("socket {} ({why})", socket.display());
     }
     Ok(())
+}
+
+/// The located daemon binary answering for itself, exactly as the shell
+/// client asked it: its own build, the daemon on the canonical socket, and
+/// that daemon's hello — so a staged binary that differs from the running
+/// daemon shows as two different versions. `channel::resolve` already pinned
+/// `TERMIO_CHANNEL`, which the child inherits.
+fn daemon_status(daemon: &std::path::Path) -> Option<lifecycle::NodeStatus> {
+    let output = Command::new(daemon).args(["status", "--json"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
 }
 
 /// The running app's `CFBundleShortVersionString+CFBundleVersion`, through
@@ -146,10 +167,14 @@ fn remote_rows(support_dir_name: &str) -> Vec<RemoteRow> {
             let version = device
                 .get("daemonVersion")
                 .and_then(|value| value.as_str())
-                .unwrap_or("-");
+                .unwrap_or("");
             let proto = device
                 .get("proto")
-                .and_then(|value| value.as_u64())
+                .and_then(|value| match value {
+                    serde_json::Value::Number(number) => Some(number.to_string()),
+                    serde_json::Value::String(text) => Some(text.clone()),
+                    _ => None,
+                })
                 .map(|proto| format!("proto {proto}"))
                 .unwrap_or_default();
             let stamp = device
@@ -196,14 +221,15 @@ fn parse_utc_timestamp(stamp: &str) -> Option<i64> {
     let number = |range: std::ops::Range<usize>| stamp.get(range)?.parse::<i64>().ok();
     let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
     let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
         return None;
     }
     if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second) {
         return None;
     }
     // Days-from-civil (Howard Hinnant's algorithm), avoiding a time crate for
-    // one fixed-format field.
+    // one fixed-format field. The month-length check above matters because
+    // the algorithm normalizes impossible dates instead of rejecting them.
     let year_adjusted = if month <= 2 { year - 1 } else { year };
     let era = year_adjusted.div_euclid(400);
     let year_of_era = year_adjusted - era * 400;
@@ -212,6 +238,21 @@ fn parse_utc_timestamp(stamp: &str) -> Option<i64> {
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +271,18 @@ mod tests {
         assert_eq!(parse_utc_timestamp("2026-08-31 00:00:00"), None);
         assert_eq!(parse_utc_timestamp("2026-08-31T00:00:00.123Z"), None);
         assert_eq!(parse_utc_timestamp("2026-13-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn impossible_calendar_dates_are_rejected_not_normalized() {
+        assert_eq!(parse_utc_timestamp("2026-02-31T00:00:00Z"), None);
+        assert_eq!(parse_utc_timestamp("2026-02-29T00:00:00Z"), None);
+        assert_eq!(parse_utc_timestamp("2026-04-31T00:00:00Z"), None);
+        // 2024-02-29 is real: a leap day, one day after the 28th.
+        assert_eq!(
+            parse_utc_timestamp("2024-02-29T00:00:00Z"),
+            parse_utc_timestamp("2024-02-28T00:00:00Z").map(|epoch| epoch + 86_400)
+        );
     }
 
     #[test]
