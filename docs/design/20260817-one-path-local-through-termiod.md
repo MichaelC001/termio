@@ -1,9 +1,9 @@
 ---
 title: One path — local sessions run through termiod too
-status: in-review
+status: active
 type: rfc
 created: 2026-08-17
-updated: 2026-08-24
+updated: 2026-08-31
 related:
   - 20260817-one-path-local-through-termiod.review-claude.md
   - 20260805-termiod-device-architecture.md
@@ -1125,7 +1125,7 @@ Linux/macOS split behind one trait, argv → agent mapping staying on the client
 
 **Rollback:** additive field; an app that ignores it behaves as before.
 
-### Stage 4 — the companion stops depending on `PTYProcess`
+### Stage 4 — the companion stops depending on `PTYProcess` — **done** (PR #404; unify-server-plane Stage 6)
 
 The blocker identified in §1.5, and **the biggest stage in this RFC.** Not "extract
 a protocol both types satisfy": three of `PTYBridge`'s twelve members have no
@@ -1164,7 +1164,7 @@ piece, and the one most likely to change phone behaviour visibly.
 
 **Rollback:** the seam has one other conformer; revert to the concrete type.
 
-### Stage 5 — delete the fork
+### Stage 5 — delete the fork — **done** (`a8b15bd`, 2026-08-22; soak note in unify-server-plane §2 restamp)
 
 Only now. Remove `Termiod.isEnabled` (`TermiodClient.swift:46`) and every branch
 on it, the in-process `PTYProcess` construction
@@ -1193,7 +1193,7 @@ default for a full release cycle. Concretely — **ship Stage 4 with the flag
 defaulting to on and the env var able to force it off**, run one release, then
 delete in Stage 5. The escape hatch is a release rollback, not a runtime flag.
 
-### Stage 6 — the CLI moves, verb by verb (§7)
+### Stage 6 — the CLI moves, verb by verb (§7) — **in progress since 2026-08-31** (as unify-server-plane Stage 10, pulled forward; criteria unchanged)
 
 Order chosen so the verbs the client cannot fix land first (§7.1):
 
