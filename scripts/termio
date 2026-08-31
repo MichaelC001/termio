@@ -725,12 +725,14 @@ agent() {
 
     # `--reply` is handled by the daemon binary, which prints `{}` itself even
     # when the report could not be delivered — one implementation of Cursor's
-    # stdout contract rather than two.
+    # stdout contract rather than two. The channel is pinned like every other
+    # daemon exec in this script: a dev-located daemon with a stale or absent
+    # inherited channel would otherwise report to the release socket.
     # shellcheck disable=SC2086
     if [ "$reply" -eq 1 ]; then
-        exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded --reply
+        TERMIO_CHANNEL="$CHANNEL" exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded --reply
     fi
-    exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded
+    TERMIO_CHANNEL="$CHANNEL" exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded
 }
 
 # `termio notify [--title T] "<message>"` — post a macOS notification on demand.
