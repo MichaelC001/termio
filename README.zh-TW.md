@@ -84,10 +84,6 @@ tmux 剩下要教你的東西，要麼是一個 Mac 快捷鍵，要麼你本來�
 - 腳本化：`termio sessions`（見下文）做的就是 `send-keys` 腳本做的事，而且
   Agent 狀態是協定物件，不用抓畫面。
 
-沒有前綴鍵，沒有 `.tmux.conf`，不用裝外掛來還原工作階段——持久化生效之前，
-沒有任何東西需要設定。如果 tmux 已經是你的肌肉記憶，它在工作階段裡照樣能跑，
-和別的程式一樣。
-
 ## 和你現有的 Agent 一起用
 
 Claude Code、Codex、Antigravity、Grok、Cursor Agent、Copilot、Amp、OpenCode、

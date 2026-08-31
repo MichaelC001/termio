@@ -83,9 +83,6 @@ tmux 剩下要教你的东西，要么是一个 Mac 快捷键，要么你本来�
 - 脚本化：`termio sessions`（见下文）干的就是 `send-keys` 脚本干的事，而且
   Agent 状态是协议对象，不用抓屏。
 
-没有前缀键，没有 `.tmux.conf`，不用装插件来恢复会话——持久化生效之前，没有任何
-东西需要配置。如果 tmux 已经是你的肌肉记忆，它在会话里照样能跑，和别的程序一样。
-
 ## 和你现有的 Agent 一起用
 
 Claude Code、Codex、Antigravity、Grok、Cursor Agent、Copilot、Amp、OpenCode、

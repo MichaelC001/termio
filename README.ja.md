@@ -84,10 +84,6 @@ tmux が教えてくれるはずだった残りは、Mac のショートカッ�
 - スクリプトは `termio sessions`（後述）が `send-keys` の役目を果たし、
   エージェントのステータスは画面ではなくプロトコル上のオブジェクトです。
 
-プレフィックスキーも `.tmux.conf` も、セッション復元のプラグインもなし —
-永続化が効くまでに設定するものは何もありません。tmux が手に馴染んでいるなら、
-ほかのプログラムと同じようにセッションの中でそのまま動きます。
-
 ## お使いのエージェントで動く
 
 Claude Code、Codex、Gemini CLI、Grok、Cursor Agent、Copilot、Amp、OpenCode、

@@ -32,7 +32,7 @@ related:
 | 手机配对时会先拨号握手、拿到 `hello_ok` 才落盘 | `Models.swift` `pair(invite:)` |
 | 手机持久化 `address` / `token` / `origin`，按 `host_id` 索引 | `Models.swift` `adopt(invite:hostID:)` |
 | tunelo 的 relay 与客户端共用 `crates/protocol`，两端都已用 `quinn` + `rustls` | `jiweiyuan/tunelo` 三个 `Cargo.toml` |
-| `ukvps` 上的 tunelo 是 **0.3.0**，`--identity` 可用（写这份 RFC 时是 0.2.0） | `tunelo --version` |
+| `ukvps` 上的 tunelo 是 **0.2.0** —— `--identity` 是 0.3.0 才有的 | `tunelo --version` |
 | `*.tunelo.net` 通配 DNS 已解析，证书含 `*.tunelo.net` | `getent hosts`、`/etc/nginx/sites-enabled/tunelo.net` |
 
 ## 0.1 写完之后（2026-08-30 复核）

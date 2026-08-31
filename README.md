@@ -92,10 +92,6 @@ your hands:
 - Scripting: `termio sessions` (below) does what `send-keys` scripts do, and
   agent status is a protocol object, not a pane to scrape.
 
-No prefix key, no `.tmux.conf`, no plugins to restore sessions — there is
-nothing to configure before the durability works. And if tmux is already
-muscle memory, it still runs inside a session like any other program.
-
 ## Works with your agents
 
 Claude Code, Codex, Antigravity, Grok, Cursor Agent, Copilot, Amp, OpenCode,
