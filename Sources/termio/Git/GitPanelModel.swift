@@ -125,6 +125,9 @@ final class GitPanelModel: ObservableObject {
     private var gitWatch: Termiod.ResourceSubscription?
     private var gitCursor: UInt64?
     private var resubscribing = false
+    /// Orders the pieces of a subscribe handshake that reach the main actor on
+    /// different paths — see `DeviceWatchLedger`.
+    private var watchLedger = DeviceWatchLedger()
     /// The status the device has published so far, keyed by path. The batches
     /// are **deltas**, so the pane holds the baseline they apply to.
     private var deviceStatuses: [String: GitChange] = [:]
@@ -137,6 +140,7 @@ final class GitPanelModel: ObservableObject {
     func startDeviceWatch() {
         guard let device, gitWatch == nil, !resubscribing else { return }
         resubscribing = true
+        let generation = watchLedger.begin()
         Task { [repoRoot] in
             defer { resubscribing = false }
             do {
@@ -145,21 +149,34 @@ final class GitPanelModel: ObservableObject {
                     root: repoRoot,
                     since: gitCursor,
                     onBatch: { [weak self] batch in
-                        Task { @MainActor in self?.apply(batch) }
+                        Task { @MainActor in self?.receive(batch, generation: generation) }
                     },
                     onInterrupted: { [weak self] in
-                        Task { @MainActor in self?.deviceWatchInterrupted() }
+                        Task { @MainActor in
+                            self?.deviceWatchInterrupted(generation: generation)
+                        }
                     })
+                guard let earlyBatches = watchLedger.settle(generation: generation) else {
+                    // The pane stopped (or restarted) the watch while this
+                    // handshake was in flight; the subscription must not
+                    // outlive the interest that asked for it.
+                    subscription.cancel()
+                    return
+                }
                 gitWatch = subscription
                 // A gap means the ring could not replay from this cursor, so the
                 // baseline is not trustworthy: drop it and let the device's
-                // synthesized full batch rebuild it.
+                // synthesized full batch rebuild it. The reset lands *before*
+                // any batch applies — batches that raced the ack sat in the
+                // ledger and apply below, so the full batch can never be erased
+                // by its own gap reset.
                 if gap {
                     deviceStatuses = [:]
                     gitCursor = nil
                 } else {
                     gitCursor = max(gitCursor ?? 0, seq)
                 }
+                for batch in earlyBatches { apply(batch) }
                 // The ack only says the device accepted the subscription; the
                 // baseline follows a beat later (measured at 2 ms behind it).
                 // Waiting for it is what keeps a repo with changes from flashing
@@ -168,9 +185,11 @@ final class GitPanelModel: ObservableObject {
                 // pane's answer to a clean tree. So: wait briefly, then settle.
                 Task { [weak self] in
                     try? await Task.sleep(for: .seconds(1))
-                    self?.isLoading = false
+                    guard let self, self.watchLedger.generation == generation else { return }
+                    self.isLoading = false
                 }
             } catch {
+                guard watchLedger.generation == generation else { return }
                 isLoading = false
                 deviceProblem = Self.message(for: error)
             }
@@ -178,8 +197,17 @@ final class GitPanelModel: ObservableObject {
     }
 
     func stopDeviceWatch() {
+        watchLedger.stop()
         gitWatch?.cancel()
         gitWatch = nil
+    }
+
+    /// Routes one arriving batch through the ledger: applied when the watch is
+    /// settled, held when the handshake's baseline decision is still in
+    /// flight, dropped when it belongs to a watch that was stopped.
+    private func receive(_ batch: Termiod.GitChangedPayload, generation: Int) {
+        guard let ready = watchLedger.admit(batch, generation: generation) else { return }
+        apply(ready)
     }
 
     /// Why the device's git pane is empty, when it is empty for a reason. Held
@@ -187,7 +215,8 @@ final class GitPanelModel: ObservableObject {
     /// read as the same thing.
     @Published private(set) var deviceProblem: String?
 
-    private func deviceWatchInterrupted() {
+    private func deviceWatchInterrupted(generation: Int) {
+        guard watchLedger.generation == generation else { return }
         gitWatch = nil
         guard !resubscribing else { return }
         Task {
@@ -416,5 +445,63 @@ final class GitPanelModel: ObservableObject {
                 await self.loadCompare()
             }
         }
+    }
+}
+
+// MARK: - Device-watch ordering
+
+/// The ordering ledger for one device git watch.
+///
+/// A subscribe handshake resolves on two paths that both land on the main
+/// actor: the ack (with its gap → reset-the-baseline decision) comes back
+/// through the async call, while the first batches arrive through the
+/// subscription handler — and the daemon queues the synthesized full batch
+/// right behind the ack, so a batch can be applied *before* the gap reset that
+/// would erase it, rendering a changed checkout clean. The ledger holds batches
+/// until the baseline decision has landed, and stamps every attempt with a
+/// generation so a watch that was stopped — or restarted — while its handshake
+/// was in flight can neither install its subscription nor apply its batches.
+struct DeviceWatchLedger {
+    private(set) var generation = 0
+    private var awaitingBaseline = false
+    private var held: [Termiod.GitChangedPayload] = []
+
+    /// A new subscribe attempt begins; everything older is dead.
+    mutating func begin() -> Int {
+        generation += 1
+        awaitingBaseline = true
+        held = []
+        return generation
+    }
+
+    /// The watch was stopped; an in-flight attempt must not land.
+    mutating func stop() {
+        generation += 1
+        awaitingBaseline = false
+        held = []
+    }
+
+    /// Admits one arriving batch: returns it when the watch is settled and the
+    /// batch may apply now, or nil when it was held for `settle` or belongs to
+    /// a dead generation.
+    mutating func admit(
+        _ batch: Termiod.GitChangedPayload, generation: Int
+    ) -> Termiod.GitChangedPayload? {
+        guard generation == self.generation else { return nil }
+        guard !awaitingBaseline else {
+            held.append(batch)
+            return nil
+        }
+        return batch
+    }
+
+    /// The ack landed and the caller is about to make the baseline decision.
+    /// Returns the batches that raced ahead, in arrival order, to apply after
+    /// that decision — or nil when the attempt is stale and must be abandoned.
+    mutating func settle(generation: Int) -> [Termiod.GitChangedPayload]? {
+        guard generation == self.generation else { return nil }
+        awaitingBaseline = false
+        defer { held = [] }
+        return held
     }
 }
