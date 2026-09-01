@@ -15,7 +15,7 @@ struct ContentMatch: Sendable {
     /// Path relative to the searched root — the grouping key and header label.
     let relative: String
     let url: URL
-    /// 1-based line number, as grep reports it.
+    /// 1-based line number, as the daemon reports it.
     let line: Int
     /// The matched line, or a window of it when the line is long enough that
     /// sending the whole thing is pointless. Untrimmed — the row trims.
@@ -31,12 +31,7 @@ struct ContentMatch: Sendable {
     /// hit is at the top or bottom of its file, or from a host too old to send
     /// context.
     let before: [String]
-    private(set) var after: [String]
-
-    /// Appends a line of trailing context, as grep hands it over after the hit.
-    mutating func appendAfter(_ line: String) {
-        after.append(line)
-    }
+    let after: [String]
 
     /// The line numbers `before` and `after` occupy, which the excerpt gutter
     /// needs and which are pure arithmetic off `line`.
@@ -99,14 +94,22 @@ extension SearchScope {
         case .device(_, let host, let root): return host + ":" + root
         }
     }
+
+    /// Whether the checkout is on this Mac. The engine no longer asks — only the
+    /// sentences do, since a failure worded for a machine across a network reads
+    /// wrong on the one the window is open on.
+    var isLocal: Bool {
+        if case .thisMac = self { return true }
+        return false
+    }
 }
 
 /// The inspector's Search pane — a sibling of Files / Changes / Info on the
 /// toolbar switch, searching file *contents* (VS Code's ⇧⌘F; the filename jump
-/// lives in Open Quickly, ⌘⇧O). Queries run debounced through `git grep` — this
-/// Mac's own for a local root, the device's for a checkout on another machine —
-/// results group under their file with the matched substring tinted accent, and
-/// clicking a hit opens the file scrolled to that line.
+/// lives in Open Quickly, ⌘⇧O). Queries run debounced through `fs.search`, on
+/// whichever daemon owns the checkout — this Mac's over its socket, a device's
+/// over its pipe — results group under their file with the matched substring
+/// tinted accent, and clicking a hit opens the file scrolled to that line.
 struct FileSearchView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
@@ -470,17 +473,15 @@ struct FileSearchView: View {
     /// that is not the problem.
     private static func message(for error: Error, on scope: SearchScope,
                                 fallback: String) -> String {
-        var local = false
-        if case .thisMac = scope { local = true }
         // Silence, not a refusal — and the likeliest cause is a host that has
         // never heard of the op, so the sentence names that. The rest is the
         // shared table every device pane words its failures from.
         if case TermiodClientError.timedOut = error {
-            return local
+            return scope.isLocal
                 ? localized("termiod on this Mac didn’t answer.")
                 : localized("This device didn’t answer. Its termiod may be too old to search.")
         }
-        if case DeviceFileError.unsupported = error, local {
+        if case DeviceFileError.unsupported = error, scope.isLocal {
             return localized("termiod on this Mac is too old to search.")
         }
         return RemoteFileFailure.message(for: error, fallback: fallback)
