@@ -583,6 +583,9 @@ async fn connect_if_serving(socket: &Path) -> Result<Option<UnixStream>> {
 /// whose backlog is full, `EINTR`, `ETIMEDOUT` — and reading any of those as
 /// absence is how a stop reports success over a daemon still holding every
 /// session it had.
+///
+/// This licenses a conclusion, never an action on the path — see
+/// [`crate::client::absent_daemon`] for the narrower rule that does.
 pub(crate) fn nothing_is_serving(errno: Option<i32>) -> bool {
     matches!(
         errno,

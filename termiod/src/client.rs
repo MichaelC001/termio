@@ -88,15 +88,17 @@ pub async fn stdio() -> Result<()> {
 /// Whether a connect failure proves nothing is serving the socket. `ENOENT`
 /// (no file) and `ECONNREFUSED` (a file no listener backs) do; every other
 /// errno describes this client's situation, not the daemon's.
-/// Whether a failed connect means autostarting is the right recovery.
+/// Whether a failed connect licenses *acting on* the path: starting a daemon
+/// that will bind it, or — in [`crate::daemon`] — unlinking it first.
 ///
 /// Narrower than [`crate::lifecycle::nothing_is_serving`] by exactly one errno,
-/// and deliberately: `ENOTSOCK` says a *file* holds the path, which proves no
-/// daemon is serving but also that starting one cannot help — it would fail to
-/// bind over the file and the spawn would be noise on top of a state a human
-/// has to clear. The two questions are close enough to fold together and
-/// different enough that folding them would be wrong.
-fn absent_daemon(errno: Option<i32>) -> bool {
+/// and the difference is the point. `ENOTSOCK` says a plain file holds the
+/// path. That proves no daemon is serving, which is all a stop needs to
+/// conclude; it is not permission to delete a file this daemon did not create,
+/// nor to spawn one that would fail to bind over it. That state needs a human,
+/// and the two questions are different enough that folding them would answer
+/// one of them wrongly.
+pub(crate) fn absent_daemon(errno: Option<i32>) -> bool {
     matches!(errno, Some(libc::ENOENT) | Some(libc::ECONNREFUSED))
 }
 
@@ -916,6 +918,10 @@ mod autostart_tests {
     fn only_a_provably_absent_daemon_recovers_by_spawning() {
         assert!(super::absent_daemon(Some(libc::ENOENT)));
         assert!(super::absent_daemon(Some(libc::ECONNREFUSED)));
+        // Proof that nothing is serving, but not permission to unlink a file
+        // this daemon did not create or to spawn one that cannot bind over it.
+        assert!(!super::absent_daemon(Some(libc::ENOTSOCK)));
+        assert!(crate::lifecycle::nothing_is_serving(Some(libc::ENOTSOCK)));
         assert!(!super::absent_daemon(Some(libc::EPERM)));
         assert!(!super::absent_daemon(Some(libc::EACCES)));
         assert!(!super::absent_daemon(Some(libc::ETIMEDOUT)));

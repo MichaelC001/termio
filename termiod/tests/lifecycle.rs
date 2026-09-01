@@ -195,6 +195,51 @@ fn stop_succeeds_when_the_daemon_left_its_socket_and_its_pid_behind() {
     assert!(daemon.wait_exit(), "daemon still running after stop");
 }
 
+/// `serve` never deletes a file it did not create.
+///
+/// A plain file where the socket should be proves no daemon is serving — which
+/// is enough for a stop to conclude it stopped, and deliberately not enough to
+/// unlink the file and bind over its name. `TERMIOD_SOCK` can name anywhere,
+/// so the file that would be destroyed is whatever the user pointed it at.
+#[test]
+fn serve_refuses_to_replace_a_file_it_did_not_create() {
+    let dir = TestDir::new();
+    let occupied = dir.0.join("d.sock");
+    std::fs::write(&occupied, b"someone else's file").expect("occupy the socket path");
+
+    // Spawned rather than run to completion: a `serve` that wrongly accepts the
+    // path does not exit, and a test that proves a regression by hanging is not
+    // a test. It gets a bounded window to refuse, and is killed if it does not.
+    let mut child = Command::new(BIN)
+        .arg("serve")
+        .env("TERMIOD_SOCK", &occupied)
+        .env("TERMIOD_KEEP_AWAKE", "off")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("run termiod serve");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let refused = loop {
+        match child.try_wait().expect("poll serve") {
+            Some(status) => break Some(status),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+
+    let refused = refused.expect("serve bound over a file that was not its socket");
+    assert!(!refused.success(), "serve accepted a socket path that held a plain file");
+    assert_eq!(
+        std::fs::read(&occupied).expect("the file must still be there"),
+        b"someone else's file",
+        "serve destroyed a file it did not create"
+    );
+}
+
 /// A daemon this process cannot reach is not a daemon that stopped.
 ///
 /// The socket is denied rather than removed, which is what a sandbox does — and

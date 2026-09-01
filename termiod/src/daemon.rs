@@ -889,7 +889,7 @@ pub async fn serve(
 
 /// Whether a failed probe connect proves no daemon is behind the socket file.
 fn socket_is_stale(errno: Option<i32>) -> bool {
-    crate::lifecycle::nothing_is_serving(errno)
+    crate::client::absent_daemon(errno)
 }
 
 /// The inode currently at `path`, or `None` when nothing is.
