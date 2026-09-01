@@ -28,6 +28,11 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[8;24;80t")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[?1u")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[>4;2m")))
+        // Focus in / focus out. libghostty writes one as soon as it parses
+        // `CSI ? 1004 h`, and every keyframe replays that mode, so an observer
+        // that read these as typing took the token on every resize barrier.
+        XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[I")))
+        XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}[O")))
         // DCS: XTVERSION, DECRQSS, XTGETTCAP.
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}P>|ghostty 1.3.2\u{1B}\\")))
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}P1$r0 q\u{1B}\\")))
@@ -53,6 +58,10 @@ final class TerminalDeviceReportTests: XCTestCase {
         // A key press under the kitty keyboard protocol ends in `u` too, but
         // without the `?` a flags report carries.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[97;5u")))
+        // Only the bare three-byte form is a focus report; anything parameterised
+        // ending in I or O is not one libghostty emits.
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[2I")))
+        XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[?1O")))
         // SGR mouse press and release carry `<`, never the `>` of XTQMODKEYS.
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[<0;10;20M")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}[<0;10;20m")))

@@ -27,6 +27,18 @@ import Foundation
 ///                        press under that protocol is `ESC [ code ; mods u`
 ///   • `ESC [ > … m`      XTQMODKEYS report — only with `>`: SGR mouse input is
 ///                        `ESC [ < … M` / `m`
+///   • `ESC [ I` / `ESC [ O`
+///                        focus in / focus out, with no parameters. libghostty
+///                        emits one the instant it parses `CSI ? 1004 h`
+///                        (`stream_handler.zig`, `.focus_event => if (enabled)`),
+///                        and a snapshot replays that mode — so every keyframe
+///                        makes every attachment write one. Read as typing they
+///                        are the resize storm this type exists to stop: Claude
+///                        Code and Codex both enable 1004, so each barrier
+///                        keyframe handed the token to whichever surface parsed
+///                        it first, which re-asserted its own grid, which was
+///                        another barrier. A plain shell never sets 1004, which
+///                        is why only the agent TUIs shook.
 ///   • `ESC P > | …`      XTVERSION;  `ESC P n $ r …` DECRQSS;  `ESC P n + r …` XTGETTCAP
 ///   • `ESC ] 4 ; …`, `ESC ] 10–19 ; …`, `ESC ] 21 …`, `ESC ] 52 ; …`
 ///                        colour, kitty colour, and clipboard query answers
@@ -71,6 +83,10 @@ public enum TerminalDeviceReport {
                 switch byte {
                 case 0x63, 0x6E, 0x52, 0x79, 0x74: // c n R y t
                     return true
+                case 0x49, 0x4F: // I O
+                    // A focus report carries nothing between the introducer and
+                    // its final byte, and no key encodes to those three bytes.
+                    return index == 2
                 case 0x75: // u
                     return marker == 0x3F // ?
                 case 0x6D: // m
