@@ -452,21 +452,36 @@ struct FileSearchView: View {
             search \(scope.machine, privacy: .public): \
             \(String(describing: error), privacy: .public)
             """)
-            failure = Self.message(for: error, fallback: localized("The search failed."))
+            failure = Self.message(for: error, on: scope,
+                                   fallback: localized("The search failed."))
             return []
         }
     }
 
-    /// The device described what went wrong; wording it is this client's job, and
+    /// The daemon described what went wrong; wording it is this client's job, and
     /// only for the cases the client decides itself — a daemon that named a cause
     /// is quoted verbatim. `fallback` says which of the two round trips failed,
     /// since an error with no message of its own tells the user nothing else.
-    private static func message(for error: Error, fallback: String) -> String {
+    ///
+    /// The two roads need different sentences even though they now run one
+    /// engine. A device that stopped answering is a network story; the daemon on
+    /// this Mac is not reached over a network, and telling someone searching
+    /// their own laptop that "this device didn’t answer" points them at a machine
+    /// that is not the problem.
+    private static func message(for error: Error, on scope: SearchScope,
+                                fallback: String) -> String {
+        var local = false
+        if case .thisMac = scope { local = true }
         // Silence, not a refusal — and the likeliest cause is a host that has
         // never heard of the op, so the sentence names that. The rest is the
         // shared table every device pane words its failures from.
         if case TermiodClientError.timedOut = error {
-            return localized("This device didn’t answer. Its termiod may be too old to search.")
+            return local
+                ? localized("termiod on this Mac didn’t answer.")
+                : localized("This device didn’t answer. Its termiod may be too old to search.")
+        }
+        if case DeviceFileError.unsupported = error, local {
+            return localized("termiod on this Mac is too old to search.")
         }
         return RemoteFileFailure.message(for: error, fallback: fallback)
     }
