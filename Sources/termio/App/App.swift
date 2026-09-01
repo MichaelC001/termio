@@ -14,6 +14,9 @@ import TermioShared
 enum Termio {
     @MainActor
     static func main() {
+        // First line of Swift in the process: stamps the launch timeline, whose
+        // zero is `exec` (see `LaunchTrace`).
+        LaunchTrace.mark("main")
         let application = NSApplication.shared
         let delegate = AppDelegate()
         application.delegate = delegate
@@ -139,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var paneDragRearrange: PaneDragRearrange?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        LaunchTrace.mark("delegate ready")
         // Dev-only: `TERMIO_TERMINAL_DEBUG=1` turns on the GhosttyTerminal
         // wrapper's own lifecycle + metrics diagnostics, printed to stdout.
         if AppChannel.isDev,
@@ -152,10 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         StraySessionReaper.reapStrayOrphans()
-        // Ask the device the last run ended on what is running on it, before any
-        // pane mounts — the sidebar draws that answer, and a session that did not
-        // survive is a tombstone rather than a silently missing row.
         store.refreshDeviceSessions()
+        LaunchTrace.mark("store restored")
         // Task-completion notifications: the delegate must be installed before a
         // notification click can arrive, so wire it before any session runs.
         TaskNotificationCenter.shared.activate(store: store)
@@ -219,10 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // representable with no connection to the title bar, so the sidebar can never
         // reach behind the traffic lights. SwiftUI still renders each pane's contents.
         window.contentViewController = makeContentSplitViewController()
+        LaunchTrace.mark("content installed")
         window.delegate = self
         window.center()
         window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         window.makeKeyAndOrderFront(nil)
+        LaunchTrace.mark("window front")
         applyWindowTransparency()
         applyChromeAppearance()
         updateInspectorMaxThickness()
@@ -449,6 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         maybePromptForSessionControl()
+        LaunchTrace.mark("launched")
+        LaunchTrace.whenLaunchSettles {}
     }
 
     /// Start whichever server the Mobile pane's Direct Attach switch selects.
