@@ -37,12 +37,12 @@ final class SessionRuntime {
     /// foreground-demotion streak (RFC 20260830 §D2), cleared the moment the
     /// foreground stops being the shell or the agent reports working again.
     var agentExitNotice: String?
-    /// The PTY's real grid, from the daemon: the smallest viewport currently
-    /// rendering this session. The bytes on the wire are wrapped for it, and the
+    /// The PTY's real grid, from the daemon: the viewport of whichever screen a
+    /// person is in front of. The bytes on the wire are wrapped for it, and the
     /// only faithful way to show them is a surface laid out at it — letterboxed
     /// in the pane, not stretched to the window (§C.5 of the session protocol).
     /// Not read together with `isWriter` any more: under a size policy the pane
-    /// holding the write token is letterboxed too whenever somebody smaller is
-    /// looking at the same session.
+    /// holding the write token is letterboxed too whenever the session is sized
+    /// to somebody else's screen.
     var sharedGrid: TerminalGrid?
 }

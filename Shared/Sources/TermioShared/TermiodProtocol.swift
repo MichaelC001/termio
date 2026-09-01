@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import CoreGraphics
 
 /// The termiod Session Protocol codec (v0.1, see termiod/src/protocol.rs) —
 /// framing, control payloads, and the encode/decode tables, with nothing that
@@ -1984,12 +1985,43 @@ extension Termiod {
 /// A terminal grid. A named pair rather than a tuple so "is the PTY already
 /// this size?" is one comparison the compiler checks, on a path where getting
 /// it wrong costs every viewer a repaint.
-public struct TerminalGrid: Equatable, Sendable {
+public struct TerminalGrid: Equatable, Sendable, Codable {
     public let rows: UInt16
     public let cols: UInt16
 
     public init(rows: UInt16, cols: UInt16) {
         self.rows = rows
         self.cols = cols
+    }
+
+    /// How many whole cells a rectangle of this size can show — a client's
+    /// *viewport*, the thing the host sizes sessions by.
+    ///
+    /// libghostty's own arithmetic, deliberately: floor of the space left after
+    /// padding on both sides (`renderer/size.zig`, `GridSize.update`). A client
+    /// measuring its viewport differently would declare a grid its own surface
+    /// then disagrees with by a column, and the pane would letterbox against
+    /// itself forever.
+    ///
+    /// Both clients must use this one function rather than each keeping its own
+    /// copy: the Mac pane and the phone's terminal host both have to answer "how
+    /// much could I show" the same way, because a session moves between them
+    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md` §6.1).
+    ///
+    /// `nil` is no viewport at all — a window that has not laid out, a cell size
+    /// that is not there yet, or a rectangle too small for one cell. The host
+    /// counts that for nobody rather than treating it as a stand-in.
+    public static func fitting(
+        _ size: CGSize, cell: CGSize, paddingX: CGFloat, paddingY: CGFloat
+    ) -> TerminalGrid? {
+        guard cell.width > 0, cell.height > 0 else { return nil }
+        let cols = ((size.width - 2 * paddingX) / cell.width).rounded(.down)
+        let rows = ((size.height - 2 * paddingY) / cell.height).rounded(.down)
+        // A pane mid-teardown reports zero, and a NaN cell size would otherwise
+        // trap on the way to `UInt16`.
+        guard cols.isFinite, rows.isFinite, cols >= 1, rows >= 1 else { return nil }
+        return TerminalGrid(
+            rows: UInt16(clamping: Int(min(rows, 10_000))),
+            cols: UInt16(clamping: Int(min(cols, 10_000))))
     }
 }

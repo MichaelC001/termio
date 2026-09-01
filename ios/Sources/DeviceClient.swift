@@ -97,7 +97,7 @@ protocol DeviceSession: AnyObject {
 
     /// The PTY's actual grid and whether this device holds the write token, on
     /// the main queue: once on attach and on every change of either. The grid is
-    /// the smallest viewport rendering the session — what the bytes arriving are
+    /// the viewport of the screen being used — what the bytes arriving are
     /// wrapped for — and is unrelated to the token that travels beside it.
     var onSharedGrid: ((TerminalGrid, Bool) -> Void)? { get set }
 
@@ -108,12 +108,21 @@ protocol DeviceSession: AnyObject {
     /// A reply the surface generated to a host query (`TerminalDeviceReport`).
     /// Passes only while this device is the writer, and never claims.
     func sendDeviceReport(_ data: Data)
-    /// Declares this screen's viewport. The device sizes the session to the
-    /// smallest viewport being rendered, so this is a fact about this screen and
-    /// not a claim on the session — it goes through whether or not this device
-    /// holds the write token
+    /// Declares this screen's viewport: how much of a session it could show,
+    /// measured from the screen itself. The device sizes a session to the
+    /// viewport of whichever screen a person is in front of, so this is a fact
+    /// about this screen and not a claim on the session — it goes through
+    /// whether or not this device holds the write token
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     func setViewport(columns: Int, rows: Int)
+    /// The grid the surface is *actually* laid out at, which is the session's
+    /// rather than this screen's whenever this screen is showing a session
+    /// bigger than itself. Never a declaration: a screen that told the device
+    /// the grid it had been shrunk to could never say it had room for more, and
+    /// the session could never come back to it. Its one job is the repaint — a
+    /// keyframe parsed before the surface reached the shared grid is mangled,
+    /// and arriving there is what asks for a fresh one.
+    func noteSurfaceGrid(columns: Int, rows: Int)
     /// Whether this screen is showing the session. A screen the container parked
     /// keeps its viewport and stops counting, so a session left open on the
     /// phone does not hold a Mac pane at phone width forever.

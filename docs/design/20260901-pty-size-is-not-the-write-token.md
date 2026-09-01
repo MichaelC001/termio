@@ -21,6 +21,13 @@ related:
 >
 > §1–§4 are the argument, written before the code. §5 settles what §4 left open,
 > §6 records where §4 was wrong, and §10 says what the tests hold.
+>
+> **§11 supersedes §4's policy.** Smallest-wins shipped and the complaint §7
+> predicted arrived the same afternoon: with a second viewer attached, collapsing
+> a pane's sidebar resized nothing at all. The size now follows the screen a
+> person is in front of. Everything §1–§3 argues — that size must not ride on the
+> write token, and that the host must own the policy — is unchanged and is what
+> makes §11 safe.
 
 ---
 
@@ -274,6 +281,9 @@ sit at 38 columns. Whether that is acceptable, or whether termio needs tmux's
 `window-size` as a user-facing option, is the open question. Recommendation: ship
 the correct default first; add the option only if the complaint is real.
 
+*Answered the same afternoon, and not by the phone: two Termio windows on one
+session were enough. See §11.*
+
 **Where the policy runs.** Settled: the daemon, in
 `Session::apply_size_policy`, called from every change to the attachment set —
 an arrival, a departure, a viewport, a pane going to a background tab. It is the
@@ -323,16 +333,100 @@ stays as it is. Recorded so the next reader does not mistake it for the bug.
 
 ## 10. What the tests hold
 
-- `termiod/src/session.rs` — the policy itself: smallest wins; rows and columns
-  minimised independently; a hidden attachment stops counting and starts again;
-  nobody rendering leaves the size alone; a viewport of zero counts for nobody;
-  an observer never sizes anything. Plus the one that had to change shape: a
-  failed `TIOCSWINSZ` now tells nobody, because there is no requester to answer.
+*Updated by §11; the shapes below are current.*
+
+- `termiod/src/session.rs` — the policy itself: the session is the viewport of
+  the attachment most recently used; the answer is one screen's grid and never a
+  blend of two; changing a viewport is a use and a token claim is not; a hidden
+  attachment stops counting and starts again; nobody rendering leaves the size
+  alone; a viewport of zero counts for nobody; an observer never sizes anything.
+  Plus the one that had to change shape: a failed `TIOCSWINSZ` now tells nobody,
+  because there is no requester to answer.
 - `Tests/termioTests/TermiodSizePolicyIntegrationTests.swift` — two real Swift
-  attachments against a real daemon: the session is the smaller of the two, and
-  **typing on either end does not move it**. That last assertion is the whole
-  RFC, and it was false before this branch.
+  attachments against a real daemon: typing on a screen brings the session to it,
+  a viewer that is merely attached does not pull it back, and **resizing a pane
+  with a second viewer attached resizes the session**. That last assertion is the
+  report §11 exists for, and it was false on the branch that shipped §4.
 - `Tests/termioTests/TermiodWriteTokenIntegrationTests.swift` — unchanged, and
   that is the point: §H #6 is an input invariant and this did not touch it.
 - `Tests/termioTests/TermiodViewportFrameTests.swift` — the `R` payload's
   layout, which is the whole compatibility story.
+
+## 11. The complaint was real, and it was not the phone
+
+Shipped, and reported within hours: *"right sidebar 展开折叠 无法 resize tui, in
+last release version you could do it."*
+
+Reproduced against a real daemon on a dev build of `main`. One Termio window:
+⌘⌥0 moves the PTY 41×63 ↔ 41×97, every time. A second Termio window attached to
+the same session at 700×600: the PTY pins to 41×61 and four toggles in the first
+window move nothing, the app logging `PTY is now 41x61; this pane has room for
+41x70` each time. Quit the second window and the toggles work again.
+
+So §7's mitigation is not enough, and the case that breaks it is not the exotic
+one. It does not need a phone: a second window — two dev builds on one channel,
+a session open in a worktree app — is enough, and *every* viewer of a session is
+a hostage to the smallest one. The user asked for the size to follow the device
+being used.
+
+### 11.1 The policy
+
+```
+size = viewport of the most recently used attachment
+       among those interactive, rendering, and having declared one
+```
+
+`use_clock` is a counter on the session, stamped onto an attachment by exactly
+three things:
+
+| stamps a use | does not |
+| --- | --- |
+| typing (`SessionMsg::Input`, writer-only) | output, or any byte the terminal produced |
+| declaring a changed viewport, while rendering | a device report (`TerminalDeviceReport` — its own frame kind) |
+| attaching | gaining the write token |
+| | going to `rendering: false` |
+
+Everything else in §4 survives: the daemon still owns the policy, `R` is still a
+viewport declaration accepted from any attachment, an observer still counts for
+nothing, and nobody rendering still leaves the size where it was.
+
+### 11.2 Why this is not the `latest` §2 warns about
+
+§3 is right that termio's old `latest` was the worst version of it, and none of
+what made it bad is here:
+
+- **The trigger is a person, not a byte.** Bytes the terminal produced never
+  reach `Input` — clients send them on their own frame kind — so the storm's fuel
+  is still excluded.
+- **There is one authority.** §4 deleted both ends' grid re-assertion, and this
+  does not bring it back. The oscillation needed *two* clients each answering the
+  other's size; the daemon now decides alone, and a stray use costs one resize.
+- **The token is not the signal.** A claim is what a client sends to be allowed
+  to type; typing is what says somebody is there. Keeping those apart is why a
+  queued keystroke or a handover moves nothing.
+
+### 11.3 What it costs, honestly
+
+The phone can be *narrower* than the PTY again, which is exactly the case
+smallest-wins existed to make impossible — so §6.3's deletion is reverted: iOS
+lays its surface out at the shared grid and scales it down to fit, as it did
+before. With that comes §6.1's trap, now on the phone: a screen that letterboxes
+must declare its viewport from its own geometry, or it can only ever say it has
+room for the grid it was scaled to and the session can never come back to it. The
+phone therefore measures its viewport from the terminal host, and its surface's
+own report travels beside it as a second fact (`surfaceCols`/`surfaceRows` on the
+companion `resize`, optional, absent = the surface fills the screen) purely so
+the Mac's bridge can arm the repaint it has no local surface to hear about.
+
+Two viewers at different sizes now means one of them is scaled or padded at all
+times, which is the tmux/screen/zellij answer and was always going to be. The
+difference is which one: the screen nobody is touching.
+
+### 11.4 One thing §5.4 said and the code did not
+
+`companionAttachment` builds its link through `makeTermiodLink`, which put the
+Mac's `lastHostGrid` in the attach payload — so the bridge declared a stand-in
+viewport for a screen it does not have, against §5.4's own rule. Harmless under
+smallest-wins (it was never the smallest). Not harmless here: an attach is a use,
+so a stale stand-in would have taken the session for a frame. The bridge now
+attaches with a zero grid, which the daemon reads as no viewport at all.

@@ -320,15 +320,17 @@ maintains an internal grid at *authoritative PTY dimensions* with its own
 *local* viewport layered on top (letterbox / scale / scroll) — never by parsing
 at its own window size. *(`Attached` carries `rows`/`cols` as of Phase 1c. Both app clients conform: the
 Mac pane letterboxes at the shared grid (`SharedGridLetterbox`) whenever the
-session is smaller than the pane, and the phone fills its screen — under the
-2026-09-01 size policy it is never the larger of the two, so it has nothing to
-scale. Neither is keyed on the write token any more. The keyframe that announces
-a new grid reaches a client before its surface has moved, so it is parsed at the
-old grid; the first surface report that lands on the shared grid sends
-`request_snapshot`, and that keyframe paints right. A pane that letterboxes must
-declare its viewport from its own geometry rather than from the surface: a
-surface laid out at the shared grid reports that grid, and a pane declaring what
-its surface reports could never say it had room for more. The reference CLI
+session is a different size than the pane, and the phone lays its surface out at
+that grid and scales the whole thing down to fit. Neither is keyed on the write
+token any more. The keyframe that announces a new grid reaches a client before
+its surface has moved, so it is parsed at the old grid; the first surface report
+that lands on the shared grid sends `request_snapshot`, and that keyframe paints
+right. A client that lays its surface out at the shared grid must declare its
+viewport from its own geometry rather than from the surface: a surface laid out
+at the shared grid reports *that* grid, and a client declaring what its surface
+reports could never say it had room for its own width back. The phone carries
+both facts over the companion wire for the same reason — the Mac's bridge has no
+surface of its own to read the second one from. The reference CLI
 client still parses at its own size — acceptable for a single same-size CLI.)*
 
 **Writer policy — single writer, follows the device being used, observable.**
@@ -356,13 +358,16 @@ explicitly rejected (§H); the write token is also the natural place a future
 share ACL plugs in without new message shapes.
 
 **Resize policy — the PTY has one size and the *host* computes it, from the
-attachments that are actually rendering.** Amended 2026-09-01 by
+screen a person is in front of.** Amended 2026-09-01 by
 [PTY size is not the write token](20260901-pty-size-is-not-the-write-token.md);
 what follows replaces "the writer owns it".
 
 ```
-size = componentwise min(viewport of each attachment that is interactive,
-                         rendering, and has declared one)
+size = viewport of the most recently used attachment
+       among those interactive, rendering, and having declared one
+
+used by: typing · declaring a viewport · attaching
+not by:  output · device reports · gaining the write token
 ```
 
 `R` declares *this attachment's viewport* — "my window could show N×M" — and is
@@ -375,6 +380,18 @@ observer has no tty and therefore no screen a viewport could be about, so
 `termio read` tailing a session cannot squeeze the window someone is working in.
 With nobody rendering, the size stays exactly where it was.
 
+"Used" is deliberately narrow, and it is what separates this from the policy it
+replaces. Gaining the write token is *not* a use — a client claims the token to
+be allowed to type, and a claim can arrive from a queued keystroke or a
+handover — and neither is a byte the terminal produced. Typing, resizing a
+window, and opening the session on a device are: each is a person acting on a
+particular screen. This is tmux's `latest`, which tmux ships as an option rather
+than a default because binding size to recency thrashes. It does not here, for
+one structural reason: the host is the only thing that resizes. The old
+implementation had *both ends* re-assert their own grid on every token grant, so
+two clients could saw the PTY between their two sizes; a stray use now costs one
+resize, not an oscillation.
+
 The barrier is unchanged: quiesce, resize, emit fresh `S`, resume deltas (the
 ghostty-web lesson), and `E {ev:"resized"}` still carries the authoritative
 dimensions. What changed is who decides. Binding the size to the token made
@@ -382,10 +399,10 @@ every token move a resize barrier and every byte misread as typing a resize
 loop — measured at 6135 token moves in 30 seconds, the grid alternating 39×38 ↔
 47×42. Per-client server-side reflow remains rejected — it means one vt per
 viewer per session, which is a nested-window-manager tax in disguise — so the
-mismatch is *shown*: a viewer larger than the session lays its surface out at
-the session's grid and leaves the rest blank, the way tmux pads and screen
-leaves space. Under a smallest-wins policy no renderer is ever narrower than the
-PTY, so nothing is ever scaled down.
+mismatch is *shown*: a viewer whose screen is not the one the session is sized to
+lays its surface out at the session's grid — blank space around it where there is
+room, scaled down where there is not, the way tmux pads and screen leaves space.
+The Mac pane pads; the phone, against a 200-column pane, scales.
 
 ### C.6 Terminal plane staging
 

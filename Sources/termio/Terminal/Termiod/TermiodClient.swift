@@ -1083,9 +1083,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last viewport actually written as an `R` frame, so an unchanged
     /// declaration isn't re-sent while the daemon is still applying the first.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
-    /// Bumped by every viewport change; only the newest scheduled send may write
-    /// its frame. See `scheduleViewportLocked`.
-    private var viewportGeneration: UInt64 = 0
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
@@ -1104,8 +1101,8 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// keyframe, and that one paints right.
     ///
     /// Not gated on the write token any more. Under a size policy the writer's
-    /// own surface is letterboxed too whenever somebody smaller is looking, and
-    /// it needs the same repaint the observer always did.
+    /// own surface is letterboxed too whenever the session is sized to another
+    /// screen, and it needs the same repaint the observer always did.
     private var repaintPending = false
     /// Set on any deliberate teardown so the reader's EOF is not misread as a
     /// daemon crash.
@@ -1417,8 +1414,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     ///
     /// Measured from the pane, not read back off the surface, and sent whether
     /// or not this client holds the write token. The daemon sizes the session to
-    /// the smallest viewport being rendered; who may type is a separate question
-    /// and asking it here is what used to turn a stray byte into a resize loop
+    /// the viewport of whichever screen someone is in front of, and a pane that
+    /// just changed shape is one somebody has their hands on. Who may *type* is
+    /// a separate question, and answering it here is what used to turn a stray
+    /// byte into a resize loop
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     func setViewport(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
@@ -1467,27 +1466,41 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// How long the viewport must hold still before it goes to the daemon.
-    /// The same 50ms `PTYProcess.resizeFromHost` coalesces on, and for a
-    /// sharper reason here: on the in-process path an intermediate size costs a
-    /// SIGWINCH, while on this one a viewport that moves the session is a
-    /// host-side **barrier** — the session quiesces, resizes, and pushes a fresh
-    /// keyframe to every attachment. A live drag or a settling split emits a
-    /// burst of them, and each keyframe is a full repaint racing the child's own
+    /// How often a moving pane may move the session, at most.
+    ///
+    /// Twice ghostty's 25ms (`termio/Thread.zig`), because a viewport that moves
+    /// the session costs more here: on the in-process path an intermediate size
+    /// is a SIGWINCH, while on this one it is a host-side **barrier** — the
+    /// session quiesces, resizes, and pushes a fresh keyframe to every
+    /// attachment, and each keyframe is a full repaint racing the child's own
     /// redraw.
     private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(50)
 
-    /// Sends the viewport once the pane stops moving. Generation-stamped rather
-    /// than debounced with a cancellable work item because the size is re-read
-    /// at fire time: the last scheduled send is the only one that writes, and it
-    /// writes whatever the pane settled at.
+    /// Whether a flush is already on the queue. The window is not extended by
+    /// later changes — see `scheduleViewportLocked`.
+    private var viewportFlushScheduled = false
+
+    /// Flushes the viewport on a fixed cadence while the pane is moving, rather
+    /// than waiting for it to stop.
+    ///
+    /// This is ghostty's coalescer, not a debounce: the first change opens a
+    /// window, changes inside it only update the value, and the flush at the end
+    /// sends whatever the pane is at *then*. A drag therefore reflows the child
+    /// every 50ms while it is happening. The trailing debounce this replaced
+    /// re-armed its deadline on every change, so a continuous drag — the case it
+    /// most needed to serve — sent nothing at all until the pane held still, and
+    /// the terminal only caught up after the mouse came up.
+    ///
+    /// The tail is not lost: a change either finds no flush scheduled and opens
+    /// a window, or finds one that has not fired and will read the newer value.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
-        viewportGeneration &+= 1
-        let generation = viewportGeneration
+        guard !viewportFlushScheduled else { return }
+        viewportFlushScheduled = true
         workQueue.asyncAfter(deadline: .now() + Self.viewportCoalescingInterval) { [self] in
-            guard !closed, attached, generation == viewportGeneration else { return }
+            viewportFlushScheduled = false
+            guard !closed, attached else { return }
             do {
                 try sendViewportLocked()
             } catch {
@@ -1864,8 +1877,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// Records the PTY's real size — the smallest viewport currently rendering
-    /// this session, which is what every attachment's bytes are wrapped for.
+    /// Records the PTY's real size — the viewport of the screen being used,
+    /// which is what every attachment's bytes are wrapped for.
     ///
     /// Only noted, never answered. A writer used to answer a divergence by
     /// putting its own size back, which is how two devices watching one session

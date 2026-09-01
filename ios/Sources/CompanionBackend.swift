@@ -143,6 +143,9 @@ final class CompanionDeviceSession: DeviceSession {
     /// phone's own attachment, so on this wire it travels like any other byte.
     func sendDeviceReport(_ data: Data) { transport.send(data) }
     func setViewport(columns: Int, rows: Int) { transport.setViewport(cols: columns, rows: rows) }
+    func noteSurfaceGrid(columns: Int, rows: Int) {
+        transport.noteSurfaceGrid(cols: columns, rows: rows)
+    }
     func setRendering(_ showing: Bool) { transport.setRendering(showing) }
     func reassertGrid() { transport.reassertGrid() }
 }

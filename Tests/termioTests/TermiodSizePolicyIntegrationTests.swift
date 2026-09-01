@@ -3,13 +3,15 @@ import TermioShared
 @testable import termio
 
 /// Two attachments on one session, against a real daemon: the PTY is the
-/// smallest viewport being rendered, and the write token does not move it.
+/// viewport of the screen a person is in front of, and nothing else moves it.
 ///
-/// Every assertion here was false before
-/// `docs/design/20260901-pty-size-is-not-the-write-token.md`. The size followed
-/// the token — gaining it re-asserted the winner's grid — so two devices trading
-/// the token traded the PTY with it, and one byte misread as typing was a
-/// full-speed resize loop. This is the test that says it does not.
+/// Both halves have been wrong, in opposite directions
+/// (`docs/design/20260901-pty-size-is-not-the-write-token.md`). The size first
+/// followed the write token, which gaining it re-asserted, so one byte misread
+/// as typing was a full-speed resize loop. Then it followed the smallest viewer,
+/// and a phone that had opened a session once held a 200-column pane at 47 for
+/// as long as it stayed open — collapsing the pane's sidebar moved nothing at
+/// all, which is the report this file ends with.
 ///
 /// Opt-in on the same terms as the other daemon suites: set
 /// `TERMIO_TERMIOD_TEST_BIN` to run it.
@@ -102,10 +104,11 @@ final class TermiodSizePolicyIntegrationTests: XCTestCase {
         }
     }
 
-    func testTheSessionIsTheSmallestViewportAndTheTokenDoesNotMoveIt() throws {
+    func testTheSessionIsTheScreenBeingUsed() throws {
         let name = "size-policy-\(UUID().uuidString.prefix(8))"
         let wide = TerminalGrid(rows: 50, cols: 200)
         let narrow = TerminalGrid(rows: 42, cols: 47)
+        let widened = TerminalGrid(rows: 50, cols: 240)
 
         let mac = link(name, rows: Int(wide.rows), cols: Int(wide.cols))
         let macGrid = GridWatcher()
@@ -114,31 +117,47 @@ final class TermiodSizePolicyIntegrationTests: XCTestCase {
         defer { mac.detach() }
         waitForGrid(macGrid, wide, "one viewer, its own grid")
 
-        // A phone opens the same session on a much smaller screen.
+        // A phone opens the same session on a much smaller screen. Opening it
+        // there is using it, so the session goes to the phone and the Mac
+        // letterboxes.
         let phone = link(name, rows: Int(narrow.rows), cols: Int(narrow.cols))
         let phoneGrid = GridWatcher()
         phone.onSharedGrid = { phoneGrid.grid = $0 }
         phone.start()
         defer { phone.detach() }
-        waitForGrid(phoneGrid, narrow, "the phone is smaller, so the session is")
+        waitForGrid(phoneGrid, narrow, "the phone was just opened, so the session is its size")
         waitForGrid(macGrid, narrow, "and the Mac is told, so it can letterbox")
 
-        // Typing takes the write token. It used to take the grid with it.
+        // Typing is the plainest statement of which screen someone is at.
         mac.send(Data("echo\n".utf8))
-        assertGridHolds(macGrid, narrow, "typing on the Mac must not resize the session")
-        phone.send(Data("echo\n".utf8))
-        assertGridHolds(phoneGrid, narrow, "nor typing on the phone")
+        waitForGrid(macGrid, wide, "typing on the Mac brings the session back to it")
+        assertGridHolds(
+            phoneGrid, wide, "a phone that is merely attached must not pull it back")
 
-        // Putting the session away on the phone is what gives the width back.
+        phone.send(Data("echo\n".utf8))
+        waitForGrid(phoneGrid, narrow, "and typing on the phone hands it over again")
+
+        // The report that produced this policy: with a second viewer attached,
+        // collapsing the pane's sidebar has to resize the session. Under
+        // smallest-wins the Mac's new width lost to the phone's every time.
+        mac.setViewport(rows: Int(widened.rows), cols: Int(widened.cols))
+        waitForGrid(macGrid, widened, "resizing a pane is using it")
+
+        // Putting the session away on the phone leaves the Mac the only screen
+        // anyone is in front of.
+        phone.send(Data("echo\n".utf8))
+        waitForGrid(macGrid, narrow, "the phone takes it back")
         phone.setRendering(false)
-        waitForGrid(macGrid, wide, "a viewer that stopped rendering stops counting")
+        waitForGrid(macGrid, widened, "a viewer that stopped rendering stops counting")
 
         phone.setRendering(true)
-        waitForGrid(macGrid, narrow, "and counts again when it comes back")
+        waitForGrid(macGrid, narrow, "and opening it again is using the phone")
     }
 
     /// The other half: a viewer that leaves altogether releases the session too,
     /// and the size it left behind survives until somebody is rendering again.
+    /// A departure is the one size change nobody asked for, so it is the one
+    /// that has to fall back rather than hold.
     func testDetachingHandsTheWidthBack() throws {
         let name = "size-detach-\(UUID().uuidString.prefix(8))"
         let wide = TerminalGrid(rows: 50, cols: 200)
@@ -153,7 +172,7 @@ final class TermiodSizePolicyIntegrationTests: XCTestCase {
 
         let phone = link(name, rows: Int(narrow.rows), cols: Int(narrow.cols))
         phone.start()
-        waitForGrid(macGrid, narrow, "the phone squeezes it")
+        waitForGrid(macGrid, narrow, "opening it on the phone takes the session there")
 
         phone.detach()
         waitForGrid(macGrid, wide, "and hands it back on the way out")
