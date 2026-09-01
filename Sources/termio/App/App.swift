@@ -160,6 +160,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         StraySessionReaper.reapStrayOrphans()
+        // The daemon on this Mac outlives the app, so an update leaves the old
+        // process running until something asks it to take on the new binary.
+        // Here — before the first control channel opens and long before a pane
+        // attaches — is the only moment that costs nobody their session. The
+        // probe can block behind a wedged daemon, so it must never delay making
+        // the first window.
+        DispatchQueue.global(qos: .utility).async {
+            TermioStore.reconcileLocalDaemon()
+        }
         store.refreshDeviceSessions()
         LaunchTrace.mark("store restored")
         // Task-completion notifications: the delegate must be installed before a

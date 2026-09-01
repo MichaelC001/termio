@@ -1402,6 +1402,96 @@ extension TermioStore {
         }
     }
 
+    // MARK: - This Mac's own daemon
+
+    /// Puts the daemon on this Mac onto the binary this app ships.
+    ///
+    /// The daemon outlives the app deliberately: that is what makes a session
+    /// survive quit. The cost is that updating the app replaces the binary in
+    /// the bundle and leaves the *process* running whatever version it started
+    /// with, indefinitely — this Mac was observed a full release behind while
+    /// every box it talks to was current, because a remote is reconciled before
+    /// each terminal opens (`ensureRemoteReady`) and the machine the app runs on
+    /// was the one nobody asked.
+    ///
+    /// Launch is the right moment to stage the replacement: no pane has yet
+    /// asked to start this app's daemon, so a missing daemon will start from the
+    /// new binary. An existing daemon is deliberately left alone. The later swap
+    /// is deferred to an explicit deploy or the daemon's own restart, so launch
+    /// can never terminate an idle session without the user asking.
+    ///
+    /// The rule itself stays in one place. This asks what the daemon is running
+    /// and, when that is not what the bundled daemon carries, hands the decision to the
+    /// same `deploy` loop every device goes through. Whether a difference is an
+    /// upgrade at all is that loop's answer to give — a dev build must never
+    /// stage itself over a released daemon — so this side compares for equality
+    /// and nothing more.
+    nonisolated static func reconcileLocalDaemon() {
+        let binary = Termiod.daemonBinaryPath()
+        guard FileManager.default.isExecutableFile(atPath: binary),
+              let desired = daemonBuildStamp(at: binary),
+              // A release stamps the bundle and termiod together. The local
+              // build script leaves the plist's placeholder in place while the
+              // daemon reports its commit-count fallback, so refusing that
+              // mismatch keeps a dev app from deploying a binary the Rust loop
+              // will correctly decline to use.
+              AppInfo.bundledStamp == desired
+        else { return }
+        // No autostart on purpose: a daemon that is not running cannot be stale,
+        // and the one the first pane starts is this bundle's own.
+        guard let running = try? Termiod.probeExistingLocalDevice().daemonVersion,
+              running != desired
+        else { return }
+        Log.termiod.info("""
+        this Mac runs termiod \(running, privacy: .public) and this app ships \
+        \(desired, privacy: .public); staging it before any pane attaches
+        """)
+        guard let run = runProcess(binary, ["deploy", "--stage-only", "--json"]) else {
+            Log.termiod.error("couldn't run \(binary, privacy: .public) deploy")
+            return
+        }
+        guard let report = try? Termiod.LifecycleReport.decode(
+            Data(run.standardOutput.utf8))
+        else {
+            Log.termiod.error("""
+            the local termiod deploy ended without a report: \
+            \(run.standardError, privacy: .public)
+            """)
+            return
+        }
+        switch report.state {
+        case .staged:
+            Log.termiod.info("""
+            staged termiod \(report.version ?? desired, privacy: .public) for this Mac's daemon; \
+            it is still running \(report.daemon ?? running, privacy: .public)
+            """)
+        case .current:
+            Log.termiod.info(
+                "this Mac's termiod deploy reports current at \(report.version ?? desired, privacy: .public)")
+        default:
+            // Never an alert. Version skew is negotiated at the handshake,
+            // so a daemon that stays behind is a worse build, not a broken
+            // app, and launch is the wrong place to argue about it.
+            Log.termiod.error("""
+            left this Mac's termiod on \(running, privacy: .public): \
+            \(report.message ?? report.state.rawValue, privacy: .public)
+            """)
+        }
+    }
+
+    /// The bundled daemon's own build stamp. This is the source the deploy
+    /// command compares with the running daemon, so launch must use it too.
+    private nonisolated static func daemonBuildStamp(at binary: String) -> String? {
+        guard let output = runProcess(binary, ["--version"]), output.exitCode == 0 else {
+            return nil
+        }
+        return output.standardOutput
+            .split(whereSeparator: \.isWhitespace)
+            .dropFirst()
+            .first
+            .map(String.init)
+    }
+
     /// A captured subprocess result — exit code plus drained stdout/stderr.
     private struct ProcessOutput {
         let exitCode: Int32
