@@ -1435,7 +1435,6 @@ final class TermiodSessionLink: @unchecked Sendable {
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
             guard attached else { return }
-            raiseViewportPendingLocked()
             scheduleViewportLocked()
         }
     }
@@ -1582,6 +1581,16 @@ final class TermiodSessionLink: @unchecked Sendable {
         let showing = hostSizesByPolicy ? rendering : true
         if let sent = sentViewport, sent.grid == viewportGrid, sent.rendering == showing { return }
         sentViewport = (viewportGrid, showing)
+        // From here the surface may lead: the declaration is on the wire, the
+        // daemon's answer and its keyframe are coming, and the pane knows the
+        // grid they will be at. Before here — a drag still in the coalescing
+        // window — it must not: the pane's grid is changing every frame while
+        // nothing new has been drawn at any of those widths, so a surface that
+        // followed it would re-wrap the old screen once per frame. That is the
+        // mess during a drag; the session's grid is the last width anything was
+        // actually drawn for, and holding the surface there is what tmux and
+        // screen show while a window moves.
+        raiseViewportPendingLocked()
         Log.termiod.debug("""
         resize-trace declare \(self.viewportGrid.rows, privacy: .public)x\
         \(self.viewportGrid.cols, privacy: .public) rendering=\(showing, privacy: .public)
