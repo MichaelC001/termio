@@ -1007,7 +1007,14 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        self.send_sidecar(SidecarCommand::Resize { rows, cols });
+        // Rewrap only when the shell is not the one about to redraw. A job in
+        // the foreground — an agent TUI, an editor — does no width-relative
+        // cursor arithmetic against the old screen, so the screen can be
+        // rewrapped the way every terminal the program was written for would;
+        // the shell's own redisplay cannot survive that, and gets the
+        // truncating resize it assumes.
+        let reflow = self.foreground.current().job;
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         self.begin_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
@@ -1848,10 +1855,15 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                             }
                         }
                     }
-                    SidecarCommand::Resize { rows, cols } => {
+                    SidecarCommand::Resize { rows, cols, reflow } => {
                         if fault.is_none() {
                             if let Some(terminal) = terminal.as_mut() {
-                                if let Err(error) = terminal.resize(rows, cols) {
+                                let resized = if reflow {
+                                    terminal.resize_reflowing(rows, cols)
+                                } else {
+                                    terminal.resize(rows, cols)
+                                };
+                                if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
                                 }
                             }
@@ -2576,7 +2588,7 @@ mod tests {
             .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
             .unwrap();
         sidecar
-            .send(SidecarCommand::Resize { rows: 3, cols: 20 })
+            .send(SidecarCommand::Resize { rows: 3, cols: 20, reflow: false })
             .unwrap();
         sidecar
             .send(SidecarCommand::Snapshot {
