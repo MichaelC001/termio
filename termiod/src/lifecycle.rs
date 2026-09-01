@@ -505,12 +505,16 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
             std::io::Error::last_os_error()
         );
     }
-    // The daemon removes its socket last, after burying every session, so the
-    // socket going away is the drain having finished — not merely begun.
+    // What was asked for is that `pid` stop serving this socket, and that is
+    // what is waited on. The two proxies this loop used to read instead each
+    // answer a different question: `kill(pid, 0)` succeeds for a *zombie*, so a
+    // daemon nobody reaped reads as one that refuses to leave, and the socket
+    // file existing says only that a path is occupied — a client autostarting
+    // its replacement re-creates it in milliseconds. Together they turned a
+    // stop that had already worked into a failed upgrade (#571).
     let deadline = Instant::now() + SETTLE;
     loop {
-        let process_gone = unsafe { libc::kill(pid, 0) } != 0;
-        if process_gone || !socket.exists() {
+        if !still_serving(&socket, pid).await {
             return Ok(StopOutcome {
                 stopped: true,
                 busy: Vec::new(),
@@ -518,10 +522,33 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
             });
         }
         if Instant::now() >= deadline {
-            bail!("pid {pid} was asked to stop and is still holding {} after {}s", socket.display(), SETTLE.as_secs());
+            bail!(
+                "pid {pid} was asked to stop and is still serving {} after {}s; \
+                 its log says what it is waiting on",
+                socket.display(),
+                SETTLE.as_secs()
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Whether `pid` is still the process behind `socket`.
+///
+/// The daemon holds its listener bound through the whole drain, on purpose, so
+/// that nothing can place a replacement over state still being buried: while it
+/// answers here it really is still working, and waiting is right. Nothing
+/// answering, or a different pid answering, both mean this daemon let the
+/// socket go — which is the postcondition, whatever became of its process
+/// table entry afterwards.
+///
+/// A daemon that answers but whose pid the kernel will not name is not evidence
+/// that it left, so that case keeps waiting rather than claiming success.
+async fn still_serving(socket: &Path, pid: i32) -> bool {
+    let Some(stream) = connect_existing(socket).await else {
+        return false;
+    };
+    peer_pid(&stream).is_none_or(|serving| serving == pid)
 }
 
 // MARK: Node side — `termiod handoff`

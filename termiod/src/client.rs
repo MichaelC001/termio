@@ -121,10 +121,26 @@ fn spawn_daemon() -> Result<()> {
         cmd.pre_exec(|| {
             // Detach from the client's session so the daemon survives us.
             libc::setsid();
-            Ok(())
+            // Then fork once more, so the daemon's parent is pid 1 rather than
+            // whichever client happened to autostart it. Clients here outlive
+            // the daemon routinely — the app, and the long-lived `termiod
+            // stdio` an SSH attach runs — and none of them waits on it, so its
+            // exit used to leave a zombie whose pid still answered `kill(pid,
+            // 0)`. Supervised hosts never had this: systemd is the parent
+            // there, and it reaps (#571).
+            match libc::fork() {
+                -1 => Err(std::io::Error::last_os_error()),
+                0 => Ok(()),
+                _ => libc::_exit(0),
+            }
         });
     }
-    cmd.spawn().context("starting termiod daemon")?;
+    // Waits on the intermediate, which exits the instant it has forked — never
+    // on the daemon, which is no longer a child of this process at all.
+    cmd.spawn()
+        .context("starting termiod daemon")?
+        .wait()
+        .context("waiting for the daemon to detach")?;
     Ok(())
 }
 

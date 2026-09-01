@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -153,6 +154,45 @@ fn stop_takes_an_idle_daemon_down() {
     let again = termiod(&socket, &["stop", "--json"]);
     assert!(again.status.success());
     assert_eq!(json(&again)["stopped"], true);
+}
+
+/// The stop that #571 reported as a failure: the daemon left, but its socket
+/// file stayed on disk and its process table entry stayed with it.
+///
+/// Both halves are reproduced without any timing to lose. The directory is
+/// made unwritable so the daemon's own `remove_file` fails on the way out,
+/// leaving the same file-still-there state a client autostarting a replacement
+/// produces. And the daemon is this test's child, never waited on before the
+/// stop runs — the shape of every client that autostarts a daemon and outlives
+/// it, and the reason `kill(pid, 0)` kept answering for a process that had
+/// already exited.
+///
+/// `--force` only skips the roster round trip, which the sealed directory would
+/// break; the wait this is about is the same in both paths.
+#[test]
+fn stop_succeeds_when_the_daemon_left_its_socket_and_its_pid_behind() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("d.sock");
+    let mut daemon = Daemon::start(&socket);
+
+    // Owner without write permission cannot unlink from its own directory.
+    let sealed = std::fs::Permissions::from_mode(0o500);
+    std::fs::set_permissions(&dir.0, sealed).expect("seal the daemon's directory");
+
+    let stopped = termiod(&socket, &["stop", "--force", "--json"]);
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700))
+        .expect("unseal the daemon's directory");
+
+    assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
+    assert_eq!(json(&stopped)["stopped"], true);
+    // The two states that used to be read as "still running", asserted so the
+    // test fails if it stops reproducing them rather than passing vacuously.
+    assert!(socket.exists(), "the daemon removed the socket; this no longer reproduces #571");
+    assert!(
+        unsafe { libc::kill(daemon.child.id() as i32, 0) } == 0,
+        "the daemon's pid was already reaped; this no longer reproduces #571"
+    );
+    assert!(daemon.wait_exit(), "daemon still running after stop");
 }
 
 /// A session whose agent reports `working` keeps the daemon up, and the
