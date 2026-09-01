@@ -882,6 +882,16 @@
         }
       }
     },
+    "Arguments": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参数"
+          }
+        }
+      }
+    },
     "Asking %@ what it has.": {
       "localizations": {
         "zh-Hans": {
@@ -4843,6 +4853,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "窗格"
+          }
+        }
+      }
+    },
+    "Passed to %@ every time a session starts.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次开启会话时传给 %@。"
           }
         }
       }

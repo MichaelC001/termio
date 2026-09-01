@@ -549,6 +549,25 @@ private struct AgentDetailPane: View {
                         namesItsMachine: devices.count > 1)
                 }
                 LabeledContent {
+                    TextField(
+                        "",
+                        text: Binding(
+                            get: { settings.arguments(for: preset) ?? "" },
+                            set: { settings.setArguments($0, for: preset) }
+                        ),
+                        prompt: Text(localized("None"))
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .labelsHidden()
+                    .frame(minWidth: 180)
+                } label: {
+                    SettingsLabel(
+                        title: localized("Arguments"),
+                        subtext: localized("Passed to \(preset.displayName) every time a session starts."),
+                        titleFont: .headline
+                    )
+                }
+                LabeledContent {
                     if let url = preset.installURL {
                         Link(localized("Install Page"), destination: url)
                     } else {

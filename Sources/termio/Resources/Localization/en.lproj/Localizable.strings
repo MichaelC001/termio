@@ -188,6 +188,8 @@
 	<string>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</string>
 	<key>Apply</key>
 	<string>Apply</string>
+	<key>Arguments</key>
+	<string>Arguments</string>
 	<key>Asking %@ what it has.</key>
 	<string>Asking %@ what it has.</string>
 	<key>Asking %@…</key>
@@ -984,6 +986,8 @@
 	<string>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</string>
 	<key>Panes</key>
 	<string>Panes</string>
+	<key>Passed to %@ every time a session starts.</key>
+	<string>Passed to %@ every time a session starts.</string>
 	<key>Password</key>
 	<string>Password</string>
 	<key>Paste</key>
