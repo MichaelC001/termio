@@ -628,6 +628,33 @@ pub fn search(
 ) -> SearchOutcome {
     use std::sync::atomic::Ordering;
 
+    // A stall directory makes this search take a fixed time while staying
+    // cancellable — the integration tests' stand-in for the enormous checkout
+    // they cannot afford to create, now that there is no `git grep` subprocess
+    // left to shim. Absent outside a test harness, this costs one env lookup.
+    if let Some(stall) = std::env::var_os("TERMIOD_TEST_SEARCH_STALL") {
+        let stall = Path::new(&stall);
+        let seconds = std::fs::read_to_string(stall.join("seconds"))
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .unwrap_or(0.0);
+        if seconds > 0.0 {
+            let _ = std::fs::write(stall.join("started"), b"");
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+            while std::time::Instant::now() < deadline {
+                if cancel.load(Ordering::Relaxed) {
+                    // The marker is the host's own record that the walk was
+                    // stopped, not merely abandoned by its client.
+                    let _ = std::fs::write(stall.join("canceled"), b"");
+                    return SearchOutcome { matches: 0, limit_hit: false, canceled: true };
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            let _ = std::fs::write(stall.join("finished"), b"");
+        }
+    }
+
     // An empty query has no literal to look for. `git grep -e ""` answered it
     // by matching every line in the tree, which is the whole repo streamed back
     // with nothing to highlight; no result is the more useful reading and the
