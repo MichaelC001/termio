@@ -569,7 +569,7 @@
 			repositoryURL = "https://github.com/termio-sh/libghostty-swift";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.22;
+				minimumVersion = 1.0.24;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
