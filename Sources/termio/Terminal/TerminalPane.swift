@@ -498,7 +498,8 @@ private struct SharedGridLetterbox<Content: View>: View {
         // A pane already the session's size fills the pane exactly, with none of
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
-        guard let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
+        guard !runtime.viewportPending,
+              let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
         let width = CGFloat(grid.cols) * cell.width + 2 * paddingX + cell.width / 2

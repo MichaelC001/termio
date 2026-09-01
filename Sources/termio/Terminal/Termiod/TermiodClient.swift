@@ -1086,6 +1086,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
+    /// Whether a viewport change of this pane's own is still unanswered, and the
+    /// stamp that lets only the newest one lower it. See `onViewportPending`.
+    private var viewportPending = false
+    private var viewportPendingGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1205,6 +1209,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
+    /// Raised the moment this pane declares a new viewport and lowered when the
+    /// daemon's grid agrees — or when it plainly is not going to, because
+    /// somebody else is using the session. While it is up the pane's surface
+    /// follows the pane rather than the session, so the keyframe that follows
+    /// the resize lands on a surface that is already the right size.
+    var onViewportPending: ((Bool) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1425,6 +1435,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
             guard attached else { return }
+            raiseViewportPendingLocked()
             scheduleViewportLocked()
         }
     }
@@ -1471,6 +1482,34 @@ final class TermiodSessionLink: @unchecked Sendable {
                 requestResyncLocked()
             }
         }
+    }
+
+    /// How long a declaration is treated as in flight before the pane accepts
+    /// that the session belongs to another screen. Long enough for the coalesced
+    /// send plus a local round trip, short enough that a pane watching a phone
+    /// lays its surface out at the phone's grid rather than sitting stretched
+    /// over bytes wrapped for it.
+    private static let viewportSettleDeadline = DispatchTimeInterval.milliseconds(600)
+
+    /// Must run on `workQueue`.
+    private func raiseViewportPendingLocked() {
+        viewportPendingGeneration &+= 1
+        let generation = viewportPendingGeneration
+        if !viewportPending {
+            viewportPending = true
+            DispatchQueue.main.async { [self] in onViewportPending?(true) }
+        }
+        workQueue.asyncAfter(deadline: .now() + Self.viewportSettleDeadline) { [self] in
+            guard !closed, generation == viewportPendingGeneration else { return }
+            lowerViewportPendingLocked()
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func lowerViewportPendingLocked() {
+        guard viewportPending else { return }
+        viewportPending = false
+        DispatchQueue.main.async { [self] in onViewportPending?(false) }
     }
 
     /// How long a moving pane must hold still before its size goes to the
@@ -1915,6 +1954,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            if grid == viewportGrid { lowerViewportPendingLocked() }
             Log.termiod.debug("""
             resize-trace session-is \(grid.rows, privacy: .public)x\
             \(grid.cols, privacy: .public)
