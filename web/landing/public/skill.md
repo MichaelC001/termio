@@ -96,10 +96,9 @@ id-prefix works too).
 
 - Copy links verbatim from `list` or a `send` reply; never guess or
   construct one.
-- A flag it does not know is an error, never text: `--agnet codex` exits 2
-  with a suggestion instead of becoming part of the prompt. Exit 2 means the
-  command was malformed and never reached Termio — fix the command, do not
-  retry it. `--agent codex` and `--agent=codex` are both accepted.
+- An unknown flag is an error, never text. Exit 2 means the command was
+  malformed and never reached Termio — fix it rather than retry.
+  `--agent codex` and `--agent=codex` are both accepted.
 - One request, one target. Never send the same prompt to several siblings,
   and never run multiple `send` commands in parallel — delegate to ONE
   session.

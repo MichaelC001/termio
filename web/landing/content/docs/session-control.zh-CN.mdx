@@ -3,7 +3,7 @@ title: 会话控制与命令行
 description: Termio 的编排 API——让 Agent 汇报自己在做什么的状态 hooks，以及让你（或另一个 Agent）从 shell 里派生、驱动和监督会话的 termio sessions 命令行。
 x-i18n:
   source_path: session-control.mdx
-  source_hash: aee6cd59c94753760b5e56a2721e63748a839419f837107823c1603563d394a1
+  source_hash: d8f45e181eaceaf156197e86596db197400f29e4b4fcda4ddb44d8d644a93984
   generated_at: 2026-09-01
 ---
 
@@ -192,11 +192,9 @@ termio sessions spawn "summarize the failing CI job" --wait --timeout 120000
 ### 大声失败
 
 这个命令行是为信任退出码、而不是信任散文的调用方设计的。跑起来又失败的命令——错误回复、空
-回复——以 `1` 退出；写错的命令根本到不了应用，以 `2` 退出。
-
-正是第二个退出码让写错的选项不再危险。`--agnet codex` 会被拒绝并给出拼写建议，而不是被并进
-提示里，所以一个写错的选项不会再看起来像一次成功的 spawn。选项两种写法都收，`--agent codex`
-和 `--agent=codex`；`--` 结束选项解析——以短横线开头的文本就是这样送进会话的：
+回复——以 `1` 退出；解析不了的命令不会联系应用，以 `2` 退出。选项两种写法都收，
+`--agent codex` 和 `--agent=codex`；`--` 结束选项解析——以短横线开头的文本就是这样送进
+会话的：
 
 ```sh
 termio sessions send <session> -- --force

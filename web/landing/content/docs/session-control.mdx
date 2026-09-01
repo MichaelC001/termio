@@ -232,14 +232,10 @@ supervisor reads the worker’s transcript, with `watch` as the backstop. A
 ### Fail loud
 
 The CLI is built for callers that trust exit codes, not prose. A command that
-runs and fails — an error reply, an empty one — exits `1`. A command that was
-typed wrong never reaches the app at all and exits `2`.
-
-That second code is what makes a mistyped flag safe. `--agnet codex` is refused
-with a suggestion rather than folded into the prompt, so a wrong flag can no
-longer read as a successful spawn. Flags take either spelling, `--agent codex`
-or `--agent=codex`, and `--` ends them — which is how text beginning with a
-dash reaches a session:
+runs and fails — an error reply, an empty one — exits `1`; a command it cannot
+parse exits `2` without contacting the app. Flags take either spelling,
+`--agent codex` or `--agent=codex`, and `--` ends them, which is how text
+beginning with a dash reaches a session:
 
 ```sh
 termio sessions send <session> -- --force
