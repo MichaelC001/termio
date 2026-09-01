@@ -45,4 +45,18 @@ final class SessionRuntime {
     /// holding the write token is letterboxed too whenever the session is sized
     /// to somebody else's screen.
     var sharedGrid: TerminalGrid?
+    /// Whether this pane's own viewport change is still in flight.
+    ///
+    /// The letterbox reads it, and it is the difference between the two reasons
+    /// the session's grid can differ from the pane's. Somebody else is using the
+    /// session on a smaller screen: letterbox, or this pane re-wraps bytes that
+    /// were wrapped for theirs (§C.5). *This* pane was just resized and the
+    /// daemon has not answered yet: letterboxing there pins the screen to the
+    /// width the drag started at and slides it around inside the growing pane,
+    /// which is what a window drag looked like. Under a size policy that follows
+    /// the device being used, an in-flight change of this pane's own is a
+    /// resize that is about to be granted — so the surface follows the pane, the
+    /// way it would in a terminal with no host at all, and the keyframe at the
+    /// end is what everyone converges on.
+    var viewportPending = false
 }

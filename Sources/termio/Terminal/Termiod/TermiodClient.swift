@@ -1083,6 +1083,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last viewport actually written as an `R` frame, so an unchanged
     /// declaration isn't re-sent while the daemon is still applying the first.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
+    /// Whether a viewport change of this pane's own is still unanswered, and the
+    /// stamp that lets only the newest one lower it. See `onViewportPending`.
+    private var viewportPending = false
+    private var viewportPendingGeneration: UInt64 = 0
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
@@ -1205,6 +1209,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
+    /// Raised the moment this pane declares a new viewport and lowered when the
+    /// daemon's grid agrees with it — or when it plainly is not going to,
+    /// because somebody else is using the session. The letterbox is suppressed
+    /// while it is up: a pane must not letterbox against its own pending resize.
+    var onViewportPending: ((Bool) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1425,8 +1434,36 @@ final class TermiodSessionLink: @unchecked Sendable {
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
             guard attached else { return }
+            raiseViewportPendingLocked()
             scheduleViewportLocked()
         }
+    }
+
+    /// How long a declaration is treated as in flight before the pane accepts
+    /// that the session belongs to another screen. Long enough for the coalesced
+    /// send plus a local round trip, short enough that a pane watching a phone
+    /// letterboxes rather than sitting stretched over bytes wrapped for it.
+    private static let viewportSettleDeadline = DispatchTimeInterval.milliseconds(600)
+
+    /// Must run on `workQueue`.
+    private func raiseViewportPendingLocked() {
+        viewportPendingGeneration &+= 1
+        let generation = viewportPendingGeneration
+        if !viewportPending {
+            viewportPending = true
+            DispatchQueue.main.async { [self] in onViewportPending?(true) }
+        }
+        workQueue.asyncAfter(deadline: .now() + Self.viewportSettleDeadline) { [self] in
+            guard !closed, generation == viewportPendingGeneration else { return }
+            lowerViewportPendingLocked()
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func lowerViewportPendingLocked() {
+        guard viewportPending else { return }
+        viewportPending = false
+        DispatchQueue.main.async { [self] in onViewportPending?(false) }
     }
 
     /// Whether this pane is on screen. A hidden pane is not rendering and stops
@@ -1481,37 +1518,24 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// 180ms — and none of them are wrong about it.
     private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(150)
 
-    /// When the last declaration actually went out, so a change arriving after a
-    /// quiet spell can skip the wait. See `scheduleViewportLocked`.
-    private var lastViewportSend: DispatchTime?
     /// Bumped by every viewport change inside a burst; only the newest scheduled
     /// send may write its frame. See `scheduleViewportLocked`.
     private var viewportGeneration: UInt64 = 0
 
-    /// Sends the first change at once and the rest of a burst only once it ends.
+    /// Sends a burst's final size, once it stops.
     ///
-    /// The two cases a pane produces are genuinely different and this is what
-    /// tells them apart. A **discrete** change — collapsing the sidebar,
-    /// splitting, a font size — arrives alone after a quiet spell: there is
-    /// nothing to coalesce it with, and delaying it is pure lag, so it goes now.
-    /// A **drag** is a continuous stream: every intermediate size costs every
-    /// viewer a repaint and none of them is the one the user is asking for, so
-    /// the stream collapses to one send when it stops.
+    /// One barrier per drag, at the end, and deliberately not one at the start
+    /// as well: the pane's own surface follows the drag live (the letterbox
+    /// stands aside while this declaration is in flight), so an early barrier
+    /// buys nothing and costs every viewer a full-screen repaint at the moment
+    /// the drag begins — which is what it looked like.
     ///
-    /// The result is two barriers for a drag rather than one per 50ms, and no
-    /// wait at all for a toggle. The trailing half is generation-stamped rather
-    /// than cancelled because the size is re-read at fire time: the last
-    /// scheduled send is the only one that writes, and it writes whatever the
-    /// pane settled at.
+    /// Generation-stamped rather than cancelled because the size is re-read at
+    /// fire time: the last scheduled send is the only one that writes, and it
+    /// writes whatever the pane settled at.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
-        let now = DispatchTime.now()
-        let quiet = lastViewportSend.map { now >= $0 + Self.viewportCoalescingInterval } ?? true
-        if quiet {
-            flushViewportLocked()
-            return
-        }
         viewportGeneration &+= 1
         let generation = viewportGeneration
         workQueue.asyncAfter(deadline: .now() + Self.viewportCoalescingInterval) { [self] in
@@ -1522,7 +1546,6 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// Must run on `workQueue`.
     private func flushViewportLocked() {
-        lastViewportSend = DispatchTime.now()
         do {
             try sendViewportLocked()
         } catch {
@@ -1911,6 +1934,10 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            // The answer to this pane's own declaration: the letterbox can stop
+            // standing aside, and in the common case it has nothing to do
+            // anyway because the two grids now match.
+            if grid == viewportGrid { lowerViewportPendingLocked() }
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }
