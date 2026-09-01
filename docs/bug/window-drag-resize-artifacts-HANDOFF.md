@@ -201,3 +201,55 @@ put a per-frame grid encoder between the PTY and the pipe.
 6. **Consider the mirror RFC** (§7) before adding any further reconciliation
    logic to the client. Each patch so far has been correct in isolation and the
    pile is now the problem.
+
+## 9. Independent probe (codex), and what its drag left in the trace
+
+A second agent re-ran the investigation from this document. Its result: a focused
+3s edge drag ended with the daemon and `TIOCGWINSZ` **both at 45×21** — the two
+agree, so the sizing chain is consistent end to end and §2 holds. It could not
+get Screen Recording either, and had no retained trace, so it adds nothing to §5.
+
+Two agents are now blind on the same half of the same bug. **The blocker is a
+permission, not a question about the code**, and it should be cleared before
+anyone writes another line: Screen Recording + Accessibility for the session
+driving the app, or a five-second screen recording of a drag from the reporter.
+
+The trace *was* still capturing during that probe, and it settles one open
+question and opens another.
+
+**§8.3 answered: `resync-requested` still fires after every resize.** Even with
+the surface leading its own declaration:
+
+```
+20:05:32.561 6E769100 declare 45x21 rendering=true
+20:05:32.561 6E769100 session-is 45x21
+20:05:32.562 6E769100 surface-at 45x21
+20:05:32.562 6E769100 resync-requested
+```
+
+The surface reaches the grid one millisecond *after* the daemon's answer, so the
+keyframe that rides behind `E resized` still lands on a surface that has not been
+re-laid-out. The ordering fix moved the race, it did not remove it. A client
+cannot win this by predicting: the fix is to hold the post-barrier keyframe until
+`surfaceGrid == authoritativeGrid` (with a timeout) rather than paint it and ask
+again — or to stop having two VTs at all (§7).
+
+**New: two sessions declare identical viewports at the same instant.**
+
+```
+20:05:32.561 D65810C6 declare 45x21 rendering=true
+20:05:32.561 6E769100 declare 45x21 rendering=true
+20:05:32.561 5AAA195E declare 45x44 rendering=false
+```
+
+`D65810C6` and `6E769100` are different sessions reporting the *same* grid in the
+same millisecond, both `rendering=true`, and both resize. A split would give them
+different geometry — a side-by-side split halves the columns, a stacked one
+halves the rows — so identical numbers mean two panes each measuring the whole
+pane rect. `SharedGridLetterbox` computes `paneGrid` from
+`paneFrames[id] ?? bounds`, and a session with no split geometry falls back to
+`bounds`: the entire pane. Hidden panes are meant to be excluded by
+`rendering=false` (`5AAA195E` correctly is), so the question is why two are
+marked visible at once. Worth checking `store.visiblePaneIDs` before assuming the
+letterbox is at fault.
+
