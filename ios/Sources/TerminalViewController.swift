@@ -83,6 +83,14 @@ final class TerminalViewController: UIViewController {
         return v
     }()
     private var settingsObserver: NSObjectProtocol?
+    /// Background/foreground observers, for the app half of the rendering bit.
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// Whether this screen is on screen, and whether the app is frontmost. Both
+    /// have to hold for this phone's viewport to count toward the session's
+    /// size, and they move independently — the container parks a screen without
+    /// tearing it down, and the app can be backgrounded with a session showing.
+    private var screenIsShowing = false
+    private var applicationIsActive = true
     /// System edit menu over the live selection (Copy/Paste), presented at
     /// the touch-selection release point.
     private lazy var editMenuInteraction = UIEditMenuInteraction(delegate: self)
@@ -151,6 +159,9 @@ final class TerminalViewController: UIViewController {
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     @available(*, unavailable)
@@ -171,6 +182,37 @@ final class TerminalViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyAppearanceSettings() }
         }
+        // A locked phone renders nothing, and `viewWillDisappear` does not fire
+        // on the way to the background — the screen stays "appeared" — so
+        // without this a session left open while the phone locks keeps counting
+        // toward the session's size. `didBecomeActive` rather than
+        // `willEnterForeground` so a link reconnecting on that same
+        // notification finds the viewport already declared.
+        lifecycleObservers = [
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applicationActivityChanged(false) }
+            },
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applicationActivityChanged(true) }
+            },
+        ]
+    }
+
+    private func applicationActivityChanged(_ active: Bool) {
+        guard applicationIsActive != active else { return }
+        applicationIsActive = active
+        publishRendering()
+    }
+
+    /// The session counts this phone's viewport only while there is actually a
+    /// viewer: the screen is up *and* the app is frontmost.
+    private func publishRendering() {
+        guard case .device = backend else { return }
+        companion?.setRendering(screenIsShowing && applicationIsActive)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -211,7 +253,8 @@ final class TerminalViewController: UIViewController {
             companion?.reassertGrid()
         }
         // Back on screen, so back in the running for the session's size.
-        if case .device = backend { companion?.setRendering(true) }
+        screenIsShowing = true
+        publishRendering()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -224,7 +267,8 @@ final class TerminalViewController: UIViewController {
         // attachment survives. It stops counting toward the session's size the
         // moment nobody is looking at it, or a session opened once on the phone
         // would hold a Mac pane at phone width for as long as it stayed open.
-        if case .device = backend { companion?.setRendering(false) }
+        screenIsShowing = false
+        publishRendering()
     }
 
     override func viewDidLayoutSubviews() {
