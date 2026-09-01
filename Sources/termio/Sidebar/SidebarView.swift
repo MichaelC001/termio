@@ -85,7 +85,7 @@ private struct SidebarSectionHeader: View {
         // Generous top padding is the separator between sections — whitespace, not a
         // rule — so each group reads as its own block without a hairline. The first
         // section has no group above it to separate from, so it stays tight.
-        .padding(.top, isFirstSection ? 2 : 12)
+        .padding(.top, isFirstSection ? 0 : 12)
         .padding(.bottom, 2)
         // No `listRowInsets` override — the header keeps the rows' default inset so both
         // share one left baseline. The small leading then lands the label's left edge on
@@ -320,6 +320,7 @@ struct SidebarView: View {
         // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
         // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
         .listStyle(.sidebar)
+        .contentMargins(.vertical, 12, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
