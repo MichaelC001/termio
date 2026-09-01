@@ -88,7 +88,7 @@ pub async fn stdio() -> Result<()> {
 /// Whether a connect failure proves nothing is serving the socket. `ENOENT`
 /// (no file) and `ECONNREFUSED` (a file no listener backs) do; every other
 /// errno describes this client's situation, not the daemon's.
-fn absent_daemon(errno: Option<i32>) -> bool {
+pub(crate) fn absent_daemon(errno: Option<i32>) -> bool {
     matches!(errno, Some(libc::ENOENT) | Some(libc::ECONNREFUSED))
 }
 

@@ -195,6 +195,40 @@ fn stop_succeeds_when_the_daemon_left_its_socket_and_its_pid_behind() {
     assert!(daemon.wait_exit(), "daemon still running after stop");
 }
 
+/// A daemon this process cannot reach is not a daemon that stopped.
+///
+/// The socket is denied rather than removed, which is what a sandbox does — and
+/// what the fix for #571 must not mistake for absence, since answering a stop
+/// with success here would let an upgrade replace the binary under a daemon
+/// still serving every session it holds. The daemon must survive, and the
+/// refusal must say the connection was denied.
+#[test]
+fn stop_refuses_to_call_an_unreachable_daemon_stopped() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("d.sock");
+    let mut daemon = Daemon::start(&socket);
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o000))
+        .expect("deny the socket");
+
+    let refused = termiod(&socket, &["stop", "--json"]);
+    assert!(!refused.status.success(), "an unreachable daemon was reported stopped");
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        complaint.contains("reaching the daemon"),
+        "the refusal does not name what went wrong: {complaint}"
+    );
+    assert!(
+        daemon.child.try_wait().expect("poll").is_none(),
+        "the daemon exited on a stop that never reached it"
+    );
+
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
+        .expect("restore the socket");
+    let stopped = termiod(&socket, &["stop", "--json"]);
+    assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
+    assert!(daemon.wait_exit(), "daemon still running after stop");
+}
+
 /// A session whose agent reports `working` keeps the daemon up, and the
 /// refusal names it: the decision is the user's, and a count cannot inform
 /// it. `--force` overrides.
