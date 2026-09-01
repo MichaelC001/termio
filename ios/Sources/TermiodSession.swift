@@ -24,11 +24,12 @@ final class TermiodSession: DeviceSession {
     var onState: ((DeviceSessionState) -> Void)?
     var onSharedGrid: ((TerminalGrid, Bool) -> Void)?
 
-    /// How often a moving screen may move the session, at most. Every distinct
+    /// How long a moving screen must hold still before its size goes to the
+    /// device, and the shortest gap between two declarations. Every distinct
     /// size is a host-side barrier — quiesce, resize, fresh keyframe to every
-    /// attachment — so a keyboard animation must not become a burst of full
-    /// repaints. A cadence, not a settle: see `scheduleViewport`.
-    private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(50)
+    /// attachment — so a rotation or a keyboard animation must not become a
+    /// burst of full repaints.
+    private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(150)
 
     private let sessionName: String
     private let channel: TermiodChannel
@@ -64,9 +65,10 @@ final class TermiodSession: DeviceSession {
     /// an older host that reads `R` as "set the PTY size" and refuses it from
     /// anyone but the writer.
     private var hostSizesByPolicy = false
-    /// Whether a flush is already on the queue; the window is not extended by
-    /// later changes (`scheduleViewport`).
-    private var viewportFlushScheduled = false
+    /// When the last declaration went out, so a change after a quiet spell can
+    /// skip the wait, and the burst counter that collapses the rest.
+    private var lastViewportSend: DispatchTime?
+    private var viewportGeneration: UInt64 = 0
     /// The last declaration actually written, so an unchanged one is not
     /// re-sent: a viewport that moves the session is a host-side barrier.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
@@ -394,18 +396,29 @@ final class TermiodSession: DeviceSession {
     /// rather than debounced with a cancellable item because the size is re-read
     /// at fire time: the last scheduled send is the only one that writes, and it
     /// writes whatever the layout settled at.
-    /// Ghostty's coalescer rather than a debounce: the first change opens a
-    /// window, changes inside it only update the value, and the flush sends
-    /// whatever the screen is at then. A rotation or a keyboard animation
-    /// therefore reflows while it is happening instead of after it settles.
+    /// The first change of a burst goes at once, the rest only once it ends —
+    /// the Mac's `scheduleViewportLocked`, for the same reason. A discrete
+    /// change (opening the session, a pinch) arrives alone and delaying it is
+    /// pure lag; a rotation or a keyboard animation is a stream whose
+    /// intermediate sizes each cost every viewer a repaint.
     private func scheduleViewport() {
-        guard !viewportFlushScheduled else { return }
-        viewportFlushScheduled = true
-        queue.asyncAfter(deadline: .now() + Self.resizeCoalescingInterval) { [self] in
-            viewportFlushScheduled = false
-            guard attached else { return }
-            sendViewport()
+        let now = DispatchTime.now()
+        let quiet = lastViewportSend.map { now >= $0 + Self.resizeCoalescingInterval } ?? true
+        if quiet {
+            flushViewport()
+            return
         }
+        viewportGeneration &+= 1
+        let generation = viewportGeneration
+        queue.asyncAfter(deadline: .now() + Self.resizeCoalescingInterval) { [self] in
+            guard attached, generation == viewportGeneration else { return }
+            flushViewport()
+        }
+    }
+
+    private func flushViewport() {
+        lastViewportSend = DispatchTime.now()
+        sendViewport()
     }
 
     /// An older device refuses an `R` from anyone but the writer, and reads a

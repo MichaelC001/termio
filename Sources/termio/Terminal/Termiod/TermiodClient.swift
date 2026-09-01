@@ -1466,49 +1466,70 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// How often a moving pane may move the session, at most.
+    /// How long a moving pane must hold still before its size goes to the
+    /// daemon, and the shortest gap between two declarations.
     ///
-    /// Twice ghostty's 25ms (`termio/Thread.zig`), because a viewport that moves
-    /// the session costs more here: on the in-process path an intermediate size
-    /// is a SIGWINCH, while on this one it is a host-side **barrier** — the
-    /// session quiesces, resizes, and pushes a fresh keyframe to every
-    /// attachment, and each keyframe is a full repaint racing the child's own
-    /// redraw.
-    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(50)
+    /// Not ghostty's 25ms, and deliberately: ghostty's resize is an ioctl on a
+    /// PTY it owns alone, while this one is a **barrier** — the session
+    /// quiesces, resizes, and pushes a fresh keyframe to every attachment. A
+    /// drag flushed on a cadence is therefore twenty full repaints a second
+    /// racing the child's own redraw, which is visible as the terminal shaking
+    /// and, when an agent TUI's incremental repaint loses that race, as rows
+    /// left behind at the width they were drawn at. Every multiplexer coalesces
+    /// harder than ghostty for this reason — tmux rate-limits a pane to one
+    /// resize per 250ms, zellij collapses a burst to its last, cmux debounces
+    /// 180ms — and none of them are wrong about it.
+    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(150)
 
-    /// Whether a flush is already on the queue. The window is not extended by
-    /// later changes — see `scheduleViewportLocked`.
-    private var viewportFlushScheduled = false
+    /// When the last declaration actually went out, so a change arriving after a
+    /// quiet spell can skip the wait. See `scheduleViewportLocked`.
+    private var lastViewportSend: DispatchTime?
+    /// Bumped by every viewport change inside a burst; only the newest scheduled
+    /// send may write its frame. See `scheduleViewportLocked`.
+    private var viewportGeneration: UInt64 = 0
 
-    /// Flushes the viewport on a fixed cadence while the pane is moving, rather
-    /// than waiting for it to stop.
+    /// Sends the first change at once and the rest of a burst only once it ends.
     ///
-    /// This is ghostty's coalescer, not a debounce: the first change opens a
-    /// window, changes inside it only update the value, and the flush at the end
-    /// sends whatever the pane is at *then*. A drag therefore reflows the child
-    /// every 50ms while it is happening. The trailing debounce this replaced
-    /// re-armed its deadline on every change, so a continuous drag — the case it
-    /// most needed to serve — sent nothing at all until the pane held still, and
-    /// the terminal only caught up after the mouse came up.
+    /// The two cases a pane produces are genuinely different and this is what
+    /// tells them apart. A **discrete** change — collapsing the sidebar,
+    /// splitting, a font size — arrives alone after a quiet spell: there is
+    /// nothing to coalesce it with, and delaying it is pure lag, so it goes now.
+    /// A **drag** is a continuous stream: every intermediate size costs every
+    /// viewer a repaint and none of them is the one the user is asking for, so
+    /// the stream collapses to one send when it stops.
     ///
-    /// The tail is not lost: a change either finds no flush scheduled and opens
-    /// a window, or finds one that has not fired and will read the newer value.
+    /// The result is two barriers for a drag rather than one per 50ms, and no
+    /// wait at all for a toggle. The trailing half is generation-stamped rather
+    /// than cancelled because the size is re-read at fire time: the last
+    /// scheduled send is the only one that writes, and it writes whatever the
+    /// pane settled at.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
-        guard !viewportFlushScheduled else { return }
-        viewportFlushScheduled = true
+        let now = DispatchTime.now()
+        let quiet = lastViewportSend.map { now >= $0 + Self.viewportCoalescingInterval } ?? true
+        if quiet {
+            flushViewportLocked()
+            return
+        }
+        viewportGeneration &+= 1
+        let generation = viewportGeneration
         workQueue.asyncAfter(deadline: .now() + Self.viewportCoalescingInterval) { [self] in
-            viewportFlushScheduled = false
-            guard !closed, attached else { return }
-            do {
-                try sendViewportLocked()
-            } catch {
-                Log.termiod.error("""
-                viewport of \(self.sessionName, privacy: .public) failed: \
-                \(error.localizedDescription, privacy: .public)
-                """)
-            }
+            guard !closed, attached, generation == viewportGeneration else { return }
+            flushViewportLocked()
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func flushViewportLocked() {
+        lastViewportSend = DispatchTime.now()
+        do {
+            try sendViewportLocked()
+        } catch {
+            Log.termiod.error("""
+            viewport of \(self.sessionName, privacy: .public) failed: \
+            \(error.localizedDescription, privacy: .public)
+            """)
         }
     }
 
