@@ -584,7 +584,19 @@ pub async fn serve(
                     // here is a sandbox denying *this* process, not a dead
                     // daemon: unlinking on it displaced healthy daemons and
                     // left them as the unreachable orphans of #526.
+                    // A corpse is still a *socket*. Linux answers a connect to
+                    // a plain file with ECONNREFUSED where macOS says ENOTSOCK,
+                    // so without this the same mistyped `TERMIOD_SOCK` deletes
+                    // the file it names on one platform and is refused on the
+                    // other. What the errno licenses is replacing a socket
+                    // nobody serves, never destroying something else.
                     Err(error) if socket_is_stale(error.raw_os_error()) => {
+                        if !path_is_socket(&sock_path) {
+                            anyhow::bail!(
+                                "{} is not a socket — refusing to replace a file termiod did not create",
+                                sock_path.display()
+                            );
+                        }
                         let _ = std::fs::remove_file(&sock_path);
                     }
                     Err(error) => {
@@ -890,6 +902,16 @@ pub async fn serve(
 /// Whether a failed probe connect proves no daemon is behind the socket file.
 fn socket_is_stale(errno: Option<i32>) -> bool {
     crate::client::absent_daemon(errno)
+}
+
+/// Whether `path` is a socket. `false` for anything else, a path that cannot be
+/// stat'd included: the only caller is about to unlink, and it may act only on
+/// what it can positively identify.
+fn path_is_socket(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false)
 }
 
 /// The inode currently at `path`, or `None` when nothing is.

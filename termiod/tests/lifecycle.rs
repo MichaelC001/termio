@@ -240,6 +240,37 @@ fn serve_refuses_to_replace_a_file_it_did_not_create() {
     );
 }
 
+/// The other half of the same rule: a socket the daemon really did leave behind
+/// is still cleaned up. A kill -9 runs no shutdown, so the file survives with
+/// nothing serving it, and the next start must replace it rather than refuse —
+/// otherwise one crash would leave the machine unable to start a daemon at all.
+#[test]
+fn serve_replaces_a_socket_its_daemon_died_holding() {
+    let dir = TestDir::new();
+    let socket = dir.0.join("d.sock");
+    let mut dead = Daemon::start(&socket);
+    let killed = dead.child.kill().and_then(|()| dead.child.wait());
+    assert!(killed.is_ok(), "could not kill the first daemon");
+    assert!(socket.exists(), "kill -9 should leave the socket file behind");
+
+    // Not `Daemon::start`'s wait: that watches for the socket file, which the
+    // dead daemon already left. Serving is the thing being asserted, so serving
+    // is what this waits for.
+    let _replacement = Daemon::start(&socket);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let running = loop {
+        let status = termiod(&socket, &["status", "--json"]);
+        if status.status.success() && json(&status)["daemon"]["running"] == true {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(running, "no daemon came up over the socket its predecessor died holding");
+}
+
 /// A daemon this process cannot reach is not a daemon that stopped.
 ///
 /// The socket is denied rather than removed, which is what a sandbox does — and
