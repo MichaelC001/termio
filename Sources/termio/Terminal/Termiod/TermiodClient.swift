@@ -1455,7 +1455,14 @@ final class TermiodSessionLink: @unchecked Sendable {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
             guard !closed else { return }
+            let changed = surfaceGrid != size
             surfaceGrid = size
+            if changed {
+                Log.termiod.debug("""
+                resize-trace surface-at \(size.rows, privacy: .public)x\
+                \(size.cols, privacy: .public)
+                """)
+            }
             guard attached else { return }
             if authoritativeGrid != size {
                 repaintPending = true
@@ -1536,6 +1543,10 @@ final class TermiodSessionLink: @unchecked Sendable {
         let showing = hostSizesByPolicy ? rendering : true
         if let sent = sentViewport, sent.grid == viewportGrid, sent.rendering == showing { return }
         sentViewport = (viewportGrid, showing)
+        Log.termiod.debug("""
+        resize-trace declare \(self.viewportGrid.rows, privacy: .public)x\
+        \(self.viewportGrid.cols, privacy: .public) rendering=\(showing, privacy: .public)
+        """)
         try Termiod.writeFrame(
             transport.writeDescriptor, kind: .resize,
             payload: Termiod.viewportPayload(
@@ -1577,7 +1588,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     /// Must run on `workQueue`.
+    /// Trace only: a repaint was asked for because the surface reached the
+    /// session's grid with bytes parsed at another one behind it.
+    private func traceResync() {
+        Log.termiod.debug("resize-trace resync-requested")
+    }
+
     private func requestResyncLocked() {
+        traceResync()
         guard !closed, attached, let transport else { return }
         do {
             try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
@@ -1897,6 +1915,10 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            Log.termiod.debug("""
+            resize-trace session-is \(grid.rows, privacy: .public)x\
+            \(grid.cols, privacy: .public)
+            """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }

@@ -928,6 +928,53 @@ impl Session {
             .and_then(|entry| entry.viewport)
     }
 
+    /// Whether the thing on screen is a shell, which is the one class of
+    /// program a rewrapping resize breaks.
+    ///
+    /// A shell answers SIGWINCH by moving the cursor up a number of rows it
+    /// computed from the *old* width and repainting its prompt from there.
+    /// Rewrap under that and the repaint lands in the wrong place, leaving a
+    /// stale prompt above it — the ⌘D duplicate. Nothing else on a terminal
+    /// does width-relative arithmetic against a screen it cannot see: an agent
+    /// TUI, an editor, a pager all repaint from their own model, and truncating
+    /// *their* screen is what leaves a window looking mangled after a drag.
+    ///
+    /// This asks the foreground rather than the session's spawn command,
+    /// because the two are routinely different in both directions: a session
+    /// launched as `zsh -ilc exec claude` has no shell in it at all — `exec`
+    /// replaced the image, so the child *is* the agent and the old
+    /// "is a job running under the shell" test was false for exactly the
+    /// sessions that needed rewrapping most — and a plain shell session running
+    /// `vim` has no prompt on screen to protect.
+    ///
+    /// A closed set of names, matched on the executable's basename with the
+    /// login-shell `-` stripped. Name matching is the wrong instinct for
+    /// agents, whose set is open and whose behaviour termio reads from a
+    /// manifest; it is the right one here, because "programs that redraw a
+    /// prompt from an old width" is a small set that has not grown in decades.
+    /// When the foreground cannot be read, the answer is "shell": the
+    /// truncating resize is the conservative one, and it is what shipped.
+    fn foreground_is_a_shell(&self) -> bool {
+        const SHELLS: [&str; 9] = [
+            "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu",
+        ];
+        let Some(argv0) = self
+            .foreground
+            .current()
+            .argv
+            .as_ref()
+            .and_then(|argv| argv.first())
+        else {
+            return true;
+        };
+        let name = argv0
+            .rsplit('/')
+            .next()
+            .unwrap_or(argv0)
+            .trim_start_matches('-');
+        SHELLS.contains(&name)
+    }
+
     /// Records that a person is on this attachment's device, so the session
     /// sizes to its screen from now on.
     ///
@@ -1007,13 +1054,7 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        // Rewrap only when the shell is not the one about to redraw. A job in
-        // the foreground — an agent TUI, an editor — does no width-relative
-        // cursor arithmetic against the old screen, so the screen can be
-        // rewrapped the way every terminal the program was written for would;
-        // the shell's own redisplay cannot survive that, and gets the
-        // truncating resize it assumes.
-        let reflow = self.foreground.current().job;
+        let reflow = !self.foreground_is_a_shell();
         self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         self.begin_snapshot_barrier();
         self.emit_event(Event::Resized {
@@ -3023,6 +3064,43 @@ mod tests {
 
         declare_viewport(&mut session, "phone", 42, 47, true);
         assert_eq!(session.policy_size(), Some((42, 47)));
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The rule the reflow policy turns on, and the case that made the previous
+    /// one wrong: `zsh -ilc exec claude` leaves no shell in the session at all,
+    /// so "is a job running under the shell" was false for exactly the sessions
+    /// a truncating resize mangles.
+    #[tokio::test]
+    async fn only_a_shell_gets_the_truncating_resize() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        for shell in ["/bin/zsh", "-zsh", "bash", "/usr/local/bin/fish"] {
+            session.foreground.set_argv_for_tests(Some(vec![shell.to_string()]));
+            assert!(
+                session.foreground_is_a_shell(),
+                "{shell} redraws its prompt from the old width"
+            );
+        }
+        for program in ["claude", "/opt/homebrew/bin/codex", "vim", "less"] {
+            session.foreground.set_argv_for_tests(Some(vec![program.to_string()]));
+            assert!(
+                !session.foreground_is_a_shell(),
+                "{program} repaints from its own model and wants the rewrap"
+            );
+        }
+        // Unreadable is treated as a shell: the truncating resize is the
+        // conservative one.
+        session.foreground.set_argv_for_tests(None);
+        assert!(session.foreground_is_a_shell());
 
         session.vt.shut_down();
         let _ = thread.join();

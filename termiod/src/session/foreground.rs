@@ -74,6 +74,13 @@ pub(crate) struct Foreground {
 }
 
 impl Foreground {
+    /// Pins the sampled argv so a test can ask what the size policy would do
+    /// with a given program on screen, without a real process group.
+    #[cfg(test)]
+    pub(super) fn set_argv_for_tests(&mut self, argv: Option<Vec<String>>) {
+        self.sample.argv = argv;
+    }
+
     pub(super) fn current(&self) -> &ForegroundSample {
         &self.sample
     }
