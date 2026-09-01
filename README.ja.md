@@ -12,21 +12,40 @@
 
 <p><a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | 日本語 | <a href="README.ko.md">한국어</a></p>
 
-<br />
-
-Claude Code、Codex をはじめ、あらゆる CLI エージェントを本物の Mac ターミナルで並列に実行 —<br />
-Swift と libghostty、Electron なし。メニューバーのドットが、いま対応の必要なエージェントを知らせ、<br />
-席を離れているあいだは iPhone が見守ります。
-
-<br />
-
 [**macOS 版をダウンロード**](https://downloads.termio.sh/termio.dmg) &nbsp;&bull;&nbsp; [ウェブサイト](https://termio.sh) &nbsp;&bull;&nbsp; [ドキュメント](https://termio.sh/docs) &nbsp;&bull;&nbsp; [変更履歴](https://termio.sh/changelog) &nbsp;&bull;&nbsp; [Discord](https://discord.gg/H9DKVwsE5f)
-
-<br />
 
 <img alt="ダークモードの Termio: プロジェクトサイドバーの横で動作するライブ Claude Code セッション" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
+
+## ターミナルファーストの ADE
+
+コードの大半をエージェントが書くようになると、環境の仕事はエージェントを動かすこと、そして「いまどれがあなたを必要としているか」を伝えることになります。Termio はその環境であり、本物のターミナルです。エージェントはすでにターミナルに住んでいるからです。
+
+初回起動時に、各エージェント自身のフックを自動で設定します。セッションは作業中・アイドル・*要対応* を報告し、サイドバーのドット、詰まったときに鳴るメニューバーのアイコン、そして同じシグナルがあなたの iPhone にも届きます。Claude Code、Codex、OpenCode、Pi、Amp、Cursor、Copilot、Kimi、Antigravity、Crush、Grok、そのほかどんな CLI エージェントでも。
+
+詳しい議論は [*From IDE to ADE*](docs/essays/from-ide-to-ade.md) をご覧ください。
+
+### tmux の代わりに
+
+みんなが tmux を覚えろと言う理由が、Termio では覚えなくて済みます。各セッションのシェルはデーモン `termiod` の中で動くので、アプリを終了してもデタッチされるだけです。ノートを閉じて、また Termio を開けば、エージェントは離れたときのまま — 同じプロセス、同じスクロールバック。終了させるのは「セッションを閉じる」（⌘W）だけです。
+
+分割は ⌘D、ズームは ⇧⌘↩。Ctrl-b のようなプレフィックスキーはありません。⌘ ショートカットはペイン内のプログラムに届かないので、vim や TUI とキーが衝突しません。スクロール・選択・コピーはトラックパッドと ⌘C で。copy-mode はありません。
+
+### リモート VPS
+
+`ssh` で入れる Linux VPS ならどれでも。Termio は `~/.ssh/config` を読むだけで、書き換えることはありません。**設定 ▸ デバイス ▸ セットアップ**が SSH 経由でバイナリを 1 つ `~/.local/bin` にコピーし、デーモンを起動し、そのマシンにエージェントのフックを入れます。ローカルのセッションもリモートのセッションも、同じホストを通ります。
+
+セッションは接続ではなくマシンの上で生きています。回線が切れてもエージェントは働き続け、再接続すれば画面がそのまま戻ります。Zed Remote や VS Code Remote は、リモート作業を生きた接続の中に閉じ込めます。
+
+## 他のツールとの比較
+
+| | どんなツールか | Termio との違い |
+| --- | --- | --- |
+| **[Ghostty](https://ghostty.org)** | ターミナルそのもの。Termio はそのコアである [libghostty](https://ghostty.org) で描画しています（フォークではありません）。 | Ghostty はエージェントを追跡せず、セッションを永続化せず、VPS 上で動かすこともしません。速いターミナルが欲しいなら Ghostty です。Termio はエージェントが動く環境のほうです。 |
+| **[cmux](https://cmux.com)** | いちばん近い親戚：ネイティブ Swift、libghostty、エージェントが呼んだときに鳴る通知、iPhone コンパニオン。リモートは SSH ワークスペース（マシン上のリレー、必要なら tmux）で、iPhone は Mac とペアリングします。 | すべてのセッションが `termiod` 上で動きます。この Mac でも Linux VPS でも同じで、iPhone はそのホストへ直接アタッチします。ステータスはメニューバー、プロジェクトと worktree はサイドバーに。cmux にはアプリ内のスクリプト可能なブラウザがあり、Ghostty の設定も読みますが、Termio にはありません。 |
+| **[herdr](https://herdr.dev)** | いま使っているターミナルの中で動くマルチプレクサ。永続化の考え方は同じ（サーバーが PTY を持つ）で、各エージェントを作業中・ブロック中・アイドルとしてマークします。形は tmux 的：プレフィックスキー、TUI、SSH でアタッチ、macOS / Linux / Windows 対応。 | Termio はネイティブの Mac アプリで、Mac のショートカット、iPhone コンパニオン、そしてサイドバーのワークスペースとしての VPS があります。アタッチしに行く TUI ではありません。 |
+| **[Otty](https://otty.sh)** | エージェント向けに調整されたネイティブ Mac ターミナル：タブのバッジ、コンポーザ、Claude / Codex / OpenCode を再開できるセッション復元。ターミナルと ADE の中間に位置します。 | Termio はその ADE 側です。セッションは `termiod` の中で生き、アプリを終了しても残り、Linux VPS 上でも iPhone 上でも同じオブジェクトです。 |
 
 ## インストール
 
@@ -38,108 +57,148 @@ brew install --cask termio-sh/tap/termio
 
 **iPhone では**: [TestFlight](https://testflight.apple.com/join/1Arf1UKR) でコンパニオンのベータ版を入手し、Mac アプリの設定 ▸ Mobile に表示される QR コードをスキャンしてペアリングしてください。
 
-## エージェント時代の開発のために
+## 使えるもの
 
-IDE は、人間がコードを打ち込むことを前提に設計されてきました。コードの大半をエージェントが書くようになると、環境の役割は変わります。そこはエージェントが働く場所であり、あなたが指示し、レビューし、行き詰まったエージェントを助ける場所です。Termio はまさにその環境です。エージェントがすでに住んでいる場所だからこそターミナルファーストであり、複数のエージェントが同時に動き、そのほとんどは手がかからず、ひとつだけが詰まっている — そんな新しい仕事のかたちのために作られています。（詳しい議論は [*From IDE to ADE*](docs/essays/from-ide-to-ade.md) をご覧ください。）
-
-- **Web ビューではない、本物のターミナル。** Swift + AppKit を
-  [libghostty](https://ghostty.org)（Ghostty のターミナルコア）の上に構築し、
-  Metal でレンダリングします。Electron も xterm.js も使っていません。
-- **プロジェクト → セッション。** サイドバーは実際の作業の構造をそのまま映します。
-  各プロジェクトが自分のターミナルとエージェントを持ち、その下に並行タスク用の
-  git ワークツリーがネストされます。
-- **設定ゼロのステータス表示。** Termio は各エージェント固有のフックを自動で配線し、
-  エージェントがもともと発しているシグナルを読み取ります。作業中・アイドル・
-  *要対応* — セッションごとのドットに加え、メニューバーのトレイは普段は静かに、
-  エージェントの作業中は脈打ち、あなたの対応待ちになると鳴って知らせます。
-- **離れずにレビュー。** 読み取り専用の git ペイン（変更、履歴、unified diff）、
-  クリックでそのまま編集できるエディタ付きのファイルツリー、プロジェクト全体のコンテンツ検索 —
-  コミットする場所は、あくまでターミナルのままです。
-- **git ワークツリー。** サイドバーから作成すると、プロジェクト配下にネストされた
-  フォルダとして表示されます。並行タスクごとに 1 ブランチ。
-- **チャット。** どのプロジェクトにも属さない使い捨てのエージェント会話。
-- **使用量メーター。** Claude と Codex のプラン上限を、設定 → Usage に
-  ローカルで表示します。
-- **テーマ。** ライト、ダーク、システムに追従するガラス調。
-- **自動アップデート。** 公証済み DMG を Sparkle が更新します。
-- **無料。** アカウントもライセンスキーも有料プランもありません。MIT ライセンスです。
-
-## tmux を学ばなくていい
-
-みんなが tmux を学べと言う理由は、エージェントの作業にはターミナルより長生きする
-セッションが要るからです — アプリを終了しても、ノートを閉じても、エージェントは
-動き続けてほしい。Termio はそれを最初からやります。各セッションのシェルはデーモン
-`termiod` の中に住んでいるので、終了しても切断されるだけ。アプリを開き直せば、
-エージェントは離れたときのまま — 同じプロセス、同じスクロールバックです。
-終わらせるのは「セッションを閉じる」（⌘W）だけ。
-
-tmux が教えてくれるはずだった残りは、Mac のショートカットか、もう知っていることです。
-
-- 分割は ⌘D、ズームは ⇧⌘↩ — 先に Ctrl-b は要りません。⌘ ショートカットは
-  ペインの中のプログラムに届かないので、vim や TUI とキーを取り合いません。
-- スクロール・選択・コピーはトラックパッド、マウス、⌘C。出入りする copy-mode は
-  ありません。
-- Linux マシンのセッションも同じデーモンが動き、どのシェルからでも
-  `termiod attach <session>` で入れます。
-- スクリプトは `termio sessions`（後述）が `send-keys` の役目を果たし、
-  エージェントのステータスは画面ではなくプロトコル上のオブジェクトです。
-
-## お使いのエージェントで動く
-
-Claude Code、Codex、Gemini CLI、Grok、Cursor Agent、Copilot、Amp、OpenCode、
-Pi、Kimi — そのほかどんな CLI エージェントでも動きます。セッションは本物のターミナルそのものだからです。組み込み対応のエージェントは、Termio がそれぞれのフックやプラグインを自動でインストールするため、初回起動からステータス検出が機能します。
+<table>
+<tr>
+<td width="50%" valign="top">
+<h3>プロジェクトがセッションを持つ</h3>
+<p>チェックアウトごとに 1 プロジェクト、その下にターミナルとエージェント。チャットはその上 — どのプロジェクトにも属さない使い捨てのエージェントセッションです。</p>
+<img alt="ターミナル、チャット、プロジェクト、worktree とそのネストしたセッションを表示する Termio のサイドバー" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" />
+</td>
+<td width="50%" valign="top">
+<h3>Git worktree</h3>
+<p>並行タスク 1 つにつき 1 ブランチ、サイドバーから作成できます。worktree は元のプロジェクトの下にネストします。</p>
+<img alt="Termio のサイドバー内の worktree、ネストしたセッションと worktree を追加するコンテキストメニュー" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>ペイン分割</h3>
+<p>⌘D で右に、⇧⌘D で下に分割。エージェント、開発サーバー、シェルを 1 つのウインドウに。</p>
+<img alt="Codex セッションと 2 つのシェルペインをグループ化した Termio" src="web/landing/public/screenshots/docs/03-grouped-panes.png" />
+</td>
+<td width="50%" valign="top">
+<h3>ひと目でわかるステータス</h3>
+<p>作業中、アイドル、完了、<em>要対応</em> — すべての行にマークが付きます。同じ一覧が <code>termio sessions list</code> です。</p>
+<img alt="作業中・完了・要対応を報告する Termio のサイドバーと、ターミナルの termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>ファイルエディタ</h3>
+<p>ツリーでファイルをクリック。シンタックスハイライトと自動保存。コミットはこれまでどおりターミナルで。</p>
+<img alt="ターミナルの横で Swift ファイルをシンタックスハイライト付きで開いた Termio のファイルインスペクタ" src="web/landing/public/screenshots/docs/06-files-editor.png" />
+</td>
+<td width="50%" valign="top">
+<h3>変更</h3>
+<p>現在の統合 diff を表示する読み取り専用の git ペイン。コミット、プッシュ、PR はターミナルのままです。</p>
+<img alt="ファイルを選択し、赤と緑の統合 diff をターミナルの横に表示した Termio の変更タブ" src="web/landing/public/screenshots/docs/07-changes-diff.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>検索</h3>
+<p>プロジェクト全体の内容検索。エディタの該当行にそのままジャンプします。</p>
+<img alt="4 つのファイルにまたがる DiffGapText の一致を並べた Termio の検索タブ" src="web/landing/public/screenshots/docs/09-project-search.png" />
+</td>
+<td width="50%" valign="top">
+<h3>コマンドパレット</h3>
+<p>⌘⇧P。分割、フォーカス、メニューを探し回るような操作はすべてここから。</p>
+<img alt="split と入力し「右に分割」を選択している Termio のコマンドパレット" src="web/landing/public/screenshots/docs/10-command-palette.png" />
+</td>
+</tr>
+</table>
 
 ## ターミナルから操作する
 
-Termio には `termio` CLI が同梱されており、セッションをスクリプトから操作できます — エージェント自身からも。Termio の中で動くエージェントは、兄弟セッションを起動してタスクを渡し、返答を読み取れます。
+`termio` CLI は動作中のアプリを操作します。Termio の中のエージェントは、兄弟セッションを起こし、タスクを渡し、その返答を読み取れます:
 
 ```sh
 termio .                                    # カレントディレクトリをプロジェクトとして開く
-termio sessions list                        # 誰が作業中か、アイドルか、あなたを待っているか
+termio sessions list                        # 作業中・アイドル・あなた待ちの一覧
 termio sessions spawn "fix the flaky test"  # プロンプトを渡して新しいエージェントセッションを開始
 termio sessions run "pnpm test --watch"     # コマンドを渡して通常のターミナルセッションを開始
-termio sessions send ab12cd34 "1"           # 兄弟セッションの許可プロンプトに応答
-termio sessions read ab12cd34 --lines 40    # そのセッションの画面を出力
-termio sessions watch                       # ステータスの変化をリアルタイムにストリーム
+termio sessions send ab12cd34 "1"           # 兄弟セッションの権限確認に答える
+termio sessions read ab12cd34 --lines 40    # セッションの画面の内容を出力
+termio sessions watch                       # ステータスの変化をストリームで受け取る
 termio sessions focus ab12cd34              # アプリでそのセッションを前面に出す
 termio sessions close ab12cd34              # 閉じる
 termio notify "the migration finished"      # macOS の通知を送る
 ```
 
-残りはフラグが担います。`--wait` はターンが落ち着くまでブロックし、最終ステータスと読むべきトランスクリプトの行範囲を返します。`--json` は任意の `sessions` コマンドを機械可読にし、`--agent` は `spawn` が起動するエージェントを選び、`--direction` / `--ratio` は新しいペインの位置と大きさを決めます。
+`--wait` はそのターンが落ち着くまで待ち、最終ステータスと読むべきトランスクリプトの範囲を返します。`--json` はどの `sessions` コマンドも機械可読にします。`--agent` は `spawn` が起動するエージェントを選びます。`--direction` / `--ratio` は新しいペインの位置と大きさを決めます。
 
 ```sh
 termio sessions spawn "run the migration" --agent codex --wait
 ```
 
+セッション制御は各エージェントのスキルフォルダ（`~/.claude/skills`、`~/.codex/skills`）に `termio` [エージェントスキル](https://termio.sh/skill.md)をインストールし、起動のたびに最新に保ちます。ほかのエージェントも、このリポジトリから同じスキルを入れられます:
+
+```sh
+npx skills add termio-sh/termio --skill termio
+```
+
 ## iPhone で
 
-コンパニオンアプリが、Mac のすべてのセッションをスマートフォンにライブでミラーリングします — チャットの要約ではなく、TUI そのものです。キーバーが esc、tab、ctrl、矢印キーをキーボードの上に並べ、長押しで話せば音声がそのままプロンプトに文字起こしされます。無料のパブリックベータを公開中です: [TestFlight で参加](https://testflight.apple.com/join/1Arf1UKR)。
+コンパニオンはすべてのセッションをライブでミラーします — チャットの要約ではなく、完全な TUI です。キーバーがキーボードの上に esc、tab、ctrl、矢印キーを並べ、長押しで話すと音声がプロンプトに書き起こされます。[TestFlight](https://testflight.apple.com/join/1Arf1UKR) で public beta 公開中。
+
+<table>
+  <tr>
+    <td><img alt="iPhone の Termio: ホーム画面、プロジェクトの上に要対応のセッション" src="web/landing/public/screenshots/iphone-home.webp" width="230" /></td>
+    <td><img alt="iPhone の Termio: プロジェクト内のセッションが、それぞれのステータスを報告している" src="web/landing/public/screenshots/iphone-sessions.webp" width="230" /></td>
+    <td><img alt="iPhone の Termio: キーボードの上にキーバーが並んだライブのエージェントセッション" src="web/landing/public/screenshots/iphone-session-keys.webp" width="230" /></td>
+  </tr>
+</table>
+
+## アーキテクチャ
+
+すべてのセッションは `termiod` の中で生きています。クライアントはアタッチするだけです。クライアントを閉じてもエージェントは死にません。プロトコルは 1 つ、変わるのはパイプだけです。
+
+```
+  ┌─────────────────┐ unix  ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ unix  │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ unix  │   (Mac)    │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
+
+  ┌─────────────────┐ ssh   ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ ssh   │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ ssh   │  (Linux)   │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
+```
+
+iPhone は Mac を経由せず、マシン上の `termiod` に直接アタッチします。VPS 上のセッションは、ノート PC 上のセッションとまったく同じオブジェクトです。
+
+その考え方は [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) にあります。
 
 ## ロードマップ
 
-- **Linux リモートサーバー** — VPS や開発マシンなど、自分の Linux マシンで
-  セッションを動かし、Mac アプリから管理できます。
-- **Mux サーバー** — 永続的なセッションホスト。セッションは接続ではなくマシン側に
-  生きるので、ノートを閉じてもエージェントは動き続け、再接続すれば画面がそのまま
-  戻ります。
-- **Issue トリアージ** — GitHub・GitLab・Linear の issue をアプリ内で確認し、
-  そのままエージェントに任せられます。
-- **モバイルの TUI → GUI** — ライブミラーの上に、エージェントセッションを GUI として
-  表示するオプション。
-- **Windows 対応** — ネイティブの Windows アプリ。同じ思想、同じターミナルコアで、
-  Electron 移植ではありません。
-- **Web 対応** — どのブラウザからでもセッションに接続。ターミナルはリンクで
-  共有できます。
+- **Issue トリアージ** — GitHub、GitLab、Linear の issue をアプリの中に。そのままエージェントに渡せます。
+- **TUI クライアント** — tmux にアタッチするように、どのターミナルからでもアタッチ。
+- **モバイルでの TUI → GUI** — ライブミラーの上に、エージェントセッションの GUI 表示をオプションで。
+- **Android** — iPhone と同じコンパニオン。
+- **Windows 対応** — ネイティブの Windows アプリとしての Termio。同じ考え方、同じターミナルコア、Electron なし。
+- **Web 対応** — どのブラウザからでもセッションにアタッチ。リンクで共有できるターミナルも。
 
-進捗のフォローやご意見は [GitHub Issues](https://github.com/termio-sh/termio/issues) へ。
+進捗を追ったり意見を寄せたりするには [GitHub Issues](https://github.com/termio-sh/termio/issues) へ。
 
 ## コミュニティ
 
-**Termio は長期的なメンテナーを募集しています。** Termio を気に入って使っていて、
-上のロードマップのどこか — Linux リモートサーバー、Web クライアント、Windows、
-iOS コンパニオンアプリ — を担当してみたい方は、Discord で声をかけるか、issue を
-拾ってみてください。
+**Termio は長期のメンテナを探しています。** 使っていて気に入っていて、上のロードマップのどれか — Web クライアント、Windows、iOS コンパニオン — を担当してみたい方は、Discord で声をかけてください。issue を 1 つ拾うところからでも大歓迎です。
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 開発者やほかのユーザーと交流できます
 - **[GitHub Issues](https://github.com/termio-sh/termio/issues)** — バグ報告と機能リクエスト
@@ -152,4 +211,4 @@ iOS コンパニオンアプリ — を担当してみたい方は、Discord で
 
 ## ライセンス
 
-[MIT](LICENSE) ライセンスです。
+[MIT](LICENSE)。

@@ -16,11 +16,7 @@
 
 </div>
 
-## What it is
-
-Termio is a native Mac app for coding agents. Sessions run on this Mac or on a Linux VPS you own, survive closing the window, and show up on your iPhone.
-
-### Terminal-first ADE
+## What it is Terminal-first ADE
 
 When agents write most of the code, the environment's job is to run them and to tell you which one needs you. Termio is that environment, and it's a real terminal because that's where the agents already live.
 
@@ -42,13 +38,12 @@ The session lives on the box, not in the connection. Drop the link and the agent
 
 ## Compared with
 
-**[Ghostty](https://ghostty.org)** is the terminal. Termio uses its core, [libghostty](https://ghostty.org), for rendering — it is not a fork. Ghostty does not track agents, persist sessions, or run them on a VPS. If you want a fast terminal, that is Ghostty. Termio is the environment the agents run in.
-
-**[cmux](https://cmux.com)** is the closest cousin: native Swift, libghostty, notification rings when an agent needs you, an iPhone companion. cmux remote is an SSH workspace — a relay on the box, tmux if you want it — and the phone pairs with the Mac. In Termio every session runs on `termiod`, this Mac or a Linux VPS, and the phone attaches to that host directly. Termio also puts status in a menu-bar tray, and projects and worktrees in the sidebar. cmux has an in-app scriptable browser and reads your Ghostty config; Termio does not.
-
-**[herdr](https://herdr.dev)** is a multiplexer that runs inside the terminal you already use. Same persistence idea — a server owns the PTYs — and it marks each agent working, blocked, or idle. It is tmux-shaped: prefix keys, a TUI, attach over SSH, macOS / Linux / Windows. Termio is a native Mac app with Mac shortcuts, an iPhone companion, and the VPS as a workspace in the sidebar, not a TUI you attach to.
-
-**[Otty](https://otty.sh)** is a native Mac terminal tuned for agents: tab badges, a composer, session restore that resumes Claude / Codex / OpenCode. It sits between a terminal and an ADE. Termio is the ADE side of that: the session lives in `termiod`, survives quitting the app, and is the same object on a Linux VPS and on your iPhone.
+| | What it is | How Termio differs |
+| --- | --- | --- |
+| **[Ghostty](https://ghostty.org)** | The terminal. Termio renders with its core, [libghostty](https://ghostty.org) — not a fork. | Ghostty does not track agents, persist sessions, or run them on a VPS. If you want a fast terminal, that is Ghostty. Termio is the environment the agents run in. |
+| **[cmux](https://cmux.com)** | The closest cousin: native Swift, libghostty, notification rings when an agent needs you, an iPhone companion. Remote is an SSH workspace — a relay on the box, tmux if you want it — and the phone pairs with the Mac. | Every session runs on `termiod`, this Mac or a Linux VPS, and the phone attaches to that host directly. Status sits in a menu-bar tray, projects and worktrees in the sidebar. cmux has an in-app scriptable browser and reads your Ghostty config; Termio does not. |
+| **[herdr](https://herdr.dev)** | A multiplexer inside the terminal you already use. Same persistence idea — a server owns the PTYs — and it marks each agent working, blocked, or idle. tmux-shaped: prefix keys, a TUI, attach over SSH, macOS / Linux / Windows. | A native Mac app with Mac shortcuts, an iPhone companion, and the VPS as a workspace in the sidebar — not a TUI you attach to. |
+| **[Otty](https://otty.sh)** | A native Mac terminal tuned for agents: tab badges, a composer, session restore that resumes Claude / Codex / OpenCode. It sits between a terminal and an ADE. | The ADE side of that: the session lives in `termiod`, survives quitting the app, and is the same object on a Linux VPS and on your iPhone. |
 
 ## Install
 
@@ -162,31 +157,29 @@ The companion mirrors every session live — the full TUI, not a chat summary. A
 Every session lives in `termiod`. Clients only attach. Closing a client does not kill the agent. One protocol; only the pipe changes.
 
 ```
-  ┌──────────────┐  unix   ┌────────────┐         ┌─────────────────┐
-  │ Mac app      │────────►│            │         │                 │
-  ├──────────────┤  unix   │            │         │                 │
-  │ Windows *    │────────►│            │         │                 │
-  ├──────────────┤  wss    │            │         │                 │
-  │ iPhone       │────────►│  termiod   │── PTY ─►│  shell / agent  │
-  ├──────────────┤  unix   │   (Mac)    │         │                 │
-  │ TUI *        │────────►│            │         │                 │
-  ├──────────────┤  wss    │            │         │                 │
-  │ Android *    │────────►│            │         │                 │
-  └──────────────┘         └────────────┘         └─────────────────┘
+  ┌─────────────────┐ unix  ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ unix  │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ unix  │   (Mac)    │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
 
-  ┌──────────────┐  ssh    ┌────────────┐         ┌─────────────────┐
-  │ Mac app      │────────►│            │         │                 │
-  ├──────────────┤  ssh    │            │         │                 │
-  │ Windows *    │────────►│            │         │                 │
-  ├──────────────┤  wss    │            │         │                 │
-  │ iPhone       │────────►│  termiod   │── PTY ─►│  shell / agent  │
-  ├──────────────┤  ssh    │  (Linux)   │         │                 │
-  │ TUI *        │────────►│            │         │                 │
-  ├──────────────┤  wss    │            │         │                 │
-  │ Android *    │────────►│            │         │                 │
-  └──────────────┘         └────────────┘         └─────────────────┘
-
-  * coming soon
+  ┌─────────────────┐ ssh   ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ ssh   │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ ssh   │  (Linux)   │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
 ```
 
 The phone attaches to `termiod` on the box, not through the Mac. A session on a VPS is the same object as one on your laptop.
