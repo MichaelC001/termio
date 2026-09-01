@@ -157,9 +157,6 @@ extension TermioStore {
         link.onStartRefused = { [weak self, weak inMemory] message in
             self?.applyTermiodStartRefused(for: session.id, message: message, surface: inMemory)
         }
-        link.onViewportPending = { [weak self] pending in
-            self?.runtime(for: session.id).viewportPending = pending
-        }
         link.onConnectionLost = { [weak self, weak inMemory] in
             self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
         }
