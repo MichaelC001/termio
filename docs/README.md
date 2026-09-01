@@ -104,6 +104,7 @@ from the real front matter).
 | done | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | done | rfc | [Remote git — the pane's verbs run on the device](design/20260818-remote-git-plane.md) |
 | done | rfc | [Session identity survives the agent](design/20260830-session-identity-survives-the-agent.md) |
+| draft | bug | ["HANDOFF: window drag still corrupts the terminal mid-drag"](bug/window-drag-resize-artifacts-HANDOFF.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
@@ -129,7 +130,6 @@ from the real front matter).
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
 | draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
-| draft | rfc | [PTY size is not the write token](design/20260901-pty-size-is-not-the-write-token.md) |
 | draft | rfc | [Retire the companion's second protocol — the phone attaches to a device](design/20260831-companion-second-protocol-retires.md) |
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Termiod web client on official Ghostty WASM (Linux first)](design/20260818-termiod-web-client-ghostty-wasm.md) |
