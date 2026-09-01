@@ -537,7 +537,10 @@ extension TermioStore {
                 if projects[index].remoteCheckouts[device.id] == nil {
                     projects[index].remoteCheckouts[device.id] = stale
                 }
-                projects[index].remoteCheckouts[old] = nil
+                // An alias is only a route, not proof that its old device and the
+                // one answering now have the same filesystem. Keep the recorded
+                // fact under its old identity: it is inert for this device's
+                // lookup, while deleting it makes an alias repoint unrecoverable.
             }
             // What the checkout itself is sitting on is not recorded here: a
             // project takes its machine from the workspace that owns it, and the
@@ -1149,19 +1152,16 @@ extension TermioStore {
                 // replaces.
                 if let projectID, let project = self.projects.first(where: { $0.id == projectID }) {
                     let target = KnownDevice(alias: host, deviceID: device.id)
-                    guard let checkout = self.remoteCheckout(for: project, on: target) else {
+                    guard let checkout = self.remoteCheckoutReading(for: project, on: target) else {
                         self.presentRemoteCheckoutMissing(host: host, project: project.name)
                         return
                     }
-                    // The identity that answered is the one the checkout is filed
-                    // under from here on, so a repo found by its workspace stops
-                    // depending on that fallback and the panes reading the raw
-                    // lookup agree with this terminal.
-                    if let index = self.projects.firstIndex(where: { $0.id == projectID }),
-                       self.projects[index].remoteCheckouts[device.id] != checkout {
-                        self.projects[index].remoteCheckouts[device.id] = checkout
+                    if case .recorded(let path) = checkout,
+                       let index = self.projects.firstIndex(where: { $0.id == projectID }),
+                       self.projects[index].remoteCheckouts[device.id] != path {
+                        self.projects[index].remoteCheckouts[device.id] = path
                     }
-                    cwd = checkout
+                    cwd = checkout.path
                 }
                 self.createRemoteTerminalSession(
                     host: host, device: device.id, cwd: cwd, title: title, project: projectID

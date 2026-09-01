@@ -189,9 +189,8 @@ final class TermiodDeviceAdoptionTests: XCTestCase {
     }
 
     /// A machine that re-mints its `host_id` keeps its clones. The alias still
-    /// reaches the same box — the evidence the workspace loop already re-keys on —
-    /// so a checkout filed under the identity that died moves to the live one
-    /// instead of reading as "not cloned yet" while sitting right there.
+    /// reaches the same box — enough to offer the new identity a reading — while
+    /// the old identity remains recorded in case the alias was repointed.
     func testCarriesCheckoutsAcrossAHostIdentityChange() {
         var remote = deviceWorkspace(alias: "vps")
         remote.deviceID = "h_old"
@@ -201,7 +200,10 @@ final class TermiodDeviceAdoptionTests: XCTestCase {
 
         store.adoptDevice(device("h_new"), forRoute: .ssh("vps"))
 
-        XCTAssertEqual(store.projects[0].remoteCheckouts, ["h_new": "/home/me/termio"])
+        XCTAssertEqual(store.projects[0].remoteCheckouts, [
+            "h_old": "/home/me/termio",
+            "h_new": "/home/me/termio",
+        ])
     }
 
     /// A project filed under a machine's workspace is already a path over there,
@@ -218,6 +220,49 @@ final class TermiodDeviceAdoptionTests: XCTestCase {
                                  on: KnownDevice(alias: "vps", deviceID: "h_new")),
             "/code/termio"
         )
+    }
+
+    /// An alias is not proof that the host behind it is the same filesystem. Once
+    /// the workspace identifies a different box, its path cannot be guessed for
+    /// the new one or promoted into a checkout record.
+    func testAnAliasRepointKeepsTheOldCheckoutAndDoesNotInventOneOnTheNewBox() {
+        var remote = deviceWorkspace(alias: "vps")
+        remote.deviceID = "h_old"
+        let checkout = project("termio", in: remote)
+        let store = makeStore(workspaces: [remote], projects: [checkout])
+
+        store.adoptDevice(device("h_new"), forRoute: .ssh("vps"))
+
+        XCTAssertNil(store.remoteCheckoutReading(
+            for: store.projects[0], on: KnownDevice(alias: "vps", deviceID: "h_new")))
+        XCTAssertTrue(store.projects[0].remoteCheckouts.isEmpty)
+    }
+
+    /// A project whose workspace still identifies the old box must not open its
+    /// old path after an alias is reused for a new one.
+    func testARepointedAliasRefusesTheWorkspacePath() {
+        var remote = deviceWorkspace(alias: "vps")
+        remote.deviceID = "h_old"
+        let checkout = project("termio", in: remote)
+        let store = makeStore(workspaces: [remote], projects: [checkout])
+
+        XCTAssertNil(store.remoteCheckout(for: checkout,
+                                          on: KnownDevice(alias: "vps", deviceID: "h_new")))
+    }
+
+    /// A workspace records only its latest identity. A checkout stranded under an
+    /// older one remains a fact and must not be discarded while adopting another.
+    func testKeepsCheckoutOlderThanTheWorkspacesCurrentIdentity() {
+        var remote = deviceWorkspace(alias: "vps")
+        remote.deviceID = "h_current"
+        var checkout = project("termio", in: Workspace(name: "Sessions"))
+        checkout.remoteCheckouts = ["h_older": "/home/me/termio"]
+        let store = makeStore(workspaces: [remote], projects: [checkout])
+
+        store.adoptDevice(device("h_new"), forRoute: .ssh("vps"))
+
+        XCTAssertEqual(store.projects[0].remoteCheckouts,
+                       ["h_older": "/home/me/termio"])
     }
 
     /// The fallback is scoped to the machine the project is filed on: a checkout
