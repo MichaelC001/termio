@@ -56,8 +56,17 @@ final class TermiodStatusResourceTests: XCTestCase {
     /// status delta for a session the roster has never named is dropped, so
     /// without this the assertions below would pass on an empty backend and
     /// prove nothing.
+    /// Re-run the handshake, which is what opens a new subscribe attempt.
+    private func handshakeAndSubscribe(_ backend: TermiodBackend) throws {
+        try handshake(backend)
+    }
+
+    /// A backend in the state the status assertions assume: handshaken, its
+    /// subscribe attempt settled, and a roster to revise. The ack matters —
+    /// without one the ledger holds every batch, by design.
     private func seedRoster(_ backend: TermiodBackend, sessions: [String]) throws {
         try handshake(backend)
+        try deliver(backend, ack: subscribed(seq: 0))
         let rows = sessions.map { id in
             "{\"id\":\"\(id)\",\"name\":\"\(id)\",\"pid\":1,\"alive\":true,"
                 + "\"cwd\":\"/srv/repo\",\"command\":\"claude\",\"status\":\"working\","
@@ -87,27 +96,137 @@ final class TermiodStatusResourceTests: XCTestCase {
         return seen
     }
 
-    /// A session the roster has never named cannot be revised, but its batch
-    /// still advances the cursor: a batch skipped here is a batch that must not
-    /// be asked for again, or every reconnect replays it forever.
-    func testAnUnknownSessionStillAdvancesTheCursor() throws {
-        let backend = makeBackend()
-        XCTAssertNil(backend.statusResumeCursor)
-
-        backend.receive(try event(statusChanged(seq: 7, session: "s_1", status: "working")))
-
-        XCTAssertEqual(backend.statusResumeCursor, 7)
+    /// The ack for a subscription that resumed cleanly.
+    private func subscribed(seq: UInt64, gap: Bool = false) -> String {
+        "{\"op\":\"subscribed\",\"resource\":\"status:\",\"seq\":\(seq),"
+            + "\"gap\":\(gap ? "true" : "false"),\"re\":3}"
     }
 
-    /// The cursor only ever moves forward. A late duplicate must not walk it
-    /// backwards into re-reading batches it has already applied.
-    func testTheCursorNeverMovesBackwards() throws {
+    private func deliver(_ backend: TermiodBackend, ack json: String) throws {
+        let payload = Data(json.utf8)
+        backend.receive(TermiodChannel.Reply(
+            responseID: Termiod.responseID(of: payload),
+            control: try Termiod.decodeControl(payload)))
+    }
+
+    /// A batch that lands before the ack is **held**, not applied — it would
+    /// otherwise apply against a baseline the ack has not installed yet.
+    func testABatchArrivingBeforeTheAckIsHeldUntilItLands() throws {
         let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        try handshakeAndSubscribe(backend)
 
+        backend.receive(try event(statusChanged(seq: 1, session: "s_1", status: "needs_you")))
+        XCTAssertNotEqual(drawnStatus(backend, "s_1"), .needsAttention,
+                          "a batch applied before its baseline decision landed")
+
+        try deliver(backend, ack: subscribed(seq: 1))
+
+        XCTAssertEqual(drawnStatus(backend, "s_1"), .needsAttention)
+        XCTAssertEqual(backend.statusResumeCursor, 1)
+    }
+
+    /// Scenario (a): the cursor must not adopt the ack's `seq`.
+    ///
+    /// The ack names the end of a replay the host is *about* to send. Adopting
+    /// it and then losing the link before the replay arrives means the next
+    /// reconnect asks from a future this phone never saw, and 9 and 10 are gone
+    /// for good — a session stuck reading `working` after its turn ended.
+    func testADisconnectRightAfterTheAckDoesNotSkipTheReplay() throws {
+        let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        backend.setStatusCursorForTests(8)
+        try handshakeAndSubscribe(backend)  // re-subscribes: the ledger holds again
+
+        // The host says "you will get 9 and 10". Nothing has arrived yet.
+        try deliver(backend, ack: subscribed(seq: 10))
+
+        XCTAssertEqual(backend.statusResumeCursor, 8,
+                       "the ack is a target, not an achievement")
+
+        // The link drops before either batch lands. The next subscribe must ask
+        // from 8, not from 10.
+        backend.simulateLinkDropForTests()
+        XCTAssertEqual(backend.statusResumeCursor, 8)
+
+        // …and once they do arrive, the cursor follows them one at a time.
+        try handshakeAndSubscribe(backend)
+        try deliver(backend, ack: subscribed(seq: 10))
         backend.receive(try event(statusChanged(seq: 9, session: "s_1", status: "working")))
-        backend.receive(try event(statusChanged(seq: 4, session: "s_1", status: "idle")))
-
         XCTAssertEqual(backend.statusResumeCursor, 9)
+        backend.receive(try event(statusChanged(seq: 10, session: "s_1", status: "idle")))
+        XCTAssertEqual(backend.statusResumeCursor, 10)
+    }
+
+    /// Scenario (b): a stale replayed batch must never overwrite newer truth.
+    ///
+    /// If a live 11 reaches the phone between the subscription installing and
+    /// the replay being queued, applying the replayed 9 and 10 afterwards rolls
+    /// the session back to a status that stopped being true two batches ago.
+    /// The host now serialises the two, and this is the client's half of the
+    /// same guarantee.
+    func testAStaleReplayedBatchDoesNotOverwriteALiveOne() throws {
+        let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        backend.setStatusCursorForTests(8)
+        try handshakeAndSubscribe(backend)  // re-subscribes: the ledger holds again
+        try deliver(backend, ack: subscribed(seq: 10))
+
+        // The live one arrives first — the ordering this end must survive.
+        backend.receive(try event(statusChanged(seq: 11, session: "s_1", status: "needs_you")))
+        XCTAssertEqual(drawnStatus(backend, "s_1"), .needsAttention)
+
+        // Now the replay it was owed. Both are older than what is on screen.
+        backend.receive(try event(statusChanged(seq: 9, session: "s_1", status: "working")))
+        backend.receive(try event(statusChanged(seq: 10, session: "s_1", status: "idle")))
+
+        XCTAssertEqual(drawnStatus(backend, "s_1"), .needsAttention,
+                       "a replayed batch rolled the session backwards")
+        XCTAssertEqual(backend.statusResumeCursor, 8,
+                       "a hole was crossed, so the cursor stays where it was applied")
+    }
+
+    /// A gap has no continuity to preserve, so the cursor restarts at the
+    /// baseline the host named and the roster behind it re-establishes rows.
+    func testAGapRestartsTheCursorAtTheHostsBaseline() throws {
+        let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        backend.setStatusCursorForTests(2)
+        try handshakeAndSubscribe(backend)
+
+        try deliver(backend, ack: subscribed(seq: 40, gap: true))
+
+        XCTAssertEqual(backend.statusResumeCursor, 40)
+    }
+
+    /// A duplicate this phone has already applied is dropped outright, not
+    /// merely ignored for the cursor.
+    func testAnAlreadyAppliedBatchIsDropped() throws {
+        let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        try handshakeAndSubscribe(backend)
+        try deliver(backend, ack: subscribed(seq: 1))
+
+        backend.receive(try event(statusChanged(seq: 1, session: "s_1", status: "needs_you")))
+        XCTAssertEqual(drawnStatus(backend, "s_1"), .needsAttention)
+
+        backend.receive(try event(statusChanged(seq: 1, session: "s_1", status: "working")))
+
+        XCTAssertEqual(drawnStatus(backend, "s_1"), .needsAttention, "a duplicate was applied")
+        XCTAssertEqual(backend.statusResumeCursor, 1)
+    }
+
+    /// An ack for an attempt the link already killed must not settle the
+    /// replacement — its batches belong to a subscription that no longer exists.
+    func testAnAckFromADeadAttemptIsIgnored() throws {
+        let backend = makeBackend()
+        try seedRoster(backend, sessions: ["s_1"])
+        try handshakeAndSubscribe(backend)
+        backend.simulateLinkDropForTests()
+
+        try deliver(backend, ack: subscribed(seq: 5))
+
+        XCTAssertNil(backend.statusResumeCursor, "a dead attempt installed a baseline")
     }
 
     /// The daemon's `stalled` fields ride the same batches, so dropping the

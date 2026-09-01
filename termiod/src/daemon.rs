@@ -1710,18 +1710,20 @@ async fn process_control(
                             .map(|reply| (id, reply))
                     }) {
                     Ok((id, reply)) => {
-                        // The reply lands before any replayed batch, so the
-                        // client learns whether to rescan before applying them.
-                        let ack = Control::Subscribed {
+                        // The replay is already queued on `resource_tx` —
+                        // `Registry::attach` puts it there under the resource
+                        // lock, so no live batch can precede it. This ack
+                        // reaches `out` first regardless, because it is sent
+                        // from here while the select loop that drains
+                        // `resource_rx` is still waiting on this call: the
+                        // client learns whether to rescan before it applies
+                        // anything.
+                        Control::Subscribed {
                             resource: id,
                             seq: reply.seq,
                             gap: reply.gap,
                             re: seq,
-                        };
-                        for event in reply.replay {
-                            let _ = resource_tx.send(event);
                         }
-                        ack
                     }
                     Err(e) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
                 }

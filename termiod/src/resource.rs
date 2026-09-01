@@ -158,16 +158,20 @@ impl ResourceBatch for crate::git::GitBatch {
 }
 
 /// What a subscriber is told at subscribe time.
+///
+/// It carries no replay: the batches are queued straight onto the subscriber's
+/// own channel inside `attach`, because handing them back for the caller to
+/// send after the lock is what let a live batch overtake them.
 pub struct SubscribeReply {
-    /// The resource's current seq. A client that later reconnects passes this
-    /// (or the highest seq it has actually applied) back as `since`.
+    /// The resource's current seq — the cursor the subscription starts *at*,
+    /// which is a target and not an achievement: a client that has not yet
+    /// applied the replayed batches must not adopt it, or it resumes from a
+    /// future it never saw.
     pub seq: u64,
     /// The client's baseline is unusable — it must do a full scan before
     /// applying anything further. True for a first subscribe, and for a resume
     /// whose `since` has already fallen out of the ring.
     pub gap: bool,
-    /// Batches strictly newer than `since`, in order. Empty when `gap`.
-    pub replay: Vec<Event>,
 }
 
 struct ResourceState<B: ResourceBatch> {
@@ -225,6 +229,48 @@ impl<B: ResourceBatch> ResourceState<B> {
             && self
                 .idle_since
                 .is_some_and(|since| since.elapsed() >= LINGER)
+    }
+
+    /// Install a subscriber and hand it its replay in **one** critical section.
+    ///
+    /// The two halves used to be split: `subscribe` registered the subscriber,
+    /// released the lock, and the caller queued the replay afterwards. Between
+    /// those, a `publish` could fan a *live* batch out to a subscriber that had
+    /// not been given its replay yet — so the client applied 11 and then had 9
+    /// and 10 land on top of it. This is the same ordering family the clients
+    /// grew `DeviceWatchLedger` for, one hop upstream: the host should not
+    /// hand out an order it did not put the batches in.
+    ///
+    /// The replay is queued **before** the subscriber is installed, so nothing
+    /// this method admits can precede it, and a `publish` that wins the lock
+    /// next necessarily lands behind it. `override_replay` is the `git:` gap
+    /// case, which serves a full snapshot instead of a ring slice and has to
+    /// decide that inside the same section.
+    fn attach(
+        &mut self,
+        resource: &str,
+        client: ClientId,
+        tx: mpsc::UnboundedSender<Event>,
+        since: Option<u64>,
+        override_replay: impl FnOnce(u64) -> Option<Vec<Event>>,
+    ) -> SubscribeReply {
+        let (gap, replay) = self.resume(resource, since);
+        let replay = match gap.then(|| override_replay(self.seq)).flatten() {
+            Some(full) => full,
+            None => replay,
+        };
+        for event in replay {
+            // Unbounded and non-blocking, which is what makes it safe to do
+            // under the lock. A closed receiver means the subscriber left
+            // between asking and being served; it is dropped below either way.
+            let _ = tx.send(event);
+        }
+        self.subscribers.insert(client, tx);
+        self.idle_since = None;
+        SubscribeReply {
+            seq: self.seq,
+            gap,
+        }
     }
 
     /// Decide what a (re)subscribing client gets. A cursor inside the ring
@@ -380,15 +426,7 @@ impl Registry {
             self.fs_entry_locked(&mut watches, resource, Path::new(&root))?
         };
         let mut guard = entry.state.lock().unwrap();
-        guard.subscribers.insert(client, tx);
-        guard.idle_since = None;
-        let (gap, replay) = guard.resume(resource, since);
-
-        Ok(SubscribeReply {
-            seq: guard.seq,
-            gap,
-            replay,
-        })
+        Ok(guard.attach(resource, client, tx, since, |_| None))
     }
 
     /// Get or start the `fs:` watch for a workspace. Shared by fs subscribers
@@ -441,14 +479,10 @@ impl Registry {
             }
         };
         let mut guard = entry.lock().unwrap();
-        guard.subscribers.insert(client, tx);
-        guard.idle_since = None;
-        let (gap, replay) = guard.resume(STATUS_ID, since);
-        Ok(SubscribeReply {
-            seq: guard.seq,
-            gap,
-            replay,
-        })
+        // No snapshot to serve on gap: a status is a history of transitions,
+        // and only the roster says what is true *now*. The client re-reads
+        // `list`, which carries each session's current status.
+        Ok(guard.attach(STATUS_ID, client, tx, since, |_| None))
     }
 
     /// Publish one session's status. Called from the daemon's own event pump
@@ -495,23 +529,21 @@ impl Registry {
         };
 
         let mut guard = entry.state.lock().unwrap();
-        guard.subscribers.insert(client, tx);
-        guard.idle_since = None;
-        let (gap, mut replay) = guard.resume(resource, since);
-        if gap && guard.seq > 0 {
-            let full = entry.snapshot.lock().unwrap().full_batch();
-            replay = vec![crate::git::GitBatch::into_event(
-                full,
-                resource.to_string(),
-                guard.seq,
-            )];
-        }
-
-        Ok(SubscribeReply {
-            seq: guard.seq,
-            gap,
-            replay,
-        })
+        let snapshot = entry.snapshot.clone();
+        let resource_id = resource.to_string();
+        // Only the host can rescan git status, so a gap subscriber is served
+        // the full current state at the current seq rather than told to do it
+        // itself — decided inside `attach`'s critical section with everything
+        // else, so it cannot be overtaken either.
+        // Takes the snapshot lock while holding the state lock. Safe in that
+        // order and only that order: `refresh_git` releases the snapshot before
+        // it touches the state, so the two never nest the other way.
+        Ok(guard.attach(resource, client, tx, since, move |seq| {
+            (seq > 0).then(|| {
+                let full = snapshot.lock().unwrap().full_batch();
+                vec![crate::git::GitBatch::into_event(full, resource_id, seq)]
+            })
+        }))
     }
 
     /// Start the machinery behind one `git:` resource: ensure the workspace's
@@ -1042,13 +1074,19 @@ mod tests {
         registry.unsubscribe(STATUS_ID, &client);
         registry.publish_status(status_batch("s_2", "needs_you"));
 
-        let (resumed_tx, _resumed_rx) = mpsc::unbounded_channel();
+        let (resumed_tx, mut resumed_rx) = mpsc::unbounded_channel();
         let resumed = registry
             .subscribe(STATUS_ID, client.clone(), resumed_tx, Some(2))
             .expect("resume");
         assert!(!resumed.gap, "a cursor inside the ring is not a gap");
         assert_eq!(resumed.seq, 3);
-        assert_eq!(resumed.replay.len(), 1, "only what it missed");
+        // Delivered on the subscriber's own channel rather than handed back,
+        // which is what keeps a live batch from overtaking it.
+        assert!(matches!(
+            resumed_rx.try_recv(),
+            Ok(Event::StatusChanged { seq: 3, .. })
+        ));
+        assert!(resumed_rx.try_recv().is_err(), "only what it missed");
 
         // A cursor ahead of the host is nonsense, and says so rather than
         // silently replaying nothing.
@@ -1057,6 +1095,79 @@ mod tests {
             .subscribe(STATUS_ID, ClientId::new("other"), ahead_tx, Some(99))
             .expect("subscribe");
         assert!(ahead.gap);
+    }
+
+    /// The bug this exists for: the subscriber used to be installed under the
+    /// resource lock while its replay was queued *after* the lock was
+    /// released, so a batch published in between reached it first. The client
+    /// then applied 11, and 9 and 10 landed on top of it — a session's status
+    /// silently rolled backwards.
+    ///
+    /// Ordering is asserted from the subscriber's own channel, because that is
+    /// the only place the two streams meet.
+    #[tokio::test]
+    async fn a_live_batch_cannot_overtake_the_replay_a_subscriber_is_owed() {
+        let registry = Registry::new();
+        let (warm_tx, _warm_rx) = mpsc::unbounded_channel();
+        // Somebody has to be subscribed for the ring to exist at all.
+        registry
+            .subscribe(STATUS_ID, ClientId::new("warm"), warm_tx, None)
+            .expect("subscribe");
+        registry.publish_status(status_batch("s_1", "working"));
+        registry.publish_status(status_batch("s_1", "idle"));
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry
+            .subscribe(STATUS_ID, ClientId::new("phone"), tx, Some(0))
+            .expect("resume from the start of the ring");
+        assert!(!reply.gap);
+        assert_eq!(reply.seq, 2);
+
+        // The instant the subscription exists, a live batch is published. It
+        // must land behind the two it is owed, not in front of them.
+        registry.publish_status(status_batch("s_2", "needs_you"));
+
+        let mut seqs = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            rx.recv(),
+        )
+        .await
+        {
+            if let Event::StatusChanged { seq, .. } = event {
+                seqs.push(seq);
+            }
+        }
+        assert_eq!(seqs, vec![1, 2, 3], "the replay must precede the live batch");
+    }
+
+    /// A subscriber that asks for everything gets the ring in order, and the
+    /// seq it is handed is the last one *in* that run — so a client that
+    /// applies them all can adopt it, and one that does not must not.
+    #[tokio::test]
+    async fn the_ack_seq_names_the_end_of_the_replay_it_is_handed() {
+        let registry = Registry::new();
+        let (warm_tx, _warm_rx) = mpsc::unbounded_channel();
+        registry
+            .subscribe(STATUS_ID, ClientId::new("warm"), warm_tx, None)
+            .expect("subscribe");
+        for status in ["working", "idle", "working"] {
+            registry.publish_status(status_batch("s_1", status));
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry
+            .subscribe(STATUS_ID, ClientId::new("phone"), tx, Some(1))
+            .expect("resume");
+
+        assert_eq!(reply.seq, 3);
+        let mut seqs = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::StatusChanged { seq, .. } = event {
+                seqs.push(seq);
+            }
+        }
+        assert_eq!(seqs, vec![2, 3], "exactly what the cursor had not seen");
     }
 
     /// Publishing before anyone has ever asked must not conjure a ring: there is

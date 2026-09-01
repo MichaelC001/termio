@@ -261,6 +261,34 @@ the same batches, so nothing is lost by dropping the broadcast — and a device
 too old to know `status:` refuses, which the phone answers by falling back to
 the broadcast rather than going dark.
 
+**The resume path has an ordering contract, and both ends hold half of it.**
+A subscription resolves on two paths — the ack, and the batches — and the
+window between them is where `fs:` and `git:` were each caught once already:
+
+- **Host.** `Registry::attach` queues a subscriber's replay and installs the
+  subscriber inside *one* critical section. Before, the subscriber went in under
+  the lock and the replay was sent after it was released, so a batch published
+  in between reached the client first and the replay landed on top of newer
+  truth. This is shared machinery, so `fs:` and `git:` are fixed by the same
+  change rather than left one revision behind.
+- **Client.** The ack's `seq` names the end of a replay the host is *about* to
+  send — a target, not an achievement. A phone that adopted it and then lost the
+  link resumed from a future it had never seen, and the batches it named were
+  gone for good. The durable cursor therefore advances only for a batch actually
+  applied, and only when that batch is the next one; batches arriving before the
+  ack are held by `DeviceWatchLedger`, the same staging discipline the Mac's two
+  planes use. That type moved to `Shared/` for this — its own comment says a
+  second copy of the reasoning is how `fs:` came to be missing it, and this is
+  the third plane to need it.
+
+Two marks, not one: the cursor is the highest *contiguous* batch applied, and a
+separate per-attempt mark is the highest applied at all. They part only when a
+hole appears — the batch applies, because newer truth beats none, while the
+cursor stays put so the hole is re-asked for. The per-attempt mark resets on
+every new subscribe, because a fresh subscription replays in order from the
+cursor: without the reset, the batches spanning the hole would be dropped as
+stale on every reconnect and the cursor would never move again.
+
 The Mac stays on `E status`, deliberately. It attaches to each session it shows,
 so it already has the per-session channel; a roster-wide cursor is what a client
 that watches sessions it is *not* attached to needs, and on the Mac that is
@@ -407,10 +435,10 @@ derives status from the same device:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test` | **347 passed, 0 failed** (40 of them `session::status`) |
+| `cargo test` | **349 passed, 0 failed** (40 of them `session::status`) |
 | `swift build && swift test` | 950 passed, 0 failed |
 | `python3 termiod/tests/cli_compat.py` | **110/110** — the hook and CLI surface is byte-identical against the frozen shell client |
-| iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 34 passed, 0 failed (8 new) |
+| iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 38 passed, 0 failed (12 new) |
 | iOS builds for the simulator | clean |
 | No second matcher: `grep -rn 'firstMatch\|NSRegularExpression' Sources/termio/Agents Sources/termio/TermioStore` | 0 |
 | The engine is gone, not disabled: `OSCProgressScanner.swift`, `StallProbe`, `StallMeasurement`, `applyScreenDetectedActivity`, `applyTitleActivity`, `applyProgressActivity`, `noteOutputActivity`, `sweepStaleWorking`, `sweepStalledSessions`, `makeStatusTap` | all deleted |
