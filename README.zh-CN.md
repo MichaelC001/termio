@@ -12,21 +12,40 @@
 
 <p><a href="README.md">English</a> | 简体中文 | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a></p>
 
-<br />
-
-在真实的 Mac 终端里并排跑 Claude Code、Codex 和任意 CLI Agent——<br />
-Swift 加 libghostty，没有 Electron。菜单栏的圆点告诉你哪个在等你，<br />
-人不在桌前的时候，iPhone 来告诉你。
-
-<br />
-
 [**下载 macOS 版**](https://downloads.termio.sh/termio.dmg) &nbsp;&bull;&nbsp; [官网](https://termio.sh) &nbsp;&bull;&nbsp; [文档](https://termio.sh/docs) &nbsp;&bull;&nbsp; [更新日志](https://termio.sh/changelog) &nbsp;&bull;&nbsp; [Discord](https://discord.gg/H9DKVwsE5f)
-
-<br />
 
 <img alt="深色模式下的 Termio：一个正在运行的 Claude Code 会话，旁边是项目侧栏" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
+
+## 终端优先的 ADE
+
+代码大半改由 Agent 写之后，开发环境的职责就是把它们跑起来，并告诉你哪一个需要你。Termio 就是这样一个环境，而它是一个真实的终端——因为 Agent 本来就住在终端里。
+
+它在第一次启动时自动接好每个 Agent 自带的 hook。会话会报告工作中、空闲，还是*需要你*——侧栏一个状态点，菜单栏托盘在有 Agent 被挡住时出声，手机上是同一个信号。Claude Code、Codex、OpenCode、Pi、Amp、Cursor、Copilot、Kimi、Antigravity、Crush、Grok，以及任何其他 CLI Agent。
+
+更完整的论述：[*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。
+
+### tmux 的替代品
+
+所有人劝你学 tmux 的理由，Termio 让你不用学。每个会话的 shell 都活在守护进程 `termiod` 里，退出 app 只是断开连接。合上笔记本，再打开 Termio，Agent 还在你离开的地方——同一个进程，同一份回滚历史。只有「关闭会话」（⌘W）会结束它。
+
+分屏是 ⌘D，放大是 ⇧⌘↩。不用 Ctrl-b 前缀：⌘ 快捷键根本不会传进窗格里的程序，所以永远不会和 vim 或 TUI 抢键。翻历史、选文本、复制，用触控板和 ⌘C。没有 copy-mode。
+
+### 远程 VPS
+
+任何你能 `ssh` 上去的 Linux VPS。Termio 读 `~/.ssh/config`，从不改写它。**设置 ▸ 设备 ▸ 设置**会通过 SSH 把一个二进制文件复制到 `~/.local/bin`，启动守护进程，并在那台机器上装好 Agent 的 hook。本地会话和远程会话走的是同一套宿主。
+
+会话活在机器上，不在连接里。断开链接，Agent 继续干活；重新附着，屏幕原样回来。Zed Remote 和 VS Code Remote 则把远程工作困在一条活着的连接里。
+
+## 横向对比
+
+| | 它是什么 | Termio 有什么不同 |
+| --- | --- | --- |
+| **[Ghostty](https://ghostty.org)** | 终端本身。Termio 用它的内核 [libghostty](https://ghostty.org) 渲染，不是 fork。 | Ghostty 不跟踪 Agent，不持久化会话，也不在 VPS 上跑它们。你要的是一个快终端，那就用 Ghostty。Termio 是 Agent 跑在里面的环境。 |
+| **[cmux](https://cmux.com)** | 最接近的同类：原生 Swift、libghostty、Agent 需要你时响铃、iPhone 伴侣应用。它的远程是一个 SSH 工作区——机器上跑一个中继，愿意的话再加 tmux——手机与 Mac 配对。 | 每个会话都跑在 `termiod` 上，这台 Mac 或一台 Linux VPS，手机直接附着到那台宿主。状态放在菜单栏托盘，项目和 worktree 放在侧栏。cmux 有内置的可脚本化浏览器，也会读你的 Ghostty 配置；Termio 没有。 |
+| **[herdr](https://herdr.dev)** | 跑在你现有终端里的多路复用器。同样的持久化思路——一个服务端持有 PTY——并且会标记每个 Agent 工作中、被挡住还是空闲。形状是 tmux 式的：前缀键、TUI、通过 SSH 附着，支持 macOS / Linux / Windows。 | 一个原生 Mac 应用，有 Mac 快捷键、iPhone 伴侣应用，VPS 作为侧栏里的一个工作区——不是一个你去附着的 TUI。 |
+| **[Otty](https://otty.sh)** | 为 Agent 调过的原生 Mac 终端：标签徽标、输入框、能恢复 Claude / Codex / OpenCode 的会话还原。它介于终端和 ADE 之间。 | Termio 是这件事的 ADE 那一侧：会话活在 `termiod` 里，退出 app 也不会消失，在 Linux VPS 上和在你 iPhone 上都是同一个对象。 |
 
 ## 安装
 
@@ -41,59 +60,62 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR) 装伴侣应用的公测版，
 再扫 Mac 应用 **设置 ▸ 手机** 里的二维码配对。
 
-## 为 Agent 编程而造
+## 你会得到什么
 
-IDE 是围绕一个人敲代码设计的。代码大半改由 Agent 写之后，开发环境的职责跟着变：
-它既是 Agent 干活的地方，也是你指挥、审阅、给它们解困的地方。Termio 就是这样一个
-环境——终端优先，因为 Agent 本来就住在终端里——它对着工作的新形状造：几个 Agent
-同时在跑，大多数不用你管，有一个卡住了。（更完整的论述见
-[*From IDE to ADE*](docs/essays/from-ide-to-ade.md)。）
-
-- **真实的终端，不是网页视图。** Swift + AppKit，跑在
-  [libghostty](https://ghostty.org)（Ghostty 的终端内核）上，用 Metal 渲染。
-  没有 Electron，也没有 xterm.js。
-- **项目 → 会话。** 侧栏映射你实际的工作方式：每个项目装着自己的终端和 Agent，
-  git worktree 嵌在项目下面，一条分支对应一项并行任务。
-- **状态不用配。** Termio 自动接好每个 Agent 自带的 hook，读它们本来就会发出的
-  信号。工作中、空闲，还是*需要你*——每个会话一个状态点；菜单栏托盘平时安静，
-  Agent 干活时脉动，有 Agent 被你挡住时出声。
-- **审阅不必离开。** 只读的 git 面板（更改、历史、统一 diff）、点击即编辑的文件树、
-  项目级内容搜索——提交仍然在终端里做。
-- **Git worktree。** 从侧栏创建，以嵌套文件夹出现在项目下，一条分支对应一项并行任务。
-- **聊天。** 不属于任何项目的一次性 Agent 会话。
-- **用量仪表。** Claude 和 Codex 的套餐额度，在 **设置 ▸ 用量** 里本地读取。
-- **主题。** 浅色、深色，以及跟随系统的玻璃外观。
-- **自动更新。** 经过公证的 DMG，由 Sparkle 更新。
-- **免费。** 不用账号，没有许可证密钥，也没有付费档位。MIT 许可。
-
-## 不需要学 tmux 了
-
-所有人劝你学 tmux 的理由，是跑 Agent 需要比终端活得久的会话——退出 app、合上
-笔记本，Agent 得继续干活。这件事 Termio 开箱就做了：每个会话的 shell 都活在
-守护进程 `termiod` 里，退出 app 只是断开连接。再打开，Agent 还在你离开的地方——
-同一个进程，同一份回滚历史。只有"关闭会话"（⌘W）会结束它。
-
-tmux 剩下要教你的东西，要么是一个 Mac 快捷键，要么你本来就会：
-
-- 分屏：⌘D，放大：⇧⌘↩——不用先按 Ctrl-b。⌘ 快捷键根本不会传进窗格里的程序，
-  所以永远不会和 vim 或 TUI 抢键。
-- 翻历史、选文本、复制：触控板、鼠标、⌘C。没有 copy-mode 要进出。
-- Linux 机器上的会话：同一个守护进程跑在那边，任何 shell 里
-  `termiod attach <session>` 就能接上。
-- 脚本化：`termio sessions`（见下文）干的就是 `send-keys` 脚本干的事，而且
-  Agent 状态是协议对象，不用抓屏。
-
-## 和你现有的 Agent 一起用
-
-Claude Code、Codex、Antigravity、Grok、Cursor Agent、Copilot、Amp、OpenCode、
-Pi、Kimi——以及任何其他 CLI Agent，因为会话本来就是一个真实终端。
-内置的那些，Termio 会自动装上它们各自的 hook 或插件，你第一次启动它们时状态检测
-就已经在了。
+<table>
+<tr>
+<td width="50%" valign="top">
+<h3>项目装着会话</h3>
+<p>一个 checkout 一个项目，它的终端和 Agent 都在下面。聊天排在项目上方——不属于任何项目的一次性 Agent 会话。</p>
+<img alt="Termio 侧栏，显示终端、聊天、项目、worktree 及其嵌套的会话" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" />
+</td>
+<td width="50%" valign="top">
+<h3>Git worktree</h3>
+<p>一条分支对应一项并行任务，从侧栏创建。Worktree 嵌在它来自的项目下面。</p>
+<img alt="Termio 侧栏里的一个 worktree，带着嵌套的会话和一个新增 worktree 的右键菜单" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>分屏面板</h3>
+<p>⌘D 向右分屏，⇧⌘D 向下分屏。一个 Agent、一个开发服务器、一个 shell，同一个窗口。</p>
+<img alt="Termio 里一个 Codex 会话和两个 shell 面板并排成组" src="web/landing/public/screenshots/docs/03-grouped-panes.png" />
+</td>
+<td width="50%" valign="top">
+<h3>状态一眼看清</h3>
+<p>工作中、空闲、完成，还是<em>需要你</em>——每一行都有标记。同一份列表就是 <code>termio sessions list</code>。</p>
+<img alt="Termio 侧栏报告工作中、完成和需要你，终端里同时跑着 termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>文件编辑器</h3>
+<p>在文件树里点一个文件。语法高亮，自动保存。提交仍然在终端里做。</p>
+<img alt="Termio 的文件检查器里打开了一个 Swift 文件，语法高亮的编辑器旁边是终端" src="web/landing/public/screenshots/docs/06-files-editor.png" />
+</td>
+<td width="50%" valign="top">
+<h3>更改</h3>
+<p>只读的 git 面板，显示当前的统一 diff。提交、推送和开 PR 仍然在终端里。</p>
+<img alt="Termio 的更改标签页选中了一个文件，红绿统一 diff 显示在终端旁边" src="web/landing/public/screenshots/docs/07-changes-diff.png" />
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<h3>搜索</h3>
+<p>项目级内容搜索，点一下就跳到编辑器里匹配的那一行。</p>
+<img alt="Termio 的搜索标签页列出 DiffGapText 在四个文件里的匹配" src="web/landing/public/screenshots/docs/09-project-search.png" />
+</td>
+<td width="50%" valign="top">
+<h3>命令面板</h3>
+<p>⌘⇧P。分屏、聚焦，一切你本来要翻菜单找的东西。</p>
+<img alt="Termio 的命令面板输入 split，选中了向右分屏" src="web/landing/public/screenshots/docs/10-command-palette.png" />
+</td>
+</tr>
+</table>
 
 ## 从终端驱动
 
-Termio 附带 `termio` 命令行工具，会话因此可以脚本化——Agent 自己也能调。跑在 Termio
-里的 Agent 可以派生一个同伴，交给它一个任务，再把回复读回来：
+`termio` 命令行工具驱动正在运行的应用。跑在 Termio 里的 Agent 可以派生一个同伴，交给它一个任务，再把回复读回来：
 
 ```sh
 termio .                                    # 把当前目录作为项目打开
@@ -108,18 +130,13 @@ termio sessions close ab12cd34              # 关掉它
 termio notify "the migration finished"      # 发一条 macOS 通知
 ```
 
-剩下的交给参数：`--wait` 一直等到这一轮结束，回来时带上最终状态和可以去读的记录行
-范围；`--json` 让任何 `sessions` 命令输出机器可读的结果；`--agent` 决定 `spawn`
-启动哪个 Agent；`--direction` / `--ratio` 决定新面板落在哪、占多大。
+`--wait` 一直等到这一轮结束，回来时带上最终状态和可以去读的记录行范围。`--json` 让任何 `sessions` 命令输出机器可读的结果。`--agent` 决定 `spawn` 启动哪个 Agent。`--direction` / `--ratio` 决定新面板落在哪、占多大。
 
 ```sh
 termio sessions spawn "run the migration" --agent codex --wait
 ```
 
-Agent 自己会学会这套：会话控制会往每个 Agent 的技能目录（`~/.claude/skills`、
-`~/.codex/skills`）装一个 `termio`
-[Agent 技能](https://termio.sh/skill.md)，并在每次启动时保持它最新。
-其他 Agent 也可以直接从这个仓库装同一个技能：
+会话控制会往每个 Agent 的技能目录（`~/.claude/skills`、`~/.codex/skills`）装一个 `termio` [Agent 技能](https://termio.sh/skill.md)，并在每次启动时保持它最新。其他 Agent 也可以直接从这个仓库装同一个技能：
 
 ```sh
 npx skills add termio-sh/termio --skill termio
@@ -127,9 +144,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## 在你的 iPhone 上
 
-伴侣应用把每个 Mac 会话实时镜像到手机上——是完整的 TUI，不是聊天摘要。按键条把
-esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转写进提示词。免费，公测中：
-[加入 TestFlight](https://testflight.apple.com/join/1Arf1UKR)。
+伴侣应用把每个会话实时镜像过来——是完整的 TUI，不是聊天摘要。按键条把 esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转写进提示词。公测中：[TestFlight](https://testflight.apple.com/join/1Arf1UKR)。
 
 <table>
   <tr>
@@ -141,49 +156,52 @@ esc、tab、ctrl 和方向键放在键盘上方，按住说话把语音直接转
 
 ## 架构
 
-Termio 的每个会话都跑在 `termiod` 上——一个小小的 Rust daemon，在活儿实际跑的那台
-机器上持有 PTY。每个界面——Mac 应用、手机、浏览器——都是通过同一套带版本的协议附着
-上去的客户端。
+每个会话都活在 `termiod` 里。客户端只是附着上去。关掉一个客户端不会杀死 Agent。一套协议，变的只有管道。
 
 ```
-  web     ─WSS──┐
-  iPhone  ─WSS──┼─► termiod (Mac)    ─► PTY ─► shell / agent
-  Mac app ─unix─┘
+  ┌─────────────────┐ unix  ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ unix  │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ unix  │   (Mac)    │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
 
-  web     ─WSS──┐
-  iPhone  ─WSS──┼─► termiod (Linux)  ─► PTY ─► shell / agent
-  Mac app ─ssh──┘
+  ┌─────────────────┐ ssh   ┌────────────┐         ┌─────────────────┐
+  │ Mac app         │──────►│            │         │                 │
+  ├─────────────────┤ ssh   │            │         │                 │
+  │ Windows (soon)  │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
+  ├─────────────────┤ ssh   │  (Linux)   │         │                 │
+  │ TUI (soon)      │──────►│            │         │                 │
+  ├─────────────────┤ wss   │            │         │                 │
+  │ Android (soon)  │──────►│            │         │                 │
+  └─────────────────┘       └────────────┘         └─────────────────┘
 ```
 
-变的只有管道，每一段上的帧完全一样。没有哪个客户端要穿过另一个客户端才能拿到会话
-——手机因此不是 Mac 的卫星，VPS 上的会话和笔记本上的会话也因此是同一种东西。
+手机直接附着到机器上的 `termiod`，不经过 Mac。VPS 上的会话和你笔记本上的会话是同一种东西。
 
-**已经有的：** daemon 和它的协议、`unix`、`ssh`、`wss` 三种传输、附着时的快照、
-回滚、文件和 git 平面，以及 launchd/systemd 托管。Mac 应用的每个会话都跑在它上面，
-手机通过 WSS 附着到 Mac 或 Linux 机器。**还没有的：** 浏览器客户端。
-
-推导过程写在 [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) 和
-[`docs/`](docs/README.md) 下的设计笔记里。
+推导过程写在 [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md) 里。
 
 ## 路线图
 
-- **Linux 远程服务器** — 会话跑在你自己的 Linux 机器上（VPS、开发机），在 Mac
-  应用里统一带。
-- **Mux 服务器** — 持久的会话宿主：会话活在机器上，不在连接里。合上笔记本，Agent
-  继续干活；重新附着，屏幕原样回来。
 - **Issue 分诊** — GitHub、GitLab、Linear 的 issue 直接进应用，随手交给 Agent。
+- **TUI 客户端** — 从任意终端附着，像你附着 tmux 那样。
 - **手机上的 TUI → GUI** — 在实时镜像之上，把 Agent 会话可选地渲染成 GUI。
-- **Windows 支持** — 原生 Windows 应用。同样的想法，同样的终端内核，不是 Electron
-  移植。
+- **Android** — 和 iPhone 一样的伴侣应用。
+- **Windows 支持** — 原生 Windows 应用。同样的想法，同样的终端内核，不是 Electron。
 - **Web 支持** — 从任意浏览器附着到你的会话，终端还能用链接分享。
 
 在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 关注进展或参与讨论。
 
 ## 社区
 
-**Termio 正在找长期维护者。** 如果你喜欢用它，也想认领路线图里的某一块——Linux
-远程服务器、Web 客户端、Windows，或者 iOS 伴侣应用——来 Discord 打个招呼，或者
-直接捡一个 issue。
+**Termio 正在找长期维护者。** 如果你喜欢用它，也想认领上面路线图里的某一块——Web 客户端、Windows，或者 iOS 伴侣应用——来 Discord 打个招呼，或者直接捡一个 issue。
 
 - **[Discord](https://discord.gg/H9DKVwsE5f)** — 和开发者以及其他用户交流
 - **微信群** — 中文用户扫下面的二维码
