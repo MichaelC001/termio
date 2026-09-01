@@ -496,6 +496,17 @@ extension Termiod {
                              route: .local, sshPid: nil)
         }
 
+        /// Local Unix socket without starting a daemon. Startup reconciliation
+        /// only has work to do when a previous daemon is already running; the
+        /// first pane starts a missing one from this app's bundled binary.
+        static func existingLocal() throws -> Transport {
+            guard let descriptor = openSocket() else {
+                throw TermiodClientError.daemonUnreachable(socketPath())
+            }
+            return Transport(readDescriptor: descriptor, writeDescriptor: descriptor,
+                             route: .local, sshPid: nil)
+        }
+
         /// Opens whichever kind of pipe the route names — the one place local and
         /// SSH differ, so no caller above this line has to branch on it.
         static func open(_ route: TermiodRoute) throws -> Transport {
@@ -834,6 +845,19 @@ extension Termiod {
     @discardableResult
     static func probeDevice(route: TermiodRoute) throws -> TermiodDevice {
         let transport = try Transport.open(route)
+        defer { transport.close() }
+        do {
+            return try performHello(transport, role: "control").device
+        } catch let error as TermiodClientError {
+            throw transport.explained(error)
+        }
+    }
+
+    /// Asks an already-running local daemon who it is, without the normal
+    /// connect path's autostart side effect.
+    @discardableResult
+    static func probeExistingLocalDevice() throws -> TermiodDevice {
+        let transport = try Transport.existingLocal()
         defer { transport.close() }
         do {
             return try performHello(transport, role: "control").device

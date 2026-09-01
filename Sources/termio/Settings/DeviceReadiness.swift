@@ -448,4 +448,12 @@ enum AppInfo {
         let build = info?["CFBundleVersion"] as? String ?? "0"
         return "\(version)+\(build)"
     }()
+
+    /// The same stamp, `nil` when the running binary is not a bundle. A bare
+    /// `swift build` executable carries no version at all, and the daemon it
+    /// finds in the checkout is stamped from the commit count — comparing the
+    /// two would report a mismatch on every launch that no update could settle.
+    static let bundledStamp: String? = {
+        Bundle.main.infoDictionary?["CFBundleVersion"] == nil ? nil : buildStamp
+    }()
 }
