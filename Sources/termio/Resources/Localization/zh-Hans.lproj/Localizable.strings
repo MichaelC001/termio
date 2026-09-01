@@ -188,6 +188,8 @@
 	<string>将 Host 块追加到 ~/.ssh/config，该别名也可直接用于 `ssh %@`。</string>
 	<key>Apply</key>
 	<string>应用</string>
+	<key>Arguments</key>
+	<string>参数</string>
 	<key>Asking %@ what it has.</key>
 	<string>正在询问 %@ 上有什么。</string>
 	<key>Asking %@…</key>
@@ -984,6 +986,8 @@
 	<string>让 iPhone 直接连到这台 Mac 的会话宿主。没有会话在跑的项目暂时不会出现。</string>
 	<key>Panes</key>
 	<string>窗格</string>
+	<key>Passed to %@ every time a session starts.</key>
+	<string>每次开启会话时传给 %@。</string>
 	<key>Password</key>
 	<string>密码</string>
 	<key>Paste</key>

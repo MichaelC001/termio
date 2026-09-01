@@ -782,7 +782,7 @@
       "id": "opencode",
       "installURL": "https://opencode.ai",
       "order": 30,
-      "permissionBypassFlag": null,
+      "permissionBypassFlag": "--auto",
       "resume": {
         "create": null,
         "discover": {

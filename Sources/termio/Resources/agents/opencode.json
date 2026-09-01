@@ -4,6 +4,7 @@
   "name": "OpenCode",
   "wire": "opencode",
   "command": "opencode",
+  "permissionBypassFlag": "--auto",
   "resume": {
     "resume": "--session {id}",
     "discover": {

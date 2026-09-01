@@ -91,7 +91,7 @@ final class AppSettings: ObservableObject {
         Key.scrollbackMegabytes, Key.copyOnSelect,
         Key.interfaceFontFamily, Key.interfaceFontSize, Key.interfaceRowPadding,
         Key.agentCommands, Key.devices,
-        Key.bypassPermissionAgents, Key.disabledAgents,
+        Key.bypassPermissionAgents, Key.agentArguments, Key.disabledAgents,
         Key.addedAgents, Key.agentOrder, Key.agentHooksEnabled,
         Key.sessionControlEnabled, Key.githubIntegrationEnabled,
         Key.notifyTaskCompletion, Key.notificationSound,
@@ -132,6 +132,10 @@ final class AppSettings: ObservableObject {
         /// machine identities, which are discovered, not enumerable up front.
         static let devices = "devices"
         static let bypassPermissionAgents = "agents.bypassPermissions"
+        /// Extra arguments the user wants every session of an agent to start
+        /// with, by `rawValue`. Flat rather than nested under `devices` because
+        /// they describe the agent, not the box it runs on.
+        static let agentArguments = "agents.arguments"
         static let disabledAgents = "agents.disabled"
         static let addedAgents = "agents.added"
         static let agentOrder = "agents.order"
@@ -368,6 +372,16 @@ final class AppSettings: ObservableObject {
     /// the default (nothing stored) means every agent keeps its prompts.
     @Published var bypassPermissionAgents: Set<String> {
         didSet { store.set(Array(bypassPermissionAgents), forKey: Key.bypassPermissionAgents) }
+    }
+
+    /// Extra arguments appended to an agent's command on every launch, by
+    /// `rawValue` — `--model opus`, a project flag, the agent's own bypass flag
+    /// when it has one termio does not know about. Held once for the app rather
+    /// than per machine for the same reason the bypass switch is: how you want an
+    /// agent to run is a standing decision about that agent, while a command path
+    /// is a fact about a box (RFC §The model).
+    @Published var agentArguments: [String: String] {
+        didSet { store.set(agentArguments.isEmpty ? nil : agentArguments, forKey: Key.agentArguments) }
     }
 
     /// Agent presets hidden from the sidebar quick-add row, by `rawValue`. Stored
@@ -617,6 +631,7 @@ final class AppSettings: ObservableObject {
         interfaceRowPadding = store.double(Key.interfaceRowPadding)
         deviceSettings = DeviceSettingsSection(jsonObject: store.object(Key.devices))
         bypassPermissionAgents = Set(store.stringArray(Key.bypassPermissionAgents) ?? [])
+        agentArguments = store.stringDictionary(Key.agentArguments) ?? [:]
         disabledAgents = Set(store.stringArray(Key.disabledAgents) ?? [])
         addedAgents = Set(store.stringArray(Key.addedAgents) ?? [])
         agentOrder = store.stringArray(Key.agentOrder) ?? []
@@ -657,20 +672,42 @@ final class AppSettings: ObservableObject {
 
     /// Effective command for an agent **on a machine**: the path authored for that
     /// machine if it's non-empty, otherwise the preset's built-in default (`nil`
-    /// for a plain login shell), with the permission-bypass flag appended when
-    /// that switch is on. The flag is only added if it isn't already present, so a
-    /// user who typed it into the path by hand doesn't get it twice.
+    /// for a plain login shell), then the user's own arguments, then the
+    /// permission-bypass flag when that switch is on. The flag is only added if it
+    /// isn't already present anywhere in the line, so a user who typed it into the
+    /// path or the arguments by hand doesn't get it twice.
     ///
-    /// The path is per-machine and the bypass switch is not: where a CLI lives is
-    /// a fact about a box, while running an agent without its prompts is a
-    /// standing decision about that agent (RFC §The model).
+    /// The path is per-machine and the other two are not: where a CLI lives is a
+    /// fact about a box, while how you want the agent to run is a standing
+    /// decision about that agent (RFC §The model).
     func command(for agent: AgentPreset, on device: KnownDevice = .thisMac) -> String? {
         let authored = commandPath(for: agent, on: device)
         let base = (authored?.isEmpty == false ? authored : agent.command)
         guard let base else { return nil }
+        var command = base
+        if let extra = arguments(for: agent) {
+            command += " \(extra)"
+        }
         guard bypassesPermissions(agent), let flag = agent.permissionBypassFlag,
-              !base.contains(flag) else { return base }
-        return "\(base) \(flag)"
+              !command.contains(flag) else { return command }
+        return "\(command) \(flag)"
+    }
+
+    /// The arguments the user authored for this agent, or `nil` when they never
+    /// set any — the same empty-means-unset rule the command path follows, which
+    /// is what keeps a cleared field out of `settings.json`.
+    func arguments(for agent: AgentPreset) -> String? {
+        let authored = agentArguments[agent.rawValue]?.trimmingCharacters(in: .whitespaces)
+        return authored?.isEmpty == false ? authored : nil
+    }
+
+    func setArguments(_ arguments: String?, for agent: AgentPreset) {
+        let trimmed = arguments?.trimmingCharacters(in: .whitespaces)
+        if let trimmed, !trimmed.isEmpty {
+            agentArguments[agent.rawValue] = trimmed
+        } else {
+            agentArguments.removeValue(forKey: agent.rawValue)
+        }
     }
 
     /// The command path the user authored for this agent on this machine, before
