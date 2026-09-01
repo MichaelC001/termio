@@ -262,7 +262,13 @@ extension Termiod {
             let fresh: Bool = lock.withLock {
                 guard !stopped else { return false }
                 if let cursor, batch.seq <= cursor { return false }
-                cursor = batch.seq
+                // Contiguous only, for the reason `GitPanelModel.apply` states:
+                // a batch past the next one means batches are missing, and each
+                // one names directories to re-walk. Deliver it — those
+                // directories really did change — but leave the cursor, so the
+                // next resume replays the ones this attempt never saw instead
+                // of stepping over them for good.
+                if batch.seq == (cursor ?? 0) + 1 { cursor = batch.seq }
                 return true
             }
             guard fresh else { return }
