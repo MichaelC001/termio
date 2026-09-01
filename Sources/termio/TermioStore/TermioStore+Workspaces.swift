@@ -262,6 +262,46 @@ extension TermioStore {
         device(of: project) != .thisMac
     }
 
+    enum RemoteCheckoutReading: Equatable {
+        case recorded(String)
+        case workspacePath(String)
+
+        var path: String {
+            switch self {
+            case .recorded(let path), .workspacePath(let path): path
+            }
+        }
+    }
+
+    /// Where a project's files sit on `device`: the checkout recorded for that
+    /// machine, or — when the project is filed under an as-yet-unidentified
+    /// workspace on it — the project's own `path`.
+    ///
+    /// The second reading is what keeps a machine that re-mints its `host_id` from
+    /// orphaning every repo on it. A checkout is keyed by the identity that
+    /// answered when it was recorded; a box that comes back with a different one
+    /// (a reboot that wiped a pre-0.48 `host.id`, which lived in the runtime dir)
+    /// no longer matches its own key, and the repo reads as "not on that machine
+    /// yet" while sitting right there. A workspace states the same fact more
+    /// durably only until the workspace has identified a device. An alias can be
+    /// repointed, and an identity change cannot distinguish that from the same
+    /// box returning, so the soft reading is valid only before that fact exists.
+    func remoteCheckoutReading(for project: Project, on device: KnownDevice) -> RemoteCheckoutReading? {
+        guard let alias = device.alias else { return nil }
+        if let recorded = project.remoteCheckout(device: device.deviceID, alias: alias) {
+            return .recorded(recorded)
+        }
+        guard let workspace = workspace(owning: project),
+              workspace.deviceAlias == alias,
+              workspace.deviceID == nil
+        else { return nil }
+        return .workspacePath(project.path)
+    }
+
+    func remoteCheckout(for project: Project, on device: KnownDevice) -> String? {
+        remoteCheckoutReading(for: project, on: device)?.path
+    }
+
     /// The project that already *is* the directory `path` on that machine — what
     /// "opening the same folder twice reopens the row you have" asks.
     ///

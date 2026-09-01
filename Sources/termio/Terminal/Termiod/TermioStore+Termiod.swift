@@ -526,6 +526,17 @@ extension TermioStore {
     /// case (a cloned VM carrying a duplicate `host_id`) has an answer.
     func adoptDevice(_ device: TermiodDevice, forRoute route: TermiodRoute) {
         let alias = route.sshAlias
+        // Identities this alias used to answer with. A machine that re-mints its
+        // `host_id` — a reboot that took a pre-0.48 `host.id` with it — comes back
+        // as a device nothing is keyed under, and every clone on it would read as
+        // "not cloned yet" while sitting right there. The alias reaching the same
+        // box is the same evidence the workspace loop below already re-keys on.
+        let superseded = alias.map { alias in
+            workspaces
+                .filter { $0.deviceAlias == alias }
+                .compactMap(\.deviceID)
+                .filter { $0 != device.id }
+        } ?? []
         for index in projects.indices {
             // A checkout recorded before checkouts were device-keyed sits under
             // the alias. Promote it the moment the alias resolves, so an old state
@@ -534,6 +545,16 @@ extension TermioStore {
                projects[index].remoteCheckouts[device.id] == nil {
                 projects[index].remoteCheckouts[device.id] = legacy
                 projects[index].remoteCheckouts[alias] = nil
+            }
+            for old in superseded {
+                guard let stale = projects[index].remoteCheckouts[old] else { continue }
+                if projects[index].remoteCheckouts[device.id] == nil {
+                    projects[index].remoteCheckouts[device.id] = stale
+                }
+                // An alias is only a route, not proof that its old device and the
+                // one answering now have the same filesystem. Keep the recorded
+                // fact under its old identity: it is inert for this device's
+                // lookup, while deleting it makes an alias repoint unrecoverable.
             }
             // What the checkout itself is sitting on is not recorded here: a
             // project takes its machine from the workspace that owns it, and the
@@ -1144,12 +1165,17 @@ extension TermioStore {
                 // you clicked and what you got is exactly the confusion this
                 // replaces.
                 if let projectID, let project = self.projects.first(where: { $0.id == projectID }) {
-                    guard let checkout = project.remoteCheckout(device: device.id, alias: host)
-                    else {
+                    let target = KnownDevice(alias: host, deviceID: device.id)
+                    guard let checkout = self.remoteCheckoutReading(for: project, on: target) else {
                         self.presentRemoteCheckoutMissing(host: host, project: project.name)
                         return
                     }
-                    cwd = checkout
+                    if case .recorded(let path) = checkout,
+                       let index = self.projects.firstIndex(where: { $0.id == projectID }),
+                       self.projects[index].remoteCheckouts[device.id] != path {
+                        self.projects[index].remoteCheckouts[device.id] = path
+                    }
+                    cwd = checkout.path
                 }
                 self.createRemoteTerminalSession(
                     host: host, device: device.id, cwd: cwd, title: title, project: projectID
