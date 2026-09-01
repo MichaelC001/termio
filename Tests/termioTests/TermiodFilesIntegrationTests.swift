@@ -16,64 +16,42 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     private var socketDirectory: URL?
     private var socketPath = ""
     private var root = URL(fileURLWithPath: "/")
-    private var shimDirectory = URL(fileURLWithPath: "/")
+    private var stallDirectory = URL(fileURLWithPath: "/")
 
-    // MARK: - A grep that takes a known amount of time
+    // MARK: - A search that takes a known amount of time
 
-    /// Where the shim reads how long to run, and records that it ran to the end.
-    private var shimSecondsFile: URL { shimDirectory.appendingPathComponent("seconds") }
-    private var shimStartedFile: URL { shimDirectory.appendingPathComponent("started") }
-    private var shimFinishedFile: URL { shimDirectory.appendingPathComponent("finished") }
+    /// `fs.search` runs in-process on the daemon — ripgrep's crates, not a
+    /// `git grep` child — so there is no binary to shim and no process to
+    /// watch. The daemon's own `TERMIOD_TEST_SEARCH_STALL` hook stands in for
+    /// the enormous checkout instead: armed with a duration, every search
+    /// stalls for that long before walking, checking its cancel flag all the
+    /// while, and records what happened as marker files in this directory.
+    /// `started` is written on entry, `finished` only after the full stall,
+    /// `canceled` only when the flag stopped it — so "the host stopped early"
+    /// is the host's own record, not an inference from the client returning.
+    private var stallSecondsFile: URL { stallDirectory.appendingPathComponent("seconds") }
+    private var stallStartedFile: URL { stallDirectory.appendingPathComponent("started") }
+    private var stallFinishedFile: URL { stallDirectory.appendingPathComponent("finished") }
+    private var stallCanceledFile: URL { stallDirectory.appendingPathComponent("canceled") }
 
-    /// Installs a `git` that stands in for a long grep over a big checkout.
-    ///
-    /// Everything except `grep` is handed to the real `git`, and so is `grep`
-    /// itself until a test arms the delay — so every search test that wants a
-    /// real answer still gets one. Once armed, a `grep` sleeps for the
-    /// configured time and only then writes `finished`, which makes "the host
-    /// stopped early" observable as the absence of that file rather than as the
-    /// client having returned.
-    private func installGrepShim() throws {
-        shimDirectory = try XCTUnwrap(socketDirectory)
-            .appendingPathComponent("shim")
-        try FileManager.default.createDirectory(
-            at: shimDirectory, withIntermediateDirectories: true)
-        let script = """
-        #!/bin/bash
-        for argument in "$@"; do
-          if [ "$argument" = "grep" ]; then
-            delay=$(cat "\(shimSecondsFile.path)" 2>/dev/null || echo 0)
-            if [ "$delay" != "0" ]; then
-              echo "$$" >> "\(shimStartedFile.path)"
-              sleep "$delay"
-              echo "$$" >> "\(shimFinishedFile.path)"
-              exit 1
-            fi
-            break
-          fi
-        done
-        exec /usr/bin/git "$@"
-        """
-        let shim = shimDirectory.appendingPathComponent("git")
-        try Data(script.utf8).write(to: shim)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: shim.path)
-        try Data("0\n".utf8).write(to: shimSecondsFile)
-    }
-
-    /// Arms the shim to run for `seconds`, and clears the previous run's marks.
+    /// Arms the stall for `seconds`, and clears the previous run's marks.
     private func makeSearchTake(seconds: Double) throws {
-        try? FileManager.default.removeItem(at: shimStartedFile)
-        try? FileManager.default.removeItem(at: shimFinishedFile)
-        try Data("\(seconds)\n".utf8).write(to: shimSecondsFile)
+        try? FileManager.default.removeItem(at: stallStartedFile)
+        try? FileManager.default.removeItem(at: stallFinishedFile)
+        try? FileManager.default.removeItem(at: stallCanceledFile)
+        try Data("\(seconds)\n".utf8).write(to: stallSecondsFile)
     }
 
-    private var shimStarted: Bool {
-        FileManager.default.fileExists(atPath: shimStartedFile.path)
+    private var searchStarted: Bool {
+        FileManager.default.fileExists(atPath: stallStartedFile.path)
     }
 
-    private var shimRanToCompletion: Bool {
-        FileManager.default.fileExists(atPath: shimFinishedFile.path)
+    private var searchRanToCompletion: Bool {
+        FileManager.default.fileExists(atPath: stallFinishedFile.path)
+    }
+
+    private var searchWasCanceledOnTheHost: Bool {
+        FileManager.default.fileExists(atPath: stallCanceledFile.path)
     }
 
     /// Starts a daemon on this test's socket and waits for it to answer. Split
@@ -90,12 +68,11 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         serve.arguments = ["serve"]
         serve.environment = ProcessInfo.processInfo.environment.merging([
             "TERMIOD_SOCK": socketPath,
-            // The daemon runs `git grep` by name, so putting a shim first on its
-            // PATH is how a search can be made to take a known amount of time.
-            // Real `git grep` is far too fast to abandon on purpose — 133 MB of
-            // text answers in 40 ms — so a fixture built out of file count would
-            // pin nothing.
-            "PATH": "\(shimDirectory.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")",
+            // How a search can be made to take a known amount of time. The real
+            // engine is far too fast to abandon on purpose — 133 MB of text
+            // answers in tens of milliseconds — so a fixture built out of file
+            // count would pin nothing.
+            "TERMIOD_TEST_SEARCH_STALL": stallDirectory.path,
         ]) { _, new in new }
         serve.standardOutput = FileHandle.nullDevice
         serve.standardError = FileHandle.nullDevice
@@ -124,7 +101,10 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         XCTAssertLessThan(socket.utf8.count, 104, "socket path must fit sun_path")
         setenv("TERMIOD_SOCK", socket, 1)
         socketPath = socket
-        try installGrepShim()
+        stallDirectory = directory.appendingPathComponent("stall")
+        try FileManager.default.createDirectory(
+            at: stallDirectory, withIntermediateDirectories: true)
+        try Data("0\n".utf8).write(to: stallSecondsFile)
         daemon = try startDaemon()
 
         // A tree with one of everything the pane draws: a file, a directory, a
@@ -139,9 +119,10 @@ final class TermiodFilesIntegrationTests: XCTestCase {
             to: root.appendingPathComponent("sub/b.txt"))
         try Data("Widget lives here\n".utf8).write(
             to: root.appendingPathComponent("widget.txt"))
-        // `fs.search` is `git grep`, so the workspace has to be a real checkout
-        // for it to run at all. The `.git` directory above is what the listing
-        // tests expect to see; this makes it a repository rather than a husk.
+        // `fs.search` reads its ignore rules the way git would, so the
+        // workspace should be a real checkout. The `.git` directory above is
+        // what the listing tests expect to see; this makes it a repository
+        // rather than a husk.
         try gitInit()
     }
 
@@ -493,7 +474,7 @@ final class TermiodFilesIntegrationTests: XCTestCase {
     ///
     /// The discriminator is *when* the fast two finish, not that they finish. A
     /// channel that took one request at a time would answer all three correctly
-    /// and simply make the listing wait out the grep, which is exactly the
+    /// and simply make the listing wait out the search, which is exactly the
     /// behaviour worth ruling out: the pane must stay usable while a search runs.
     /// So the search is made to take four seconds and the assertion is that the
     /// listing and the read both landed while it was still going.
@@ -515,11 +496,11 @@ final class TermiodFilesIntegrationTests: XCTestCase {
             searchEnded.value = clock.now
             done.fulfill()
         }
-        // Give the search time to be on the wire and the grep time to start, so
+        // Give the search time to be on the wire and the walk time to start, so
         // "while it was still running" is a fact rather than a hope.
         let armed = ContinuousClock.now.advanced(by: .seconds(10))
-        while !shimStarted, ContinuousClock.now < armed { usleep(20_000) }
-        XCTAssertTrue(shimStarted, "the slow grep is what this test measures against")
+        while !searchStarted, ContinuousClock.now < armed { usleep(20_000) }
+        XCTAssertTrue(searchStarted, "the slow search is what this test measures against")
 
         DispatchQueue.global().async {
             listed.value = (try? Termiod.listDirectories(
@@ -542,29 +523,30 @@ final class TermiodFilesIntegrationTests: XCTestCase {
         let searchAt = try XCTUnwrap(searchEnded.value)
         let listAt = try XCTUnwrap(listEnded.value)
         let readAt = try XCTUnwrap(readEnded.value)
-        XCTAssertTrue(listAt < searchAt, "the listing answered while the grep was still running")
+        XCTAssertTrue(listAt < searchAt, "the listing answered while the search was still running")
         XCTAssertTrue(readAt < searchAt, "so did the read")
         // And by a margin that could not be scheduling noise: both should land
-        // in well under the four seconds the grep is holding the channel for.
+        // in well under the four seconds the search is holding the channel for.
         XCTAssertGreaterThan(listAt.duration(to: searchAt), .seconds(2))
         XCTAssertGreaterThan(readAt.duration(to: searchAt), .seconds(2))
     }
 
-    /// Abandoning a search has to stop the `git grep` on the device.
+    /// Abandoning a search has to stop the walk on the device.
     ///
     /// This is the one thing pooling took away and had to give back. A channel
-    /// that lived for one request stopped a grep by hanging up — `run_search`
+    /// that lived for one request stopped a search by hanging up — `run_search`
     /// watches `out.closed()` for exactly that, and that arm is the whole reason
-    /// an abandoned query did not leave a process walking someone's checkout. A
-    /// pooled channel never hangs up, so the client now sends the protocol's own
-    /// `cancel { request: <seq> }` instead, which only a multiplexed channel
+    /// an abandoned query did not leave a walk running over someone's checkout.
+    /// A pooled channel never hangs up, so the client now sends the protocol's
+    /// own `cancel { request: <seq> }` instead, which only a multiplexed channel
     /// *can* send: a synchronous one is blocked reading the descriptor it would
     /// have to write to.
     ///
-    /// The assertion is on the host's own record. The shim writes `finished`
-    /// only if it runs its full ten seconds, so the client giving up cannot
-    /// produce a pass; the grep really has to have been killed.
-    func testAnAbandonedSearchStopsTheGrepOnTheDevice() throws {
+    /// The assertion is on the host's own record. The stall hook writes
+    /// `finished` only if it runs its full ten seconds and `canceled` only when
+    /// its cancel flag stops it, so the client giving up cannot produce a pass;
+    /// the walk really has to have been stopped.
+    func testAnAbandonedSearchStopsTheWalkOnTheDevice() throws {
         try makeSearchTake(seconds: 10)
 
         let started = ContinuousClock.now
@@ -577,42 +559,22 @@ final class TermiodFilesIntegrationTests: XCTestCase {
                 return XCTFail("expected the idle bound to fire, got \(error)")
             }
         }
-        XCTAssertTrue(shimStarted, "the grep did start, so there was something to stop")
+        XCTAssertTrue(searchStarted, "the walk did start, so there was something to stop")
 
         // The cancel goes out as the request is retired. Allow a moment for the
         // host to act on it, then check its record — well inside the ten seconds
-        // an uncancelled grep would still be running for.
+        // an uncancelled walk would still be running for.
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        var greps = grepProcessCount()
-        while greps > 0, ContinuousClock.now < deadline {
+        while !searchWasCanceledOnTheHost, ContinuousClock.now < deadline {
             usleep(100_000)
-            greps = grepProcessCount()
         }
-        XCTAssertEqual(greps, 0, "the device's grep was killed, not left running")
+        XCTAssertTrue(
+            searchWasCanceledOnTheHost, "the device's walk was stopped, not left running")
         XCTAssertFalse(
-            shimRanToCompletion, "and killed rather than allowed to finish on its own")
+            searchRanToCompletion, "stopped rather than allowed to finish on its own")
         XCTAssertLessThan(
             started.duration(to: .now), .seconds(8),
-            "which happened long before the grep would have ended by itself")
-    }
-
-    /// Shim processes still alive for this test's own fixture directory. Scoped
-    /// by that path — which is in the shim's own argv — so a developer's
-    /// unrelated `git grep` cannot fail the run.
-    private func grepProcessCount() -> Int {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-f", shimDirectory.appendingPathComponent("git").path]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return 0 }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
-            .split(separator: "\n")
-            .filter { !$0.isEmpty }
-            .count
+            "which happened long before the walk would have ended by itself")
     }
 
     /// The cost of holding a connection: it can die between requests, and the
