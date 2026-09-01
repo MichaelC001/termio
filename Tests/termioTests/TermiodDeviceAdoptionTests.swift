@@ -188,6 +188,52 @@ final class TermiodDeviceAdoptionTests: XCTestCase {
         XCTAssertEqual(checkout.remoteCheckout(device: "h_aaaa", alias: "vps"), "/srv/termio")
     }
 
+    /// A machine that re-mints its `host_id` keeps its clones. The alias still
+    /// reaches the same box — the evidence the workspace loop already re-keys on —
+    /// so a checkout filed under the identity that died moves to the live one
+    /// instead of reading as "not cloned yet" while sitting right there.
+    func testCarriesCheckoutsAcrossAHostIdentityChange() {
+        var remote = deviceWorkspace(alias: "vps")
+        remote.deviceID = "h_old"
+        var checkout = project("termio", in: Workspace(name: "Sessions"))
+        checkout.remoteCheckouts = ["h_old": "/home/me/termio"]
+        let store = makeStore(workspaces: [remote], projects: [checkout])
+
+        store.adoptDevice(device("h_new"), forRoute: .ssh("vps"))
+
+        XCTAssertEqual(store.projects[0].remoteCheckouts, ["h_new": "/home/me/termio"])
+    }
+
+    /// A project filed under a machine's workspace is already a path over there,
+    /// so it needs no recorded checkout to open a terminal in. This is the reading
+    /// that survives an identity change even after the workspace has taken the new
+    /// one, which leaves nothing to re-key from.
+    func testAProjectFiledOnAMachineNeedsNoRecordedCheckout() {
+        let remote = deviceWorkspace(alias: "vps")
+        let checkout = project("termio", in: remote)
+        let store = makeStore(workspaces: [remote], projects: [checkout])
+
+        XCTAssertEqual(
+            store.remoteCheckout(for: checkout,
+                                 on: KnownDevice(alias: "vps", deviceID: "h_new")),
+            "/code/termio"
+        )
+    }
+
+    /// The fallback is scoped to the machine the project is filed on: a checkout
+    /// on this Mac still has to have been cloned before a terminal opens on a box,
+    /// or the shell would land in a directory that is not there.
+    func testAProjectOnThisMacStillNeedsARecordedCheckout() {
+        let home = Workspace(name: "Sessions")
+        let checkout = project("termio", in: home)
+        let store = makeStore(workspaces: [home, deviceWorkspace(alias: "vps")],
+                              projects: [checkout])
+
+        XCTAssertNil(
+            store.remoteCheckout(for: checkout,
+                                 on: KnownDevice(alias: "vps", deviceID: "h_new")))
+    }
+
     /// Workspace state survives a round trip through the state file, or the device
     /// would have to be re-learned on every launch.
     func testDeviceFieldsSurviveEncoding() throws {

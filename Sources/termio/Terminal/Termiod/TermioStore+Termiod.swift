@@ -512,6 +512,17 @@ extension TermioStore {
     /// case (a cloned VM carrying a duplicate `host_id`) has an answer.
     func adoptDevice(_ device: TermiodDevice, forRoute route: TermiodRoute) {
         let alias = route.sshAlias
+        // Identities this alias used to answer with. A machine that re-mints its
+        // `host_id` — a reboot that took a pre-0.48 `host.id` with it — comes back
+        // as a device nothing is keyed under, and every clone on it would read as
+        // "not cloned yet" while sitting right there. The alias reaching the same
+        // box is the same evidence the workspace loop below already re-keys on.
+        let superseded = alias.map { alias in
+            workspaces
+                .filter { $0.deviceAlias == alias }
+                .compactMap(\.deviceID)
+                .filter { $0 != device.id }
+        } ?? []
         for index in projects.indices {
             // A checkout recorded before checkouts were device-keyed sits under
             // the alias. Promote it the moment the alias resolves, so an old state
@@ -520,6 +531,13 @@ extension TermioStore {
                projects[index].remoteCheckouts[device.id] == nil {
                 projects[index].remoteCheckouts[device.id] = legacy
                 projects[index].remoteCheckouts[alias] = nil
+            }
+            for old in superseded {
+                guard let stale = projects[index].remoteCheckouts[old] else { continue }
+                if projects[index].remoteCheckouts[device.id] == nil {
+                    projects[index].remoteCheckouts[device.id] = stale
+                }
+                projects[index].remoteCheckouts[old] = nil
             }
             // What the checkout itself is sitting on is not recorded here: a
             // project takes its machine from the workspace that owns it, and the
@@ -1130,10 +1148,18 @@ extension TermioStore {
                 // you clicked and what you got is exactly the confusion this
                 // replaces.
                 if let projectID, let project = self.projects.first(where: { $0.id == projectID }) {
-                    guard let checkout = project.remoteCheckout(device: device.id, alias: host)
-                    else {
+                    let target = KnownDevice(alias: host, deviceID: device.id)
+                    guard let checkout = self.remoteCheckout(for: project, on: target) else {
                         self.presentRemoteCheckoutMissing(host: host, project: project.name)
                         return
+                    }
+                    // The identity that answered is the one the checkout is filed
+                    // under from here on, so a repo found by its workspace stops
+                    // depending on that fallback and the panes reading the raw
+                    // lookup agree with this terminal.
+                    if let index = self.projects.firstIndex(where: { $0.id == projectID }),
+                       self.projects[index].remoteCheckouts[device.id] != checkout {
+                        self.projects[index].remoteCheckouts[device.id] = checkout
                     }
                     cwd = checkout
                 }

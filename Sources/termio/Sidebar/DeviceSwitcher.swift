@@ -218,10 +218,10 @@ func newTerminalMenuItem(
     return .submenu(localized("New Terminal"), known.map { device in
         guard let alias = device.alias else { return .action(device.name, local) }
         // A project row says which machines already hold this repo, so the menu
-        // answers "where does this exist?" before you click. The checkout is keyed
-        // by device, so ask the registry for the identity learned earlier and let
-        // the lookup fall back to the alias when this box has never been reached.
-        let cloned = project?.remoteCheckout(device: device.deviceID, alias: alias) != nil
+        // answers "where does this exist?" before you click. Asked through the
+        // store rather than the project alone: a repo can be on a machine because
+        // it is filed under that machine's workspace, with no checkout recorded.
+        let cloned = project.map { store.remoteCheckout(for: $0, on: device) != nil } ?? false
         let label = project == nil || cloned ? device.name : "\(device.name) — not cloned yet"
         return .action(label) { store.addRemoteTerminal(host: alias, project: projectID) }
     })

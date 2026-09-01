@@ -262,6 +262,27 @@ extension TermioStore {
         device(of: project) != .thisMac
     }
 
+    /// Where a project's files sit on `device`: the checkout recorded for that
+    /// machine, or — when the project is filed under a workspace *on* it — the
+    /// project's own `path`, which is already a path over there.
+    ///
+    /// The second reading is what keeps a machine that re-mints its `host_id` from
+    /// orphaning every repo on it. A checkout is keyed by the identity that
+    /// answered when it was recorded; a box that comes back with a different one
+    /// (a reboot that wiped a pre-0.48 `host.id`, which lived in the runtime dir)
+    /// no longer matches its own key, and the repo reads as "not on that machine
+    /// yet" while sitting right there. A workspace states the same fact more
+    /// durably — it is matched by alias, so it follows the box across identity
+    /// changes — and `adoptionProjectIndex` already reads roots this way.
+    func remoteCheckout(for project: Project, on device: KnownDevice) -> String? {
+        guard let alias = device.alias else { return nil }
+        if let recorded = project.remoteCheckout(device: device.deviceID, alias: alias) {
+            return recorded
+        }
+        guard workspace(owning: project)?.deviceAlias == alias else { return nil }
+        return project.path
+    }
+
     /// The project that already *is* the directory `path` on that machine — what
     /// "opening the same folder twice reopens the row you have" asks.
     ///
