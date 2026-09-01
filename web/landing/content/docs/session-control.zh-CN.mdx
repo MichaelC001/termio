@@ -3,8 +3,8 @@ title: 会话控制与命令行
 description: Termio 的编排 API——让 Agent 汇报自己在做什么的状态 hooks，以及让你（或另一个 Agent）从 shell 里派生、驱动和监督会话的 termio sessions 命令行。
 x-i18n:
   source_path: session-control.mdx
-  source_hash: 56acf1ab65cf19cb4894ab70c524c20ea429225458e84adcff20422f72168ec8
-  generated_at: 2026-08-30
+  source_hash: aee6cd59c94753760b5e56a2721e63748a839419f837107823c1603563d394a1
+  generated_at: 2026-09-01
 ---
 
 你在侧栏看到的实时状态背后，是两个相关的可选功能：让 Agent 汇报自己在做什么的**状态
@@ -191,8 +191,18 @@ termio sessions spawn "summarize the failing CI job" --wait --timeout 120000
 
 ### 大声失败
 
-这个命令行是为信任退出码、而不是信任散文的调用方设计的。每条一次性命令在出错或收到空回复时
-都以 `1` 退出，并在 15 秒的客户端超时后放弃，而不是在应用繁忙时一直挂着（可用
+这个命令行是为信任退出码、而不是信任散文的调用方设计的。跑起来又失败的命令——错误回复、空
+回复——以 `1` 退出；写错的命令根本到不了应用，以 `2` 退出。
+
+正是第二个退出码让写错的选项不再危险。`--agnet codex` 会被拒绝并给出拼写建议，而不是被并进
+提示里，所以一个写错的选项不会再看起来像一次成功的 spawn。选项两种写法都收，`--agent codex`
+和 `--agent=codex`；`--` 结束选项解析——以短横线开头的文本就是这样送进会话的：
+
+```sh
+termio sessions send <session> -- --force
+```
+
+一次性命令会在 15 秒的客户端超时后放弃，而不是在应用繁忙时一直挂着（可用
 `TERMIO_CLI_TIMEOUT` 环境变量覆盖；带 `--wait` 的调用会自动放宽客户端超时，让它活得比服务端
 的等待更久）。
 
