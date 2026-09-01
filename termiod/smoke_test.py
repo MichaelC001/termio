@@ -461,17 +461,24 @@ def main():
     check("fan-out: client 1 sees injected output", b"PINGPONG" in read_until(a1, "PINGPONG"))
     check("fan-out: client 2 sees injected output", b"PINGPONG" in read_until(a2, "PINGPONG"))
 
-    # Single writer = whoever is being used. a1 attached first and still holds
-    # the token; a2 arriving did not take it, and — the regression this pins —
-    # did not drag the one PTY down to a2's grid behind a1's back.
+    # Single writer is about input; it says nothing about size. The session is
+    # the componentwise minimum over every attachment's viewport — a1's 26x90
+    # against a2's 34x110 — so a2 arriving neither took the token nor dragged
+    # the one PTY to its own grid.
     check("attaching does not take the winsize", session_size("fan") == (26, 90))
     os.write(a1, b"FROM_A1\r")
     check("single-writer: writer input applied", b"FROM_A1" in read_until(a2, "FROM_A1"))
 
-    # Typing is what moves the token, and the size travels with it.
+    # Typing moves the token. The size must NOT move with it. That binding is
+    # what let two screens on one session oscillate at IO speed: each grant
+    # re-asserted the new writer's grid, every resize was a barrier that pushed
+    # a keyframe, and the keyframe provoked the next grant. Slept past the
+    # daemon's 50ms resize coalescing first, because the failure this pins is a
+    # size change that arrives late, not one that never happens.
     os.write(a2, b"FROM_A2\r")
     check("single-writer: typing takes the token", b"FROM_A2" in read_until(a1, "FROM_A2"))
-    check("the winsize follows the token", wait_for_size("fan", (34, 110)))
+    time.sleep(0.75)
+    check("the winsize does not follow the token", session_size("fan") == (26, 90))
 
     os.write(a2, b"\x1c")
     a2p.wait(timeout=5)
@@ -479,7 +486,7 @@ def main():
     while time.time() < deadline and session_size("fan") != (26, 90):
         time.sleep(0.05)
     check(
-        "writer failover: promoted reference client reclaims its size",
+        "a departing attachment leaves the minimum to the survivors",
         session_size("fan") == (26, 90),
     )
     drain(a1, 0.5)
