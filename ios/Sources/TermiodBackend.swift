@@ -38,35 +38,11 @@ final class TermiodBackend: DeviceClient {
     /// Status the device revised since its row was last delivered whole. Held
     /// beside the rows so a fresh row can retire the delta standing in for it.
     private var statusOverrides: [String: StatusDelta] = [:]
-    /// The highest **contiguous** `status:` batch this phone has actually
-    /// applied. Sent back as `since` on every reconnect, which is the whole
-    /// point of status being a resource rather than a broadcast: a screen that
-    /// locked through three turns resumes at its cursor instead of rescanning
-    /// (§C.10).
-    ///
-    /// It advances only for a batch that is exactly the next one, and never on
-    /// the ack. The ack's `seq` names the end of the replay the host is *about*
-    /// to send — a target, not an achievement — so adopting it before applying
-    /// that replay is how a disconnect right after the ack skipped the batches
-    /// it named, permanently. Leaving the cursor behind costs a re-replay on
-    /// the next reconnect, which is idempotent; moving it ahead loses the
-    /// batches for good.
-    private var statusCursor: UInt64?
-    /// The highest seq applied *in this subscribe attempt*, which is not the
-    /// same thing as the durable cursor and must not be confused with it.
-    ///
-    /// The cursor answers "where do I resume"; this answers "have I already
-    /// shown something newer than this". They part company exactly once — when
-    /// a batch arrives past the next one, leaving a hole: the batch applies
-    /// (newer truth beats none) and this moves, while the cursor stays put so
-    /// the hole is re-asked for.
-    ///
-    /// Reset to the cursor on every new attempt, because a fresh subscription
-    /// replays *in order* from the cursor — so what looked stale under the old
-    /// attempt is the very thing this one has to apply. Without the reset the
-    /// two would deadlock: 9 and 10 dropped as stale on every reconnect, and
-    /// the cursor stuck at 8 forever.
-    private var statusApplied: UInt64?
+    /// Where a reconnect resumes from, which is the whole point of status being
+    /// a resource rather than a broadcast: a screen that locked through three
+    /// turns resumes at its cursor instead of rescanning (§C.10). The rule, and
+    /// why the ack is not an input to it, is `ResourceCursor`.
+    private var statusCursor = ResourceCursor()
     /// Holds batches that arrive while a subscribe handshake is in flight, so
     /// nothing applies against a baseline the ack has not installed yet, and
     /// nothing overtakes what is already waiting. The same ledger the Mac's
@@ -440,9 +416,9 @@ final class TermiodBackend: DeviceClient {
             // broadcast so an older device still lights its dots.
             // Everything from here until the ack is held, not applied.
             statusGeneration = statusLedger.begin()
-            statusApplied = statusCursor
+            statusCursor.beginAttempt()
             channel.send(kind: .control, payload: try Termiod.subscribeResourcePayload(
-                resource: Termiod.statusResource, since: statusCursor,
+                resource: Termiod.statusResource, since: statusCursor.resumeFrom,
                 seq: nextSeq(statusSubscription: true)))
             channel.send(kind: .control, payload: try Termiod.listPayload(seq: nextSeq()))
         } catch {
@@ -486,8 +462,7 @@ final class TermiodBackend: DeviceClient {
                 // guarantees, same facts, and a dot that moves beats a correct
                 // cursor into nothing.
                 statusSubscriptionSeq = nil
-                statusCursor = nil
-                statusApplied = nil
+                statusCursor.reset()
                 // No resource, so nothing will ever settle the ledger: stop it
                 // rather than leave the broadcast's batches held forever.
                 statusLedger.stop()
@@ -567,8 +542,10 @@ final class TermiodBackend: DeviceClient {
             // baseline the host named, because there is no continuity left to
             // preserve — that is what a gap *is*.
             statusOverrides.removeAll()
-            statusCursor = subscription.seq
-            statusApplied = subscription.seq
+            // A gap has no continuity to preserve, and the `list` behind this
+            // rebuilds every row — so the host's baseline is adopted outright
+            // rather than walked to.
+            statusCursor.adoptBaseline(subscription.seq)
             publishRoster()
         }
         while let held = statusLedger.releaseNext(generation: statusGeneration) {
@@ -576,24 +553,12 @@ final class TermiodBackend: DeviceClient {
         }
     }
 
-    /// Apply one `status:` batch, and move the durable cursor only if it
-    /// earned it.
-    ///
-    /// Three cases:
-    /// - **already shown something at least this new** — drop it. A stale batch
-    ///   landing after newer truth would roll a session's status backwards,
-    ///   which is what a client sees as a finished agent going back to
-    ///   "working".
-    /// - **exactly the next batch** — apply it; both marks follow.
-    /// - **beyond the next** — a hole. Apply it, because newer truth about a
-    ///   session beats none, but leave the *cursor* where it was: the next
-    ///   reconnect asks from the last contiguous batch and the host replays the
-    ///   hole in order, last writer winning.
+    /// Apply one `status:` batch, unless the cursor says it is already old
+    /// news. A dropped batch is one that would roll a session's status
+    /// backwards — a finished agent reading `working` again.
     private func applyStatusBatch(_ change: Termiod.StatusChangedPayload) {
-        if let applied = statusApplied, change.seq <= applied { return }
+        guard statusCursor.admit(seq: change.seq) != .drop else { return }
         applyStatus(change.report)
-        statusApplied = change.seq
-        if change.seq == (statusCursor ?? 0) + 1 { statusCursor = change.seq }
     }
 
     /// One interpretation of a status, whichever channel carried it.
@@ -620,8 +585,8 @@ final class TermiodBackend: DeviceClient {
     /// Seed the durable cursor, so a test can start from a phone that has
     /// already applied batches rather than build that state through the wire.
     func setStatusCursorForTests(_ seq: UInt64?) {
-        statusCursor = seq
-        statusApplied = seq
+        statusCursor.reset()
+        if let seq { statusCursor.adoptBaseline(seq) }
     }
 
     /// The link going down, without a socket to drop. What matters to the
@@ -631,7 +596,7 @@ final class TermiodBackend: DeviceClient {
 
     /// The cursor this phone would resume from. Read by tests; the resume
     /// itself happens in `handshakeLanded`.
-    var statusResumeCursor: UInt64? { statusCursor }
+    var statusResumeCursor: UInt64? { statusCursor.resumeFrom }
 
     private func publishRoster() {
         // A workspace id that churned between pushes would reshuffle every list

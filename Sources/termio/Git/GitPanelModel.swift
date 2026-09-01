@@ -123,7 +123,14 @@ final class GitPanelModel: ObservableObject {
     /// batches — so a dropped channel resumes from the replay ring rather than
     /// re-reading a whole status.
     private var gitWatch: Termiod.ResourceSubscription?
-    private var gitCursor: UInt64?
+    /// Where a resubscribe resumes from. Never the ack's `seq` — see
+    /// `ResourceCursor`, which is the rule and the reason.
+    private var gitCursor = ResourceCursor()
+    /// A gap subscriber's first batch is the device's synthesized *full* state
+    /// at its current seq, not a delta (`resource.rs` `subscribe_git`). There is
+    /// nothing before it to be missing, so the cursor adopts it outright — which
+    /// is also what keeps a reconnect from re-snapshotting forever.
+    private var awaitingFullBaseline = false
     private var resubscribing = false
     /// Orders the pieces of a subscribe handshake that reach the main actor on
     /// different paths — see `DeviceWatchLedger`.
@@ -153,6 +160,9 @@ final class GitPanelModel: ObservableObject {
         }
         resubscribing = true
         let generation = watchLedger.begin()
+        // The replay this attempt is about to get arrives in order from the
+        // cursor, so nothing before it counts as stale any more.
+        gitCursor.beginAttempt()
         Task { [repoRoot] in
             defer {
                 resubscribing = false
@@ -164,7 +174,7 @@ final class GitPanelModel: ObservableObject {
                 let (subscription, gap, seq) = try await Termiod.watchGit(
                     route: device,
                     root: repoRoot,
-                    since: gitCursor,
+                    since: gitCursor.resumeFrom,
                     onBatch: { [weak self] batch in
                         Task { @MainActor in self?.receive(batch, generation: generation) }
                     },
@@ -190,10 +200,13 @@ final class GitPanelModel: ObservableObject {
                 if gap {
                     deviceStatuses = [:]
                     deviceListTotal = nil
-                    gitCursor = nil
-                } else {
-                    gitCursor = max(gitCursor ?? 0, seq)
+                    gitCursor.reset()
+                    // `seq == 0` means the device has published nothing, so no
+                    // full batch is coming and there is no baseline to wait for.
+                    awaitingFullBaseline = seq > 0
                 }
+                // A clean resume deliberately leaves the cursor alone: it moves
+                // in `apply`, for batches that actually applied.
                 // Drained one at a time rather than as an array: a batch that
                 // arrives during this loop queues behind what is left of it
                 // instead of overtaking it (`DeviceWatchLedger.releaseNext`).
@@ -221,6 +234,8 @@ final class GitPanelModel: ObservableObject {
 
     func stopDeviceWatch() {
         watchLedger.stop()
+        awaitingFullBaseline = false
+        gitCursor.reset()
         gitWatch?.cancel()
         gitWatch = nil
     }
@@ -252,7 +267,15 @@ final class GitPanelModel: ObservableObject {
 
     /// Applies one `git_changed` delta to the baseline the pane holds.
     private func apply(_ batch: Termiod.GitChangedPayload) {
-        gitCursor = max(gitCursor ?? 0, batch.seq)
+        if awaitingFullBaseline {
+            awaitingFullBaseline = false
+            gitCursor.adoptBaseline(batch.seq)
+        } else if gitCursor.admit(seq: batch.seq) == .drop {
+            // A delta already folded into the baseline this pane holds.
+            // Re-applying it would resurrect a path that has since been
+            // cleaned, or bury one that has since changed.
+            return
+        }
         for path in batch.removedPaths {
             deviceStatuses.removeValue(forKey: path)
         }

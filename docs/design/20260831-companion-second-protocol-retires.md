@@ -289,6 +289,15 @@ every new subscribe, because a fresh subscription replays in order from the
 cursor: without the reset, the batches spanning the hole would be dropped as
 stale on every reconnect and the cursor would never move again.
 
+That rule is `ResourceCursor` in `Shared/`, and it is one rule for three
+planes. The Mac's `git:` had the same ack-adopting bug and is fixed with it;
+`fs:` never had it — it advances only in `deliver`, for batches that applied —
+and now follows the same contiguity rule in place. The pattern is the reason
+both this and `DeviceWatchLedger` are shared types rather than three careful
+copies: the ledger orders a batch's *arrival* against the ack, the cursor
+decides what it is *worth*, and needing one has never implied having the
+other.
+
 The Mac stays on `E status`, deliberately. It attaches to each session it shows,
 so it already has the per-session channel; a roster-wide cursor is what a client
 that watches sessions it is *not* attached to needs, and on the Mac that is
@@ -436,8 +445,9 @@ derives status from the same device:
 | Gate | Result |
 | --- | --- |
 | `cargo test` | **349 passed, 0 failed** (40 of them `session::status`) |
-| `swift build && swift test` | 950 passed, 0 failed |
+| `swift build && swift test` | 959 passed, 0 failed |
 | `python3 termiod/tests/cli_compat.py` | **110/110** — the hook and CLI surface is byte-identical against the frozen shell client |
+| The real-daemon job, run locally (`TERMIO_TERMIOD_TEST_BIN=… swift test --filter TermiodFilesIntegrationTests --filter TermiodWireOrderIntegrationTests`) | **35 passed, 0 failed** |
 | iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 38 passed, 0 failed (12 new) |
 | iOS builds for the simulator | clean |
 | No second matcher: `grep -rn 'firstMatch\|NSRegularExpression' Sources/termio/Agents Sources/termio/TermioStore` | 0 |

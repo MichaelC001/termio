@@ -538,6 +538,21 @@ impl Registry {
         // Takes the snapshot lock while holding the state lock. Safe in that
         // order and only that order: `refresh_git` releases the snapshot before
         // it touches the state, so the two never nest the other way.
+        //
+        // **The build stays under the state lock on purpose, and the bound is
+        // why that is affordable.** Moving it out would break the one pairing
+        // that matters: the full batch must describe the snapshot *at* the seq
+        // it is stamped with. `refresh_git` writes the snapshot and then
+        // publishes, so a build that read the snapshot outside this lock could
+        // be stamped with a seq taken after the publish — old state under a new
+        // cursor, and the delta it missed is skipped for good. Holding the state
+        // lock across both reads is what makes that interleaving impossible.
+        //
+        // The cost it buys is bounded by `cap_statuses`: at most `STATUS_CAP`
+        // (5,000) entries and `STATUS_PATH_BYTES_CAP` (1 MiB) of paths, so the
+        // clone-and-sort is a five-thousand-element sort at worst, on a lock no
+        // other resource shares. A tree big enough to matter is capped before it
+        // ever reaches here.
         Ok(guard.attach(resource, client, tx, since, move |seq| {
             (seq > 0).then(|| {
                 let full = snapshot.lock().unwrap().full_batch();
