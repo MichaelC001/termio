@@ -407,9 +407,9 @@ derives status from the same device:
 
 | Gate | Result |
 | --- | --- |
-| `cargo test` | **336 passed, 0 failed** — 278 lib (40 of them `session::status`), 3 bin, 55 integration |
+| `cargo test` | **347 passed, 0 failed** (40 of them `session::status`) |
 | `swift build && swift test` | 950 passed, 0 failed |
-| `python3 termiod/tests/cli_compat.py` | **93/93** — the hook and CLI surface is byte-identical |
+| `python3 termiod/tests/cli_compat.py` | **110/110** — the hook and CLI surface is byte-identical against the frozen shell client |
 | iOS unit tests (`xcodebuild … -only-testing:TermioMobileTests`) | 34 passed, 0 failed (8 new) |
 | iOS builds for the simulator | clean |
 | No second matcher: `grep -rn 'firstMatch\|NSRegularExpression' Sources/termio/Agents Sources/termio/TermioStore` | 0 |
