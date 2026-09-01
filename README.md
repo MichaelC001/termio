@@ -12,9 +12,14 @@
 
 <br />
 
-Run Claude Code, Codex, and any CLI agent side by side in a real Mac terminal —<br />
-Swift and libghostty, no Electron. A menu-bar dot tells you which one needs you,<br />
-and your iPhone tells you when you're away from the desk.
+Four agents running. Three are fine. One has been sitting on a permission<br />
+prompt for ten minutes and nothing on your screen says which.
+
+<br />
+
+Termio runs them all in one real Mac terminal and tells you which one needs you.<br />
+A dot per session, a menu-bar tray that rings when an agent is blocked, and the<br />
+same signal on your iPhone when you're away from the desk.
 
 <br />
 
@@ -39,58 +44,64 @@ brew install --cask termio-sh/tap/termio
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR), then pair it by
 scanning the QR code in the Mac app's Settings ▸ Mobile.
 
-## Built for agentic coding and engineering
+## The IDE was built around a person typing
 
-The IDE was built around a person typing code. When agents write most of the
-code, the environment's job changes: it's where agents work and where you
-direct, review, and unblock them. Termio is that environment — Terminal-first,
-because that's where the agents already live — built for the new
-shape of the work: several agents going at once, most of them fine without
-you, one of them stuck. (The longer argument:
+When agents write most of the code, the environment's job changes. It stops
+being where you type and becomes where agents work and where you direct,
+review, and unblock them. That is a different shape of work: several agents
+going at once, most of them fine without you, one of them stuck.
+
+Termio is built for that shape, and it's terminal-first because that's where
+the agents already live. (The longer argument:
 [*From IDE to ADE*](docs/essays/from-ide-to-ade.md).)
+
+## Your agents keep running when you close the laptop
+
+Every session's shell lives in `termiod`, a daemon, so quitting the app only
+detaches. Go to lunch, shut the lid, reopen Termio — the agent is where you
+left it, same process, same scrollback. Only Close Session (⌘W) ends one.
+
+This is the reason people tell you to learn tmux. You don't have to. Everything
+else tmux would have taught you is already a Mac shortcut:
+
+- **Splits are ⌘D**, zoom is ⇧⌘↩. No Ctrl-b prefix first. tmux needs a prefix
+  because it has to disambiguate itself from the program in the pane; a ⌘
+  shortcut never reaches that program, so nothing collides with vim or a TUI.
+- **Scroll, select, copy** with the trackpad and ⌘C. There is no copy-mode to
+  enter and leave.
+- **A session on a Linux box** runs on the same daemon, and
+  `termiod attach <session>` reaches it from any shell.
+- **Scripting** is `termio sessions` (below), which does what `send-keys`
+  scripts do — and agent status is a protocol object, not a pane to scrape.
+
+## You always know which agent needs you
+
+Termio wires up each agent's own hooks on first launch and reads the signals
+agents already emit. No config file, no prompt markers to install.
+
+The result is a status per session — working, idle, or *needs you* — shown as a
+dot in the sidebar and summed up in a menu-bar tray that stays calm, pulses
+while agents work, and rings when one is blocked on you. Click the ring and
+you're in the session that raised it. When you're away from the Mac, the same
+status arrives on your phone.
+
+## Everything you'd otherwise leave the terminal for
 
 - **A real terminal, not a web view.** Swift + AppKit on
   [libghostty](https://ghostty.org) (Ghostty's terminal core), rendered with
   Metal. No Electron, no xterm.js.
-- **Projects → sessions.** The sidebar mirrors how you actually work: each
-  project holds its terminals and agents, with git worktrees nested beneath it
-  for parallel tasks.
-- **Status with zero setup.** Termio wires up each agent's own hooks and reads
-  the signals agents already emit. Working, idle, or *needs you* — per-session
-  dots, and a menu-bar tray that stays calm, pulses while agents work, and
-  rings when one is blocked on you.
-- **Review without leaving.** A read-only git pane (changes, history, unified
-  diffs), a file tree with a click-to-edit editor, and project-wide content
-  search — the terminal stays the place where you commit.
-- **Git worktrees.** Create one from the sidebar; it nests under the project,
-  one branch per parallel task.
+- **Projects hold sessions.** The sidebar mirrors how you actually work: one
+  project per checkout, its terminals and agents underneath, git worktrees
+  nested below that — one branch per parallel task, created from the sidebar.
+- **Review without switching apps.** A read-only git pane with changes,
+  history, and unified diffs; a file tree with a click-to-edit editor; and
+  project-wide content search. The terminal stays the place where you commit.
 - **Chats.** Scratch agent sessions that don't belong to any project.
 - **Usage meters.** Claude and Codex plan limits, read locally in
   Settings → Usage.
 - **Themes.** Light, dark, and a glass appearance that follows the system.
 - **Auto-update.** Notarized DMG, updated by Sparkle.
 - **Free.** No account, no license keys, no paid tier. MIT-licensed.
-
-## You don't have to learn tmux
-
-The reason everyone tells you to learn tmux is that agent work needs sessions
-that outlive the terminal — quit the app, close the laptop, and the agent
-should keep going. Termio does that out of the box: every session's shell
-lives in `termiod`, a daemon, so quitting only detaches. Reopen the app and
-the agent is where you left it — same process, same scrollback. Only Close
-Session (⌘W) ends one.
-
-Everything else tmux would have taught you is a Mac shortcut or already in
-your hands:
-
-- Splits: ⌘D, zoom ⇧⌘↩ — no Ctrl-b first. A ⌘ shortcut never reaches the
-  program in the pane, so nothing collides with vim or a TUI.
-- Scroll, select, copy: trackpad, mouse, ⌘C. No copy-mode to enter and
-  leave.
-- A session on a Linux box: same daemon there, and `termiod attach <session>`
-  reaches it from any shell.
-- Scripting: `termio sessions` (below) does what `send-keys` scripts do, and
-  agent status is a protocol object, not a pane to scrape.
 
 ## Works with your agents
 
@@ -138,10 +149,11 @@ npx skills add termio-sh/termio --skill termio
 
 ## On your iPhone
 
-The companion app mirrors every Mac session live on your phone — the full
-TUI, not a chat summary. A key bar puts esc, tab, ctrl, and arrows above the
-keyboard, and hold-to-speak transcribes straight into the prompt. Free, in
-public beta: [join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
+The companion app mirrors every Mac session live on your phone — the full TUI,
+not a chat summary. An agent that blocks while you're out is one you can answer
+without going back to the desk. A key bar puts esc, tab, ctrl, and arrows above
+the keyboard, and hold-to-speak transcribes straight into the prompt. Free, in public beta:
+[join on TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
 <table>
   <tr>
