@@ -43,7 +43,7 @@ A byte-grammar of "what libghostty happens to emit" has to be complete forever,
 against an upstream that keeps adding to it. It should not be load-bearing.
 
 What makes it load-bearing is one line in `applyWriter`
-(`TermiodClient.swift:1752`, `TermiodSession.swift:327`): on gaining the token,
+(`TermiodClient.swift:1761`, `TermiodSession.swift:313`): on gaining the token,
 re-assert this client's grid. Under that rule the classifier is the only thing
 standing between an unexpected byte and a full-speed resize loop. **Size is bound
 to the write token, so every misclassification is a resize bug.**
@@ -76,7 +76,7 @@ termio implements `latest`, in its most reactive form:
 
 - the write token follows input;
 - `applyWriter` re-asserts the winner's grid on every grant;
-- `applyAuthoritativeGrid` (`TermiodClient.swift:1823`,
+- `applyAuthoritativeGrid` (`TermiodClient.swift:1850`,
   `TermiodSession.swift:334`) has the writer answer any divergence by putting its
   own size back.
 

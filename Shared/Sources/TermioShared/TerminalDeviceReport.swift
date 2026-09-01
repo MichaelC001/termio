@@ -40,8 +40,13 @@ import Foundation
 ///                        another barrier. A plain shell never sets 1004, which
 ///                        is why only the agent TUIs shook.
 ///   • `ESC P > | …`      XTVERSION;  `ESC P n $ r …` DECRQSS;  `ESC P n + r …` XTGETTCAP
+///   • `ESC _ G i=… ; …`  kitty graphics replies; `ESC _ 25a1 ; …` glyph
+///                        protocol replies
 ///   • `ESC ] 4 ; …`, `ESC ] 10–19 ; …`, `ESC ] 21 …`, `ESC ] 52 ; …`
 ///                        colour, kitty colour, and clipboard query answers
+///   • `ESC ] 5522 ; type=…:status=…`
+///                        kitty clipboard replies, except a terminal-initiated
+///                        paste event, which also carries `:pw=` and is input
 ///
 /// Everything else is input: arrows and function keys end a CSI in A–Z, `~`
 /// or `u` without `?`; mouse reports carry `<`; a bare Esc is a lone byte;
@@ -68,6 +73,8 @@ public enum TerminalDeviceReport {
             return isDeviceControlReport(bytes)
         case 0x5D: // ESC ]
             return isOperatingSystemCommandReport(bytes)
+        case 0x5F: // ESC _
+            return isApplicationProgramCommandReport(bytes)
         default:
             return false
         }
@@ -116,15 +123,52 @@ public enum TerminalDeviceReport {
         while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 {
             number = number * 10 + Int(bytes[index] - 0x30)
             index += 1
-            if number > 999 { return false }
+            if number > 9999 { return false }
         }
         // The number, then the `;` every reply puts before its payload.
         guard index > 2, index < bytes.count, bytes[index] == 0x3B else { return false }
         switch number {
         case 4, 5, 10...19, 21, 52:
             return true
+        case 5522:
+            // Kitty clipboard requests omit `status`; terminal-initiated paste
+            // events deliberately look like replies but uniquely carry `:pw=`.
+            return bytes[index...].starts(with: [0x3B, 0x74, 0x79, 0x70, 0x65, 0x3D])
+                && bytes[index...].containsSlice([0x3A, 0x73, 0x74, 0x61, 0x74, 0x75, 0x73, 0x3D])
+                && !bytes[index...].containsSlice([0x3A, 0x70, 0x77, 0x3D])
         default:
             return false
+        }
+    }
+
+    private static func isApplicationProgramCommandReport(_ bytes: [UInt8]) -> Bool {
+        // Kitty graphics replies carry an image id or image number before the
+        // payload separator; requests start with an action (`a=`) or another
+        // command field instead.
+        if bytes.count >= 5, bytes[2] == 0x47 { // G
+            return bytes[3] == 0x69 || bytes[3] == 0x49 // i I
+        }
+
+        // Glyph replies use the protocol namespace and either advertise formats
+        // or include a status field. Requests never include either response field.
+        let glyphPrefix: [UInt8] = [0x32, 0x35, 0x61, 0x31, 0x3B] // 25a1;
+        guard bytes[2...].starts(with: glyphPrefix) else { return false }
+        let payload = bytes[(2 + glyphPrefix.count)...]
+        return payload.starts(with: [0x73, 0x3B, 0x66, 0x6D, 0x74, 0x3D]) // s;fmt=
+            || payload.containsSlice([0x3B, 0x73, 0x74, 0x61, 0x74, 0x75, 0x73, 0x3D]) // ;status=
+    }
+}
+
+private extension Collection where Element == UInt8 {
+    func containsSlice(_ needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, count >= needle.count else { return false }
+        return indices.dropLast(needle.count - 1).contains { start in
+            var index = start
+            for byte in needle {
+                guard self[index] == byte else { return false }
+                formIndex(after: &index)
+            }
+            return true
         }
     }
 }
