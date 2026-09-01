@@ -42,6 +42,10 @@ const SETTLE: Duration = Duration::from_secs(15);
 /// and the settle budget belongs to the next one.
 const PROBE: Duration = Duration::from_secs(1);
 
+/// How long to wait between probes. Sized from what is left of the deadline
+/// each time, so the last one never sleeps past it.
+const POLL: Duration = Duration::from_millis(100);
+
 /// Exit code for a stop the daemon declined because it holds work someone is
 /// using. Distinct from failure: the state is named, and running again after
 /// the sessions close is the whole recovery.
@@ -536,7 +540,8 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
                 message: format!("stopped pid {pid}"),
             });
         }
-        tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
+        let left = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(left.min(POLL)).await;
     }
 }
 
@@ -559,7 +564,7 @@ pub async fn stop(force: bool) -> Result<StopOutcome> {
 async fn connect_if_serving(socket: &Path) -> Result<Option<UnixStream>> {
     match tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(socket)).await {
         Ok(Ok(stream)) => Ok(Some(stream)),
-        Ok(Err(error)) if crate::client::absent_daemon(error.raw_os_error()) => Ok(None),
+        Ok(Err(error)) if nothing_is_serving(error.raw_os_error()) => Ok(None),
         Ok(Err(error)) => Err(anyhow::Error::new(error)
             .context(format!("reaching the daemon at {}", socket.display()))),
         Err(_elapsed) => bail!(
@@ -569,19 +574,31 @@ async fn connect_if_serving(socket: &Path) -> Result<Option<UnixStream>> {
     }
 }
 
-/// Only two errnos prove nothing is behind the path, and they are the two
-/// [`absent_daemon`] already names for the client that is about to autostart
-/// one. Everything else is a daemon this process cannot reach rather than one
-/// that left: `EPERM` from a sandbox, or a connect that ran out of budget
-/// against a listener whose backlog is full. Reading either as "stopped" would
-/// hand the upgrade a daemon still holding every session it had, which is worse
-/// than the wait it replaced — so they keep waiting, and the deadline decides.
-/// A daemon that answers but whose pid the kernel will not name is treated the
-/// same way.
+/// Whether a failed connect proves nothing is behind the path.
+///
+/// Three errnos do. `ENOENT` and `ECONNREFUSED` are the socket gone and the
+/// socket unserved; `ENOTSOCK` is a plain file where the socket was, which is
+/// no daemon either. Everything else is a daemon this process could not reach
+/// rather than one that left — `EPERM` from a sandbox, `EAGAIN` from a listener
+/// whose backlog is full, `EINTR`, `ETIMEDOUT` — and reading any of those as
+/// absence is how a stop reports success over a daemon still holding every
+/// session it had.
+pub(crate) fn nothing_is_serving(errno: Option<i32>) -> bool {
+    matches!(
+        errno,
+        Some(libc::ENOENT) | Some(libc::ECONNREFUSED) | Some(libc::ENOTSOCK)
+    )
+}
+
+/// Whether `pid` is still the process behind `socket`, within `budget`.
+///
+/// Anything short of proof that the path is unserved keeps waiting, and the
+/// deadline decides — including a probe that ran out of budget, and a daemon
+/// that answers but whose pid the kernel will not name.
 async fn still_serving(socket: &Path, pid: i32, budget: Duration) -> bool {
     match tokio::time::timeout(budget, UnixStream::connect(socket)).await {
         Ok(Ok(stream)) => peer_pid(&stream).is_none_or(|serving| serving == pid),
-        Ok(Err(error)) => !crate::client::absent_daemon(error.raw_os_error()),
+        Ok(Err(error)) => !nothing_is_serving(error.raw_os_error()),
         Err(_elapsed) => true,
     }
 }
@@ -1280,6 +1297,12 @@ mod tests {
         // Nothing at the path at all: ENOENT.
         let missing = dir.join("missing.sock");
         assert!(!still_serving(&missing, ours, PROBE).await);
+
+        // A plain file where the socket was: no daemon, and one that cannot be
+        // autostarted over either — which is why the two rules differ.
+        let occupied = dir.join("occupied.sock");
+        std::fs::write(&occupied, b"not a socket").expect("occupying file");
+        assert!(!still_serving(&occupied, ours, PROBE).await);
 
         // Someone is serving it. The same pid means the daemon is still there
         // — mid-drain, which is what the settle budget is for — and a different

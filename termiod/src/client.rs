@@ -88,7 +88,15 @@ pub async fn stdio() -> Result<()> {
 /// Whether a connect failure proves nothing is serving the socket. `ENOENT`
 /// (no file) and `ECONNREFUSED` (a file no listener backs) do; every other
 /// errno describes this client's situation, not the daemon's.
-pub(crate) fn absent_daemon(errno: Option<i32>) -> bool {
+/// Whether a failed connect means autostarting is the right recovery.
+///
+/// Narrower than [`crate::lifecycle::nothing_is_serving`] by exactly one errno,
+/// and deliberately: `ENOTSOCK` says a *file* holds the path, which proves no
+/// daemon is serving but also that starting one cannot help — it would fail to
+/// bind over the file and the spawn would be noise on top of a state a human
+/// has to clear. The two questions are close enough to fold together and
+/// different enough that folding them would be wrong.
+fn absent_daemon(errno: Option<i32>) -> bool {
     matches!(errno, Some(libc::ENOENT) | Some(libc::ECONNREFUSED))
 }
 
