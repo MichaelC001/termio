@@ -1215,6 +1215,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// follows the pane rather than the session, so the keyframe that follows
     /// the resize lands on a surface that is already the right size.
     var onViewportPending: ((Bool) -> Void)?
+    /// Whether this session's host sizes by policy, from the handshake. A pane
+    /// on an older host must not letterbox: there the writer's grid is the
+    /// size, so a difference is an unanswered declaration rather than another
+    /// viewer, and pinning to it never resolves.
+    var onSizesByPolicy: ((Bool) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1240,6 +1245,8 @@ final class TermiodSessionLink: @unchecked Sendable {
                     channel, role: "attach", caps: Termiod.attachCapabilities)
                 clientID = handshake.clientID
                 hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+                let sizesByPolicy = hostSizesByPolicy
+                DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
                 let device = handshake.device
                 DispatchQueue.main.async { [self] in onDevice?(device) }
                 let requested = viewportGrid
@@ -1469,7 +1476,8 @@ final class TermiodSessionLink: @unchecked Sendable {
             surfaceGrid = size
             if changed {
                 Log.termiod.debug("""
-                resize-trace surface-at \(size.rows, privacy: .public)x\
+                resize-trace \(self.sessionName.prefix(8), privacy: .public) surface-at \
+                \(size.rows, privacy: .public)x\
                 \(size.cols, privacy: .public)
                 """)
             }
@@ -1592,7 +1600,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         // screen show while a window moves.
         raiseViewportPendingLocked()
         Log.termiod.debug("""
-        resize-trace declare \(self.viewportGrid.rows, privacy: .public)x\
+        resize-trace \(self.sessionName.prefix(8), privacy: .public) declare \
+        \(self.viewportGrid.rows, privacy: .public)x\
         \(self.viewportGrid.cols, privacy: .public) rendering=\(showing, privacy: .public)
         """)
         try Termiod.writeFrame(
@@ -1639,7 +1648,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Trace only: a repaint was asked for because the surface reached the
     /// session's grid with bytes parsed at another one behind it.
     private func traceResync() {
-        Log.termiod.debug("resize-trace resync-requested")
+        Log.termiod.debug("""
+        resize-trace \(self.sessionName.prefix(8), privacy: .public) resync-requested
+        """)
     }
 
     private func requestResyncLocked() {
@@ -1965,7 +1976,8 @@ final class TermiodSessionLink: @unchecked Sendable {
             authoritativeGrid = grid
             if grid == viewportGrid { lowerViewportPendingLocked() }
             Log.termiod.debug("""
-            resize-trace session-is \(grid.rows, privacy: .public)x\
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) session-is \
+            \(grid.rows, privacy: .public)x\
             \(grid.cols, privacy: .public)
             """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }

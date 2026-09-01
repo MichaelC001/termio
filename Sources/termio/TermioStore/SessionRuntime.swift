@@ -57,4 +57,13 @@ final class SessionRuntime {
     /// mangled and has to ask for another one. A surface that already moved
     /// paints it right the first time.
     var viewportPending = false
+    /// Whether the host this session lives on sizes by policy at all.
+    ///
+    /// The letterbox only means anything under that policy: it exists because
+    /// the session's grid can belong to another screen. An older daemon — a VPS
+    /// that has not been redeployed — reads a resize as "set the PTY size" from
+    /// the writer, so the pane's own grid *is* the session's, and a difference
+    /// between them is not another viewer, it is a declaration that host will
+    /// never answer. Pinning the surface to it freezes the terminal for good.
+    var sizesByPolicy = false
 }

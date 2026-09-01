@@ -157,6 +157,9 @@ extension TermioStore {
         link.onStartRefused = { [weak self, weak inMemory] message in
             self?.applyTermiodStartRefused(for: session.id, message: message, surface: inMemory)
         }
+        link.onSizesByPolicy = { [weak self] byPolicy in
+            self?.runtime(for: session.id).sizesByPolicy = byPolicy
+        }
         link.onViewportPending = { [weak self] pending in
             self?.runtime(for: session.id).viewportPending = pending
         }
