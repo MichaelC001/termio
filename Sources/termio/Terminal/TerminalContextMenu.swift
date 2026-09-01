@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyKit
 import GhosttyTerminal
 
 /// Ghostty-style right-click menu over the terminal surfaces: Copy/Paste plus
@@ -10,8 +11,14 @@ import GhosttyTerminal
 /// never gets a say, and the wrapper instantiates its view class itself so a
 /// subclass override can't be injected. So the menu is added one level up: a
 /// local `rightMouseDown` monitor that spots clicks landing on a terminal
-/// surface in the main window and consumes them with termio's menu instead
-/// (Ghostty likewise claims right-click for its menu).
+/// surface in the main window and consumes them with termio's menu instead.
+///
+/// It claims only the clicks Ghostty itself would leave unclaimed. Ghostty's
+/// contract is that a program which turned on mouse reporting owns every mouse
+/// button, right included, and shift is the single bypass that hands one back
+/// to the terminal. So inside a mouse-reporting TUI a plain right-click goes to
+/// the program — tmux's own pane menus keep working — and shift+right-click
+/// opens this menu.
 @MainActor
 final class TerminalContextMenu: NSObject {
     private weak var store: TermioStore?
@@ -69,6 +76,16 @@ final class TerminalContextMenu: NSObject {
         }
         guard let target else { return false }
 
+        // Defer to the program when it asked for the mouse, exactly as Ghostty
+        // does: it offers the press to the core first and only falls through to
+        // its own menu when the core reports the click was not consumed. There is
+        // no such return value to read here — the wrapper's `rightMouseDown` sends
+        // the press without reporting whether it landed — so the same verdict is
+        // reached by reading the terminal's mouse-reporting flag before the click
+        // is sent. Returning false leaves the event to the wrapper, which forwards
+        // it as it would if this monitor did not exist.
+        if !event.modifierFlags.contains(.shift), programCapturesMouse(target) { return false }
+
         // Focus follows the right-click (the wrapper's own `rightMouseDown`
         // does the same), and the selection is moved synchronously so the
         // split actions below operate on the clicked pane, not a stale one.
@@ -95,8 +112,8 @@ final class TerminalContextMenu: NSObject {
         let menu = NSMenu()
         // Right-clicking a web link offers it externally up top (the Browser
         // Right/Down items below pick the same link up for an in-app split).
-        // This is also the path that always works — a TUI with mouse reporting
-        // (Claude Code) swallows cmd+click, but never the right-click.
+        // A TUI with mouse reporting (Claude Code) swallows cmd+click, so inside
+        // one this menu — reached with shift+right-click — is the way to the link.
         if clickedLinkURL != nil {
             menu.addItem(storeItem(localized("Open Link"), action: #selector(openLink), symbol: "safari"))
             menu.addItem(.separator())
@@ -202,6 +219,18 @@ final class TerminalContextMenu: NSObject {
             stack.append(contentsOf: view.subviews)
         }
         return found
+    }
+
+    /// Whether the program on this surface turned on mouse reporting (DECSET
+    /// 1000/1002/1003). `ghostty_surface_mouse_captured` reads the terminal's
+    /// `mouse_event` flag, which is the same state the core consults before it
+    /// reports a click and swallows it.
+    private func programCapturesMouse(_ view: TerminalView) -> Bool {
+        guard let handle = store?.surfaces
+            .first(where: { $0.value.controller === view.controller })?
+            .value.surface?.rawValue
+        else { return false }
+        return ghostty_surface_mouse_captured(handle)
     }
 
     /// Maps a surface view back to its session through the store's surface
