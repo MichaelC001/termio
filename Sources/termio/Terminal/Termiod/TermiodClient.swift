@@ -717,6 +717,26 @@ extension Termiod {
         guard status == 0 else {
             throw TermiodClientError.daemonSpawnFailed(status)
         }
+        reapWhenItExits(pid)
+    }
+
+    /// Collect the daemon's exit status whenever it comes.
+    ///
+    /// `POSIX_SPAWN_SETSID` detaches the session, not the parentage: the daemon
+    /// stays this app's child, and a child nobody waits on becomes a zombie the
+    /// moment it exits — one whose pid `kill(pid, 0)` keeps answering for. That
+    /// is what `termiod stop` used to read as a daemon refusing to leave (#571),
+    /// and it lasted as long as the app did. The daemon this waits on outlives
+    /// most launches, so the wait cannot be a parked thread.
+    private static func reapWhenItExits(_ pid: pid_t) {
+        let source = DispatchSource.makeProcessSource(
+            identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+        source.setEventHandler {
+            var ignored: Int32 = 0
+            _ = waitpid(pid, &ignored, WNOHANG)
+            source.cancel()
+        }
+        source.resume()
     }
 
     // MARK: - Handshake and control channel
