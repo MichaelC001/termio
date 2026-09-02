@@ -476,14 +476,19 @@ private struct SharedGridLetterbox<Content: View>: View {
         .onChange(of: paneGrid, initial: true) { _, grid in
             if let grid { onViewport(grid) }
             // The inputs behind the declaration, which the wire trace cannot
-            // show: `declare` says 46 and `surface-at` answers 45 without ever
-            // naming the rectangle and cell the two disagreed about. libghostty
-            // is handed whole pixels (`floor(points × scale)` in
-            // `TerminalSurfaceCoordinator.synchronizeMetrics`) and floors again
-            // dividing by the cell; this measures in points and floors once.
-            // Whether that is the off-by-one takes numbers, not argument.
+            // show: `declare 46x47` answered by `surface-at 45x47` never named
+            // the rectangle and cell the two disagreed about, and the gap was
+            // guessed at as a points-vs-pixels off-by-one in
+            // `TerminalGrid.fitting` for a day. It was not: the pane really did
+            // change height. Whatever the next disagreement is, it takes
+            // numbers, not argument.
             Log.termiod.debug("""
-            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure             pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public)             cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public)             scale=\(self.displayScale, privacy: .public)             padX=\(self.paddingX, privacy: .public)             grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure \
+            pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public) \
+            cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public) \
+            scale=\(self.displayScale, privacy: .public) \
+            padX=\(self.paddingX, privacy: .public) \
+            grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
             """)
         }
     }
@@ -1214,4 +1219,3 @@ private struct SplitDividerHandle: View {
             .position(x: spec.frame.midX, y: spec.frame.midY)
     }
 }
-
