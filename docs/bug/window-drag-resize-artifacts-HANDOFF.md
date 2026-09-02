@@ -192,10 +192,31 @@ put a per-frame grid encoder between the PTY and the pipe.
    in §5 is right it should now be rare. If it still fires every time, the
    keyframe is still landing on a mis-sized surface and the extra repaint is a
    second visible paint per resize.
-4. **The 45↔46 row oscillation at launch** in the trace: the pane declares 46,
-   then 45, and the surface alternates. Suspect the half-cell slack in
-   `letterboxSize` against libghostty's own padding rounding — one of the two is
-   off by a row.
+4. ~~**The 45↔46 row oscillation at launch**~~ — **fixed, and the guess here was
+   wrong.** `TerminalGrid.fitting` is not off by one and the half-cell slack had
+   nothing to do with it. The trace now carries the inputs behind each
+   declaration (`resize-trace … measure pane=… cell=… scale=… grid=…`), and they
+   name the cause outright:
+
+   ```
+   36.219 measure pane=465x890  cell=9.5x19  scale=2  grid=46x47
+   36.344 WINDOW  layout=1150x890
+   36.378 declare 46x47  →  session-is 46x47      ← PTY resized, barrier, keyframe
+   36.419 WINDOW  layout=1150x870                 ← the toolbar costs 20pt
+   36.444 measure pane=465x870  cell=9.5x19  scale=2  grid=45x47
+   36.594 declare 45x47  →  session-is 45x47      ← all of it again
+   ```
+
+   `fitting` is right both times: `floor((890−4)/19) = 46`, `floor((870−4)/19) =
+   45`. The pane really was 890pt tall and then really was 870.
+   `installToolbar()` ran *after* `makeKeyAndOrderFront`, so every launch
+   measured a content rect one row too tall, declared it, and had the daemon
+   answer — resizing the PTY, opening a barrier and pushing a keyframe for a
+   grid that lived 40ms.
+
+   Fixed by installing the toolbar right after the content view controller and
+   before the window is shown. Measured after: `layout` is 870 from the first
+   pass, one declaration where there were two, and no resync.
 5. **Redeploy the VPS daemon** (`termiod deploy --host ukvps`); remote sessions
    are on an old build and will keep behaving like the pre-policy world.
 6. **Consider the mirror RFC** (§7) before adding any further reconciliation
