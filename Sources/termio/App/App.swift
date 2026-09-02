@@ -72,12 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pendingOpenURLs: [URL] = []
     // The split controller (sidebar + terminal + inspector). The navigator toggle reaches its
     // `toggleSidebar(_:)` through the responder chain, so this is just a weak handle on the
-    // window content controller's child.
+    // window's content view controller.
     private weak var splitViewController: NSSplitViewController?
-    // The split normally meets the window edge, but fullscreen keeps a small breathing room above
-    // both the sidebar and terminal. Held so fullscreen transitions can adjust it without
-    // rebuilding panes or their terminal surfaces.
-    private var splitTopInsetConstraint: NSLayoutConstraint?
     // The trailing file-browser inspector item, retained so the toolbar button and the
     // View menu can collapse/expand it. Starts collapsed (see `makeContentSplitViewController`).
     private var filesInspectorItem: NSSplitViewItem?
@@ -265,7 +261,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The autosaved frame can restore straight into fullscreen, so seed the mirror rather
         // than waiting for a transition that already happened.
         store.windowIsFullScreen = window.styleMask.contains(.fullScreen)
-        updateSplitTopInset()
         // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
         // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
         // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
@@ -599,7 +594,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// lights and the title-bar tracking separator. The panes no longer bridge their toolbars —
     /// the window owns a real `NSToolbar` (see `installToolbar`) so it can carry the native
     /// `.toggleSidebar` item. The standard `toggleSidebar(_:)` responder action collapses the item.
-    private func makeContentSplitViewController() -> NSViewController {
+    private func makeContentSplitViewController() -> NSSplitViewController {
         let sidebar = NSHostingController(rootView: SidebarView()
             .environmentObject(store)
             .environmentObject(settings))
@@ -669,21 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         splitViewController.addSplitViewItem(inspectorItem)
         splitViewController.splitView.autosaveName = "TermioContentSplit"
         self.splitViewController = splitViewController
-
-        let container = NSViewController()
-        container.addChild(splitViewController)
-        let splitView = splitViewController.view
-        splitView.translatesAutoresizingMaskIntoConstraints = false
-        container.view.addSubview(splitView)
-        let topInset = splitView.topAnchor.constraint(equalTo: container.view.topAnchor)
-        NSLayoutConstraint.activate([
-            splitView.leadingAnchor.constraint(equalTo: container.view.leadingAnchor),
-            splitView.trailingAnchor.constraint(equalTo: container.view.trailingAnchor),
-            splitView.bottomAnchor.constraint(equalTo: container.view.bottomAnchor),
-            topInset,
-        ])
-        splitTopInsetConstraint = topInset
-        return container
+        return splitViewController
     }
 
     /// Keeps the native window title in step with the selected session's working directory.
@@ -805,7 +786,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `windowDidEnterFullScreen` corrects it.
     func windowWillEnterFullScreen(_ notification: Notification) {
         window?.titlebarAppearsTransparent = false
-        updateSplitTopInset(fullScreen: true)
         // Flip before the animation, so a maximized detail's header drops its traffic-light gap
         // as the window grows rather than snapping inward once it lands.
         store.windowIsFullScreen = true
@@ -814,7 +794,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The twin of `windowWillEnterFullScreen` for the maximized detail's header: the buttons come
     /// back with the window, so the gap that clears them is restored before the animation ends.
     func windowWillExitFullScreen(_ notification: Notification) {
-        updateSplitTopInset(fullScreen: false)
         store.windowIsFullScreen = false
     }
 
@@ -825,24 +804,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidEnterFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
-        updateSplitTopInset(fullScreen: true)
         store.windowIsFullScreen = true
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
-        updateSplitTopInset(fullScreen: false)
         updateInspectorMaxThickness()
         store.windowIsFullScreen = false
-    }
-
-    /// Fullscreen's hidden toolbar otherwise lets the split touch the screen's top edge. The same
-    /// inset applies to every split item, keeping the sidebar and terminal visually aligned.
-    private func updateSplitTopInset(fullScreen: Bool? = nil) {
-        guard let splitTopInsetConstraint else { return }
-        let isFullScreen = fullScreen ?? window?.styleMask.contains(.fullScreen) == true
-        splitTopInsetConstraint.constant = isFullScreen ? 8 : 0
     }
 
     /// View ▸ Toggle Full Screen (⌃⌘F).
