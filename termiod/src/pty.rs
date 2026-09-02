@@ -35,6 +35,20 @@ fn set_winsize(fd: RawFd, rows: u16, cols: u16) -> Result<()> {
     Ok(())
 }
 
+fn get_winsize(fd: RawFd) -> Result<(u16, u16)> {
+    let mut ws = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+    if rc != 0 {
+        bail!("TIOCGWINSZ failed: {}", std::io::Error::last_os_error());
+    }
+    Ok((ws.ws_row, ws.ws_col))
+}
+
 fn set_nonblocking(fd: RawFd) -> Result<()> {
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
@@ -463,10 +477,18 @@ impl Pty {
         (pgid > 0).then_some(pgid)
     }
 
-    /// Push a new window size to the PTY (TIOCSWINSZ). The kernel delivers
-    /// SIGWINCH to the foreground process group.
-    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        set_winsize(self.master.get_ref().as_raw_fd(), rows, cols)
+    /// Push a new window size to the PTY (TIOCSWINSZ) and return the size the
+    /// kernel actually holds afterwards.
+    ///
+    /// The read-back is not paranoia about the ioctl's return code: the child
+    /// reflows off SIGWINCH and its own `TIOCGWINSZ`, so the kernel's copy — not
+    /// the number we asked for — is the one every viewer's bytes are wrapped
+    /// for. A caller that recorded its request instead would hand its clients a
+    /// grid the child does not have, and nothing downstream could tell.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<(u16, u16)> {
+        let fd = self.master.get_ref().as_raw_fd();
+        set_winsize(fd, rows, cols)?;
+        get_winsize(fd)
     }
 
     /// Read available PTY output. `Ok(0)` means the slave closed (process

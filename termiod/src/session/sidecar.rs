@@ -97,6 +97,12 @@ pub(crate) enum SidecarCommand {
     Resize {
         rows: u16,
         cols: u16,
+        /// Whether the screen may be rewrapped. False while the shell holds the
+        /// terminal, because its SIGWINCH redisplay assumes the old wrap points
+        /// (`termiod_vt::VtTerminal::resize`); true when a job does, which is
+        /// the only case where truncating is visible as a mangled window rather
+        /// than as a clean prompt.
+        reflow: bool,
     },
     Snapshot {
         client_id: ClientId,

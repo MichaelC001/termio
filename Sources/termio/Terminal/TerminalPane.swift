@@ -412,15 +412,15 @@ private enum TerminalFocusReason {
 /// Lays a surface out at the grid another device is sizing the session to.
 ///
 /// One PTY has one winsize, and every attachment parses the same bytes. The
-/// daemon sizes the session to the smallest viewport being rendered, so while a
-/// phone is watching, those bytes are wrapped for the phone's grid — and a
-/// surface stretched across this pane would re-wrap them at its own width, the
-/// §C.5 divergence: every line that wrapped on the phone lands somewhere else
-/// here, and a TUI that repaints incrementally never repairs it. So a pane
-/// larger than the session shows it at exactly the shared grid, centred, with
-/// the terminal background around it — the same picture the phone has, at the
-/// Mac's font. The phone leaves, the session springs back, and the surface
-/// returns to the pane.
+/// daemon sizes the session to the screen a person is in front of, so while
+/// somebody is working on the phone those bytes are wrapped for the phone's
+/// grid — and a surface stretched across this pane would re-wrap them at its own
+/// width, the §C.5 divergence: every line that wrapped on the phone lands
+/// somewhere else here, and a TUI that repaints incrementally never repairs it.
+/// So a pane larger than the session shows it at exactly the shared grid,
+/// centred, with the terminal background around it — the same picture the phone
+/// has, at the Mac's font. Typing here, or resizing this pane, brings the
+/// session back and the surface returns to the pane.
 ///
 /// This is also where the pane states its *viewport* — how much it could show,
 /// measured from its own geometry. The surface cannot answer that question once
@@ -454,8 +454,13 @@ private struct SharedGridLetterbox<Content: View>: View {
         // remount its NSView, which is the repaint this file exists to avoid. A
         // nil frame dimension is "no constraint", so the surface fills the pane.
         let size = letterboxSize
-        let fits = size.map { $0.width <= paneSize.width && $0.height <= paneSize.height } ?? true
-        ZStack(alignment: fits ? .center : .topLeading) {
+        // Always anchored, never centred. A centred island moves as the pane
+        // grows, so a window drag slid the text around inside it before
+        // snapping — the shake. Anchoring is also what every multiplexer does
+        // with the space it cannot fill: tmux pads to the right and bottom,
+        // screen leaves it blank. The text stays exactly where it is and only
+        // the empty area changes.
+        ZStack(alignment: .topLeading) {
             background
             content()
                 .frame(width: size?.width, height: size?.height)
@@ -469,20 +474,14 @@ private struct SharedGridLetterbox<Content: View>: View {
         }
     }
 
-    /// How much this pane could show: libghostty's own floor of the space left
-    /// after padding, so the number matches what the surface would report if it
-    /// were filling the pane rather than sitting at the shared grid.
+    /// How much this pane could show. `TerminalGrid.fitting` is libghostty's own
+    /// floor, shared with the phone so both clients answer the question the same
+    /// way — the session moves between them.
     private var paneGrid: TerminalGrid? {
         guard let cell = cellSize else { return nil }
-        let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
-        let cols = ((paneSize.width - 2 * paddingX) / cell.width).rounded(.down)
-        let rows = ((paneSize.height - 2 * paddingY) / cell.height).rounded(.down)
-        // A pane mid-teardown reports zero, and a NaN cell size would otherwise
-        // trap on the way to `UInt16`.
-        guard cols.isFinite, rows.isFinite, cols >= 1, rows >= 1 else { return nil }
-        return TerminalGrid(
-            rows: UInt16(clamping: Int(min(rows, 10_000))),
-            cols: UInt16(clamping: Int(min(cols, 10_000))))
+        return TerminalGrid.fitting(
+            paneSize, cell: cell, paddingX: paddingX,
+            paddingY: CGFloat(TermioStore.terminalWindowPaddingY))
     }
 
     /// The size a surface at the shared grid takes, or nil to fill the pane.
@@ -499,7 +498,8 @@ private struct SharedGridLetterbox<Content: View>: View {
         // A pane already the session's size fills the pane exactly, with none of
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
-        guard let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
+        guard runtime.sizesByPolicy, !runtime.viewportPending,
+              let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
         let width = CGFloat(grid.cols) * cell.width + 2 * paddingX + cell.width / 2

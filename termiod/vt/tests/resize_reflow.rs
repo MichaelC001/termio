@@ -76,7 +76,7 @@ fn reflowing_resize_duplicates_the_prompt() {
     // (resize() itself now suppresses reflow, so drive the duplicate through
     // the engine's own behaviour: wraparound on is the engine default.)
     let rows = visible(&{
-        vt.resize_reflowing_for_tests(24, 47).expect("resize");
+        vt.resize_reflowing(24, 47).expect("resize");
         vt.vt_write(ZSH_WINCH_REDRAW);
         vt.vt_write(PROMPT.as_bytes());
         vt.format_vt().expect("fmt")
@@ -154,3 +154,44 @@ fn no_reflow_resize_leaves_program_autowrap_choice_alone() {
     assert_eq!(snapshot.cursor_y, 1, "autowrap must come back on");
 }
 
+
+/// What the no-reflow policy costs on the way *out*: a line the program wrapped
+/// at the old width stays broken where it was broken, so widening the window
+/// leaves a word split across two rows and the second row starting mid-word.
+///
+/// This is the tmux/xterm behaviour the policy above is chosen for, seen from
+/// the other side — recorded here because it is what a user reports as "the
+/// screen is 错位 after I drag the window", and because any future reflow work
+/// has to move this assertion rather than discover it.
+#[test]
+fn widening_does_not_re_join_a_wrapped_line() {
+    let mut vt = VtTerminal::new(6, 20).unwrap();
+    // 26 columns of text in a 20-column terminal: the program's own autowrap
+    // breaks it after "image in clipboar".
+    vt.vt_write(b"image in clipboard ok");
+    let before = visible(&vt.format_vt().unwrap());
+    assert_eq!(before, vec!["image in clipboard o", "k"], "wrapped by the program");
+
+    vt.resize(6, 40).unwrap();
+    let after = visible(&vt.format_vt().unwrap());
+    assert_eq!(
+        after,
+        vec!["image in clipboard o", "k"],
+        "the break survives the widening — the rows are not re-joined"
+    );
+}
+
+/// The other half of the rule: with a job on screen rather than the shell, the
+/// same widening re-joins the line, which is what every terminal the program was
+/// written for does and what the user is comparing against.
+#[test]
+fn widening_with_reflow_re_joins_a_wrapped_line() {
+    let mut vt = VtTerminal::new(6, 20).unwrap();
+    vt.vt_write(b"image in clipboard ok");
+    vt.resize_reflowing(6, 40).unwrap();
+    assert_eq!(
+        visible(&vt.format_vt().unwrap()),
+        vec!["image in clipboard ok"],
+        "the rows are re-joined at the new width"
+    );
+}

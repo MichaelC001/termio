@@ -1083,12 +1083,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last viewport actually written as an `R` frame, so an unchanged
     /// declaration isn't re-sent while the daemon is still applying the first.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
-    /// Bumped by every viewport change; only the newest scheduled send may write
-    /// its frame. See `scheduleViewportLocked`.
-    private var viewportGeneration: UInt64 = 0
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
+    /// Whether a viewport change of this pane's own is still unanswered, and the
+    /// stamp that lets only the newest one lower it. See `onViewportPending`.
+    private var viewportPending = false
+    private var viewportPendingGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1104,8 +1105,8 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// keyframe, and that one paints right.
     ///
     /// Not gated on the write token any more. Under a size policy the writer's
-    /// own surface is letterboxed too whenever somebody smaller is looking, and
-    /// it needs the same repaint the observer always did.
+    /// own surface is letterboxed too whenever the session is sized to another
+    /// screen, and it needs the same repaint the observer always did.
     private var repaintPending = false
     /// Set on any deliberate teardown so the reader's EOF is not misread as a
     /// daemon crash.
@@ -1208,6 +1209,17 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
+    /// Raised the moment this pane declares a new viewport and lowered when the
+    /// daemon's grid agrees — or when it plainly is not going to, because
+    /// somebody else is using the session. While it is up the pane's surface
+    /// follows the pane rather than the session, so the keyframe that follows
+    /// the resize lands on a surface that is already the right size.
+    var onViewportPending: ((Bool) -> Void)?
+    /// Whether this session's host sizes by policy, from the handshake. A pane
+    /// on an older host must not letterbox: there the writer's grid is the
+    /// size, so a difference is an unanswered declaration rather than another
+    /// viewer, and pinning to it never resolves.
+    var onSizesByPolicy: ((Bool) -> Void)?
 
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
@@ -1233,6 +1245,8 @@ final class TermiodSessionLink: @unchecked Sendable {
                     channel, role: "attach", caps: Termiod.attachCapabilities)
                 clientID = handshake.clientID
                 hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+                let sizesByPolicy = hostSizesByPolicy
+                DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
                 let device = handshake.device
                 DispatchQueue.main.async { [self] in onDevice?(device) }
                 let requested = viewportGrid
@@ -1417,8 +1431,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     ///
     /// Measured from the pane, not read back off the surface, and sent whether
     /// or not this client holds the write token. The daemon sizes the session to
-    /// the smallest viewport being rendered; who may type is a separate question
-    /// and asking it here is what used to turn a stray byte into a resize loop
+    /// the viewport of whichever screen someone is in front of, and a pane that
+    /// just changed shape is one somebody has their hands on. Who may *type* is
+    /// a separate question, and answering it here is what used to turn a stray
+    /// byte into a resize loop
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     func setViewport(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
@@ -1456,7 +1472,15 @@ final class TermiodSessionLink: @unchecked Sendable {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
             guard !closed else { return }
+            let changed = surfaceGrid != size
             surfaceGrid = size
+            if changed {
+                Log.termiod.debug("""
+                resize-trace \(self.sessionName.prefix(8), privacy: .public) surface-at \
+                \(size.rows, privacy: .public)x\
+                \(size.cols, privacy: .public)
+                """)
+            }
             guard attached else { return }
             if authoritativeGrid != size {
                 repaintPending = true
@@ -1467,19 +1491,63 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// How long the viewport must hold still before it goes to the daemon.
-    /// The same 50ms `PTYProcess.resizeFromHost` coalesces on, and for a
-    /// sharper reason here: on the in-process path an intermediate size costs a
-    /// SIGWINCH, while on this one a viewport that moves the session is a
-    /// host-side **barrier** — the session quiesces, resizes, and pushes a fresh
-    /// keyframe to every attachment. A live drag or a settling split emits a
-    /// burst of them, and each keyframe is a full repaint racing the child's own
-    /// redraw.
-    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(50)
+    /// How long a declaration is treated as in flight before the pane accepts
+    /// that the session belongs to another screen. Long enough for the coalesced
+    /// send plus a local round trip, short enough that a pane watching a phone
+    /// lays its surface out at the phone's grid rather than sitting stretched
+    /// over bytes wrapped for it.
+    private static let viewportSettleDeadline = DispatchTimeInterval.milliseconds(600)
 
-    /// Sends the viewport once the pane stops moving. Generation-stamped rather
-    /// than debounced with a cancellable work item because the size is re-read
-    /// at fire time: the last scheduled send is the only one that writes, and it
+    /// Must run on `workQueue`.
+    private func raiseViewportPendingLocked() {
+        viewportPendingGeneration &+= 1
+        let generation = viewportPendingGeneration
+        if !viewportPending {
+            viewportPending = true
+            DispatchQueue.main.async { [self] in onViewportPending?(true) }
+        }
+        workQueue.asyncAfter(deadline: .now() + Self.viewportSettleDeadline) { [self] in
+            guard !closed, generation == viewportPendingGeneration else { return }
+            lowerViewportPendingLocked()
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func lowerViewportPendingLocked() {
+        guard viewportPending else { return }
+        viewportPending = false
+        DispatchQueue.main.async { [self] in onViewportPending?(false) }
+    }
+
+    /// How long a moving pane must hold still before its size goes to the
+    /// daemon, and the shortest gap between two declarations.
+    ///
+    /// Not ghostty's 25ms, and deliberately: ghostty's resize is an ioctl on a
+    /// PTY it owns alone, while this one is a **barrier** — the session
+    /// quiesces, resizes, and pushes a fresh keyframe to every attachment. A
+    /// drag flushed on a cadence is therefore twenty full repaints a second
+    /// racing the child's own redraw, which is visible as the terminal shaking
+    /// and, when an agent TUI's incremental repaint loses that race, as rows
+    /// left behind at the width they were drawn at. Every multiplexer coalesces
+    /// harder than ghostty for this reason — tmux rate-limits a pane to one
+    /// resize per 250ms, zellij collapses a burst to its last, cmux debounces
+    /// 180ms — and none of them are wrong about it.
+    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(150)
+
+    /// Bumped by every viewport change inside a burst; only the newest scheduled
+    /// send may write its frame. See `scheduleViewportLocked`.
+    private var viewportGeneration: UInt64 = 0
+
+    /// Sends a burst's final size, once it stops.
+    ///
+    /// One barrier per drag, at the end, and deliberately not one at the start
+    /// as well: the pane's own surface follows the drag live (the letterbox
+    /// stands aside while this declaration is in flight), so an early barrier
+    /// buys nothing and costs every viewer a full-screen repaint at the moment
+    /// the drag begins — which is what it looked like.
+    ///
+    /// Generation-stamped rather than cancelled because the size is re-read at
+    /// fire time: the last scheduled send is the only one that writes, and it
     /// writes whatever the pane settled at.
     ///
     /// Must run on `workQueue`.
@@ -1488,14 +1556,19 @@ final class TermiodSessionLink: @unchecked Sendable {
         let generation = viewportGeneration
         workQueue.asyncAfter(deadline: .now() + Self.viewportCoalescingInterval) { [self] in
             guard !closed, attached, generation == viewportGeneration else { return }
-            do {
-                try sendViewportLocked()
-            } catch {
-                Log.termiod.error("""
-                viewport of \(self.sessionName, privacy: .public) failed: \
-                \(error.localizedDescription, privacy: .public)
-                """)
-            }
+            flushViewportLocked()
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func flushViewportLocked() {
+        do {
+            try sendViewportLocked()
+        } catch {
+            Log.termiod.error("""
+            viewport of \(self.sessionName, privacy: .public) failed: \
+            \(error.localizedDescription, privacy: .public)
+            """)
         }
     }
 
@@ -1516,6 +1589,21 @@ final class TermiodSessionLink: @unchecked Sendable {
         let showing = hostSizesByPolicy ? rendering : true
         if let sent = sentViewport, sent.grid == viewportGrid, sent.rendering == showing { return }
         sentViewport = (viewportGrid, showing)
+        // From here the surface may lead: the declaration is on the wire, the
+        // daemon's answer and its keyframe are coming, and the pane knows the
+        // grid they will be at. Before here — a drag still in the coalescing
+        // window — it must not: the pane's grid is changing every frame while
+        // nothing new has been drawn at any of those widths, so a surface that
+        // followed it would re-wrap the old screen once per frame. That is the
+        // mess during a drag; the session's grid is the last width anything was
+        // actually drawn for, and holding the surface there is what tmux and
+        // screen show while a window moves.
+        raiseViewportPendingLocked()
+        Log.termiod.debug("""
+        resize-trace \(self.sessionName.prefix(8), privacy: .public) declare \
+        \(self.viewportGrid.rows, privacy: .public)x\
+        \(self.viewportGrid.cols, privacy: .public) rendering=\(showing, privacy: .public)
+        """)
         try Termiod.writeFrame(
             transport.writeDescriptor, kind: .resize,
             payload: Termiod.viewportPayload(
@@ -1557,7 +1645,16 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     /// Must run on `workQueue`.
+    /// Trace only: a repaint was asked for because the surface reached the
+    /// session's grid with bytes parsed at another one behind it.
+    private func traceResync() {
+        Log.termiod.debug("""
+        resize-trace \(self.sessionName.prefix(8), privacy: .public) resync-requested
+        """)
+    }
+
     private func requestResyncLocked() {
+        traceResync()
         guard !closed, attached, let transport else { return }
         do {
             try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
@@ -1864,8 +1961,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// Records the PTY's real size — the smallest viewport currently rendering
-    /// this session, which is what every attachment's bytes are wrapped for.
+    /// Records the PTY's real size — the viewport of the screen being used,
+    /// which is what every attachment's bytes are wrapped for.
     ///
     /// Only noted, never answered. A writer used to answer a divergence by
     /// putting its own size back, which is how two devices watching one session
@@ -1877,6 +1974,12 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
+            if grid == viewportGrid { lowerViewportPendingLocked() }
+            Log.termiod.debug("""
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) session-is \
+            \(grid.rows, privacy: .public)x\
+            \(grid.cols, privacy: .public)
+            """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }

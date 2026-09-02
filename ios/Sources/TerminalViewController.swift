@@ -51,14 +51,20 @@ final class TerminalViewController: UIViewController {
     private var fitDebounce: DispatchWorkItem?
     /// The area the surface may occupy, pinned by constraints between the
     /// header and the keyboard. The surface is framed by hand inside it
-    /// (`layoutTerminalSurface`): while another device sizes the session, the
-    /// surface has to be laid out at that device's grid, not this rectangle.
+    /// (`layoutTerminalSurface`): while the session is sized to another screen,
+    /// the surface has to be laid out at that screen's grid, not this rectangle.
     private let terminalHost: UIView = {
         let host = UIView()
         host.clipsToBounds = true
         host.translatesAutoresizingMaskIntoConstraints = false
         return host
     }()
+    /// The PTY's grid, from the session: the viewport of whichever screen a
+    /// person is in front of. `nil` until the session says.
+    private var sharedGrid: TerminalGrid?
+    /// The live surface's cell size, from the resize delegate. Both the
+    /// letterbox and this screen's own viewport are measured with it.
+    private var surfaceMetrics: TerminalGridMetrics?
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
     private var companion: DeviceSession?
     private var companionSession: InMemoryTerminalSession?
@@ -294,21 +300,83 @@ final class TerminalViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 
-    /// Frames the surface inside `terminalHost`: it fills it.
+    /// Frames the surface inside `terminalHost`, and states what this screen
+    /// could show while it is there.
     ///
-    /// It used to letterbox — lay the surface out at the shared grid and scale
-    /// the whole thing down to fit — because while another device held the write
-    /// token the PTY was that device's size, and it could be *smaller* than this
-    /// phone's. The device now sizes a session to the smallest viewport
-    /// rendering it, so a phone showing one is never wider than the PTY except
-    /// against a Mac pane narrower than a phone; there is nothing left to scale
-    /// down, and blank space is the honest picture for what remains (§4 of
-    /// `docs/design/20260901-pty-size-is-not-the-write-token.md`).
+    /// Normally the surface fills the host. While the session is sized to
+    /// another screen — somebody is working at the Mac — every byte arriving
+    /// here is wrapped for that grid, and a surface at this phone's own width
+    /// re-wraps those lines into a screen a TUI's incremental repaints never
+    /// repair (§C.5 of the session protocol). So the surface is laid out at
+    /// exactly the shared grid, the same picture the Mac has, and the whole
+    /// thing is scaled down to fit, top-aligned and centred. Using the phone —
+    /// typing, or resizing this host — brings the session back to it and the
+    /// surface fills the host again.
+    ///
+    /// Half a cell of slack on each axis: libghostty floors
+    /// `(size − padding) / cell` for its grid, and an exact multiple can round
+    /// to one column short.
+    ///
+    /// This is also where the screen states its *viewport*, measured from the
+    /// host's own geometry. The surface cannot answer that question once it is
+    /// laid out at somebody else's grid: it reports the grid it was scaled to,
+    /// so a screen that declared what its surface reports could never say it had
+    /// room for its own width back, and the session could never return to it
+    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md` §6.1).
     private func layoutTerminalSurface() {
         let host = terminalHost.bounds
         guard host.width > 0, host.height > 0 else { return }
+        let screen = hostGrid
+        if case .device = backend, let screen {
+            companion?.setViewport(columns: Int(screen.cols), rows: Int(screen.rows))
+        }
+        // A frame set under a transform is undefined; always start from identity.
         terminalView.transform = .identity
-        terminalView.frame = host
+        guard case .device = backend,
+              let grid = sharedGrid, grid != screen,
+              let cell = cellSize, grid.cols > 0, grid.rows > 0
+        else {
+            terminalView.frame = host
+            return
+        }
+        let width = CGFloat(grid.cols) * cell.width + 2 * Self.terminalPaddingX + cell.width / 2
+        let height = CGFloat(grid.rows) * cell.height + 2 * Self.terminalPaddingY + cell.height / 2
+        let fit = min(1, host.width / width, host.height / height)
+        terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
+        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2)
+    }
+
+    /// How much of a session this screen could show. The same
+    /// `TerminalGrid.fitting` the Mac pane measures itself with, so the two
+    /// clients declare comparable viewports — the session moves between them and
+    /// a per-platform copy of this arithmetic would drift a column apart. `nil`
+    /// before the surface has reported a cell size, which the device reads as no
+    /// viewport at all rather than as a stand-in.
+    private var hostGrid: TerminalGrid? {
+        guard let cell = cellSize else { return nil }
+        return TerminalGrid.fitting(
+            terminalHost.bounds.size, cell: cell,
+            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY)
+    }
+
+    private var cellSize: CGSize? {
+        guard let metrics = surfaceMetrics,
+              metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
+        else { return nil }
+        let scale = max(1, traitCollection.displayScale)
+        return CGSize(
+            width: CGFloat(metrics.cellWidthPixels) / scale,
+            height: CGFloat(metrics.cellHeightPixels) / scale)
+    }
+
+    /// The session's word on the PTY's grid. Not keyed on the write token: the
+    /// screen holding it is letterboxed too whenever the session is sized to
+    /// somebody else's.
+    private func applySharedGrid(_ grid: TerminalGrid) {
+        guard sharedGrid != grid else { return }
+        sharedGrid = grid
+        view.setNeedsLayout()
     }
 
     // MARK: - Header
@@ -781,9 +849,11 @@ final class TerminalViewController: UIViewController {
                     }
                 },
                 resize: { [weak transport] viewport in
-                    // The surface fills the host, so what it reports *is* this
-                    // screen's viewport — how much of a session it could show.
-                    transport?.setViewport(
+                    // What the *surface* was laid out at, which is the shared
+                    // grid rather than this screen's whenever the session is
+                    // sized to another one. The viewport the device sizes by is
+                    // measured from the host instead (`layoutTerminalSurface`).
+                    transport?.noteSurfaceGrid(
                         columns: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
@@ -796,6 +866,9 @@ final class TerminalViewController: UIViewController {
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
+            }
+            transport.onSharedGrid = { [weak self] grid, _ in
+                self?.applySharedGrid(grid)
             }
             companion = transport
             companionSession = terminalSession
@@ -1214,6 +1287,19 @@ extension TerminalViewController: UIImagePickerControllerDelegate, UINavigationC
 
     func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
         picker.dismiss(animated: true)
+    }
+}
+
+extension TerminalViewController: TerminalSurfaceGridResizeDelegate {
+    /// Cell metrics for `layoutTerminalSurface`; they change with the font, so
+    /// a pinch re-frames a letterboxed surface at the same grid and re-states
+    /// this screen's viewport at the new cell size.
+    func terminalDidResize(_ size: TerminalGridMetrics) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, surfaceMetrics != size else { return }
+            surfaceMetrics = size
+            view.setNeedsLayout()
+        }
     }
 }
 

@@ -35,11 +35,18 @@ final class CompanionTransport {
     /// foreground: the first layout often fires before the socket exists and
     /// would be silently lost, and a reconnect never re-fires it (the view's
     /// size didn't change). The Mac forwards it as its bridge attachment's own
-    /// viewport; the session's size is the smallest one being rendered, and the
-    /// write token has nothing to do with it.
+    /// viewport; the session's size is the viewport of the screen someone is in
+    /// front of, and the write token has nothing to do with it.
+    ///
+    /// `surface` rides along because the bridge has no surface of its own to
+    /// read it from: while this screen shows a session bigger than itself the
+    /// two are different grids, and the Mac needs the second one to know when a
+    /// keyframe can finally be painted here.
     private var gridCols = 0
     private var gridRows = 0
     private var gridRendering = true
+    private var surfaceCols = 0
+    private var surfaceRows = 0
     private let gridLock = NSLock()
     /// Guards send order: `auth` must be the first frame on the socket. The
     /// terminal view calls `resize` (→ `sendGrid`) as it lays out, which can land
@@ -110,12 +117,25 @@ final class CompanionTransport {
 
     /// This screen's viewport. The Mac's bridge has no surface of its own, so it
     /// forwards this as its own attachment's viewport and the daemon sizes the
-    /// session to the smallest one being rendered.
+    /// session to the screen a person is in front of.
     func setViewport(cols: Int, rows: Int) {
         gridLock.lock()
         gridCols = cols
         gridRows = rows
         gridLock.unlock()
+        sendGrid()
+    }
+
+    /// The grid the surface is actually laid out at — this screen's own while it
+    /// fills the host, the session's while it is showing something bigger and
+    /// scaling it down. Never a declaration of what this screen has room for.
+    func noteSurfaceGrid(cols: Int, rows: Int) {
+        gridLock.lock()
+        let changed = surfaceCols != cols || surfaceRows != rows
+        surfaceCols = cols
+        surfaceRows = rows
+        gridLock.unlock()
+        guard changed else { return }
         sendGrid()
     }
 
@@ -139,11 +159,19 @@ final class CompanionTransport {
         let cols = gridCols
         let rows = gridRows
         let rendering = gridRendering
+        let laidOutCols = surfaceCols
+        let laidOutRows = surfaceRows
         let ready = authSent
         gridLock.unlock()
         guard ready, cols > 0, rows > 0 else { return }
+        // Omitted while the surface fills the host, which is the common case and
+        // what a Mac built before the field assumes.
+        let surface = (laidOutCols > 0 && laidOutRows > 0 && (laidOutCols, laidOutRows) != (cols, rows))
+            ? TerminalGrid(rows: UInt16(clamping: laidOutRows), cols: UInt16(clamping: laidOutCols))
+            : nil
         link.send(
-            CompanionControl.resize(cols: cols, rows: rows, rendering: rendering).encoded())
+            CompanionControl.resize(
+                cols: cols, rows: rows, rendering: rendering, surface: surface).encoded())
     }
 
     func stop() {

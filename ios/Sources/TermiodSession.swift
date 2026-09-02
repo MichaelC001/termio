@@ -12,10 +12,10 @@ import TermioShared
 ///   than a torrent of historical escapes that mangles an idle TUI. The phone
 ///   reattaches every time it unlocks.
 /// - **The grid is arbitrated.** The PTY's size is a host-side policy over every
-///   attachment that is rendering — the smallest viewport wins — so `E resized`
-///   is authoritative and this client honours it rather than assuming its own
-///   viewport won. It declares that viewport whether or not it holds the write
-///   token; the two are unrelated
+///   attachment that is rendering — the screen a person is in front of wins — so
+///   `E resized` is authoritative and this client honours it rather than
+///   assuming its own viewport won. It declares that viewport whether or not it
+///   holds the write token; the two are unrelated
 ///   (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
 /// - **Input is gated on a token.** Many clients may watch one session and
 ///   exactly one may type into it.
@@ -24,11 +24,12 @@ final class TermiodSession: DeviceSession {
     var onState: ((DeviceSessionState) -> Void)?
     var onSharedGrid: ((TerminalGrid, Bool) -> Void)?
 
-    /// How long the grid must hold still before a size goes to the device. Every
-    /// distinct size is a host-side barrier — quiesce, resize, fresh keyframe to
-    /// every attachment — so a settling keyboard animation must not become a
+    /// How long a moving screen must hold still before its size goes to the
+    /// device, and the shortest gap between two declarations. Every distinct
+    /// size is a host-side barrier — quiesce, resize, fresh keyframe to every
+    /// attachment — so a rotation or a keyboard animation must not become a
     /// burst of full repaints.
-    private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(50)
+    private static let resizeCoalescingInterval = DispatchTimeInterval.milliseconds(150)
 
     private let sessionName: String
     private let channel: TermiodChannel
@@ -41,15 +42,18 @@ final class TermiodSession: DeviceSession {
     /// Keystrokes that arrived before the attach landed. The device would refuse
     /// them and the person would have to retype, so they wait.
     private var pendingInput = Data()
-    /// This screen's viewport: the grid its surface is laid out at, which is the
-    /// whole terminal host — the phone shows a session at its own size and never
-    /// scales it down, because under a smallest-wins policy it is never the
-    /// larger of the two.
+    /// This screen's viewport: how much of a session the terminal host could
+    /// show, measured from the host's own geometry. Not the same as the grid the
+    /// surface ends up at — a screen watching a session bigger than itself lays
+    /// the surface out at the session's grid and scales it down.
     private var viewportGrid = TerminalGrid(rows: 0, cols: 0)
+    /// The grid the surface is actually laid out at. Read only by the repaint
+    /// arming in `noteSurfaceGrid`; it never goes on the wire.
+    private var surfaceGrid = TerminalGrid(rows: 0, cols: 0)
     /// Whether this screen is showing the session. A parked screen the container
     /// kept alive stops counting toward the session's size.
     private var rendering = true
-    /// What the PTY actually is: the smallest viewport rendering it.
+    /// What the PTY actually is: the viewport of the screen being used.
     private var authoritativeGrid: TerminalGrid?
     /// A surface not yet laid out at the shared grid. The keyframe that
     /// announced the grid was parsed at the old one, and the surface is
@@ -61,6 +65,9 @@ final class TermiodSession: DeviceSession {
     /// an older host that reads `R` as "set the PTY size" and refuses it from
     /// anyone but the writer.
     private var hostSizesByPolicy = false
+    /// When the last declaration went out, so a change after a quiet spell can
+    /// skip the wait, and the burst counter that collapses the rest.
+    private var lastViewportSend: DispatchTime?
     private var viewportGeneration: UInt64 = 0
     /// The last declaration actually written, so an unchanged one is not
     /// re-sent: a viewport that moves the session is a host-side barrier.
@@ -144,20 +151,36 @@ final class TermiodSession: DeviceSession {
         }
     }
 
-    /// Declares how much of a session this screen could show, whether or not
-    /// this phone holds the write token. The device sizes the session to the
-    /// smallest viewport being rendered; who may type is a separate question.
+    /// Declares how much of a session this screen could show, measured from the
+    /// screen and not read back off the surface: once the surface is laid out at
+    /// a bigger shared grid it reports *that*, and a screen that declared it
+    /// could never say it had room for less. Sent whether or not this phone
+    /// holds the write token — the device sizes a session to the screen someone
+    /// is in front of, and who may type is a separate question.
     func setViewport(columns: Int, rows: Int) {
         queue.async { [self] in
             let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
             guard viewportGrid != grid else { return }
             viewportGrid = grid
             guard attached, grid.rows > 0, grid.cols > 0 else { return }
-            // Arriving at the shared grid is the one moment a screen showing a
-            // session smaller than itself needs something from the device: a
-            // keyframe it can finally paint. Leaving it — a pinch reports the
-            // old frame at new cell metrics before the layout settles — arms the
-            // next arrival, so the bytes parsed in between are repainted too.
+            scheduleViewport()
+        }
+    }
+
+    /// The grid the surface was actually laid out at.
+    ///
+    /// Arriving at the shared grid is the one moment a screen showing a session
+    /// bigger than itself needs something from the device: a keyframe it can
+    /// finally paint, because the one that announced the resize was parsed at
+    /// the old grid. Leaving it — a pinch reports the old frame at new cell
+    /// metrics before the layout settles — arms the next arrival, so the bytes
+    /// parsed in between are repainted too.
+    func noteSurfaceGrid(columns: Int, rows: Int) {
+        queue.async { [self] in
+            let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
+            guard surfaceGrid != grid else { return }
+            surfaceGrid = grid
+            guard attached, grid.rows > 0, grid.cols > 0 else { return }
             if authoritativeGrid != grid {
                 repaintPending = true
             } else if repaintPending {
@@ -166,7 +189,6 @@ final class TermiodSession: DeviceSession {
                     channel.send(kind: .control, payload: payload)
                 }
             }
-            scheduleViewport()
         }
     }
 
@@ -206,10 +228,10 @@ final class TermiodSession: DeviceSession {
                 // already exists, and spawning one here would turn "that session
                 // is gone" into a second, empty shell.
                 specification: nil,
-                // Zero when the surface has not laid out yet, which the device
+                // Zero when the screen has not laid out yet, which the device
                 // counts as no viewport at all. A 24×80 stand-in used to go here
-                // instead, and under a smallest-wins policy that would squeeze
-                // every other viewer for as long as the first layout pass took.
+                // instead, and an attach is a use — it would have sized the
+                // session for a screen that had not measured itself.
                 rows: grid.rows,
                 cols: grid.cols
             ))
@@ -374,13 +396,29 @@ final class TermiodSession: DeviceSession {
     /// rather than debounced with a cancellable item because the size is re-read
     /// at fire time: the last scheduled send is the only one that writes, and it
     /// writes whatever the layout settled at.
+    /// The first change of a burst goes at once, the rest only once it ends —
+    /// the Mac's `scheduleViewportLocked`, for the same reason. A discrete
+    /// change (opening the session, a pinch) arrives alone and delaying it is
+    /// pure lag; a rotation or a keyboard animation is a stream whose
+    /// intermediate sizes each cost every viewer a repaint.
     private func scheduleViewport() {
+        let now = DispatchTime.now()
+        let quiet = lastViewportSend.map { now >= $0 + Self.resizeCoalescingInterval } ?? true
+        if quiet {
+            flushViewport()
+            return
+        }
         viewportGeneration &+= 1
         let generation = viewportGeneration
         queue.asyncAfter(deadline: .now() + Self.resizeCoalescingInterval) { [self] in
             guard attached, generation == viewportGeneration else { return }
-            sendViewport()
+            flushViewport()
         }
+    }
+
+    private func flushViewport() {
+        lastViewportSend = DispatchTime.now()
+        sendViewport()
     }
 
     /// An older device refuses an `R` from anyone but the writer, and reads a

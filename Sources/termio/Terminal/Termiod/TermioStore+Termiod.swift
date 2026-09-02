@@ -13,8 +13,13 @@ extension TermioStore {
     /// `create_if_missing` resolves the name first, so a session that survived
     /// the last app quit is rejoined — same process, same pid — and only a
     /// session with no live counterpart spawns fresh.
+    /// `viewport` is this attachment's opening declaration — how much of the
+    /// session the screen behind it could show. A pane's own geometry replaces
+    /// it on the first layout pass; a relay with no screen of its own passes a
+    /// zero, which the daemon reads as "no viewport at all" and never sizes by.
     func makeTermiodLink(for session: Session, argv: [String], cwd: String,
-                         env: [String: String]) -> TermiodSessionLink {
+                         env: [String: String],
+                         viewport: TerminalGrid? = nil) -> TermiodSessionLink {
         // The session is the only source of truth for where it runs. There used
         // to be a `TERMIO_TERMIOD_REMOTE` fallback here from before the picker
         // existed, but it silently turned *every* session without an explicit
@@ -41,14 +46,16 @@ extension TermioStore {
                 env: Self.presentationEnvironment(from: env),
                 rows: UInt16(clamping: lastHostGridRows),
                 cols: UInt16(clamping: lastHostGridColumns))
+        let opening = viewport ?? TerminalGrid(
+            rows: UInt16(clamping: lastHostGridRows), cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
             // Its uuid for a session Termio opened; the name it already had for
             // one adopted off the device's roster (see `Session.termiodSessionName`).
             sessionName: daemonSessionName(for: session),
             specification: specification,
             route: route,
-            rows: lastHostGridRows,
-            cols: lastHostGridColumns
+            rows: Int(opening.rows),
+            cols: Int(opening.cols)
         )
     }
 
@@ -150,6 +157,12 @@ extension TermioStore {
         link.onStartRefused = { [weak self, weak inMemory] message in
             self?.applyTermiodStartRefused(for: session.id, message: message, surface: inMemory)
         }
+        link.onSizesByPolicy = { [weak self] byPolicy in
+            self?.runtime(for: session.id).sizesByPolicy = byPolicy
+        }
+        link.onViewportPending = { [weak self] pending in
+            self?.runtime(for: session.id).viewportPending = pending
+        }
         link.onConnectionLost = { [weak self, weak inMemory] in
             self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
         }
@@ -164,17 +177,16 @@ extension TermioStore {
     }
 
     /// How much of a session this pane could show, measured from the pane
-    /// itself. The daemon sizes the session to the smallest viewport currently
-    /// rendering it, so this is the Mac's whole say in the matter — the write
-    /// token has none.
+    /// itself. The daemon sizes the session to the viewport of the screen being
+    /// used, and a pane that just changed shape is one somebody has their hands
+    /// on — so this is both the Mac's declaration and its claim to the size.
     func reportViewport(_ grid: TerminalGrid, for id: Session.ID) {
         termiodLinks[id]?.setViewport(rows: Int(grid.rows), cols: Int(grid.cols))
     }
 
     /// Whether this pane is on screen. A hidden pane keeps its viewport and
-    /// stops counting, so a window left open on another workspace does not hold
-    /// every session it has a pane for down to its own width — zellij's rule for
-    /// tabs nobody is looking at.
+    /// stops counting, so a window left open on another workspace never sizes a
+    /// session nobody is looking at there — zellij's rule for unviewed tabs.
     func reportRendering(_ showing: Bool, for id: Session.ID) {
         termiodLinks[id]?.setRendering(showing)
     }

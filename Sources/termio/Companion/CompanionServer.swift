@@ -503,12 +503,13 @@ final class CompanionServer {
             if !stopSession(sessionID) {
                 sendControl(.error(message: "unknown session — pull the list to refresh"), to: connection)
             }
-        case .resize(let cols, let rows, let rendering):
+        case .resize(let cols, let rows, let rendering, let surface):
             // The phone reports its grid on attach, foreground, and layout.
             // A report is a fact about the phone's screen, not a claim on the
-            // session: the daemon sizes the session to the smallest viewport
-            // being rendered, and the write token is a separate question.
-            bridges[id]?.applyClientViewport(cols: cols, rows: rows, rendering: rendering)
+            // session: the daemon sizes the session to the screen someone is in
+            // front of, and the write token is a separate question.
+            bridges[id]?.applyClientViewport(
+                cols: cols, rows: rows, rendering: rendering, surface: surface)
         case .listFiles(let projectID, let path):
             handleListFiles(projectID: projectID, path: path, on: connection)
         case .readFile(let projectID, let path, let dark):
@@ -1104,14 +1105,17 @@ final class SessionBridge: @unchecked Sendable {
     /// stand-in grid would size the session for a screen nobody is looking at.
     /// The phone downstream of it is the surface, and this is where the bridge
     /// borrows its viewport — including whether it is being shown at all.
-    func applyClientViewport(cols: Int, rows: Int, rendering: Bool) {
+    func applyClientViewport(cols: Int, rows: Int, rendering: Bool, surface: TerminalGrid?) {
         link.setViewport(rows: rows, cols: cols)
         link.setRendering(rendering)
-        // The phone's surface fills its screen — it never letterboxes — so the
-        // viewport it declares is also the grid it is laid out at. That is the
-        // fact the repaint arming needs, and on a bridge there is no local
-        // surface to hear it from.
-        link.noteSurfaceGrid(rows: rows, cols: cols)
+        // The grid the phone's surface is laid out at, which is the session's
+        // rather than the phone's whenever the phone is watching a screen bigger
+        // than itself. That is the fact the repaint arming needs, and a bridge
+        // has no local surface to hear it from. A client that sends no surface
+        // grid fills its screen with the session, so the two are the same.
+        let laidOut = surface ?? TerminalGrid(
+            rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
+        link.noteSurfaceGrid(rows: Int(laidOut.rows), cols: Int(laidOut.cols))
     }
 
     private func publishGrid(grid: TerminalGrid? = nil, writer: Bool? = nil) {
@@ -1213,7 +1217,13 @@ extension TermioStore {
         // daemon. The spec below is therefore never used to create anything —
         // `attach` resolves the name first — so it carries nothing.
         guard termiodLinks[session.id] != nil else { return nil }
-        return makeTermiodLink(for: session, argv: [], cwd: "", env: [:])
+        // No viewport of its own: a bridge is a byte forwarder with no surface,
+        // and a stand-in grid here would size the session for a screen nobody is
+        // looking at — this Mac's own last grid, at the moment the phone opened
+        // it. The phone's first `resize` is where the bridge borrows one (§5.4).
+        return makeTermiodLink(
+            for: session, argv: [], cwd: "", env: [:],
+            viewport: TerminalGrid(rows: 0, cols: 0))
     }
 
     /// Create a session in a project for a phone `start` request — the same

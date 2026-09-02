@@ -37,12 +37,33 @@ final class SessionRuntime {
     /// foreground-demotion streak (RFC 20260830 §D2), cleared the moment the
     /// foreground stops being the shell or the agent reports working again.
     var agentExitNotice: String?
-    /// The PTY's real grid, from the daemon: the smallest viewport currently
-    /// rendering this session. The bytes on the wire are wrapped for it, and the
+    /// The PTY's real grid, from the daemon: the viewport of whichever screen a
+    /// person is in front of. The bytes on the wire are wrapped for it, and the
     /// only faithful way to show them is a surface laid out at it — letterboxed
     /// in the pane, not stretched to the window (§C.5 of the session protocol).
     /// Not read together with `isWriter` any more: under a size policy the pane
-    /// holding the write token is letterboxed too whenever somebody smaller is
-    /// looking at the same session.
+    /// holding the write token is letterboxed too whenever the session is sized
+    /// to somebody else's screen.
     var sharedGrid: TerminalGrid?
+    /// Whether this pane's own viewport change is still in flight.
+    ///
+    /// The letterbox reads it, and it separates the two reasons the session's
+    /// grid can differ from the pane's. Somebody else is using the session on a
+    /// smaller screen: lay the surface out at their grid, or this pane re-wraps
+    /// bytes that were wrapped for theirs (§C.5). *This* pane was just resized:
+    /// let the surface follow the pane. It is about to be granted, and the
+    /// ordering is what matters — the keyframe that follows a resize arrives
+    /// before the next layout pass, so a surface still at the old grid paints it
+    /// mangled and has to ask for another one. A surface that already moved
+    /// paints it right the first time.
+    var viewportPending = false
+    /// Whether the host this session lives on sizes by policy at all.
+    ///
+    /// The letterbox only means anything under that policy: it exists because
+    /// the session's grid can belong to another screen. An older daemon — a VPS
+    /// that has not been redeployed — reads a resize as "set the PTY size" from
+    /// the writer, so the pane's own grid *is* the session's, and a difference
+    /// between them is not another viewer, it is a declaration that host will
+    /// never answer. Pinning the surface to it freezes the terminal for good.
+    var sizesByPolicy = false
 }

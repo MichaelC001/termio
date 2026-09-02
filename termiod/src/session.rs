@@ -192,6 +192,10 @@ struct ClientEntry {
     /// session springs back to the width of whoever is still looking.
     viewport: Option<(u16, u16)>,
     rendering: bool,
+    /// Where this attachment sits in most-recently-used order (`note_use`).
+    /// The session sizes to the highest one that is rendering: the screen a
+    /// person is actually in front of.
+    used: u64,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
@@ -362,6 +366,11 @@ struct Session {
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
+    /// Ticks on every `note_use`, ordering attachments by when a person was
+    /// last on them. A counter rather than a clock: it only ever needs to be
+    /// compared, and a monotonic integer is the same answer in a test as it is
+    /// under a wall clock that jumped.
+    use_clock: u64,
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
@@ -891,35 +900,105 @@ impl Session {
         }
     }
 
-    /// The size this session should be: the componentwise smallest viewport
-    /// among the attachments that are actually rendering it. `None` when nobody
-    /// is — every viewer left, or every one of them is on another tab.
+    /// The size this session should be: the viewport of the attachment being
+    /// used — the one whose device most recently saw a person. `None` when no
+    /// candidate has a viewport at all: every viewer left, or every one of them
+    /// is on another tab or has not laid out yet.
     ///
-    /// Only interactive attachments are counted, for the same reason only they
-    /// are ranked for the write token: an observer attached without a tty has no
-    /// viewport of its own, and a `termiod read` tailing a session must not
-    /// squeeze the window someone is working in.
+    /// Only interactive attachments are candidates, for the same reason only
+    /// they are ranked for the write token: an observer attached without a tty
+    /// has no screen a viewport could be about, so `termio read` tailing a
+    /// session never resizes the window someone is working in.
     ///
-    /// Rows and columns are minimised independently, which is what tmux's
-    /// `smallest` does. A session between a tall narrow phone and a short wide
-    /// pane ends up narrow *and* short, and both ends see all of it.
+    /// This is tmux's `latest`, and the reason it is safe here is that the
+    /// trigger is narrow. `use_clock` moves on the three things a person does —
+    /// typing, resizing that screen, opening the session there — and never on a
+    /// byte the terminal answered a query with. The old implementation bound the
+    /// size to the write token and had *both ends* re-assert their own grid,
+    /// which turned one misclassified byte into a full-speed resize loop; the
+    /// daemon is the only thing that resizes now, so a stray use costs one
+    /// resize rather than an oscillation
+    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     fn policy_size(&self) -> Option<(u16, u16)> {
         self.clients
             .values()
             .filter(|entry| entry.role.is_interactive() && entry.rendering)
-            .filter_map(|entry| entry.viewport)
-            .reduce(|(rows, cols), (other_rows, other_cols)| {
-                (rows.min(other_rows), cols.min(other_cols))
-            })
+            .filter(|entry| entry.viewport.is_some())
+            .max_by_key(|entry| entry.used)
+            .and_then(|entry| entry.viewport)
+    }
+
+    /// Whether the thing on screen is a shell, which is the one class of
+    /// program a rewrapping resize breaks.
+    ///
+    /// A shell answers SIGWINCH by moving the cursor up a number of rows it
+    /// computed from the *old* width and repainting its prompt from there.
+    /// Rewrap under that and the repaint lands in the wrong place, leaving a
+    /// stale prompt above it — the ⌘D duplicate. Nothing else on a terminal
+    /// does width-relative arithmetic against a screen it cannot see: an agent
+    /// TUI, an editor, a pager all repaint from their own model, and truncating
+    /// *their* screen is what leaves a window looking mangled after a drag.
+    ///
+    /// This asks the foreground rather than the session's spawn command,
+    /// because the two are routinely different in both directions: a session
+    /// launched as `zsh -ilc exec claude` has no shell in it at all — `exec`
+    /// replaced the image, so the child *is* the agent and the old
+    /// "is a job running under the shell" test was false for exactly the
+    /// sessions that needed rewrapping most — and a plain shell session running
+    /// `vim` has no prompt on screen to protect.
+    ///
+    /// A closed set of names, matched on the executable's basename with the
+    /// login-shell `-` stripped. Name matching is the wrong instinct for
+    /// agents, whose set is open and whose behaviour termio reads from a
+    /// manifest; it is the right one here, because "programs that redraw a
+    /// prompt from an old width" is a small set that has not grown in decades.
+    /// When the foreground cannot be read, the answer is "shell": the
+    /// truncating resize is the conservative one, and it is what shipped.
+    fn foreground_is_a_shell(&self) -> bool {
+        const SHELLS: [&str; 9] = [
+            "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu",
+        ];
+        let Some(argv0) = self
+            .foreground
+            .current()
+            .argv
+            .as_ref()
+            .and_then(|argv| argv.first())
+        else {
+            return true;
+        };
+        let name = argv0
+            .rsplit('/')
+            .next()
+            .unwrap_or(argv0)
+            .trim_start_matches('-');
+        SHELLS.contains(&name)
+    }
+
+    /// Records that a person is on this attachment's device, so the session
+    /// sizes to its screen from now on.
+    ///
+    /// Stamped by typing, by a viewport declaration (somebody resized that
+    /// window or opened its sidebar), and by the attach itself (somebody opened
+    /// the session there). Deliberately not by output, by a device report, or by
+    /// anything the daemon does on its own: those are the terminal talking, not
+    /// the person, and sizing must never follow them.
+    fn note_use(&mut self, id: &ClientId) {
+        self.use_clock += 1;
+        let clock = self.use_clock;
+        if let Some(entry) = self.clients.get_mut(id) {
+            entry.used = clock;
+        }
     }
 
     /// Moves the PTY to whatever the policy now says, if that is somewhere else.
     ///
     /// This is the only thing in the daemon that resizes a session, and it runs
     /// on every change to the attachment set: an arrival, a departure, a
-    /// viewport, a pane going to a background tab. The write token is not
-    /// consulted — who may type and how big the screen is are different
-    /// questions (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
+    /// viewport, a keystroke, a pane going to a background tab. The write token
+    /// is not consulted — the token is about who may type, and a device can be
+    /// the one being looked at without holding it
+    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     ///
     /// With nobody rendering, the size is left exactly where it was. A session
     /// every viewer walked away from keeps the shape its last viewer gave it,
@@ -937,14 +1016,35 @@ impl Session {
         if rows == self.rows && cols == self.cols {
             return;
         }
-        if let Err(error) = self.pty.resize(rows, cols) {
-            // Nobody asked for this, so there is nobody to answer: the size is a
-            // policy over the whole attachment set, not one client's request.
-            // The session stays where it was and the next change tries again.
+        let applied = match self.pty.resize(rows, cols) {
+            Ok(applied) => applied,
+            Err(error) => {
+                // Nobody asked for this, so there is nobody to answer: the size
+                // is a policy over the whole attachment set, not one client's
+                // request. The session stays where it was and the next change
+                // tries again.
+                eprintln!(
+                    "termiod: resize of session {} to {rows}x{cols} failed: {error}",
+                    self.id
+                );
+                return;
+            }
+        };
+        // What the kernel holds, not what was asked for. The child reflows from
+        // its own `TIOCGWINSZ`, so a divergence here would mean every viewer
+        // letterboxing to a grid the child never had — and no event downstream
+        // could contradict it. Recording the truth keeps the barrier, the
+        // keyframe, and `E resized` describing one screen.
+        if applied != (rows, cols) {
             eprintln!(
-                "termiod: resize of session {} to {rows}x{cols} failed: {error}",
-                self.id
+                "termiod: session {} asked for {rows}x{cols} and the kernel kept {}x{}",
+                self.id, applied.0, applied.1
             );
+        }
+        let (rows, cols) = applied;
+        // The kernel can have kept the size it already had, in which case the
+        // child saw no SIGWINCH and there is nothing to tell anyone about.
+        if rows == self.rows && cols == self.cols {
             return;
         }
         self.rows = rows;
@@ -954,7 +1054,8 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        self.send_sidecar(SidecarCommand::Resize { rows, cols });
+        let reflow = !self.foreground_is_a_shell();
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         self.begin_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
@@ -1544,6 +1645,7 @@ fn start(
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
+        use_clock: 0,
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
@@ -1794,10 +1896,15 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                             }
                         }
                     }
-                    SidecarCommand::Resize { rows, cols } => {
+                    SidecarCommand::Resize { rows, cols, reflow } => {
                         if fault.is_none() {
                             if let Some(terminal) = terminal.as_mut() {
-                                if let Err(error) = terminal.resize(rows, cols) {
+                                let resized = if reflow {
+                                    terminal.resize_reflowing(rows, cols)
+                                } else {
+                                    terminal.resize(rows, cols)
+                                };
+                                if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
                                 }
                             }
@@ -2202,6 +2309,8 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 ClientRole::Observer
             };
             let old_writer = session.writer.clone();
+            session.use_clock += 1;
+            let use_stamp = session.use_clock;
             let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
 
             if !snapshot {
@@ -2247,6 +2356,10 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     // yet, and says so with a zero.
                     viewport: (rows > 0 && cols > 0).then_some((rows, cols)),
                     rendering: true,
+                    // Opening a session on a device is somebody using that
+                    // device, so the newcomer sizes it. The Mac springs back the
+                    // moment it is typed in again.
+                    used: use_stamp,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
@@ -2257,9 +2370,10 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // Attaching is a viewer arriving, not a device taking over. The
             // token travels by typing — both ends claim on input — so the only
             // attach that takes it is the one that finds nobody holding it.
-            // What this attach *does* move, if it is smaller than everyone
-            // already looking, is the size; that is `apply_size_policy` below
-            // and it is deliberately not this decision.
+            // What this attach *does* move is the size: opening a session on a
+            // device is somebody using it, and the session sizes to the screen
+            // in front of a person. That is `apply_size_policy` below and it is
+            // deliberately not this decision.
             if interactive && session.writer.is_none() {
                 session.grant_writer(&id);
             }
@@ -2333,6 +2447,13 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session
                     .status_engine
                     .note_user_input(std::time::Instant::now());
+                // The same fact the size policy runs on: somebody is typing
+                // here, so this screen is the one to fit. A device report never
+                // reaches this arm — clients send those on their own frame kind
+                // — which is what keeps a terminal's answer to a query from
+                // moving the size.
+                session.note_use(&id);
+                session.apply_size_policy();
                 let _ = session.input_tx.send(data);
             } else {
                 session.reject_not_writer(&id);
@@ -2356,6 +2477,13 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             }
             entry.viewport = declared;
             entry.rendering = rendering;
+            // Resizing a window, collapsing its sidebar, turning a phone: the
+            // person is on this device. A screen that only stopped rendering is
+            // not — nobody is looking at it, so it must not take the size with
+            // it on the way out.
+            if rendering {
+                session.note_use(&id);
+            }
             session.apply_size_policy();
         }
         SessionMsg::Inject { data } => {
@@ -2501,7 +2629,7 @@ mod tests {
             .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
             .unwrap();
         sidecar
-            .send(SidecarCommand::Resize { rows: 3, cols: 20 })
+            .send(SidecarCommand::Resize { rows: 3, cols: 20, reflow: false })
             .unwrap();
         sidecar
             .send(SidecarCommand::Snapshot {
@@ -2565,6 +2693,7 @@ mod tests {
                 clients: HashMap::new(),
                 writer: None,
                 next_seq: 0,
+                use_clock: 0,
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
@@ -2675,6 +2804,20 @@ mod tests {
         );
     }
 
+    /// What a person does: take the token the way a keystroke does, then send
+    /// the keystroke. `SessionMsg::Input` is rejected from anyone else, so both
+    /// halves are needed to type at all.
+    fn type_into(session: &mut Session, id: &str) {
+        claim_writer(session, id);
+        handle_msg(
+            session,
+            SessionMsg::Input {
+                id: ClientId::new(id),
+                data: b"x".to_vec(),
+            },
+        );
+    }
+
     fn claim_writer(session: &mut Session, id: &str) -> bool {
         let (reply, mut reply_rx) = oneshot::channel();
         handle_msg(
@@ -2747,14 +2890,16 @@ mod tests {
         let _ = thread.join();
     }
 
-    /// The session is as wide as its narrowest viewer, and the write token has
-    /// nothing to do with it.
+    /// The session is the size of the screen a person is in front of, and the
+    /// write token is not that signal.
     ///
-    /// This is the whole of the policy, and every assertion here used to be
-    /// false: the size followed the token, so the answer to "how big is this
-    /// session" was "whoever typed last".
+    /// This is the whole of the policy. Every assertion here used to be false
+    /// twice over: the size first followed whoever typed last *through the
+    /// token*, so any byte that read as input moved it, and then followed the
+    /// smallest viewer, so a phone left open on a session held a 200-column pane
+    /// at 47 for as long as it stayed there.
     #[tokio::test]
-    async fn the_session_is_the_smallest_viewport_being_rendered() {
+    async fn the_session_is_the_viewport_of_the_device_being_used() {
         let Sidecar {
             commands,
             results: _results,
@@ -2770,24 +2915,35 @@ mod tests {
         assert_eq!(
             session.policy_size(),
             Some((42, 47)),
-            "the phone is smaller, so the session is"
+            "opening it on the phone is using the phone"
         );
 
-        // The token moving is what used to move the size. It no longer does.
+        // Taking the token is not using the device: a client claims it to be
+        // allowed to type, and the claim can arrive from a queued keystroke or a
+        // handover. Only the typing itself counts.
         assert!(claim_writer(&mut session, "mac"));
-        assert_eq!(session.policy_size(), Some((42, 47)));
-        assert!(claim_writer(&mut session, "phone"));
-        assert_eq!(session.policy_size(), Some((42, 47)));
+        assert_eq!(session.policy_size(), Some((42, 47)), "a claim is not a use");
+
+        type_into(&mut session, "mac");
+        assert_eq!(
+            session.policy_size(),
+            Some((50, 200)),
+            "typing on the Mac hands it the session"
+        );
+
+        type_into(&mut session, "phone");
+        assert_eq!(session.policy_size(), Some((42, 47)), "and back again");
 
         session.vt.shut_down();
         let _ = thread.join();
     }
 
-    /// Rows and columns are minimised independently, the way tmux's `smallest`
-    /// does it: a short wide pane and a tall narrow phone leave a session that
-    /// is short *and* narrow, which is the only shape both can show in full.
+    /// The answer is one screen's viewport, never a blend of two. Under
+    /// smallest-wins a short wide pane beside a tall narrow phone produced a
+    /// session that was short *and* narrow — a shape neither device had asked
+    /// for and neither was using.
     #[tokio::test]
-    async fn rows_and_columns_are_taken_from_whichever_viewer_is_smaller() {
+    async fn the_size_is_one_screen_and_not_a_blend_of_two() {
         let Sidecar {
             commands,
             results: _results,
@@ -2798,7 +2954,37 @@ mod tests {
 
         let _wide = attach_interactive_client_at(&mut session, "wide", 20, 200);
         let _tall = attach_interactive_client_at(&mut session, "tall", 60, 47);
-        assert_eq!(session.policy_size(), Some((20, 47)));
+        type_into(&mut session, "wide");
+        assert_eq!(session.policy_size(), Some((20, 200)));
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// Resizing a window is using it: the pane that just widened is the one
+    /// somebody has their hands on, so the session follows it there without
+    /// waiting for a keystroke. This is the report that started it — collapsing
+    /// the inspector while a second viewer was attached moved nothing at all.
+    #[tokio::test]
+    async fn changing_a_viewport_is_using_that_device() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        assert_eq!(session.policy_size(), Some((42, 47)));
+
+        declare_viewport(&mut session, "mac", 50, 240, true);
+        assert_eq!(
+            session.policy_size(),
+            Some((50, 240)),
+            "the Mac's sidebar collapsed; the session is the Mac's again"
+        );
 
         session.vt.shut_down();
         let _ = thread.join();
@@ -2878,6 +3064,43 @@ mod tests {
 
         declare_viewport(&mut session, "phone", 42, 47, true);
         assert_eq!(session.policy_size(), Some((42, 47)));
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The rule the reflow policy turns on, and the case that made the previous
+    /// one wrong: `zsh -ilc exec claude` leaves no shell in the session at all,
+    /// so "is a job running under the shell" was false for exactly the sessions
+    /// a truncating resize mangles.
+    #[tokio::test]
+    async fn only_a_shell_gets_the_truncating_resize() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+
+        for shell in ["/bin/zsh", "-zsh", "bash", "/usr/local/bin/fish"] {
+            session.foreground.set_argv_for_tests(Some(vec![shell.to_string()]));
+            assert!(
+                session.foreground_is_a_shell(),
+                "{shell} redraws its prompt from the old width"
+            );
+        }
+        for program in ["claude", "/opt/homebrew/bin/codex", "vim", "less"] {
+            session.foreground.set_argv_for_tests(Some(vec![program.to_string()]));
+            assert!(
+                !session.foreground_is_a_shell(),
+                "{program} repaints from its own model and wants the rewrap"
+            );
+        }
+        // Unreadable is treated as a shell: the truncating resize is the
+        // conservative one.
+        session.foreground.set_argv_for_tests(None);
+        assert!(session.foreground_is_a_shell());
 
         session.vt.shut_down();
         let _ = thread.join();
@@ -3268,12 +3491,14 @@ mod tests {
                     plane: ClientPlane::Raw,
                     viewport: Some((24, 80)),
                     rendering: true,
+                    used: 1,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                 },
             )]),
             writer: Some(ClientId::new("writer")),
             next_seq: 2,
+            use_clock: 0,
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,

@@ -229,7 +229,7 @@ impl VtTerminal {
                 "set_mode(WRAPAROUND, false)",
             )?;
         }
-        let resized = self.resize_reflowing_for_tests(rows, cols);
+        let resized = self.resize_reflowing(rows, cols);
         if wraparound {
             // Restore even when the resize failed: the mode belongs to the
             // program, and a failed ioctl must not leave autowrap off.
@@ -241,10 +241,23 @@ impl VtTerminal {
         resized
     }
 
-    /// The bare engine resize, which reflows whenever the screen's own DECAWM
-    /// is set. Public only so tests can reproduce the reflow duplicate this
-    /// crate's `resize` exists to prevent.
-    pub fn resize_reflowing_for_tests(&mut self, rows: u16, cols: u16) -> Result<()> {
+    /// Resize **with** reflow — Ghostty.app's semantics — for when the shell is
+    /// not the thing on screen.
+    ///
+    /// `resize` above is right whenever the shell will redisplay: its redraw
+    /// assumes the old wrap points, and rewrapping under it duplicates the
+    /// prompt. That assumption belongs to the shell, and the shell only makes
+    /// it while it holds the terminal. When a job does — an agent TUI, an
+    /// editor, anything the session spawned — nobody is doing width-relative
+    /// cursor arithmetic against the old screen, and truncating instead costs
+    /// what a user sees as a mangled window: a line the program wrapped stays
+    /// broken where it was broken, so widening leaves rows starting mid-word
+    /// (`widening_does_not_re_join_a_wrapped_line`). Ghostty never shows that
+    /// because it always reflows; this is the same behaviour, restricted to the
+    /// case where it is safe.
+    ///
+    /// Also the reflow the crate's own tests reproduce the duplicate with.
+    pub fn resize_reflowing(&mut self, rows: u16, cols: u16) -> Result<()> {
         // Pixel dimensions are not used by the daemon snapshot sidecar; fixed
         // cell metrics still give libghostty-vt consistent total dimensions.
         check(self.terminal.resize(cols, rows, 8, 16), "Terminal::resize")
