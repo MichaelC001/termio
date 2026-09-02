@@ -1011,6 +1011,14 @@ final class CompanionServer {
         }
     }
 
+    /// Sends the roster to one connection. Deliberately does not touch
+    /// `lastRoster`: that field is `broadcastIfChanged`'s record of what *every*
+    /// authenticated phone has seen, and a send to a single socket is no
+    /// evidence about the others. Stamping it here meant the catch-up send on a
+    /// newly authenticated socket consumed a pending change — the phone that
+    /// just connected got the new roster, `broadcastIfChanged` then found
+    /// nothing to do, and every phone already connected kept a stale project
+    /// list until something else changed.
     private func send(_ roster: CompanionRoster, to connection: NWConnection) {
         let meta = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "roster", metadata: [meta])

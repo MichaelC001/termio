@@ -160,9 +160,6 @@ extension TermioStore {
         link.onSizesByPolicy = { [weak self] byPolicy in
             self?.runtime(for: session.id).sizesByPolicy = byPolicy
         }
-        link.onViewportPending = { [weak self] pending in
-            self?.runtime(for: session.id).viewportPending = pending
-        }
         link.onConnectionLost = { [weak self, weak inMemory] in
             self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
         }

@@ -234,7 +234,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // representable with no connection to the title bar, so the sidebar can never
         // reach behind the traffic lights. SwiftUI still renders each pane's contents.
         window.contentViewController = makeContentSplitViewController()
+        // Before the window is shown, and before anything measures a pane.
+        // A toolbar takes 20pt off `contentLayoutRect`, so installing it after
+        // the show meant every launch laid the panes out twice: the first pass
+        // measured a content rect 20pt too tall, declared a viewport one row
+        // taller than the window would ever have, and the daemon answered it —
+        // resizing the PTY, opening a snapshot barrier and pushing a keyframe
+        // for a grid that existed for 40ms. The toolbar then landed, the panes
+        // re-measured one row shorter, and the whole round happened again.
+        // Measured: `layout=1150x890` before `installToolbar`, `1150x870`
+        // after, with `declare 46x47` sent in between.
+        installToolbar()
         LaunchTrace.mark("content installed")
+        // The height every pane is about to measure itself against. If a future
+        // change moves chrome back after this point, the panes declare a
+        // viewport for a window that never existed and the trace says so here.
+        Log.termiod.debug("""
+        resize-trace WINDOW content-height-final \
+        layout=\(self.window.contentLayoutRect.width, privacy: .public)x\
+        \(self.window.contentLayoutRect.height, privacy: .public)
+        """)
         window.delegate = self
         window.center()
         window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
@@ -247,7 +266,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // than waiting for a transition that already happened.
         store.windowIsFullScreen = window.styleMask.contains(.fullScreen)
         updateSplitTopInset()
-        installToolbar()
         // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
         // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
         // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
