@@ -154,6 +154,94 @@ final class TermiodSizePolicyIntegrationTests: XCTestCase {
         waitForGrid(macGrid, narrow, "and opening it again is using the phone")
     }
 
+    /// What a resize's keyframe does to the screen, end to end against the real
+    /// barrier.
+    ///
+    /// The daemon opens its snapshot barrier before it emits `E resized`, and
+    /// defers events behind an open barrier, so `S` reaches a client *ahead* of
+    /// the message that tells it what size to become. The client used to paint
+    /// it there — onto a surface still laid out at the old grid — and then ask
+    /// for a second keyframe once the surface caught up: two visible paints per
+    /// resize, and a drag crosses several cell boundaries. Both halves are
+    /// asserted here, because neither is visible in a screenshot.
+    func testAResizeKeyframeWaitsForTheSurfaceAndPaintsOnce() throws {
+        let name = "size-keyframe-\(UUID().uuidString.prefix(8))"
+        let before = TerminalGrid(rows: 24, cols: 80)
+        let after = TerminalGrid(rows: 24, cols: 100)
+
+        let mac = link(name, rows: Int(before.rows), cols: Int(before.cols))
+        let keyframes = KeyframeCounter()
+        mac.onOutput = { keyframes.count($0) }
+        let macGrid = GridWatcher()
+        mac.onSharedGrid = { macGrid.grid = $0 }
+        mac.start()
+        defer { mac.detach() }
+        waitForGrid(macGrid, before, "one viewer, its own grid")
+        mac.noteSurfaceGrid(rows: Int(before.rows), cols: Int(before.cols))
+        // The attach bootstrap's own keyframe is not what this test is about.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        keyframes.reset()
+
+        mac.setViewport(rows: Int(after.rows), cols: Int(after.cols))
+        waitForGrid(macGrid, after, "the daemon answers the declaration")
+        // `E resized` is delivered behind the barrier's `S`, so the keyframe is
+        // already on this client — and must not have been painted, because the
+        // surface is still laid out at the old grid.
+        XCTAssertEqual(
+            keyframes.painted, 0,
+            "the barrier's keyframe painted before the surface reached its grid")
+
+        mac.noteSurfaceGrid(rows: Int(after.rows), cols: Int(after.cols))
+        let deadline = Date().addingTimeInterval(5)
+        while keyframes.painted == 0, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertEqual(keyframes.painted, 1, "the surface arrived, so the keyframe paints")
+
+        // The resync the old ordering needed would land here, as a second full
+        // repaint a round trip after the first.
+        let settle = Date().addingTimeInterval(1.5)
+        while Date() < settle {
+            XCTAssertEqual(keyframes.painted, 1, "a resize must cost exactly one repaint")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+    }
+
+    /// Counts full repaints in the delivered byte stream. Every keyframe opens
+    /// with erase-and-home, whether the host formatted it or this client
+    /// synthesised it from packed cells (`SNAPSHOT_PROLOGUE` in `vt/src/lib.rs`,
+    /// `TermiodSnapshot.render`), and nothing a program echoes carries it.
+    private final class KeyframeCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen = 0
+
+        var painted: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return seen
+        }
+
+        func reset() {
+            lock.lock()
+            seen = 0
+            lock.unlock()
+        }
+
+        func count(_ data: Data) {
+            let prologue = Data("\u{1b}[2J".utf8)
+            var found = 0
+            var searchRange = data.startIndex..<data.endIndex
+            while let hit = data.range(of: prologue, in: searchRange) {
+                found += 1
+                searchRange = hit.upperBound..<data.endIndex
+            }
+            guard found > 0 else { return }
+            lock.lock()
+            seen += found
+            lock.unlock()
+        }
+    }
+
     /// The other half: a viewer that leaves altogether releases the session too,
     /// and the size it left behind survives until somebody is rendering again.
     /// A departure is the one size change nobody asked for, so it is the one

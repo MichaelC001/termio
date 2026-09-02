@@ -3,7 +3,7 @@ title: "HANDOFF: window drag still corrupts the terminal mid-drag"
 status: draft
 type: bug
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 related:
   - ../design/20260901-pty-size-is-not-the-write-token.md
   - ../design/20260730-termiod-session-protocol.md
@@ -13,9 +13,10 @@ related:
 
 # HANDOFF — window drag still corrupts the terminal mid-drag
 
-> **OPEN.** Sizing is fixed and proven. What is still wrong is what the screen
-> *looks like* while a window is being dragged. Everything below is measured, not
-> reasoned; the open questions at the end are the ones nobody has data for.
+> **§5 fixed, pending eyes.** Sizing was already proven. The mid-drag corruption
+> now has a measured cause and a fix with tests that fail without it (§10).
+> Nobody has yet *looked* at a drag — Screen Recording is still ungranted — so
+> the visual claim is inference from a measured mechanism, not observation.
 
 ## 0. Read this first
 
@@ -25,16 +26,16 @@ The reporter's words, in order, across one afternoon on branch
 1. "right sidebar 展开折叠 无法 resize tui" — **fixed**, see §2.
 2. "resize 过程抖动 and 依然错位" — partly fixed, see §3.
 3. "还是会抖动" — partly fixed, see §4.
-4. "drag 过程中还是会乱？结束的时候不乱" — **the live one**, see §5.
+4. "drag 过程中还是会乱？结束的时候不乱" — **fixed**, see §5 and §10.
 5. "完全不会 resize 了" — a regression introduced chasing #4; fixed, see §6.
 
-Nine commits. The sizing half is tested and I stand behind it. The visual half
-(§5) has been changed five times by an agent that **cannot see the screen** —
-`screencapture` is refused (no Screen Recording) and `osascript` returns -25211
-(no Accessibility) for this session, so every visual claim in this file comes
-from the reporter's screenshots or from the trace in §1, never from observation.
-That is the single biggest reason this took so long, and the first thing a
-follow-up should fix.
+Nine commits, then a tenth that replaced the fifth attempt at §5. The visual
+half was changed five times by agents that **cannot see the screen** —
+`screencapture` is still refused (no Screen Recording), though Accessibility is
+now granted — so no claim in this file comes from watching a drag. §5 is now
+argued from the daemon's own ordering and pinned by tests that fail without the
+fix, which is the strongest evidence available without a camera. Getting eyes on
+it is still the first thing a follow-up should do.
 
 ## 1. How to get evidence (do this before changing anything)
 
@@ -51,7 +52,12 @@ resize-trace <session> declare 45x97 rendering=true   # what this pane told the 
 resize-trace <session> session-is 45x97               # what the daemon answered
 resize-trace <session> surface-at 45x97               # what libghostty laid the surface out at
 resize-trace <session> resync-requested               # the pane asking for a paintable keyframe
+resize-trace <session> keyframe-held-out              # a held keyframe gave up on its surface
 ```
+
+Since §5, the healthy trace for a resize is `declare` → `session-is` →
+`surface-at` → nothing. `resync-requested` after a resize means the hold was
+abandoned; `keyframe-held-out` says the 250ms deadline is why.
 
 Four links log into one stream — one per open session, plus the companion
 bridge. Before the session name was added, their interleaved bursts read as a
@@ -123,22 +129,45 @@ cmux debounces 180ms.
 Now one send per drag, at the end, 150ms after the pane stops moving. Measured on
 a real 2.8s drag: six declarations, each answered by the daemon in 2–11ms.
 
-## 5. **Still open: the screen is wrong *during* the drag**
+## 5. **Fixed: the screen was wrong *during* the drag**
 
-Reporter, after the fixes above: *"drag 过程中还是会乱？结束的时候不乱"* — the end
-state is correct, the journey is not.
+Reporter: *"drag 过程中还是会乱？结束的时候不乱"* — the end state is correct, the
+journey is not.
 
-There are only two coherent behaviours and termio has been oscillating between
-them because each was tried without being able to see the result:
+The two behaviours this file oscillated between were both wrong, and the reason
+is one fact nobody had checked in the daemon:
 
-| | during the drag | why it is wrong |
-| --- | --- | --- |
-| **surface follows the pane** | libghostty re-wraps the *old* screen once per frame, at widths nothing was ever drawn for | the mess the reporter sees |
-| **surface pinned to the session's grid** | nothing moves, padding grows | correct-looking, but the keyframe after the resize lands on a surface still at the old grid, paints mangled, and needs a second repaint (`resync-requested` fires after every resize in the trace) |
+`apply_size_policy` calls `begin_snapshot_barrier()` **before**
+`emit_event(Event::Resized)`, and `emit_event` defers events behind an open
+barrier (`queue_non_data`). So on the wire the order is always
 
-The current commit tries to take both: pinned while the pane is moving, leading
-from the moment the declaration is written to the wire, so the keyframe lands on
-a correctly-sized surface. **Unverified by anyone who can see it.**
+```
+S (at the new grid) → E ready → buffered data → E resized (the new grid)
+```
+
+The client learns the new size *after* the keyframe describing it. **No
+client-side ordering can win that**, which is why "let the surface lead its own
+declaration" did not: the pane cannot know the grid before the frame that
+carries it, and even if it guessed, the daemon answers in 2–11ms while a SwiftUI
+layout pass costs a main-thread hop.
+
+So the keyframe was painted onto a surface still laid out at the old grid — one
+mangled full-screen frame — and the repair was a second keyframe asked for after
+the layout pass. Two full repaints per resize, and a slow drag crosses several
+cell boundaries (measured: six declarations in 2.8s). That is the mess.
+
+The fix is to stop predicting and start waiting. `TerminalKeyframeHold`
+(`Sources/termio/Terminal/Termiod/TermiodClient.swift`) holds a keyframe whose
+grid the surface is not laid out at, queues the bytes that arrive behind it, and
+emits both — in order — the moment libghostty reports that grid. One paint per
+resize, and it is the right one. A 250ms deadline and a 1MiB cap keep it a hold
+rather than a stall; either ending falls back to the old resync.
+
+With the hold in place the surface can stay pinned to the session's grid for the
+*whole* drag, so `viewportPending` and its 600ms window are gone. That was the
+half that made a long drag worse: after the first mid-drag flush the surface
+followed the pane for 600ms at a time, re-wrapping the old screen at widths
+nothing had been drawn at.
 
 Ghostty has neither problem because it has neither half of the architecture: one
 VT, no host, no keyframe, and the PTY resizes continuously so the child's output
@@ -183,45 +212,48 @@ put a per-frame grid encoder between the PTY and the pipe.
 
 ## 8. What to investigate next
 
-1. **Get eyes on it.** Screen Recording + Accessibility for whoever drives this,
-   or a screen recording from the reporter. Five blind changes is four too many.
-2. **Decide §5 deliberately**, with the trace open: does the pinned or the
-   leading surface look better mid-drag? They are one boolean apart today
-   (`viewportPending`), so the experiment is cheap.
-3. **Why does `resync-requested` fire after every resize?** If the ordering fix
-   in §5 is right it should now be rare. If it still fires every time, the
-   keyframe is still landing on a mis-sized surface and the extra repaint is a
-   second visible paint per resize.
+1. **Get eyes on it.** Screen Recording for whoever drives this, or a screen
+   recording from the reporter. Accessibility is now granted; Screen Recording is
+   not, and `screencapture` still answers *could not create image from display*.
+   §5 is fixed at the mechanism, and the mechanism is measured, but nobody has
+   watched a drag.
+2. ~~Decide §5 deliberately~~ — decided, see §5. Neither pinned nor leading was
+   right on its own; the keyframe had to wait.
+3. ~~Why does `resync-requested` fire after every resize?~~ — answered in §9 and
+   removed by §5's fix, which makes the barrier's own keyframe the repaint.
 4. ~~**The 45↔46 row oscillation at launch**~~ — **fixed, and the guess here was
-   wrong.** `TerminalGrid.fitting` is not off by one and the half-cell slack had
-   nothing to do with it. The trace now carries the inputs behind each
+   wrong.** `TerminalGrid.fitting` is not off by one and points-vs-pixels had
+   nothing to do with it. The trace was extended to carry the inputs behind each
    declaration (`resize-trace … measure pane=… cell=… scale=… grid=…`), and they
    name the cause outright:
 
    ```
+   36.178 WINDOW at-content-installed  layout=640x468
    36.219 measure pane=465x890  cell=9.5x19  scale=2  grid=46x47
-   36.344 WINDOW  layout=1150x890
+   36.344 WINDOW after-frame-restore   layout=1150x890
    36.378 declare 46x47  →  session-is 46x47      ← PTY resized, barrier, keyframe
-   36.419 WINDOW  layout=1150x870                 ← the toolbar costs 20pt
+   36.419 WINDOW after-toolbar         layout=1150x870   ← the toolbar costs 20pt
    36.444 measure pane=465x870  cell=9.5x19  scale=2  grid=45x47
    36.594 declare 45x47  →  session-is 45x47      ← all of it again
    ```
 
    `fitting` is right both times: `floor((890−4)/19) = 46`, `floor((870−4)/19) =
-   45`. The pane really was 890pt tall and then really was 870.
-   `installToolbar()` ran *after* `makeKeyAndOrderFront`, so every launch
-   measured a content rect one row too tall, declared it, and had the daemon
-   answer — resizing the PTY, opening a barrier and pushing a keyframe for a
-   grid that lived 40ms.
+   45`. The pane really was 890pt tall and then really was 870. `installToolbar()`
+   ran *after* `makeKeyAndOrderFront`, so every launch measured a content rect one
+   row too tall, declared it, and had the daemon answer — resizing the PTY,
+   opening a barrier and pushing a keyframe for a grid that lived 40ms.
 
    Fixed by installing the toolbar right after the content view controller and
-   before the window is shown. Measured after: `layout` is 870 from the first
-   pass, one declaration where there were two, and no resync.
+   before the window is shown, so the content height is final before anything
+   measures it. Measured after: `layout` is 870 from the first pass, and the
+   launch sends **zero** redundant declarations where it used to send two.
 5. **Redeploy the VPS daemon** (`termiod deploy --host ukvps`); remote sessions
-   are on an old build and will keep behaving like the pre-policy world.
+   are on an old build and will keep behaving like the pre-policy world. They
+   also predate §10, so a resync there is still dropped.
 6. **Consider the mirror RFC** (§7) before adding any further reconciliation
-   logic to the client. Each patch so far has been correct in isolation and the
-   pile is now the problem.
+   logic to the client. The pile is smaller than it was — the lead is gone and
+   the resync is now a fallback rather than the mechanism — but §7 still deletes
+   the class by construction.
 
 ## 9. Independent probe (codex), and what its drag left in the trace
 
@@ -274,3 +306,34 @@ pane rect. `SharedGridLetterbox` computes `paneGrid` from
 marked visible at once. Worth checking `store.visiblePaneIDs` before assuming the
 letterbox is at fault.
 
+## 10. Found while measuring §5: a resync was never answered
+
+`SessionMsg::ResendSnapshot` asked the sidecar for a capture but never opened the
+attachment's snapshot barrier. `finish_snapshot` matches every capture against
+the request the attachment is waiting on (`plane.pending_request()`), and with no
+barrier open that is `None`, so **every client-requested resync was captured and
+then discarded as stale**. The client asked for a repaint, the daemon produced
+one, and nobody ever saw it.
+
+Measured, not read: with the hold disabled, an integration test against a real
+daemon saw `resync-requested` go out and no second keyframe come back. With the
+one-line barrier restored, the same test sees two keyframes per resize — the old
+design's true cost — and with the hold enabled, one.
+
+This is the fallback §5 degrades to, and the phone bridge's only recovery from
+bytes it dropped downstream (`TermiodSessionLink.requestResync`). It has been
+broken on `main` for as long as the verb has existed. Fixed in
+`termiod/src/session.rs`; pinned by `a_resync_a_client_asked_for_reaches_it`.
+
+## 11. What is pinned, and what a follow-up must not undo
+
+- `TerminalKeyframeHoldTests` — the ordering rule as pure state: a keyframe at
+  the surface's grid passes through, one ahead of it waits, live bytes queue
+  behind it in order, a newer keyframe supersedes what was queued, and the flood
+  cap and deadline both end the wait exactly once.
+- `TermiodSizePolicyIntegrationTests.testAResizeKeyframeWaitsForTheSurfaceAndPaintsOnce`
+  — the same rule end to end against a real daemon, including that a resize costs
+  exactly one repaint. It fails without the hold (`("1") is not equal to ("0")`).
+- `session::tests::a_resync_a_client_asked_for_reaches_it` — §10.
+- §3's `vt/tests/resize_reflow.rs` and §2's size-policy integration tests are
+  untouched and still pass.

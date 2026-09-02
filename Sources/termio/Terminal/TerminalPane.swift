@@ -517,7 +517,14 @@ private struct SharedGridLetterbox<Content: View>: View {
         // A pane already the session's size fills the pane exactly, with none of
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
-        guard runtime.sizesByPolicy, !runtime.viewportPending,
+        //
+        // Held for the whole of a drag, not just until the declaration goes out.
+        // The session's grid is the last width anything was actually drawn for;
+        // a surface that moved ahead of the daemon's answer would re-wrap that
+        // screen at widths nothing was ever drawn for, once per frame. The
+        // surface moves when the answer lands, and the keyframe that comes with
+        // it is held until it does (`TermiodSessionLink.receiveKeyframe`).
+        guard runtime.sizesByPolicy,
               let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
@@ -1212,4 +1219,3 @@ private struct SplitDividerHandle: View {
             .position(x: spec.frame.midX, y: spec.frame.midY)
     }
 }
-

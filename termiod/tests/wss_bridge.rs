@@ -652,9 +652,9 @@ fn wss_off_removes_the_durable_bind() {
     let daemon = start_daemon("wss-off", Some(TOKEN), false);
     // The unix socket is bound before the wss listener is, and the bind file is
     // written with the listener — so asserting straight off `start_daemon` races
-    // the daemon under load. Every other test here waits for the port first;
-    // this one did not, and failed under a full `cargo test` while passing
-    // alone every time.
+    // the daemon under a loaded machine. Every other test here waits for the
+    // port first; this one did not, and failed roughly one full `cargo test` in
+    // two while passing alone every time.
     wait_for_port(daemon.port);
     let bind_file = daemon.dir.join("wss.bind");
     assert!(
