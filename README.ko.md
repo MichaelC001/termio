@@ -39,29 +39,32 @@ CLI 에이전트든요.
 노트북을 덮었다가 Termio를 다시 열면 에이전트는 떠날 때 그대로예요 — 같은
 프로세스, 같은 스크롤백. 세션을 끝내는 건 세션 닫기(⌘W)뿐이에요.
 
-분할은 ⌘D, 확대는 ⇧⌘↩. Ctrl-b 같은 프리픽스 키는 없어요. ⌘ 단축키는 페인 안의
-프로그램까지 전달되지 않으니 vim이나 TUI와 키가 부딪히지 않아요. 스크롤, 선택,
-복사는 트랙패드와 ⌘C로 하면 되고, copy-mode도 없어요.
-
-### 원격 VPS
+### 원격 터미널
 
 `ssh`로 들어갈 수 있는 Linux VPS라면 어디든 돼요. Termio는 `~/.ssh/config`를 읽기만
 하고 절대 고쳐 쓰지 않아요. **설정 ▸ 기기 ▸ 설정하기**가 SSH로 바이너리 하나를
 `~/.local/bin`에 복사하고, 데몬을 띄우고, 그 머신에 에이전트 훅까지 설치해요.
-로컬 세션과 원격 세션이 같은 호스트를 지나가요.
-
-세션은 연결이 아니라 머신 위에 살아요. 연결이 끊겨도 에이전트는 계속 일하고, 다시
-붙으면 화면이 그대로 돌아와요. Zed Remote와 VS Code Remote는 원격 작업을 살아 있는
-연결 안에 묶어 두죠.
+로컬 세션과 원격 세션이 같은 호스트를 지나가요. 세션은 연결이 아니라 머신 위에
+살아요. 연결이 끊겨도 에이전트는 계속 일하고, 다시 붙으면 화면이 그대로 돌아와요.
 
 ## 다른 도구와 비교하면
 
-| | 어떤 도구인지 | Termio는 무엇이 다른지 |
-| --- | --- | --- |
-| **[Ghostty](https://ghostty.org)** | 터미널 그 자체예요. Termio는 그 코어인 [libghostty](https://ghostty.org)로 그려요. 포크가 아니에요. | Ghostty는 에이전트를 추적하지도, 세션을 유지하지도, VPS에서 돌리지도 않아요. 빠른 터미널이 필요하다면 Ghostty예요. Termio는 에이전트가 그 안에서 도는 환경이고요. |
-| **[cmux](https://cmux.com)** | 가장 가까운 사촌이에요: 네이티브 Swift, libghostty, 에이전트가 부르면 울리는 알림, iPhone 컴패니언. 원격은 SSH 워크스페이스라서 머신에 릴레이를 두고 원하면 tmux를 쓰고, 휴대폰은 Mac과 페어링해요. | Termio는 모든 세션이 `termiod` 위에서 돌아요. 이 Mac이든 Linux VPS든 같고, 휴대폰은 그 호스트에 바로 붙어요. 상태는 메뉴 막대에, 프로젝트와 worktree는 사이드바에 있고요. cmux에는 앱 안에 스크립트로 다룰 수 있는 브라우저가 있고 Ghostty 설정도 읽지만, Termio에는 없어요. |
-| **[herdr](https://herdr.dev)** | 지금 쓰는 터미널 안에서 도는 멀티플렉서예요. 지속성에 대한 생각은 같고(서버가 PTY를 들고 있어요), 에이전트마다 작업 중·막힘·유휴를 표시해요. 모양은 tmux 쪽이에요: 프리픽스 키, TUI, SSH로 붙기, macOS / Linux / Windows. | Termio는 네이티브 Mac 앱이에요. Mac 단축키, iPhone 컴패니언, 그리고 사이드바 안의 워크스페이스로서의 VPS가 있어요. 붙으러 가는 TUI가 아니고요. |
-| **[Otty](https://otty.sh)** | 에이전트에 맞춰 다듬은 네이티브 Mac 터미널이에요: 탭 배지, 입력창, Claude / Codex / OpenCode를 이어서 여는 세션 복원. 터미널과 ADE 사이에 있어요. | Termio는 그중 ADE 쪽이에요. 세션이 `termiod` 안에 살아서 앱을 종료해도 남고, Linux VPS에서도 iPhone에서도 똑같은 객체예요. |
+Termio는 에이전트가 그 안에서 도는 환경이에요. 세션은 머신 위의 `termiod` 안에서
+살고, Mac 앱도 iPhone도 거기에 붙기만 해요.
+
+| | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 에이전트 모니터 | ✓ 훅 | – | ✓ | ✓ | – | ✓ 탭 배지 |
+| 에이전트 오케스트레이션 API | ✓ `termio sessions` | – | ✓ CLI와 소켓 API | ✓ 소켓 API | – | – |
+| 에이전트 알림 | ✓ 메뉴 막대 | – | ✓ | ✓ 토스트, 시스템 알림, 소리 | – | – |
+| 멀티플렉서 | ✓ 데몬이 PTY를 들고 있음 | – | 다시 열 때 복원 | ✓ 서버가 PTY를 들고 있음 | ✓ 서버가 PTY를 들고 있음 | 다시 열 때 복원 |
+| 원격 Linux | ✓ 네이티브 지원 | – | ✓ SSH 워크스페이스 | ✓ SSH로 붙기 | ✓ 네이티브 지원 | – |
+| iOS | ✓ 호스트에 바로, VPS까지 | – | ✓ Mac과 페어링 | 커뮤니티 플러그인 | 예고만 | – |
+| 프로젝트, 워크스페이스 | ✓ | – | 워크스페이스 그룹 | worktree 명령 | – | – |
+| 파일 트리 | ✓ | – | – | ✓ 플러그인 | – | – |
+| 에디터 | ✓ | – | – | – | – | – |
+| Diff | ✓ | – | – | ✓ 플러그인 | – | – |
+| 오픈소스 | ✓ MIT | ✓ MIT | ✓ GPL | ✓ Apache-2.0 | 일부, 미정 | – |
 
 ## 설치하기
 
@@ -167,9 +170,9 @@ npx skills add termio-sh/termio --skill termio
 
 ## iPhone에서
 
-컴패니언 앱이 모든 세션을 실시간으로 미러링해요 — 채팅 요약이 아니라 TUI 전체를
-그대로요. 키 바가 esc, tab, ctrl, 화살표 키를 키보드 위에 놓아주고, 길게 눌러
-말하면 음성이 그대로 프롬프트에 입력돼요. 공개 베타는
+Termio iOS가 모든 세션을 실시간으로 미러링해요 — TUI 전체를 그대로요. 키 바가
+esc, tab, ctrl, 화살표 키를 키보드 위에 놓아주고, 길게 눌러 말하면 음성이 그대로
+프롬프트에 입력돼요. 공개 베타는
 [TestFlight](https://testflight.apple.com/join/1Arf1UKR)에서 참여할 수 있어요.
 
 <table>
@@ -218,16 +221,15 @@ npx skills add termio-sh/termio --skill termio
 
 ## 로드맵
 
-- **이슈 트리아지** — GitHub, GitLab, Linear 이슈를 앱 안에서 보고 바로
-  에이전트에게 맡겨요.
 - **TUI 클라이언트** — tmux에 붙듯이, 어느 터미널에서든 붙을 수 있어요.
 - **모바일 TUI → GUI** — 라이브 미러 위에 에이전트 세션을 GUI로 보여주는
   옵션이에요.
 - **Android** — iPhone과 같은 컴패니언 앱이에요.
-- **Windows 지원** — 네이티브 Windows 앱이에요. 같은 철학, 같은 터미널 코어로,
-  Electron은 쓰지 않아요.
+- **Windows 지원** — 네이티브 Windows 앱이에요. 같은 철학, 같은 termiod 코어로요.
 - **웹 지원** — 어느 브라우저에서든 세션에 붙을 수 있어요. 터미널은 링크로
   공유할 수 있고요.
+- **이슈 트리아지** — GitHub, GitLab, Linear 이슈를 앱 안에서 보고 바로
+  에이전트에게 맡겨요.
 
 진행 상황은 [GitHub Issues](https://github.com/termio-sh/termio/issues)에서 지켜보거나 의견을 남겨 주세요.
 

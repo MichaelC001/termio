@@ -30,22 +30,28 @@
 
 所有人勸你學 tmux 的理由，Termio 讓你不用學。每個工作階段的 shell 都活在常駐程式 `termiod` 裡，結束 app 只是中斷連線。闔上筆電，再打開 Termio，Agent 還在你離開的地方——同一個行程，同一份捲動紀錄。只有「關閉工作階段」（⌘W）會結束它。
 
-分割是 ⌘D，放大是 ⇧⌘↩。不用 Ctrl-b 前綴鍵：⌘ 快速鍵根本不會傳進窗格裡的程式，所以永遠不會和 vim 或 TUI 搶按鍵。捲動、選取、複製，用觸控板和 ⌘C。沒有 copy-mode。
+### 遠端終端機
 
-### 遠端 VPS
-
-任何你能 `ssh` 上去的 Linux VPS。Termio 讀 `~/.ssh/config`，從不改寫它。**設定 ▸ 裝置 ▸ 設定**會透過 SSH 把一個執行檔複製到 `~/.local/bin`，啟動常駐程式，並在那台機器上裝好 Agent 的 hook。本機和遠端的工作階段走的是同一套主機。
-
-工作階段活在機器上，不在連線裡。斷線之後 Agent 繼續工作；重新接上，畫面原樣回來。Zed Remote 和 VS Code Remote 則把遠端工作困在一條活著的連線裡。
+任何你能 `ssh` 上去的 Linux VPS。Termio 讀 `~/.ssh/config`，從不改寫它。**設定 ▸ 裝置 ▸ 設定**會透過 SSH 把一個執行檔複製到 `~/.local/bin`，啟動常駐程式，並在那台機器上裝好 Agent 的 hook。本機和遠端的工作階段走的是同一套主機。工作階段活在機器上，不在連線裡。斷線之後 Agent 繼續工作；重新接上，畫面原樣回來。
 
 ## 橫向比較
 
-| | 它是什麼 | Termio 有什麼不同 |
-| --- | --- | --- |
-| **[Ghostty](https://ghostty.org)** | 終端機本身。Termio 用它的核心 [libghostty](https://ghostty.org) 算繪，不是 fork。 | Ghostty 不追蹤 Agent，不保存工作階段，也不在 VPS 上跑它們。你要的是一個快的終端機，那就用 Ghostty。Termio 是 Agent 跑在裡面的環境。 |
-| **[cmux](https://cmux.com)** | 最接近的同類：原生 Swift、libghostty、Agent 需要你時響鈴、iPhone 配套應用程式。它的遠端是一個 SSH 工作區——機器上跑一個中繼，想要的話再加 tmux——手機與 Mac 配對。 | 每個工作階段都跑在 `termiod` 上，這台 Mac 或一台 Linux VPS，手機直接接上那台主機。狀態放在選單列，專案和 worktree 放在側邊欄。cmux 有內建的可指令稿化瀏覽器，也會讀你的 Ghostty 設定；Termio 沒有。 |
-| **[herdr](https://herdr.dev)** | 跑在你現有終端機裡的多工器。同樣的持久化想法——一個伺服器持有 PTY——而且會標記每個 Agent 工作中、被擋住還是閒置。形狀是 tmux 式的：前綴鍵、TUI、透過 SSH 接上，支援 macOS / Linux / Windows。 | 一個原生 Mac 應用程式，有 Mac 快速鍵、iPhone 配套應用程式，VPS 是側邊欄裡的一個工作區——不是一個你去接上的 TUI。 |
-| **[Otty](https://otty.sh)** | 為 Agent 調校過的原生 Mac 終端機：分頁標記、輸入框、能恢復 Claude / Codex / OpenCode 的工作階段還原。它介於終端機和 ADE 之間。 | Termio 是這件事的 ADE 那一側：工作階段活在 `termiod` 裡，結束 app 也不會消失，在 Linux VPS 上和在你 iPhone 上都是同一個物件。 |
+Termio 是 Agent 跑在裡面的環境。工作階段活在機器上的 `termiod` 裡，Mac app 和
+iPhone 都只是接上去。
+
+| | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Agent 監控 | ✓ 靠 hook | – | ✓ | ✓ | – | ✓ 分頁標記 |
+| Agent 編排 API | ✓ `termio sessions` | – | ✓ CLI 和 socket API | ✓ socket API | – | – |
+| Agent 通知 | ✓ 選單列 | – | ✓ | ✓ toast、系統通知或聲音 | – | – |
+| 多工 | ✓ 常駐程式持有 PTY | – | 重啟後復原 | ✓ 伺服器持有 PTY | ✓ 伺服器持有 PTY | 重啟後復原 |
+| 遠端 Linux | ✓ 原生支援 | – | ✓ SSH 工作區 | ✓ 透過 SSH 接上 | ✓ 原生支援 | – |
+| iOS | ✓ 直接接上主機，包括 VPS | – | ✓ 和 Mac 配對 | 社群外掛 | 已預告 | – |
+| 專案、工作區 | ✓ | – | 工作區群組 | worktree 指令 | – | – |
+| 檔案樹 | ✓ | – | – | ✓ 外掛 | – | – |
+| 編輯器 | ✓ | – | – | – | – | – |
+| Diff | ✓ | – | – | ✓ 外掛 | – | – |
+| 開源 | ✓ MIT | ✓ MIT | ✓ GPL | ✓ Apache-2.0 | 部分開源，尚未確定 | – |
 
 ## 安裝
 
@@ -144,7 +150,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## 在你的 iPhone 上
 
-配套應用程式把每個工作階段即時鏡像過來——是完整的 TUI，不是聊天摘要。按鍵列把 esc、tab、ctrl 和方向鍵放在鍵盤上方，按住說話把語音直接轉寫進提示詞。公開測試中：[TestFlight](https://testflight.apple.com/join/1Arf1UKR)。
+Termio iOS 把每個工作階段即時鏡像過來——完整的 TUI。按鍵列把 esc、tab、ctrl 和方向鍵放在鍵盤上方，按住說話把語音直接轉寫進提示詞。公開測試中：[TestFlight](https://testflight.apple.com/join/1Arf1UKR)。
 
 <table>
   <tr>
@@ -190,12 +196,12 @@ npx skills add termio-sh/termio --skill termio
 
 ## 路線圖
 
-- **Issue 分流** — GitHub、GitLab、Linear 的 issue 直接進應用程式，隨手交給 Agent。
 - **TUI 用戶端** — 從任意終端機接上，像你接上 tmux 那樣。
 - **手機上的 TUI → GUI** — 在即時鏡像之上，把 Agent 工作階段選擇性地算繪成 GUI。
 - **Android** — 和 iPhone 一樣的配套應用程式。
-- **Windows 支援** — 原生 Windows 應用程式。同樣的想法，同樣的終端機核心，不是 Electron。
+- **Windows 支援** — 原生 Windows 應用程式。同樣的想法，同樣的 termiod 核心。
 - **Web 支援** — 從任意瀏覽器接上你的工作階段，終端機還能用連結分享。
+- **Issue 分流** — GitHub、GitLab、Linear 的 issue 直接進應用程式，隨手交給 Agent。
 
 在 [GitHub Issues](https://github.com/termio-sh/termio/issues) 追蹤進展或參與討論。
 
