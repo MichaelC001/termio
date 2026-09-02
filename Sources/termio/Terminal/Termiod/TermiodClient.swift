@@ -30,9 +30,21 @@ extension Termiod {
     /// **one device**: they share `host.id`, each is handed the other's roster,
     /// and each can kill what the other is running. The release channel's
     /// suffix is empty, so its path is unchanged and its sessions survive this.
+    ///
+    /// A shipped `.app` ignores the `TERMIOD_SOCK` override, for the same
+    /// reason `AppChannel.suffix` ignores `TERMIO_CHANNEL`: every termio
+    /// session exports it, and macOS `open` hands the caller's environment to
+    /// the app it launches, so a dev build started from a release session was
+    /// silently binding to the release channel's daemon — dev bundle id, dev
+    /// state directory, dev companion port, *release* session table. That is
+    /// the unscoped socket this comment already warns about, arriving through
+    /// the one door the scoping did not cover. The override exists for the
+    /// unbundled case — `swift run` and the test suite have no bundle
+    /// identifier — which is exactly the case that still honours it.
     static func socketPath() -> String {
         socketPath(channelSuffix: AppChannel.suffix,
-                   environment: ProcessInfo.processInfo.environment)
+                   environment: ProcessInfo.processInfo.environment,
+                   bundled: AppChannel.isTermioAppBundle)
     }
 
     /// Separate from the caller above so the derivation can be tested without a
@@ -40,8 +52,10 @@ extension Termiod {
     /// `termiod/src/paths.rs` is exactly the kind of agreement that drifts
     /// silently: nothing fails to build when the two sides disagree, the app
     /// just starts talking to a daemon nobody else can see.
-    static func socketPath(channelSuffix: String, environment: [String: String]) -> String {
-        if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
+    static func socketPath(channelSuffix: String,
+                           environment: [String: String],
+                           bundled: Bool = false) -> String {
+        if !bundled, let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
             return explicit
         }
         if let runtimeDirectory = environment["XDG_RUNTIME_DIR"], !runtimeDirectory.isEmpty {
@@ -61,11 +75,13 @@ extension Termiod {
     /// socket's temp directory, which the OS may clear and a reboot forgets.
     /// A `TERMIOD_SOCK` override keeps it beside the socket — the same
     /// isolation rule the Rust side follows for a daemon pointed at its own
-    /// socket.
+    /// socket — and a shipped `.app` ignores that override exactly as
+    /// `socketPath` does, so the two never disagree about which daemon this is.
     static func durableStateDirectory() -> String {
         durableStateDirectory(channelSuffix: AppChannel.suffix,
                               environment: ProcessInfo.processInfo.environment,
-                              home: NSHomeDirectory())
+                              home: NSHomeDirectory(),
+                              bundled: AppChannel.isTermioAppBundle)
     }
 
     /// Separate from the caller above for the same reason as `socketPath`:
@@ -73,8 +89,9 @@ extension Termiod {
     /// testable without a bundle.
     static func durableStateDirectory(channelSuffix: String,
                                       environment: [String: String],
-                                      home: String) -> String {
-        if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
+                                      home: String,
+                                      bundled: Bool = false) -> String {
+        if !bundled, let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
             return (explicit as NSString).deletingLastPathComponent
         }
         return home + "/Library/Application Support/termio" + channelSuffix
@@ -715,6 +732,15 @@ extension Termiod {
         // inherited from whatever launched the app cannot redirect the daemon.
         var childEnvironment = ProcessInfo.processInfo.environment
         childEnvironment["TERMIO_CHANNEL"] = channelName
+        // `TERMIOD_SOCK` outranks the channel on both sides, so a bundle that
+        // ignores it for itself must also strip it here: inheriting it would
+        // bind the daemon to the very socket the app just declined to use, and
+        // the two would rendezvous nowhere. Left in place when this process is
+        // not a bundle, which is how the test suite points a daemon at its own
+        // socket.
+        if AppChannel.isTermioAppBundle {
+            childEnvironment["TERMIOD_SOCK"] = nil
+        }
         let argumentStrings = [binary, "serve"]
         let argv: [UnsafeMutablePointer<CChar>?] = argumentStrings.map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] =
