@@ -1011,7 +1011,6 @@ final class CompanionServer {
     }
 
     private func send(_ roster: CompanionRoster, to connection: NWConnection) {
-        lastRoster = roster
         let meta = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "roster", metadata: [meta])
         connection.send(
