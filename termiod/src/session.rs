@@ -2414,10 +2414,21 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             session.emit_roster();
         }
         SessionMsg::ResendSnapshot { id } => {
-            if !session.clients.contains_key(&id) {
+            let request_id = session.allocate_snapshot_request();
+            let Some(entry) = session.clients.get_mut(&id) else {
+                return None;
+            };
+            if !entry.plane.snapshots() {
                 return None;
             }
-            let request_id = session.allocate_snapshot_request();
+            // The barrier has to be opened, not just the capture asked for.
+            // `finish_snapshot` matches every answer against the request the
+            // attachment is waiting on, so a capture nobody opened a barrier for
+            // is discarded as stale — the client asks for a repaint, the sidecar
+            // produces one, and it is dropped on the floor. That is a repair
+            // that silently never happens, which is worse than not offering one.
+            let superseded = entry.plane.begin_pending(request_id);
+            release_buffered(&entry.backlog, superseded);
             // No scrollback: this repaints the viewport a client already has
             // room for, and history it never lost.
             session.request_snapshot(id, request_id, false);
@@ -3291,6 +3302,65 @@ mod tests {
                 Received::Data(b"during".to_vec())
             ],
             "the snapshot boundary and the bytes buffered behind it did not line up"
+        );
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// A resync a client asks for has to actually repaint it.
+    ///
+    /// `finish_snapshot` matches every capture against the request the
+    /// attachment is waiting on, so a `ResendSnapshot` that asked the sidecar
+    /// for a capture without opening the barrier had its answer discarded as
+    /// stale. The client asked for a repaint, the sidecar produced one, and
+    /// nobody ever saw it — a repair that silently never happens, which is
+    /// worse than not offering one. It is the fallback the resize path leans on
+    /// when a keyframe cannot wait for its surface, and the phone bridge's only
+    /// recovery from bytes it dropped downstream.
+    #[tokio::test]
+    async fn a_resync_a_client_asked_for_reaches_it() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (mut client, _backlog) = attach_snapshot_client(&mut session, "viewer");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut client),
+            vec![Received::Snapshot, Received::Ready],
+            "the attach bootstrap never landed, so this test proves nothing"
+        );
+
+        handle_msg(
+            &mut session,
+            SessionMsg::ResendSnapshot {
+                id: ClientId::new("viewer"),
+            },
+        );
+        assert!(
+            matches!(
+                session.clients[&ClientId::new("viewer")].plane,
+                ClientPlane::Snapshot(ClientDelivery::SnapshotPending { .. })
+            ),
+            "the resync opened no barrier, so its answer will be discarded as stale"
+        );
+
+        // Bytes written while the repaint is being captured ride behind it, the
+        // same way they do behind a resize's.
+        session.fan_out(Bytes::from_static(b"during"));
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut client),
+            vec![
+                Received::Snapshot,
+                Received::Ready,
+                Received::Data(b"during".to_vec())
+            ],
+            "the resync this client asked for never reached it"
         );
 
         session.vt.shut_down();
