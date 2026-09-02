@@ -1092,8 +1092,18 @@ struct TerminalKeyframeHold {
     private var keyframe: Data?
     private var keyframeGrid: TerminalGrid?
     private var queued = Data()
+    /// The next keyframe answers a repaint this client asked for, so it is
+    /// painted whatever grid it describes. See `paintNextKeyframe`.
+    private var painting = false
 
     var isHolding: Bool { keyframe != nil }
+
+    /// Take the next keyframe out of the hold: it answers a resync, which is
+    /// only ever asked for after a hold has already failed to deliver one.
+    /// Waiting on the same grid again would give up the same way and ask again.
+    mutating func paintNextKeyframe() {
+        painting = true
+    }
 
     init(surfaceGrid: TerminalGrid) {
         self.surfaceGrid = surfaceGrid
@@ -1108,7 +1118,9 @@ struct TerminalKeyframeHold {
         // `begin_snapshot_barrier` applies to its own buffered data.
         queued.removeAll(keepingCapacity: true)
         epoch &+= 1
-        guard grid != surfaceGrid else {
+        let asked = painting
+        painting = false
+        guard grid != surfaceGrid, !asked else {
             keyframe = nil
             keyframeGrid = nil
             return [repaint]
@@ -1119,13 +1131,14 @@ struct TerminalKeyframeHold {
     }
 
     /// Live output, queued behind a waiting keyframe. Past `limit` bytes the
-    /// wait is abandoned: a program flooding through a resize is not worth an
-    /// unbounded buffer, and the surface can still be repaired by resync.
-    mutating func receive(output: Data, limit: Int) -> [Data] {
-        guard keyframe != nil else { return [output] }
+    /// wait is given up on: a program flooding through a resize is not worth an
+    /// unbounded buffer, and the flood is overwriting the screen the keyframe
+    /// describes anyway. `given_up` tells the caller to arm the repaint.
+    mutating func receive(output: Data, limit: Int) -> (emit: [Data], gaveUp: Bool) {
+        guard keyframe != nil else { return ([output], false) }
         queued.append(output)
-        guard queued.count > limit else { return [] }
-        return release()
+        guard queued.count > limit else { return ([], false) }
+        return (abandon(), true)
     }
 
     /// The surface reached a grid. Answers what to paint, and whether the
@@ -1137,8 +1150,29 @@ struct TerminalKeyframeHold {
         return (release(), true)
     }
 
-    /// Stop waiting and paint. The deadline, the flood cap, and teardown all end
-    /// here; an empty answer means there was nothing held.
+    /// Stop waiting and give the keyframe up unpainted, answering with only the
+    /// bytes that were queued behind it.
+    ///
+    /// A keyframe describes a screen at *its* grid. Painted into a surface laid
+    /// out at another one, every row wraps somewhere the daemon never put it —
+    /// a scrambled full-screen frame, guaranteed, which is what a give-up used
+    /// to put on screen before asking for the repaint that replaced it a round
+    /// trip later. Dropping it instead leaves the last correct screen up until
+    /// the resync lands. The live bytes still go out: they are the child's, and
+    /// this is not the layer that may discard them.
+    mutating func abandon() -> [Data] {
+        guard keyframe != nil else { return [] }
+        keyframe = nil
+        keyframeGrid = nil
+        epoch &+= 1
+        let behind = queued
+        queued.removeAll(keepingCapacity: false)
+        return behind.isEmpty ? [] : [behind]
+    }
+
+    /// Stop waiting and paint. Only teardown ends here — a surface that is going
+    /// away has no repair coming, so an imperfectly wrapped final frame beats a
+    /// blank one. Every other ending goes through `abandon`.
     mutating func release() -> [Data] {
         guard let repaint = keyframe else { return [] }
         keyframe = nil
@@ -1150,8 +1184,18 @@ struct TerminalKeyframeHold {
     }
 }
 
-/// One session's attach channel: the termiod-backed stand-in for what
-/// `PTYProcess` is on the in-process path. Owns the socket, forwards surface
+enum TerminalViewportGrowth {
+    static func canLeadSurface(
+        viewport: TerminalGrid, authoritativeGrid: TerminalGrid?
+    ) -> Bool {
+        guard let authoritativeGrid, viewport != authoritativeGrid else { return false }
+        return viewport.rows >= authoritativeGrid.rows
+            && viewport.cols >= authoritativeGrid.cols
+    }
+}
+
+/// One session's attach channel — everything this app knows about a running
+/// session. Owns the socket, forwards surface
 /// input as `D` frames and grid changes as `R` frames, and delivers the
 /// daemon's output/exit back to the surface. Closing the socket is a detach —
 /// the daemon keeps the session running; only `killAndClose` destroys it.
@@ -1202,6 +1246,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
+    /// A local viewport growth that has not reached the daemon yet. While this
+    /// is true the surface may widen with the pane instead of letterboxing at
+    /// the old session grid; shrinking never takes this path.
+    private var growingViewportPending = false
+    private var growingViewportGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1210,10 +1259,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the authority — §C.5: a client that parses at its own window size instead
     /// of this one wraps the same bytes differently and diverges from the host.
     private var authoritativeGrid: TerminalGrid?
-    /// A surface still owed a repaint, because a keyframe was painted onto it at
-    /// a grid it was not laid out at. Only the degraded path reaches this now —
-    /// a keyframe the hold below gave up on — and the resync it arms is the same
-    /// one the observer always had.
+    /// A surface still owed a repaint, because the keyframe that would have
+    /// given it one was given up on before it could be laid out at that grid.
+    /// Only the degraded path reaches this — the hold below timing out, or a
+    /// flood behind it — and the resync it arms is the same one the observer
+    /// always had.
     private var repaintPending = false
 
     /// Guards the seam every byte reaches the surface through. Both the reader
@@ -1265,9 +1315,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         return latestInformationLocked
     }
 
-    /// Raw PTY bytes from the daemon — fed to the surface exactly where
-    /// `PTYProcess`'s read pump delivers on the in-process path. Called on the
-    /// reader thread; the consumer (`InMemoryTerminalSession.receive`) is
+    /// Raw PTY bytes from the daemon, fed straight to the surface. Called on
+    /// the reader thread; the consumer (`InMemoryTerminalSession.receive`) is
     /// thread-safe.
     ///
     /// Never called directly: everything goes through `deliverOutput`, which is
@@ -1329,6 +1378,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
+    /// Raised only while this pane is growing beyond the session's grid. The UI
+    /// uses it to remove the outward-drag letterbox until the daemon answers.
+    var onGrowingViewportPending: ((Bool) -> Void)?
     /// Whether this session's host sizes by policy, from the handshake. A pane
     /// on an older host must not letterbox: there the writer's grid is the
     /// size, so a difference is an unanswered declaration rather than another
@@ -1461,7 +1513,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         // Stamped here rather than on the work queue: this is the choke point every
         // input path crosses (Mac keystrokes, the phone bridge, `sessions send`),
         // and the status tap reads it to tell input echo apart from agent-driven
-        // output. Same contract as `PTYProcess.lastInputAt`.
+        // output.
         inputLock.lock()
         lastInputAtLocked = Date()
         inputLock.unlock()
@@ -1472,10 +1524,9 @@ final class TermiodSessionLink: @unchecked Sendable {
                 return
             }
             do {
-                // Typing is what claims the token, the same rule
-                // `PTYProcess.claimHostOwnership` follows on the in-process
-                // path: the size and the write follow the device whose user is
-                // actually at the keyboard. Typing is the *only* thing that
+                // Typing is what claims the token: the size and the write both
+                // follow the device whose user is actually at the keyboard.
+                // Typing is the *only* thing that
                 // moves the token — attaching does not, or a phone merely
                 // looking at this session would mute this window and pull the
                 // PTY down to its own width.
@@ -1557,9 +1608,37 @@ final class TermiodSessionLink: @unchecked Sendable {
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
             guard attached else { return }
+            updateGrowingViewportLocked()
             scheduleViewportLocked()
         }
     }
+
+    /// A local growth may lead the daemon because widening cannot split a row
+    /// at a width the child never drew. The deadline restores the authoritative
+    /// letterbox if another device wins the size policy instead.
+    ///
+    /// Must run on `workQueue`.
+    private func updateGrowingViewportLocked() {
+        growingViewportGeneration &+= 1
+        let generation = growingViewportGeneration
+        let mayLead = hostSizesByPolicy && TerminalViewportGrowth.canLeadSurface(
+            viewport: viewportGrid, authoritativeGrid: authoritativeGrid)
+        setGrowingViewportPendingLocked(mayLead)
+        guard mayLead else { return }
+        workQueue.asyncAfter(deadline: .now() + Self.growingViewportDeadline) { [self] in
+            guard !closed, generation == growingViewportGeneration else { return }
+            setGrowingViewportPendingLocked(false)
+        }
+    }
+
+    /// Must run on `workQueue`.
+    private func setGrowingViewportPendingLocked(_ pending: Bool) {
+        guard growingViewportPending != pending else { return }
+        growingViewportPending = pending
+        DispatchQueue.main.async { [self] in onGrowingViewportPending?(pending) }
+    }
+
+    private static let growingViewportDeadline = DispatchTimeInterval.milliseconds(600)
 
     /// Whether this pane is on screen. A hidden pane is not rendering and stops
     /// counting toward the session's size; showing it again puts its viewport
@@ -1613,19 +1692,21 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// How long a keyframe waits for the surface before it is painted anyway.
+    /// How long a keyframe waits for the surface before it is given up on.
     ///
     /// A layout pass is one frame; this is several, so a busy main thread still
     /// gets the ordered paint. It is a deadline rather than a promise because
     /// nothing guarantees the surface ever reaches the grid — a pane too small
     /// to hold it is laid out at it and clipped, but a pane mid-teardown, or one
-    /// whose window is being destroyed, simply stops reporting.
+    /// whose window is being destroyed, simply stops reporting. Missing it costs
+    /// a resync round trip and nothing else: the keyframe is dropped rather than
+    /// painted through the wrong grid.
     private static let keyframeHoldDeadline = DispatchTimeInterval.milliseconds(250)
 
     /// How much output may queue behind a held keyframe before the wait is not
     /// worth it. A program that floods through a resize would otherwise grow
-    /// this buffer without bound; past the cap the keyframe paints early and the
-    /// surface is repaired the old way, by resync.
+    /// this buffer without bound; past the cap the keyframe is given up on and
+    /// the surface is repaired by resync.
     private static let keyframeHoldByteLimit = 1 << 20
 
     /// Hands bytes to the surface, or queues them behind a keyframe that is
@@ -1637,10 +1718,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// that order is the whole point of the hold.
     private func deliverOutput(_ data: Data) {
         outputLock.lock()
-        defer { outputLock.unlock() }
-        for chunk in hold.receive(output: data, limit: Self.keyframeHoldByteLimit) {
-            onOutput?(chunk)
-        }
+        let outcome = hold.receive(output: data, limit: Self.keyframeHoldByteLimit)
+        for chunk in outcome.emit { onOutput?(chunk) }
+        outputLock.unlock()
+        guard outcome.gaveUp else { return }
+        Log.termiod.debug("""
+        resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-flooded-out
+        """)
+        workQueue.async { [self] in armRepaintLocked() }
     }
 
     /// Takes a keyframe off the wire, holding it back when it describes a grid
@@ -1649,8 +1734,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     ///
     /// Called on the reader thread, the only place a hold begins. The deadline
     /// is what makes it a hold and not a stall: a surface that never reports the
-    /// grid — a pane mid-teardown, a window being destroyed — still gets its
-    /// paint, and `repaintPending` repairs it the old way.
+    /// grid — a pane mid-teardown, a window being destroyed — stops the wait and
+    /// gets the resync instead. The keyframe itself is *not* painted there; see
+    /// `TerminalKeyframeHold.abandon`.
     private func receiveKeyframe(_ frame: TermiodSnapshot.Frame) {
         let grid = TerminalGrid(
             rows: UInt16(clamping: frame.rows), cols: UInt16(clamping: frame.cols))
@@ -1663,14 +1749,54 @@ final class TermiodSessionLink: @unchecked Sendable {
         guard waiting else { return }
         workQueue.asyncAfter(deadline: .now() + Self.keyframeHoldDeadline) { [self] in
             outputLock.lock()
-            defer { outputLock.unlock() }
-            guard epoch == hold.epoch else { return }
+            guard epoch == hold.epoch else {
+                outputLock.unlock()
+                return
+            }
+            for chunk in hold.abandon() { onOutput?(chunk) }
+            outputLock.unlock()
             Log.termiod.debug("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-held-out
             """)
-            for chunk in hold.release() { onOutput?(chunk) }
+            armRepaintLocked()
         }
     }
+
+    /// A hold ended without the surface ever reaching the keyframe's grid, so
+    /// the screen is the last one that was painted correctly plus whatever live
+    /// bytes came past. Ask for the repaint: now, if the surface is already
+    /// where the session is and nothing further will move it, otherwise when it
+    /// gets there.
+    ///
+    /// Must run on `workQueue`.
+    private func armRepaintLocked() {
+        guard !closed, attached else { return }
+        if authoritativeGrid == surfaceGrid {
+            repaintPending = false
+            requestResyncLocked()
+            return
+        }
+        repaintPending = true
+        // The surface is expected to reach the session's grid on its next layout
+        // pass, and `noteSurfaceGrid` asks for the repaint when it does. Nothing
+        // guarantees it ever reports that *exact* grid: a pane that fills itself
+        // is measured in points here and floored in pixels by libghostty, and
+        // the two can disagree by a column. Without this the arming would wait
+        // on a report that never comes and the pane would keep its pre-resize
+        // screen indefinitely — which is worse than the wrong frame this whole
+        // path exists to stop showing.
+        workQueue.asyncAfter(deadline: .now() + Self.repaintBackstop) { [self] in
+            guard !closed, attached, repaintPending else { return }
+            repaintPending = false
+            requestResyncLocked()
+        }
+    }
+
+    /// How long the arming above waits for a surface that may never report the
+    /// grid it was asked for. Long enough that the ordinary path — one layout
+    /// pass — always wins it, so the backstop only ever fires for a surface that
+    /// genuinely settled somewhere else.
+    private static let repaintBackstop = DispatchTimeInterval.milliseconds(500)
 
     /// Paints a keyframe that was waiting for exactly this grid, and says
     /// whether it did — the caller reads that as "the repaint has happened".
@@ -1703,11 +1829,8 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// Sends a burst's final size, once it stops.
     ///
-    /// One barrier per drag, at the end, and deliberately not one at the start
-    /// as well: the pane's own surface follows the drag live (the letterbox
-    /// stands aside while this declaration is in flight), so an early barrier
-    /// buys nothing and costs every viewer a full-screen repaint at the moment
-    /// the drag begins — which is what it looked like.
+    /// One barrier per drag, at the end. A growing pane may follow the drag live;
+    /// a shrinking one stays at the last authoritative grid and is clipped.
     ///
     /// Generation-stamped rather than cancelled because the size is re-read at
     /// fire time: the last scheduled send is the only one that writes, and it
@@ -1752,13 +1875,10 @@ final class TermiodSessionLink: @unchecked Sendable {
         let showing = hostSizesByPolicy ? rendering : true
         if let sent = sentViewport, sent.grid == viewportGrid, sent.rendering == showing { return }
         sentViewport = (viewportGrid, showing)
-        // The declaration goes out; the surface does not move with it. It stays
-        // at the session's grid — the last width anything was actually drawn for
-        // — until the daemon answers with a screen drawn for the new one. A
-        // surface that led instead re-wrapped the old screen at a width nothing
-        // had been drawn at, once per frame for the rest of the drag, and it
-        // never won the race it was leading for: the barrier's keyframe is on
-        // the wire before `E resized` by construction (`receiveKeyframe`).
+        // A shrinking surface stays at the session's grid until this declaration
+        // is answered; leading there would split rows at widths the child never
+        // drew. A growing surface may already have widened with the pane, and the
+        // keyframe hold still covers the case where its layout trails the reply.
         Log.termiod.debug("""
         resize-trace \(self.sessionName.prefix(8), privacy: .public) declare \
         \(self.viewportGrid.rows, privacy: .public)x\
@@ -1815,6 +1935,15 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     private func requestResyncLocked() {
         traceResync()
+        // A repaint asked for is one the hold has already failed to deliver, so
+        // its answer is not put through the hold again. Holding it would wait on
+        // the same grid the surface did not reach the first time, give up the
+        // same way, and ask again — a loop that leaves the surface stale for as
+        // long as it runs. By the time an answer arrives the surface has stopped
+        // moving, which is the condition the hold exists to wait for.
+        outputLock.lock()
+        hold.paintNextKeyframe()
+        outputLock.unlock()
         guard !closed, attached, let transport else { return }
         do {
             try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
@@ -2135,6 +2264,12 @@ final class TermiodSessionLink: @unchecked Sendable {
             \(grid.cols, privacy: .public)
             """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
+            if grid == viewportGrid || !TerminalViewportGrowth.canLeadSurface(
+                viewport: viewportGrid, authoritativeGrid: grid)
+            {
+                growingViewportGeneration &+= 1
+                setGrowingViewportPendingLocked(false)
+            }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }
             Log.termiod.info("""

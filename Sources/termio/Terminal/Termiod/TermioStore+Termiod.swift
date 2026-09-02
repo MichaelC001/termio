@@ -140,6 +140,9 @@ extension TermioStore {
         link.onSharedGrid = { [weak self] grid in
             self?.runtime(for: session.id).sharedGrid = grid
         }
+        link.onGrowingViewportPending = { [weak self] pending in
+            self?.runtime(for: session.id).growingViewportPending = pending
+        }
         // What the device knows about the process, gated exactly where the
         // in-process PTY's own kernel poll is gated: that poll is installed only
         // on a row declared `.terminal` (a declared agent's foreground is its own
