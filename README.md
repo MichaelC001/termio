@@ -28,22 +28,28 @@ The longer argument: [*From IDE to ADE*](docs/essays/from-ide-to-ade.md).
 
 This is the reason people tell you to learn tmux. You don't have to. Every session's shell lives in `termiod`, a daemon, so quitting the app only detaches. Close the laptop, reopen Termio — the agent is where you left it, same process, same scrollback. Only Close Session (⌘W) ends one.
 
-Splits are ⌘D, zoom is ⇧⌘↩. No Ctrl-b prefix: a ⌘ shortcut never reaches the program in the pane, so nothing collides with vim or a TUI. Scroll, select, copy with the trackpad and ⌘C. There is no copy-mode.
+### Remote Terminal
 
-### Remote VPS
-
-Any Linux VPS you can `ssh` to. Termio reads `~/.ssh/config` and never rewrites it. Settings ▸ Devices ▸ Set Up copies one binary into `~/.local/bin` over SSH, starts the daemon, and installs the agents' hooks there. Local and remote sessions run through the same host.
-
-The session lives on the box, not in the connection. Drop the link and the agent keeps working; reattach restores the exact screen. Zed Remote and VS Code Remote keep remote work inside a live connection.
+Any Linux VPS you can `ssh` to. Termio reads `~/.ssh/config` and never rewrites it. Settings ▸ Devices ▸ Set Up copies one binary into `~/.local/bin` over SSH, starts the daemon, and installs the agents' hooks there. Local and remote sessions run through the same host. The session lives on the box, not in the connection. Drop the link and the agent keeps working; reattach restores the exact screen.
 
 ## Compared with
 
-| | What it is | How Termio differs |
-| --- | --- | --- |
-| **[Ghostty](https://ghostty.org)** | The terminal. Termio renders with its core, [libghostty](https://ghostty.org) — not a fork. | Ghostty does not track agents, persist sessions, or run them on a VPS. If you want a fast terminal, that is Ghostty. Termio is the environment the agents run in. |
-| **[cmux](https://cmux.com)** | The closest cousin: native Swift, libghostty, notification rings when an agent needs you, an iPhone companion. Remote is an SSH workspace — a relay on the box, tmux if you want it — and the phone pairs with the Mac. | Every session runs on `termiod`, this Mac or a Linux VPS, and the phone attaches to that host directly. Status sits in a menu-bar tray, projects and worktrees in the sidebar. cmux has an in-app scriptable browser and reads your Ghostty config; Termio does not. |
-| **[herdr](https://herdr.dev)** | A multiplexer inside the terminal you already use. Same persistence idea — a server owns the PTYs — and it marks each agent working, blocked, or idle. tmux-shaped: prefix keys, a TUI, attach over SSH, macOS / Linux / Windows. | A native Mac app with Mac shortcuts, an iPhone companion, and the VPS as a workspace in the sidebar — not a TUI you attach to. |
-| **[Otty](https://otty.sh)** | A native Mac terminal tuned for agents: tab badges, a composer, session restore that resumes Claude / Codex / OpenCode. It sits between a terminal and an ADE. | The ADE side of that: the session lives in `termiod`, survives quitting the app, and is the same object on a Linux VPS and on your iPhone. |
+Termio is the environment the agents run in. The session lives in `termiod` on
+the box; the Mac app and the iPhone both attach to it.
+
+| | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Agent Monitor | ✓ hooks | – | ✓ | ✓ | – | ✓ tab badges |
+| Agent Orchestration API | ✓ `termio sessions` | – | ✓ CLI + socket API | ✓ socket API | – | – |
+| Agent Notification | ✓ menu-bar tray | – | ✓ | ✓ toast, system or sound | – | – |
+| Multiplexer | ✓ a daemon owns the PTY | – | restores on relaunch | ✓ a server owns the PTYs | ✓ a server owns the PTYs | restores on relaunch |
+| Remote Linux | ✓ Native Supported | – | ✓ SSH workspace | ✓ attach over SSH | ✓ Native Supported | – |
+| iOS | ✓ attaches to the host, VPS included | – | ✓ pairs with the Mac | community plugins | announced | – |
+| Projects, Workspace | ✓ | – | workspace groups | worktree commands | – | – |
+| File tree | ✓ | – | – | ✓ plugin | – | – |
+| Editor | ✓ | – | – | – | – | – |
+| Diff | ✓ | – | – | ✓ plugin | – | – |
+| Open source | ✓ MIT | ✓ MIT | ✓ GPL | ✓ Apache-2.0 | parts, undecided | – |
 
 ## Install
 
@@ -142,7 +148,7 @@ npx skills add termio-sh/termio --skill termio
 
 ## On your iPhone
 
-The companion mirrors every session live — the full TUI, not a chat summary. A key bar puts esc, tab, ctrl, and arrows above the keyboard, and hold-to-speak transcribes into the prompt. Public beta on [TestFlight](https://testflight.apple.com/join/1Arf1UKR).
+The Termio iOS mirrors every session live — full TUI. A key bar puts esc, tab, ctrl, and arrows above the keyboard, and hold-to-speak transcribes into the prompt. Public beta on [TestFlight](https://testflight.apple.com/join/1Arf1UKR).
 
 <table>
   <tr>
@@ -188,12 +194,12 @@ The reasoning is in [`termiod/ARCHITECTURE.md`](termiod/ARCHITECTURE.md).
 
 ## Roadmap
 
-- **Issue triage** — GitHub, GitLab, and Linear issues inside the app, ready to hand straight to an agent.
 - **TUI client** — attach from any terminal, the way you would to tmux.
 - **TUI → GUI on mobile** — an optional GUI rendering of agent sessions on the phone, built on top of the live mirror.
 - **Android** — the same companion as iPhone.
-- **Windows support** — Termio as a native Windows app. Same idea, same terminal core, no Electron.
+- **Windows support** — Termio as a native Windows app. Same idea, same termiod core.
 - **Web support** — attach to your sessions from any browser, with terminals you can share by link.
+- **Issue triage** — GitHub, GitLab, and Linear issues inside the app, ready to hand straight to an agent.
 
 Follow along or weigh in on [GitHub Issues](https://github.com/termio-sh/termio/issues).
 
