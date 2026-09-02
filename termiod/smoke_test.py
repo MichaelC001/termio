@@ -453,6 +453,10 @@ def main():
     print("\n# 2. multi-client fan-out + single-writer input")
     a1p, a1 = spawn_attach(["fan", "--", "cat"], rows=26, cols=90)
     read_until(a1, "attached to fan")
+    # Settled before the second screen arrives: a client that is handed the
+    # token re-declares its own viewport, and that declaration has to land
+    # before a2 attaches or the two arrive in the wrong order.
+    check("the only screen sizes the session", wait_for_size("fan", (26, 90)))
     a2p, a2 = spawn_attach(["fan"], rows=34, cols=110)  # a reader until it types
     read_until(a2, "attached to fan")
 
@@ -461,33 +465,33 @@ def main():
     check("fan-out: client 1 sees injected output", b"PINGPONG" in read_until(a1, "PINGPONG"))
     check("fan-out: client 2 sees injected output", b"PINGPONG" in read_until(a2, "PINGPONG"))
 
-    # Single writer is about input; it says nothing about size. The session is
-    # the componentwise minimum over every attachment's viewport — a1's 26x90
-    # against a2's 34x110 — so a2 arriving neither took the token nor dragged
-    # the one PTY to its own grid.
-    check("attaching does not take the winsize", session_size("fan") == (26, 90))
+    # Single writer is about input; it says nothing about size. What sizes a
+    # session is *use*, and opening one on a screen is somebody using that
+    # screen — so a2 arriving takes the size to 34x110 without taking the token,
+    # and the answer is one screen's grid rather than a blend of the two.
+    check(
+        "attaching sizes the session to the screen it was opened on",
+        wait_for_size("fan", (34, 110)),
+    )
     os.write(a1, b"FROM_A1\r")
     check("single-writer: writer input applied", b"FROM_A1" in read_until(a2, "FROM_A1"))
+    check("typing brings the session back to that screen", wait_for_size("fan", (26, 90)))
 
-    # Typing moves the token. The size must NOT move with it. That binding is
-    # what let two screens on one session oscillate at IO speed: each grant
-    # re-asserted the new writer's grid, every resize was a barrier that pushed
-    # a keyframe, and the keyframe provoked the next grant. Slept past the
-    # daemon's 50ms resize coalescing first, because the failure this pins is a
-    # size change that arrives late, not one that never happens.
+    # Typing moves the size, and deliberately not by moving the token: a claim
+    # on its own is not a use. Binding the size to the token is what let two
+    # screens oscillate at IO speed — each grant re-asserted the new writer's
+    # grid, every resize was a barrier that pushed a keyframe, and the keyframe
+    # provoked the next grant. The daemon is the only thing that resizes now, so
+    # a stray use costs one resize rather than a loop.
     os.write(a2, b"FROM_A2\r")
     check("single-writer: typing takes the token", b"FROM_A2" in read_until(a1, "FROM_A2"))
-    time.sleep(0.75)
-    check("the winsize does not follow the token", session_size("fan") == (26, 90))
+    check("the winsize follows the screen being typed on", wait_for_size("fan", (34, 110)))
 
     os.write(a2, b"\x1c")
     a2p.wait(timeout=5)
-    deadline = time.time() + 3
-    while time.time() < deadline and session_size("fan") != (26, 90):
-        time.sleep(0.05)
     check(
-        "a departing attachment leaves the minimum to the survivors",
-        session_size("fan") == (26, 90),
+        "a departing attachment leaves the size to the survivor",
+        wait_for_size("fan", (26, 90)),
     )
     drain(a1, 0.5)
     os.write(a1, b"\x1c")
