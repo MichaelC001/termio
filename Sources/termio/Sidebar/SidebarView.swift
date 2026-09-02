@@ -56,9 +56,6 @@ private struct SidebarSectionHeader: View {
     let title: String
     let chrome: ChromeTheme?
     var isCollapsed: Bool = false
-    /// The first section in the list sits right under the toolbar, so its top
-    /// padding is dead space rather than a separator — it gets a tight inset.
-    var isFirstSection: Bool = false
     var toggleCollapsed: () -> Void = {}
     var menuItems: [SidebarMenuItem] = []
     @State private var isMenuOpen = false
@@ -84,8 +81,11 @@ private struct SidebarSectionHeader: View {
         }
         // Generous top padding is the separator between sections — whitespace, not a
         // rule — so each group reads as its own block without a hairline. The first
-        // section has no group above it to separate from, so it stays tight.
-        .padding(.top, isFirstSection ? 0 : 12)
+        // section carries it too: that gap used to come from the list's `contentMargins`,
+        // but a scroll-content inset is recomputed whenever the split view relayouts the
+        // sidebar, so toggling the inspector dropped it for a frame and the rows jumped.
+        // Padding inside a row cannot be recomputed.
+        .padding(.top, 12)
         .padding(.bottom, 2)
         // No `listRowInsets` override — the header keeps the rows' default inset so both
         // share one left baseline. The small leading then lands the label's left edge on
@@ -213,7 +213,6 @@ struct SidebarView: View {
                     title: localized("Pinned"),
                     chrome: chrome,
                     isCollapsed: pinnedCollapsed,
-                    isFirstSection: true,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
                     }
@@ -244,7 +243,6 @@ struct SidebarView: View {
                     title: localized("Terminals"),
                     chrome: chrome,
                     isCollapsed: terminalsCollapsed,
-                    isFirstSection: !hasPinned,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { terminalsCollapsed.toggle() }
                     },
@@ -275,7 +273,6 @@ struct SidebarView: View {
                     title: localized("Chats"),
                     chrome: chrome,
                     isCollapsed: chatsCollapsed,
-                    isFirstSection: !hasPinned && !hasTerminals,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { chatsCollapsed.toggle() }
                     },
@@ -302,7 +299,6 @@ struct SidebarView: View {
                     title: localized("Projects"),
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
-                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
                     }
@@ -320,7 +316,7 @@ struct SidebarView: View {
         // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
         // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
         .listStyle(.sidebar)
-        .contentMargins(.vertical, 12, for: .scrollContent)
+        .contentMargins(.bottom, 12, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
