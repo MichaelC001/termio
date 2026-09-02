@@ -402,6 +402,15 @@ struct Session {
     /// `info()` reads this cache so a roster request never turns into a burst
     /// of syscalls.
     foreground: Foreground,
+    /// A resize's barrier, opened but not yet captured. See
+    /// `begin_resize_snapshot_barrier`.
+    resize_capture: Option<ResizeCapture>,
+}
+
+/// The snapshot a resize opened a barrier for, waiting on the child's redraw.
+struct ResizeCapture {
+    at: tokio::time::Instant,
+    requests: Vec<(ClientId, u64)>,
 }
 
 impl Session {
@@ -525,6 +534,17 @@ impl Session {
     /// silently would leave `S` describing a screen that never occurred, and
     /// blocking here would put the VT parse back on the fan-out path.
     fn write_sidecar(&mut self, chunk: Bytes) {
+        // The child answering its SIGWINCH is the event a resize's capture is
+        // actually waiting for; the deadline is only there for a child that
+        // never answers. Pulling the capture in the moment it does keeps the
+        // wait off the common path — a TUI writes within a millisecond of the
+        // ioctl — so `E resized` is not held up behind a clock every viewer of
+        // this session would feel.
+        if let Some(capture) = self.resize_capture.as_mut() {
+            capture.at = capture
+                .at
+                .min(tokio::time::Instant::now() + Self::RESIZE_ANSWER_QUIESCE);
+        }
         if !self.vt.is_live() {
             return;
         }
@@ -662,7 +682,68 @@ impl Session {
         self.send_sidecar(SidecarCommand::SetGridDiff(self.wants_grid_diffs()));
     }
 
-    fn begin_snapshot_barrier(&mut self) {
+    /// How long a resize's keyframe waits for the child's own redraw.
+    ///
+    /// The capture used to be adjacent to the sidecar's `Resize`, which by
+    /// construction snapshotted the screen the terminal had just rewrapped and
+    /// the child had not yet answered — so every resize shipped every
+    /// attachment a full-screen paint of a screen that was about to be thrown
+    /// away, and that frame is what a drag looked like. A program that answers
+    /// SIGWINCH lands its redraw well inside this window: measured from a real
+    /// PTY, Claude Code writes its `ESC[2J` repaint 0.3ms after the ioctl and
+    /// zsh redisplays within 23ms. A child that takes longer, or writes
+    /// nothing, gets exactly the old behaviour — the rewrapped screen — so this
+    /// window trades no correctness for the common case.
+    const RESIZE_SNAPSHOT_SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
+
+    /// How long the capture waits after the child's *first* byte in answer to
+    /// the resize, so a redraw split across two writes is captured whole rather
+    /// than half-drawn. Only ever pulls the deadline in, never pushes it out, so
+    /// a program that keeps writing cannot hold the barrier open.
+    const RESIZE_ANSWER_QUIESCE: std::time::Duration = std::time::Duration::from_millis(5);
+
+    /// A resize's barrier: opened now so nothing reaches a client ahead of the
+    /// screen that describes the new grid, captured once the child has had time
+    /// to redraw into it.
+    fn begin_resize_snapshot_barrier(&mut self) {
+        let requests = self.open_snapshot_barrier();
+        self.resize_capture = Some(ResizeCapture {
+            at: tokio::time::Instant::now() + Self::RESIZE_SNAPSHOT_SETTLE,
+            requests,
+        });
+    }
+
+    /// When the resize barrier opened above should be captured, if one is.
+    /// Read by the actor loop, which owns the timer.
+    fn resize_capture_deadline(&self) -> Option<tokio::time::Instant> {
+        self.resize_capture.as_ref().map(|capture| capture.at)
+    }
+
+    /// Captures what the last resize opened a barrier for.
+    ///
+    /// Each request is checked against the attachment's current barrier: one
+    /// superseded in the meantime — a second resize, an attach, a resync — is
+    /// already being captured by whoever superseded it, and asking again would
+    /// spend a capture on a request `finish_snapshot` would discard as stale.
+    fn capture_resize_snapshots(&mut self) {
+        let Some(capture) = self.resize_capture.take() else {
+            return;
+        };
+        for (client_id, request_id) in capture.requests {
+            let still_waiting = self
+                .clients
+                .get(&client_id)
+                .is_some_and(|entry| entry.plane.pending_request() == Some(request_id));
+            if still_waiting {
+                self.request_snapshot(client_id, request_id, false);
+            }
+        }
+    }
+
+    /// Opens every snapshot attachment's barrier and answers what each is now
+    /// waiting on. Data and events queue behind it from here; who asks for the
+    /// capture, and when, is the caller's.
+    fn open_snapshot_barrier(&mut self) -> Vec<(ClientId, u64)> {
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
@@ -688,12 +769,7 @@ impl Session {
             requests.push((client_id, request_id));
         }
 
-        // The session actor cannot read the PTY while this handler runs, so
-        // these requests are adjacent to the Resize command in the sidecar
-        // FIFO, with no intervening Write command.
-        for (client_id, request_id) in requests {
-            self.request_snapshot(client_id, request_id, false);
-        }
+        requests
     }
 
     /// D4(a): a client that outruns its backlog gets one forced resync before it
@@ -1056,7 +1132,7 @@ impl Session {
         self.ring_reconstructs_screen = false;
         let reflow = !self.foreground_is_a_shell();
         self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
-        self.begin_snapshot_barrier();
+        self.begin_resize_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
             rows,
@@ -1662,6 +1738,7 @@ fn start(
         ),
         transcript_path: None,
         foreground: Foreground::default(),
+        resize_capture: None,
     };
     // A carried or created session arrives with a status this actor did not
     // derive; the engine adopts it so the roster and the engine never disagree
@@ -2015,7 +2092,18 @@ async fn run(
     let (stall_tx, mut stall_rx) = mpsc::unbounded_channel::<StallResult>();
 
     loop {
+        // Read before the select rather than inside a branch: the timer wants
+        // an owned deadline, and every other branch takes `&mut session`.
+        let resize_capture_at = session.resize_capture_deadline();
         tokio::select! {
+            // A resize opened a snapshot barrier and left the capture to this
+            // timer, so the keyframe carries the child's answer to SIGWINCH
+            // rather than the screen the rewrap left behind.
+            _ = tokio::time::sleep_until(
+                resize_capture_at.unwrap_or_else(tokio::time::Instant::now)
+            ), if resize_capture_at.is_some() => {
+                session.capture_resize_snapshots();
+            }
             _ = foreground_poll.tick() => {
                 if session.foreground.poll(&session.pty, session.pid, &foreground_tx) {
                     session.refresh_status_facts();
@@ -2717,6 +2805,7 @@ mod tests {
                 ),
                 transcript_path: None,
                 foreground: super::Foreground::default(),
+                resize_capture: None,
             },
             event_rx,
         )
@@ -3308,6 +3397,88 @@ mod tests {
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
+    /// A resize's keyframe has to describe the screen the *child* redrew.
+    ///
+    /// The capture used to be adjacent to the sidecar's `Resize`, which by
+    /// construction snapshotted the screen the rewrap had just produced and the
+    /// child had not yet answered — so every resize handed every attachment a
+    /// full-screen paint of a screen that was about to be replaced, and that
+    /// frame is what a window drag looked like. The barrier still opens with
+    /// the resize, so nothing reaches a client ahead of the new grid; only the
+    /// capture waits.
+    #[tokio::test]
+    async fn a_resize_keyframe_carries_the_child_s_redraw() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (mut client, _backlog) = attach_snapshot_client(&mut session, "viewer");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut client),
+            vec![Received::Snapshot, Received::Ready],
+            "the attach bootstrap never landed, so this test proves nothing"
+        );
+
+        // The screen as the child last drew it, before anything moved. Through
+        // `write_sidecar`, which is the path a live PTY byte takes.
+        session.write_sidecar(Bytes::from_static(b"STALE"));
+
+        session.begin_resize_snapshot_barrier();
+        let armed = session
+            .resize_capture_deadline()
+            .expect("the resize armed no capture");
+        assert!(
+            session.clients[&ClientId::new("viewer")].plane.is_pending(),
+            "the barrier must open with the resize, not with its capture"
+        );
+        assert!(
+            session.resize_capture_deadline().is_some(),
+            "the capture was asked for adjacent to the resize again"
+        );
+        assert!(
+            drain(&mut client).is_empty(),
+            "a screen reached the client before the boundary that describes it"
+        );
+
+        // What the child writes when it answers SIGWINCH. It reaches the VT
+        // ahead of the capture, which is the whole point.
+        session.write_sidecar(Bytes::from_static(b"\x1b[2J\x1b[HREDRAWN"));
+        assert!(
+            session
+                .resize_capture_deadline()
+                .expect("the capture was given up on")
+                < armed,
+            "the child answered and the capture still waited out its deadline — \
+             every viewer's `E resized` pays for that wait"
+        );
+
+        session.capture_resize_snapshots();
+        pump_sidecar(&mut session, &mut results, 1).await;
+
+        let mut painted = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            if let ClientEvent::Snapshot(snapshot) = event {
+                painted = snapshot.vt.clone().unwrap_or_default();
+            }
+        }
+        let painted = String::from_utf8_lossy(&painted).to_string();
+        assert!(
+            painted.contains("REDRAWN"),
+            "the keyframe missed the redraw the child answered the resize with: {painted:?}"
+        );
+        assert!(
+            !painted.contains("STALE"),
+            "the keyframe painted the screen the child had already replaced: {painted:?}"
+        );
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
     /// A resync a client asks for has to actually repaint it.
     ///
     /// `finish_snapshot` matches every capture against the request the
@@ -3581,6 +3752,7 @@ mod tests {
             ),
             transcript_path: None,
             foreground: super::Foreground::default(),
+            resize_capture: None,
         };
 
         assert!(handle_msg(

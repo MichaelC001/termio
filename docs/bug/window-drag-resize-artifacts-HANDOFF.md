@@ -13,10 +13,10 @@ related:
 
 # HANDOFF — window drag still corrupts the terminal mid-drag
 
-> **§5 fixed, pending eyes.** Sizing was already proven. The mid-drag corruption
-> now has a measured cause and a fix with tests that fail without it (§10).
-> Nobody has yet *looked* at a drag — Screen Recording is still ungranted — so
-> the visual claim is inference from a measured mechanism, not observation.
+> **Eyes obtained.** The reporter's screenshot (§12) has been decoded down to the
+> column: it is an 82-column Claude Code screen rewrapped to 66. §12 also
+> measures what the child does with a SIGWINCH, which settles two arguments this
+> file was making from assumption, and closes one ordering hole in the daemon.
 
 ## 0. Read this first
 
@@ -337,3 +337,175 @@ broken on `main` for as long as the verb has existed. Fixed in
 - `session::tests::a_resync_a_client_asked_for_reaches_it` — §10.
 - §3's `vt/tests/resize_reflow.rs` and §2's size-policy integration tests are
   untouched and still pass.
+
+## 12. Eyes on it, finally — and what the screenshot decodes to
+
+2026-09-02. The reporter photographed a drag: *"why 拖动屏幕 tui 乱码"*. The
+picture is a wide pane holding a much narrower screen, its box borders broken
+into one long run and one short one, and `/rc` split across a row boundary.
+
+**It decodes exactly.** Run `claude` on a real PTY at 82 columns and it draws its
+hint row as `⏵⏵ bypass permissions on (shift+tab to cycle)` followed by
+`ESC[66G` — `/rc` at column 66. Rewrap that screen to 66 columns and `/` is the
+last cell of the row while `rc` wraps; the 78-cell border splits into 66 + 12.
+That is the screenshot, glyph for glyph. Reproduced against `termiod-vt`
+directly:
+
+```
+--- 82 -> 55 (reflow) ---
+───────────────────────────────────────────────────────
+───────────────────────────
+bypass permissions on (shift+tab to cycle) . <- for age
+nts / rc
+```
+
+So the frame on screen is **a screen drawn for one width, rewrapped to another,
+with no repaint over it**. Nothing else produces that shape. Two questions
+follow: does the child not repaint, or does its repaint get overwritten?
+
+### 12.1 The child does repaint — measured, not assumed
+
+§3 argued the rewrap is safe for a TUI because "an agent TUI, an editor, a pager
+all repaint from their own model". That is true of Claude Code, and now measured
+rather than asserted. Captured from a real PTY across a `TIOCSWINSZ`:
+
+```
+ESC[?1000h ESC[?1002h ESC[?1003h ESC[?1006h ESC[?25l ESC[2J ESC[H  <redraw>
+```
+
+It clears the whole screen and repaints it from home with absolute addressing.
+Latency from the ioctl to the first byte, four trials: **0.1–0.3 ms**. zsh's
+redisplay, same harness: **7–23 ms**.
+
+Two consequences. The rewrap gate in §3 stands — a program that answers SIGWINCH
+this way cannot be broken by a rewrap it immediately paints over. And any frame
+of the rewrapped screen that a viewer sees is one *we* put there: the child had
+already replaced it.
+
+### 12.2 Closed: the keyframe could describe a screen the child had replaced
+
+`apply_size_policy` resized the PTY, told the sidecar to reflow, and asked for
+the snapshot in the same handler — deliberately, and the comment said so: *"these
+requests are adjacent to the Resize command in the sidecar FIFO, with no
+intervening Write command."* Adjacent to the resize means **before** the child's
+answer to it. The keyframe every attachment repaints from was therefore the
+rewrapped screen, by construction, and the child's redraw arrived behind it as
+ordinary data.
+
+That is a full-screen paint of a screen that is already wrong, shipped on every
+resize. Whether a viewer *sees* it is a race it should never have been running:
+with Claude Code answering in 0.3 ms the redraw usually reaches the sidecar in
+time to be in the capture anyway — an end-to-end recording of a real 82→66 resize
+shows a clean keyframe on the pre-fix daemon — but nothing made that true, and a
+slower child, or a busier actor, loses it.
+
+Fixed: the resize opens its barrier immediately (so nothing reaches a client
+ahead of the grid that describes it) and the **capture waits for the child**.
+The child answering its SIGWINCH is the event the capture is actually for, so
+the first byte it writes pulls the deadline in to 5 ms — enough to catch a
+redraw split across two writes, never enough to be felt. The 40 ms is only the
+cap, for a child that never answers; it then gets exactly the old screen, so the
+window costs no correctness.
+
+Waiting on a clock instead of on the child is not free, and a test says so.
+`E resized` is deferred behind the open barrier, so a fixed settle delays *every*
+viewer's notion of the session's size by that much:
+`TermiodSizePolicyIntegrationTests.testTheSessionIsTheScreenBeingUsed` fails on a
+flat 40 ms settle and passes on the answer-driven one. Any future change here
+must keep that test honest rather than widen its tolerance.
+
+Pinned by `session::tests::a_resize_keyframe_carries_the_child_s_redraw`, which
+fails without the deferral with the keyframe painting `STALE` — the screen the
+child had already replaced — and asserts the deadline moves in when the child
+answers.
+
+### 12.3 Fixed: a hold that gave up painted the keyframe anyway
+
+`TerminalKeyframeHold` waits for the surface to reach the keyframe's grid, with
+a 250 ms deadline and a 1 MiB flood cap so it stays a hold and not a stall. Both
+of those endings **painted the keyframe anyway** — a screen drawn for one grid,
+written into a surface laid out at another, which wraps every row somewhere the
+daemon never put it. A guaranteed scrambled full-screen frame, followed by the
+surface's own reflow of it, followed by the resync that replaced it a round trip
+later. A drag is exactly the condition for missing that deadline: the deadline is
+main-thread layout, and a drag is a busy main thread.
+
+Both endings now **drop** the keyframe (`TerminalKeyframeHold.abandon`) and arm
+the repaint instead. The live bytes queued behind it still go out — they are the
+child's, and this is not the layer that may discard them — and the last screen
+that was painted correctly stays up until the resync lands. Teardown is the one
+ending that still paints, and for the reason it always did: a surface that is
+going away has no resync coming, so an imperfectly wrapped final frame beats a
+blank one.
+
+`resize-trace … keyframe-held-out` (deadline) and `keyframe-flooded-out` (cap)
+name the two in the client log. Pinned by
+`TerminalKeyframeHoldTests.testGivingUpDropsTheKeyframeAndKeepsWhatWasQueuedBehindIt`
+and `…testAFloodBehindAHeldKeyframeEndsTheWaitWithoutPaintingIt`.
+
+### 12.4 Reported after §12.2/§12.3: inward is clean, outward is not
+
+*"往内拖拽没有问题 往外拖拽还是有问题"*. Two things are worth separating.
+
+**A hole §12.3 opened, now closed.** Dropping the keyframe instead of painting it
+leaves the pane on its last correct screen and arms `repaintPending`, and the
+arming waited for the surface to report the *exact* grid the session moved to.
+Nothing guarantees it ever does: a pane that fills itself is measured in points
+by `TerminalGrid.fitting` and floored in pixels by libghostty, and the two can
+disagree by a column. The old code hid this — it painted something wrong, and
+wrong-but-fresh is invisible next to stale. A backstop now asks for the repaint
+500 ms later whatever grid the surface settled at, and a keyframe answering a
+repaint *we asked for* is no longer put through the hold (`paintNextKeyframe`):
+holding it would wait on the grid that already failed, give up the same way, and
+ask again. Pinned by
+`TerminalKeyframeHoldTests.testAKeyframeAnsweringARepaintWeAskedForIsNotHeld`.
+
+**The direction itself is asymmetric by construction, and that is unexamined.**
+`SharedGridLetterbox` lays the surface out at the *session's* grid for the whole
+drag, anchored top-left:
+
+- dragging **inward**, the surface is larger than the pane and clipped — the
+  content still reaches every edge of the window, and only the far right and
+  bottom are cut, which for a TUI is padding;
+- dragging **outward**, the surface is smaller than the pane — the terminal sits
+  in the top-left corner of a window that keeps growing around it, for the whole
+  drag plus the 150 ms debounce, and then snaps out.
+
+That is what the reporter's screenshot shows: content occupying the left portion
+of a wide pane. Whether *that* is the complaint, or whether something is also
+wrong with the content itself, is the open question — and it is the same question
+§8.1 has been asking for since this file was opened. It needs one screenshot
+taken **mid-outward-drag**, before the mouse is released.
+
+If the pin is the complaint, the fix is a real design decision and must be argued
+against §4 and §5 rather than tried: §5 removed `viewportPending` precisely so the
+surface would stay pinned for the whole drag, and §4 rejected mid-drag barriers
+because each shipped a rewrapped screen. §12.2 changes the second half of that
+argument — a mid-drag barrier now carries the child's own redraw, not a rewrap —
+so the cost §4 measured is no longer the cost. Growing is also the direction that
+cannot split a row: a wider surface re-joins, it never re-wraps into a width
+nothing was drawn at, which is the objection §5 pinned the surface for. Neither
+observation is permission to change it blind.
+
+### 12.5 What is still unproven
+
+Neither fix has been *watched*. The photograph was never reproduced under a
+trace: the app was showing only its settings window by the time the daemon fix
+was live, and driving a real drag by AppleScript needs the main window up. What
+would settle it is one drag with
+
+```sh
+log stream --predicate 'subsystem == "sh.termio.app.dev"' --debug --style compact \
+  | grep resize-trace
+```
+
+running. `keyframe-held-out` in that trace says §12.3 was the frame in the
+photograph; its absence says the remaining suspect is elsewhere and this file is
+not finished.
+
+One operational trap found while measuring, worth its own line: **the daemon does
+not restart when the app is rebuilt.** The dev daemon on the reporter's machine
+was running a binary built hours earlier from a worktree that no longer exists,
+so every Swift-side rebuild that afternoon was talking to old host code.
+`termiod handoff` replaces it in place, keeping the PTYs.
+
