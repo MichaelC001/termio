@@ -153,6 +153,7 @@ struct TerminalPane: View {
                 let context = store.surface(for: item.session)
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
+                    sessionName: id.uuidString,
                     context: context,
                     paneSize: rect.size,
                     paddingX: CGFloat(settings.windowPadding),
@@ -439,6 +440,9 @@ private enum TerminalFocusReason {
 /// ask for the keyframe that paints it (`observerRepaintPending`).
 private struct SharedGridLetterbox<Content: View>: View {
     let runtime: SessionRuntime
+    /// Only for the trace: four links log into one stream, and before the name
+    /// was on every line their interleaved bursts read as a loop.
+    let sessionName: String
     @ObservedObject var context: TerminalViewState
     let paneSize: CGSize
     let paddingX: CGFloat
@@ -471,6 +475,21 @@ private struct SharedGridLetterbox<Content: View>: View {
         // mutates state mid-render.
         .onChange(of: paneGrid, initial: true) { _, grid in
             if let grid { onViewport(grid) }
+            // The inputs behind the declaration, which the wire trace cannot
+            // show: `declare 46x47` answered by `surface-at 45x47` never named
+            // the rectangle and cell the two disagreed about, and the gap was
+            // guessed at as a points-vs-pixels off-by-one in
+            // `TerminalGrid.fitting` for a day. It was not: the pane really did
+            // change height. Whatever the next disagreement is, it takes
+            // numbers, not argument.
+            Log.termiod.debug("""
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure \
+            pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public) \
+            cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public) \
+            scale=\(self.displayScale, privacy: .public) \
+            padX=\(self.paddingX, privacy: .public) \
+            grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
+            """)
         }
     }
 
