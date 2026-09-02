@@ -165,4 +165,42 @@ final class TermiodDaemonBinaryTests: XCTestCase {
             home: "/Users/u")
         XCTAssertEqual(pinned, "/tmp/test-daemon")
     }
+
+    /// A shipped `.app` ignores a pinned socket and stays on its channel.
+    ///
+    /// Every termio session exports `TERMIOD_SOCK`, and macOS `open` hands the
+    /// caller's environment to the app it launches, so without this a dev build
+    /// started from a release session bound to the *release* daemon while
+    /// keeping its dev bundle id, dev state directory and dev companion port.
+    /// Two apps then shared one session table, each drawing and able to kill
+    /// what the other was running — and every measurement taken against that
+    /// app was of the wrong process.
+    func testABundleIgnoresAPinnedSocketAndStaysOnItsChannel() {
+        let leaked = ["TERMIOD_SOCK": "/var/tmp/termiod-501/termiod.sock",
+                      "TMPDIR": "/var/folders/xx/T"]
+
+        XCTAssertEqual(
+            Termiod.socketPath(channelSuffix: "-dev", environment: leaked, bundled: true),
+            "/var/folders/xx/T/termiod-\(getuid())-dev/termiod.sock")
+        XCTAssertEqual(
+            Termiod.socketPath(channelSuffix: "-dev", environment: leaked, bundled: false),
+            "/var/tmp/termiod-501/termiod.sock",
+            "the unbundled case — swift run and this test suite — still honours the pin")
+    }
+
+    /// The durable state directory follows the socket, so it has to answer the
+    /// bundle question the same way. Disagreeing would put the pairing token
+    /// and `host.id` beside one daemon while the app talked to another.
+    func testABundleKeepsDurableStateOnItsChannelDespiteAPinnedSocket() {
+        let leaked = ["TERMIOD_SOCK": "/var/tmp/termiod-501/termiod.sock"]
+
+        XCTAssertEqual(
+            Termiod.durableStateDirectory(
+                channelSuffix: "-dev", environment: leaked, home: "/Users/u", bundled: true),
+            "/Users/u/Library/Application Support/termio-dev")
+        XCTAssertEqual(
+            Termiod.durableStateDirectory(
+                channelSuffix: "-dev", environment: leaked, home: "/Users/u", bundled: false),
+            "/var/tmp/termiod-501")
+    }
 }

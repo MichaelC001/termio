@@ -45,18 +45,6 @@ final class SessionRuntime {
     /// holding the write token is letterboxed too whenever the session is sized
     /// to somebody else's screen.
     var sharedGrid: TerminalGrid?
-    /// Whether this pane's own viewport change is still in flight.
-    ///
-    /// The letterbox reads it, and it separates the two reasons the session's
-    /// grid can differ from the pane's. Somebody else is using the session on a
-    /// smaller screen: lay the surface out at their grid, or this pane re-wraps
-    /// bytes that were wrapped for theirs (§C.5). *This* pane was just resized:
-    /// let the surface follow the pane. It is about to be granted, and the
-    /// ordering is what matters — the keyframe that follows a resize arrives
-    /// before the next layout pass, so a surface still at the old grid paints it
-    /// mangled and has to ask for another one. A surface that already moved
-    /// paints it right the first time.
-    var viewportPending = false
     /// Whether the host this session lives on sizes by policy at all.
     ///
     /// The letterbox only means anything under that policy: it exists because

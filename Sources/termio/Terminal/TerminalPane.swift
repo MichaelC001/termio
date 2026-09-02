@@ -153,6 +153,7 @@ struct TerminalPane: View {
                 let context = store.surface(for: item.session)
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
+                    sessionName: id.uuidString,
                     context: context,
                     paneSize: rect.size,
                     paddingX: CGFloat(settings.windowPadding),
@@ -439,6 +440,9 @@ private enum TerminalFocusReason {
 /// ask for the keyframe that paints it (`observerRepaintPending`).
 private struct SharedGridLetterbox<Content: View>: View {
     let runtime: SessionRuntime
+    /// Only for the trace: four links log into one stream, and before the name
+    /// was on every line their interleaved bursts read as a loop.
+    let sessionName: String
     @ObservedObject var context: TerminalViewState
     let paneSize: CGSize
     let paddingX: CGFloat
@@ -471,6 +475,16 @@ private struct SharedGridLetterbox<Content: View>: View {
         // mutates state mid-render.
         .onChange(of: paneGrid, initial: true) { _, grid in
             if let grid { onViewport(grid) }
+            // The inputs behind the declaration, which the wire trace cannot
+            // show: `declare` says 46 and `surface-at` answers 45 without ever
+            // naming the rectangle and cell the two disagreed about. libghostty
+            // is handed whole pixels (`floor(points × scale)` in
+            // `TerminalSurfaceCoordinator.synchronizeMetrics`) and floors again
+            // dividing by the cell; this measures in points and floors once.
+            // Whether that is the off-by-one takes numbers, not argument.
+            Log.termiod.debug("""
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure             pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public)             cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public)             scale=\(self.displayScale, privacy: .public)             padX=\(self.paddingX, privacy: .public)             grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
+            """)
         }
     }
 
@@ -498,7 +512,14 @@ private struct SharedGridLetterbox<Content: View>: View {
         // A pane already the session's size fills the pane exactly, with none of
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
-        guard runtime.sizesByPolicy, !runtime.viewportPending,
+        //
+        // Held for the whole of a drag, not just until the declaration goes out.
+        // The session's grid is the last width anything was actually drawn for;
+        // a surface that moved ahead of the daemon's answer would re-wrap that
+        // screen at widths nothing was ever drawn for, once per frame. The
+        // surface moves when the answer lands, and the keyframe that comes with
+        // it is held until it does (`TermiodSessionLink.receiveKeyframe`).
+        guard runtime.sizesByPolicy,
               let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)

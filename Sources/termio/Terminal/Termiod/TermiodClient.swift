@@ -30,9 +30,21 @@ extension Termiod {
     /// **one device**: they share `host.id`, each is handed the other's roster,
     /// and each can kill what the other is running. The release channel's
     /// suffix is empty, so its path is unchanged and its sessions survive this.
+    ///
+    /// A shipped `.app` ignores the `TERMIOD_SOCK` override, for the same
+    /// reason `AppChannel.suffix` ignores `TERMIO_CHANNEL`: every termio
+    /// session exports it, and macOS `open` hands the caller's environment to
+    /// the app it launches, so a dev build started from a release session was
+    /// silently binding to the release channel's daemon — dev bundle id, dev
+    /// state directory, dev companion port, *release* session table. That is
+    /// the unscoped socket this comment already warns about, arriving through
+    /// the one door the scoping did not cover. The override exists for the
+    /// unbundled case — `swift run` and the test suite have no bundle
+    /// identifier — which is exactly the case that still honours it.
     static func socketPath() -> String {
         socketPath(channelSuffix: AppChannel.suffix,
-                   environment: ProcessInfo.processInfo.environment)
+                   environment: ProcessInfo.processInfo.environment,
+                   bundled: AppChannel.isTermioAppBundle)
     }
 
     /// Separate from the caller above so the derivation can be tested without a
@@ -40,8 +52,10 @@ extension Termiod {
     /// `termiod/src/paths.rs` is exactly the kind of agreement that drifts
     /// silently: nothing fails to build when the two sides disagree, the app
     /// just starts talking to a daemon nobody else can see.
-    static func socketPath(channelSuffix: String, environment: [String: String]) -> String {
-        if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
+    static func socketPath(channelSuffix: String,
+                           environment: [String: String],
+                           bundled: Bool = false) -> String {
+        if !bundled, let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
             return explicit
         }
         if let runtimeDirectory = environment["XDG_RUNTIME_DIR"], !runtimeDirectory.isEmpty {
@@ -61,11 +75,13 @@ extension Termiod {
     /// socket's temp directory, which the OS may clear and a reboot forgets.
     /// A `TERMIOD_SOCK` override keeps it beside the socket — the same
     /// isolation rule the Rust side follows for a daemon pointed at its own
-    /// socket.
+    /// socket — and a shipped `.app` ignores that override exactly as
+    /// `socketPath` does, so the two never disagree about which daemon this is.
     static func durableStateDirectory() -> String {
         durableStateDirectory(channelSuffix: AppChannel.suffix,
                               environment: ProcessInfo.processInfo.environment,
-                              home: NSHomeDirectory())
+                              home: NSHomeDirectory(),
+                              bundled: AppChannel.isTermioAppBundle)
     }
 
     /// Separate from the caller above for the same reason as `socketPath`:
@@ -73,8 +89,9 @@ extension Termiod {
     /// testable without a bundle.
     static func durableStateDirectory(channelSuffix: String,
                                       environment: [String: String],
-                                      home: String) -> String {
-        if let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
+                                      home: String,
+                                      bundled: Bool = false) -> String {
+        if !bundled, let explicit = environment["TERMIOD_SOCK"], !explicit.isEmpty {
             return (explicit as NSString).deletingLastPathComponent
         }
         return home + "/Library/Application Support/termio" + channelSuffix
@@ -715,6 +732,15 @@ extension Termiod {
         // inherited from whatever launched the app cannot redirect the daemon.
         var childEnvironment = ProcessInfo.processInfo.environment
         childEnvironment["TERMIO_CHANNEL"] = channelName
+        // `TERMIOD_SOCK` outranks the channel on both sides, so a bundle that
+        // ignores it for itself must also strip it here: inheriting it would
+        // bind the daemon to the very socket the app just declined to use, and
+        // the two would rendezvous nowhere. Left in place when this process is
+        // not a bundle, which is how the test suite points a daemon at its own
+        // socket.
+        if AppChannel.isTermioAppBundle {
+            childEnvironment["TERMIOD_SOCK"] = nil
+        }
         let argumentStrings = [binary, "serve"]
         let argv: [UnsafeMutablePointer<CChar>?] = argumentStrings.map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] =
@@ -1034,6 +1060,96 @@ extension Termiod {
 
 }
 
+/// A keyframe waiting for the surface to be laid out at the grid it describes,
+/// and everything that arrived behind it.
+///
+/// The daemon's resize barrier opens *before* `E resized` is emitted, and events
+/// are deferred behind an open barrier, so `S` always reaches a client ahead of
+/// the message telling it what size to become. A keyframe from a resize
+/// therefore cannot arrive after the layout pass that would let it paint —
+/// no client-side ordering wins that, which is why leading the declaration did
+/// not. Painting it anyway draws the new screen through the old grid, and the
+/// repair was a second keyframe asked for afterwards: two visible paints per
+/// resize, the second a round trip late, and a slow drag crosses several cell
+/// boundaries. That is what a drag looked like.
+///
+/// Held, it costs neither. The bytes wait, in order, until libghostty reports
+/// the grid they were captured at, and the first paint is the right one. This is
+/// a boundary hold, not a per-frame one: it opens only where the protocol
+/// already quiesces the session (§A of the session protocol).
+///
+/// Pure state, with no lock and no I/O — every method answers with the bytes the
+/// caller should hand to the surface, in order. Ordering is the whole mechanism
+/// and the one part of it a screenshot could never show, so it is the part that
+/// is pinned by tests.
+struct TerminalKeyframeHold {
+    /// The grid libghostty last reported this surface laid out at.
+    private(set) var surfaceGrid: TerminalGrid
+    /// Bumped whenever a hold opens or closes, so a deadline armed for an older
+    /// keyframe does nothing when it fires.
+    private(set) var epoch: UInt64 = 0
+
+    private var keyframe: Data?
+    private var keyframeGrid: TerminalGrid?
+    private var queued = Data()
+
+    var isHolding: Bool { keyframe != nil }
+
+    init(surfaceGrid: TerminalGrid) {
+        self.surfaceGrid = surfaceGrid
+    }
+
+    /// A keyframe off the wire. Paints straight through when the surface is
+    /// already at its grid, which is every keyframe that is not a resize's.
+    mutating func receive(keyframe repaint: Data, at grid: TerminalGrid) -> [Data] {
+        // A keyframe supersedes whatever was queued behind an older one: the
+        // daemon captures it at a sidecar boundary past those writes, so the
+        // screen it describes already contains them. The client half of the rule
+        // `begin_snapshot_barrier` applies to its own buffered data.
+        queued.removeAll(keepingCapacity: true)
+        epoch &+= 1
+        guard grid != surfaceGrid else {
+            keyframe = nil
+            keyframeGrid = nil
+            return [repaint]
+        }
+        keyframe = repaint
+        keyframeGrid = grid
+        return []
+    }
+
+    /// Live output, queued behind a waiting keyframe. Past `limit` bytes the
+    /// wait is abandoned: a program flooding through a resize is not worth an
+    /// unbounded buffer, and the surface can still be repaired by resync.
+    mutating func receive(output: Data, limit: Int) -> [Data] {
+        guard keyframe != nil else { return [output] }
+        queued.append(output)
+        guard queued.count > limit else { return [] }
+        return release()
+    }
+
+    /// The surface reached a grid. Answers what to paint, and whether the
+    /// keyframe painted was the one waiting for exactly this grid — which the
+    /// caller reads as "the repaint has happened, ask for nothing".
+    mutating func surfaceReached(_ grid: TerminalGrid) -> (paint: [Data], painted: Bool) {
+        surfaceGrid = grid
+        guard keyframe != nil, keyframeGrid == grid else { return ([], false) }
+        return (release(), true)
+    }
+
+    /// Stop waiting and paint. The deadline, the flood cap, and teardown all end
+    /// here; an empty answer means there was nothing held.
+    mutating func release() -> [Data] {
+        guard let repaint = keyframe else { return [] }
+        keyframe = nil
+        keyframeGrid = nil
+        epoch &+= 1
+        let behind = queued
+        queued.removeAll(keepingCapacity: false)
+        return behind.isEmpty ? [repaint] : [repaint, behind]
+    }
+}
+
 /// One session's attach channel: the termiod-backed stand-in for what
 /// `PTYProcess` is on the in-process path. Owns the socket, forwards surface
 /// input as `D` frames and grid changes as `R` frames, and delivers the
@@ -1086,10 +1202,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
-    /// Whether a viewport change of this pane's own is still unanswered, and the
-    /// stamp that lets only the newest one lower it. See `onViewportPending`.
-    private var viewportPending = false
-    private var viewportPendingGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1098,16 +1210,21 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the authority — §C.5: a client that parses at its own window size instead
     /// of this one wraps the same bytes differently and diverges from the host.
     private var authoritativeGrid: TerminalGrid?
-    /// A surface not yet laid out at the shared grid. The keyframe that
-    /// announced the grid was parsed at the old one, and the surface is re-laid
-    /// out only after `onSharedGrid` reaches the UI — so the first surface
-    /// report that lands *on* the shared grid asks the daemon for a fresh
-    /// keyframe, and that one paints right.
-    ///
-    /// Not gated on the write token any more. Under a size policy the writer's
-    /// own surface is letterboxed too whenever the session is sized to another
-    /// screen, and it needs the same repaint the observer always did.
+    /// A surface still owed a repaint, because a keyframe was painted onto it at
+    /// a grid it was not laid out at. Only the degraded path reaches this now —
+    /// a keyframe the hold below gave up on — and the resync it arms is the same
+    /// one the observer always had.
     private var repaintPending = false
+
+    /// Guards the seam every byte reaches the surface through. Both the reader
+    /// thread and `workQueue` emit through it, and both emit while holding it:
+    /// a release that dropped the lock first could be overtaken by the next `D`
+    /// frame, and that order is the whole point of the hold.
+    private let outputLock = NSLock()
+    /// A keyframe waiting for the surface to reach its grid, and the bytes
+    /// queued behind it. Guarded by `outputLock`.
+    private var hold: TerminalKeyframeHold
+
     /// Set on any deliberate teardown so the reader's EOF is not misread as a
     /// daemon crash.
     private var closed = false
@@ -1152,6 +1269,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// `PTYProcess`'s read pump delivers on the in-process path. Called on the
     /// reader thread; the consumer (`InMemoryTerminalSession.receive`) is
     /// thread-safe.
+    ///
+    /// Never called directly: everything goes through `deliverOutput`, which is
+    /// where a keyframe waiting for its grid holds the stream in order.
     var onOutput: ((Data) -> Void)?
     /// Fired on the main queue once the handshake reveals which device this
     /// session actually runs on. A session knows its *route* from the start but
@@ -1209,12 +1329,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
-    /// Raised the moment this pane declares a new viewport and lowered when the
-    /// daemon's grid agrees — or when it plainly is not going to, because
-    /// somebody else is using the session. While it is up the pane's surface
-    /// follows the pane rather than the session, so the keyframe that follows
-    /// the resize lands on a surface that is already the right size.
-    var onViewportPending: ((Bool) -> Void)?
     /// Whether this session's host sizes by policy, from the handshake. A pane
     /// on an older host must not letterbox: there the writer's grid is the
     /// size, so a difference is an unanswered declaration rather than another
@@ -1232,6 +1346,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
         surfaceGrid = grid
+        hold = TerminalKeyframeHold(surfaceGrid: grid)
     }
 
     /// Kicks off connect → hello → attach in the background. The caller wires
@@ -1463,11 +1578,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// around it. Never sent: it would tell the daemon this pane has room for
     /// only what it was already shrunk to, and the session could never grow.
     ///
-    /// Arriving at the shared grid is the one moment a letterboxed surface needs
-    /// something from the daemon: a keyframe it can finally paint. Leaving it —
-    /// a font change reports the old frame at new cell metrics before the
-    /// letterbox puts it back — arms the next arrival, so the bytes parsed in
-    /// between are repainted too.
+    /// Arriving at a keyframe's grid is the one moment the surface can paint it,
+    /// so that is where the held keyframe is released. Leaving it — a font
+    /// change reports the old frame at new cell metrics before the letterbox
+    /// puts it back — arms the resync, so the bytes parsed in between are
+    /// repainted too.
     func noteSurfaceGrid(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
@@ -1481,8 +1596,15 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(size.cols, privacy: .public)
                 """)
             }
+            let painted = releaseKeyframe(at: size)
             guard attached else { return }
-            if authoritativeGrid != size {
+            if painted {
+                // The keyframe that was waiting for this grid has just been
+                // painted onto it. It *is* the fresh repaint the resync used to
+                // go and fetch a round trip later, so there is nothing left to
+                // ask for and nothing to repair.
+                repaintPending = false
+            } else if authoritativeGrid != size {
                 repaintPending = true
             } else if repaintPending {
                 repaintPending = false
@@ -1491,32 +1613,73 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
-    /// How long a declaration is treated as in flight before the pane accepts
-    /// that the session belongs to another screen. Long enough for the coalesced
-    /// send plus a local round trip, short enough that a pane watching a phone
-    /// lays its surface out at the phone's grid rather than sitting stretched
-    /// over bytes wrapped for it.
-    private static let viewportSettleDeadline = DispatchTimeInterval.milliseconds(600)
+    /// How long a keyframe waits for the surface before it is painted anyway.
+    ///
+    /// A layout pass is one frame; this is several, so a busy main thread still
+    /// gets the ordered paint. It is a deadline rather than a promise because
+    /// nothing guarantees the surface ever reaches the grid — a pane too small
+    /// to hold it is laid out at it and clipped, but a pane mid-teardown, or one
+    /// whose window is being destroyed, simply stops reporting.
+    private static let keyframeHoldDeadline = DispatchTimeInterval.milliseconds(250)
 
-    /// Must run on `workQueue`.
-    private func raiseViewportPendingLocked() {
-        viewportPendingGeneration &+= 1
-        let generation = viewportPendingGeneration
-        if !viewportPending {
-            viewportPending = true
-            DispatchQueue.main.async { [self] in onViewportPending?(true) }
-        }
-        workQueue.asyncAfter(deadline: .now() + Self.viewportSettleDeadline) { [self] in
-            guard !closed, generation == viewportPendingGeneration else { return }
-            lowerViewportPendingLocked()
+    /// How much output may queue behind a held keyframe before the wait is not
+    /// worth it. A program that floods through a resize would otherwise grow
+    /// this buffer without bound; past the cap the keyframe paints early and the
+    /// surface is repaired the old way, by resync.
+    private static let keyframeHoldByteLimit = 1 << 20
+
+    /// Hands bytes to the surface, or queues them behind a keyframe that is
+    /// still waiting for the surface to reach its grid.
+    ///
+    /// Called on the reader thread. It emits under `outputLock`, as every other
+    /// path to the surface does: a release running on `workQueue` that dropped
+    /// the lock before emitting could be overtaken by the next `D` frame, and
+    /// that order is the whole point of the hold.
+    private func deliverOutput(_ data: Data) {
+        outputLock.lock()
+        defer { outputLock.unlock() }
+        for chunk in hold.receive(output: data, limit: Self.keyframeHoldByteLimit) {
+            onOutput?(chunk)
         }
     }
 
-    /// Must run on `workQueue`.
-    private func lowerViewportPendingLocked() {
-        guard viewportPending else { return }
-        viewportPending = false
-        DispatchQueue.main.async { [self] in onViewportPending?(false) }
+    /// Takes a keyframe off the wire, holding it back when it describes a grid
+    /// the surface is not laid out at yet — see `TerminalKeyframeHold` for why
+    /// that is every keyframe a resize produces.
+    ///
+    /// Called on the reader thread, the only place a hold begins. The deadline
+    /// is what makes it a hold and not a stall: a surface that never reports the
+    /// grid — a pane mid-teardown, a window being destroyed — still gets its
+    /// paint, and `repaintPending` repairs it the old way.
+    private func receiveKeyframe(_ frame: TermiodSnapshot.Frame) {
+        let grid = TerminalGrid(
+            rows: UInt16(clamping: frame.rows), cols: UInt16(clamping: frame.cols))
+        let repaint = TermiodSnapshot.render(frame)
+        outputLock.lock()
+        for chunk in hold.receive(keyframe: repaint, at: grid) { onOutput?(chunk) }
+        let waiting = hold.isHolding
+        let epoch = hold.epoch
+        outputLock.unlock()
+        guard waiting else { return }
+        workQueue.asyncAfter(deadline: .now() + Self.keyframeHoldDeadline) { [self] in
+            outputLock.lock()
+            defer { outputLock.unlock() }
+            guard epoch == hold.epoch else { return }
+            Log.termiod.debug("""
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-held-out
+            """)
+            for chunk in hold.release() { onOutput?(chunk) }
+        }
+    }
+
+    /// Paints a keyframe that was waiting for exactly this grid, and says
+    /// whether it did — the caller reads that as "the repaint has happened".
+    private func releaseKeyframe(at grid: TerminalGrid) -> Bool {
+        outputLock.lock()
+        defer { outputLock.unlock() }
+        let (paint, painted) = hold.surfaceReached(grid)
+        for chunk in paint { onOutput?(chunk) }
+        return painted
     }
 
     /// How long a moving pane must hold still before its size goes to the
@@ -1589,16 +1752,13 @@ final class TermiodSessionLink: @unchecked Sendable {
         let showing = hostSizesByPolicy ? rendering : true
         if let sent = sentViewport, sent.grid == viewportGrid, sent.rendering == showing { return }
         sentViewport = (viewportGrid, showing)
-        // From here the surface may lead: the declaration is on the wire, the
-        // daemon's answer and its keyframe are coming, and the pane knows the
-        // grid they will be at. Before here — a drag still in the coalescing
-        // window — it must not: the pane's grid is changing every frame while
-        // nothing new has been drawn at any of those widths, so a surface that
-        // followed it would re-wrap the old screen once per frame. That is the
-        // mess during a drag; the session's grid is the last width anything was
-        // actually drawn for, and holding the surface there is what tmux and
-        // screen show while a window moves.
-        raiseViewportPendingLocked()
+        // The declaration goes out; the surface does not move with it. It stays
+        // at the session's grid — the last width anything was actually drawn for
+        // — until the daemon answers with a screen drawn for the new one. A
+        // surface that led instead re-wrapped the old screen at a width nothing
+        // had been drawn at, once per frame for the rest of the drag, and it
+        // never won the race it was leading for: the barrier's keyframe is on
+        // the wire before `E resized` by construction (`receiveKeyframe`).
         Log.termiod.debug("""
         resize-trace \(self.sessionName.prefix(8), privacy: .public) declare \
         \(self.viewportGrid.rows, privacy: .public)x\
@@ -1697,6 +1857,12 @@ final class TermiodSessionLink: @unchecked Sendable {
         closed = true
         transport?.close()
         transport = nil
+        // A keyframe still waiting for a surface that is going away would take
+        // the last screen with it. Paint it: an imperfectly wrapped final frame
+        // beats a blank one.
+        outputLock.lock()
+        for chunk in hold.release() { onOutput?(chunk) }
+        outputLock.unlock()
     }
 
     /// Must run on `workQueue` — `exitDelivered` is queue-confined state.
@@ -1759,32 +1925,21 @@ final class TermiodSessionLink: @unchecked Sendable {
                 guard let self else { return }
                 switch frame.kind {
                 case .data:
-                    self.onOutput?(frame.payload)
+                    self.deliverOutput(frame.payload)
                 case .snapshot:
                     // The daemon guarantees `S` before any post-attach `D`, and
-                    // this reader is a single serial thread: synthesising the
-                    // repaint and emitting it here — before the next `readFrame`
-                    // pulls the first live `D` — preserves S-before-D through
-                    // the same `onOutput` seam, with no hold-back buffer needed.
-                    // A mid-session `S` (the resize barrier's fresh keyframe)
-                    // takes the same path and repaints idempotently.
-                    //
-                    // Painted even when it describes a grid this surface is not
-                    // laid out at yet, which it briefly is: the barrier's `S`
-                    // arrives ahead of the `E resized` the letterbox reacts to.
-                    // Dropping it instead used to be safe only for the writer,
-                    // whose own resize guaranteed another keyframe behind it —
-                    // and no client can make that promise now that the size is a
-                    // policy nobody client-side controls. `repaintPending` is
-                    // what repairs the one mangled frame, on the far side of the
-                    // layout pass.
+                    // this reader is a single serial thread, so S-before-D is
+                    // preserved by construction. What it does *not* guarantee is
+                    // that the surface is laid out at the grid the keyframe
+                    // describes — see `receiveKeyframe`, which is where a
+                    // keyframe waits for it.
                     guard let keyframe = TermiodSnapshot.decode(frame.payload) else {
                         Log.termiod.error("""
                         undecodable snapshot frame on \(self.sessionName, privacy: .public)
                         """)
                         break
                     }
-                    self.onOutput?(TermiodSnapshot.render(keyframe))
+                    self.receiveKeyframe(keyframe)
                 case .control:
                     if self.handleControl(frame.payload) { return }
                 case .event:
@@ -1974,7 +2129,6 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
-            if grid == viewportGrid { lowerViewportPendingLocked() }
             Log.termiod.debug("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) session-is \
             \(grid.rows, privacy: .public)x\
