@@ -57,6 +57,12 @@ final class TermiodWatchOrderingTests: XCTestCase {
 
         var watch: Termiod.ResourceWatch?
         let watching = WatchedRootReader()
+        // The watch starts delivering on its own queue the moment the
+        // initializer returns, but the probe can only be aimed at the watch
+        // after that — so the handover holds here until it is, or the probe
+        // reads nil out of its own arming race rather than out of the defect
+        // this test exists for.
+        let probeArmed = DispatchSemaphore(value: 0)
         watch = Termiod.ResourceWatch(
             route: .local,
             caps: ["files", Termiod.ResourceWatch.capability],
@@ -75,11 +81,13 @@ final class TermiodWatchOrderingTests: XCTestCase {
             case .reset:
                 seen.append(.reset)
             case .batch(let payload):
+                probeArmed.wait()
                 seen.append(.batch(payload.seq, watching: watching.read()))
             }
             if seen.value.count == 2 { settled.fulfill() }
         }
         watching.source = { [weak watch] in watch?.watchedRoot }
+        probeArmed.signal()
 
         wait(for: [settled], timeout: 5)
         XCTAssertEqual(
