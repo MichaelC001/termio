@@ -387,6 +387,15 @@ struct Session {
     /// replay. It exists for the far side of a handoff, which has only the ring
     /// and would otherwise present a confidently wrong screen.
     ring_reconstructs_screen: bool,
+    /// When the last resize's dust should be declared settled and the
+    /// foreground asked for one more repaint. Bytes drawn for the old grid can
+    /// still be in flight through the PTY when the VT takes the new one —
+    /// nothing orders a child's output against a resize it has not seen yet —
+    /// and whatever they painted, only the child's own post-settle repaint can
+    /// overwrite. Every further resize pushes the deadline out, so a drag
+    /// costs one nudge, at the end. (cmux's mirror answers the same problem by
+    /// re-reading tmux's screen after a grid grows; the child *is* our tmux.)
+    settle_nudge_at: Option<tokio::time::Instant>,
     events: broadcast::Sender<Event>,
     vt: Vt,
     /// This session's agent status, derived here rather than in each viewer.
@@ -701,6 +710,15 @@ impl Session {
     /// than half-drawn. Only ever pulls the deadline in, never pushes it out, so
     /// a program that keeps writing cannot hold the barrier open.
     const RESIZE_ANSWER_QUIESCE: std::time::Duration = std::time::Duration::from_millis(5);
+
+    /// How long after a resize the child is asked to repaint once more.
+    ///
+    /// Long enough that a drag's own bursts have stopped pushing it out — every
+    /// resize re-arms it, so a drag costs one nudge, at the end — and that the
+    /// child's answer to the *last* resize has drained. Anything the transition
+    /// mis-parsed is still on screen until something overwrites it, and only
+    /// the child can.
+    const RESIZE_SETTLE_NUDGE: std::time::Duration = std::time::Duration::from_millis(300);
 
     /// A resize's barrier: opened now so nothing reaches a client ahead of the
     /// screen that describes the new grid, captured once the child has had time
@@ -1138,6 +1156,22 @@ impl Session {
             rows,
             cols,
         });
+        self.settle_nudge_at = Some(tokio::time::Instant::now() + Self::RESIZE_SETTLE_NUDGE);
+    }
+
+    /// The settle deadline fired: the last resize has stood for long enough
+    /// that the child's answer to it has drained. One more repaint request
+    /// makes the child overwrite anything the transition mis-parsed.
+    ///
+    /// Shells are excluded for the same reason `foreground_is_a_shell` gates
+    /// the rewrap: a shell repainted its prompt on the resize's own SIGWINCH
+    /// and a second poke buys nothing, while the agents and editors this is
+    /// for redraw their whole screen from their own model.
+    fn fire_settle_nudge(&mut self) {
+        self.settle_nudge_at = None;
+        if !self.foreground_is_a_shell() {
+            self.pty.nudge_repaint();
+        }
     }
 
     fn queue_history_chunk(
@@ -1414,6 +1448,17 @@ impl Session {
             }
         }
         self.clients.insert(client_id.clone(), entry);
+        // The replay this client was just handed may not draw the screen the
+        // program believes it is looking at (see `ring_reconstructs_screen`).
+        // The old answer — "the program repaints on its next output either way"
+        // — assumed there would be a next output; an agent idling at its prompt
+        // never produces one, and a viewer whose window matches the session's
+        // size gets no resize to force the issue either. So force it here: the
+        // repaint the nudge provokes is ordinary output, which corrects this
+        // screen and every other attachment's at once.
+        if !self.ring_reconstructs_screen {
+            self.pty.nudge_repaint();
+        }
     }
 
     fn remove_finished_client(&mut self, client_id: &ClientId) {
@@ -1726,6 +1771,7 @@ fn start(
         ring: VecDeque::new(),
         ring_bytes: 0,
         ring_reconstructs_screen: true,
+        settle_nudge_at: None,
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
         status_engine: StatusEngine::new(
@@ -2095,6 +2141,7 @@ async fn run(
         // Read before the select rather than inside a branch: the timer wants
         // an owned deadline, and every other branch takes `&mut session`.
         let resize_capture_at = session.resize_capture_deadline();
+        let settle_nudge_at = session.settle_nudge_at;
         tokio::select! {
             // A resize opened a snapshot barrier and left the capture to this
             // timer, so the keyframe carries the child's answer to SIGWINCH
@@ -2118,6 +2165,14 @@ async fn run(
                     session.refresh_status_facts();
                     session.emit_roster();
                 }
+            }
+            // The dust from the last resize has settled; the child gets one
+            // more SIGWINCH so its own repaint overwrites anything the
+            // transition mis-parsed.
+            _ = tokio::time::sleep_until(
+                settle_nudge_at.unwrap_or_else(tokio::time::Instant::now)
+            ), if settle_nudge_at.is_some() => {
+                session.fire_settle_nudge();
             }
             _ = status_sweep.tick() => {
                 let now = std::time::Instant::now();
@@ -2797,6 +2852,7 @@ mod tests {
                 ring: VecDeque::new(),
                 ring_bytes: 0,
                 ring_reconstructs_screen: true,
+                settle_nudge_at: None,
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
                 status_engine: super::StatusEngine::new(
@@ -3744,6 +3800,7 @@ mod tests {
             ring: VecDeque::new(),
             ring_bytes: 0,
             ring_reconstructs_screen: true,
+            settle_nudge_at: None,
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             status_engine: super::StatusEngine::new(
@@ -3905,6 +3962,207 @@ mod tests {
         assert!(stale.contains("handoff"), "{stale}");
 
         adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A client handed an unfaithful ring replay must not be left staring at
+    /// it until the program happens to print. An idle program never does, and
+    /// a viewer at the session's own size gets no resize to force a repaint
+    /// either — so the fallback itself nudges the foreground with the SIGWINCH
+    /// a resize would have delivered, and the repaint arrives as fresh output.
+    #[tokio::test]
+    async fn a_knowingly_wrong_replay_nudges_the_foreground_to_repaint() {
+        let (handle, _events, _on_exit) = start_session(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "trap 'echo NUDGED' WINCH; echo READY; while :; do read line; done".to_string(),
+            ],
+            "/",
+        );
+
+        // Wait for the child to say the trap is installed; before that a
+        // nudge would be absorbed by the default disposition and prove
+        // nothing.
+        let (ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("watcher"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            out: ready_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            loop {
+                match ready_rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(&seen).contains("READY") {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended before READY"),
+                }
+            }
+        })
+        .await
+        .expect("the child announced its trap");
+
+        // Hand the session over with a ring declared unfaithful — the far side
+        // of a handoff whose output predates what drew the screen. No resize is
+        // involved, so the only SIGWINCH the child can ever see is the nudge.
+        let mut carried = carry(&handle).await;
+        carried.info.ring_reconstructs_screen = false;
+        use std::os::fd::IntoRawFd as _;
+        carried.info.master_fd = carried.master.into_raw_fd();
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, mut events_rx) = broadcast::channel(64);
+        let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
+            .expect("adopting the carried session");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events_rx.recv().await {
+                    Ok(Event::VtStale { .. }) => return,
+                    Ok(_) => continue,
+                    Err(error) => panic!("event stream ended: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the adopted session declared its VT stale");
+
+        // Attach at the session's own size: no resize fires, so without the
+        // nudge nothing would ever repaint this screen.
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        adopted.send(SessionMsg::AddClient {
+            id: ClientId::new("viewer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached to the adopted session");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            loop {
+                match client_rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(&seen).contains("NUDGED") {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended before the repaint"),
+                }
+            }
+        })
+        .await
+        .expect("the unfaithful replay was followed by a nudged repaint");
+
+        adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A resize is followed, once it has stood for the settle window, by one
+    /// more SIGWINCH to a non-shell foreground: the child's answer to the
+    /// resize raced the grid change, and its post-settle repaint is the only
+    /// thing that can overwrite whatever the race painted. The child counts the
+    /// signals — the resize's own ioctl delivers the first, the settle nudge
+    /// the second.
+    #[tokio::test]
+    async fn a_settled_resize_nudges_a_job_foreground_once_more() {
+        let script = "import signal,sys,time\n\
+                      signal.signal(signal.SIGWINCH, lambda *a: print('NUDGED', flush=True))\n\
+                      print('READY', flush=True)\n\
+                      while True: time.sleep(0.05)\n";
+        let (handle, _events, _on_exit) = start_session(
+            vec![
+                "/usr/bin/python3".to_string(),
+                "-c".to_string(),
+                script.to_string(),
+            ],
+            "/",
+        );
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+
+        async fn receive_until(
+            rx: &mut mpsc::UnboundedReceiver<ClientEvent>,
+            seen: &mut Vec<u8>,
+            marker: &str,
+        ) {
+            loop {
+                match rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(seen).contains(marker) {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended waiting for {marker}"),
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            receive_until(&mut client_rx, &mut seen, "READY"),
+        )
+        .await
+        .expect("the child installed its handler");
+
+        // The foreground poller must see python3 before the resize, or the
+        // rewrap/nudge gates still believe a shell is on screen.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        handle.send(SessionMsg::Viewport {
+            id: ClientId::new("writer"),
+            rows: 30,
+            cols: 100,
+            rendering: true,
+        });
+
+        // Two signals: the resize's own SIGWINCH, then the settle nudge.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            receive_until(&mut client_rx, &mut seen, "NUDGED\r\nNUDGED"),
+        )
+        .await
+        .expect("the settled resize delivered a second SIGWINCH");
+
+        handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
     }

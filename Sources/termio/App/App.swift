@@ -245,7 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The height every pane is about to measure itself against. If a future
         // change moves chrome back after this point, the panes declare a
         // viewport for a window that never existed and the trace says so here.
-        Log.termiod.debug("""
+        Log.termiod.info("""
         resize-trace WINDOW content-height-final \
         layout=\(self.window.contentLayoutRect.width, privacy: .public)x\
         \(self.window.contentLayoutRect.height, privacy: .public)
