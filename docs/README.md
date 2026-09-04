@@ -75,6 +75,7 @@ from the real front matter).
 | archived | rfc | [Review — One path, local sessions run through termiod too](design/20260817-one-path-local-through-termiod.review-claude.md) |
 | done | bug | ["HANDOFF: a pane renders at the wrong grid while a phone is attached"](bug/phone-attached-resize-HANDOFF.md) |
 | done | bug | ["HANDOFF: terminal content does not reflow on window resize"](bug/terminal-resize-no-reflow-HANDOFF.md) |
+| done | bug | ["Resize mojibake: one symptom, eleven causes"](bug/window-drag-resize-artifacts-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 | done | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
@@ -105,7 +106,6 @@ from the real front matter).
 | done | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | done | rfc | [Remote git — the pane's verbs run on the device](design/20260818-remote-git-plane.md) |
 | done | rfc | [Session identity survives the agent](design/20260830-session-identity-survives-the-agent.md) |
-| draft | bug | ["HANDOFF: window drag still corrupts the terminal mid-drag"](bug/window-drag-resize-artifacts-HANDOFF.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | ["Markdown preview — Apple-grade reading typography"](design/20260718-markdown-preview-reading-typography.md) |
@@ -126,6 +126,7 @@ from the real front matter).
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | ["How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal"](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | [零前置远程访问：把 dev tunnels 的形状搬到 termio](design/20260827-remote-access-dev-tunnels-model.md) |
+| draft | rfc | ["Superlogical's server memory model: three levels of parking"](design/20260902-superlogical-server-memory-parking.md) |
 | draft | rfc | [Automation — scheduled agent runs](design/20260702-automation-scheduled-agent-runs.md) |
 | draft | rfc | [Feature cut after Superlogical's 28 Aug demo](design/20260829-feature-cut-after-superlogical-demo.md) |
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
