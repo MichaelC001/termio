@@ -509,3 +509,61 @@ was running a binary built hours earlier from a worktree that no longer exists,
 so every Swift-side rebuild that afternoon was talking to old host code.
 `termiod handoff` replaces it in place, keeping the PTYs.
 
+## 13. The other three, and why the fix went out twice
+
+2026-09-04. The reporter, on a build that already carried §12: *"怎么还是有
+问题啊？我印象里昨天晚上一个 dev 的版本是可以的"*.
+
+**The build never had §12 in it.** The dev app was built that morning from a
+checkout whose `main` sat six commits behind `origin/main`, at the commit
+before §12 merged. Grepped against the source it was built from: no
+`growingViewportPending`, no `abandon`, no `RESIZE_SNAPSHOT_SETTLE`. Nothing
+had regressed; the machine had simply never run the fix. Worth a line in any
+future session: **check what the running binary was built from before
+believing a symptom.** `termiod status` names the daemon, and the app's own
+build time against `git log` names the app.
+
+Meanwhile that same checkout held a day of *uncommitted* work — a separate
+investigation, recorded in the memory note `termio-resize-mojibake-family`,
+which had found three more causes. Two fix sets existed, neither build had
+both, and both touched `TermiodClient.swift` and `session.rs`. They are now
+reconciled on one branch.
+
+### 13.1 A hidden pane keeps the grid it left with
+
+The main one. A pane outside the layout still has a live link feeding it
+bytes, and its surface keeps whatever grid it had when it stopped being laid
+out. Every byte drawn for the session's later widths wraps at that stale one,
+and the wrap points are baked into the surface — re-layout cannot undo them,
+it only re-wraps the lie at the new width. `repaintPending` never fires,
+because it is armed by surface reports a hidden pane does not deliver.
+
+Coming back on screen is now a boundary that takes a snapshot, the way attach
+does. It goes *through* the hold, not around it: §12.3's `requestResyncLocked`
+force-paints its answer, which is right for a hold that already failed and
+wrong for a pane about to be laid out.
+
+### 13.2 The coalescer declared sizes nobody chose
+
+A pane's width also moves when the app animates layout. Those animations pause
+long enough mid-flight that the 150ms timer fired on an animation frame: a
+traced session open declared 68 columns on its way from 97 to 97. The child's
+repaint for that width then races the next resize. 400ms; the real answer is
+declaring only at boundaries, which is still not done.
+
+### 13.3 Nothing made the child repaint after the dust settled
+
+Bytes drawn for the old grid can still be in flight when the VT takes the new
+one, and only the child can overwrite what they painted. 300ms after the last
+resize the foreground gets one more SIGWINCH — re-armed by every resize, so a
+drag costs one nudge at the end. A ring replay the daemon knows is unfaithful
+gets the same nudge, which is the frozen mangled screen after a handoff: an
+idle agent produces no next output, and a viewer already at the session's size
+gets no resize either.
+
+cmux solves the same family by pinning the surface's pixels to the authoritative
+grid regardless of visibility, checking grid parity both ways, and kicking a
+repaint after a grow. The child is our tmux; §13.3 is that kick. A true pin
+needs `InMemoryTerminalSession.updateViewport` made public in the fork, which is
+the follow-up this file should be reopened for.
+
