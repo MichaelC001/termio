@@ -477,6 +477,22 @@ impl Pty {
         (pgid > 0).then_some(pgid)
     }
 
+    /// Deliver the SIGWINCH a resize would have, without a resize.
+    ///
+    /// For when a client was just handed a screen the daemon knows is wrong —
+    /// a ring replay of bytes written into a grid the session no longer has —
+    /// and the size is not changing, so no ioctl is coming to make the child
+    /// repaint. A full-screen program answers by re-reading `TIOCGWINSZ`
+    /// (unchanged) and redrawing from its own model; that redraw is the
+    /// correct screen, and it reaches every attachment as ordinary output.
+    pub fn nudge_repaint(&self) {
+        if let Some(pgid) = self.foreground_pgid() {
+            unsafe {
+                libc::killpg(pgid, libc::SIGWINCH);
+            }
+        }
+    }
+
     /// Push a new window size to the PTY (TIOCSWINSZ) and return the size the
     /// kernel actually holds afterwards.
     ///

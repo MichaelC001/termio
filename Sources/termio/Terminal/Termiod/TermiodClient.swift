@@ -1649,6 +1649,20 @@ final class TermiodSessionLink: @unchecked Sendable {
             rendering = showing
             guard attached else { return }
             scheduleViewportLocked()
+            // Coming back on screen is a boundary, and it gets a snapshot the
+            // way attach does. A hidden pane keeps parsing live output into a
+            // surface stuck at whatever grid it had when it left the layout —
+            // the session may have been resized many times since, and every
+            // byte drawn for those widths wrapped at the stale one. The wrap
+            // points are baked into the surface's own state, so no amount of
+            // re-layout repairs them: showing the pane again re-wraps the lie
+            // at the new width. Only a fresh keyframe painted over it does,
+            // and `repaintPending` cannot be relied on to ask for one — it is
+            // set by surface reports, which a pane outside the layout never
+            // delivers.
+            if showing {
+                requestResyncLocked(paintImmediately: false)
+            }
         }
     }
 
@@ -1669,7 +1683,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             let changed = surfaceGrid != size
             surfaceGrid = size
             if changed {
-                Log.termiod.debug("""
+                Log.termiod.info("""
                 resize-trace \(self.sessionName.prefix(8), privacy: .public) surface-at \
                 \(size.rows, privacy: .public)x\
                 \(size.cols, privacy: .public)
@@ -1722,7 +1736,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         for chunk in outcome.emit { onOutput?(chunk) }
         outputLock.unlock()
         guard outcome.gaveUp else { return }
-        Log.termiod.debug("""
+        Log.termiod.info("""
         resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-flooded-out
         """)
         workQueue.async { [self] in armRepaintLocked() }
@@ -1755,7 +1769,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             }
             for chunk in hold.abandon() { onOutput?(chunk) }
             outputLock.unlock()
-            Log.termiod.debug("""
+            Log.termiod.info("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-held-out
             """)
             armRepaintLocked()
@@ -1821,7 +1835,16 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// harder than ghostty for this reason — tmux rate-limits a pane to one
     /// resize per 250ms, zellij collapses a burst to its last, cmux debounces
     /// 180ms — and none of them are wrong about it.
-    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(150)
+    ///
+    /// 400ms rather than 150 because a pane's width also moves when the *app*
+    /// animates layout — opening a session, toggling the sidebar — and those
+    /// animations pause long enough mid-flight that a 150ms timer declared a
+    /// size nobody chose (a traced session open declared 68 cols on its way
+    /// from 97 to 97). A transient declaration is not merely wasted work: the
+    /// child's repaint for it races the next resize, and bytes drawn for the
+    /// transient width parsed into the final grid are what a user reports as
+    /// glued, miswrapped rows after every session open.
+    private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(400)
 
     /// Bumped by every viewport change inside a burst; only the newest scheduled
     /// send may write its frame. See `scheduleViewportLocked`.
@@ -1879,7 +1902,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         // is answered; leading there would split rows at widths the child never
         // drew. A growing surface may already have widened with the pane, and the
         // keyframe hold still covers the case where its layout trails the reply.
-        Log.termiod.debug("""
+        Log.termiod.info("""
         resize-trace \(self.sessionName.prefix(8), privacy: .public) declare \
         \(self.viewportGrid.rows, privacy: .public)x\
         \(self.viewportGrid.cols, privacy: .public) rendering=\(showing, privacy: .public)
@@ -1928,22 +1951,27 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Trace only: a repaint was asked for because the surface reached the
     /// session's grid with bytes parsed at another one behind it.
     private func traceResync() {
-        Log.termiod.debug("""
+        Log.termiod.info("""
         resize-trace \(self.sessionName.prefix(8), privacy: .public) resync-requested
         """)
     }
 
-    private func requestResyncLocked() {
+    /// `paintImmediately` says which kind of repair this is. A repaint asked
+    /// for because the hold already failed to deliver one must not be put
+    /// through the hold again: it would wait on the grid the surface did not
+    /// reach the first time, give up the same way, and ask again — a loop that
+    /// leaves the surface stale for as long as it runs. A repaint asked for at
+    /// a *boundary* is the opposite case: the pane is about to be laid out, so
+    /// the answer belongs in the hold like any other, and force-painting it
+    /// would draw the session's screen through the stale grid the boundary
+    /// exists to get rid of.
+    private func requestResyncLocked(paintImmediately: Bool = true) {
         traceResync()
-        // A repaint asked for is one the hold has already failed to deliver, so
-        // its answer is not put through the hold again. Holding it would wait on
-        // the same grid the surface did not reach the first time, give up the
-        // same way, and ask again — a loop that leaves the surface stale for as
-        // long as it runs. By the time an answer arrives the surface has stopped
-        // moving, which is the condition the hold exists to wait for.
-        outputLock.lock()
-        hold.paintNextKeyframe()
-        outputLock.unlock()
+        if paintImmediately {
+            outputLock.lock()
+            hold.paintNextKeyframe()
+            outputLock.unlock()
+        }
         guard !closed, attached, let transport else { return }
         do {
             try Termiod.writeFrame(transport.writeDescriptor, kind: .control,
@@ -2258,7 +2286,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard authoritativeGrid != grid else { return }
             authoritativeGrid = grid
-            Log.termiod.debug("""
+            Log.termiod.info("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) session-is \
             \(grid.rows, privacy: .public)x\
             \(grid.cols, privacy: .public)

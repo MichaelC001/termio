@@ -483,7 +483,7 @@ private struct SharedGridLetterbox<Content: View>: View {
             // `TerminalGrid.fitting` for a day. It was not: the pane really did
             // change height. Whatever the next disagreement is, it takes
             // numbers, not argument.
-            Log.termiod.debug("""
+            Log.termiod.info("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) measure \
             pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public) \
             cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public) \
