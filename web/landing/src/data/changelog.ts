@@ -17,6 +17,30 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.49.0",
+    date: "2026-09-04",
+    title: "A remote checkout reads like a local one",
+    changes: {
+      new: [
+        "The Changes pane reads a remote machine's checkout — status, diffs, history, and branch comparison — over the session host instead of shelling out over SSH, so a repo on a VPS behaves like one on this Mac.",
+        "The file tree and content search go the same way. Search is ripgrep's own engine embedded in the host, and it honours the repo's excludes.",
+        "Agents can carry their own startup arguments, set per agent in Settings.",
+        "The termio command is a real binary now, shipped inside the app instead of a shell script — it fails loudly instead of guessing, and rejects a flag it does not know rather than passing it on as text.",
+      ],
+      improved: [
+        "A session is sized to the screen someone is actually using. Working on the phone sizes it to the phone; typing on the Mac hands it back, and a window nobody is looking at stops holding it down.",
+        "Workstream status is derived on the machine the session lives on, so a session opened straight from the phone reports without the Mac in the middle.",
+      ],
+      fixed: [
+        "Resizing a window no longer mangles the screen. A drag now costs one repaint at the end instead of twenty racing the program's own redraw, the screen is captured after the program answers rather than before, and dragging outward grows the terminal with the window instead of leaving it in the corner until you let go.",
+        "A pane you switch back to repaints instead of showing text wrapped at the width it had when you left it.",
+        "Dev servers and test runners no longer die from running out of file descriptors — the session host raises the limit it hands the shells it spawns.",
+        "A file sitting where the session host's socket belongs is never deleted, and stopping the host waits on the socket rather than on a pid and a filename.",
+        "A terminal answering a query — a cursor or focus report — no longer counts as typing, so two devices watching one session stop fighting over it.",
+      ],
+    },
+  },
+  {
     version: "0.48.0",
     date: "2026-08-31",
     title: "A session off screen keeps reporting",
