@@ -508,6 +508,75 @@ impl Manager {
     }
 }
 
+/// Soft `RLIMIT_NOFILE` values to try for the daemon and everything it spawns,
+/// most generous first.
+///
+/// macOS hands a Finder-launched app 2560 open files, and the daemon passes
+/// that straight down to every shell it spawns — where a modern JavaScript
+/// toolchain (`bun`, `next dev --turbopack`, a watch-mode test runner) runs out
+/// and dies with "possibly due to low max file descriptors". The hard limit is
+/// orders of magnitude higher, so the raise needs no privileges.
+///
+/// The ladder stops well short of the hard limit rather than taking it: on
+/// macOS that is effectively unbounded, and a program that sizes a table — or a
+/// close-every-descriptor loop — off `RLIMIT_NOFILE` turns the number it reads
+/// into a hang. The second rung is `OPEN_MAX`, for kernels whose
+/// `kern.maxfilesperproc` refuses the first.
+const DESCRIPTOR_LIMIT_LADDER: [libc::rlim_t; 2] = [65_536, 10_240];
+
+/// The values worth attempting, given what the process has and what it is
+/// allowed: each rung clamped to the hard limit, dropping the ones that would
+/// not be a raise and the duplicates clamping produces.
+fn descriptor_limit_candidates(current: libc::rlim_t, hard: libc::rlim_t) -> Vec<libc::rlim_t> {
+    let mut candidates: Vec<libc::rlim_t> = Vec::new();
+    for rung in DESCRIPTOR_LIMIT_LADDER {
+        let target = rung.min(hard);
+        if target > current && !candidates.contains(&target) {
+            candidates.push(target);
+        }
+    }
+    candidates
+}
+
+/// Raise this process's soft descriptor limit so the sessions it spawns inherit
+/// headroom instead of whatever the launcher happened to have.
+///
+/// Done here rather than in the child's `pre_exec` because the daemon holds a
+/// PTY master and a client socket per session and needs the same headroom
+/// itself, and because an `execve` handoff re-enters `serve` and so re-applies
+/// it. A failure is reported and stepped over: serving with the limit we
+/// started with is the status quo, not a reason to refuse to serve.
+fn raise_descriptor_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        eprintln!(
+            "termiod: could not read the descriptor limit: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let candidates = descriptor_limit_candidates(limit.rlim_cur, limit.rlim_max);
+    for target in &candidates {
+        let raised = libc::rlimit {
+            rlim_cur: *target,
+            rlim_max: limit.rlim_max,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+            return;
+        }
+    }
+    if !candidates.is_empty() {
+        eprintln!(
+            "termiod: could not raise the descriptor limit above {}: {}",
+            limit.rlim_cur,
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Run the daemon: bind the socket and accept forever.
 ///
 /// `handoff_fd` is set only when this image is the far side of an `execve` from
@@ -528,6 +597,10 @@ pub async fn serve(
     if let Err(error) = crate::log::redirect() {
         eprintln!("termiod: could not open the log file: {error:#}");
     }
+
+    // Before the first session can be spawned, and before the accept loop can
+    // start opening descriptors of its own.
+    raise_descriptor_limit();
 
     let sock_path = paths::socket_path()?;
 
@@ -3038,5 +3111,33 @@ mod search_queue_tests {
 
         running.await.expect("the search task ends with its reply");
         drop(held);
+    }
+}
+
+#[cfg(test)]
+mod descriptor_limit_tests {
+    use super::descriptor_limit_candidates;
+
+    #[test]
+    fn a_finder_launched_limit_is_raised_with_open_max_held_in_reserve() {
+        assert_eq!(
+            descriptor_limit_candidates(2_560, 2_147_483_646),
+            vec![65_536, 10_240]
+        );
+    }
+
+    #[test]
+    fn a_low_hard_limit_clamps_and_does_not_repeat_itself() {
+        assert_eq!(descriptor_limit_candidates(256, 8_192), vec![8_192]);
+    }
+
+    #[test]
+    fn a_middling_hard_limit_keeps_open_max_as_the_fallback_rung() {
+        assert_eq!(descriptor_limit_candidates(2_560, 24_576), vec![24_576, 10_240]);
+    }
+
+    #[test]
+    fn an_already_generous_limit_is_left_alone() {
+        assert!(descriptor_limit_candidates(1_048_576, 2_147_483_646).is_empty());
     }
 }
