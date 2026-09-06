@@ -327,6 +327,41 @@ fn marked_resize_survives_a_split_storm() {
     }
 }
 
+/// The race the settle nudge exists for, at the VT layer: the shell's WINCH
+/// redraw and the sidecar's Resize share one FIFO, and when the redraw's
+/// bytes land first, `resize_for_shell` blanks the prompt the shell just
+/// painted — leaving a bare cursor, with nothing queued to paint it again
+/// (the "prompt disappeared" report). The daemon answers with a post-settle
+/// SIGWINCH; zsh redisplays, and the screen heals. This pins both halves:
+/// the blank screen the race produces, and the redraw that repairs it.
+#[test]
+fn redraw_winning_the_resize_race_blanks_until_the_nudged_redraw() {
+    let mut vt = VtTerminal::new(24, 63).expect("new");
+    vt.vt_write(MARK_PROMPT_START);
+    vt.vt_write(PROMPT.as_bytes());
+    // The kernel's SIGWINCH beat the sidecar: zsh already redrew for the new
+    // width before the VT processed the resize.
+    vt.vt_write(ZSH_WINCH_REDRAW);
+    vt.vt_write(MARK_PROMPT_START);
+    vt.vt_write(PROMPT.as_bytes());
+    vt.resize_for_shell(24, 47).expect("resize");
+    assert_eq!(
+        visible(&vt.format_vt().expect("fmt")),
+        Vec::<String>::new(),
+        "the late clear blanked the redrawn prompt"
+    );
+    // The settle nudge's SIGWINCH: zsh redisplays even at an unchanged size.
+    vt.vt_write(ZSH_WINCH_REDRAW);
+    vt.vt_write(MARK_PROMPT_START);
+    vt.vt_write(PROMPT.as_bytes());
+    let rows = visible(&vt.format_vt().expect("fmt"));
+    let copies = rows
+        .iter()
+        .filter(|row| row.contains(">> termio git:("))
+        .count();
+    assert_eq!(copies, 1, "the nudged redraw restored one prompt, rows: {rows:?}");
+}
+
 /// The other half of the rule: with a job on screen rather than the shell, the
 /// same widening re-joins the line, which is what every terminal the program was
 /// written for does and what the user is comparing against.

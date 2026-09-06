@@ -1163,15 +1163,19 @@ impl Session {
     /// that the child's answer to it has drained. One more repaint request
     /// makes the child overwrite anything the transition mis-parsed.
     ///
-    /// Shells are excluded for the same reason `foreground_is_a_shell` gates
-    /// the rewrap: a shell repainted its prompt on the resize's own SIGWINCH
-    /// and a second poke buys nothing, while the agents and editors this is
-    /// for redraw their whole screen from their own model.
+    /// Shells used to be excluded — a shell repainted its prompt on the
+    /// resize's own SIGWINCH, and while the resize merely truncated, a second
+    /// poke bought nothing. The mark-gated reflow changed that arithmetic:
+    /// the shell's redraw and the sidecar's Resize race through the same
+    /// FIFO, and when the redraw's bytes land first, `resize_for_shell`
+    /// blanks the prompt the shell just painted — with nothing left to paint
+    /// it again, the session sits at a bare cursor. The nudge is that
+    /// something: zsh's WINCH handler redisplays the prompt even when the
+    /// size did not change, and when the redraw won the race after all, the
+    /// extra redisplay repaints the same cells.
     fn fire_settle_nudge(&mut self) {
         self.settle_nudge_at = None;
-        if !self.foreground_is_a_shell() {
-            self.pty.nudge_repaint();
-        }
+        self.pty.nudge_repaint();
     }
 
     fn queue_history_chunk(
@@ -4085,11 +4089,12 @@ mod tests {
     }
 
     /// A resize is followed, once it has stood for the settle window, by one
-    /// more SIGWINCH to a non-shell foreground: the child's answer to the
-    /// resize raced the grid change, and its post-settle repaint is the only
-    /// thing that can overwrite whatever the race painted. The child counts the
-    /// signals — the resize's own ioctl delivers the first, the settle nudge
-    /// the second.
+    /// more SIGWINCH to the foreground: the child's answer to the resize
+    /// raced the grid change, and its post-settle repaint is the only thing
+    /// that can overwrite whatever the race painted — for a shell, that
+    /// includes the prompt `resize_for_shell` blanked after the shell had
+    /// already redrawn it. The child counts the signals — the resize's own
+    /// ioctl delivers the first, the settle nudge the second.
     #[tokio::test]
     async fn a_settled_resize_nudges_a_job_foreground_once_more() {
         let script = "import signal,sys,time\n\
