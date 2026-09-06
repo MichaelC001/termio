@@ -1110,17 +1110,51 @@ impl Session {
         if rows == self.rows && cols == self.cols {
             return;
         }
+        // Probe the PTY with the size it already has before anything is
+        // enqueued. Re-asserting an unchanged size raises no SIGWINCH on any
+        // kernel this runs on, so the probe is silent — it only proves the
+        // descriptor can take an ioctl at all. That proof is what lets the VT
+        // resize below go out *first* while keeping the failure contract:
+        // a session whose PTY is gone stays exactly where it was and tells
+        // nobody.
+        if let Err(error) = self.pty.resize(self.rows, self.cols) {
+            // Nobody asked for this, so there is nobody to answer: the size
+            // is a policy over the whole attachment set, not one client's
+            // request. The session stays where it was and the next change
+            // tries again.
+            eprintln!(
+                "termiod: resize of session {} to {rows}x{cols} failed: {error}",
+                self.id
+            );
+            return;
+        }
+        let reflow = !self.foreground_is_a_shell();
+        // The VT's resize is enqueued *before* the ioctl that raises
+        // SIGWINCH. The shell answers that signal by redrawing its prompt,
+        // and those bytes travel the same FIFO as this command — enqueueing
+        // the resize first is what guarantees `resize_for_shell` clears the
+        // *old* prompt and never the one the shell just repainted. With the
+        // order reversed, a redraw that won the race was blanked and nothing
+        // repainted it: the session sat at a bare cursor (the "prompt
+        // disappeared" report), because zsh may skip its redisplay for a
+        // nudge that changes nothing.
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         let applied = match self.pty.resize(rows, cols) {
             Ok(applied) => applied,
             Err(error) => {
-                // Nobody asked for this, so there is nobody to answer: the size
-                // is a policy over the whole attachment set, not one client's
-                // request. The session stays where it was and the next change
-                // tries again.
+                // The probe passed and this did not: the PTY died in between.
+                // Put the VT back on the grid the kernel still holds — a plain
+                // reflow, because no SIGWINCH is coming to repaint anything a
+                // clear would blank — and leave the session's state alone.
                 eprintln!(
                     "termiod: resize of session {} to {rows}x{cols} failed: {error}",
                     self.id
                 );
+                self.send_sidecar(SidecarCommand::Resize {
+                    rows: self.rows,
+                    cols: self.cols,
+                    reflow: true,
+                });
                 return;
             }
         };
@@ -1134,6 +1168,13 @@ impl Session {
                 "termiod: session {} asked for {rows}x{cols} and the kernel kept {}x{}",
                 self.id, applied.0, applied.1
             );
+            // The VT already took the requested grid; align it with the one
+            // the kernel actually kept.
+            self.send_sidecar(SidecarCommand::Resize {
+                rows: applied.0,
+                cols: applied.1,
+                reflow: true,
+            });
         }
         let (rows, cols) = applied;
         // The kernel can have kept the size it already had, in which case the
@@ -1148,8 +1189,6 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        let reflow = !self.foreground_is_a_shell();
-        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         self.begin_resize_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
