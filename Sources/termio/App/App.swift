@@ -124,6 +124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
     // stops, not on every intermediate frame.
     private var inspectorResizeSettle: DispatchWorkItem?
+    // Catch-all for the tracking-separator re-bind: any content-split relayout (divider drag,
+    // sidebar toggle, fullscreen transition) can detach `.inspectorTrackingSeparator` from
+    // divider 1, leaving its hairline stranded beside the real divider. The explicit re-binds
+    // cover the known mutation sites; this observer covers the rest.
+    private var splitResizeObserver: NSObjectProtocol?
+    private var separatorReassertSettle: DispatchWorkItem?
+    // Divider 1's position at the last re-bind, so a settle that moved nothing (including the
+    // relayout a re-bind itself may cause) doesn't re-bind again.
+    private var lastReassertedInspectorMinX: CGFloat?
     // The floating panel shared by ⌘⇧O Open Quickly and ⌘⇧P Command Palette.
     // Presented as a child window (Xcode Open-Quickly style) because the
     // terminal surfaces are NSViews that draw above any SwiftUI overlay in the
@@ -288,6 +297,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let store = self?.store, store.inspectorVisible != visible else { return }
                 store.inspectorVisible = visible
             }
+        }
+        // Re-bind the inspector's tracking separator after *any* split relayout settles — the
+        // explicit re-binds (detail open, max-thickness change, maximize restore) each cured one
+        // reported detachment path, and divider drags / sidebar toggles were still uncovered.
+        splitResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSSplitView.didResizeSubviewsNotification,
+            object: splitViewController?.splitView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleSeparatorReassert() }
         }
         // Re-resolve the window background whenever the OS flips light↔dark under `.system` mode
         // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
@@ -1183,6 +1201,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 toolbar.removeItem(at: toggle - 1)
             }
         }
+    }
+
+    /// Coalesces the per-frame `didResizeSubviews` stream (a divider drag fires it continuously)
+    /// into one re-bind after the geometry settles, and only when divider 1 actually moved since
+    /// the last re-bind — which also keeps the relayout a re-bind itself may cause from cycling.
+    private func scheduleSeparatorReassert() {
+        separatorReassertSettle?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let splitView = self.splitViewController?.splitView,
+                      splitView.arrangedSubviews.count > 2 else { return }
+                let inspectorMinX = splitView.arrangedSubviews[2].frame.minX
+                guard inspectorMinX != self.lastReassertedInspectorMinX else { return }
+                self.lastReassertedInspectorMinX = inspectorMinX
+                self.reassertInspectorSeparator()
+            }
+        }
+        separatorReassertSettle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     /// Removes and re-inserts the inspector's tracking separator so it re-binds to divider 1 against
