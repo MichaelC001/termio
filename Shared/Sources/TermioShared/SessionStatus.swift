@@ -96,7 +96,13 @@ public struct WorkingIndicator: View {
             // comet is visually identical at 30Hz, and an uncapped timeline
             // ran this body at 120Hz per working row on ProMotion — enough to
             // saturate the main thread once a few sessions worked at once.
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            //
+            // `.periodic`, not `.animation`: the animation clock wraps every
+            // tick in an animation transaction, and on macOS that makes the
+            // hosting view re-negotiate its size each tick (FB13810482) — the
+            // whole window's layout walked 30 times a second per working row.
+            // A periodic tick just redraws this Canvas.
+            TimelineView(.periodic(from: .now, by: 1.0 / 30)) { context in
                 let p = context.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period) / period
                 grid(phase: p)
