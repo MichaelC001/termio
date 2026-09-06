@@ -27,11 +27,20 @@ use std::path::{Path, PathBuf};
 /// `PS1`: a printed mark would survive only until the first resize repaint,
 /// and the second resize would find an unmarked prompt and truncate again.
 ///
-/// The mark must stay a bare `133;A` — never `133;A;redraw=1`. An explicit
-/// `redraw=` is the one thing that flips the engine's own prompt-clear back
-/// on (the C API builds terminals with `shell_redraws_prompt = .false`, and
-/// only that parameter writes the flag), and the engine's clear runs *after*
-/// its reflow — the dde3d4d6b ordering `resize_for_shell` exists to avoid.
+/// The mark carries `redraw=0`, and that parameter is load-bearing. A bare
+/// `133;A` marks the row *and* leaves `shell_redraws_prompt` at its engine
+/// default — which is `.true` in the full libghostty core the Mac and iOS
+/// **surfaces** run. Those surfaces reflow locally on every resize, and with
+/// the flag on they clear the marked prompt themselves, in the engine's own
+/// clear-*after*-reflow order (the dde3d4d6b regression), leaving a blank
+/// prompt that the daemon's keyframe only sometimes repaints in time. The
+/// daemon is the one authority allowed to clear a prompt, in the correct
+/// order, through `resize_for_shell`; `redraw=0` turns the surfaces' local
+/// clear off (the engine's own words: it "will NOT clear any prompt lines on
+/// resize") while still marking the row, because the row's semantic content
+/// is set independently of the flag. The daemon's own sidecar VT is built
+/// through the C API, which already defaults the flag to `.false`, so
+/// `redraw=0` changes nothing there — its clear stays the manual one.
 const ZSH_SHIM: &str = r#"# termiod routes one zsh startup through this directory (ZDOTDIR) so the
 # session's shell emits OSC 133 prompt marks -- the rows the host must know
 # to blank before it may reflow the screen on resize. The borrowed ZDOTDIR
@@ -70,8 +79,8 @@ _termiod_mark_prompt() {
         builtin print -rn -- $'\e]133;D;'"${_termiod_exit_status}"$'\a'
         _termiod_command_running=''
     fi
-    if [[ "$PS1" != *$'\e]133;A\a'* ]]; then
-        PS1="%{"$'\e]133;A\a'"%}${PS1}"
+    if [[ "$PS1" != *$'\e]133;A;redraw=0\a'* ]]; then
+        PS1="%{"$'\e]133;A;redraw=0\a'"%}${PS1}"
     fi
 }
 

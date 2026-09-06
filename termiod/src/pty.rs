@@ -660,7 +660,11 @@ mod tests {
         )
         .expect("spawn zsh");
 
-        const PROMPT_START: &[u8] = b"\x1b]133;A\x07";
+        // The mark opens with `ESC ] 133 ; A`; what follows is a `;`-separated
+        // option list (the shim's carries `redraw=0`) then the BEL. Match the
+        // opening so the assertion is about the mark being emitted, not about
+        // which options ride it.
+        const PROMPT_START: &[u8] = b"\x1b]133;A";
         let marked = |bytes: &[u8]| bytes.windows(PROMPT_START.len()).any(|w| w == PROMPT_START);
         let mut collected = Vec::new();
         let mut buffer = [0u8; 4096];
