@@ -283,6 +283,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // toolbar has nothing left to carry.
                 self?.store.sidebarVisible = !collapsed
                 self?.syncMaximizedChrome()
+                // The toolbar mutation above can detach the tracking separator, and the
+                // inspector holds its width through a sidebar toggle — divider 1 never moves,
+                // so the settle observer's moved-divider guard would skip this path. Re-bind
+                // explicitly once the mutation settles.
+                DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
             }
         }
         // Mirror the inspector's live collapse state onto the store, so panes it hosts
@@ -299,8 +304,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         // Re-bind the inspector's tracking separator after *any* split relayout settles — the
-        // explicit re-binds (detail open, max-thickness change, maximize restore) each cured one
-        // reported detachment path, and divider drags / sidebar toggles were still uncovered.
+        // explicit re-binds (detail open, max-thickness change, maximize restore, sidebar
+        // toggle) each cure one known mutation site; this catches divider drags and
+        // cap-preserving window resizes. Toolbar mutations that move no divider stay on the
+        // explicit list: the moved-divider guard in `scheduleSeparatorReassert` skips them.
         splitResizeObserver = NotificationCenter.default.addObserver(
             forName: NSSplitView.didResizeSubviewsNotification,
             object: splitViewController?.splitView, queue: .main
@@ -667,12 +674,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
         let inspector = FileBrowserHostingController(store: store, settings: settings)
         let inspectorItem = NSSplitViewItem(viewController: inspector)
-        // Hold firmer than the terminal (default 250): a sidebar toggle or window resize is
-        // absorbed by the terminal alone, Xcode-style, instead of being split proportionally
-        // between both flexible panes — which nudged the inspector's width (and relaid out its
-        // content) on every frame of the sidebar's slide. The inspector only yields once the
-        // terminal is squeezed to its own minimum.
-        inspectorItem.holdingPriority = .init(260)
+        // Hold firmer than the terminal (250, the plain-item default): a sidebar toggle or
+        // window resize is absorbed by the terminal alone, Xcode-style, instead of being split
+        // proportionally between both flexible panes — which nudged the inspector's width (and
+        // relaid out its content) on every frame of the sidebar's slide. 261 is AppKit's own
+        // inspector-item default and clears the sidebar item's actual 260 (its header claims
+        // 250), so once the terminal is squeezed to its minimum the sidebar yields next, not a
+        // solver tie-break between the two.
+        inspectorItem.holdingPriority = .init(261)
         inspectorItem.minimumThickness = 260
         // Max width tracks the window: the inspector can grow to the golden ratio of the
         // content width (`updateInspectorMaxThickness`), never below the 420pt floor. A fixed
