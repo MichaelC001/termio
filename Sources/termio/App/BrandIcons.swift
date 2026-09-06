@@ -189,7 +189,7 @@ struct BrandLogoShape: Shape {
     let logo: BrandLogo
 
     func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(logo.pathData).cgPath, viewBox: logo.viewBox, in: rect)
+        scaledVectorPath(VectorGlyphCache.glyph(for: logo.pathData).glyph, viewBox: logo.viewBox, in: rect)
     }
 }
 
@@ -293,7 +293,7 @@ private struct CodiconShape: Shape {
     let viewBox: CGFloat
 
     func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(pathData).cgPath, viewBox: viewBox, in: rect)
+        scaledVectorPath(VectorGlyphCache.glyph(for: pathData).glyph, viewBox: viewBox, in: rect)
     }
 }
 
@@ -344,7 +344,7 @@ private struct ForgeMarkShape: Shape {
     let forge: GitService.Forge
 
     func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(forge.pathData).cgPath, viewBox: 24, in: rect)
+        scaledVectorPath(VectorGlyphCache.glyph(for: forge.pathData).glyph, viewBox: 24, in: rect)
     }
 }
 
