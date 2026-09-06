@@ -3939,6 +3939,140 @@ mod tests {
         (handle, events_rx, on_exit_rx)
     }
 
+    /// The whole reflow pipeline against a real zsh: injection gives the
+    /// prompt its marks, a storm of narrowing viewports drives
+    /// `resize_for_shell` through the same FIFO as the shell's own redraws,
+    /// and at the end the screen must still show a prompt — the exact thing
+    /// the "prompt disappeared after resize" reports lost. Asserted from the
+    /// authoritative snapshot, not the byte stream, because the byte stream
+    /// always contains a redraw; the question is whether a later clear ate it.
+    #[tokio::test]
+    async fn a_real_zsh_keeps_its_prompt_through_a_resize_storm() {
+        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let home = std::env::temp_dir().join(format!("termiod-zsh-storm-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("scratch home");
+
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(64);
+        let handle = super::spawn(
+            SessionId::new("zsh-storm"),
+            "test".to_string(),
+            "/".to_string(),
+            "zsh".to_string(),
+            vec![zsh.to_string(), "-i".to_string()],
+            vec![
+                ("HOME".to_string(), home.display().to_string()),
+                ("ZDOTDIR".to_string(), home.display().to_string()),
+            ],
+            24,
+            80,
+            None,
+            on_exit,
+            events,
+        )
+        .expect("spawning zsh");
+
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+
+        // Wait until the injected shim has marked a prompt, which is also the
+        // signal that zsh is at its prompt and idle.
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let event = tokio::time::timeout_at(deadline, client_rx.recv())
+                .await
+                .expect("zsh reached a marked prompt")
+                .expect("client stream open");
+            if let ClientEvent::Data(payload) = event {
+                seen.extend_from_slice(&payload.bytes);
+                if seen
+                    .windows(7)
+                    .any(|window| window == b"\x1b]133;A")
+                {
+                    break;
+                }
+            }
+        }
+
+        // The streaming cadence of a window drag: several narrowings in
+        // flight, each racing the redraw of the one before it.
+        for cols in [70u16, 60, 50, 40] {
+            handle.send(SessionMsg::Viewport {
+                id: ClientId::new("writer"),
+                rows: 24,
+                cols,
+                rendering: true,
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        // Poll the authoritative screen until the cursor's row holds a prompt
+        // again. A bare zsh prompt ends in "% ", so the row the cursor sits on
+        // must contain a '%' once the storm settles.
+        let prompt_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut last_row = String::new();
+        loop {
+            assert!(
+                tokio::time::Instant::now() < prompt_deadline,
+                "prompt never came back after the storm; cursor row: {last_row:?}"
+            );
+            handle.send(SessionMsg::ResendSnapshot {
+                id: ClientId::new("writer"),
+            });
+            let snapshot_deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(900);
+            let snapshot = loop {
+                match tokio::time::timeout_at(snapshot_deadline, client_rx.recv()).await {
+                    Ok(Some(ClientEvent::Snapshot(snapshot))) => break Some(snapshot),
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("client stream ended"),
+                    Err(_) => break None,
+                }
+            };
+            let Some(snapshot) = snapshot else { continue };
+            // The attach's own snapshot (and any captured mid-storm) still
+            // carries an earlier width; only the settled grid answers the
+            // question.
+            if snapshot.cols != 40 {
+                continue;
+            }
+            let row_start = usize::from(snapshot.cursor_y) * usize::from(snapshot.cols);
+            let row_end = row_start + usize::from(snapshot.cols);
+            last_row = snapshot.cells[row_start..row_end.min(snapshot.cells.len())]
+                .iter()
+                .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+                .collect();
+            if last_row.contains('%') {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// A resize invalidates the ring as a source of truth for the screen: the
     /// bytes already in it were written into a differently shaped grid, and
     /// replaying them into this one puts them in the wrong places. Nothing in
