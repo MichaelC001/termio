@@ -667,6 +667,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
         let inspector = FileBrowserHostingController(store: store, settings: settings)
         let inspectorItem = NSSplitViewItem(viewController: inspector)
+        // Hold firmer than the terminal (default 250): a sidebar toggle or window resize is
+        // absorbed by the terminal alone, Xcode-style, instead of being split proportionally
+        // between both flexible panes — which nudged the inspector's width (and relaid out its
+        // content) on every frame of the sidebar's slide. The inspector only yields once the
+        // terminal is squeezed to its own minimum.
+        inspectorItem.holdingPriority = .init(260)
         inspectorItem.minimumThickness = 260
         // Max width tracks the window: the inspector can grow to the golden ratio of the
         // content width (`updateInspectorMaxThickness`), never below the 420pt floor. A fixed
