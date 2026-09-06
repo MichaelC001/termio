@@ -26,6 +26,12 @@ use std::path::{Path, PathBuf};
 /// being printed from the hook, because zle's own SIGWINCH redraw reprints
 /// `PS1`: a printed mark would survive only until the first resize repaint,
 /// and the second resize would find an unmarked prompt and truncate again.
+///
+/// The mark must stay a bare `133;A` — never `133;A;redraw=1`. An explicit
+/// `redraw=` is the one thing that flips the engine's own prompt-clear back
+/// on (the C API builds terminals with `shell_redraws_prompt = .false`, and
+/// only that parameter writes the flag), and the engine's clear runs *after*
+/// its reflow — the dde3d4d6b ordering `resize_for_shell` exists to avoid.
 const ZSH_SHIM: &str = r#"# termiod routes one zsh startup through this directory (ZDOTDIR) so the
 # session's shell emits OSC 133 prompt marks -- the rows the host must know
 # to blank before it may reflow the screen on resize. The borrowed ZDOTDIR
