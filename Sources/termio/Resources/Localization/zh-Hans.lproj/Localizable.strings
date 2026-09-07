@@ -594,8 +594,12 @@
 	<string>编组到</string>
 	<key>Hide</key>
 	<string>隐藏</string>
+	<key>Hide Others</key>
+	<string>隐藏其他</string>
 	<key>Hide Replace</key>
 	<string>隐藏替换</string>
+	<key>Hide Termio</key>
+	<string>隐藏 Termio</string>
 	<key>Hide or show the inspector</key>
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
@@ -1230,6 +1234,8 @@
 	<string>快捷键必须包含 ⌘，以免遮蔽 Agent 或 shell 所需的按键。录制时按 ⌫ 可移除快捷键，按 esc 取消。</string>
 	<key>Show</key>
 	<string>显示</string>
+	<key>Show All</key>
+	<string>全部显示</string>
 	<key>Show Original</key>
 	<string>显示原身</string>
 	<key>Show Project Files</key>
