@@ -623,6 +623,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let sidebar = NSHostingController(rootView: SidebarView()
             .environmentObject(store)
             .environmentObject(settings))
+        // Same reason as the detail pane below: the default `.preferredContentSize`
+        // publishes the tree's ideal size on every view update, so a 30Hz working
+        // indicator re-negotiated the split layout 30 times a second. The split
+        // item's min/max thickness governs the column; the content never should.
+        sidebar.sizingOptions = []
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         // The sidebar's toolbar region must hold the traffic lights, the navigator toggle, and
         // (while open) the sort pull-down + new-terminal button; below ~240 the trailing `+`

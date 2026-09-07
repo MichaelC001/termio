@@ -538,7 +538,7 @@ public struct BrandLogoShape: Shape {
     }
 
     public func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(logo.pathData).cgPath, viewBox: logo.viewBox, in: rect)
+        scaledVectorPath(VectorGlyphCache.glyph(for: logo.pathData).glyph, viewBox: logo.viewBox, in: rect)
     }
 }
 
@@ -606,7 +606,7 @@ public struct OcticonShape: Shape {
     }
 
     public func path(in rect: CGRect) -> Path {
-        scaledVectorPath(SVGPath(icon.pathData).cgPath, viewBox: icon.viewBox, in: rect)
+        scaledVectorPath(VectorGlyphCache.glyph(for: icon.pathData).glyph, viewBox: icon.viewBox, in: rect)
     }
 }
 
@@ -657,8 +657,7 @@ public struct HugeIconShape: Shape {
         // width to a fixed fraction of the box — the terminal mark's own 18/24
         // fill — keeps the terminal identical while pulling wider marks in to
         // match it, so same-`size` HugeIcons line up.
-        let glyph = SVGPath(icon.pathData).cgPath
-        let ink = glyph.boundingBoxOfPath
+        let (glyph, ink) = VectorGlyphCache.glyph(for: icon.pathData)
         guard ink.width > 0, ink.height > 0 else { return Path(glyph) }
         let targetWidth = rect.width * (18.0 / 24.0)
         let scale = min(targetWidth / ink.width, rect.height / ink.height)
@@ -685,6 +684,27 @@ private func scaledVectorPath(_ glyph: CGPath, viewBox: CGFloat, in rect: CGRect
 }
 
 // MARK: - SVG path parser
+
+/// Parsed glyphs, keyed by their SVG path string. A `Shape`'s `path(in:)` runs
+/// on every layout pass, and parsing a real Hugeicons path measures ~171µs —
+/// free for one icon drawn once, real main-thread money for a sidebar of marks
+/// laid out 30 times a second (docs/design/20260819-workspace-switch-latency.md).
+/// The glyph and its ink box are immutable, so they are parsed once and reused;
+/// the icon set is a fixed catalog, so the cache needs no eviction.
+public enum VectorGlyphCache {
+    private static let lock = NSLock()
+    private static var parsed: [String: (glyph: CGPath, ink: CGRect)] = [:]
+
+    public static func glyph(for pathData: String) -> (glyph: CGPath, ink: CGRect) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hit = parsed[pathData] { return hit }
+        let glyph = SVGPath(pathData).cgPath
+        let entry = (glyph: glyph, ink: glyph.boundingBoxOfPath)
+        parsed[pathData] = entry
+        return entry
+    }
+}
 
 /// A small parser for the subset of SVG path syntax used by the embedded
 /// brand marks — moveto/lineto/horizontal/vertical, cubic and quadratic

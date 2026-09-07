@@ -664,12 +664,19 @@ private struct SessionRowDragAndDrop: ViewModifier {
             //
             // The height comes off the row itself because the zones are fractions of it;
             // rows grow with the interface row padding, so a fixed band would drift.
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.onAppear { rowHeight = proxy.size.height }
-                        .onChange(of: proxy.size.height) { _, new in rowHeight = new }
-                }
-            )
+            //
+            // `onGeometryChange`, not a `GeometryReader` background: the reader wrote
+            // `rowHeight` from `onAppear`/`onChange` *inside* the layout pass, and a
+            // column of rows mounting at once turned that into reentrant NSTableView
+            // layout — AppKit warns, and a cold switch into a large workspace spent
+            // seconds re-laying the List (docs/bug/main-thread-beachball-sidebar-layout.md).
+            // `onGeometryChange` delivers the same height with the write deferred out
+            // of the update.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { newHeight in
+                rowHeight = newHeight
+            }
             .onDrop(of: [.text], delegate: SessionRowDropDelegate(
                 session: session.id, height: rowHeight, store: store))
     }
