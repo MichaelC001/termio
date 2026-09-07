@@ -42,13 +42,18 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         None => row("termiod local", "-", "", "(not installed)"),
         Some(daemon) => match daemon_status(&daemon) {
             Some(status) if status.daemon.running => {
+                // A stale local daemon is the one skew with no command in this
+                // table's margins — a remote is reconciled before each terminal
+                // opens, and the machine the app runs on is the one nobody
+                // asks — so the row itself names the way out.
+                let behind = behind_note(status.daemon.version.as_deref(), &status.binary.version);
                 let version = status.daemon.version.unwrap_or(status.binary.version);
                 let proto = status
                     .daemon
                     .proto
                     .map(|proto| format!("proto {proto}"))
                     .unwrap_or_default();
-                row("termiod local", &version, &proto, "");
+                row("termiod local", &version, &proto, behind);
             }
             Some(status) if !status.binary.version.is_empty() => row(
                 "termiod local",
@@ -78,6 +83,24 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         println!("socket {} ({why})", socket.display());
     }
     Ok(())
+}
+
+/// "← behind; run `termiod handoff`" when the running daemon is older than the
+/// binary staged at its path, and quiet in every other case — including the
+/// versionless answer of a daemon too old to say, which `handoff` would refuse
+/// anyway.
+fn behind_note(running: Option<&str>, staged: &str) -> &'static str {
+    let (Some(running), Some(staged)) = (
+        running.and_then(lifecycle::Version::parse),
+        lifecycle::Version::parse(staged),
+    ) else {
+        return "";
+    };
+    if running < staged {
+        "← behind; run `termiod handoff`"
+    } else {
+        ""
+    }
 }
 
 /// The located daemon binary answering for itself, exactly as the shell
@@ -283,6 +306,17 @@ mod tests {
             parse_utc_timestamp("2024-02-29T00:00:00Z"),
             parse_utc_timestamp("2024-02-28T00:00:00Z").map(|epoch| epoch + 86_400)
         );
+    }
+
+    #[test]
+    fn only_a_running_daemon_older_than_its_binary_is_flagged() {
+        assert_eq!(
+            behind_note(Some("0.49.0+1881"), "0.50.0+1913"),
+            "← behind; run `termiod handoff`"
+        );
+        assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913"), "");
+        assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913"), "");
+        assert_eq!(behind_note(None, "0.50.0+1913"), "");
     }
 
     #[test]
