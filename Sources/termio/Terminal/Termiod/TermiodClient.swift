@@ -5,12 +5,10 @@ import Foundation
 import TermioShared
 
 /// Whether any of this app's windows is mid live-resize — the user dragging a
-/// window edge, as AppKit reports it. Consulted by every session link's
-/// viewport scheduling to pick between two cadences: a drag streams throttled
-/// intermediate sizes so the session reflows while the user watches (the way
-/// an in-process terminal does), while everything else keeps the trailing
-/// debounce that protects the daemon from sizes nobody chose — the app's own
-/// layout animations, which are not window live-resizes and never flip this.
+/// window edge, as AppKit reports it. The app's own layout animations (opening
+/// a session, toggling the sidebar) move a pane's size too but are not window
+/// live-resizes, so this stays false through them; `scheduleViewportLocked`
+/// reads it to tell a real drag from those and pick its cadence.
 final class WindowLiveResizeTracker: @unchecked Sendable {
     static let shared = WindowLiveResizeTracker()
 
@@ -1892,7 +1890,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// luxury; over the daemon socket each declaration is a resize barrier
     /// with a keyframe to every attached device, so the stream is throttled
     /// to a handful per second, which reads as live.
-    private static let liveResizeStreamInterval = DispatchTimeInterval.milliseconds(150)
     private static let liveResizeStreamNanoseconds = UInt64(150_000_000)
 
     /// When the last viewport declaration actually went out, for the throttle's
@@ -1903,23 +1900,17 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// send may write its frame. See `scheduleViewportLocked`.
     private var viewportGeneration: UInt64 = 0
 
-    /// Sends a burst's final size, once it stops.
-    ///
-    /// One barrier per drag, at the end. A growing pane may follow the drag live;
-    /// a shrinking one stays at the last authoritative grid and is clipped.
-    ///
-    /// Generation-stamped rather than cancelled because the size is re-read at
-    /// fire time: the last scheduled send is the only one that writes, and it
-    /// writes whatever the pane settled at.
+    /// Schedules the viewport send, on one of two cadences: a window drag
+    /// streams on a leading-edge throttle so the session reflows under the
+    /// user's hand, everything else debounces so the app's own layout
+    /// animations don't declare a size nobody chose. Generation-stamped rather
+    /// than cancelled, so the send re-reads the size at fire time and only the
+    /// newest one writes.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
         viewportGeneration &+= 1
         let generation = viewportGeneration
-        // A window drag streams: send now if the throttle window has passed,
-        // otherwise at its end. Everything else debounces — the app's layout
-        // animations produce sizes nobody chose, and only quiet proves the
-        // pane has settled.
         if WindowLiveResizeTracker.shared.isActive {
             let now = DispatchTime.now()
             let elapsed = now.uptimeNanoseconds - lastViewportFlush.uptimeNanoseconds
