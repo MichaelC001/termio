@@ -1110,17 +1110,51 @@ impl Session {
         if rows == self.rows && cols == self.cols {
             return;
         }
+        // Probe the PTY with the size it already has before anything is
+        // enqueued. Re-asserting an unchanged size raises no SIGWINCH on any
+        // kernel this runs on, so the probe is silent — it only proves the
+        // descriptor can take an ioctl at all. That proof is what lets the VT
+        // resize below go out *first* while keeping the failure contract:
+        // a session whose PTY is gone stays exactly where it was and tells
+        // nobody.
+        if let Err(error) = self.pty.resize(self.rows, self.cols) {
+            // Nobody asked for this, so there is nobody to answer: the size
+            // is a policy over the whole attachment set, not one client's
+            // request. The session stays where it was and the next change
+            // tries again.
+            eprintln!(
+                "termiod: resize of session {} to {rows}x{cols} failed: {error}",
+                self.id
+            );
+            return;
+        }
+        let reflow = !self.foreground_is_a_shell();
+        // The VT's resize is enqueued *before* the ioctl that raises
+        // SIGWINCH. The shell answers that signal by redrawing its prompt,
+        // and those bytes travel the same FIFO as this command — enqueueing
+        // the resize first is what guarantees `resize_for_shell` clears the
+        // *old* prompt and never the one the shell just repainted. With the
+        // order reversed, a redraw that won the race was blanked and nothing
+        // repainted it: the session sat at a bare cursor (the "prompt
+        // disappeared" report), because zsh may skip its redisplay for a
+        // nudge that changes nothing.
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         let applied = match self.pty.resize(rows, cols) {
             Ok(applied) => applied,
             Err(error) => {
-                // Nobody asked for this, so there is nobody to answer: the size
-                // is a policy over the whole attachment set, not one client's
-                // request. The session stays where it was and the next change
-                // tries again.
+                // The probe passed and this did not: the PTY died in between.
+                // Put the VT back on the grid the kernel still holds — a plain
+                // reflow, because no SIGWINCH is coming to repaint anything a
+                // clear would blank — and leave the session's state alone.
                 eprintln!(
                     "termiod: resize of session {} to {rows}x{cols} failed: {error}",
                     self.id
                 );
+                self.send_sidecar(SidecarCommand::Resize {
+                    rows: self.rows,
+                    cols: self.cols,
+                    reflow: true,
+                });
                 return;
             }
         };
@@ -1134,6 +1168,13 @@ impl Session {
                 "termiod: session {} asked for {rows}x{cols} and the kernel kept {}x{}",
                 self.id, applied.0, applied.1
             );
+            // The VT already took the requested grid; align it with the one
+            // the kernel actually kept.
+            self.send_sidecar(SidecarCommand::Resize {
+                rows: applied.0,
+                cols: applied.1,
+                reflow: true,
+            });
         }
         let (rows, cols) = applied;
         // The kernel can have kept the size it already had, in which case the
@@ -1148,8 +1189,6 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        let reflow = !self.foreground_is_a_shell();
-        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         self.begin_resize_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
@@ -1163,15 +1202,19 @@ impl Session {
     /// that the child's answer to it has drained. One more repaint request
     /// makes the child overwrite anything the transition mis-parsed.
     ///
-    /// Shells are excluded for the same reason `foreground_is_a_shell` gates
-    /// the rewrap: a shell repainted its prompt on the resize's own SIGWINCH
-    /// and a second poke buys nothing, while the agents and editors this is
-    /// for redraw their whole screen from their own model.
+    /// Shells used to be excluded — a shell repainted its prompt on the
+    /// resize's own SIGWINCH, and while the resize merely truncated, a second
+    /// poke bought nothing. The mark-gated reflow changed that arithmetic:
+    /// the shell's redraw and the sidecar's Resize race through the same
+    /// FIFO, and when the redraw's bytes land first, `resize_for_shell`
+    /// blanks the prompt the shell just painted — with nothing left to paint
+    /// it again, the session sits at a bare cursor. The nudge is that
+    /// something: zsh's WINCH handler redisplays the prompt even when the
+    /// size did not change, and when the redraw won the race after all, the
+    /// extra redisplay repaints the same cells.
     fn fire_settle_nudge(&mut self) {
         self.settle_nudge_at = None;
-        if !self.foreground_is_a_shell() {
-            self.pty.nudge_repaint();
-        }
+        self.pty.nudge_repaint();
     }
 
     fn queue_history_chunk(
@@ -2025,7 +2068,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 let resized = if reflow {
                                     terminal.resize_reflowing(rows, cols)
                                 } else {
-                                    terminal.resize(rows, cols)
+                                    terminal.resize_for_shell(rows, cols)
                                 };
                                 if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
@@ -3228,9 +3271,11 @@ mod tests {
     /// The rule the reflow policy turns on, and the case that made the previous
     /// one wrong: `zsh -ilc exec claude` leaves no shell in the session at all,
     /// so "is a job running under the shell" was false for exactly the sessions
-    /// a truncating resize mangles.
+    /// a truncating resize mangles. A shell gets the mark-gated resize
+    /// (`resize_for_shell`): reflow when its prompt rows are OSC 133-marked,
+    /// truncation when they are not.
     #[tokio::test]
-    async fn only_a_shell_gets_the_truncating_resize() {
+    async fn only_a_shell_gets_the_mark_gated_resize() {
         let Sidecar {
             commands,
             results: _results,
@@ -3894,6 +3939,140 @@ mod tests {
         (handle, events_rx, on_exit_rx)
     }
 
+    /// The whole reflow pipeline against a real zsh: injection gives the
+    /// prompt its marks, a storm of narrowing viewports drives
+    /// `resize_for_shell` through the same FIFO as the shell's own redraws,
+    /// and at the end the screen must still show a prompt — the exact thing
+    /// the "prompt disappeared after resize" reports lost. Asserted from the
+    /// authoritative snapshot, not the byte stream, because the byte stream
+    /// always contains a redraw; the question is whether a later clear ate it.
+    #[tokio::test]
+    async fn a_real_zsh_keeps_its_prompt_through_a_resize_storm() {
+        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let home = std::env::temp_dir().join(format!("termiod-zsh-storm-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("scratch home");
+
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(64);
+        let handle = super::spawn(
+            SessionId::new("zsh-storm"),
+            "test".to_string(),
+            "/".to_string(),
+            "zsh".to_string(),
+            vec![zsh.to_string(), "-i".to_string()],
+            vec![
+                ("HOME".to_string(), home.display().to_string()),
+                ("ZDOTDIR".to_string(), home.display().to_string()),
+            ],
+            24,
+            80,
+            None,
+            on_exit,
+            events,
+        )
+        .expect("spawning zsh");
+
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+
+        // Wait until the injected shim has marked a prompt, which is also the
+        // signal that zsh is at its prompt and idle.
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let event = tokio::time::timeout_at(deadline, client_rx.recv())
+                .await
+                .expect("zsh reached a marked prompt")
+                .expect("client stream open");
+            if let ClientEvent::Data(payload) = event {
+                seen.extend_from_slice(&payload.bytes);
+                if seen
+                    .windows(7)
+                    .any(|window| window == b"\x1b]133;A")
+                {
+                    break;
+                }
+            }
+        }
+
+        // The streaming cadence of a window drag: several narrowings in
+        // flight, each racing the redraw of the one before it.
+        for cols in [70u16, 60, 50, 40] {
+            handle.send(SessionMsg::Viewport {
+                id: ClientId::new("writer"),
+                rows: 24,
+                cols,
+                rendering: true,
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        // Poll the authoritative screen until the cursor's row holds a prompt
+        // again. A bare zsh prompt ends in "% ", so the row the cursor sits on
+        // must contain a '%' once the storm settles.
+        let prompt_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut last_row = String::new();
+        loop {
+            assert!(
+                tokio::time::Instant::now() < prompt_deadline,
+                "prompt never came back after the storm; cursor row: {last_row:?}"
+            );
+            handle.send(SessionMsg::ResendSnapshot {
+                id: ClientId::new("writer"),
+            });
+            let snapshot_deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(900);
+            let snapshot = loop {
+                match tokio::time::timeout_at(snapshot_deadline, client_rx.recv()).await {
+                    Ok(Some(ClientEvent::Snapshot(snapshot))) => break Some(snapshot),
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("client stream ended"),
+                    Err(_) => break None,
+                }
+            };
+            let Some(snapshot) = snapshot else { continue };
+            // The attach's own snapshot (and any captured mid-storm) still
+            // carries an earlier width; only the settled grid answers the
+            // question.
+            if snapshot.cols != 40 {
+                continue;
+            }
+            let row_start = usize::from(snapshot.cursor_y) * usize::from(snapshot.cols);
+            let row_end = row_start + usize::from(snapshot.cols);
+            last_row = snapshot.cells[row_start..row_end.min(snapshot.cells.len())]
+                .iter()
+                .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+                .collect();
+            if last_row.contains('%') {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// A resize invalidates the ring as a source of truth for the screen: the
     /// bytes already in it were written into a differently shaped grid, and
     /// replaying them into this one puts them in the wrong places. Nothing in
@@ -4083,11 +4262,12 @@ mod tests {
     }
 
     /// A resize is followed, once it has stood for the settle window, by one
-    /// more SIGWINCH to a non-shell foreground: the child's answer to the
-    /// resize raced the grid change, and its post-settle repaint is the only
-    /// thing that can overwrite whatever the race painted. The child counts the
-    /// signals — the resize's own ioctl delivers the first, the settle nudge
-    /// the second.
+    /// more SIGWINCH to the foreground: the child's answer to the resize
+    /// raced the grid change, and its post-settle repaint is the only thing
+    /// that can overwrite whatever the race painted — for a shell, that
+    /// includes the prompt `resize_for_shell` blanked after the shell had
+    /// already redrawn it. The child counts the signals — the resize's own
+    /// ioctl delivers the first, the settle nudge the second.
     #[tokio::test]
     async fn a_settled_resize_nudges_a_job_foreground_once_more() {
         let script = "import signal,sys,time\n\

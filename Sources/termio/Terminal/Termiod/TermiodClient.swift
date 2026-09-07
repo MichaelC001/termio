@@ -1,7 +1,46 @@
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
 import TermioShared
+
+/// Whether any of this app's windows is mid live-resize — the user dragging a
+/// window edge, as AppKit reports it. Consulted by every session link's
+/// viewport scheduling to pick between two cadences: a drag streams throttled
+/// intermediate sizes so the session reflows while the user watches (the way
+/// an in-process terminal does), while everything else keeps the trailing
+/// debounce that protects the daemon from sizes nobody chose — the app's own
+/// layout animations, which are not window live-resizes and never flip this.
+final class WindowLiveResizeTracker: @unchecked Sendable {
+    static let shared = WindowLiveResizeTracker()
+
+    private let lock = NSLock()
+    private var resizingWindows = 0
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return resizingWindows > 0
+    }
+
+    private init() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: NSWindow.willStartLiveResizeNotification, object: nil, queue: nil
+        ) { [self] _ in
+            lock.lock()
+            resizingWindows += 1
+            lock.unlock()
+        }
+        center.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification, object: nil, queue: nil
+        ) { [self] _ in
+            lock.lock()
+            resizingWindows = max(0, resizingWindows - 1)
+            lock.unlock()
+        }
+    }
+}
 
 /// Attach client for the local `termiod` session host (Session Protocol v0.1,
 /// see termiod/src/protocol.rs). The
@@ -1846,6 +1885,20 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// glued, miswrapped rows after every session open.
     private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(400)
 
+    /// The cadence a window drag streams at instead. Every size under the
+    /// user's hand is one they chose, so the transient-width argument above
+    /// does not apply — what applies is Ghostty's behaviour, where the screen
+    /// reflows continuously while the edge moves. Per-frame is an in-process
+    /// luxury; over the daemon socket each declaration is a resize barrier
+    /// with a keyframe to every attached device, so the stream is throttled
+    /// to a handful per second, which reads as live.
+    private static let liveResizeStreamInterval = DispatchTimeInterval.milliseconds(150)
+    private static let liveResizeStreamNanoseconds = UInt64(150_000_000)
+
+    /// When the last viewport declaration actually went out, for the throttle's
+    /// leading edge. Must only be touched on `workQueue`.
+    private var lastViewportFlush = DispatchTime(uptimeNanoseconds: 0)
+
     /// Bumped by every viewport change inside a burst; only the newest scheduled
     /// send may write its frame. See `scheduleViewportLocked`.
     private var viewportGeneration: UInt64 = 0
@@ -1863,6 +1916,26 @@ final class TermiodSessionLink: @unchecked Sendable {
     private func scheduleViewportLocked() {
         viewportGeneration &+= 1
         let generation = viewportGeneration
+        // A window drag streams: send now if the throttle window has passed,
+        // otherwise at its end. Everything else debounces — the app's layout
+        // animations produce sizes nobody chose, and only quiet proves the
+        // pane has settled.
+        if WindowLiveResizeTracker.shared.isActive {
+            let now = DispatchTime.now()
+            let elapsed = now.uptimeNanoseconds - lastViewportFlush.uptimeNanoseconds
+            if elapsed >= Self.liveResizeStreamNanoseconds {
+                flushViewportLocked()
+                return
+            }
+            let remainder = Self.liveResizeStreamNanoseconds - elapsed
+            workQueue.asyncAfter(
+                deadline: .now() + .nanoseconds(Int(min(remainder, UInt64(Int.max))))
+            ) { [self] in
+                guard !closed, attached, generation == viewportGeneration else { return }
+                flushViewportLocked()
+            }
+            return
+        }
         workQueue.asyncAfter(deadline: .now() + Self.viewportCoalescingInterval) { [self] in
             guard !closed, attached, generation == viewportGeneration else { return }
             flushViewportLocked()
@@ -1871,6 +1944,7 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// Must run on `workQueue`.
     private func flushViewportLocked() {
+        lastViewportFlush = DispatchTime.now()
         do {
             try sendViewportLocked()
         } catch {
