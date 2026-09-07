@@ -17,6 +17,23 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.50.0",
+    date: "2026-09-07",
+    title: "Resizing reflows the shell",
+    changes: {
+      new: [
+        "Resizing a session no longer cuts off long lines while the shell sits at a prompt — the screen rewraps to the new width in both directions, without duplicating the prompt. zsh gets this automatically; other shells keep the old behavior.",
+      ],
+      improved: [
+        "The terminal reflows under the window edge while you drag, instead of waiting for the drag to end.",
+      ],
+      fixed: [
+        "Opening a session from the phone no longer resizes it to the Mac's window first, which was mangling agent TUIs' composer boxes on every open.",
+        "⌘H hides the app: the app menu now carries the standard Hide Termio, Hide Others, and Show All items.",
+      ],
+    },
+  },
+  {
     version: "0.49.1",
     date: "2026-09-07",
     title: "The sidebar stops stalling the app",
