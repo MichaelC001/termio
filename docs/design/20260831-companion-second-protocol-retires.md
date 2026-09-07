@@ -3,7 +3,7 @@ title: Retire the companion's second protocol — the phone attaches to a device
 status: draft
 type: rfc
 created: 2026-08-31
-updated: 2026-08-31
+updated: 2026-09-02
 related:
   - 20260805-termiod-device-architecture.md
   - 20260819-unify-server-plane.md
@@ -496,8 +496,8 @@ subscription, its cursor and its focus rule are covered by unit tests against
 the daemon's own JSON, and the daemon's half by `cargo test`, but the two have
 not been in one room — CI builds the iOS app and does not run its tests. What
 that leaves unproven is the wiring between two things each proven separately,
-which is exactly what Stage 2's gate is for: a phone driving a session on a Mac
-with the app quit.
+which is exactly what Stage 2's gates are for: a phone driving a session on a
+Mac, first with the app running (2a) and then with it quit (2b).
 
 `AgentStatusRules` stays in Swift **as a type and not as a matcher** — it now
 holds pattern *sources*, because the app still parses manifests to render the
@@ -511,8 +511,55 @@ agent roster and the fixture contract says both parsers stay
 iOS-as-device-client D4 describes. The Mac app does not stop serving here; the
 phone simply gains a second way to reach the same sessions.
 
-**Gate:** a phone attaches to the Mac's own `termiod` and drives a session with
-**the Mac app quit**. Not the simulator.
+#### What shipped, and where it diverged
+
+The enrollment half is done, and matches D4 rung for rung. The phone speaks the
+Session Protocol (`ios/Sources/TermiodBackend.swift`, `ios/Sources/DeviceClient.swift`),
+reads a `termio://device` invite carrying D4's four fields and no fifth
+(`ios/Sources/Models.swift:641`; the struct's `origin` is derived from the invite's
+own `url`, not carried in the link), and dials once for `hello_ok` before persisting
+— D4's *verify before saving*. `termiod pair --qr` covers rungs 2 and 3;
+`Settings ▸ Devices ▸ Serving` covers rung 1 (`DeviceServingSection`).
+
+The reachability half diverged, deliberately, and this document did not record
+it. A phone does not reach this Mac through `termiod serve --wss`. It reaches it
+through `DeviceSpliceServer`, which terminates the WebSocket **in the app** and
+splices it onto the daemon's Unix socket
+(`Sources/termio/Companion/DeviceSpliceServer.swift:55-72`). The Mac's own daemon
+is still spawned as a bare `serve`
+(`Sources/termio/Terminal/Termiod/TermiodClient.swift:718`).
+
+**The divergence is correct, and is not to be undone.** `wss::parse_bind` refuses
+any non-loopback address (`termiod/src/wss.rs:63-70`), because the rule that keeps
+TLS out of `termiod` (§H #3) is that a tunnel or a proxy always sits in front of
+it. A phone on the same Wi-Fi has neither, and telling someone to publish a relay
+to reach a Mac three feet away is not an answer. The splice is what the invariant
+allows: after the Upgrade it copies bytes and never reads a frame, so it cannot
+disagree with the daemon about what one means.
+
+**What it costs is exactly what the original gate measured.** A listener owned by
+an `@MainActor` class in the app process ends when the app does. Fronting
+`devicePort` with a tunnel (`Sources/termio/Companion/TunnelManager.swift:567`)
+does not change that: the tunnel survives the quit, the thing behind it does not.
+
+#### The gate, split
+
+One gate could not hold both, because the Mac has two ways to be reached and only
+one of them is allowed to outlive the app. Neither subsumes the other — 2a is the
+case the splice exists for, 2b is the case that earns the stage its name.
+
+**Gate 2a — same network, app running.** A phone on the same Wi-Fi attaches to
+this Mac through `DeviceSpliceServer` and drives a session. The app is running by
+construction. Not the simulator.
+*Unrun.* The path exists end to end in code; Stage 1 recorded that no device pair
+had been run, and none has been since.
+
+**Gate 2b — remote, app quit.** A phone reaches this Mac's `termiod` through a
+tunnel and drives a session with **the Mac app quit**. Not the simulator.
+*Unmet, and it is the work Stage 2 still owes:* the Mac's daemon has to be spawned
+with `--wss` on loopback, and the tunnel has to front that port rather than the
+splice's, so that quitting the app leaves the path intact. Direct Attach then
+selects a *port*, not a *lifetime*.
 
 ### Stage 3 — the roster is the device's
 
