@@ -3019,6 +3019,27 @@ private func buildMainMenu() -> NSMenu {
         keyEquivalent: ","
     )
     appMenu.addItem(.separator())
+    // The standard Hide block every Mac app carries and termio didn't, which is
+    // why ⌘H did nothing (#612) — the Window menu's ⌘M had the same history.
+    // The surface's performKeyEquivalent passes unbound ⌘-chords through, so
+    // these fire from the menu with no extra key plumbing.
+    appMenu.addItem(
+        withTitle: localized("Hide Termio"),
+        action: #selector(NSApplication.hide(_:)),
+        keyEquivalent: "h"
+    )
+    let hideOthersItem = appMenu.addItem(
+        withTitle: localized("Hide Others"),
+        action: #selector(NSApplication.hideOtherApplications(_:)),
+        keyEquivalent: "h"
+    )
+    hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+    appMenu.addItem(
+        withTitle: localized("Show All"),
+        action: #selector(NSApplication.unhideAllApplications(_:)),
+        keyEquivalent: ""
+    )
+    appMenu.addItem(.separator())
     appMenu.addItem(
         withTitle: localized("Quit Termio"),
         action: #selector(NSApplication.terminate(_:)),

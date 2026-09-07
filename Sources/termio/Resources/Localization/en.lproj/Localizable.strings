@@ -594,8 +594,12 @@
 	<string>Group with</string>
 	<key>Hide</key>
 	<string>Hide</string>
+	<key>Hide Others</key>
+	<string>Hide Others</string>
 	<key>Hide Replace</key>
 	<string>Hide Replace</string>
+	<key>Hide Termio</key>
+	<string>Hide Termio</string>
 	<key>Hide or show the inspector</key>
 	<string>Hide or show the inspector</string>
 	<key>Hide or show the navigator</key>
@@ -1230,6 +1234,8 @@
 	<string>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</string>
 	<key>Show</key>
 	<string>Show</string>
+	<key>Show All</key>
+	<string>Show All</string>
 	<key>Show Original</key>
 	<string>Show Original</string>
 	<key>Show Project Files</key>
