@@ -17,6 +17,20 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.49.1",
+    date: "2026-09-07",
+    title: "The sidebar stops stalling the app",
+    changes: {
+      fixed: [
+        "Beachballs traced to the sidebar are gone: rows measure their height without re-entering the list's own layout, the sidebar stops re-sizing itself on every update, and the working indicator ticks on a clock instead of on every repaint.",
+        "The inspector keeps its width while the sidebar toggles, and its divider stays draggable after any split relayout.",
+      ],
+      improved: [
+        "Sidebar icons are parsed once and cached, so a long session list scrolls without redoing that work per row.",
+      ],
+    },
+  },
+  {
     version: "0.49.0",
     date: "2026-09-04",
     title: "A remote checkout reads like a local one",
