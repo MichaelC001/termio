@@ -84,8 +84,34 @@ When invoked, execute these steps sequentially:
    echo "launched ./termio-dev.app (logs: /tmp/termio-dev.log)"
    ```
 
-5. **Report** the result: whether the build succeeded and the app relaunched, or
-   what went wrong. If the window doesn't appear, check `/tmp/termio-dev.log`.
+5. **Upgrade the running dev daemon.** `build-app.sh` already rebuilt the
+   daemon into `Resources/termiod`, but a **running** dev daemon keeps its old
+   image: a dev app's launch-time reconcile deliberately refuses to stage
+   (its bundle stamp is a placeholder, and that guard is what keeps a dev
+   build from ever deploying itself over a release daemon). Without this
+   step, a termiod-side change gets "verified" against the previous daemon.
+   The deploy is idempotent — same version reports `current` and does
+   nothing, so it costs nothing on Swift-only rebuilds — and an execve
+   handoff keeps the pid and carries every live session. `TERMIOD_SOCK` must
+   be unset first: a shell inside a termio session carries it pointed at the
+   *release* daemon, and it overrides the channel.
+   ```bash
+   unset TERMIOD_SOCK
+   TERMIO_CHANNEL=dev ./termio-dev.app/Contents/Resources/termiod deploy --json 2>&1 | tail -3
+   ```
+   A daemon that isn't running needs nothing: the first pane starts it from
+   the new bundle.
+
+6. **Report** the result: whether the build succeeded, the app relaunched, and
+   the daemon version the deploy reported. If the window doesn't appear, check
+   `/tmp/termio-dev.log`.
+
+## Verifying a termiod-side change
+
+Sessions carried across the handoff keep the environment and shell their
+**old** daemon spawned them with — a change to session spawning (env,
+injection, PTY setup) is invisible in them by design. Open a **new** session
+to see it.
 
 ## Icons
 

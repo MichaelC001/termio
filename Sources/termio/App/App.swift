@@ -72,12 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pendingOpenURLs: [URL] = []
     // The split controller (sidebar + terminal + inspector). The navigator toggle reaches its
     // `toggleSidebar(_:)` through the responder chain, so this is just a weak handle on the
-    // window content controller's child.
+    // window's content view controller.
     private weak var splitViewController: NSSplitViewController?
-    // The split normally meets the window edge, but fullscreen keeps a small breathing room above
-    // both the sidebar and terminal. Held so fullscreen transitions can adjust it without
-    // rebuilding panes or their terminal surfaces.
-    private var splitTopInsetConstraint: NSLayoutConstraint?
     // The trailing file-browser inspector item, retained so the toolbar button and the
     // View menu can collapse/expand it. Starts collapsed (see `makeContentSplitViewController`).
     private var filesInspectorItem: NSSplitViewItem?
@@ -128,6 +124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
     // stops, not on every intermediate frame.
     private var inspectorResizeSettle: DispatchWorkItem?
+    // Catch-all for the tracking-separator re-bind: any content-split relayout (divider drag,
+    // sidebar toggle, fullscreen transition) can detach `.inspectorTrackingSeparator` from
+    // divider 1, leaving its hairline stranded beside the real divider. The explicit re-binds
+    // cover the known mutation sites; this observer covers the rest.
+    private var splitResizeObserver: NSObjectProtocol?
+    private var separatorReassertSettle: DispatchWorkItem?
+    // Divider 1's position at the last re-bind, so a settle that moved nothing (including the
+    // relayout a re-bind itself may cause) doesn't re-bind again.
+    private var lastReassertedInspectorMinX: CGFloat?
     // The floating panel shared by ⌘⇧O Open Quickly and ⌘⇧P Command Palette.
     // Presented as a child window (Xcode Open-Quickly style) because the
     // terminal surfaces are NSViews that draw above any SwiftUI overlay in the
@@ -249,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The height every pane is about to measure itself against. If a future
         // change moves chrome back after this point, the panes declare a
         // viewport for a window that never existed and the trace says so here.
-        Log.termiod.debug("""
+        Log.termiod.info("""
         resize-trace WINDOW content-height-final \
         layout=\(self.window.contentLayoutRect.width, privacy: .public)x\
         \(self.window.contentLayoutRect.height, privacy: .public)
@@ -265,7 +270,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The autosaved frame can restore straight into fullscreen, so seed the mirror rather
         // than waiting for a transition that already happened.
         store.windowIsFullScreen = window.styleMask.contains(.fullScreen)
-        updateSplitTopInset()
         // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
         // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
         // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
@@ -279,6 +283,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // toolbar has nothing left to carry.
                 self?.store.sidebarVisible = !collapsed
                 self?.syncMaximizedChrome()
+                // The toolbar mutation above can detach the tracking separator, and the
+                // inspector holds its width through a sidebar toggle — divider 1 never moves,
+                // so the settle observer's moved-divider guard would skip this path. Re-bind
+                // explicitly once the mutation settles.
+                DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
             }
         }
         // Mirror the inspector's live collapse state onto the store, so panes it hosts
@@ -293,6 +302,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let store = self?.store, store.inspectorVisible != visible else { return }
                 store.inspectorVisible = visible
             }
+        }
+        // Re-bind the inspector's tracking separator after *any* split relayout settles — the
+        // explicit re-binds (detail open, max-thickness change, maximize restore, sidebar
+        // toggle) each cure one known mutation site; this catches divider drags and
+        // cap-preserving window resizes. Toolbar mutations that move no divider stay on the
+        // explicit list: the moved-divider guard in `scheduleSeparatorReassert` skips them.
+        splitResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSSplitView.didResizeSubviewsNotification,
+            object: splitViewController?.splitView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleSeparatorReassert() }
         }
         // Re-resolve the window background whenever the OS flips light↔dark under `.system` mode
         // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
@@ -599,10 +619,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// lights and the title-bar tracking separator. The panes no longer bridge their toolbars —
     /// the window owns a real `NSToolbar` (see `installToolbar`) so it can carry the native
     /// `.toggleSidebar` item. The standard `toggleSidebar(_:)` responder action collapses the item.
-    private func makeContentSplitViewController() -> NSViewController {
+    private func makeContentSplitViewController() -> NSSplitViewController {
         let sidebar = NSHostingController(rootView: SidebarView()
             .environmentObject(store)
             .environmentObject(settings))
+        // Same reason as the detail pane below: the default `.preferredContentSize`
+        // publishes the tree's ideal size on every view update, so a 30Hz working
+        // indicator re-negotiated the split layout 30 times a second. The split
+        // item's min/max thickness governs the column; the content never should.
+        sidebar.sizingOptions = []
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         // The sidebar's toolbar region must hold the traffic lights, the navigator toggle, and
         // (while open) the sort pull-down + new-terminal button; below ~240 the trailing `+`
@@ -654,6 +679,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
         let inspector = FileBrowserHostingController(store: store, settings: settings)
         let inspectorItem = NSSplitViewItem(viewController: inspector)
+        // Hold firmer than the terminal (250, the plain-item default): a sidebar toggle or
+        // window resize is absorbed by the terminal alone, Xcode-style, instead of being split
+        // proportionally between both flexible panes — which nudged the inspector's width (and
+        // relaid out its content) on every frame of the sidebar's slide. 261 is AppKit's own
+        // inspector-item default and clears the sidebar item's actual 260 (its header claims
+        // 250), so once the terminal is squeezed to its minimum the sidebar yields next, not a
+        // solver tie-break between the two.
+        inspectorItem.holdingPriority = .init(261)
         inspectorItem.minimumThickness = 260
         // Max width tracks the window: the inspector can grow to the golden ratio of the
         // content width (`updateInspectorMaxThickness`), never below the 420pt floor. A fixed
@@ -669,21 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         splitViewController.addSplitViewItem(inspectorItem)
         splitViewController.splitView.autosaveName = "TermioContentSplit"
         self.splitViewController = splitViewController
-
-        let container = NSViewController()
-        container.addChild(splitViewController)
-        let splitView = splitViewController.view
-        splitView.translatesAutoresizingMaskIntoConstraints = false
-        container.view.addSubview(splitView)
-        let topInset = splitView.topAnchor.constraint(equalTo: container.view.topAnchor)
-        NSLayoutConstraint.activate([
-            splitView.leadingAnchor.constraint(equalTo: container.view.leadingAnchor),
-            splitView.trailingAnchor.constraint(equalTo: container.view.trailingAnchor),
-            splitView.bottomAnchor.constraint(equalTo: container.view.bottomAnchor),
-            topInset,
-        ])
-        splitTopInsetConstraint = topInset
-        return container
+        return splitViewController
     }
 
     /// Keeps the native window title in step with the selected session's working directory.
@@ -805,7 +824,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `windowDidEnterFullScreen` corrects it.
     func windowWillEnterFullScreen(_ notification: Notification) {
         window?.titlebarAppearsTransparent = false
-        updateSplitTopInset(fullScreen: true)
         // Flip before the animation, so a maximized detail's header drops its traffic-light gap
         // as the window grows rather than snapping inward once it lands.
         store.windowIsFullScreen = true
@@ -814,7 +832,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The twin of `windowWillEnterFullScreen` for the maximized detail's header: the buttons come
     /// back with the window, so the gap that clears them is restored before the animation ends.
     func windowWillExitFullScreen(_ notification: Notification) {
-        updateSplitTopInset(fullScreen: false)
         store.windowIsFullScreen = false
     }
 
@@ -825,24 +842,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidEnterFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
-        updateSplitTopInset(fullScreen: true)
         store.windowIsFullScreen = true
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
-        updateSplitTopInset(fullScreen: false)
         updateInspectorMaxThickness()
         store.windowIsFullScreen = false
-    }
-
-    /// Fullscreen's hidden toolbar otherwise lets the split touch the screen's top edge. The same
-    /// inset applies to every split item, keeping the sidebar and terminal visually aligned.
-    private func updateSplitTopInset(fullScreen: Bool? = nil) {
-        guard let splitTopInsetConstraint else { return }
-        let isFullScreen = fullScreen ?? window?.styleMask.contains(.fullScreen) == true
-        splitTopInsetConstraint.constant = isFullScreen ? 8 : 0
     }
 
     /// View ▸ Toggle Full Screen (⌃⌘F).
@@ -1214,6 +1221,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 toolbar.removeItem(at: toggle - 1)
             }
         }
+    }
+
+    /// Coalesces the per-frame `didResizeSubviews` stream (a divider drag fires it continuously)
+    /// into one re-bind after the geometry settles, and only when divider 1 actually moved since
+    /// the last re-bind — which also keeps the relayout a re-bind itself may cause from cycling.
+    private func scheduleSeparatorReassert() {
+        separatorReassertSettle?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let splitView = self.splitViewController?.splitView,
+                      splitView.arrangedSubviews.count > 2 else { return }
+                let inspectorMinX = splitView.arrangedSubviews[2].frame.minX
+                guard inspectorMinX != self.lastReassertedInspectorMinX else { return }
+                self.lastReassertedInspectorMinX = inspectorMinX
+                self.reassertInspectorSeparator()
+            }
+        }
+        separatorReassertSettle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     /// Removes and re-inserts the inspector's tracking separator so it re-binds to divider 1 against

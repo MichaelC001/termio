@@ -393,6 +393,15 @@ struct Session {
     /// replay. It exists for the far side of a handoff, which has only the ring
     /// and would otherwise present a confidently wrong screen.
     ring_reconstructs_screen: bool,
+    /// When the last resize's dust should be declared settled and the
+    /// foreground asked for one more repaint. Bytes drawn for the old grid can
+    /// still be in flight through the PTY when the VT takes the new one —
+    /// nothing orders a child's output against a resize it has not seen yet —
+    /// and whatever they painted, only the child's own post-settle repaint can
+    /// overwrite. Every further resize pushes the deadline out, so a drag
+    /// costs one nudge, at the end. (cmux's mirror answers the same problem by
+    /// re-reading tmux's screen after a grid grows; the child *is* our tmux.)
+    settle_nudge_at: Option<tokio::time::Instant>,
     events: broadcast::Sender<Event>,
     vt: Vt,
     /// This session's agent status, derived here rather than in each viewer.
@@ -408,6 +417,15 @@ struct Session {
     /// `info()` reads this cache so a roster request never turns into a burst
     /// of syscalls.
     foreground: Foreground,
+    /// A resize's barrier, opened but not yet captured. See
+    /// `begin_resize_snapshot_barrier`.
+    resize_capture: Option<ResizeCapture>,
+}
+
+/// The snapshot a resize opened a barrier for, waiting on the child's redraw.
+struct ResizeCapture {
+    at: tokio::time::Instant,
+    requests: Vec<(ClientId, u64)>,
 }
 
 impl Session {
@@ -531,6 +549,17 @@ impl Session {
     /// silently would leave `S` describing a screen that never occurred, and
     /// blocking here would put the VT parse back on the fan-out path.
     fn write_sidecar(&mut self, chunk: Bytes) {
+        // The child answering its SIGWINCH is the event a resize's capture is
+        // actually waiting for; the deadline is only there for a child that
+        // never answers. Pulling the capture in the moment it does keeps the
+        // wait off the common path — a TUI writes within a millisecond of the
+        // ioctl — so `E resized` is not held up behind a clock every viewer of
+        // this session would feel.
+        if let Some(capture) = self.resize_capture.as_mut() {
+            capture.at = capture
+                .at
+                .min(tokio::time::Instant::now() + Self::RESIZE_ANSWER_QUIESCE);
+        }
         if !self.vt.is_live() {
             return;
         }
@@ -668,7 +697,77 @@ impl Session {
         self.send_sidecar(SidecarCommand::SetGridDiff(self.wants_grid_diffs()));
     }
 
-    fn begin_snapshot_barrier(&mut self) {
+    /// How long a resize's keyframe waits for the child's own redraw.
+    ///
+    /// The capture used to be adjacent to the sidecar's `Resize`, which by
+    /// construction snapshotted the screen the terminal had just rewrapped and
+    /// the child had not yet answered — so every resize shipped every
+    /// attachment a full-screen paint of a screen that was about to be thrown
+    /// away, and that frame is what a drag looked like. A program that answers
+    /// SIGWINCH lands its redraw well inside this window: measured from a real
+    /// PTY, Claude Code writes its `ESC[2J` repaint 0.3ms after the ioctl and
+    /// zsh redisplays within 23ms. A child that takes longer, or writes
+    /// nothing, gets exactly the old behaviour — the rewrapped screen — so this
+    /// window trades no correctness for the common case.
+    const RESIZE_SNAPSHOT_SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
+
+    /// How long the capture waits after the child's *first* byte in answer to
+    /// the resize, so a redraw split across two writes is captured whole rather
+    /// than half-drawn. Only ever pulls the deadline in, never pushes it out, so
+    /// a program that keeps writing cannot hold the barrier open.
+    const RESIZE_ANSWER_QUIESCE: std::time::Duration = std::time::Duration::from_millis(5);
+
+    /// How long after a resize the child is asked to repaint once more.
+    ///
+    /// Long enough that a drag's own bursts have stopped pushing it out — every
+    /// resize re-arms it, so a drag costs one nudge, at the end — and that the
+    /// child's answer to the *last* resize has drained. Anything the transition
+    /// mis-parsed is still on screen until something overwrites it, and only
+    /// the child can.
+    const RESIZE_SETTLE_NUDGE: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// A resize's barrier: opened now so nothing reaches a client ahead of the
+    /// screen that describes the new grid, captured once the child has had time
+    /// to redraw into it.
+    fn begin_resize_snapshot_barrier(&mut self) {
+        let requests = self.open_snapshot_barrier();
+        self.resize_capture = Some(ResizeCapture {
+            at: tokio::time::Instant::now() + Self::RESIZE_SNAPSHOT_SETTLE,
+            requests,
+        });
+    }
+
+    /// When the resize barrier opened above should be captured, if one is.
+    /// Read by the actor loop, which owns the timer.
+    fn resize_capture_deadline(&self) -> Option<tokio::time::Instant> {
+        self.resize_capture.as_ref().map(|capture| capture.at)
+    }
+
+    /// Captures what the last resize opened a barrier for.
+    ///
+    /// Each request is checked against the attachment's current barrier: one
+    /// superseded in the meantime — a second resize, an attach, a resync — is
+    /// already being captured by whoever superseded it, and asking again would
+    /// spend a capture on a request `finish_snapshot` would discard as stale.
+    fn capture_resize_snapshots(&mut self) {
+        let Some(capture) = self.resize_capture.take() else {
+            return;
+        };
+        for (client_id, request_id) in capture.requests {
+            let still_waiting = self
+                .clients
+                .get(&client_id)
+                .is_some_and(|entry| entry.plane.pending_request() == Some(request_id));
+            if still_waiting {
+                self.request_snapshot(client_id, request_id, false);
+            }
+        }
+    }
+
+    /// Opens every snapshot attachment's barrier and answers what each is now
+    /// waiting on. Data and events queue behind it from here; who asks for the
+    /// capture, and when, is the caller's.
+    fn open_snapshot_barrier(&mut self) -> Vec<(ClientId, u64)> {
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
@@ -694,12 +793,7 @@ impl Session {
             requests.push((client_id, request_id));
         }
 
-        // The session actor cannot read the PTY while this handler runs, so
-        // these requests are adjacent to the Resize command in the sidecar
-        // FIFO, with no intervening Write command.
-        for (client_id, request_id) in requests {
-            self.request_snapshot(client_id, request_id, false);
-        }
+        requests
     }
 
     /// D4(a): a client that outruns its backlog gets one forced resync before it
@@ -1022,17 +1116,51 @@ impl Session {
         if rows == self.rows && cols == self.cols {
             return;
         }
+        // Probe the PTY with the size it already has before anything is
+        // enqueued. Re-asserting an unchanged size raises no SIGWINCH on any
+        // kernel this runs on, so the probe is silent — it only proves the
+        // descriptor can take an ioctl at all. That proof is what lets the VT
+        // resize below go out *first* while keeping the failure contract:
+        // a session whose PTY is gone stays exactly where it was and tells
+        // nobody.
+        if let Err(error) = self.pty.resize(self.rows, self.cols) {
+            // Nobody asked for this, so there is nobody to answer: the size
+            // is a policy over the whole attachment set, not one client's
+            // request. The session stays where it was and the next change
+            // tries again.
+            eprintln!(
+                "termiod: resize of session {} to {rows}x{cols} failed: {error}",
+                self.id
+            );
+            return;
+        }
+        let reflow = !self.foreground_is_a_shell();
+        // The VT's resize is enqueued *before* the ioctl that raises
+        // SIGWINCH. The shell answers that signal by redrawing its prompt,
+        // and those bytes travel the same FIFO as this command — enqueueing
+        // the resize first is what guarantees `resize_for_shell` clears the
+        // *old* prompt and never the one the shell just repainted. With the
+        // order reversed, a redraw that won the race was blanked and nothing
+        // repainted it: the session sat at a bare cursor (the "prompt
+        // disappeared" report), because zsh may skip its redisplay for a
+        // nudge that changes nothing.
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
         let applied = match self.pty.resize(rows, cols) {
             Ok(applied) => applied,
             Err(error) => {
-                // Nobody asked for this, so there is nobody to answer: the size
-                // is a policy over the whole attachment set, not one client's
-                // request. The session stays where it was and the next change
-                // tries again.
+                // The probe passed and this did not: the PTY died in between.
+                // Put the VT back on the grid the kernel still holds — a plain
+                // reflow, because no SIGWINCH is coming to repaint anything a
+                // clear would blank — and leave the session's state alone.
                 eprintln!(
                     "termiod: resize of session {} to {rows}x{cols} failed: {error}",
                     self.id
                 );
+                self.send_sidecar(SidecarCommand::Resize {
+                    rows: self.rows,
+                    cols: self.cols,
+                    reflow: true,
+                });
                 return;
             }
         };
@@ -1046,6 +1174,13 @@ impl Session {
                 "termiod: session {} asked for {rows}x{cols} and the kernel kept {}x{}",
                 self.id, applied.0, applied.1
             );
+            // The VT already took the requested grid; align it with the one
+            // the kernel actually kept.
+            self.send_sidecar(SidecarCommand::Resize {
+                rows: applied.0,
+                cols: applied.1,
+                reflow: true,
+            });
         }
         let (rows, cols) = applied;
         // The kernel can have kept the size it already had, in which case the
@@ -1060,14 +1195,32 @@ impl Session {
         // only matters where a replay is all there is — the far side of a
         // handoff.
         self.ring_reconstructs_screen = false;
-        let reflow = !self.foreground_is_a_shell();
-        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
-        self.begin_snapshot_barrier();
+        self.begin_resize_snapshot_barrier();
         self.emit_event(Event::Resized {
             session: self.id.to_string(),
             rows,
             cols,
         });
+        self.settle_nudge_at = Some(tokio::time::Instant::now() + Self::RESIZE_SETTLE_NUDGE);
+    }
+
+    /// The settle deadline fired: the last resize has stood for long enough
+    /// that the child's answer to it has drained. One more repaint request
+    /// makes the child overwrite anything the transition mis-parsed.
+    ///
+    /// Shells used to be excluded — a shell repainted its prompt on the
+    /// resize's own SIGWINCH, and while the resize merely truncated, a second
+    /// poke bought nothing. The mark-gated reflow changed that arithmetic:
+    /// the shell's redraw and the sidecar's Resize race through the same
+    /// FIFO, and when the redraw's bytes land first, `resize_for_shell`
+    /// blanks the prompt the shell just painted — with nothing left to paint
+    /// it again, the session sits at a bare cursor. The nudge is that
+    /// something: zsh's WINCH handler redisplays the prompt even when the
+    /// size did not change, and when the redraw won the race after all, the
+    /// extra redisplay repaints the same cells.
+    fn fire_settle_nudge(&mut self) {
+        self.settle_nudge_at = None;
+        self.pty.nudge_repaint();
     }
 
     fn queue_history_chunk(
@@ -1344,6 +1497,17 @@ impl Session {
             }
         }
         self.clients.insert(client_id.clone(), entry);
+        // The replay this client was just handed may not draw the screen the
+        // program believes it is looking at (see `ring_reconstructs_screen`).
+        // The old answer — "the program repaints on its next output either way"
+        // — assumed there would be a next output; an agent idling at its prompt
+        // never produces one, and a viewer whose window matches the session's
+        // size gets no resize to force the issue either. So force it here: the
+        // repaint the nudge provokes is ordinary output, which corrects this
+        // screen and every other attachment's at once.
+        if !self.ring_reconstructs_screen {
+            self.pty.nudge_repaint();
+        }
     }
 
     fn remove_finished_client(&mut self, client_id: &ClientId) {
@@ -1656,6 +1820,7 @@ fn start(
         ring: VecDeque::new(),
         ring_bytes: 0,
         ring_reconstructs_screen: true,
+        settle_nudge_at: None,
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
         status_engine: StatusEngine::new(
@@ -1668,6 +1833,7 @@ fn start(
         ),
         transcript_path: None,
         foreground: Foreground::default(),
+        resize_capture: None,
     };
     // A carried or created session arrives with a status this actor did not
     // derive; the engine adopts it so the roster and the engine never disagree
@@ -1908,7 +2074,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 let resized = if reflow {
                                     terminal.resize_reflowing(rows, cols)
                                 } else {
-                                    terminal.resize(rows, cols)
+                                    terminal.resize_for_shell(rows, cols)
                                 };
                                 if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
@@ -2021,7 +2187,19 @@ async fn run(
     let (stall_tx, mut stall_rx) = mpsc::unbounded_channel::<StallResult>();
 
     loop {
+        // Read before the select rather than inside a branch: the timer wants
+        // an owned deadline, and every other branch takes `&mut session`.
+        let resize_capture_at = session.resize_capture_deadline();
+        let settle_nudge_at = session.settle_nudge_at;
         tokio::select! {
+            // A resize opened a snapshot barrier and left the capture to this
+            // timer, so the keyframe carries the child's answer to SIGWINCH
+            // rather than the screen the rewrap left behind.
+            _ = tokio::time::sleep_until(
+                resize_capture_at.unwrap_or_else(tokio::time::Instant::now)
+            ), if resize_capture_at.is_some() => {
+                session.capture_resize_snapshots();
+            }
             _ = foreground_poll.tick() => {
                 if session.foreground.poll(&session.pty, session.pid, &foreground_tx) {
                     session.refresh_status_facts();
@@ -2036,6 +2214,14 @@ async fn run(
                     session.refresh_status_facts();
                     session.emit_roster();
                 }
+            }
+            // The dust from the last resize has settled; the child gets one
+            // more SIGWINCH so its own repaint overwrites anything the
+            // transition mis-parsed.
+            _ = tokio::time::sleep_until(
+                settle_nudge_at.unwrap_or_else(tokio::time::Instant::now)
+            ), if settle_nudge_at.is_some() => {
+                session.fire_settle_nudge();
             }
             _ = status_sweep.tick() => {
                 let now = std::time::Instant::now();
@@ -2722,6 +2908,7 @@ mod tests {
                 ring: VecDeque::new(),
                 ring_bytes: 0,
                 ring_reconstructs_screen: true,
+                settle_nudge_at: None,
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
                 status_engine: super::StatusEngine::new(
@@ -2730,6 +2917,7 @@ mod tests {
                 ),
                 transcript_path: None,
                 foreground: super::Foreground::default(),
+                resize_capture: None,
             },
             event_rx,
         )
@@ -3146,9 +3334,11 @@ mod tests {
     /// The rule the reflow policy turns on, and the case that made the previous
     /// one wrong: `zsh -ilc exec claude` leaves no shell in the session at all,
     /// so "is a job running under the shell" was false for exactly the sessions
-    /// a truncating resize mangles.
+    /// a truncating resize mangles. A shell gets the mark-gated resize
+    /// (`resize_for_shell`): reflow when its prompt rows are OSC 133-marked,
+    /// truncation when they are not.
     #[tokio::test]
-    async fn only_a_shell_gets_the_truncating_resize() {
+    async fn only_a_shell_gets_the_mark_gated_resize() {
         let Sidecar {
             commands,
             results: _results,
@@ -3365,6 +3555,88 @@ mod tests {
                 Received::Data(b"during".to_vec())
             ],
             "the snapshot boundary and the bytes buffered behind it did not line up"
+        );
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// A resize's keyframe has to describe the screen the *child* redrew.
+    ///
+    /// The capture used to be adjacent to the sidecar's `Resize`, which by
+    /// construction snapshotted the screen the rewrap had just produced and the
+    /// child had not yet answered — so every resize handed every attachment a
+    /// full-screen paint of a screen that was about to be replaced, and that
+    /// frame is what a window drag looked like. The barrier still opens with
+    /// the resize, so nothing reaches a client ahead of the new grid; only the
+    /// capture waits.
+    #[tokio::test]
+    async fn a_resize_keyframe_carries_the_child_s_redraw() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (mut client, _backlog) = attach_snapshot_client(&mut session, "viewer");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut client),
+            vec![Received::Snapshot, Received::Ready],
+            "the attach bootstrap never landed, so this test proves nothing"
+        );
+
+        // The screen as the child last drew it, before anything moved. Through
+        // `write_sidecar`, which is the path a live PTY byte takes.
+        session.write_sidecar(Bytes::from_static(b"STALE"));
+
+        session.begin_resize_snapshot_barrier();
+        let armed = session
+            .resize_capture_deadline()
+            .expect("the resize armed no capture");
+        assert!(
+            session.clients[&ClientId::new("viewer")].plane.is_pending(),
+            "the barrier must open with the resize, not with its capture"
+        );
+        assert!(
+            session.resize_capture_deadline().is_some(),
+            "the capture was asked for adjacent to the resize again"
+        );
+        assert!(
+            drain(&mut client).is_empty(),
+            "a screen reached the client before the boundary that describes it"
+        );
+
+        // What the child writes when it answers SIGWINCH. It reaches the VT
+        // ahead of the capture, which is the whole point.
+        session.write_sidecar(Bytes::from_static(b"\x1b[2J\x1b[HREDRAWN"));
+        assert!(
+            session
+                .resize_capture_deadline()
+                .expect("the capture was given up on")
+                < armed,
+            "the child answered and the capture still waited out its deadline — \
+             every viewer's `E resized` pays for that wait"
+        );
+
+        session.capture_resize_snapshots();
+        pump_sidecar(&mut session, &mut results, 1).await;
+
+        let mut painted = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            if let ClientEvent::Snapshot(snapshot) = event {
+                painted = snapshot.vt.clone().unwrap_or_default();
+            }
+        }
+        let painted = String::from_utf8_lossy(&painted).to_string();
+        assert!(
+            painted.contains("REDRAWN"),
+            "the keyframe missed the redraw the child answered the resize with: {painted:?}"
+        );
+        assert!(
+            !painted.contains("STALE"),
+            "the keyframe painted the screen the child had already replaced: {painted:?}"
         );
 
         session.vt.shut_down();
@@ -3636,6 +3908,7 @@ mod tests {
             ring: VecDeque::new(),
             ring_bytes: 0,
             ring_reconstructs_screen: true,
+            settle_nudge_at: None,
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             status_engine: super::StatusEngine::new(
@@ -3644,6 +3917,7 @@ mod tests {
             ),
             transcript_path: None,
             foreground: super::Foreground::default(),
+            resize_capture: None,
         };
 
         assert!(handle_msg(
@@ -3728,6 +4002,141 @@ mod tests {
         (handle, events_rx, on_exit_rx)
     }
 
+    /// The whole reflow pipeline against a real zsh: injection gives the
+    /// prompt its marks, a storm of narrowing viewports drives
+    /// `resize_for_shell` through the same FIFO as the shell's own redraws,
+    /// and at the end the screen must still show a prompt — the exact thing
+    /// the "prompt disappeared after resize" reports lost. Asserted from the
+    /// authoritative snapshot, not the byte stream, because the byte stream
+    /// always contains a redraw; the question is whether a later clear ate it.
+    #[tokio::test]
+    async fn a_real_zsh_keeps_its_prompt_through_a_resize_storm() {
+        let Some(zsh) = ["/bin/zsh", "/usr/bin/zsh"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let home = std::env::temp_dir().join(format!("termiod-zsh-storm-{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("scratch home");
+
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(64);
+        let handle = super::spawn(
+            SessionId::new("zsh-storm"),
+            "test".to_string(),
+            "/".to_string(),
+            "zsh".to_string(),
+            vec![zsh.to_string(), "-i".to_string()],
+            vec![
+                ("HOME".to_string(), home.display().to_string()),
+                ("ZDOTDIR".to_string(), home.display().to_string()),
+            ],
+            24,
+            80,
+            None,
+            on_exit,
+            events,
+        )
+        .expect("spawning zsh");
+
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            rendering: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+
+        // Wait until the injected shim has marked a prompt, which is also the
+        // signal that zsh is at its prompt and idle.
+        let mut seen = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let event = tokio::time::timeout_at(deadline, client_rx.recv())
+                .await
+                .expect("zsh reached a marked prompt")
+                .expect("client stream open");
+            if let ClientEvent::Data(payload) = event {
+                seen.extend_from_slice(&payload.bytes);
+                if seen
+                    .windows(7)
+                    .any(|window| window == b"\x1b]133;A")
+                {
+                    break;
+                }
+            }
+        }
+
+        // The streaming cadence of a window drag: several narrowings in
+        // flight, each racing the redraw of the one before it.
+        for cols in [70u16, 60, 50, 40] {
+            handle.send(SessionMsg::Viewport {
+                id: ClientId::new("writer"),
+                rows: 24,
+                cols,
+                rendering: true,
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        // Poll the authoritative screen until the cursor's row holds a prompt
+        // again. A bare zsh prompt ends in "% ", so the row the cursor sits on
+        // must contain a '%' once the storm settles.
+        let prompt_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut last_row = String::new();
+        loop {
+            assert!(
+                tokio::time::Instant::now() < prompt_deadline,
+                "prompt never came back after the storm; cursor row: {last_row:?}"
+            );
+            handle.send(SessionMsg::ResendSnapshot {
+                id: ClientId::new("writer"),
+            });
+            let snapshot_deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(900);
+            let snapshot = loop {
+                match tokio::time::timeout_at(snapshot_deadline, client_rx.recv()).await {
+                    Ok(Some(ClientEvent::Snapshot(snapshot))) => break Some(snapshot),
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("client stream ended"),
+                    Err(_) => break None,
+                }
+            };
+            let Some(snapshot) = snapshot else { continue };
+            // The attach's own snapshot (and any captured mid-storm) still
+            // carries an earlier width; only the settled grid answers the
+            // question.
+            if snapshot.cols != 40 {
+                continue;
+            }
+            let row_start = usize::from(snapshot.cursor_y) * usize::from(snapshot.cols);
+            let row_end = row_start + usize::from(snapshot.cols);
+            last_row = snapshot.cells[row_start..row_end.min(snapshot.cells.len())]
+                .iter()
+                .map(|cell| char::from_u32(cell.codepoint).unwrap_or(' '))
+                .collect();
+            if last_row.contains('%') {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// A resize invalidates the ring as a source of truth for the screen: the
     /// bytes already in it were written into a differently shaped grid, and
     /// replaying them into this one puts them in the wrong places. Nothing in
@@ -3796,6 +4205,211 @@ mod tests {
         assert!(stale.contains("handoff"), "{stale}");
 
         adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A client handed an unfaithful ring replay must not be left staring at
+    /// it until the program happens to print. An idle program never does, and
+    /// a viewer at the session's own size gets no resize to force a repaint
+    /// either — so the fallback itself nudges the foreground with the SIGWINCH
+    /// a resize would have delivered, and the repaint arrives as fresh output.
+    #[tokio::test]
+    async fn a_knowingly_wrong_replay_nudges_the_foreground_to_repaint() {
+        let (handle, _events, _on_exit) = start_session(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "trap 'echo NUDGED' WINCH; echo READY; while :; do read line; done".to_string(),
+            ],
+            "/",
+        );
+
+        // Wait for the child to say the trap is installed; before that a
+        // nudge would be absorbed by the default disposition and prove
+        // nothing.
+        let (ready_tx, mut ready_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("watcher"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            rendering: true,
+            out: ready_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            loop {
+                match ready_rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(&seen).contains("READY") {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended before READY"),
+                }
+            }
+        })
+        .await
+        .expect("the child announced its trap");
+
+        // Hand the session over with a ring declared unfaithful — the far side
+        // of a handoff whose output predates what drew the screen. No resize is
+        // involved, so the only SIGWINCH the child can ever see is the nudge.
+        let mut carried = carry(&handle).await;
+        carried.info.ring_reconstructs_screen = false;
+        use std::os::fd::IntoRawFd as _;
+        carried.info.master_fd = carried.master.into_raw_fd();
+        let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
+        let (events, mut events_rx) = broadcast::channel(64);
+        let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
+            .expect("adopting the carried session");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events_rx.recv().await {
+                    Ok(Event::VtStale { .. }) => return,
+                    Ok(_) => continue,
+                    Err(error) => panic!("event stream ended: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the adopted session declared its VT stale");
+
+        // Attach at the session's own size: no resize fires, so without the
+        // nudge nothing would ever repaint this screen.
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        adopted.send(SessionMsg::AddClient {
+            id: ClientId::new("viewer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            rendering: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached to the adopted session");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut seen = Vec::new();
+            loop {
+                match client_rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(&seen).contains("NUDGED") {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended before the repaint"),
+                }
+            }
+        })
+        .await
+        .expect("the unfaithful replay was followed by a nudged repaint");
+
+        adopted.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+    }
+
+    /// A resize is followed, once it has stood for the settle window, by one
+    /// more SIGWINCH to the foreground: the child's answer to the resize
+    /// raced the grid change, and its post-settle repaint is the only thing
+    /// that can overwrite whatever the race painted — for a shell, that
+    /// includes the prompt `resize_for_shell` blanked after the shell had
+    /// already redrawn it. The child counts the signals — the resize's own
+    /// ioctl delivers the first, the settle nudge the second.
+    #[tokio::test]
+    async fn a_settled_resize_nudges_a_job_foreground_once_more() {
+        let script = "import signal,sys,time\n\
+                      signal.signal(signal.SIGWINCH, lambda *a: print('NUDGED', flush=True))\n\
+                      print('READY', flush=True)\n\
+                      while True: time.sleep(0.05)\n";
+        let (handle, _events, _on_exit) = start_session(
+            vec![
+                "/usr/bin/python3".to_string(),
+                "-c".to_string(),
+                script.to_string(),
+            ],
+            "/",
+        );
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        handle.send(SessionMsg::AddClient {
+            id: ClientId::new("writer"),
+            interactive: true,
+            rows: 24,
+            cols: 80,
+            rendering: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: false,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached");
+
+        async fn receive_until(
+            rx: &mut mpsc::UnboundedReceiver<ClientEvent>,
+            seen: &mut Vec<u8>,
+            marker: &str,
+        ) {
+            loop {
+                match rx.recv().await {
+                    Some(ClientEvent::Data(payload)) => {
+                        seen.extend_from_slice(&payload.bytes);
+                        if String::from_utf8_lossy(seen).contains(marker) {
+                            return;
+                        }
+                    }
+                    Some(_) => continue,
+                    None => panic!("client stream ended waiting for {marker}"),
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            receive_until(&mut client_rx, &mut seen, "READY"),
+        )
+        .await
+        .expect("the child installed its handler");
+
+        // The foreground poller must see python3 before the resize, or the
+        // rewrap/nudge gates still believe a shell is on screen.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        handle.send(SessionMsg::Viewport {
+            id: ClientId::new("writer"),
+            rows: 30,
+            cols: 100,
+            rendering: true,
+        });
+
+        // Two signals: the resize's own SIGWINCH, then the settle nudge.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            receive_until(&mut client_rx, &mut seen, "NUDGED\r\nNUDGED"),
+        )
+        .await
+        .expect("the settled resize delivered a second SIGWINCH");
+
+        handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
     }

@@ -418,10 +418,11 @@ private enum TerminalFocusReason {
 /// grid — and a surface stretched across this pane would re-wrap them at its own
 /// width, the §C.5 divergence: every line that wrapped on the phone lands
 /// somewhere else here, and a TUI that repaints incrementally never repairs it.
-/// So a pane larger than the session shows it at exactly the shared grid,
-/// centred, with the terminal background around it — the same picture the phone
-/// has, at the Mac's font. Typing here, or resizing this pane, brings the
-/// session back and the surface returns to the pane.
+/// So a pane larger than the session normally shows it at exactly the shared
+/// grid, anchored top-left with the terminal background around it — the same
+/// picture the phone has, at the Mac's font. A local outward resize is the safe
+/// exception: widening can rejoin rows but cannot split them at an invented
+/// width, so the surface grows with the pane until the daemon answers.
 ///
 /// This is also where the pane states its *viewport* — how much it could show,
 /// measured from its own geometry. The surface cannot answer that question once
@@ -476,14 +477,19 @@ private struct SharedGridLetterbox<Content: View>: View {
         .onChange(of: paneGrid, initial: true) { _, grid in
             if let grid { onViewport(grid) }
             // The inputs behind the declaration, which the wire trace cannot
-            // show: `declare` says 46 and `surface-at` answers 45 without ever
-            // naming the rectangle and cell the two disagreed about. libghostty
-            // is handed whole pixels (`floor(points × scale)` in
-            // `TerminalSurfaceCoordinator.synchronizeMetrics`) and floors again
-            // dividing by the cell; this measures in points and floors once.
-            // Whether that is the off-by-one takes numbers, not argument.
-            Log.termiod.debug("""
-            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure             pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public)             cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public)             scale=\(self.displayScale, privacy: .public)             padX=\(self.paddingX, privacy: .public)             grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
+            // show: `declare 46x47` answered by `surface-at 45x47` never named
+            // the rectangle and cell the two disagreed about, and the gap was
+            // guessed at as a points-vs-pixels off-by-one in
+            // `TerminalGrid.fitting` for a day. It was not: the pane really did
+            // change height. Whatever the next disagreement is, it takes
+            // numbers, not argument.
+            Log.termiod.info("""
+            resize-trace \(self.sessionName.prefix(8), privacy: .public) measure \
+            pane=\(self.paneSize.width, privacy: .public)x\(self.paneSize.height, privacy: .public) \
+            cell=\(self.cellSize?.width ?? -1, privacy: .public)x\(self.cellSize?.height ?? -1, privacy: .public) \
+            scale=\(self.displayScale, privacy: .public) \
+            padX=\(self.paddingX, privacy: .public) \
+            grid=\(grid?.rows ?? 0, privacy: .public)x\(grid?.cols ?? 0, privacy: .public)
             """)
         }
     }
@@ -513,13 +519,10 @@ private struct SharedGridLetterbox<Content: View>: View {
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
         //
-        // Held for the whole of a drag, not just until the declaration goes out.
-        // The session's grid is the last width anything was actually drawn for;
-        // a surface that moved ahead of the daemon's answer would re-wrap that
-        // screen at widths nothing was ever drawn for, once per frame. The
-        // surface moves when the answer lands, and the keyframe that comes with
-        // it is held until it does (`TermiodSessionLink.receiveKeyframe`).
-        guard runtime.sizesByPolicy,
+        // Shrinking stays pinned: it would split rows at widths the child never
+        // drew. Growing may follow the pane because it only rejoins rows, while
+        // the keyframe hold covers a layout that trails the daemon's answer.
+        guard runtime.sizesByPolicy, !runtime.growingViewportPending,
               let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
@@ -1214,4 +1217,3 @@ private struct SplitDividerHandle: View {
             .position(x: spec.frame.midX, y: spec.frame.midY)
     }
 }
-

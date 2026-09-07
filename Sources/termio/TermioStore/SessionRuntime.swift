@@ -45,6 +45,9 @@ final class SessionRuntime {
     /// holding the write token is letterboxed too whenever the session is sized
     /// to somebody else's screen.
     var sharedGrid: TerminalGrid?
+    /// This pane is growing beyond the shared grid and may widen its surface
+    /// while the coalesced viewport declaration is still unanswered.
+    var growingViewportPending = false
     /// Whether the host this session lives on sizes by policy at all.
     ///
     /// The letterbox only means anything under that policy: it exists because

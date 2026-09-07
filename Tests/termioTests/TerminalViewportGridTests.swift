@@ -1,5 +1,6 @@
 import XCTest
 import TermioShared
+@testable import termio
 
 /// The one piece of arithmetic both clients declare their viewport with.
 ///
@@ -69,5 +70,26 @@ final class TerminalViewportGridTests: XCTestCase {
     func testZeroPaddingUsesTheWholeRectangle() {
         XCTAssertEqual(
             grid(800, 400, paddingX: 0, paddingY: 0), TerminalGrid(rows: 20, cols: 100))
+    }
+
+    /// Only a viewport that contains the authoritative grid may lead it. This is
+    /// the direction that cannot split an existing row at an invented width.
+    func testOnlyOutwardViewportGrowthMayLeadTheSurface() {
+        let session = TerminalGrid(rows: 24, cols: 80)
+
+        XCTAssertTrue(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 24, cols: 100), authoritativeGrid: session))
+        XCTAssertTrue(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 30, cols: 80), authoritativeGrid: session))
+        XCTAssertTrue(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 30, cols: 100), authoritativeGrid: session))
+        XCTAssertFalse(TerminalViewportGrowth.canLeadSurface(
+            viewport: session, authoritativeGrid: session))
+        XCTAssertFalse(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 24, cols: 79), authoritativeGrid: session))
+        XCTAssertFalse(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 23, cols: 100), authoritativeGrid: session))
+        XCTAssertFalse(TerminalViewportGrowth.canLeadSurface(
+            viewport: TerminalGrid(rows: 30, cols: 100), authoritativeGrid: nil))
     }
 }

@@ -22,34 +22,13 @@ When agents write most of the code, the environment's job is to run them and to 
 
 It wires up each agent's own hooks on first launch. A session reports working, idle, or *needs you* — a dot in the sidebar, a menu-bar tray that rings when one is blocked, the same signal on your phone. Claude Code, Codex, OpenCode, Pi, Amp, Cursor, Copilot, Kimi, Antigravity, Crush, Grok, and any other CLI agent.
 
-The longer argument: [*From IDE to ADE*](docs/essays/from-ide-to-ade.md).
-
 ### A tmux alternative
 
-This is the reason people tell you to learn tmux. You don't have to. Every session's shell lives in `termiod`, a daemon, so quitting the app only detaches. Close the laptop, reopen Termio — the agent is where you left it, same process, same scrollback. Only Close Session (⌘W) ends one.
+Many people tell you to learn tmux. You don't have to. Every session's shell lives in `termiod`, a daemon, so quitting the app only detaches. Close the laptop, reopen Termio — the agent is where you left it, same process, same scrollback. Only Close Session (⌘W) ends one.
 
-### Remote Terminal
+### Remote ADE
 
 Any Linux VPS you can `ssh` to. Termio reads `~/.ssh/config` and never rewrites it. Settings ▸ Devices ▸ Set Up copies one binary into `~/.local/bin` over SSH, starts the daemon, and installs the agents' hooks there. Local and remote sessions run through the same host. The session lives on the box, not in the connection. Drop the link and the agent keeps working; reattach restores the exact screen.
-
-## Compared with
-
-Termio is the environment the agents run in. The session lives in `termiod` on
-the box; the Mac app and the iPhone both attach to it.
-
-| | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
-| --- | --- | --- | --- | --- | --- | --- |
-| Agent Monitor | ✓ hooks | – | ✓ | ✓ | – | ✓ tab badges |
-| Agent Orchestration API | ✓ `termio sessions` | – | ✓ CLI + socket API | ✓ socket API | – | – |
-| Agent Notification | ✓ menu-bar tray | – | ✓ | ✓ toast, system or sound | – | – |
-| Multiplexer | ✓ a daemon owns the PTY | – | restores on relaunch | ✓ a server owns the PTYs | ✓ a server owns the PTYs | restores on relaunch |
-| Remote Linux | ✓ Native Supported | – | ✓ SSH workspace | ✓ attach over SSH | ✓ Native Supported | – |
-| iOS | ✓ attaches to the host, VPS included | – | ✓ pairs with the Mac | community plugins | announced | – |
-| Projects, Workspace | ✓ | – | workspace groups | worktree commands | – | – |
-| File tree | ✓ | – | – | ✓ plugin | – | – |
-| Editor | ✓ | – | – | – | – | – |
-| Diff | ✓ | – | – | ✓ plugin | – | – |
-| Open source | ✓ MIT | ✓ MIT | ✓ GPL | ✓ Apache-2.0 | parts, undecided | – |
 
 ## Install
 

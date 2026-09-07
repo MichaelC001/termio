@@ -9,8 +9,11 @@ import XCTest
 /// message that tells it what size to become. Every rule below follows from
 /// that: a keyframe that arrives early must wait, everything behind it must wait
 /// with it and in order, and the wait must end — on the grid, on a flood, or on
-/// a deadline. None of it is visible in a screenshot; a wrong answer here shows
-/// up only as a terminal that paints twice per resize, or one that goes quiet.
+/// a deadline. Only the first of those three endings paints it: a keyframe drawn
+/// for a grid the surface is not laid out at scrambles every row it touches, so
+/// the other two drop it and ask for a resync. A wrong answer here shows up as a
+/// terminal that paints twice per resize, one that goes quiet, or — the report
+/// this was written from — one that scrambles for a round trip on every drag.
 final class TerminalKeyframeHoldTests: XCTestCase {
     private let old = TerminalGrid(rows: 21, cols: 45)
     private let new = TerminalGrid(rows: 21, cols: 60)
@@ -28,7 +31,7 @@ final class TerminalKeyframeHoldTests: XCTestCase {
         let paint = hold.receive(keyframe: bytes("repaint"), at: old)
         XCTAssertEqual(joined(paint), "repaint")
         XCTAssertFalse(hold.isHolding)
-        XCTAssertEqual(joined(hold.receive(output: bytes("live"), limit: limit)), "live")
+        XCTAssertEqual(joined(hold.receive(output: bytes("live"), limit: limit).emit), "live")
     }
 
     /// The resize case: the keyframe describes the size the pane is about to
@@ -62,11 +65,11 @@ final class TerminalKeyframeHoldTests: XCTestCase {
     func testOutputQueuesBehindAHeldKeyframeAndFollowsItInOrder() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
-        XCTAssertTrue(hold.receive(output: bytes("one"), limit: limit).isEmpty)
-        XCTAssertTrue(hold.receive(output: bytes("two"), limit: limit).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("one"), limit: limit).emit.isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("two"), limit: limit).emit.isEmpty)
 
         XCTAssertEqual(joined(hold.surfaceReached(new).paint), "repaintonetwo")
-        XCTAssertEqual(joined(hold.receive(output: bytes("three"), limit: limit)), "three")
+        XCTAssertEqual(joined(hold.receive(output: bytes("three"), limit: limit).emit), "three")
     }
 
     /// A second keyframe describes a screen the daemon captured past the writes
@@ -74,7 +77,7 @@ final class TerminalKeyframeHoldTests: XCTestCase {
     func testANewerKeyframeSupersedesWhatWasQueuedBehindTheOlderOne() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("first"), at: new).isEmpty)
-        XCTAssertTrue(hold.receive(output: bytes("stale"), limit: limit).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("stale"), limit: limit).emit.isEmpty)
 
         let taller = TerminalGrid(rows: 30, cols: 60)
         XCTAssertTrue(hold.receive(keyframe: bytes("second"), at: taller).isEmpty)
@@ -82,23 +85,63 @@ final class TerminalKeyframeHoldTests: XCTestCase {
     }
 
     /// A program that floods through a resize must not grow this buffer without
-    /// bound. Past the cap the keyframe paints early and the resync repairs it.
-    func testAFloodBehindAHeldKeyframeEndsTheWait() {
+    /// bound. Past the cap the wait is given up on — the live bytes go out, the
+    /// keyframe does not, and `gaveUp` is what tells the link to ask for the
+    /// repaint.
+    func testAFloodBehindAHeldKeyframeEndsTheWaitWithoutPaintingIt() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
-        XCTAssertTrue(hold.receive(output: bytes("ab"), limit: 4).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("ab"), limit: 4).emit.isEmpty)
 
-        XCTAssertEqual(joined(hold.receive(output: bytes("cde"), limit: 4)), "repaintabcde")
+        let flooded = hold.receive(output: bytes("cde"), limit: 4)
+        XCTAssertEqual(joined(flooded.emit), "abcde")
+        XCTAssertTrue(flooded.gaveUp)
         XCTAssertFalse(hold.isHolding)
     }
 
-    /// The deadline and the teardown both come through `release`, and a hold
-    /// that already ended must not paint its keyframe a second time.
-    func testReleasingTwicePaintsOnce() {
+    /// The deadline drops the keyframe rather than painting it: a screen drawn
+    /// for one grid, written into a surface laid out at another, wraps every row
+    /// somewhere the daemon never put it. Leaving the last correct screen up and
+    /// asking for a resync is the cheaper wrong answer, and the only one that
+    /// never shows the user a scrambled frame.
+    func testGivingUpDropsTheKeyframeAndKeepsWhatWasQueuedBehindIt() {
+        var hold = TerminalKeyframeHold(surfaceGrid: old)
+        XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("live"), limit: limit).emit.isEmpty)
+
+        XCTAssertEqual(joined(hold.abandon()), "live")
+        XCTAssertFalse(hold.isHolding)
+        XCTAssertTrue(hold.abandon().isEmpty)
+        XCTAssertTrue(hold.release().isEmpty, "an abandoned keyframe must not paint later")
+    }
+
+    /// Teardown is the one ending that still paints: a surface that is going
+    /// away has no resync coming, so an imperfectly wrapped final frame beats a
+    /// blank one. A hold that already ended must not paint it a second time.
+    func testTeardownPaintsOnceAndOnlyOnce() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
         XCTAssertEqual(joined(hold.release()), "repaint")
         XCTAssertTrue(hold.release().isEmpty)
+    }
+
+    /// A resync's answer is not held. The resync is only ever asked for after a
+    /// hold already failed to deliver a keyframe, so holding its answer would
+    /// wait on the grid the surface did not reach the first time, give up the
+    /// same way, and ask again — a loop that leaves the pane on its pre-resize
+    /// screen for as long as it runs.
+    func testAKeyframeAnsweringARepaintWeAskedForIsNotHeld() {
+        var hold = TerminalKeyframeHold(surfaceGrid: old)
+        XCTAssertTrue(hold.receive(keyframe: bytes("held"), at: new).isEmpty)
+        XCTAssertEqual(joined(hold.abandon()), "")
+
+        hold.paintNextKeyframe()
+        XCTAssertEqual(joined(hold.receive(keyframe: bytes("resync"), at: new)), "resync")
+        XCTAssertFalse(hold.isHolding)
+
+        // One keyframe only: the next resize waits its turn like any other.
+        XCTAssertTrue(hold.receive(keyframe: bytes("later"), at: new).isEmpty)
+        XCTAssertTrue(hold.isHolding)
     }
 
     /// The epoch is how a deadline armed for one keyframe knows it is stale. It
