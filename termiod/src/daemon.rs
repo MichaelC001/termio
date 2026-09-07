@@ -1361,6 +1361,7 @@ struct AttachRequest {
     handle: SessionHandle,
     rows: u16,
     cols: u16,
+    rendering: bool,
     mode: AttachMode,
     re: Option<u64>,
 }
@@ -1710,6 +1711,7 @@ async fn process_control(
             create_if_missing,
             rows,
             cols,
+            rendering,
             mode,
             seq,
         } => {
@@ -1758,6 +1760,7 @@ async fn process_control(
                 handle,
                 rows,
                 cols,
+                rendering,
                 mode,
                 re: seq,
             }));
@@ -2746,9 +2749,12 @@ async fn run_attach(
         interactive: request.mode == AttachMode::Interact,
         // The attach's own grid is this attachment's opening viewport
         // declaration, not an instruction to resize the PTY. The session's size
-        // is derived from every rendering viewport at once.
+        // is derived from every rendering viewport at once — and whether this
+        // one is among them is the attachment's to say, not this host's to
+        // assume.
         rows: request.rows,
         cols: request.cols,
+        rendering: request.rendering,
         out: client_out,
         backlog: backlog.clone(),
         snapshot: connection.capabilities.contains("snapshot"),
