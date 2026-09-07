@@ -87,13 +87,18 @@ relaunch loop; prefer them over hand-rolling the commands.
 Terminal core:
 
 - libghostty exposes two backends: `.exec` runs a PTY inside ghostty;
-  `.inMemory` is host-managed. termio uses **`.inMemory`** — the app owns the
-  PTY via `Sources/termio/Terminal/Ghostty/PTYProcess.swift` and the surface only
-  renders.
-- The PTY is spawned with `forkpty` (login_tty shape). Do **not** switch to
-  `posix_spawn`: that shape breaks agents' resize repaint. See
+  `.inMemory` is host-managed. termio uses **`.inMemory`** — the surface only
+  renders, and the bytes come from `termiod` over the session protocol
+  (`Sources/termio/Terminal/Termiod/TermiodClient.swift`). The app owns no PTY
+  of its own; quitting detaches instead of killing, which is what lets sessions
+  survive a quit or a self-update.
+- The PTY lives in the daemon (`termiod/src/pty.rs`), spawned with the
+  `openpty` + `login_tty` shape. Do **not** switch it to `posix_spawn`: that
+  shape breaks agents' resize repaint. See
   `docs/bug/terminal-resize-no-reflow-HANDOFF.md`.
-- PTY writes must stay non-blocking. A blocking write under the surface lock
+- Input must never be written on the caller's thread: `TermiodSessionLink.send`
+  stamps and hands off to its work queue. The PTY fd itself is non-blocking in
+  the daemon (`termiod/src/pty.rs`). A blocking write under the surface lock
   beachballs the app.
 - One `TerminalViewState` (`Sources/termio/App/Models.swift`) owns one surface.
   `TermioStore`'s SurfaceCache keeps it alive across view rebuilds so shells

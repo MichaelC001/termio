@@ -8,7 +8,7 @@ let package = Package(
     dependencies: [
         // libghostty (Ghostty's terminal core), via our termio-sh/libghostty-swift
         // fork of Lakr233/libghostty-spm (ships the `GhosttyTerminal` Swift wrapper —
-        // incl. the host-managed `.inMemory` backend PTYProcess drives — plus a prebuilt
+        // incl. the host-managed `.inMemory` backend the daemon feeds — plus a prebuilt
         // GhosttyKit.xcframework, so no zig toolchain here). Same package the iOS app
         // uses, so both platforms track one dependency. The 2026-07 "fork regressed
         // live resize" suspicion that briefly rolled this back to Lakr233 was a

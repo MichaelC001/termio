@@ -237,8 +237,9 @@ command -v cargo >/dev/null 2>&1 || daemon_toolchain_missing="cargo"
 
 if [[ -n "$daemon_toolchain_missing" ]]; then
     # A release without a daemon is a release with no session backend, so it
-    # fails. A dev build degrades instead: TERMIO_TERMIOD is opt-in, so a
-    # contributor with no Rust/Zig toolchain still gets a working app.
+    # fails. A dev build degrades instead — it still builds, launches, and can
+    # open no session — so a contributor with no Rust/Zig toolchain can work on
+    # the Swift side without the build hard-failing on them.
     if [[ "$channel" != "dev" ]]; then
         echo "error: cannot build termiod — $daemon_toolchain_missing not found." >&2
         echo "       Rust: https://rustup.rs — Zig: brew install zig (termiod/README.md)." >&2

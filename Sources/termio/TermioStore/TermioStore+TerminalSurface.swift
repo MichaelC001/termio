@@ -263,7 +263,7 @@ extension TermioStore {
         // is that library's highest-precedence override; setting it here makes
         // file-path/URL links clickable without impersonating another terminal
         // (we must keep TERM_PROGRAM=termio for session identity — see
-        // `PTYProcess` self-detection). Tools that emit OSC 8 unconditionally
+        // `StraySessionReaper`). Tools that emit OSC 8 unconditionally
         // (Codex, Aider/Rich) are unaffected.
         env["FORCE_HYPERLINK"] = "1"
 
