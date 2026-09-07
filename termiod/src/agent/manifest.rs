@@ -989,6 +989,7 @@ pub const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("agents/hermes.json", include_str!("../../../Sources/termio/Resources/agents/hermes.json")),
     ("agents/kimi.json", include_str!("../../../Sources/termio/Resources/agents/kimi.json")),
     ("agents/opencode.json", include_str!("../../../Sources/termio/Resources/agents/opencode.json")),
+    ("agents/opencode2.json", include_str!("../../../Sources/termio/Resources/agents/opencode2.json")),
     ("agents/pi.json", include_str!("../../../Sources/termio/Resources/agents/pi.json")),
     ("agents/qwen.json", include_str!("../../../Sources/termio/Resources/agents/qwen.json")),
 ];

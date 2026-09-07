@@ -1,0 +1,10 @@
+{
+  "id": "opencode2",
+  "order": 31,
+  "name": "OpenCode 2",
+  "wire": "opencode2",
+  "command": "opencode2",
+  "icon": { "asset": "opencode-favicon" },
+  "install": "https://opencode.ai/v2/docs/",
+  "skills": { "dir": "~/.config/opencode/skills" }
+}

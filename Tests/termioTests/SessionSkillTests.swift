@@ -70,6 +70,7 @@ final class SessionSkillTests: XCTestCase {
             "cursor": "~/.cursor/skills",
             "grok": "~/.grok/skills",
             "opencode": "~/.config/opencode/skills",
+            "opencode2": "~/.config/opencode/skills",
             "pi": "~/.pi/agent/skills",
             "amp": "~/.config/agents/skills",
             "antigravity": "~/.gemini/antigravity/skills",
