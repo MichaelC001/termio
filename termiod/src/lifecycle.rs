@@ -1180,17 +1180,46 @@ async fn verify<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Versio
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no daemon answered")))
 }
 
-/// Put the previous binary back and stop whatever the new one started, so the
-/// next contact autostarts the build that worked.
+/// Put the previous binary back, asking the daemon to hand off to it first —
+/// the same pid keeps every PTY — and stopping only when that also fails, so
+/// an image that turned out bad costs the sessions only when there is no
+/// non-destructive way back.
 async fn roll_back<N: Node>(node: &N) -> Result<()> {
     let binary = node.binary();
-    eprintln!("[deploy] rolling {} back to the previous binary…", node.label());
-    let _ = node.run(&format!("{binary} stop --force --json")).await;
-    let run = node
-        .run(&format!("[ -e {binary}.prev ] && mv -f {binary}.prev {binary}"))
-        .await?;
+    let label = node.label();
+    eprintln!("[deploy] rolling {label} back to the previous binary…");
+    let prev = node.run(&format!("[ -e {binary}.prev ]")).await?;
+    if prev.code != 0 {
+        bail!("no previous binary to roll back to on {label}");
+    }
+    // The previous build's own CLI drives the recovery: the staged binary just
+    // failed verification, so it is the last thing to trust with it.
+    let handoff = node
+        .run(&format!(
+            "{binary}.prev handoff --binary {binary}.prev --json"
+        ))
+        .await;
+    match handoff {
+        Ok(run) if run.code == 0 => {
+            eprintln!("[deploy] {}", handoff_line(&run.stdout));
+        }
+        outcome => {
+            let reason = match &outcome {
+                Ok(run) => last_line(&run.stderr),
+                Err(error) => format!("{error:#}"),
+            };
+            eprintln!("[deploy] {label} could not hand back ({reason}); stopping it instead");
+            let _ = node.run(&format!("{binary} stop --force --json")).await;
+        }
+    }
+    // The rename keeps the old inode alive for the daemon now exec'd from it,
+    // while the path serves the build that worked to the next autostart.
+    let run = node.run(&format!("mv -f {binary}.prev {binary}")).await?;
     if run.code != 0 {
-        bail!("no previous binary to roll back to on {}", node.label());
+        bail!(
+            "restoring the previous binary on {label}: {}",
+            last_line(&run.stderr)
+        );
     }
     Ok(())
 }
@@ -1618,7 +1647,37 @@ mod tests {
         assert_eq!(report.exit_code(), EXIT_BUSY);
     }
 
-    /// A new daemon that never verifies is rolled back, and the report says so.
+    /// An unhealthy new image is handed back to the previous binary — same
+    /// pid, sessions kept — and nothing on the box is stopped.
+    #[tokio::test]
+    async fn an_unhealthy_new_image_is_rolled_back_without_stopping() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // stage: chmod + mv
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3), // the daemon takes the bad image on
+                ok(""),        // roll back: [ -e prev ]
+                handed_off(3), // roll back: handoff --binary prev
+                ok(""),        // roll back: mv prev back
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(
+            commands.iter().any(|command| command.contains("handoff --binary")),
+            "{commands:?}"
+        );
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+        assert!(commands.last().unwrap().starts_with("mv -f"), "{commands:?}");
+    }
+
+    /// A new daemon that never verifies and cannot hand back is rolled back the
+    /// destructive way, and the report says so.
     #[tokio::test]
     async fn a_daemon_that_does_not_come_up_is_rolled_back() {
         let node = FakeNode::new(
@@ -1628,6 +1687,8 @@ mod tests {
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 cannot_hand_off(),
                 ok(""), // stop
+                ok(""), // roll back: [ -e prev ]
+                failed(1, "the daemon did not answer hello in time"), // roll back: handoff
                 ok(""), // roll back: stop --force
                 ok(""), // roll back: mv prev
             ],
@@ -1638,6 +1699,7 @@ mod tests {
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
         let commands = node.commands.borrow();
+        assert!(commands.iter().any(|command| command.contains("stop --force")), "{commands:?}");
         assert!(commands.last().unwrap().contains("termiod.prev"), "{commands:?}");
     }
 
