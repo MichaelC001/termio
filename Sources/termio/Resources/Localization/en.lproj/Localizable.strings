@@ -560,6 +560,8 @@
 	<string>Find Previous</string>
 	<key>Find…</key>
 	<string>Find…</string>
+	<key>Finish updating Termio’s session host?</key>
+	<string>Finish updating Termio’s session host?</string>
 	<key>Focus Pane Down</key>
 	<string>Focus Pane Down</string>
 	<key>Focus Pane Left</key>

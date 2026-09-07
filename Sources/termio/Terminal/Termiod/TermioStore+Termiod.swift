@@ -1391,17 +1391,9 @@ extension TermioStore {
             return .success(TermiodDevice(
                 id: hostID, daemonVersion: version, routes: [.ssh(host)], lastSeen: Date()))
         case .staged:
-            // Named, not counted. "1 session" is a number the user cannot act
-            // on: whether to interrupt it depends entirely on what it is doing,
-            // and only the name and the command answer that.
-            let names = (report.busy ?? [])
-                .map { "• \($0.label)" }
-                .joined(separator: "\n")
             return .failure(RemoteSetupError(
                 state: .staged,
-                message: "termiod \(report.desired) is ready on \(host) and takes over once "
-                    + "this finishes:\n\(names)\n"
-                    + "Update Anyway stops it now."))
+                message: stagedUpdateMessage(report, on: host)))
         case .unhealthy:
             let rolledBack = report.rolledBack == true
                 ? "\nThe previous termiod is back in place." : ""
@@ -1420,6 +1412,21 @@ extension TermioStore {
         }
     }
 
+    /// The staged rung's sentence, shared by the machines pane and the launch
+    /// reconcile. Named, not counted: "1 session" is a number the user cannot
+    /// act on — whether to interrupt it depends entirely on what it is doing,
+    /// and only the name and the command answer that.
+    private nonisolated static func stagedUpdateMessage(
+        _ report: Termiod.LifecycleReport, on label: String
+    ) -> String {
+        let names = (report.busy ?? [])
+            .map { "• \($0.label)" }
+            .joined(separator: "\n")
+        return "termiod \(report.desired) is ready on \(label) and takes over once "
+            + "this finishes:\n\(names)\n"
+            + "Update Anyway stops it now."
+    }
+
     // MARK: - This Mac's own daemon
 
     /// Puts the daemon on this Mac onto the binary this app ships.
@@ -1432,11 +1439,14 @@ extension TermioStore {
     /// each terminal opens (`ensureRemoteReady`) and the machine the app runs on
     /// was the one nobody asked.
     ///
-    /// Launch is the right moment to stage the replacement: no pane has yet
-    /// asked to start this app's daemon, so a missing daemon will start from the
-    /// new binary. An existing daemon is deliberately left alone. The later swap
-    /// is deferred to an explicit deploy or the daemon's own restart, so launch
-    /// can never terminate an idle session without the user asking.
+    /// Launch is the right moment to bring it current: no pane has yet asked to
+    /// start this app's daemon, and `deploy` leads with handoff — the daemon
+    /// `execve`s the new binary keeping its pid and every PTY — so on any
+    /// daemon that can hand off, being current is free and nobody is asked.
+    /// Only when handoff is impossible (a daemon too old to know the verb, or a
+    /// handoff that failed) does the stop rung appear, and that rung is never
+    /// taken on the user's behalf: the sessions it would interrupt are named in
+    /// a dialog, and stopping them is Update Anyway's click, not launch's.
     ///
     /// The rule itself stays in one place. This asks what the daemon is running
     /// and, when that is not what the bundled daemon carries, hands the decision to the
@@ -1462,9 +1472,9 @@ extension TermioStore {
         else { return }
         Log.termiod.info("""
         this Mac runs termiod \(running, privacy: .public) and this app ships \
-        \(desired, privacy: .public); staging it before any pane attaches
+        \(desired, privacy: .public); deploying it before any pane attaches
         """)
-        guard let run = runProcess(binary, ["deploy", "--stage-only", "--json"]) else {
+        guard let run = runProcess(binary, ["deploy", "--json"]) else {
             Log.termiod.error("couldn't run \(binary, privacy: .public) deploy")
             return
         }
@@ -1478,21 +1488,68 @@ extension TermioStore {
             return
         }
         switch report.state {
+        case .current:
+            // The free rung: the daemon handed off in place, same pid, every
+            // PTY carried. Nothing was at risk, so nobody is asked.
+            Log.termiod.info(
+                "this Mac's termiod is current at \(report.version ?? desired, privacy: .public)")
         case .staged:
             Log.termiod.info("""
             staged termiod \(report.version ?? desired, privacy: .public) for this Mac's daemon; \
-            it is still running \(report.daemon ?? running, privacy: .public)
+            it is still running \(report.daemon ?? running, privacy: .public) and could not hand off
             """)
-        case .current:
-            Log.termiod.info(
-                "this Mac's termiod deploy reports current at \(report.version ?? desired, privacy: .public)")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    offerLocalDaemonUpdate(report: report, binary: binary)
+                }
+            }
+        case .unhealthy:
+            let rolledBack = report.rolledBack == true
+                ? "; the previous binary is back in place" : ""
+            Log.termiod.error("""
+            this Mac's termiod took the new binary but did not answer: \
+            \(report.message ?? "", privacy: .public)\(rolledBack, privacy: .public)
+            """)
         default:
-            // Never an alert. Version skew is negotiated at the handshake,
-            // so a daemon that stays behind is a worse build, not a broken
-            // app, and launch is the wrong place to argue about it.
+            // Never an alert for these. Version skew is negotiated at the
+            // handshake, so a daemon that stays behind is a worse build, not a
+            // broken app, and launch is the wrong place to argue about it.
             Log.termiod.error("""
             left this Mac's termiod on \(running, privacy: .public): \
             \(report.message ?? report.state.rawValue, privacy: .public)
+            """)
+        }
+    }
+
+    /// The one rung that costs something, put to the user: the daemon on this
+    /// Mac could not take the new binary in place, so finishing the update
+    /// means stopping the sessions named here. Declining is free — the new
+    /// binary stays staged, and the daemon takes it the next time it stops on
+    /// its own.
+    @MainActor
+    private static func offerLocalDaemonUpdate(
+        report: Termiod.LifecycleReport, binary: String
+    ) {
+        let alert = NSAlert()
+        alert.messageText = localized("Finish updating Termio’s session host?")
+        alert.informativeText = stagedUpdateMessage(report, on: "this Mac")
+        // Not Now first so it owns both Return and Escape; the destructive
+        // button takes a deliberate click.
+        alert.addButton(withTitle: localized("Not Now"))
+        alert.addButton(withTitle: localized("Update Anyway"))
+        alert.buttons.last?.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let run = runProcess(binary, ["deploy", "--force", "--json"]),
+                  let forced = try? Termiod.LifecycleReport.decode(
+                    Data(run.standardOutput.utf8))
+            else {
+                Log.termiod.error("the forced local termiod deploy ended without a report")
+                return
+            }
+            Log.termiod.info("""
+            forced local termiod deploy ended \(forced.state.rawValue, privacy: .public): \
+            \(forced.message ?? forced.version ?? "", privacy: .public)
             """)
         }
     }

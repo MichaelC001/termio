@@ -2693,6 +2693,16 @@
         }
       }
     },
+    "Finish updating Termio’s session host?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要完成 Termio 会话宿主的更新吗？"
+          }
+        }
+      }
+    },
     "Find": {
       "localizations": {
         "zh-Hans": {

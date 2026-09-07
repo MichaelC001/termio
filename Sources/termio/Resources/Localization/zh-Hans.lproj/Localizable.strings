@@ -560,6 +560,8 @@
 	<string>查找上一个</string>
 	<key>Find…</key>
 	<string>查找…</string>
+	<key>Finish updating Termio’s session host?</key>
+	<string>要完成 Termio 会话宿主的更新吗？</string>
 	<key>Focus Pane Down</key>
 	<string>聚焦下方窗格</string>
 	<key>Focus Pane Left</key>
