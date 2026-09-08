@@ -6,5 +6,16 @@
   "command": "opencode2",
   "icon": { "asset": "opencode-favicon" },
   "install": "https://opencode.ai/v2/docs/",
-  "skills": { "dir": "~/.config/opencode/skills" }
+  "skills": { "dir": "~/.config/opencode/skills" },
+  "hooks": {
+    "type": "plugin",
+    "dir": "~/.config/opencode/plugins",
+    "dialect": "opencode2",
+    "conversation": "data.sessionID",
+    "events": [
+      { "on": "session.status", "state": "working", "matcher": "busy" },
+      { "on": "session.status", "state": "done", "matcher": "idle" },
+      { "on": "permission.asked", "state": "attention" }
+    ]
+  }
 }

@@ -448,6 +448,9 @@ enum HookDialect: Hashable {
     /// Shipped plugin templates. Each names a closed host API; manifests provide
     /// only the destination directory and event→state data.
     case openCodePlugin
+    /// OpenCode 2's rewritten plugin API: a default-exported `{ id, setup }`
+    /// object consuming `ctx.event.subscribe`, with payloads under `data`.
+    case openCode2Plugin
     case piPlugin
     case ampPlugin
     /// Cline: a directory of executables named after the lifecycle event
@@ -1169,6 +1172,8 @@ struct AgentManifest: Decodable {
             dialect = .kimiTOML
         case (.plugin, "opencode"):
             dialect = .openCodePlugin
+        case (.plugin, "opencode2"):
+            dialect = .openCode2Plugin
         case (.plugin, "pi"):
             dialect = .piPlugin
         case (.plugin, "amp"):
@@ -1205,7 +1210,7 @@ struct AgentManifest: Decodable {
                     throw ManifestError.invalid(
                         "\(id): hook conversation must name a stdin JSON field, not '\(raw)'")
                 }
-            case .openCodePlugin:
+            case .openCodePlugin, .openCode2Plugin:
                 let components = raw.split(separator: ".", omittingEmptySubsequences: false)
                 guard !components.isEmpty, components.allSatisfy(isIdentifier) else {
                     throw ManifestError.invalid(

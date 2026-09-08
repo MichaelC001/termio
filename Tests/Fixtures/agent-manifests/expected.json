@@ -806,6 +806,60 @@
   },
   {
     "definition": {
+      "command": "opencode2",
+      "configHome": null,
+      "displayName": "OpenCode 2",
+      "emitsProgressStatus": false,
+      "hooks": {
+        "capturesTranscript": false,
+        "conversation": "data.sessionID",
+        "dialect": "openCode2Plugin",
+        "directory": "~/.config/opencode/plugins",
+        "events": [
+          {
+            "matcher": "busy",
+            "name": "session.status",
+            "state": "working"
+          },
+          {
+            "matcher": "idle",
+            "name": "session.status",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "permission.asked",
+            "state": "attention"
+          }
+        ],
+        "file": null,
+        "promptTitle": null,
+        "tool": null,
+        "type": "plugin"
+      },
+      "icon": "image",
+      "id": "opencode2",
+      "installURL": "https://opencode.ai/v2/docs/",
+      "order": 31,
+      "permissionBypassFlag": null,
+      "resume": {
+        "create": null,
+        "discover": null,
+        "resume": null,
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.config/opencode/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "opencode2"
+    },
+    "file": "Sources/termio/Resources/agents/opencode2.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
       "command": "pi",
       "configHome": null,
       "displayName": "Pi",
