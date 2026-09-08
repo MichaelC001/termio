@@ -46,14 +46,15 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
                 // table's margins — a remote is reconciled before each terminal
                 // opens, and the machine the app runs on is the one nobody
                 // asks — so the row itself names the way out.
-                let behind = behind_note(status.daemon.version.as_deref(), &status.binary.version);
+                let behind =
+                    behind_note(status.daemon.version.as_deref(), &status.binary.version, &daemon);
                 let version = status.daemon.version.unwrap_or(status.binary.version);
                 let proto = status
                     .daemon
                     .proto
                     .map(|proto| format!("proto {proto}"))
                     .unwrap_or_default();
-                row("termiod local", &version, &proto, behind);
+                row("termiod local", &version, &proto, &behind);
             }
             Some(status) if !status.binary.version.is_empty() => row(
                 "termiod local",
@@ -85,21 +86,27 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
     Ok(())
 }
 
-/// "← behind; run `termiod handoff`" when the running daemon is older than the
-/// binary staged at its path, and quiet in every other case — including the
-/// versionless answer of a daemon too old to say, which `handoff` would refuse
-/// anyway.
-fn behind_note(running: Option<&str>, staged: &str) -> &'static str {
+/// "← behind; run `<daemon> handoff`" when the running daemon is older than
+/// the binary staged at its path, and quiet in every other case — including
+/// the versionless answer of a daemon too old to say, which `handoff` would
+/// refuse anyway. The command names the resolved binary, not a bare
+/// `termiod`: the app puts `termio` on PATH and keeps the daemon inside the
+/// bundle, so the bare name is "command not found" on a normal install — or,
+/// worse, some other build that happens to be on PATH.
+fn behind_note(running: Option<&str>, staged: &str, daemon: &std::path::Path) -> String {
     let (Some(running), Some(staged)) = (
         running.and_then(lifecycle::Version::parse),
         lifecycle::Version::parse(staged),
     ) else {
-        return "";
+        return String::new();
     };
     if running < staged {
-        "← behind; run `termiod handoff`"
+        format!(
+            "← behind; run `{} handoff`",
+            lifecycle::shell_quote(&daemon.display().to_string())
+        )
     } else {
-        ""
+        String::new()
     }
 }
 
@@ -310,13 +317,14 @@ mod tests {
 
     #[test]
     fn only_a_running_daemon_older_than_its_binary_is_flagged() {
+        let daemon = std::path::Path::new("/Applications/Termio.app/Contents/Resources/termiod");
         assert_eq!(
-            behind_note(Some("0.49.0+1881"), "0.50.0+1913"),
-            "← behind; run `termiod handoff`"
+            behind_note(Some("0.49.0+1881"), "0.50.0+1913", daemon),
+            "← behind; run `/Applications/Termio.app/Contents/Resources/termiod handoff`"
         );
-        assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913"), "");
-        assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913"), "");
-        assert_eq!(behind_note(None, "0.50.0+1913"), "");
+        assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913", daemon), "");
+        assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913", daemon), "");
+        assert_eq!(behind_note(None, "0.50.0+1913", daemon), "");
     }
 
     #[test]
