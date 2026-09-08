@@ -103,6 +103,15 @@ final class TerminalViewController: UIViewController {
     /// Bottom pin of the surface — its constant tracks the keyboard overlap
     /// (0 when the keyboard is away), see keyboardFrameWillChange.
     private var terminalBottomConstraint: NSLayoutConstraint?
+    /// How much of the screen the keyboard covers right now. The keyboard
+    /// occludes, it never resizes: the declared viewport and the surface grid
+    /// are both measured against the keyboard-hidden height, and the surface is
+    /// slid up so its bottom rows — the prompt, an agent's input box — stay
+    /// visible above the keys. Sizing the PTY to the keyboard-shrunk area sent
+    /// a SIGWINCH on every show/hide, and an agent TUI answers each one with a
+    /// full repaint (the pan-don't-resize rule every mobile terminal converges
+    /// on).
+    private var keyboardOverlap: CGFloat = 0
     /// Main-thread only — fed from the companion byte stream, read on key taps.
     private var altScreenSniffer = AlternateScreenSniffer()
     private var uploadClient: DeviceClient?
@@ -326,6 +335,11 @@ final class TerminalViewController: UIViewController {
     private func layoutTerminalSurface() {
         let host = terminalHost.bounds
         guard host.width > 0, host.height > 0 else { return }
+        // Everything below is measured against the keyboard-hidden height. The
+        // keyboard occludes this rectangle, it never shrinks it: shrinking is a
+        // viewport change, a viewport change is a PTY resize, and a PTY resize
+        // is a full TUI repaint on every show/hide of the keys.
+        let fullHeight = host.height + keyboardOverlap
         let screen = hostGrid
         if case .device = backend, let screen {
             companion?.setViewport(columns: Int(screen.cols), rows: Int(screen.rows))
@@ -336,12 +350,17 @@ final class TerminalViewController: UIViewController {
               let grid = sharedGrid, grid != screen,
               let cell = cellSize, grid.cols > 0, grid.rows > 0
         else {
-            terminalView.frame = host
+            // Full-height surface pinned to the host's bottom: with the
+            // keyboard up the host bottom sits above the keys, so the bottom
+            // rows stay visible and the top ones slide under the header
+            // (the host clips). With it away this is exactly `host`.
+            terminalView.frame = CGRect(
+                x: 0, y: host.height - fullHeight, width: host.width, height: fullHeight)
             return
         }
         let width = CGFloat(grid.cols) * cell.width + 2 * Self.terminalPaddingX + cell.width / 2
         let height = CGFloat(grid.rows) * cell.height + 2 * Self.terminalPaddingY + cell.height / 2
-        let fit = min(1, host.width / width, host.height / height)
+        let fit = min(1, host.width / width, fullHeight / height)
         terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
         terminalView.center = CGPoint(x: host.midX, y: height * fit / 2)
@@ -355,8 +374,13 @@ final class TerminalViewController: UIViewController {
     /// viewport at all rather than as a stand-in.
     private var hostGrid: TerminalGrid? {
         guard let cell = cellSize else { return nil }
+        // The keyboard-hidden height, always: what this screen could show is a
+        // fact about the screen, not about whether the keys happen to be up.
+        let size = CGSize(
+            width: terminalHost.bounds.width,
+            height: terminalHost.bounds.height + keyboardOverlap)
         return TerminalGrid.fitting(
-            terminalHost.bounds.size, cell: cell,
+            size, cell: cell,
             paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY)
     }
 
@@ -651,6 +675,7 @@ final class TerminalViewController: UIViewController {
         let endFrame = view.convert(endValue.cgRectValue, from: nil)
         let overlap = max(0, view.bounds.maxY - endFrame.minY)
         guard let constraint = terminalBottomConstraint, constraint.constant != -overlap else { return }
+        keyboardOverlap = overlap
         constraint.constant = -overlap
         let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
