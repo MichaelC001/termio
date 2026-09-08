@@ -1430,6 +1430,8 @@
 	<string>该设备上的 termiod 版本过旧，无法浏览文件。</string>
 	<key>This device’s termiod is too old to install agent integration.</key>
 	<string>该设备上的 termiod 版本过旧，无法安装 Agent 集成。</string>
+	<key>This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines.</key>
+	<string>该设备上的 termiod 版本过旧，无法启动 Agent。请在“设置 › 设备”中重新设置该设备。</string>
 	<key>This device’s termiod is too old to read git.</key>
 	<string>该设备上的 termiod 版本过旧，无法读取 git。</string>
 	<key>This device’s termiod is too old to report its agents.</key>

@@ -21,8 +21,15 @@ extension TermioStore {
     /// front of that screen yet. Two facts, two fields — a hidden pane keeps a
     /// viewport it gets back when it is shown, and a window that has not laid
     /// out has none to get back.
+    /// `command` is the *unwrapped* launch line (`resolveLaunch`'s answer,
+    /// before `launchArgv` folds it into this Mac's login shell). A remote
+    /// session hands it to the far daemon verbatim, because the wrap is the
+    /// half of the launch that belongs to the machine: which shell, and which
+    /// `PATH`, are facts about the box the process runs on. Local sessions
+    /// ignore it — their `argv` already carries the wrapped form.
     func makeTermiodLink(for session: Session, argv: [String], cwd: String,
                          env: [String: String],
+                         command: String? = nil,
                          viewport: TerminalGrid? = nil,
                          rendering: Bool = true) -> TermiodSessionLink {
         // The session is the only source of truth for where it runs. There used
@@ -33,11 +40,12 @@ extension TermioStore {
         let route = TermiodRoute(sshAlias: session.termiodRemoteHost)
         let remoteHost = session.termiodRemoteHost
         // A remote session runs on the VPS, so the Mac's cwd, PATH-laden env,
-        // and shell path are all wrong there — hand the remote its own login
-        // shell (empty argv) and let it set up its own environment. The remote
-        // cwd travels when the caller chose one (a cloned repo directory): the
-        // remote daemon `cd`s there before the shell. Local sessions keep the
-        // full spec, unchanged.
+        // and shell path are all wrong there — the spec carries no argv, only
+        // the presentation env and, for an agent session, the launch line the
+        // remote daemon wraps in its own login shell. The remote cwd travels
+        // when the caller chose one (a cloned repo directory): the remote
+        // daemon `cd`s there before the process. Local sessions keep the full
+        // spec, unchanged.
         let specification = remoteHost == nil
             ? Termiod.CreateSpecification(
                 cwd: cwd,
@@ -50,7 +58,8 @@ extension TermioStore {
                 argv: [],
                 env: Self.presentationEnvironment(from: env),
                 rows: UInt16(clamping: lastHostGridRows),
-                cols: UInt16(clamping: lastHostGridColumns))
+                cols: UInt16(clamping: lastHostGridColumns),
+                command: command)
         let opening = viewport ?? TerminalGrid(
             rows: UInt16(clamping: lastHostGridRows), cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
@@ -1136,11 +1145,16 @@ extension TermioStore {
 
     // MARK: - Remote terminals (per-session SSH host)
 
-    /// Opens a **remote terminal** on `host`: a `.terminal` session whose termiod
-    /// link runs on that SSH box (`session.termiodRemoteHost`), so the shell lives
-    /// on the remote and the Mac attaches over `ssh <host> termiod stdio`. Unlike
+    /// Opens a **remote session** on `host`: a session whose termiod link runs
+    /// on that SSH box (`session.termiodRemoteHost`), so the process lives on
+    /// the remote and the Mac attaches over `ssh <host> termiod stdio`. Unlike
     /// `addSSHSession` (a plain `ssh <host>` in a *local* PTY), this is the durable
     /// termiod path — detach-not-kill and snapshot repaint carry across the network.
+    ///
+    /// `agent` picks what the far daemon spawns: `.terminal` is that box's own
+    /// login shell, and an agent preset is the agent's command line — resolved
+    /// per-machine by `resolveLaunch` at surface time — wrapped by the daemon
+    /// in the box's login shell (`CreateSpecification.command`).
     ///
     /// The whole feature depends on the opt-in daemon backend, so with the flag off
     /// it surfaces a clear message rather than silently opening a broken pane. The
@@ -1156,6 +1170,7 @@ extension TermioStore {
     /// see `createRemoteTerminalSession`.
     func addRemoteTerminal(
         host: String,
+        agent: AgentPreset = .terminal,
         cwd: String? = nil,
         title: String? = nil,
         project projectID: UUID? = nil
@@ -1196,7 +1211,8 @@ extension TermioStore {
                     cwd = checkout.path
                 }
                 self.createRemoteTerminalSession(
-                    host: host, device: device.id, cwd: cwd, title: title, project: projectID
+                    host: host, agent: agent, device: device.id, cwd: cwd, title: title,
+                    project: projectID
                 )
             }
         }
@@ -1215,7 +1231,7 @@ extension TermioStore {
         alert.runModal()
     }
 
-    /// Creates the remote `.terminal` session under the machine it runs on — that
+    /// Creates the remote session under the machine it runs on — that
     /// machine's fallback workspace — tagging it with the per-session remote host +
     /// cwd that `makeTermiodLink` threads through.
     ///
@@ -1224,12 +1240,13 @@ extension TermioStore {
     /// workspace holding it is telling the truth about where its work is.
     private func createRemoteTerminalSession(
         host: String,
+        agent: AgentPreset = .terminal,
         device deviceID: String,
         cwd: String?,
         title: String?,
         project projectID: UUID? = nil
     ) {
-        var session = Session(title: title ?? host, agent: .terminal)
+        var session = Session(title: title ?? host, agent: agent)
         session.termiodRemoteHost = host
         // Known up front here, unusually: the session is only created once
         // readiness has already shaken hands with the machine. Every other session
@@ -1254,7 +1271,7 @@ extension TermioStore {
             // the user chose, so the row could never become `Claude Code` and then
             // follow the agent's own title the way its local twin does.
             let count = projects[index].sessions.filter { $0.agent == .terminal }.count
-            session.title = "Terminal \(count + 1)"
+            session.title = agent == .terminal ? "Terminal \(count + 1)" : agent.displayName
             projects[index].sessions.append(session)
             selectedSessionID = session.id
             return
@@ -1267,7 +1284,7 @@ extension TermioStore {
         // name down the column (`ukvps ▸ ukvps`).
         if title == nil {
             let count = workspaces[index].terminals.filter { $0.agent == .terminal }.count
-            session.title = "Terminal \(count + 1)"
+            session.title = agent == .terminal ? "Terminal \(count + 1)" : agent.displayName
         }
         workspaces[index].terminals.append(session)
         selectedSessionID = session.id

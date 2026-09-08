@@ -301,6 +301,7 @@ extension TermioStore {
         let onScreen = isPaneOnScreen(session.id)
         let termiodLink = makeTermiodLink(
             for: session, argv: argv, cwd: spawnPath, env: env,
+            command: agentCommand,
             viewport: onScreen ? nil : TerminalGrid(rows: 0, cols: 0),
             rendering: onScreen)
         let inMemory = InMemoryTerminalSession(
@@ -464,6 +465,16 @@ extension TermioStore {
         let device = KnownDevice.running(session) ?? .thisMac
         guard let base = settings.command(for: session.agent, on: device) else {
             return (nil, nil) // plain login shell — nothing to resume
+        }
+        // Every resume signal below reads *this Mac's* disk — the agent's
+        // session store, the pinned-conversation probe — and a session on
+        // another machine keeps its conversations over there, where none of it
+        // is visible. Minting resume arguments from a store that is guaranteed
+        // empty would hand the agent a create flag for an id it may already
+        // hold (an error on relaunch), so a remote launch is always plain: the
+        // process itself survives detach, which is most of what resume is for.
+        if session.termiodRemoteHost != nil {
+            return (base, nil)
         }
         let agent = session.agent
         let resumeID: String?
