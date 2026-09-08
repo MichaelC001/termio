@@ -259,7 +259,7 @@ final class TermiodSession: DeviceSession {
             // A screen parked before its attach landed has to say so: the device
             // counts every arrival as rendering.
             if !rendering { scheduleViewport() }
-            repaintPending = authoritativeGrid != viewportGrid
+            repaintPending = authoritativeGrid != surfaceGrid
             publishSharedGrid()
             if !pendingInput.isEmpty {
                 let buffered = pendingInput
@@ -382,7 +382,14 @@ final class TermiodSession: DeviceSession {
     private func applyAuthoritativeGrid(_ grid: TerminalGrid) {
         guard authoritativeGrid != grid else { return }
         authoritativeGrid = grid
-        repaintPending = grid != viewportGrid
+        // Armed against the grid the *surface* is laid out at, not this
+        // screen's viewport. The two part exactly when the PTY moves *to* this
+        // phone — typing here resizes the session to this viewport while the
+        // surface is still laid out at the old shared grid — and the child's
+        // redraw streams in before the layout pass catches up, parsed at the
+        // wrong grid. Keying on the viewport read that case as "nothing to
+        // repair", so the mangled screen stayed until the next reattach.
+        repaintPending = grid != surfaceGrid
         publishSharedGrid()
         guard grid != viewportGrid, viewportGrid.rows > 0 else { return }
         Log.device.info("""
