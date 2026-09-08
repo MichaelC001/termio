@@ -47,6 +47,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "agents",
     "handoff",
     "viewport",
+    "spawn_command",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -497,6 +498,17 @@ pub struct CreateSpec {
     /// argv[0] is the program. Empty ⇒ the daemon picks the login shell.
     #[serde(default)]
     pub argv: Vec<String>,
+    /// A shell command line to run through the account's login shell, for a
+    /// client that knows *what* to launch but not where this box keeps it.
+    /// The daemon wraps it exactly the way the Mac app wraps a local agent
+    /// launch — `<login shell> -ilc "exec <command>"` — so the user's own
+    /// `PATH` setup (profile and rc both) resolves the program. Consulted only
+    /// when `argv` is empty: a caller that spells out argv has already decided
+    /// everything this field decides. Guarded by the `spawn_command`
+    /// capability so a client can tell a host that will honour it from one
+    /// that would silently spawn a plain shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
     #[serde(default = "default_rows")]
@@ -525,6 +537,7 @@ impl Default for CreateSpec {
             name: None,
             cwd: None,
             argv: Vec::new(),
+            command: None,
             env: Vec::new(),
             rows: default_rows(),
             cols: default_cols(),

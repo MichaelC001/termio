@@ -169,7 +169,10 @@ impl Manager {
         ));
         let name = spec.name.clone().unwrap_or_else(|| id.to_string());
         let cwd = spec.cwd.clone().unwrap_or_default();
-        let command = if spec.argv.is_empty() {
+        let argv = resolve_spawn_argv(&spec);
+        let command = if let Some(line) = spec.command.as_ref().filter(|_| spec.argv.is_empty()) {
+            line.clone()
+        } else if spec.argv.is_empty() {
             format!(
                 "{} (login shell)",
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
@@ -182,7 +185,7 @@ impl Manager {
             name,
             cwd,
             command,
-            spec.argv,
+            argv,
             spec.env,
             spec.rows,
             spec.cols,
@@ -506,6 +509,27 @@ impl Manager {
             }
         }
     }
+}
+
+/// The argv a spec spawns. Explicit argv wins; a `command` line is wrapped in
+/// the account's login shell the same way the Mac app wraps a local agent
+/// launch (`-ilc` sources both profile and rc, where `PATH` entries like
+/// `~/.local/bin` and nvm's shims land, and `exec` keeps the wrapper shell
+/// from lingering). The daemon's own inherited `PATH` is deliberately not
+/// consulted: it is ssh's or systemd's, and the programs worth launching are
+/// exactly the ones outside it (see `agent::machine`).
+fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
+    if !spec.argv.is_empty() {
+        return spec.argv.clone();
+    }
+    let Some(command) = spec.command.as_ref().filter(|line| !line.trim().is_empty()) else {
+        return Vec::new();
+    };
+    vec![
+        crate::agent::machine::login_shell(),
+        "-ilc".to_string(),
+        format!("exec {command}"),
+    ]
 }
 
 /// Soft `RLIMIT_NOFILE` values to try for the daemon and everything it spawns,
@@ -3145,5 +3169,51 @@ mod descriptor_limit_tests {
     #[test]
     fn an_already_generous_limit_is_left_alone() {
         assert!(descriptor_limit_candidates(1_048_576, 2_147_483_646).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod spawn_argv_tests {
+    use super::resolve_spawn_argv;
+    use crate::protocol::CreateSpec;
+
+    #[test]
+    fn a_command_line_is_wrapped_in_the_login_shell() {
+        let spec = CreateSpec {
+            command: Some("claude --continue".to_string()),
+            ..CreateSpec::default()
+        };
+        let argv = resolve_spawn_argv(&spec);
+        assert_eq!(argv.len(), 3);
+        assert_eq!(argv[1], "-ilc");
+        assert_eq!(argv[2], "exec claude --continue");
+    }
+
+    #[test]
+    fn explicit_argv_outranks_a_command_line() {
+        let spec = CreateSpec {
+            argv: vec!["/bin/echo".to_string(), "hi".to_string()],
+            command: Some("claude".to_string()),
+            ..CreateSpec::default()
+        };
+        assert_eq!(resolve_spawn_argv(&spec), vec!["/bin/echo", "hi"]);
+    }
+
+    #[test]
+    fn a_blank_command_line_still_means_the_plain_login_shell() {
+        let spec = CreateSpec {
+            command: Some("   ".to_string()),
+            ..CreateSpec::default()
+        };
+        assert!(resolve_spawn_argv(&spec).is_empty());
+    }
+
+    #[test]
+    fn a_spec_written_before_the_field_existed_still_decodes() {
+        let spec: CreateSpec =
+            serde_json::from_str(r#"{"name":"s","argv":[],"rows":24,"cols":80}"#)
+                .expect("decode legacy spec");
+        assert!(spec.command.is_none());
+        assert!(resolve_spawn_argv(&spec).is_empty());
     }
 }
