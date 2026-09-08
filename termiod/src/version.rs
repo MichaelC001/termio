@@ -38,6 +38,22 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         None => row("termio.app", "-", "", "(not running)"),
     }
 
+    // What the printed command must carry to land on the same daemon this
+    // table just described: the socket when one was named, else the channel —
+    // spelled out even for release, so the shell it is pasted into cannot
+    // redirect it with whatever those variables happen to hold there.
+    let env_pin = match provenance {
+        Provenance::ExplicitSocket => paths::socket_path()
+            .map(|socket| {
+                format!(
+                    "TERMIOD_SOCK={}",
+                    lifecycle::shell_quote(&socket.display().to_string())
+                )
+            })
+            .unwrap_or_default(),
+        Provenance::ProgramName => format!("TERMIO_CHANNEL={}", channel.name),
+    };
+
     match channel::daemon_binary(channel) {
         None => row("termiod local", "-", "", "(not installed)"),
         Some(daemon) => match daemon_status(&daemon) {
@@ -46,8 +62,12 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
                 // table's margins — a remote is reconciled before each terminal
                 // opens, and the machine the app runs on is the one nobody
                 // asks — so the row itself names the way out.
-                let behind =
-                    behind_note(status.daemon.version.as_deref(), &status.binary.version, &daemon);
+                let behind = behind_note(
+                    status.daemon.version.as_deref(),
+                    &status.binary.version,
+                    &daemon,
+                    &env_pin,
+                );
                 let version = status.daemon.version.unwrap_or(status.binary.version);
                 let proto = status
                     .daemon
@@ -93,7 +113,12 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
 /// `termiod`: the app puts `termio` on PATH and keeps the daemon inside the
 /// bundle, so the bare name is "command not found" on a normal install — or,
 /// worse, some other build that happens to be on PATH.
-fn behind_note(running: Option<&str>, staged: &str, daemon: &std::path::Path) -> String {
+fn behind_note(
+    running: Option<&str>,
+    staged: &str,
+    daemon: &std::path::Path,
+    env_pin: &str,
+) -> String {
     let (Some(running), Some(staged)) = (
         running.and_then(lifecycle::Version::parse),
         lifecycle::Version::parse(staged),
@@ -101,8 +126,9 @@ fn behind_note(running: Option<&str>, staged: &str, daemon: &std::path::Path) ->
         return String::new();
     };
     if running < staged {
+        let space = if env_pin.is_empty() { "" } else { " " };
         format!(
-            "← behind; run `{} handoff`",
+            "← behind; run `{env_pin}{space}{} handoff`",
             lifecycle::shell_quote(&daemon.display().to_string())
         )
     } else {
@@ -318,13 +344,14 @@ mod tests {
     #[test]
     fn only_a_running_daemon_older_than_its_binary_is_flagged() {
         let daemon = std::path::Path::new("/Applications/Termio.app/Contents/Resources/termiod");
+        let pin = "TERMIO_CHANNEL=dev";
         assert_eq!(
-            behind_note(Some("0.49.0+1881"), "0.50.0+1913", daemon),
-            "← behind; run `/Applications/Termio.app/Contents/Resources/termiod handoff`"
+            behind_note(Some("0.49.0+1881"), "0.50.0+1913", daemon, pin),
+            "← behind; run `TERMIO_CHANNEL=dev /Applications/Termio.app/Contents/Resources/termiod handoff`"
         );
-        assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913", daemon), "");
-        assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913", daemon), "");
-        assert_eq!(behind_note(None, "0.50.0+1913", daemon), "");
+        assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913", daemon, pin), "");
+        assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913", daemon, pin), "");
+        assert_eq!(behind_note(None, "0.50.0+1913", daemon, pin), "");
     }
 
     #[test]
