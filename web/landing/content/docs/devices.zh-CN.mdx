@@ -37,7 +37,7 @@ Termio 读 `~/.ssh/config`，绝不背着你改写它。你本来 `ssh` 得上�
 ## 设置一台设备
 
 打开**设置 ▸ 设备**，选中那台机器，按**设置**。Termio 会通过 SSH 把一个二进制
-——会话宿主 `termiod`——复制到 `~/.local/bin`。不需要 root，不需要包管理器，也不用往
+——Termio server `termiod`——复制到 `~/.local/bin`。不需要 root，不需要包管理器，也不用往
 shell 配置里加东西。接着它会找那台机器上装了哪些 Agent CLI，给每一个写入 Termio 的
 hooks、配置块和 Agent 技能，于是 VPS 上的 Agent 也能像本机的一样汇报**工作中**、
 **需要你**和**完成**。

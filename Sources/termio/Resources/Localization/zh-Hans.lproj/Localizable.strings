@@ -561,7 +561,7 @@
 	<key>Find…</key>
 	<string>查找…</string>
 	<key>Finish updating Termio’s session host?</key>
-	<string>要完成 Termio 会话宿主的更新吗？</string>
+	<string>要完成 Termio server 的更新吗？</string>
 	<key>Focus Pane Down</key>
 	<string>聚焦下方窗格</string>
 	<key>Focus Pane Left</key>
@@ -989,7 +989,7 @@
 	<key>Pairing Token</key>
 	<string>配对 Token</string>
 	<key>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</key>
-	<string>让 iPhone 直接连到这台 Mac 的会话宿主。没有会话在跑的项目暂时不会出现。</string>
+	<string>让 iPhone 直接连到这台 Mac 的 Termio server。没有会话在跑的项目暂时不会出现。</string>
 	<key>Panes</key>
 	<string>窗格</string>
 	<key>Passed to %@ every time a session starts.</key>
@@ -1381,11 +1381,11 @@
 	<key>The search failed.</key>
 	<string>搜索失败。</string>
 	<key>The session host answered, but not with a pairing invite.</key>
-	<string>会话宿主有回应，但返回的不是配对邀请。</string>
+	<string>Termio server 有回应，但返回的不是配对邀请。</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
-	<string>%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。</string>
+	<string>%@ 上的 Termio server。断开连接后，会话仍在那里继续运行。</string>
 	<key>The session host went away</key>
-	<string>承载会话的进程消失了</string>
+	<string>Termio server 消失了</string>
 	<key>The sidebar shows this workspace</key>
 	<string>侧栏显示的是这个工作区</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
