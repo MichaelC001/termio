@@ -362,6 +362,31 @@ fn redraw_winning_the_resize_race_blanks_until_the_nudged_redraw() {
     assert_eq!(copies, 1, "the nudged redraw restored one prompt, rows: {rows:?}");
 }
 
+/// Narrowing is the same contract in the other direction: a line the program's
+/// autowrap broke at the old width is re-joined and re-broken at the new one,
+/// with nothing lost at the seam. What shipped instead truncated the first
+/// physical row at the new width and left the continuation row in its old
+/// form — the phone's "and r … ntent." stale-tail blend: characters 40..49
+/// vanished and a fragment wrapped for the old width survived beside new text.
+#[test]
+fn narrowing_with_reflow_rewraps_without_losing_the_seam() {
+    let mut vt = VtTerminal::new(24, 49).unwrap();
+    // 73 columns of text in a 49-column terminal: autowrap breaks it after
+    // "…directly"'s fifth character, exactly the phone transcript's shape.
+    vt.vt_write(
+        b"players call contentGeneration.star actions directly and re-render the co",
+    );
+    vt.resize_reflowing(24, 39).unwrap();
+    assert_eq!(
+        visible(&vt.format_vt().unwrap()),
+        vec![
+            "players call contentGeneration.star act".to_string(),
+            "ions directly and re-render the co".to_string(),
+        ],
+        "the wrapped line is re-joined and re-broken at 39 columns, keeping the seam"
+    );
+}
+
 /// The other half of the rule: with a job on screen rather than the shell, the
 /// same widening re-joins the line, which is what every terminal the program was
 /// written for does and what the user is comparing against.
