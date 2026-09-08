@@ -219,6 +219,9 @@ pub enum HookDialect {
     /// Kimi's marker-delimited TOML array-of-tables block.
     KimiToml,
     OpenCodePlugin,
+    /// OpenCode 2's rewritten plugin API: a default-exported `{ id, setup }`
+    /// object consuming `ctx.event.subscribe`, with payloads under `data`.
+    OpenCode2Plugin,
     PiPlugin,
     AmpPlugin,
     /// Cline: a directory of executables named after the lifecycle event.
@@ -233,6 +236,7 @@ impl HookDialect {
             HookDialect::CopilotFlat => "copilotFlat",
             HookDialect::KimiToml => "kimiTOML",
             HookDialect::OpenCodePlugin => "openCodePlugin",
+            HookDialect::OpenCode2Plugin => "openCode2Plugin",
             HookDialect::PiPlugin => "piPlugin",
             HookDialect::AmpPlugin => "ampPlugin",
             HookDialect::ClineScripts => "clineScripts",
@@ -711,6 +715,7 @@ impl AgentManifest {
             (HookType::Json, Some("copilot")) => HookDialect::CopilotFlat,
             (HookType::Toml, None | Some("kimi")) => HookDialect::KimiToml,
             (HookType::Plugin, Some("opencode")) => HookDialect::OpenCodePlugin,
+            (HookType::Plugin, Some("opencode2")) => HookDialect::OpenCode2Plugin,
             (HookType::Plugin, Some("pi")) => HookDialect::PiPlugin,
             (HookType::Plugin, Some("amp")) => HookDialect::AmpPlugin,
             (HookType::Scripts, None | Some("cline")) => HookDialect::ClineScripts,
@@ -753,7 +758,7 @@ impl AgentManifest {
                         )));
                     }
                 }
-                HookDialect::OpenCodePlugin => {
+                HookDialect::OpenCodePlugin | HookDialect::OpenCode2Plugin => {
                     let components: Vec<&str> = raw.split('.').collect();
                     if components.is_empty() || !components.iter().all(|c| is_identifier(c)) {
                         return Err(invalid(format!(
@@ -989,6 +994,7 @@ pub const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("agents/hermes.json", include_str!("../../../Sources/termio/Resources/agents/hermes.json")),
     ("agents/kimi.json", include_str!("../../../Sources/termio/Resources/agents/kimi.json")),
     ("agents/opencode.json", include_str!("../../../Sources/termio/Resources/agents/opencode.json")),
+    ("agents/opencode2.json", include_str!("../../../Sources/termio/Resources/agents/opencode2.json")),
     ("agents/pi.json", include_str!("../../../Sources/termio/Resources/agents/pi.json")),
     ("agents/qwen.json", include_str!("../../../Sources/termio/Resources/agents/qwen.json")),
 ];

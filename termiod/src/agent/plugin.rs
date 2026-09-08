@@ -38,7 +38,7 @@ fn js(value: &str) -> String {
 /// keeps a rename from leaving the agent loading two copies.
 pub fn filenames(dialect: HookDialect) -> Option<(&'static str, &'static str)> {
     match dialect {
-        HookDialect::OpenCodePlugin | HookDialect::PiPlugin => {
+        HookDialect::OpenCodePlugin | HookDialect::OpenCode2Plugin | HookDialect::PiPlugin => {
             Some(("termio.js", "termio-status.js"))
         }
         HookDialect::AmpPlugin => Some(("termio.ts", "termio-status.ts")),
@@ -55,6 +55,7 @@ pub fn source(
 ) -> Option<String> {
     match dialect {
         HookDialect::OpenCodePlugin => Some(open_code_source(events, conversation, request)),
+        HookDialect::OpenCode2Plugin => Some(open_code_2_source(events, conversation, request)),
         HookDialect::PiPlugin => Some(pi_source(events, conversation, request)),
         HookDialect::AmpPlugin => Some(amp_source(events, request)),
         _ => None,
@@ -91,16 +92,16 @@ fn session_declaration() -> &'static str {
 /// `conversation`, when the manifest declared a locator, rides along — on both
 /// machines now. Bun's `$` escapes each interpolation into one argv token, so
 /// the id needs no quoting of its own.
-fn daemon_report_body(shell: &str, carries_conversation: bool) -> String {
-    let mut body = String::from("    if (!session) return;\n");
+fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> String {
+    let mut body = format!("{indent}if (!session) return;\n");
     if carries_conversation {
         body.push_str(&format!(
-            "    if (conversation && roots.has(conversation)) {{\n      \
-             return {shell}`${{cli}} set-status ${{session}} ${{state}} --conversation ${{conversation}}`.quiet().nothrow();\n    }}\n"
+            "{indent}if (conversation && roots.has(conversation)) {{\n{indent}  \
+             return {shell}`${{cli}} set-status ${{session}} ${{state}} --conversation ${{conversation}}`.quiet().nothrow();\n{indent}}}\n"
         ));
     }
     body.push_str(&format!(
-        "    return {shell}`${{cli}} set-status ${{session}} ${{state}}`.quiet().nothrow();"
+        "{indent}return {shell}`${{cli}} set-status ${{session}} ${{state}}`.quiet().nothrow();"
     ));
     body
 }
@@ -166,7 +167,7 @@ fn open_code_source(
             .to_string()
     };
 
-    let report_body = daemon_report_body("$", conversation_expression.is_some());
+    let report_body = daemon_report_body("$", conversation_expression.is_some(), "    ");
     let report_parameters = if conversation_expression.is_none() {
         "(state)"
     } else {
@@ -189,6 +190,112 @@ fn open_code_source(
          }};",
         cli_declaration(request),
         session_declaration()
+    )
+}
+
+/// OpenCode 2 plugin: the same lifecycle report as [`open_code_source`], spoken
+/// through the rewritten v2 plugin API. Verified against the shipped
+/// `@opencode-ai/plugin@0.0.0-beta-19242` and its client: the plugin is a
+/// default-exported `{ id, setup }` object (v2's `Plugin.define` is the
+/// identity function, so the file imports nothing from the package); events
+/// arrive through `ctx.event.subscribe`, an AsyncIterable, instead of a
+/// returned `event` hook; payload fields moved from `event.properties` to
+/// `event.data`; `session.idle` folded into `session.status` as
+/// `{ status: { type: "idle" } }`; and the permission event is
+/// `permission.asked`. Bun's `$` is imported from `"bun"` — plugins run
+/// in-process under Bun — so the report command is byte-identical to v1's.
+///
+/// Two shapes are deliberate. Setup returns without subscribing when no
+/// `TERMIOD_SESSION_ID` is present, so an opencode2 started outside termio does
+/// not hold an idle event stream open for the process's lifetime. And the
+/// returned cleanup aborts the subscription, because v2 unloads a plugin by
+/// running its cleanup — an orphaned iterator would keep reporting into a
+/// session that replaced its plugins.
+///
+/// Top-level session tracking works as in v1 on the flat v2 payload:
+/// `session.created` carries `sessionID` and, for subagent children,
+/// `parentID`, so only top-level ids are forwarded as the conversation.
+fn open_code_2_source(
+    events: &[HookEvent],
+    conversation: Option<&str>,
+    request: &InstallRequest,
+) -> String {
+    let conversation_expression = conversation.map(|path| {
+        let mut expression = String::from("event");
+        for component in path.split('.') {
+            expression.push_str(&format!("?.{component}"));
+        }
+        expression
+    });
+
+    let branches = events
+        .iter()
+        .map(|event| {
+            let arguments = match &conversation_expression {
+                Some(expression) => format!("{}, {expression}", js(&event.state)),
+                None => js(&event.state),
+            };
+            match &event.matcher {
+                Some(matcher) => format!(
+                    "        if (event.type === {} && event.data?.status?.type === {}) {{ report({arguments}); continue; }}",
+                    js(&event.name),
+                    js(matcher)
+                ),
+                None => format!(
+                    "        if (event.type === {}) {{ report({arguments}); continue; }}",
+                    js(&event.name)
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let identity = if conversation_expression.is_none() {
+        String::new()
+    } else {
+        "\n    const roots = new Set();\n    const note = (data) => {\n      \
+         if (!data?.sessionID) return;\n      \
+         if (data.parentID) roots.delete(data.sessionID); else roots.add(data.sessionID);\n    };"
+            .to_string()
+    };
+    let identity_branches = if conversation_expression.is_none() {
+        String::new()
+    } else {
+        "        if (event.type === \"session.created\") { note(event.data); continue; }\n        \
+         if (event.type === \"session.deleted\") { roots.delete(event.data?.sessionID); continue; }\n"
+            .to_string()
+    };
+
+    let report_body = daemon_report_body("$", conversation_expression.is_some(), "      ");
+    let report_parameters = if conversation_expression.is_none() {
+        "(state)"
+    } else {
+        "(state, conversation)"
+    };
+
+    format!(
+        "// termio agent status — reports OpenCode session lifecycle to termio.\n\
+         // Socket marker: {SOCKET_MARKER}\n\
+         import {{ $ }} from \"bun\";\n\
+         export default {{\n  \
+         id: \"termio-status\",\n  \
+         async setup(ctx) {{\n    \
+         {}\n    \
+         const session = process.env.TERMIOD_SESSION_ID;\n    \
+         if (!session) return;{identity}\n    \
+         const report = {report_parameters} => {{\n\
+         {report_body}\n    \
+         }};\n    \
+         const abort = new AbortController();\n    \
+         (async () => {{\n      \
+         for await (const event of ctx.event.subscribe({{ signal: abort.signal }})) {{\n\
+         {identity_branches}{branches}\n      \
+         }}\n    \
+         }})().catch(() => {{}});\n    \
+         return () => abort.abort();\n  \
+         }},\n\
+         }};",
+        cli_declaration(request)
     )
 }
 
@@ -267,7 +374,7 @@ fn amp_source(events: &[HookEvent], request: &InstallRequest) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let report_body = daemon_report_body("amp.$", false);
+    let report_body = daemon_report_body("amp.$", false, "    ");
     format!(
         "// termio agent status — reports Amp turn lifecycle to termio.\n\
          // Socket marker: {SOCKET_MARKER}\n\
@@ -296,6 +403,17 @@ mod tests {
                   {"on":"session.status","state":"working","matcher":"busy"},
                   {"on":"session.idle","state":"done"},
                   {"on":"permission.updated","state":"attention"}]}}"#,
+        )
+    }
+
+    fn opencode2_spec() -> crate::agent::manifest::HookSpec {
+        spec_of(
+            r#"{"id":"opencode2","name":"OpenCode 2","hooks":{"type":"plugin",
+                "dir":"~/.config/opencode/plugins","dialect":"opencode2",
+                "conversation":"data.sessionID","events":[
+                  {"on":"session.status","state":"working","matcher":"busy"},
+                  {"on":"session.status","state":"done","matcher":"idle"},
+                  {"on":"permission.asked","state":"attention"}]}}"#,
         )
     }
 
@@ -335,6 +453,7 @@ mod tests {
     fn one_template_serves_both_machines() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {
@@ -399,6 +518,51 @@ export const TermioStatus = async ({ $ }) => {
     }
 
     #[test]
+    fn the_opencode2_plugin_renders_exactly() {
+        assert_eq!(
+            rendered(
+                HookDialect::OpenCode2Plugin,
+                &opencode2_spec(),
+                &device_request("/opt/termiod")
+            ),
+            r#"// termio agent status — reports OpenCode session lifecycle to termio.
+// Socket marker: agent-status.sock
+import { $ } from "bun";
+export default {
+  id: "termio-status",
+  async setup(ctx) {
+    const cli = "\/opt\/termiod";
+    const session = process.env.TERMIOD_SESSION_ID;
+    if (!session) return;
+    const roots = new Set();
+    const note = (data) => {
+      if (!data?.sessionID) return;
+      if (data.parentID) roots.delete(data.sessionID); else roots.add(data.sessionID);
+    };
+    const report = (state, conversation) => {
+      if (!session) return;
+      if (conversation && roots.has(conversation)) {
+        return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
+      }
+      return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
+    };
+    const abort = new AbortController();
+    (async () => {
+      for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
+        if (event.type === "session.created") { note(event.data); continue; }
+        if (event.type === "session.deleted") { roots.delete(event.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "busy") { report("working", event?.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "idle") { report("done", event?.data?.sessionID); continue; }
+        if (event.type === "permission.asked") { report("attention", event?.data?.sessionID); continue; }
+      }
+    })().catch(() => {});
+    return () => abort.abort();
+  },
+};"#
+        );
+    }
+
+    #[test]
     fn the_pi_plugin_renders_exactly() {
         assert_eq!(
             rendered(HookDialect::PiPlugin, &pi_spec(), &device_request("/opt/termiod")),
@@ -446,6 +610,7 @@ export default (amp) => {
     fn a_plugin_outside_a_session_reports_nothing() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {
@@ -462,6 +627,7 @@ export default (amp) => {
     fn every_generated_plugin_is_recognizable_as_ours() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
+            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {
