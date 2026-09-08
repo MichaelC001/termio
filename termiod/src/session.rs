@@ -1072,13 +1072,19 @@ impl Session {
         const SHELLS: [&str; 9] = [
             "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu",
         ];
-        let Some(argv0) = self
-            .foreground
-            .current()
-            .argv
-            .as_ref()
-            .and_then(|argv| argv.first())
-        else {
+        let sample = self.foreground.current();
+        // A job holding the terminal is not the shell whose redisplay the
+        // truncating resize protects, whatever its name says. The name check
+        // alone called an agent's tool subshell a shell, so a resize landing
+        // mid-command truncated a screen the agent's TUI had painted — tails
+        // lost from rows the resize should have rewrapped (the phone's
+        // stale-tail blend). Only the session's own child at the prompt does
+        // old-width cursor arithmetic; a nested interactive shell loses this
+        // protection, which is the cheaper edge by far.
+        if sample.job {
+            return false;
+        }
+        let Some(argv0) = sample.argv.as_ref().and_then(|argv| argv.first()) else {
             return true;
         };
         let name = argv0
@@ -3463,6 +3469,18 @@ mod tests {
         // conservative one.
         session.foreground.set_argv_for_tests(None);
         assert!(session.foreground_is_a_shell());
+
+        // A shell running as a *job* — an agent's tool subshell, `claude`
+        // shelling out mid-turn — is not the shell whose redisplay the
+        // truncating resize protects: the screen it would truncate belongs to
+        // the TUI that spawned it.
+        session.foreground.set_argv_for_tests(Some(vec!["/bin/zsh".to_string()]));
+        session.foreground.set_job_for_tests(true);
+        assert!(
+            !session.foreground_is_a_shell(),
+            "a tool subshell must not switch the resize to truncation"
+        );
+        session.foreground.set_job_for_tests(false);
 
         session.vt.shut_down();
         let _ = thread.join();

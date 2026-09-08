@@ -88,6 +88,13 @@ impl Foreground {
         self.sample.argv = argv;
     }
 
+    /// Pins the job bit the same way: whether the sampled group is something
+    /// the child put in the foreground rather than the child itself.
+    #[cfg(test)]
+    pub(super) fn set_job_for_tests(&mut self, job: bool) {
+        self.sample.job = job;
+    }
+
     pub(super) fn current(&self) -> &ForegroundSample {
         &self.sample
     }
