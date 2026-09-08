@@ -1101,7 +1101,37 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                     });
                 }
                 // A daemon holding no session has nothing a stop can cost, so
-                // handoff-only still takes the bounce.
+                // handoff-only still takes the bounce — but only on a roster
+                // read after the handoff attempt: a session created since the
+                // first snapshot must veto it. A daemon on this rung predates
+                // the handoff verb, so it cannot be asked to refuse a stop
+                // atomically; the read-to-stop gap is the window that remains,
+                // and anything short of a fresh read (an error included) keeps
+                // the daemon up rather than stopping on a stale picture.
+                match observe(node).await {
+                    Ok(Observed::Reported(fresh)) => {
+                        let alive: Vec<SessionSummary> = fresh
+                            .sessions
+                            .iter()
+                            .filter(|session| session.alive)
+                            .cloned()
+                            .collect();
+                        if !alive.is_empty() {
+                            return Ok(Outcome::Staged {
+                                version: fresh.binary.version,
+                                daemon: fresh.daemon.version,
+                                busy: alive,
+                            });
+                        }
+                    }
+                    _ => {
+                        return Ok(Outcome::Staged {
+                            version: status.binary.version.clone(),
+                            daemon: status.daemon.version.clone(),
+                            busy: Vec::new(),
+                        });
+                    }
+                }
             }
             eprintln!(
                 "[deploy] {label} could not hand off ({}); stopping it instead",
@@ -1271,6 +1301,18 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
         .await;
     match handoff {
         Ok(run) if run.code == 0 => {
+            // With no path restore, the handoff is the only way the source
+            // build ever serves again — so "no daemon was running" (exit 0,
+            // no pid) is not a recovery: the next autostart runs the binary
+            // that just failed, and reporting rolled-back would say otherwise.
+            if !plan.restores_path {
+                let handed_to_a_daemon = serde_json::from_str::<HandoffOutcome>(run.stdout.trim())
+                    .map(|outcome| outcome.pid.is_some())
+                    .unwrap_or(false);
+                if !handed_to_a_daemon {
+                    bail!("nothing was serving on {label} to hand back to the previous binary");
+                }
+            }
             eprintln!("[deploy] {}", handoff_line(&run.stdout));
         }
         outcome => {
@@ -1278,6 +1320,12 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
                 Ok(run) => last_line(&run.stderr),
                 Err(error) => format!("{error:#}"),
             };
+            // Same rule: stopping restores nothing when the path is not
+            // restored — autostart would bring the failed build right back —
+            // so it would spend the sessions to change nothing.
+            if !plan.restores_path {
+                bail!("could not hand {label} back to the previous binary: {reason}");
+            }
             eprintln!("[deploy] {label} could not hand back ({reason}); stopping it instead");
             let _ = node.run(&format!("{binary} stop --force --json")).await;
         }
@@ -1388,8 +1436,10 @@ impl Node for LocalNode {
     fn preserve_command(&self) -> Option<String> {
         let stash = Self::stash_path()?;
         let dir = paths::durable_state_dir().ok()?;
+        // Copy beside, rename over: an interrupted copy must leave the
+        // previous stash intact, since it is the only rollback there is.
         Some(format!(
-            "mkdir -p {} && cp -f {} {stash}",
+            "mkdir -p {} && cp -f {} {stash}.new && mv -f {stash}.new {stash}",
             shell_quote(&dir.display().to_string()),
             self.binary()
         ))
@@ -1842,7 +1892,8 @@ mod tests {
     }
 
     /// Handoff-only still bounces a daemon holding nothing: an empty daemon
-    /// has nothing a stop can cost.
+    /// has nothing a stop can cost. The emptiness is read again after the
+    /// failed handoff, not taken from the opening snapshot.
     #[tokio::test]
     async fn handoff_only_still_bounces_an_empty_daemon() {
         let node = FakeNode::new(
@@ -1851,7 +1902,8 @@ mod tests {
                 ok(""),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 cannot_hand_off(),
-                ok(""), // stop
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)), // still empty
+                ok(""),                                            // stop
             ],
             vec![hello(Some(WANT))],
         );
@@ -1860,6 +1912,30 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
         let commands = node.commands.borrow();
         assert!(commands.iter().any(|command| command.ends_with("stop --json")), "{commands:?}");
+    }
+
+    /// A session created between the opening snapshot and the failed handoff
+    /// vetoes the bounce: the fresh read finds it, and nothing is stopped.
+    #[tokio::test]
+    async fn handoff_only_vetoes_the_bounce_on_a_session_created_meanwhile() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)), // empty when read
+                cannot_hand_off(),
+                ok(&status_json_holding(WANT, Some("0.43.0+1500"), true, vec![idle_shell()])),
+            ],
+            vec![],
+        );
+        let options = Options { handoff_only: true, ..Options::default() };
+        let report = reconcile(&node, WANT, options).await;
+        match &report.outcome {
+            Outcome::Staged { busy, .. } => assert_eq!(busy.len(), 1),
+            other => panic!("expected staged, got {other:?}"),
+        }
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
     }
 
     /// The local shape: nothing stages (the bundle already carries the new
@@ -1887,6 +1963,59 @@ mod tests {
             "{commands:?}"
         );
         assert!(!commands.iter().any(|command| command.starts_with("mv")), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A handback that found no daemon to hand to is not a recovery when
+    /// nothing restores the path: the next autostart would run the failed
+    /// build, so the report must not claim rolled-back.
+    #[tokio::test]
+    async fn a_local_handback_that_finds_no_daemon_is_not_a_recovery() {
+        let nobody = ok(&serde_json::to_string(&HandoffOutcome {
+            pid: None,
+            from: None,
+            to: None,
+            sessions: 0,
+            message: "no daemon is running; the next client to connect starts this build".into(),
+        })
+        .unwrap());
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // roll back: [ -e stash ]
+                nobody, // roll back: handoff finds nothing serving
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: false, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A failed local handback never falls through to a stop: with no path to
+    /// restore, stopping spends the sessions to change nothing.
+    #[tokio::test]
+    async fn a_failed_local_handback_never_stops() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // roll back: [ -e stash ]
+                failed(1, "the daemon did not answer hello in time"),
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: false, .. }), "{report:?}");
+        let commands = node.commands.borrow();
         assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
     }
 
