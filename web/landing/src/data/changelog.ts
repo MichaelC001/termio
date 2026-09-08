@@ -17,6 +17,24 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.51.0",
+    date: "2026-09-08",
+    title: "Remote projects launch agents",
+    changes: {
+      new: [
+        "Remote projects launch agent sessions now, not just terminals: the box's own session host starts the agent through its login shell, in the recorded checkout, and the session survives disconnects like any other.",
+        "Updating Termio updates this Mac's session host too: the daemon takes the new binary in place, keeping every running session. When that isn't free, Termio names the sessions in the way and asks instead of interrupting them.",
+      ],
+      improved: [
+        "termio version flags a session host running behind the installed binary and says how to bring it current.",
+      ],
+      fixed: [
+        "Sessions started by hand on a remote box now group under their git repository on a directly-attached iPhone, instead of all landing in Terminals.",
+        "Fixed a garbled agent screen on iPhone after the terminal resized down to the phone's width.",
+      ],
+    },
+  },
+  {
     version: "0.50.0",
     date: "2026-09-07",
     title: "Resizing reflows the shell",
