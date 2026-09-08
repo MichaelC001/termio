@@ -448,6 +448,35 @@ impl Pty {
         })
     }
 
+    /// A real PTY with no child, for tests that assert an *applied* resize —
+    /// `TIOCSWINSZ` is answered by the terminal itself, so no process needs to
+    /// sit on the slave side. The slave descriptor is closed; the winsize
+    /// outlives it.
+    pub(crate) fn childless_pty_for_resize_test() -> Result<Pty> {
+        let mut master_raw: RawFd = -1;
+        let mut slave_raw: RawFd = -1;
+        let rc = unsafe {
+            libc::openpty(
+                &mut master_raw,
+                &mut slave_raw,
+                std::ptr::null_mut::<libc::c_char>(),
+                std::ptr::null_mut::<libc::termios>() as _,
+                std::ptr::null_mut::<libc::winsize>() as _,
+            )
+        };
+        if rc != 0 {
+            bail!("openpty failed: {}", std::io::Error::last_os_error());
+        }
+        let master = unsafe { OwnedFd::from_raw_fd(master_raw) };
+        unsafe { libc::close(slave_raw) };
+        set_cloexec(master.as_raw_fd())?;
+        set_nonblocking(master.as_raw_fd())?;
+        Ok(Pty {
+            master: AsyncFd::new(master)?,
+            pid: 0,
+        })
+    }
+
     /// The process group that currently owns the tty's foreground — the program
     /// the user is actually interacting with: the login shell until it runs a
     /// command, then that command, then the shell again once it exits.

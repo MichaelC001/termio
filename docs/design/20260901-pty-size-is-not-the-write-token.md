@@ -3,7 +3,7 @@ title: PTY size is not the write token
 status: active
 type: rfc
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-08
 related:
   - ../bug/agent-tui-focus-report-resize-storm.md
   - 20260730-termiod-session-protocol.md
@@ -454,3 +454,35 @@ is gone with it.
 `used` follows the same rule as `SessionMsg::Viewport`: an attach that is not
 rendering does not stamp one. Nobody is looking at it, so it is not somebody
 using this device.
+
+## 12. Leaving is not using
+
+§11 made the size follow the person; this closes the half of it that still
+followed the *machine*. The policy recomputed on every change to the attachment
+set — including departures, deaths, and a screen parking — so when the
+most-recently-used attachment went away, the size fell back to whichever
+unattended window remained. On a phone that is not an edge case, it is the
+lifecycle: iOS tears the socket down on every backgrounding, so a person
+pocketing the phone handed the session back to a Mac window nobody was sitting
+at, and picking the phone back up paid the full three-act reattach — wide
+snapshot, viewport claim, reflow — every single time. Two TUI reflows per
+lock/unlock, indefinitely.
+
+The rule, completing §11's sentence: **the size moves only when a person acts,
+and stays exactly where the last person put it when they stop.** `apply_size_policy`
+now runs from the three stamps and only the three stamps — an arrival with a
+screen, a keystroke, a viewport declared while rendering. Departure, death, and
+`rendering: false` recompute nothing. A session whose size owner vanished keeps
+that owner's shape until somebody types or resizes at another screen, which
+stamps a use and takes the size over in the ordinary way.
+
+tmux's `latest` recomputes on detach to the next-most-recent client, which is
+the same stale fallback this section deletes. Going stricter than `latest` is
+justified by the client that `latest` never had to serve: one whose transport
+dies and returns dozens of times a day with the same person behind it.
+
+The keyboard corollary lives on the client, not here: an on-screen keyboard
+occludes the phone's screen, it does not shrink it. The iOS client measures its
+declared viewport against the keyboard-hidden height and slides the surface up
+so the bottom rows stay visible over the keys — so showing or hiding the
+keyboard sends nothing at all, and the PTY never hears about it.

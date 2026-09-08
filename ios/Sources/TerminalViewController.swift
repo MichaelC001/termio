@@ -103,6 +103,15 @@ final class TerminalViewController: UIViewController {
     /// Bottom pin of the surface — its constant tracks the keyboard overlap
     /// (0 when the keyboard is away), see keyboardFrameWillChange.
     private var terminalBottomConstraint: NSLayoutConstraint?
+    /// How much of the screen the keyboard covers right now. The keyboard
+    /// occludes, it never resizes: the declared viewport and the surface grid
+    /// are both measured against the keyboard-hidden height, and the surface is
+    /// slid up so its bottom rows — the prompt, an agent's input box — stay
+    /// visible above the keys. Sizing the PTY to the keyboard-shrunk area sent
+    /// a SIGWINCH on every show/hide, and an agent TUI answers each one with a
+    /// full repaint (the pan-don't-resize rule every mobile terminal converges
+    /// on).
+    private var keyboardOverlap: CGFloat = 0
     /// Main-thread only — fed from the companion byte stream, read on key taps.
     private var altScreenSniffer = AlternateScreenSniffer()
     private var uploadClient: DeviceClient?
@@ -326,6 +335,11 @@ final class TerminalViewController: UIViewController {
     private func layoutTerminalSurface() {
         let host = terminalHost.bounds
         guard host.width > 0, host.height > 0 else { return }
+        // Everything below is measured against the keyboard-hidden height. The
+        // keyboard occludes this rectangle, it never shrinks it: shrinking is a
+        // viewport change, a viewport change is a PTY resize, and a PTY resize
+        // is a full TUI repaint on every show/hide of the keys.
+        let fullHeight = host.height + keyboardOverlap
         let screen = hostGrid
         if case .device = backend, let screen {
             companion?.setViewport(columns: Int(screen.cols), rows: Int(screen.rows))
@@ -336,15 +350,32 @@ final class TerminalViewController: UIViewController {
               let grid = sharedGrid, grid != screen,
               let cell = cellSize, grid.cols > 0, grid.rows > 0
         else {
-            terminalView.frame = host
+            // Full-height surface, slid up by exactly the content-aware pan:
+            // enough that the deepest drawn row clears the keys, never more.
+            // The host clips whatever the slide pushes past the top, and the
+            // keyboard covers whatever stays below. With the keys away this
+            // is exactly `host`.
+            lastAppliedPan = keyboardPan
+            terminalView.frame = CGRect(
+                x: 0, y: -lastAppliedPan, width: host.width, height: fullHeight)
             return
         }
         let width = CGFloat(grid.cols) * cell.width + 2 * Self.terminalPaddingX + cell.width / 2
         let height = CGFloat(grid.rows) * cell.height + 2 * Self.terminalPaddingY + cell.height / 2
-        let fit = min(1, host.width / width, host.height / height)
+        let fit = min(1, host.width / width, fullHeight / height)
         terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
-        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2)
+        // The same cursor-anchored slide as the full-size path, in scaled
+        // space: with the keys up, the letterboxed picture rises just enough
+        // to keep the cursor's row above them.
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        var pan: CGFloat = 0
+        if keyboardOverlap > 0, caret.maxY.isFinite, caret.maxY > 0 {
+            let anchor = (caret.maxY + 2 * cell.height) * fit
+            pan = min(max(0, anchor - host.height), max(0, height * fit - host.height))
+        }
+        lastAppliedPan = pan
+        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2 - pan)
     }
 
     /// How much of a session this screen could show. The same
@@ -353,10 +384,48 @@ final class TerminalViewController: UIViewController {
     /// a per-platform copy of this arithmetic would drift a column apart. `nil`
     /// before the surface has reported a cell size, which the device reads as no
     /// viewport at all rather than as a stand-in.
+    /// How far the surface slides up while the keyboard shows: just enough to
+    /// keep the cursor's row visible above the keys, and not a point more. A
+    /// fresh session with the cursor near the top stays put — the keys cover
+    /// empty grid — while a full transcript slides its input line over them,
+    /// and a full-screen editor follows its own cursor wherever it sits.
+    /// Pushing the whole overlap unconditionally hid a short session's only
+    /// content off the top; never pushing hid a tall session's input line
+    /// under the keys; the cursor is what resolves the two, and it is exact:
+    /// `caretRect` reads the surface's own IME caret (`imePoint`), the same
+    /// geometry the system keyboard places candidate windows with. A couple
+    /// of margin rows keep an agent's box border, drawn just below its
+    /// cursor, in view.
+    private var keyboardPan: CGFloat {
+        guard keyboardOverlap > 0 else { return 0 }
+        guard let cell = cellSize else { return keyboardOverlap }
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        guard caret.maxY.isFinite, caret.maxY > 0 else { return keyboardOverlap }
+        let anchor = caret.maxY + 2 * cell.height
+        return min(keyboardOverlap, max(0, anchor - terminalHost.bounds.height))
+    }
+
+    /// The pan the surface was last framed with, so output that moves the
+    /// cursor while the keys are up can re-slide without thrash.
+    private var lastAppliedPan: CGFloat = 0
+
+    /// Called on every output chunk: if the cursor moved enough to change the
+    /// pan while the keyboard is showing, re-frame the surface.
+    private func followContentUnderKeyboard() {
+        guard keyboardOverlap > 0 else { return }
+        guard abs(keyboardPan - lastAppliedPan) > 0.5 else { return }
+        layoutTerminalSurface()
+    }
+
     private var hostGrid: TerminalGrid? {
         guard let cell = cellSize else { return nil }
+        // The keyboard-hidden height, always: what this screen could show is a
+        // fact about the screen, not about whether the keys happen to be up.
+        let size = CGSize(
+            width: terminalHost.bounds.width,
+            height: terminalHost.bounds.height + keyboardOverlap)
         return TerminalGrid.fitting(
-            terminalHost.bounds.size, cell: cell,
+            size, cell: cell,
             paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY)
     }
 
@@ -651,6 +720,7 @@ final class TerminalViewController: UIViewController {
         let endFrame = view.convert(endValue.cgRectValue, from: nil)
         let overlap = max(0, view.bounds.maxY - endFrame.minY)
         guard let constraint = terminalBottomConstraint, constraint.constant != -overlap else { return }
+        keyboardOverlap = overlap
         constraint.constant = -overlap
         let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
@@ -859,10 +929,14 @@ final class TerminalViewController: UIViewController {
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
-                // The sniffer only decides what the key bar's scroll-edge keys
-                // send; a TUI switching screens changes nothing about the grid,
-                // which is the writer's and already what the PTY is.
-                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
+                // The sniffer decides what the key bar's scroll-edge keys send
+                // and where the keyboard pan anchors; a TUI switching screens
+                // changes nothing about the grid, which is the writer's and
+                // already what the PTY is.
+                DispatchQueue.main.async {
+                    self?.altScreenSniffer.consume(data)
+                    self?.followContentUnderKeyboard()
+                }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
