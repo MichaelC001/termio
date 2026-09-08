@@ -35,6 +35,12 @@ pub(crate) struct ForegroundSample {
     pub(super) argv: Option<Vec<String>>,
     pub(super) job: bool,
     pub(super) cwd: Option<String>,
+    /// The root of the git checkout `cwd` sits inside, or `None` outside one.
+    /// Derived here, on the blocking thread, so the roster can group a session
+    /// nobody named a project for — a shell started by hand on this box — under
+    /// the checkout it is actually standing in, without `info()` touching the
+    /// filesystem.
+    pub(super) repo_root: Option<String>,
 }
 
 /// The expensive half of a foreground sample, computed on a blocking thread and
@@ -48,6 +54,7 @@ pub(crate) struct ForegroundResolution {
     pid: Option<i32>,
     argv: Option<Vec<String>>,
     cwd: Option<String>,
+    repo_root: Option<String>,
     /// Only set when the session had not pinned its binary yet.
     executable: Option<ExecutableIdentity>,
 }
@@ -161,11 +168,14 @@ impl Foreground {
             // — and stop agreeing in a pipeline the moment it is not, which is
             // why the pid comes from the host rather than from that assumption.
             let pid = pgid.and_then(crate::proc::foreground_member);
+            let cwd = crate::proc::working_directory(child);
+            let repo_root = cwd.as_deref().and_then(repo_root);
             let _ = resolved.send(ForegroundResolution {
                 pgid,
                 pid,
                 argv: pid.and_then(crate::proc::process_arguments),
-                cwd: crate::proc::working_directory(child),
+                cwd,
+                repo_root,
                 executable: pin_executable
                     .then(|| crate::proc::executable_identity(child))
                     .flatten(),
@@ -196,6 +206,76 @@ impl Foreground {
             self.sample.cwd = resolution.cwd;
             changed = true;
         }
+        if self.sample.repo_root != resolution.repo_root {
+            self.sample.repo_root = resolution.repo_root;
+            changed = true;
+        }
         changed
+    }
+}
+
+/// The nearest ancestor of `cwd` holding a `.git` entry — a directory for a
+/// checkout, a file for a worktree. Walks *up* only, never down: descending
+/// from a home directory is what fires the macOS TCC prompts, and the upward
+/// walk is the repo-detection rule `20260713-loose-terminal-entity.md` set. A
+/// cwd outside any checkout answers `None`, which is what keeps a plain shell
+/// in `$HOME` a loose terminal.
+fn repo_root(cwd: &str) -> Option<String> {
+    let mut directory = std::path::Path::new(cwd);
+    loop {
+        if directory.join(".git").exists() {
+            return Some(directory.to_string_lossy().into_owned());
+        }
+        directory = directory.parent()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_root;
+
+    #[test]
+    fn repo_root_walks_up_to_the_checkout() {
+        let scratch =
+            std::env::temp_dir().join(format!("termiod-repo-root-{}", std::process::id()));
+        let checkout = scratch.join("checkout");
+        let nested = checkout.join("src").join("deep");
+        std::fs::create_dir_all(&nested).expect("scratch tree");
+        std::fs::create_dir_all(checkout.join(".git")).expect("git dir");
+
+        let root = repo_root(nested.to_str().expect("utf-8 path"));
+        assert_eq!(root.as_deref(), checkout.to_str());
+
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
+    }
+
+    #[test]
+    fn a_worktree_checkout_is_a_repo_too() {
+        // A linked worktree marks its root with a `.git` *file*, not a
+        // directory, and it is its own project root rather than the main
+        // checkout's.
+        let scratch =
+            std::env::temp_dir().join(format!("termiod-worktree-root-{}", std::process::id()));
+        let worktree = scratch.join("worktree");
+        std::fs::create_dir_all(&worktree).expect("scratch tree");
+        std::fs::write(worktree.join(".git"), "gitdir: elsewhere\n").expect("git file");
+
+        let root = repo_root(worktree.to_str().expect("utf-8 path"));
+        assert_eq!(root.as_deref(), worktree.to_str());
+
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
+    }
+
+    #[test]
+    fn a_directory_outside_any_checkout_is_loose() {
+        let scratch =
+            std::env::temp_dir().join(format!("termiod-loose-root-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+
+        // temp_dir sits outside any checkout on every host this runs on, so
+        // the walk reaches the filesystem root and answers nothing.
+        assert_eq!(repo_root(scratch.to_str().expect("utf-8 path")), None);
+
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
     }
 }
