@@ -859,8 +859,10 @@ impl Session {
         if self.writer != old_writer {
             self.emit_writer_changed(self.writer.clone());
         }
-        // A viewer that died was very likely the smallest one.
-        self.apply_size_policy();
+        // Deliberately no size recomputation: a death is not a person acting
+        // (§12 of the size RFC). If the dead viewer owned the size, the session
+        // keeps the shape that person gave it until somebody else does
+        // something.
     }
 
     /// Send a protocol event to attachments and control-channel subscribers.
@@ -1105,11 +1107,14 @@ impl Session {
 
     /// Moves the PTY to whatever the policy now says, if that is somewhere else.
     ///
-    /// This is the only thing in the daemon that resizes a session, and it runs
-    /// on every change to the attachment set: an arrival, a departure, a
-    /// viewport, a keystroke, a pane going to a background tab. The write token
-    /// is not consulted — the token is about who may type, and a device can be
-    /// the one being looked at without holding it
+    /// This is the only thing in the daemon that resizes a session, and (§12)
+    /// it runs only when a person acts: an arrival with a screen, a keystroke,
+    /// a viewport declared while rendering. Never on a departure, a death, or
+    /// a screen parking — leaving is not using, and recomputing on the way out
+    /// handed the size to whichever unattended window happened to remain,
+    /// which made every phone lock/unlock cycle cost two full TUI reflows.
+    /// The write token is not consulted — the token is about who may type, and
+    /// a device can be the one being looked at without holding it
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     ///
     /// With nobody rendering, the size is left exactly where it was. A session
@@ -2619,9 +2624,12 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             if session.writer != old_writer {
                 session.emit_writer_changed(session.writer.clone());
             }
-            // The viewer that left may have been the one holding the session
-            // narrow; the rest of them get their width back.
-            session.apply_size_policy();
+            // Leaving is not using: the size stays where the last person put
+            // it (§12). The viewer that left may have been the phone whose
+            // socket iOS just tore down on a backgrounding — resizing here is
+            // what made every pocket-and-return cost a full TUI reflow. The
+            // remaining screens reclaim the size the moment somebody types or
+            // resizes at one of them.
             session.emit_roster();
         }
         SessionMsg::ResendSnapshot { id } => {
@@ -2702,11 +2710,15 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // Resizing a window, collapsing its sidebar, turning a phone: the
             // person is on this device. A screen that only stopped rendering is
             // not — nobody is looking at it, so it must not take the size with
-            // it on the way out.
+            // it on the way out, and (§12) it must not hand the size to some
+            // other screen on the way out either: a phone going to a pocket is
+            // exactly this message with `rendering: false`, and recomputing
+            // here is what snapped every session back to an unattended Mac
+            // window the moment the phone locked.
             if rendering {
                 session.note_use(&id);
+                session.apply_size_policy();
             }
-            session.apply_size_policy();
         }
         SessionMsg::Inject { data } => {
             let _ = session.input_tx.send(data);
@@ -3252,6 +3264,80 @@ mod tests {
 
         declare_viewport(&mut session, "phone", 42, 47, true);
         assert_eq!(session.policy_size(), Some((42, 47)), "and back again");
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// §12: parking is not using. A phone going to a pocket sends
+    /// `rendering: false`; the session must keep the shape that person gave it
+    /// rather than snap to an unattended Mac window — that snap is what made
+    /// every lock/unlock cycle cost two full TUI reflows. The Mac reclaims the
+    /// size the moment somebody actually acts there.
+    #[tokio::test]
+    async fn parking_the_size_owner_leaves_the_size_behind() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        // A PTY whose resize actually applies: these tests assert the
+        // committed size, not just the policy's answer.
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone locked; nobody used the Mac, so nothing may resize"
+        );
+
+        type_into(&mut session, "mac");
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "typing at the Mac is a person acting; now it resizes"
+        );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// §12, the harder half: even the size owner's *death* moves nothing. A
+    /// backgrounded iOS app tears its socket down without a goodbye, so a
+    /// departure is routinely the same person who is about to come back.
+    #[tokio::test]
+    async fn a_departed_size_owner_leaves_the_size_behind() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("phone"),
+            },
+        );
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone's socket died; the size it chose stays"
+        );
 
         session.vt.shut_down();
         let _ = thread.join();
