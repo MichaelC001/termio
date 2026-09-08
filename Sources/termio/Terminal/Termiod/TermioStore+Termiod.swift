@@ -1474,7 +1474,11 @@ extension TermioStore {
         this Mac runs termiod \(running, privacy: .public) and this app ships \
         \(desired, privacy: .public); deploying it before any pane attaches
         """)
-        guard let run = runProcess(binary, ["deploy", "--json"]) else {
+        // `--handoff-only`: nobody asked for this deploy, so it must never
+        // reach the stop rung while the daemon holds any live session — an
+        // idle shell included, which a plain `stop` deliberately lets through
+        // for the user who clicked Update.
+        guard let run = runProcess(binary, ["deploy", "--handoff-only", "--json"]) else {
             Log.termiod.error("couldn't run \(binary, privacy: .public) deploy")
             return
         }
@@ -1581,6 +1585,17 @@ extension TermioStore {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
+        // The same channel pinning the daemon spawn does, for the same reason:
+        // a bundled app ignores an inherited `TERMIOD_SOCK` for itself, so a
+        // CLI it runs must not honor one either — launched from a dev session,
+        // the app would probe the release daemon and then deploy against the
+        // dev socket, updating (or stopping) a daemon it never looked at.
+        var environment = ProcessInfo.processInfo.environment
+        environment["TERMIO_CHANNEL"] = Termiod.channelName
+        if AppChannel.isTermioAppBundle {
+            environment["TERMIOD_SOCK"] = nil
+        }
+        process.environment = environment
         let out = Pipe(), err = Pipe()
         process.standardOutput = out
         process.standardError = err
