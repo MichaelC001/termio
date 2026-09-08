@@ -1497,9 +1497,10 @@ pub struct SessionInfo {
     pub status: String,
     #[serde(default)]
     pub agent_id: Option<String>,
-    /// The workstream's project root. A client attached straight to this host
-    /// has no other source for it, and without it the roster is a flat list of
-    /// sessions with nothing to group them under.
+    /// The workstream's project root, or — for a session started without one —
+    /// the root of the checkout its child is standing in. A client attached
+    /// straight to this host has no other source for it, and without it the
+    /// roster is a flat list of sessions with nothing to group them under.
     #[serde(default)]
     pub project: Option<String>,
     #[serde(default)]

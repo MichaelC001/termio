@@ -973,10 +973,12 @@ public enum Termiod {
         /// which dot it becomes is the client's call.
         public let status: String
         public let agentID: String?
-        /// The workstream's project root, **on the device**. A client attached
-        /// straight to the host has no second source for it, so this is the only
-        /// thing that groups a flat session list into projects. `nil` for a
-        /// session with no workstream, and from a daemon too old to report one.
+        /// The workstream's project root, **on the device** — or, for a session
+        /// started without one, the root of the checkout its child is standing
+        /// in, as the daemon derived it. A client attached straight to the host
+        /// has no second source for it, so this is the only thing that groups a
+        /// flat session list into projects. `nil` for a session outside any
+        /// checkout, and from a daemon too old to report one.
         public let project: String?
         /// The title the agent reported, when it reported one.
         public let title: String?

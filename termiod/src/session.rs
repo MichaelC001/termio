@@ -443,7 +443,19 @@ impl Session {
             alive: true,
             status: self.status.clone(),
             agent_id: self.workstream.as_ref().map(|w| w.agent_id.clone()),
-            project: self.workstream.as_ref().map(|w| w.project.clone()),
+            // A session created by a client names its project; one started by
+            // hand on this box carries none, so the checkout its child is
+            // standing in stands in — the repo root, not the raw cwd, because a
+            // cwd is wherever the user walked and filing by it would invent
+            // projects nobody opened (`TermiodRoster`, and the loose-terminal
+            // RFC). Cached by the foreground poll, so a roster request still
+            // costs no syscalls.
+            project: self
+                .workstream
+                .as_ref()
+                .map(|workstream| workstream.project.clone())
+                .filter(|project| !project.is_empty())
+                .or_else(|| self.foreground.current().repo_root.clone()),
             title: self.title.clone(),
             attached_clients: self.clients.len(),
             writer_client_id: self.writer.as_ref().map(ClientId::to_string),
@@ -4562,6 +4574,39 @@ mod tests {
         handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
+    }
+
+    /// A session nobody named a project for — a shell started by hand on this
+    /// box — still groups under the checkout its child is standing in. The
+    /// repo root, found by walking up to `.git`, is what a directly attached
+    /// phone files the row under; without it every hand-started session lands
+    /// in the loose Terminals bucket.
+    #[tokio::test]
+    async fn a_hand_started_session_reports_the_checkout_it_stands_in() {
+        let cat = ["/bin/cat", "/usr/bin/cat"]
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+            .expect("no cat binary on this host");
+        let scratch = std::fs::canonicalize(std::env::temp_dir())
+            .expect("canonical temp dir")
+            .join(format!("termiod-project-root-{}", std::process::id()));
+        let checkout = scratch.join("checkout");
+        let nested = checkout.join("src");
+        std::fs::create_dir_all(&nested).expect("scratch tree");
+        std::fs::create_dir_all(checkout.join(".git")).expect("git dir");
+
+        let (handle, _events_rx, _on_exit) = start_session(
+            vec![cat.to_string()],
+            nested.to_str().expect("utf-8 path"),
+        );
+
+        let info = settled_info(&handle, |info| info.project.is_some()).await;
+        assert_eq!(info.project.as_deref(), checkout.to_str());
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
     }
 
     /// A command started *inside* the session takes the tty's foreground away
