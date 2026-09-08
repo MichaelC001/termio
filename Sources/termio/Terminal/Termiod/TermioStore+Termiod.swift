@@ -1406,7 +1406,8 @@ extension TermioStore {
                     message: "termiod on \(host) answered without saying which machine it is."))
             }
             return .success(TermiodDevice(
-                id: hostID, daemonVersion: version, routes: [.ssh(host)], lastSeen: Date()))
+                id: hostID, daemonVersion: version, routes: [.ssh(host)],
+                negotiatedProtocol: report.proto, lastSeen: Date()))
         case .staged:
             return .failure(RemoteSetupError(
                 state: .staged,

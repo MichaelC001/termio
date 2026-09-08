@@ -128,12 +128,16 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        // The registry has a second, occasional writer: a CLI deploy stamps
+        // what its handshake revealed (termiod/src/remote.rs). Its stamp may be
+        // newer than this app's picture, and `save` writes the whole map from
+        // memory — so newer on-disk observations are folded in first, or the
+        // next handshake with *any* device would silently undo the deploy's.
+        mergeNewerObservationsFromDiskLocked()
+
         // A route that used to lead elsewhere is taken away from its old device
         // first, so the two never both claim it.
-        if let previous = deviceIDByRoute[route], previous != hostID {
-            devicesByID[previous]?.routes.removeAll { $0 == route }
-        }
-        deviceIDByRoute[route] = hostID
+        claimLocked(route, for: hostID)
 
         var device = devicesByID[hostID]
             ?? TermiodDevice(id: hostID, daemonVersion: daemonVersion, routes: [], lastSeen: nil)
@@ -153,6 +157,49 @@ final class TermiodDeviceRegistry: @unchecked Sendable {
 
         save()
         return device
+    }
+
+    /// Must hold `lock`. Points `route` at `id`, taking it away from whichever
+    /// device claimed it before — a route belongs to exactly one device.
+    private func claimLocked(_ route: TermiodRoute, for id: String) {
+        if let previous = deviceIDByRoute[route], previous != id {
+            devicesByID[previous]?.routes.removeAll { $0 == route }
+        }
+        deviceIDByRoute[route] = id
+    }
+
+    /// Must hold `lock`. Folds observations written to `devices.json` since the
+    /// last load into memory, newest per device winning: a row this app has
+    /// never seen is adopted whole, and a row observed more recently than the
+    /// copy in memory updates the facts a handshake learns (version, protocol,
+    /// routes, the stamp). Memory wins ties, so a normal app-only lifetime is
+    /// byte-for-byte what it was before this existed.
+    private func mergeNewerObservationsFromDiskLocked() {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: fileURL),
+              let devices = try? decoder.decode([TermiodDevice].self, from: data)
+        else { return }
+        for disk in devices {
+            guard var memory = devicesByID[disk.id] else {
+                devicesByID[disk.id] = disk
+                for route in disk.routes { claimLocked(route, for: disk.id) }
+                continue
+            }
+            guard (disk.observedAt ?? .distantPast) > (memory.observedAt ?? .distantPast) else {
+                continue
+            }
+            memory.daemonVersion = disk.daemonVersion
+            if let negotiated = disk.negotiatedProtocol {
+                memory.negotiatedProtocol = negotiated
+            }
+            memory.observedAt = disk.observedAt
+            for route in disk.routes where !memory.routes.contains(route) {
+                memory.routes.append(route)
+            }
+            devicesByID[disk.id] = memory
+            for route in disk.routes { claimLocked(route, for: disk.id) }
+        }
     }
 
     /// The device a route is known to lead to, from an earlier handshake. `nil`

@@ -195,7 +195,146 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
 
 /// The lifecycle loop against a host, for the build this binary is.
 pub async fn reconcile(node: &SshNode, options: Options) -> Report {
-    lifecycle::reconcile(node, lifecycle::BUILD_VERSION, options).await
+    let report = lifecycle::reconcile(node, lifecycle::BUILD_VERSION, options).await;
+    if let lifecycle::Outcome::Current {
+        version,
+        host_id,
+        proto,
+        ..
+    } = &report.outcome
+    {
+        record_observation(&node.host, host_id, version, *proto);
+    }
+    report
+}
+
+/// Stamps what a successful deploy's handshake revealed into the app's device
+/// registry (`devices.json`), so `termio version` shows the deploy-time
+/// observation instead of a row from the app's last pane attach. Without this,
+/// a CLI deploy leaves the table claiming the old version until the next
+/// attach — which reads as "the update didn't work".
+///
+/// The app remains the registry's writer while it runs: it merges newer
+/// on-disk observations before each save (`TermiodDeviceRegistry`), so this
+/// stamp survives instead of racing it. Best effort — the deploy already
+/// succeeded, so a failed stamp is a note on stderr, never a failed command.
+fn record_observation(alias: &str, host_id: &str, version: &str, proto: Option<u32>) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let (channel, _) = crate::channel::resolve();
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let path = PathBuf::from(home)
+        .join("Library/Application Support")
+        .join(&channel.support_dir_name)
+        .join("devices.json");
+    if let Err(error) = record_observation_in(&path, alias, host_id, version, proto, &iso8601_utc_now()) {
+        eprintln!("[deploy] couldn't record the observation in {}: {error:#}", path.display());
+    }
+}
+
+fn record_observation_in(
+    path: &Path,
+    alias: &str,
+    host_id: &str,
+    version: &str,
+    proto: Option<u32>,
+    observed_at: &str,
+) -> Result<()> {
+    let mut devices: Vec<serde_json::Value> = match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).context("reading the device registry")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error).context("reading the device registry"),
+    };
+    let route = format!("ssh:{alias}");
+    // The route moves to the device that just answered on it — a reinstall
+    // (new host_id behind the same alias) must not leave two rows claiming it.
+    for device in devices.iter_mut() {
+        if device.get("id").and_then(|value| value.as_str()) == Some(host_id) {
+            continue;
+        }
+        if let Some(routes) = device.get_mut("routes").and_then(|value| value.as_array_mut()) {
+            routes.retain(|entry| entry.as_str() != Some(route.as_str()));
+        }
+    }
+    let entry = devices
+        .iter_mut()
+        .find(|device| device.get("id").and_then(|value| value.as_str()) == Some(host_id));
+    match entry {
+        Some(device) => {
+            device["daemonVersion"] = version.into();
+            device["observedAt"] = observed_at.into();
+            if let Some(proto) = proto {
+                device["proto"] = proto.into();
+            }
+            let routes = device
+                .get_mut("routes")
+                .and_then(|value| value.as_array_mut());
+            match routes {
+                Some(routes) => {
+                    // Most recently used first, matching the app's own rule.
+                    routes.retain(|entry| entry.as_str() != Some(route.as_str()));
+                    routes.insert(0, route.into());
+                }
+                None => device["routes"] = serde_json::json!([route]),
+            }
+        }
+        None => {
+            let mut device = serde_json::json!({
+                "id": host_id,
+                "daemonVersion": version,
+                "observedAt": observed_at,
+                "routes": [route],
+            });
+            if let Some(proto) = proto {
+                device["proto"] = proto.into();
+            }
+            devices.push(device);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("creating the registry directory")?;
+    }
+    // Write-then-rename so the app never reads a half-written registry.
+    let staging = path.with_extension("json.new");
+    let body = serde_json::to_vec_pretty(&devices).context("encoding the device registry")?;
+    std::fs::write(&staging, body).context("writing the device registry")?;
+    std::fs::rename(&staging, path).context("replacing the device registry")?;
+    Ok(())
+}
+
+/// `2026-09-08T17:58:53Z` — the shape the registry uses and `termio version`
+/// parses. Civil-from-days (Howard Hinnant's algorithm), the inverse of the
+/// parser in version.rs, avoiding a time crate for one fixed-format field.
+fn iso8601_utc_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    let days = seconds.div_euclid(86_400);
+    let time_of_day = seconds.rem_euclid(86_400);
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_shifted = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_shifted + 2) / 5 + 1;
+    let month = if month_shifted < 10 {
+        month_shifted + 3
+    } else {
+        month_shifted - 9
+    };
+    let year = year_of_era + era * 400 + if month <= 2 { 1 } else { 0 };
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        time_of_day / 3_600,
+        (time_of_day % 3_600) / 60,
+        time_of_day % 60
+    )
 }
 
 fn run_blocking(cmd: RemoteCmd) -> Result<()> {
@@ -703,5 +842,78 @@ mod tests {
             node.install_directory(),
             ("$HOME/.local/bin".to_string(), ".local/bin".to_string())
         );
+    }
+
+    fn scratch_registry(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("termiod-registry-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("devices.json")
+    }
+
+    /// A deploy against a known device refreshes its row in place and leaves
+    /// every field it did not learn (and every other device) untouched.
+    #[test]
+    fn a_deploy_refreshes_the_devices_own_row() {
+        let path = scratch_registry("refresh");
+        std::fs::write(
+            &path,
+            r#"[
+                {"id": "h_other", "daemonVersion": "0.40.0+1", "routes": ["unix"]},
+                {"id": "h_box", "daemonVersion": "0.50.0+1913", "proto": 1,
+                 "observedAt": "2026-09-08T08:47:17Z", "routes": ["ssh:box"], "extra": "kept"}
+            ]"#,
+        )
+        .unwrap();
+        record_observation_in(&path, "box", "h_box", "0.52.0+1944", Some(1), "2026-09-08T17:58:00Z")
+            .unwrap();
+        let devices: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let row = devices.iter().find(|d| d["id"] == "h_box").unwrap();
+        assert_eq!(row["daemonVersion"], "0.52.0+1944");
+        assert_eq!(row["observedAt"], "2026-09-08T17:58:00Z");
+        assert_eq!(row["proto"], 1);
+        assert_eq!(row["extra"], "kept");
+        assert_eq!(row["routes"], serde_json::json!(["ssh:box"]));
+        let other = devices.iter().find(|d| d["id"] == "h_other").unwrap();
+        assert_eq!(other["daemonVersion"], "0.40.0+1");
+    }
+
+    /// A reinstall (new host id behind the same alias) moves the route: the
+    /// old row must not keep claiming it, and a first-ever deploy creates the
+    /// registry rather than requiring the app to have connected once.
+    #[test]
+    fn a_route_belongs_to_the_device_that_just_answered_on_it() {
+        let path = scratch_registry("move");
+        std::fs::write(
+            &path,
+            r#"[{"id": "h_old", "daemonVersion": "0.50.0+1913", "routes": ["ssh:box"]}]"#,
+        )
+        .unwrap();
+        record_observation_in(&path, "box", "h_new", "0.52.0+1944", Some(1), "2026-09-08T17:58:00Z")
+            .unwrap();
+        let devices: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let old = devices.iter().find(|d| d["id"] == "h_old").unwrap();
+        assert_eq!(old["routes"], serde_json::json!([]));
+        let new = devices.iter().find(|d| d["id"] == "h_new").unwrap();
+        assert_eq!(new["routes"], serde_json::json!(["ssh:box"]));
+
+        let fresh = scratch_registry("fresh");
+        record_observation_in(&fresh, "box", "h_new", "0.52.0+1944", None, "2026-09-08T17:58:00Z")
+            .unwrap();
+        let devices: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&fresh).unwrap()).unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0]["id"], "h_new");
+        assert!(devices[0].get("proto").is_none());
+    }
+
+    /// The stamp is the exact shape version.rs parses back.
+    #[test]
+    fn the_timestamp_round_trips_through_the_version_tables_parser() {
+        let stamp = iso8601_utc_now();
+        assert_eq!(stamp.len(), 20, "{stamp}");
+        assert!(stamp.ends_with('Z'), "{stamp}");
     }
 }

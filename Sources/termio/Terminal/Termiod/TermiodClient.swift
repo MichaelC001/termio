@@ -1024,6 +1024,7 @@ extension Termiod {
         let desired: String
         let version: String?
         let hostId: String?
+        let proto: Int?
         let newer: Bool?
         let daemon: String?
         let busy: [BusySession]?
