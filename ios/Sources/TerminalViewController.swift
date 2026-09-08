@@ -365,7 +365,17 @@ final class TerminalViewController: UIViewController {
         let fit = min(1, host.width / width, fullHeight / height)
         terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
-        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2)
+        // The same cursor-anchored slide as the full-size path, in scaled
+        // space: with the keys up, the letterboxed picture rises just enough
+        // to keep the cursor's row above them.
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        var pan: CGFloat = 0
+        if keyboardOverlap > 0, caret.maxY.isFinite, caret.maxY > 0 {
+            let anchor = (caret.maxY + 2 * cell.height) * fit
+            pan = min(max(0, anchor - host.height), max(0, height * fit - host.height))
+        }
+        lastAppliedPan = pan
+        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2 - pan)
     }
 
     /// How much of a session this screen could show. The same
@@ -375,30 +385,32 @@ final class TerminalViewController: UIViewController {
     /// before the surface has reported a cell size, which the device reads as no
     /// viewport at all rather than as a stand-in.
     /// How far the surface slides up while the keyboard shows: just enough to
-    /// keep the deepest drawn row visible above the keys, and not a point
-    /// more. A fresh session with three rows of content stays put — the keys
-    /// cover empty grid — while a full transcript pins its bottom row (the
-    /// prompt, an agent's input box) over them. Pushing the whole overlap
-    /// unconditionally hid a short session's only content off the top; never
-    /// pushing hid a tall session's input line under the keys; the content
-    /// anchor is what resolves the two. Alt-screen apps own the whole grid
-    /// and always pin. A couple of margin rows absorb the tracker's
-    /// undercount on wrapped lines.
+    /// keep the cursor's row visible above the keys, and not a point more. A
+    /// fresh session with the cursor near the top stays put — the keys cover
+    /// empty grid — while a full transcript slides its input line over them,
+    /// and a full-screen editor follows its own cursor wherever it sits.
+    /// Pushing the whole overlap unconditionally hid a short session's only
+    /// content off the top; never pushing hid a tall session's input line
+    /// under the keys; the cursor is what resolves the two, and it is exact:
+    /// `caretRect` reads the surface's own IME caret (`imePoint`), the same
+    /// geometry the system keyboard places candidate windows with. A couple
+    /// of margin rows keep an agent's box border, drawn just below its
+    /// cursor, in view.
     private var keyboardPan: CGFloat {
         guard keyboardOverlap > 0 else { return 0 }
-        guard let cell = cellSize, !altScreenSniffer.isAlternate else { return keyboardOverlap }
-        let marginRows: CGFloat = 2
-        let contentBottom = Self.terminalPaddingY
-            + (CGFloat(altScreenSniffer.contentBottomRow) + marginRows) * cell.height
-        return min(keyboardOverlap, max(0, contentBottom - terminalHost.bounds.height))
+        guard let cell = cellSize else { return keyboardOverlap }
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        guard caret.maxY.isFinite, caret.maxY > 0 else { return keyboardOverlap }
+        let anchor = caret.maxY + 2 * cell.height
+        return min(keyboardOverlap, max(0, anchor - terminalHost.bounds.height))
     }
 
-    /// The pan the surface was last framed with, so output that deepens the
-    /// content while the keys are up can re-slide without a full layout pass.
+    /// The pan the surface was last framed with, so output that moves the
+    /// cursor while the keys are up can re-slide without thrash.
     private var lastAppliedPan: CGFloat = 0
 
-    /// Called on every output chunk: if the content anchor moved enough to
-    /// change the pan while the keyboard is showing, re-frame the surface.
+    /// Called on every output chunk: if the cursor moved enough to change the
+    /// pan while the keyboard is showing, re-frame the surface.
     private func followContentUnderKeyboard() {
         guard keyboardOverlap > 0 else { return }
         guard abs(keyboardPan - lastAppliedPan) > 0.5 else { return }
@@ -433,9 +445,6 @@ final class TerminalViewController: UIViewController {
     private func applySharedGrid(_ grid: TerminalGrid) {
         guard sharedGrid != grid else { return }
         sharedGrid = grid
-        // The content tracker clamps its row estimate at the session's
-        // height, so scrolling output pins the anchor to the bottom row.
-        altScreenSniffer.gridRows = Int(grid.rows)
         view.setNeedsLayout()
     }
 
@@ -2056,22 +2065,8 @@ private func termio_ghostty_surface_draw(_ surface: UnsafeMutableRawPointer)
 /// page keys on the alternate one.
 private struct AlternateScreenSniffer {
     private(set) var isAlternate = false
-    /// The deepest 1-based row a *visible* glyph has landed on since the last
-    /// full clear — the anchor the keyboard pan scrolls into view. It is an
-    /// estimate from the byte stream, not a VT model: cursor rows come from
-    /// CUP/HVP/VPA addressing and linefeeds, and only non-blank printables
-    /// mark content, so a repaint that addresses blank rows (the attach
-    /// snapshot walks every row) claims nothing it didn't draw. Every
-    /// snapshot replay ends with a CUP to the true cursor, which re-anchors
-    /// `currentRow` at each boundary; between boundaries an unwrapped long
-    /// line can undercount by a row or two, which the pan's margin absorbs.
-    private(set) var contentBottomRow = 1
-    private var currentRow = 1
-    /// The session's row count, for clamping once output scrolls at the
-    /// bottom. Zero until the grid is known; then rows never count past it.
-    var gridRows = 0
     /// Unfinished escape sequence at a chunk's tail, re-parsed with the next
-    /// chunk — a sequence can split across WebSocket frames.
+    /// chunk — a mode switch can split across WebSocket frames.
     private var carry = Data()
 
     mutating func consume(_ chunk: Data) {
@@ -2081,112 +2076,60 @@ private struct AlternateScreenSniffer {
 
         var index = 0
         while index < bytes.count {
-            let byte = bytes[index]
-            guard byte == 0x1B else {
-                if byte == 0x0A {
-                    currentRow = clampRow(currentRow + 1)
-                } else if byte >= 0x21, byte != 0x7F {
-                    // A visible glyph (space and DEL excluded; UTF-8
-                    // continuation bytes count — box borders are content).
-                    contentBottomRow = max(contentBottomRow, currentRow)
-                }
-                index += 1
-                continue
-            }
-            let parsed = parseEscape(bytes, at: index)
-            switch parsed.kind {
+            guard bytes[index] == 0x1B else { index += 1; continue }
+            switch parseEscape(bytes, at: index) {
             case .incomplete:
-                // A real sequence is short; anything longer is content that
-                // happens to contain ESC — don't carry it forever.
+                // A real mode switch is short; anything longer is content
+                // that happens to contain ESC — don't carry it forever.
                 if bytes.count - index <= 40 { carry = Data(bytes[index...]) }
                 return
             case .altScreen(let entered):
                 isAlternate = entered
+                index += 1
             case .reset:
                 isAlternate = false
-                currentRow = 1
-                contentBottomRow = 1
-            case .cursorRow(let row):
-                currentRow = clampRow(row)
-            case .clearScreen:
-                // The grid was wiped; the repaint that follows rebuilds the
-                // content anchor from scratch.
-                contentBottomRow = 1
+                index += 1
             case .other:
-                break
+                index += 1
             }
-            index += parsed.length
         }
     }
 
-    private func clampRow(_ row: Int) -> Int {
-        let floor = max(1, row)
-        return gridRows > 0 ? min(floor, gridRows) : floor
-    }
-
-    private enum Kind {
+    private enum Parse {
         case incomplete
         case altScreen(Bool)
         case reset
-        case cursorRow(Int)
-        case clearScreen
         case other
     }
 
-    /// Parses the escape at `start` just far enough to classify it — RIS,
-    /// the alternate-screen modes, absolute cursor rows (CUP/HVP/VPA), and
-    /// full clears — and reports how many bytes it spans, so a sequence's
-    /// body is never re-read as content.
-    private func parseEscape(_ bytes: [UInt8], at start: Int) -> (kind: Kind, length: Int) {
+    /// Parses the escape at `start` just far enough to classify it: RIS
+    /// (`ESC c`) or a private mode set/reset (`ESC [ ? params h|l`) naming
+    /// an alternate-screen mode.
+    private func parseEscape(_ bytes: [UInt8], at start: Int) -> Parse {
         var index = start + 1
-        guard index < bytes.count else { return (.incomplete, 0) }
-        let introducer = bytes[index]
-        if introducer == UInt8(ascii: "c") { return (.reset, 2) }
-        if introducer == UInt8(ascii: "]") {
-            // OSC: swallow to BEL or ST, or a title's text reads as content.
-            index += 1
-            while index < bytes.count {
-                if bytes[index] == 0x07 { return (.other, index - start + 1) }
-                if bytes[index] == 0x1B, index + 1 < bytes.count,
-                   bytes[index + 1] == UInt8(ascii: "\\") {
-                    return (.other, index - start + 2)
-                }
-                index += 1
-            }
-            return bytes.count - start <= 4096 ? (.incomplete, 0) : (.other, bytes.count - start)
-        }
-        guard introducer == UInt8(ascii: "[") else { return (.other, 2) }
+        guard index < bytes.count else { return .incomplete }
+        if bytes[index] == UInt8(ascii: "c") { return .reset }
+        guard bytes[index] == UInt8(ascii: "[") else { return .other }
+        index += 1
+        guard index < bytes.count else { return .incomplete }
+        guard bytes[index] == UInt8(ascii: "?") else { return .other }
         index += 1
 
         var parameters = ""
         while index < bytes.count, parameters.utf8.count <= 32 {
             let byte = bytes[index]
-            if (0x30 ... 0x39).contains(byte) || byte == UInt8(ascii: ";")
-                || byte == UInt8(ascii: "?") {
+            if (0x30 ... 0x39).contains(byte) || byte == UInt8(ascii: ";") {
                 parameters.append(Character(Unicode.Scalar(byte)))
                 index += 1
                 continue
             }
-            // Any CSI final byte ends the sequence; classify the few that
-            // move the tracker and skip the rest whole.
-            guard (0x40 ... 0x7E).contains(byte) else { return (.other, index - start + 1) }
-            let length = index - start + 1
-            let names = parameters.drop(while: { $0 == "?" }).split(separator: ";")
-            switch byte {
-            case UInt8(ascii: "h"), UInt8(ascii: "l"):
-                guard parameters.hasPrefix("?"),
-                      names.contains(where: { $0 == "1049" || $0 == "1047" || $0 == "47" })
-                else { return (.other, length) }
-                return (.altScreen(byte == UInt8(ascii: "h")), length)
-            case UInt8(ascii: "H"), UInt8(ascii: "f"), UInt8(ascii: "d"):
-                return (.cursorRow(names.first.flatMap { Int($0) } ?? 1), length)
-            case UInt8(ascii: "J"):
-                let mode = names.first.flatMap { Int($0) } ?? 0
-                return mode >= 2 ? (.clearScreen, length) : (.other, length)
-            default:
-                return (.other, length)
+            guard byte == UInt8(ascii: "h") || byte == UInt8(ascii: "l") else { return .other }
+            let names = parameters.split(separator: ";")
+            guard names.contains(where: { $0 == "1049" || $0 == "1047" || $0 == "47" }) else {
+                return .other
             }
+            return .altScreen(byte == UInt8(ascii: "h"))
         }
-        return parameters.utf8.count > 32 ? (.other, index - start) : (.incomplete, 0)
+        return parameters.utf8.count > 32 ? .other : .incomplete
     }
 }
