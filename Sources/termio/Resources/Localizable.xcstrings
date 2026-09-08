@@ -2693,6 +2693,16 @@
         }
       }
     },
+    "Finish updating Termio’s session host?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要完成 Termio server 的更新吗？"
+          }
+        }
+      }
+    },
     "Find": {
       "localizations": {
         "zh-Hans": {
@@ -4862,7 +4872,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "让 iPhone 直接连到这台 Mac 的会话宿主。没有会话在跑的项目暂时不会出现。"
+            "value": "让 iPhone 直接连到这台 Mac 的 Termio server。没有会话在跑的项目暂时不会出现。"
           }
         }
       }
@@ -6823,7 +6833,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "会话宿主有回应，但返回的不是配对邀请。"
+            "value": "Termio server 有回应，但返回的不是配对邀请。"
           }
         }
       }
@@ -6833,7 +6843,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 上的会话宿主。断开连接后，会话仍在那里继续运行。"
+            "value": "%@ 上的 Termio server。断开连接后，会话仍在那里继续运行。"
           }
         }
       }
@@ -6843,7 +6853,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "承载会话的进程消失了"
+            "value": "Termio server 消失了"
           }
         }
       }

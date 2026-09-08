@@ -325,6 +325,11 @@ enum Cmd {
         /// Put the binary in place and leave the running daemon alone.
         #[arg(long)]
         stage_only: bool,
+        /// Upgrade only if the daemon can hand off in place: one that cannot
+        /// and holds any live session is left running and reported as staged,
+        /// never stopped. For automatic callers with no user behind them.
+        #[arg(long, conflicts_with = "force", conflicts_with = "stage_only")]
+        handoff_only: bool,
         /// Emit the outcome as one JSON document on stdout.
         #[arg(long)]
         json: bool,
@@ -779,9 +784,14 @@ async fn main() -> Result<()> {
             host,
             force,
             stage_only,
+            handoff_only,
             json,
         } => {
-            let options = lifecycle::Options { force, stage_only };
+            let options = lifecycle::Options {
+                force,
+                stage_only,
+                handoff_only,
+            };
             let report = match host {
                 Some(host) => {
                     eprintln!("warning: `termiod deploy --host` is deprecated — use `termio remote deploy <host>`");

@@ -852,6 +852,37 @@ pub trait Node {
     /// Handshake with the node's daemon, starting it if nothing answers —
     /// which is the contact that brings a freshly staged binary up.
     fn hello(&self) -> impl std::future::Future<Output = Result<DaemonHello>> + Send;
+    /// How the node recovers when a new image fails verification. The default
+    /// is the staging convention: `.prev` sits beside the binary and moves
+    /// back over it. The local node overrides it — its binary lives inside a
+    /// signed bundle nothing may write to, so its known-good copy is a stash
+    /// this loop keeps (`preserve_command`), and it is tried even on a run
+    /// that staged nothing, because the local node never stages at all.
+    fn rollback_plan(&self) -> RollbackPlan {
+        RollbackPlan {
+            source: format!("{}.prev", self.binary()),
+            restores_path: true,
+            even_unstaged: false,
+        }
+    }
+    /// A command that keeps the just-verified binary where `rollback_plan`
+    /// expects to find it, run after an upgrade verifies. `None` where staging
+    /// already left `.prev` behind.
+    fn preserve_command(&self) -> Option<String> {
+        None
+    }
+}
+
+/// See [`Node::rollback_plan`].
+#[derive(Debug, Clone)]
+pub struct RollbackPlan {
+    /// The known-good binary to hand the unhealthy daemon back to.
+    pub source: String,
+    /// Whether `source` is then moved back over the binary's path, so the
+    /// next autostart runs the build that worked.
+    pub restores_path: bool,
+    /// Attempt the rollback even when this run staged nothing.
+    pub even_unstaged: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -860,6 +891,14 @@ pub struct Options {
     pub force: bool,
     /// Put the binary in place and stop there; the daemon is not touched.
     pub stage_only: bool,
+    /// Upgrade only through the handoff rung: when the daemon cannot hand
+    /// off and holds any live session — busy or idle — leave it running and
+    /// report `staged` naming them, instead of stopping. The mode for a
+    /// caller nobody asked, like the app's launch reconcile: an idle shell
+    /// declines a `stop` nothing (`SessionSummary::busy` lets it through by
+    /// design, for the user who clicked Update), but an automatic caller has
+    /// no user behind it to have consented.
+    pub handoff_only: bool,
 }
 
 /// The state a node was left in. Every variant is a place the loop can resume
@@ -1043,6 +1082,57 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         if handoff.code == 0 {
             eprintln!("[deploy] {}", handoff_line(&handoff.stdout));
         } else {
+            if options.handoff_only {
+                let alive: Vec<SessionSummary> = status
+                    .sessions
+                    .iter()
+                    .filter(|session| session.alive)
+                    .cloned()
+                    .collect();
+                if !alive.is_empty() {
+                    eprintln!(
+                        "[deploy] {label} could not hand off ({}); its sessions stay up",
+                        last_line(&handoff.stderr)
+                    );
+                    return Ok(Outcome::Staged {
+                        version: status.binary.version.clone(),
+                        daemon: status.daemon.version.clone(),
+                        busy: alive,
+                    });
+                }
+                // A daemon holding no session has nothing a stop can cost, so
+                // handoff-only still takes the bounce — but only on a roster
+                // read after the handoff attempt: a session created since the
+                // first snapshot must veto it. A daemon on this rung predates
+                // the handoff verb, so it cannot be asked to refuse a stop
+                // atomically; the read-to-stop gap is the window that remains,
+                // and anything short of a fresh read (an error included) keeps
+                // the daemon up rather than stopping on a stale picture.
+                match observe(node).await {
+                    Ok(Observed::Reported(fresh)) => {
+                        let alive: Vec<SessionSummary> = fresh
+                            .sessions
+                            .iter()
+                            .filter(|session| session.alive)
+                            .cloned()
+                            .collect();
+                        if !alive.is_empty() {
+                            return Ok(Outcome::Staged {
+                                version: fresh.binary.version,
+                                daemon: fresh.daemon.version,
+                                busy: alive,
+                            });
+                        }
+                    }
+                    _ => {
+                        return Ok(Outcome::Staged {
+                            version: status.binary.version.clone(),
+                            daemon: status.daemon.version.clone(),
+                            busy: Vec::new(),
+                        });
+                    }
+                }
+            }
             eprintln!(
                 "[deploy] {label} could not hand off ({}); stopping it instead",
                 last_line(&handoff.stderr)
@@ -1078,14 +1168,25 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     }
 
     match verify(node, want).await {
-        Ok((hello, version)) => Ok(Outcome::Current {
-            version: hello.version.unwrap_or_default(),
-            host_id: hello.host_id,
-            newer: version > want,
-        }),
+        Ok((hello, version)) => {
+            if daemon_is_stale || staged {
+                // Best effort: a copy that fails costs the *next* upgrade its
+                // free rollback, not this one anything.
+                if let Some(preserve) = node.preserve_command() {
+                    let _ = node.run(&preserve).await;
+                }
+            }
+            Ok(Outcome::Current {
+                version: hello.version.unwrap_or_default(),
+                host_id: hello.host_id,
+                newer: version > want,
+            })
+        }
         Err(error) => {
             let message = format!("{error:#}");
-            let rolled_back = staged && roll_back(node).await.is_ok();
+            let plan = node.rollback_plan();
+            let rolled_back =
+                (staged || plan.even_unstaged) && roll_back(node, &plan).await.is_ok();
             Ok(Outcome::Unhealthy {
                 message,
                 rolled_back,
@@ -1180,17 +1281,66 @@ async fn verify<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Versio
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no daemon answered")))
 }
 
-/// Put the previous binary back and stop whatever the new one started, so the
-/// next contact autostarts the build that worked.
-async fn roll_back<N: Node>(node: &N) -> Result<()> {
+/// Put the previous binary back, asking the daemon to hand off to it first —
+/// the same pid keeps every PTY — and stopping only when that also fails, so
+/// an image that turned out bad costs the sessions only when there is no
+/// non-destructive way back.
+async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
     let binary = node.binary();
-    eprintln!("[deploy] rolling {} back to the previous binary…", node.label());
-    let _ = node.run(&format!("{binary} stop --force --json")).await;
-    let run = node
-        .run(&format!("[ -e {binary}.prev ] && mv -f {binary}.prev {binary}"))
-        .await?;
-    if run.code != 0 {
-        bail!("no previous binary to roll back to on {}", node.label());
+    let label = node.label();
+    let source = &plan.source;
+    eprintln!("[deploy] rolling {label} back to the previous binary…");
+    let prev = node.run(&format!("[ -e {source} ]")).await?;
+    if prev.code != 0 {
+        bail!("no previous binary to roll back to on {label}");
+    }
+    // The previous build's own CLI drives the recovery: the staged binary just
+    // failed verification, so it is the last thing to trust with it.
+    let handoff = node
+        .run(&format!("{source} handoff --binary {source} --json"))
+        .await;
+    match handoff {
+        Ok(run) if run.code == 0 => {
+            // With no path restore, the handoff is the only way the source
+            // build ever serves again — so "no daemon was running" (exit 0,
+            // no pid) is not a recovery: the next autostart runs the binary
+            // that just failed, and reporting rolled-back would say otherwise.
+            if !plan.restores_path {
+                let handed_to_a_daemon = serde_json::from_str::<HandoffOutcome>(run.stdout.trim())
+                    .map(|outcome| outcome.pid.is_some())
+                    .unwrap_or(false);
+                if !handed_to_a_daemon {
+                    bail!("nothing was serving on {label} to hand back to the previous binary");
+                }
+            }
+            eprintln!("[deploy] {}", handoff_line(&run.stdout));
+        }
+        outcome => {
+            let reason = match &outcome {
+                Ok(run) => last_line(&run.stderr),
+                Err(error) => format!("{error:#}"),
+            };
+            // Same rule: stopping restores nothing when the path is not
+            // restored — autostart would bring the failed build right back —
+            // so it would spend the sessions to change nothing.
+            if !plan.restores_path {
+                bail!("could not hand {label} back to the previous binary: {reason}");
+            }
+            eprintln!("[deploy] {label} could not hand back ({reason}); stopping it instead");
+            let _ = node.run(&format!("{binary} stop --force --json")).await;
+        }
+    }
+    if plan.restores_path {
+        // The rename keeps the old inode alive for the daemon now exec'd from
+        // it, while the path serves the build that worked to the next
+        // autostart.
+        let run = node.run(&format!("mv -f {source} {binary}")).await?;
+        if run.code != 0 {
+            bail!(
+                "restoring the previous binary on {label}: {}",
+                last_line(&run.stderr)
+            );
+        }
     }
     Ok(())
 }
@@ -1258,6 +1408,51 @@ impl Node for LocalNode {
         tokio::time::timeout(Duration::from_secs(5), handshake(&mut reader, &mut writer))
             .await
             .context("the daemon did not answer hello in time")?
+    }
+
+    fn rollback_plan(&self) -> RollbackPlan {
+        // The binary lives inside a signed app bundle nothing may write to,
+        // so the known-good copy is the stash `preserve_command` keeps in
+        // durable state, and the path is never restored — the bundle stays
+        // whatever the app shipped. With no stash yet (a box this loop has
+        // not upgraded before), the default `.prev` beside the bundle binary
+        // never exists and the rollback declines without touching anything.
+        match Self::stash_path() {
+            Some(stash) => RollbackPlan {
+                source: stash,
+                restores_path: false,
+                even_unstaged: true,
+            },
+            // No durable state dir means no stash was ever kept; this source
+            // never exists, so the rollback declines at its existence check.
+            None => RollbackPlan {
+                source: format!("{}.prev", self.binary()),
+                restores_path: false,
+                even_unstaged: true,
+            },
+        }
+    }
+
+    fn preserve_command(&self) -> Option<String> {
+        let stash = Self::stash_path()?;
+        let dir = paths::durable_state_dir().ok()?;
+        // Copy beside, rename over: an interrupted copy must leave the
+        // previous stash intact, since it is the only rollback there is.
+        Some(format!(
+            "mkdir -p {} && cp -f {} {stash}.new && mv -f {stash}.new {stash}",
+            shell_quote(&dir.display().to_string()),
+            self.binary()
+        ))
+    }
+}
+
+impl LocalNode {
+    /// Where the last verified daemon binary is kept for rollback: durable
+    /// state, because the socket's directory is a tmpfs on Linux and the
+    /// previous app bundle is gone the moment an update lands.
+    fn stash_path() -> Option<String> {
+        let dir = paths::durable_state_dir().ok()?;
+        Some(shell_quote(&dir.join("termiod.prev").display().to_string()))
     }
 }
 
@@ -1385,6 +1580,8 @@ mod tests {
         hellos: RefCell<VecDeque<Result<DaemonHello>>>,
         commands: RefCell<Vec<String>>,
         puts: RefCell<Vec<String>>,
+        plan: Option<RollbackPlan>,
+        preserve: Option<String>,
     }
 
     impl FakeNode {
@@ -1394,7 +1591,22 @@ mod tests {
                 hellos: RefCell::new(hellos.into()),
                 commands: RefCell::new(Vec::new()),
                 puts: RefCell::new(Vec::new()),
+                plan: None,
+                preserve: None,
             }
+        }
+
+        /// The local node's shape: a stash instead of `.prev`, no path
+        /// restore, rollback attempted even unstaged.
+        fn local_style(mut self) -> FakeNode {
+            self.plan = Some(RollbackPlan {
+                source: "/state/termiod.prev".to_string(),
+                restores_path: false,
+                even_unstaged: true,
+            });
+            self.preserve =
+                Some("mkdir -p /state && cp -f $HOME/.local/bin/termiod /state/termiod.prev".to_string());
+            self
         }
     }
 
@@ -1429,6 +1641,16 @@ mod tests {
                 .pop_front()
                 .unwrap_or_else(|| Err(anyhow::anyhow!("unscripted hello")))
         }
+        fn rollback_plan(&self) -> RollbackPlan {
+            self.plan.clone().unwrap_or(RollbackPlan {
+                source: format!("{}.prev", self.binary()),
+                restores_path: true,
+                even_unstaged: false,
+            })
+        }
+        fn preserve_command(&self) -> Option<String> {
+            self.preserve.clone()
+        }
     }
 
     fn ok(stdout: &str) -> Run {
@@ -1448,6 +1670,15 @@ mod tests {
     }
 
     fn status_json(binary: &str, daemon: Option<&str>, running: bool) -> String {
+        status_json_holding(binary, daemon, running, Vec::new())
+    }
+
+    fn status_json_holding(
+        binary: &str,
+        daemon: Option<&str>,
+        running: bool,
+        sessions: Vec<SessionSummary>,
+    ) -> String {
         serde_json::to_string(&NodeStatus {
             binary: BinaryStatus {
                 version: binary.to_string(),
@@ -1460,11 +1691,26 @@ mod tests {
                 pid: running.then_some(4242),
                 socket: "/run/user/1001/termiod/termiod.sock".to_string(),
             },
-            sessions: Vec::new(),
+            sessions,
             host_id: Some("h_1".to_string()),
             supervisor: Supervisor::None,
         })
         .expect("status serializes")
+    }
+
+    /// A shell at its prompt with someone attached: alive, not busy — exactly
+    /// what `stop` lets through and `--handoff-only` must not.
+    fn idle_shell() -> SessionSummary {
+        SessionSummary {
+            id: "1".into(),
+            name: "1".into(),
+            command: "zsh".into(),
+            title: Some("~/project".into()),
+            status: "idle".into(),
+            attached: 1,
+            running: false,
+            alive: true,
+        }
     }
 
     fn hello(version: Option<&str>) -> Result<DaemonHello> {
@@ -1618,7 +1864,214 @@ mod tests {
         assert_eq!(report.exit_code(), EXIT_BUSY);
     }
 
-    /// A new daemon that never verifies is rolled back, and the report says so.
+    /// Handoff-only: a daemon that cannot hand off and holds a live session —
+    /// even an idle one `stop` would let through — is left running and
+    /// reported staged with that session named.
+    #[tokio::test]
+    async fn handoff_only_never_stops_a_daemon_holding_a_live_session() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json_holding("0.43.0+1500", Some("0.43.0+1500"), true, vec![idle_shell()])),
+                ok(""), // stage: chmod + mv
+                ok(&status_json_holding(WANT, Some("0.43.0+1500"), true, vec![idle_shell()])),
+                cannot_hand_off(),
+            ],
+            vec![],
+        );
+        let options = Options { handoff_only: true, ..Options::default() };
+        let report = reconcile(&node, WANT, options).await;
+        match &report.outcome {
+            Outcome::Staged { busy, .. } => {
+                assert_eq!(busy.len(), 1);
+                assert_eq!(busy[0].command, "zsh");
+            }
+            other => panic!("expected staged, got {other:?}"),
+        }
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// Handoff-only still bounces a daemon holding nothing: an empty daemon
+    /// has nothing a stop can cost. The emptiness is read again after the
+    /// failed handoff, not taken from the opening snapshot.
+    #[tokio::test]
+    async fn handoff_only_still_bounces_an_empty_daemon() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                cannot_hand_off(),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)), // still empty
+                ok(""),                                            // stop
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let options = Options { handoff_only: true, ..Options::default() };
+        let report = reconcile(&node, WANT, options).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(commands.iter().any(|command| command.ends_with("stop --json")), "{commands:?}");
+    }
+
+    /// A session created between the opening snapshot and the failed handoff
+    /// vetoes the bounce: the fresh read finds it, and nothing is stopped.
+    #[tokio::test]
+    async fn handoff_only_vetoes_the_bounce_on_a_session_created_meanwhile() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)), // empty when read
+                cannot_hand_off(),
+                ok(&status_json_holding(WANT, Some("0.43.0+1500"), true, vec![idle_shell()])),
+            ],
+            vec![],
+        );
+        let options = Options { handoff_only: true, ..Options::default() };
+        let report = reconcile(&node, WANT, options).await;
+        match &report.outcome {
+            Outcome::Staged { busy, .. } => assert_eq!(busy.len(), 1),
+            other => panic!("expected staged, got {other:?}"),
+        }
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// The local shape: nothing stages (the bundle already carries the new
+    /// build), so a verify failure recovers through the kept stash — handed
+    /// back, never stopped, and the bundle path never written.
+    #[tokio::test]
+    async fn a_local_verify_failure_is_handed_back_to_the_stash() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)), // binary already new: no stage
+                handed_off(3),
+                ok(""),        // roll back: [ -e stash ]
+                handed_off(3), // roll back: handoff --binary stash
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(
+            commands.iter().any(|command| command.contains("/state/termiod.prev handoff --binary /state/termiod.prev")),
+            "{commands:?}"
+        );
+        assert!(!commands.iter().any(|command| command.starts_with("mv")), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A handback that found no daemon to hand to is not a recovery when
+    /// nothing restores the path: the next autostart would run the failed
+    /// build, so the report must not claim rolled-back.
+    #[tokio::test]
+    async fn a_local_handback_that_finds_no_daemon_is_not_a_recovery() {
+        let nobody = ok(&serde_json::to_string(&HandoffOutcome {
+            pid: None,
+            from: None,
+            to: None,
+            sessions: 0,
+            message: "no daemon is running; the next client to connect starts this build".into(),
+        })
+        .unwrap());
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // roll back: [ -e stash ]
+                nobody, // roll back: handoff finds nothing serving
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: false, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A failed local handback never falls through to a stop: with no path to
+    /// restore, stopping spends the sessions to change nothing.
+    #[tokio::test]
+    async fn a_failed_local_handback_never_stops() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // roll back: [ -e stash ]
+                failed(1, "the daemon did not answer hello in time"),
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: false, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+    }
+
+    /// A verified upgrade keeps a copy of the binary where the next rollback
+    /// looks for it.
+    #[tokio::test]
+    async fn a_verified_upgrade_preserves_the_binary_for_the_next_rollback() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // preserve: mkdir + cp
+            ],
+            vec![hello(Some(WANT))],
+        )
+        .local_style();
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(
+            commands.last().unwrap().contains("cp -f"),
+            "{commands:?}"
+        );
+    }
+
+    /// An unhealthy new image is handed back to the previous binary — same
+    /// pid, sessions kept — and nothing on the box is stopped.
+    #[tokio::test]
+    async fn an_unhealthy_new_image_is_rolled_back_without_stopping() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // stage: chmod + mv
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3), // the daemon takes the bad image on
+                ok(""),        // roll back: [ -e prev ]
+                handed_off(3), // roll back: handoff --binary prev
+                ok(""),        // roll back: mv prev back
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(
+            commands.iter().any(|command| command.contains("handoff --binary")),
+            "{commands:?}"
+        );
+        assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
+        assert!(commands.last().unwrap().starts_with("mv -f"), "{commands:?}");
+    }
+
+    /// A new daemon that never verifies and cannot hand back is rolled back the
+    /// destructive way, and the report says so.
     #[tokio::test]
     async fn a_daemon_that_does_not_come_up_is_rolled_back() {
         let node = FakeNode::new(
@@ -1628,6 +2081,8 @@ mod tests {
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 cannot_hand_off(),
                 ok(""), // stop
+                ok(""), // roll back: [ -e prev ]
+                failed(1, "the daemon did not answer hello in time"), // roll back: handoff
                 ok(""), // roll back: stop --force
                 ok(""), // roll back: mv prev
             ],
@@ -1638,6 +2093,7 @@ mod tests {
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
         let commands = node.commands.borrow();
+        assert!(commands.iter().any(|command| command.contains("stop --force")), "{commands:?}");
         assert!(commands.last().unwrap().contains("termiod.prev"), "{commands:?}");
     }
 
