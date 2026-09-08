@@ -147,7 +147,14 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
             let mut node = SshNode::new(host);
             node.prebuilt = bin.map(PathBuf::from);
             node.target = target;
-            let report = reconcile(&node, Options { force, stage_only: false }).await;
+            let report = reconcile(
+                &node,
+                Options {
+                    force,
+                    ..Options::default()
+                },
+            )
+            .await;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
