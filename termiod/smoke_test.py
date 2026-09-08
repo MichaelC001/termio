@@ -489,8 +489,17 @@ def main():
 
     os.write(a2, b"\x1c")
     a2p.wait(timeout=5)
+    # §12: leaving is not using. The departed screen's size stays — a phone's
+    # socket dies on every backgrounding, and handing the size to whichever
+    # unattended window remains made each pocket-and-return cost two reflows.
+    # The survivor reclaims it the moment somebody acts there.
     check(
-        "a departing attachment leaves the size to the survivor",
+        "a departing attachment leaves the size where the last person put it",
+        wait_for_size("fan", (34, 110)),
+    )
+    os.write(a1, b"FROM_A1_AGAIN\r")
+    check(
+        "the survivor reclaims the size by typing",
         wait_for_size("fan", (26, 90)),
     )
     drain(a1, 0.5)
