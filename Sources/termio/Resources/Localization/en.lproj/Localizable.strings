@@ -1430,6 +1430,8 @@
 	<string>This device’s termiod is too old to browse files.</string>
 	<key>This device’s termiod is too old to install agent integration.</key>
 	<string>This device’s termiod is too old to install agent integration.</string>
+	<key>This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines.</key>
+	<string>This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines.</string>
 	<key>This device’s termiod is too old to read git.</key>
 	<string>This device’s termiod is too old to read git.</string>
 	<key>This device’s termiod is too old to report its agents.</key>

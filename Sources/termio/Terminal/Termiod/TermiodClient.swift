@@ -1459,6 +1459,15 @@ final class TermiodSessionLink: @unchecked Sendable {
                 DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
                 let device = handshake.device
                 DispatchQueue.main.async { [self] in onDevice?(device) }
+                // A spec that names an agent command must not reach a host that
+                // predates the field: the host would drop it and spawn a plain
+                // shell, and a pane labeled Claude Code holding someone's login
+                // shell is worse than a pane that says why it refused.
+                if specification.command != nil,
+                   !handshake.capabilities.contains(Termiod.spawnCommandCapability) {
+                    throw TermiodClientError.requestFailed(localized(
+                        "This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines."))
+                }
                 let requested = viewportGrid
                 // An old host has no rendering concept at all — it reads every
                 // attachment as one somebody is looking at, and there is no

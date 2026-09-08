@@ -28,6 +28,7 @@ public enum Termiod {
     /// | ------------ | ------- | -------- |
     /// | `snapshot`   | yes     | `S` → `TermiodSnapshot.render` → the surface's repaint |
     /// | `events`     | yes     | `E` → `TermiodSessionLink.onStatus` (agent status), `applyWriter` (write gating), `applyAuthoritativeGrid` (§C.5 dimensions) |
+    /// | `spawn_command` | yes  | gates `CreateSpecification.command`; a link whose spec carries one refuses to attach to a host that dropped this offer (`TermiodSessionLink.start`) |
     /// | `scrollback` | no      | `H` carries packed cells to inject *above* the viewport; a byte-stream surface has nowhere to put them |
     /// | `grid_diff`  | no      | `G` would make the host resolve every cell's colour, which overrides the viewer's theme — the §A/§H regression this client exists not to repeat |
     /// | `send_wait`  | no      | `send`/`wait` are control-channel verbs; the app injects through its own attach channel |
@@ -44,13 +45,22 @@ public enum Termiod {
     /// session from every rendering attachment at once instead of from whoever
     /// holds the write token, and understands an `R` that says "not rendering".
     /// A host that does not offer it gets v0's four bytes and v0's meaning.
-    public static let attachCapabilities = ["snapshot", "events", viewportCapability]
+    public static let attachCapabilities = [
+        "snapshot", "events", viewportCapability, spawnCommandCapability,
+    ]
 
     /// The host computes the PTY size as a policy over the attachments that are
     /// rendering (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     /// Gate the five-byte `R` on it: an older host reads a payload of any other
     /// length as a malformed frame and drops the connection.
     public static let viewportCapability = "viewport"
+
+    /// The host honours `CreateSpecification.command` — a shell command line it
+    /// wraps in the account's own login shell, which is how an agent launches
+    /// on a box whose shell and `PATH` this client cannot know. Gate a spec
+    /// that carries one on it: an older host would ignore the field and spawn
+    /// a plain shell that *looks* like the agent session it isn't.
+    public static let spawnCommandCapability = "spawn_command"
 
     /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
@@ -339,6 +349,11 @@ public enum Termiod {
     public struct CreateSpecification: Encodable, Sendable {
         public let cwd: String
         public let argv: [String]
+        /// A shell command line the daemon runs through the account's *own*
+        /// login shell — how an agent launches on a box whose shell and `PATH`
+        /// this client cannot know. Consulted only when `argv` is empty, and
+        /// honoured only by a host that granted `spawn_command`.
+        public let command: String?
         /// Wire shape of Rust's `Vec<(String, String)>` — an array of pairs.
         public let env: [[String]]
         public let rows: UInt16
@@ -346,9 +361,10 @@ public enum Termiod {
         public let workstream: WorkstreamSpecification?
 
         public init(cwd: String, argv: [String], env: [[String]], rows: UInt16, cols: UInt16,
-                    workstream: WorkstreamSpecification? = nil) {
+                    command: String? = nil, workstream: WorkstreamSpecification? = nil) {
             self.cwd = cwd
             self.argv = argv
+            self.command = command
             self.env = env
             self.rows = rows
             self.cols = cols

@@ -7078,6 +7078,16 @@
         }
       }
     },
+    "This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法启动 Agent。请在“设置 › 设备”中重新设置该设备。"
+          }
+        }
+      }
+    },
     "This device’s termiod is too old to read git.": {
       "localizations": {
         "zh-Hans": {

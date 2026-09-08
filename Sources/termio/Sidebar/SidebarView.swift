@@ -789,23 +789,17 @@ private struct ProjectHeader: View {
         return workspace.knownDevice
     }
 
-    /// Adding a session to a project on another machine means adding it *there*.
-    /// A remote session is a login shell on the far box (`makeTermiodLink` hands
-    /// the remote empty argv), so the terminal is the only verb this row offers —
-    /// see `headerPresets`, which is why no agent preset reaches this.
+    /// Adding a session to a project on another machine means adding it *there* —
+    /// `TermioStore.addSession` routes to the remote path itself, so this row's
+    /// verbs read the same wherever the checkout lives.
     private func addSession(_ preset: AgentPreset) {
-        if let alias = store.device(of: project)?.alias {
-            store.addRemoteTerminal(host: alias, project: project.id)
-            return
-        }
         store.addSession(to: project.id, agent: preset, worktreePath: worktree?.path)
     }
 
-    /// What the hover cluster and the agents submenu offer. A project on another
-    /// machine offers a terminal only: Termio can't launch an agent over there,
-    /// and a row of agent buttons that silently open shells would claim otherwise.
+    /// What the hover cluster and the agents submenu offer — the same presets
+    /// wherever the project lives, since the far daemon launches agents too.
     private var headerPresets: [AgentPreset] {
-        store.isOnAnotherDevice(project) ? [.terminal] : headerSessionPresets(settings)
+        headerSessionPresets(settings)
     }
 
     /// Width the trailing quick-add icons occupy (button frame 22 + 3 spacing each), so
@@ -826,8 +820,7 @@ private struct ProjectHeader: View {
     private var menuItems: [SidebarMenuItem] {
         // A project on another machine has one place its sessions can run, so the
         // verb names it outright instead of offering a device submenu whose rows
-        // would all be wrong but one. The agents submenu is absent for the same
-        // reason `headerPresets` drops them: nothing launches an agent over there.
+        // would all be wrong but one.
         if store.isOnAnotherDevice(project) { return remoteMenuItems }
         var items: [SidebarMenuItem] = [
             newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
@@ -889,6 +882,9 @@ private struct ProjectHeader: View {
     private var remoteMenuItems: [SidebarMenuItem] {
         var items: [SidebarMenuItem] = [
             .action(localized("New Terminal")) { addSession(.terminal) },
+            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
+                .filter { $0 != .terminal }
+                .map { preset in .agent(preset) { addSession(preset) } }),
             .separator,
             .action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
                 store.togglePinned(project.id)

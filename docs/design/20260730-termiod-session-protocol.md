@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-09-02
+updated: 2026-09-08
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -235,8 +235,8 @@ First frame in each direction on **every** channel, before anything else:
   stream corrupts terminals (the weak-IPC-upgrade failure mode the companion
   wire taught us).
 - **`caps` are additive feature flags**, intersected: `events`, `snapshot`,
-  `grid_diff`, `send_wait`, `approvals`, later `share`, `file`, `git`,
-  `tunnel` (§C.14). New
+  `grid_diff`, `send_wait`, `spawn_command`, `approvals`, later `share`,
+  `file`, `git`, `tunnel` (§C.14). New
   nouns arrive as capabilities inside `proto:1` for as long as additivity
   holds; `proto:2` is reserved for breaking framing/semantics changes.
 - Compatibility matrix commitment: **old client × new host and new client ×
@@ -257,7 +257,7 @@ makes one control channel safely multiplexable. Ops marked ✦ exist in POC v0.
 | Op | Direction | Notes |
 | --- | --- | --- |
 | `hello` / `hello_ok` / `hello_err` | both | §C.3 |
-| `create` ✦ | c→h | `CreateSpec {name?, cwd?, argv, env, rows, cols, workstream?}` — `workstream {agent_id, project, worktree?}` is new |
+| `create` ✦ | c→h | `CreateSpec {name?, cwd?, argv, command?, env, rows, cols, workstream?}` — `workstream {agent_id, project, worktree?}` is new. `command` (capability `spawn_command`) is a shell command line the host wraps in the account's own login shell (`-ilc`, `exec`-prefixed), consulted only when `argv` is empty — how a client launches an agent on a box whose shell and `PATH` it cannot know |
 | `list` ✦ / `sessions` ✦ | c→h / h→c | `SessionInfo` gains `status`, `agent_id`, `title`, `attached_clients`, `writer_client_id` |
 | `attach` ✦ / `attached` ✦ | c→h / h→c | `{target, mode:"interact"|"observe", create_if_missing?, rows, cols, rendering?}` — `rows`/`cols` are this attachment's opening viewport, `rendering` (absent = true) whether a screen is in front of it; reply carries `session_id`, `writer` (bool), and (v1) is followed by one `S` frame |
 | `detach` ✦ | c→h | Leave stream; session lives |

@@ -4,6 +4,13 @@ import Foundation
 extension TermioStore {
     /// Adds a session to a project, optionally running in one of its linked
     /// worktree folders while remaining in the project's flat session roster.
+    ///
+    /// Returns `nil` for a project on another machine: the session is opened
+    /// *there* through the async remote path (readiness handshake first), so
+    /// there is no id to hand back yet. Routed here rather than at each caller
+    /// — the sidebar, the command palette, a phone `start` — because a local
+    /// session filed under a remote project would spawn a shell in a directory
+    /// this Mac doesn't have.
     @discardableResult
     func addSession(
         to projectID: Project.ID,
@@ -14,6 +21,10 @@ extension TermioStore {
     ) -> Session.ID? {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         let project = projects[index]
+        if isOnAnotherDevice(project), let alias = device(of: project)?.alias {
+            addRemoteTerminal(host: alias, agent: agent, project: projectID)
+            return nil
+        }
         let terminalCount = project.sessions.filter { $0.agent == .terminal }.count
         let title = agent == .terminal
             ? "Terminal \(terminalCount + 1)"
