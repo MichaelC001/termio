@@ -17,6 +17,23 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.52.0",
+    date: "2026-09-08",
+    title: "The phone stops fighting over the width",
+    changes: {
+      new: [
+        "OpenCode 2 joins the agent roster, with live working / needs-you status through its new plugin dialect.",
+      ],
+      improved: [
+        "The session's size now stays where the last person put it: locking or backgrounding the iPhone no longer bounces the width back to an unattended Mac window, so picking the phone back up is instant instead of a full reflow.",
+        "Opening the iPhone keyboard no longer resizes the terminal — the view slides just enough to keep the cursor's row above the keys, so agent screens stop repainting on every tap.",
+      ],
+      fixed: [
+        "Resizing a session while its agent ran a shell command no longer truncates the agent's screen — lines rewrap to the new width with nothing lost, which was leaving stale fragments in transcripts after switching between Mac and phone.",
+      ],
+    },
+  },
+  {
     version: "0.51.0",
     date: "2026-09-08",
     title: "Remote projects launch agents",
