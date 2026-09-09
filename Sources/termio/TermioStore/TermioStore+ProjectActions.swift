@@ -431,18 +431,29 @@ extension TermioStore {
         func remove(_ target: String, _ operation: (UnsafePointer<CChar>) -> Int32) -> Int32 {
             target.withCString { pointer in operation(pointer) == 0 ? 0 : errno }
         }
-        // `rmdir` first, and `.DS_Store` only once it is the one thing in the
-        // way. Unlinking up front threw away the user's Finder state for the
-        // folder even when a file had appeared beside it and the removal was
-        // then correctly refused — a side effect of an operation that reports
-        // it did nothing.
+        // `rmdir` first, and `.DS_Store` only once it is provably the one thing
+        // in the way. Unlinking on `ENOTEMPTY` alone was not that: a file that
+        // appeared beside it since the decision left the folder correctly
+        // refused, with the user's Finder state for it deleted anyway — a side
+        // effect of an operation that reports it did nothing.
         var failure = remove(path, rmdir)
-        if failure == ENOTEMPTY {
+        if failure == ENOTEMPTY, holdsOnlyFinderState(at: path) {
             _ = remove((path as NSString).appendingPathComponent(".DS_Store"), unlink)
             failure = remove(path, rmdir)
         }
         // Already gone is the state this wanted; anything else is a real refusal.
         return failure == 0 || failure == ENOENT
+    }
+
+    /// Whether `.DS_Store` is the only thing left in a folder — the one entry
+    /// that is Finder's rather than the user's, and so the only one this may
+    /// clear to let a `rmdir` through. A folder it cannot read holds something
+    /// as far as this is concerned.
+    private func holdsOnlyFinderState(at path: String) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: path) else {
+            return false
+        }
+        return entries == [".DS_Store"]
     }
 
     /// See `WorktreeService.canonicalPath`: git's spelling of a path and the one

@@ -162,27 +162,50 @@ enum WorktreeService {
         return !FileManager.default.fileExists(atPath: mountPoint)
     }
 
-    /// The linked worktree paths for `repoRoot`, primary checkout excluded and paths
-    /// standardized. `nil` when `git worktree list` fails (not a work tree, or a git
-    /// error) — the caller treats `nil` as "leave the current list alone" and `[]` as
-    /// "git genuinely reports no linked worktrees" (safe to prune).
+    /// What a reconcile pass needs to merge git's worktrees into a project's,
+    /// with every path it will compare already resolved.
     ///
-    /// A `prunable` worktree — its directory deleted out from under git — is skipped,
-    /// as is any path that no longer exists on disk. Without this, a stale worktree
-    /// would show in the sidebar and a session started there would launch with a
-    /// missing cwd, so the shell silently falls back to `/` (the bug this guards
-    /// against).
-    static func linkedWorktrees(in repoRoot: String) async -> [String]? {
+    /// The resolving is the point. Matching a stored row against git's spelling
+    /// takes `canonicalPath`, which stats and reads links, and the merge itself
+    /// runs on the main actor — so a hung SMB mount or a stalled `/Volumes`
+    /// device would beachball the app on a pass that fires whenever an agent
+    /// touches git state. Those spellings are worked out here, off-main, and the
+    /// merge only looks them up.
+    struct Reconcile: Sendable {
+        /// Linked worktrees git reports and this machine can see, in git's order.
+        let discovered: [String]
+        /// Canonical spelling for every path the merge compares, by the spelling
+        /// it was asked about.
+        let canonical: [String: String]
+    }
+
+    /// The linked worktrees of `repoRoot`, primary checkout excluded, together
+    /// with canonical spellings for them and for `known` — the paths the caller
+    /// already holds. `nil` when `git worktree list` fails (not a work tree, or a
+    /// git error): the caller treats `nil` as "leave the current list alone" and
+    /// an empty `discovered` as "git genuinely reports no linked worktrees".
+    ///
+    /// A `prunable` worktree — its directory deleted out from under git — is
+    /// skipped, as is any path that no longer exists on disk. Without this, a
+    /// stale worktree would show in the sidebar and a session started there would
+    /// launch with a missing cwd, so the shell silently falls back to `/` (the
+    /// bug this guards against).
+    static func reconcile(in repoRoot: String, against known: [String]) async -> Reconcile? {
         await offMain {
             guard let all = records(in: repoRoot) else { return nil }
-            return all.dropFirst()                                      // primary checkout
+            let discovered = all.dropFirst()                            // primary checkout
                 .filter { !$0.bare && !$0.prunable }
-                .compactMap { record in
+                .compactMap { record -> String? in
                     var isDirectory: ObjCBool = false
                     guard FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory),
                           isDirectory.boolValue else { return nil }
                     return URL(fileURLWithPath: record.path).standardizedFileURL.path
                 }
+            var canonical: [String: String] = [:]
+            for path in discovered + known where canonical[path] == nil {
+                canonical[path] = canonicalPath(path)
+            }
+            return Reconcile(discovered: discovered, canonical: canonical)
         }
     }
 

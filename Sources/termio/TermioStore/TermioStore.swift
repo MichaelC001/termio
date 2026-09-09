@@ -1315,10 +1315,15 @@ final class TermioStore: ObservableObject {
             if let folders, !projectOwns(project, anyOf: folders) { continue }
             let id = project.id
             let path = project.path
+            // The spellings this pass will compare, handed over so they can be
+            // resolved off the main actor with the git read.
+            let known = project.worktrees.map(\.path)
+                + project.sessions.compactMap(\.worktreePath)
             Task { [weak self] in
                 // `nil` means git errored (not a repo, transient) → leave the list untouched.
-                guard let discovered = await WorktreeService.linkedWorktrees(in: path) else { return }
-                await MainActor.run { self?.applyDiscoveredWorktrees(discovered, to: id) }
+                guard let reconciled = await WorktreeService.reconcile(in: path, against: known)
+                else { return }
+                await MainActor.run { self?.applyDiscoveredWorktrees(reconciled, to: id) }
             }
         }
     }
@@ -1341,13 +1346,24 @@ final class TermioStore: ObservableObject {
     /// A path git no longer reports is pruned — unless a live session still points at it,
     /// so an in-use worktree never vanishes from under its sessions. Only writes back when
     /// something actually changed, so a stable repo doesn't churn the persisted tree.
-    private func applyDiscoveredWorktrees(_ discovered: [String], to projectID: Project.ID) {
+    func applyDiscoveredWorktrees(
+        _ reconciled: WorktreeService.Reconcile, to projectID: Project.ID
+    ) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
         // Matched the way the removal matches (`WorktreeService.canonicalPath`),
         // which resolves symlinks rather than only standardizing. Under a
         // symlinked ancestor git's spelling never equalled a stored row's, so
         // this appended a *second* row for a checkout that already had one.
-        let canonical = WorktreeService.canonicalPath
+        //
+        // Looked up, never computed: those spellings were resolved off-main with
+        // the git read. A path that appeared since then — a row added in the last
+        // moments — falls back to the lexical form for this pass and is resolved
+        // on the next one, which is a stale match at worst and never a stalled
+        // main thread.
+        let canonical = { (path: String) in
+            reconciled.canonical[path] ?? Self.standardizedPath(path)
+        }
+        let discovered = reconciled.discovered
         let discoveredSet = Set(discovered.map(canonical))
         let existing = projects[index].worktrees
         let byPath = Dictionary(existing.map { (canonical($0.path), $0) },
@@ -1364,6 +1380,28 @@ final class TermioStore: ObservableObject {
         }
 
         if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }
+        adoptWorktreeSpellings(in: index, canonical: canonical)
+    }
+
+    /// Moves each session onto the spelling of the worktree row it belongs to.
+    ///
+    /// Sessions are matched to rows by exact path elsewhere in the app, so a
+    /// session left on a spelling no row carries belongs to no row: it drops out
+    /// of the sidebar entirely while staying in the saved roster, and nothing
+    /// short of editing state on disk brings it back. That is what merging two
+    /// rows for one checkout would otherwise do to the loser's sessions — and
+    /// those duplicate rows exist on disk today, made by the lexical matching
+    /// this pass replaces.
+    private func adoptWorktreeSpellings(in index: Int, canonical: (String) -> String) {
+        let rowsByKey = Dictionary(projects[index].worktrees.map { (canonical($0.path), $0.path) },
+                                   uniquingKeysWith: { first, _ in first })
+        for position in projects[index].sessions.indices {
+            guard let path = projects[index].sessions[position].worktreePath,
+                  let row = rowsByKey[canonical(path)],
+                  row != path
+            else { continue }
+            projects[index].sessions[position].worktreePath = row
+        }
     }
 
     private static func standardizedPath(_ path: String) -> String {
