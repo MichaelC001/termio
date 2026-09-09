@@ -161,52 +161,85 @@ extension TermioStore {
               let worktree = projects[projectIndex].worktrees.first(where: { $0.id == worktreeID })
         else { return }
 
-        // A worktree whose folder was deleted by another tool can't be inspected —
-        // `git status` has no directory to run in, and `git worktree remove` refuses a
-        // missing path — so the dirty check would dead-end this action forever (a live
-        // session is what keeps a git-absent worktree in the sidebar, see
-        // `applyDiscoveredWorktrees`, and this action is the only way to let go of it).
-        // There is no work left on disk to protect: skip straight to pruning the stale
-        // registration, recovering the branch from the parent repo's metadata since the
-        // checkout can no longer answer for itself.
-        let branch: String?
-        if FileManager.default.fileExists(atPath: worktree.path) {
+        let repository = projects[projectIndex].path
+        let displayName = (worktree.path as NSString).lastPathComponent
+
+        // One `git worktree list --porcelain` read answers everything the removal
+        // decides on: whether git still knows this checkout, whether git itself
+        // judges it gone (`prunable` covers the folder-deleted shape *and* the
+        // damaged ones — an emptied folder, a deleted `.git` gitfile, a path
+        // replaced by a plain file — none of which `git status` can inspect), and
+        // which branch to tidy afterward. The branch comes from the repo's records
+        // for both arms: the checkout can't be asked once its folder is damaged,
+        // and a detached HEAD simply carries no branch line, so no sentinel string
+        // is needed. Raw disk checks are deliberately not consulted — git's own
+        // verdict is what decides, including its escape hatch: a worktree on
+        // removable media is protected by `git worktree lock`, which is honored
+        // below.
+        let record = WorktreeService.records(in: repository)?
+            .first(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(worktree.path) })
+        let branch = record?.branch
+
+        if let record, record.prunable {
+            guard !record.locked else {
+                presentWorktreeFailure(
+                    title: localized("Worktree is locked"),
+                    message: localized("Unlock “\(displayName)” (git worktree unlock) before removing it.")
+                )
+                return
+            }
+            // A targeted remove deregisters just this worktree when its folder is
+            // gone. The damaged-folder shapes fail its validation, and for those
+            // pruning is the only tool git offers — repo-wide, so it is the
+            // fallback rather than the first resort.
+            if runGit(["worktree", "remove", worktree.path], in: repository) == nil {
+                runGit(["worktree", "prune"], in: repository)
+            }
+            // Success is the registration actually being gone — a prune that
+            // silently skipped this worktree must not be reported as a removal,
+            // or the row would reappear on the next discovery pass.
+            let gone = WorktreeService.records(in: repository)
+                .map { records in
+                    !records.contains { canonicalWorktreePath($0.path) == canonicalWorktreePath(worktree.path) }
+                } ?? false
+            guard gone else {
+                presentWorktreeFailure(
+                    title: localized("Couldn’t remove worktree"),
+                    message: localized("git still lists “\(displayName)”, so it was not removed.")
+                )
+                return
+            }
+        } else if record != nil {
             guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
                 presentWorktreeFailure(
                     title: localized("Couldn’t inspect worktree"),
-                    message: localized("git couldn’t check “\((worktree.path as NSString).lastPathComponent)” for changes, so it was not removed.")
+                    message: localized("git couldn’t check “\(displayName)” for changes, so it was not removed.")
                 )
                 return
             }
             guard status.isEmpty else {
                 presentWorktreeFailure(
                     title: localized("Worktree has changes"),
-                    message: localized("Commit or discard the changes in “\((worktree.path as NSString).lastPathComponent)” before removing it.")
+                    message: localized("Commit or discard the changes in “\(displayName)” before removing it.")
                 )
                 return
             }
-            // The branch termio created for this worktree, captured before removal so it can
-            // be tidied afterward. A user who switched branches inside the worktree leaves a
-            // different name here — that is theirs to keep, and the safe delete below won't
-            // touch it if it carries unmerged commits.
-            branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree.path)
-            guard runGit(["worktree", "remove", worktree.path], in: projects[projectIndex].path) != nil else {
+            guard runGit(["worktree", "remove", worktree.path], in: repository) != nil else {
                 presentWorktreeFailure(
                     title: localized("Couldn’t remove worktree"),
-                    message: localized("git couldn’t remove “\((worktree.path as NSString).lastPathComponent)”.")
+                    message: localized("git couldn’t remove “\(displayName)”.")
                 )
                 return
             }
-        } else {
-            branch = registeredBranch(ofWorktreeAt: worktree.path, in: projects[projectIndex].path)
         }
+        // A worktree git no longer lists at all has nothing left to remove; the
+        // sidebar row and its sessions are all that remain of it.
 
-        let pruneSucceeded = runGit(["worktree", "prune"], in: projects[projectIndex].path) != nil
         // Best-effort tidy of the auto-created branch. `-d` (not `-D`) refuses to drop a
         // branch with unmerged commits, so real work is never lost — the branch simply
-        // stays. Skips a detached HEAD ("HEAD") and any failure is silent.
-        if let branch, branch != "HEAD" {
-            runGit(["branch", "-d", branch], in: projects[projectIndex].path)
+        // stays. Any failure is silent.
+        if let branch {
+            runGit(["branch", "-d", branch], in: repository)
         }
         let sessionIDs = projects[projectIndex].sessions
             .filter { $0.worktreePath == worktree.path }
@@ -215,35 +248,13 @@ extension TermioStore {
         if let updatedProjectIndex = projects.firstIndex(where: { $0.id == projectID }) {
             projects[updatedProjectIndex].worktrees.removeAll { $0.id == worktreeID }
         }
-        if !pruneSucceeded {
-            presentWorktreeFailure(
-                title: localized("Worktree removed"),
-                message: localized("The folder was removed, but git couldn’t prune its stale worktree metadata.")
-            )
-        }
     }
 
-    /// The branch checked out in the worktree registered at `path`, read from the parent
-    /// repo's own records (`git worktree list --porcelain`) — the only source that still
-    /// answers once the checkout's folder is gone. Records are blank-line separated; the
-    /// one opening with `worktree <path>` carries a `branch refs/heads/<name>` line,
-    /// absent on a detached HEAD (which has no branch to tidy anyway).
-    private func registeredBranch(ofWorktreeAt path: String, in repository: String) -> String? {
-        guard let listing = runGit(["worktree", "list", "--porcelain"], in: repository) else { return nil }
-        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
-        for record in listing.components(separatedBy: "\n\n") {
-            let lines = record.split(separator: "\n", omittingEmptySubsequences: true)
-            guard let worktreeLine = lines.first(where: { $0.hasPrefix("worktree ") }),
-                  URL(fileURLWithPath: String(worktreeLine.dropFirst("worktree ".count)))
-                      .standardizedFileURL.path == standardized
-            else { continue }
-            guard let branchLine = lines.first(where: { $0.hasPrefix("branch ") }) else { return nil }
-            let reference = String(branchLine.dropFirst("branch ".count))
-            return reference.hasPrefix("refs/heads/")
-                ? String(reference.dropFirst("refs/heads/".count))
-                : reference
-        }
-        return nil
+    /// One spelling for a worktree path however it reaches us: git prints realpaths
+    /// while `Worktree.path` keeps whatever spelling created it, so a symlinked
+    /// ancestor (a linked home directory, `/tmp`) would otherwise defeat the match.
+    private func canonicalWorktreePath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly

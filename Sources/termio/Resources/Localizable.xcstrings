@@ -6718,16 +6718,6 @@
         }
       }
     },
-    "The folder was removed, but git couldn’t prune its stale worktree metadata.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文件夹已移除，但 git 无法清理其残留的 worktree 元数据。"
-          }
-        }
-      }
-    },
     "The ignore rule couldn’t be added.": {
       "localizations": {
         "zh-Hans": {
@@ -7739,16 +7729,6 @@
         }
       }
     },
-    "Worktree removed": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Worktree 已移除"
-          }
-        }
-      }
-    },
     "Yesterday": {
       "localizations": {
         "zh-Hans": {
@@ -8101,6 +8081,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "“%@”未安装，正在显示系统默认字体。"
+          }
+        }
+      }
+    },
+    "Worktree is locked": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Worktree 已锁定"
+          }
+        }
+      }
+    },
+    "Unlock “%@” (git worktree unlock) before removing it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先解锁“%@”（git worktree unlock）再移除。"
+          }
+        }
+      }
+    },
+    "git still lists “%@”, so it was not removed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "git 仍列出“%@”，因此未移除。"
           }
         }
       }

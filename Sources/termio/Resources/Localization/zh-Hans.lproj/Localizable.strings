@@ -1358,8 +1358,6 @@
 	<string>该设备无法读取这个对比。</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
-	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
-	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
@@ -1494,6 +1492,8 @@
 	<string>下划线</string>
 	<key>Ungroup</key>
 	<string>取消编组</string>
+	<key>Unlock “%@” (git worktree unlock) before removing it.</key>
+	<string>请先解锁“%@”（git worktree unlock）再移除。</string>
 	<key>Unpin</key>
 	<string>取消固定</string>
 	<key>Unsaved changes — press ⌘S to save to %@</key>
@@ -1562,8 +1562,8 @@
 	<string>工作区</string>
 	<key>Worktree has changes</key>
 	<string>Worktree 存在更改</string>
-	<key>Worktree removed</key>
-	<string>Worktree 已移除</string>
+	<key>Worktree is locked</key>
+	<string>Worktree 已锁定</string>
 	<key>Yesterday</key>
 	<string>昨天</string>
 	<key>You can restore it from the Trash.</key>
@@ -1600,6 +1600,8 @@
 	<string>git 无法为“%@”创建 worktree。请确认它是包含至少一个提交的 git 仓库。</string>
 	<key>git couldn’t remove “%@”.</key>
 	<string>git 无法移除“%@”。</string>
+	<key>git still lists “%@”, so it was not removed.</key>
+	<string>git 仍列出“%@”，因此未移除。</string>
 	<key>issue.state.open</key>
 	<string>开放</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>
