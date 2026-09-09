@@ -211,7 +211,8 @@ enum WorktreeService {
 
     /// The repo's worktree records, primary checkout first, in git's order. `nil`
     /// when `git worktree list` fails. Blocks on the git spawn — callers already on
-    /// a git-spawning path use it directly; use `linkedWorktrees` off-main.
+    /// a git-spawning path use it directly; `reconcile(in:against:)` is the
+    /// off-main entry point.
     static func records(in repoRoot: String) -> [Record]? {
         guard let out = run(["worktree", "list", "--porcelain"], in: repoRoot) else { return nil }
         return records(from: out)

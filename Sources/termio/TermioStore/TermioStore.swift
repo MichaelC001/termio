@@ -1373,10 +1373,18 @@ final class TermioStore: ObservableObject {
 
         // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
         var rebuilt = discovered.map { byPath[canonical($0)] ?? Worktree(path: $0) }
-        // …then any git-absent entry that still has a session, so it isn't yanked away.
+        // …then any git-absent entry that still has a session, so it isn't yanked
+        // away. One row per checkout here too: a worktree whose folder was
+        // deleted and whose row a session keeps alive is this feature's own
+        // case, and duplicates of it took this path rather than the merge above,
+        // so both survived every pass — the sessions moving onto the first and
+        // the second staying forever, empty and unremovable.
+        var kept = discoveredSet
         for worktree in existing {
             let key = canonical(worktree.path)
-            if !discoveredSet.contains(key), sessionAnchored.contains(key) { rebuilt.append(worktree) }
+            guard !kept.contains(key), sessionAnchored.contains(key) else { continue }
+            kept.insert(key)
+            rebuilt.append(worktree)
         }
 
         if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }
@@ -1395,13 +1403,21 @@ final class TermioStore: ObservableObject {
     private func adoptWorktreeSpellings(in index: Int, canonical: (String) -> String) {
         let rowsByKey = Dictionary(projects[index].worktrees.map { (canonical($0.path), $0.path) },
                                    uniquingKeysWith: { first, _ in first })
-        for position in projects[index].sessions.indices {
-            guard let path = projects[index].sessions[position].worktreePath,
+        // Built whole and assigned once. Writing through `projects` in the loop
+        // fired the store's own `didSet` per session — a synchronous state-file
+        // write each time, on the main actor, in a pass that runs on every git
+        // change. Nothing is assigned at all when no session moved.
+        var sessions = projects[index].sessions
+        var moved = false
+        for position in sessions.indices {
+            guard let path = sessions[position].worktreePath,
                   let row = rowsByKey[canonical(path)],
                   row != path
             else { continue }
-            projects[index].sessions[position].worktreePath = row
+            sessions[position].worktreePath = row
+            moved = true
         }
+        if moved { projects[index].sessions = sessions }
     }
 
     private static func standardizedPath(_ path: String) -> String {

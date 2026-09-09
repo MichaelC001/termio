@@ -77,6 +77,32 @@ final class WorktreeReconcileTests: XCTestCase {
         XCTAssertEqual(store.projects[0].sessions[0].worktreePath, "/tmp/scratch/wt-gone")
     }
 
+    /// Duplicates collapse on the git-absent path too, which is this feature's
+    /// own case: a worktree whose folder was deleted, kept in the sidebar only
+    /// because a session is still in it. Those rows never reach the merge above,
+    /// so both used to survive every pass — the sessions moving onto the first
+    /// and the second left behind, empty and anchored by a key nothing would
+    /// clear.
+    func testDuplicateRowsCollapseEvenWhenGitReportsNeither() {
+        let store = makeStore(
+            worktrees: ["/private/tmp/scratch/wt-gone", "/tmp/scratch/wt-gone"],
+            sessionPath: "/tmp/scratch/wt-gone")
+        let projectID = store.projects[0].id
+
+        store.applyDiscoveredWorktrees(
+            WorktreeService.Reconcile(
+                discovered: [],
+                canonical: [
+                    "/private/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
+                    "/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
+                ]),
+            to: projectID)
+
+        let project = store.projects[0]
+        XCTAssertEqual(project.worktrees.count, 1, "one row for one checkout")
+        XCTAssertEqual(project.sessions[0].worktreePath, project.worktrees[0].path)
+    }
+
     /// A path the off-main pass never saw — a row added since it started — is
     /// compared lexically for this round rather than resolved here, because
     /// resolving it would mean a `stat` on the main actor, on the very reconcile
