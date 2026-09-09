@@ -1270,6 +1270,8 @@
 	<string>在你打开之后，有人写入了这个文件。覆盖会替换掉对方的版本。</string>
 	<key>Something else already owns %@.</key>
 	<string>%@ 已被其他程序占用。</string>
+	<key>Something other than a folder is at “%@”. Move or delete it, then remove the worktree.</key>
+	<string>“%@”所在位置现在不是文件夹。请先移走或删除它，再移除 worktree。</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
 	<string>载入该仓库时出错。请稍后重试。</string>
 	<key>Sort</key>
@@ -1594,6 +1596,8 @@
 	<string>例如 JetBrains Mono</string>
 	<key>first %1$lld of %2$lld files</key>
 	<string>%2$lld 个文件中的前 %1$lld 个</string>
+	<key>git can no longer inspect “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
+	<string>git 已无法检查“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
 	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>
@@ -1602,8 +1606,6 @@
 	<string>git 无法读取此项目的 worktree，因此未移除“%@”。</string>
 	<key>git couldn’t remove “%@”.</key>
 	<string>git 无法移除“%@”。</string>
-	<key>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
-	<string>git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
 	<key>git still lists “%@”, so it was not removed.</key>
 	<string>git 仍列出“%@”，因此未移除。</string>
 	<key>issue.state.open</key>

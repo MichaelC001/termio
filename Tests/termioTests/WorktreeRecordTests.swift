@@ -105,18 +105,19 @@ final class WorktreeRecordTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Deleted out from under git: nothing to lose.
+        // Deleted out from under git: nothing to lose, and nothing to clear.
         XCTAssertEqual(
             WorktreeService.folderEvidence(at: root.appendingPathComponent("gone").path),
-            .nothingToProtect
+            .gone
         )
 
-        // Emptied and recreated, including the one Finder leaves behind.
+        // Emptied and recreated, including the one Finder leaves behind. This is
+        // the shape that has to be cleared before git will deregister it.
         let emptied = root.appendingPathComponent("emptied")
         try FileManager.default.createDirectory(at: emptied, withIntermediateDirectories: true)
-        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .nothingToProtect)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .emptyFolder)
         try "".write(to: emptied.appendingPathComponent(".DS_Store"), atomically: true, encoding: .utf8)
-        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .nothingToProtect)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .emptyFolder)
 
         // The `.git` gitfile deleted with the work still there: git marks this
         // prunable, and the files are exactly what must not be let go of.
@@ -129,10 +130,24 @@ final class WorktreeRecordTests: XCTestCase {
         )
         XCTAssertEqual(WorktreeService.folderEvidence(at: working.path), .mayHoldWork)
 
-        // A path that is no longer a directory holds no checkout.
+        // A path that is no longer a directory holds no checkout — but it is not
+        // ours to delete either, and `rmdir` would fail `ENOTDIR` on it, so it
+        // is kept apart from the shapes the removal may clear. git refuses to
+        // deregister a worktree whose path exists without a `.git` in it
+        // (`--force` included), so this one can only be reported with a remedy.
         let replaced = root.appendingPathComponent("replaced")
         try "not a checkout".write(to: replaced, atomically: true, encoding: .utf8)
-        XCTAssertEqual(WorktreeService.folderEvidence(at: replaced.path), .nothingToProtect)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: replaced.path), .occupied)
+
+        // A symlink is `.occupied` too, and deliberately not followed: whatever
+        // is on the other side was never part of the checkout, and classifying
+        // it by its target would authorize clearing a directory nothing here
+        // inspected.
+        let linked = root.appendingPathComponent("linked")
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: target)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: linked.path), .occupied)
     }
 
     func testABareEntryIsMarkedAndALockReasonStillReadsAsLocked() {

@@ -8125,22 +8125,32 @@
         }
       }
     },
-    "git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。"
-          }
-        }
-      }
-    },
     "termio couldn’t read “%@”, so it was not removed.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "termio 无法读取“%@”，因此未移除。"
+          }
+        }
+      }
+    },
+    "git can no longer inspect “%@”, and its folder still holds files. Delete the folder to remove the worktree.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "git 已无法检查“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。"
+          }
+        }
+      }
+    },
+    "Something other than a folder is at “%@”. Move or delete it, then remove the worktree.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@”所在位置现在不是文件夹。请先移走或删除它，再移除 worktree。"
           }
         }
       }
