@@ -561,8 +561,13 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
 /// there on its own.
 fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &str) -> String {
     match client_directory.filter(|_| shell_is_posix(shell)) {
+        // `${PATH:+…}` keeps the separator off an empty `PATH`. A trailing empty
+        // field is the *working directory* to POSIX, so `PATH=dir:"$PATH"` would
+        // put whatever the session happens to be sitting in on its own search
+        // path — with this directory leading it. `path_led_by` guards the same
+        // case on the environment side.
         Some(directory) => format!(
-            "PATH={}:\"$PATH\" exec {command}",
+            "PATH={}${{PATH:+\":$PATH\"}} exec {command}",
             crate::lifecycle::shell_quote(directory)
         ),
         None => format!("exec {command}"),
@@ -3243,13 +3248,15 @@ mod spawn_argv_tests {
     #[test]
     fn the_command_line_reasserts_the_path_prepend_after_startup_files() {
         use super::login_shell_command;
+        // The `${PATH:+…}` guard is what keeps an empty `PATH` from gaining a
+        // trailing empty field, which POSIX resolves as the working directory.
         assert_eq!(
             login_shell_command("claude", Some("/home/u/.local/bin"), "/bin/bash"),
-            "PATH=/home/u/.local/bin:\"$PATH\" exec claude"
+            "PATH=/home/u/.local/bin${PATH:+\":$PATH\"} exec claude"
         );
         assert_eq!(
             login_shell_command("claude", Some("/home/u/my bin"), "/usr/bin/zsh"),
-            "PATH='/home/u/my bin':\"$PATH\" exec claude"
+            "PATH='/home/u/my bin'${PATH:+\":$PATH\"} exec claude"
         );
         assert_eq!(
             login_shell_command("claude", Some("/home/u/.local/bin"), "/usr/bin/fish"),

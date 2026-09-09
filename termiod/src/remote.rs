@@ -564,14 +564,24 @@ impl Node for SshNode {
         Ok(())
     }
 
-    async fn artifact(&self) -> Result<Artifacts> {
+    async fn artifact(&self, client_only: bool) -> Result<Artifacts> {
         // `--bin` answers before anything is asked of the host. It is the escape
         // hatch for a machine `uname -sm` does not map to a target — an armv7
         // board, a BSD — so making it wait on target detection took the one path
         // that worked without detection and failed it with "pass --target
         // explicitly", and charged every other `--bin` deploy a round trip.
         if let Some(prebuilt) = &self.prebuilt {
-            let ships_client = self.target.as_deref().is_none_or(target_takes_a_client);
+            // Unknown means no client. The host is not asked what it is on this
+            // path, and guessing "it takes one" plants a `~/.local/bin/termio`
+            // on a Mac that manages its own — shadowing the app's copy with one
+            // frozen at this build, which no later pass refreshes or removes.
+            let ships_client = self.target.as_deref().is_some_and(target_takes_a_client);
+            if !ships_client && self.prebuilt_client.is_some() && self.target.is_none() {
+                eprintln!(
+                    "[deploy] deploying the daemon only; name the machine with --target to send \
+                     the client beside it too"
+                );
+            }
             return Ok(Artifacts {
                 daemon: prebuilt.clone(),
                 client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
@@ -596,6 +606,18 @@ impl Node for SshNode {
                 false => None,
             };
             return Ok(Artifacts { daemon, client });
+        }
+        if client_only {
+            // Repairing a client is not worth building a daemon for. A control
+            // plane run out of a checkout reaches this on every attach to a box
+            // whose client is missing, and cross-compiling there needs a
+            // toolchain it may not have — which turned an attach to a healthy
+            // machine into a failure. `stage` reads this as "leave the client
+            // alone" rather than as a failed deploy.
+            bail!(
+                "no bundled {target} client to repair {} with; a client-only pass does not build one",
+                self.host
+            );
         }
         tokio::task::spawn_blocking(move || cross_compile(&target)).await?
     }
@@ -981,19 +1003,22 @@ mod tests {
         node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
         // No `run`, so any ssh this reached for would fail the test rather than
         // quietly cost a round trip.
-        let artifacts = node.artifact().await.expect("a prebuilt needs no target");
+        let artifacts = node.artifact(false).await.expect("a prebuilt needs no target");
         assert_eq!(artifacts.daemon, PathBuf::from("/builds/termiod"));
-        assert_eq!(artifacts.client, Some(PathBuf::from("/builds/termio")));
+        // And no client, because nothing here knows what the machine is: sending
+        // one to a Mac plants a copy that shadows the app's own for good. Naming
+        // the target with `--target` is what asks for it.
+        assert_eq!(artifacts.client, None);
     }
 
-    /// …and an explicit `--target` still decides whether the client goes.
+    /// …and an explicit `--target` decides it, either way.
     #[tokio::test]
     async fn a_prebuilt_binary_sends_no_client_to_a_named_mac() {
         let mut node = SshNode::new("mac".into());
         node.prebuilt = Some(PathBuf::from("/builds/termiod"));
         node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
         node.target = Some("aarch64-apple-darwin".into());
-        let artifacts = node.artifact().await.expect("a prebuilt needs no uname");
+        let artifacts = node.artifact(false).await.expect("a prebuilt needs no uname");
         assert_eq!(artifacts.client, None);
     }
 
