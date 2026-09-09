@@ -525,11 +525,40 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
     let Some(command) = spec.command.as_ref().filter(|line| !line.trim().is_empty()) else {
         return Vec::new();
     };
-    vec![
-        crate::agent::machine::login_shell(),
-        "-ilc".to_string(),
-        format!("exec {command}"),
-    ]
+    let shell = crate::agent::machine::login_shell();
+    let line = login_shell_command(
+        command,
+        crate::session::own_binary_directory().as_deref(),
+        &shell,
+    );
+    vec![shell, "-ilc".to_string(), line]
+}
+
+/// The `-c` line a login shell runs for a `command` spec.
+///
+/// The daemon's directory is prepended to the session's `PATH` in its
+/// environment (`session::daemon_owned_env`), but a *login* shell's startup
+/// files rebuild `PATH` after that — Debian's `/etc/profile` reassigns it
+/// unconditionally — which is exactly the stale-`termio` skew the prepend
+/// exists to rule out. The `-c` line runs after every startup file, so
+/// re-asserting the prepend here is the one place the login shell cannot
+/// undo it. Only for shells whose assignment syntax is POSIX; a fish or csh
+/// login shell reads no `/etc/profile`, so the environment prepend survives
+/// there on its own.
+fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &str) -> String {
+    let posix = matches!(
+        std::path::Path::new(shell)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "ash")
+    );
+    match client_directory.filter(|_| posix) {
+        Some(directory) => format!(
+            "PATH={}:\"$PATH\" exec {command}",
+            crate::lifecycle::shell_quote(directory)
+        ),
+        None => format!("exec {command}"),
+    }
 }
 
 /// Soft `RLIMIT_NOFILE` values to try for the daemon and everything it spawns,
@@ -3186,7 +3215,29 @@ mod spawn_argv_tests {
         let argv = resolve_spawn_argv(&spec);
         assert_eq!(argv.len(), 3);
         assert_eq!(argv[1], "-ilc");
-        assert_eq!(argv[2], "exec claude --continue");
+        assert!(argv[2].ends_with("exec claude --continue"), "{}", argv[2]);
+    }
+
+    /// The `-c` line re-asserts the client-directory prepend after the login
+    /// shell's startup files have rebuilt `PATH` — but only in shells whose
+    /// assignment syntax is POSIX, and only when there is a directory to lead
+    /// with.
+    #[test]
+    fn the_command_line_reasserts_the_path_prepend_after_startup_files() {
+        use super::login_shell_command;
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/.local/bin"), "/bin/bash"),
+            "PATH=/home/u/.local/bin:\"$PATH\" exec claude"
+        );
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/my bin"), "/usr/bin/zsh"),
+            "PATH='/home/u/my bin':\"$PATH\" exec claude"
+        );
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/.local/bin"), "/usr/bin/fish"),
+            "exec claude"
+        );
+        assert_eq!(login_shell_command("claude", None, "/bin/bash"), "exec claude");
     }
 
     #[test]

@@ -37,8 +37,11 @@ pub fn remote_client_bin() -> String {
 fn client_bin_beside(daemon: &str) -> String {
     match daemon.rsplit_once('/') {
         Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
-        // A bare `termiod` resolves on the remote PATH; so does its client.
-        _ => "termio".to_string(),
+        // A bare daemon name still installs into `$HOME/.local/bin` (see
+        // `install_directory`), so the client is named by that path: its
+        // activation and verification must reach the file scp put there, not
+        // whatever a non-login shell's PATH happens to resolve.
+        _ => "$HOME/.local/bin/termio".to_string(),
     }
 }
 
@@ -160,7 +163,14 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
             json,
         } => {
             let mut node = SshNode::new(host);
-            node.prebuilt = bin.map(PathBuf::from);
+            if let Some(bin) = bin {
+                let daemon = PathBuf::from(bin);
+                // Resolved before anything is sent: a stale pair is caught by
+                // a local `--version`, not by a failed verify and a daemon
+                // bounce on the box.
+                node.prebuilt_client = client_beside(&daemon)?;
+                node.prebuilt = Some(daemon);
+            }
             node.target = target;
             let report = reconcile(
                 &node,
@@ -433,6 +443,10 @@ pub struct SshNode {
     pub host: String,
     /// A binary to install instead of choosing one — the developer override.
     pub prebuilt: Option<PathBuf>,
+    /// The client paired with `prebuilt`, validated by [`client_beside`].
+    /// `None` alongside a `prebuilt` daemon means a daemon-only deploy: the
+    /// client plane is off for this node rather than half-staged.
+    pub prebuilt_client: Option<PathBuf>,
     /// A Rust target triple instead of asking `uname`.
     pub target: Option<String>,
 }
@@ -442,6 +456,7 @@ impl SshNode {
         SshNode {
             host,
             prebuilt: None,
+            prebuilt_client: None,
             target: None,
         }
     }
@@ -534,7 +549,7 @@ impl Node for SshNode {
         if let Some(prebuilt) = &self.prebuilt {
             return Ok(Artifacts {
                 daemon: prebuilt.clone(),
-                client: client_beside(prebuilt)?,
+                client: self.prebuilt_client.clone(),
             });
         }
         let target = match &self.target {
@@ -550,13 +565,18 @@ impl Node for SshNode {
         if let Some(path) = shipped_binary(&target) {
             eprintln!("[deploy] using the bundled {target} binaries");
             let daemon = PathBuf::from(path);
-            let client = shipped_client(&target, &daemon)?;
+            let client = Some(shipped_client(&target, &daemon)?);
             return Ok(Artifacts { daemon, client });
         }
         tokio::task::spawn_blocking(move || cross_compile(&target)).await?
     }
 
     fn client_binary(&self) -> Option<String> {
+        // A `--bin` override with no client beside it deploys the daemon
+        // alone; every other artifact source carries both binaries.
+        if self.prebuilt.is_some() && self.prebuilt_client.is_none() {
+            return None;
+        }
         Some(remote_client_bin())
     }
 
@@ -674,19 +694,41 @@ fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
 }
 
 /// The client that pairs with a developer-supplied `--bin` daemon: the
-/// `termio` beside it, which a `cargo build` of this crate always produces.
-fn client_beside(daemon: &Path) -> Result<PathBuf> {
+/// `termio` beside it, when there is one of the same build.
+///
+/// `None` — a daemon-only deploy, with a note — rather than an error when
+/// the file is absent: `cargo build --bin termiod` legitimately produces no
+/// client, and the box keeps whatever client it has. But a client that *is*
+/// there and answers `--version` as another build is refused here, before a
+/// byte ships: sending it would fail verification on the box and bounce the
+/// daemon over a skew a local check already saw. A pair that cannot answer
+/// locally — cross-built for another machine — ships as found, and the box's
+/// own verify judges it.
+fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
     let candidate = daemon
         .parent()
         .map(|directory| directory.join("termio"))
         .filter(|path| path.is_file());
-    match candidate {
-        Some(path) => Ok(path),
-        None => bail!(
-            "no termio client beside {}; the client deploys with the daemon (a `cargo build` produces both)",
+    let Some(client) = candidate else {
+        eprintln!(
+            "[deploy] no termio client beside {}; deploying the daemon only",
             daemon.display()
-        ),
+        );
+        return Ok(None);
+    };
+    let (daemon_stamp, daemon_text) = lifecycle::binary_version(daemon);
+    let (client_stamp, client_text) = lifecycle::binary_version(&client);
+    if let (Some(daemon_stamp), Some(client_stamp)) = (daemon_stamp, client_stamp) {
+        if daemon_stamp != client_stamp {
+            bail!(
+                "the termio beside {} is another build ({} where the daemon is {}); rebuild so the pair matches",
+                daemon.display(),
+                client_text.as_deref().unwrap_or("unstamped"),
+                daemon_text.as_deref().unwrap_or("unstamped")
+            );
+        }
     }
+    Ok(Some(client))
 }
 
 /// The `uname -sm` half of target detection, split out so the mapping can be
@@ -809,7 +851,10 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
             bail!("expected built binary at {} but it is missing", binary.display());
         }
     }
-    Ok(Artifacts { daemon, client })
+    Ok(Artifacts {
+        daemon,
+        client: Some(client),
+    })
 }
 
 /// Run an interactive/remote command over SSH. `tty` requests a PTY (`-t`),
@@ -873,12 +918,13 @@ mod tests {
     use super::*;
 
     /// The client installs beside the daemon, wherever the daemon goes — a
-    /// `TERMIOD_REMOTE_BIN` override moves both, and a bare name stays bare.
+    /// `TERMIOD_REMOTE_BIN` override moves both, and a bare name means the
+    /// default install directory, where scp actually puts the file.
     #[test]
     fn the_client_installs_beside_the_daemon() {
         assert_eq!(client_bin_beside("$HOME/.local/bin/termiod"), "$HOME/.local/bin/termio");
         assert_eq!(client_bin_beside("/usr/local/bin/termiod"), "/usr/local/bin/termio");
-        assert_eq!(client_bin_beside("termiod"), "termio");
+        assert_eq!(client_bin_beside("termiod"), "$HOME/.local/bin/termio");
     }
 
     /// What `uname -sm` actually prints on the machines Termio is pointed at.

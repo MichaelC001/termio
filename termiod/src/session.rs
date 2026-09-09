@@ -1610,23 +1610,38 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
     // never overriding `~/.ssh/config` (docker-lessons RFC §1.2). A bare SSH
     // login outside termio keeps whatever the box's own profile does.
     if let Some(directory) = own_binary_directory() {
-        let inherited = env
-            .iter()
-            .rev()
-            .find(|(key, _)| key == "PATH")
-            .map(|(_, value)| value.clone())
-            .or_else(|| std::env::var("PATH").ok());
-        if let Some(path) = path_led_by(&directory, inherited.as_deref()) {
-            env.push(("PATH".to_string(), path));
-        }
+        lead_path_with(&directory, &mut env);
     }
     env
 }
 
-/// The directory this daemon's binary lives in — `~/.local/bin` on a box, the
-/// app bundle's Resources on a Mac — which is where the deploy loop puts the
-/// `termio` that matches this daemon's build.
-fn own_binary_directory() -> Option<String> {
+fn lead_path_with(directory: &str, env: &mut Vec<(String, String)>) {
+    let inherited = env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok());
+    if let Some(path) = path_led_by(directory, inherited.as_deref()) {
+        env.push(("PATH".to_string(), path));
+    }
+}
+
+/// The directory this daemon's binary lives in — `~/.local/bin` on a box —
+/// which is where the deploy loop puts the `termio` that matches this
+/// daemon's build.
+///
+/// `None` on a Mac, always. The Mac's client reaches sessions through the
+/// app's own support copy, never through this prepend, and the directory the
+/// daemon runs from there is actively wrong to advertise: a checkout-run
+/// daemon's `target/release` holds cargo's unsuffixed release-channel
+/// `termio` (the cross-channel skew the `termio-dev` naming exists to
+/// prevent), and after a Sparkle update the still-serving old daemon's
+/// bundle path names a client from a build it is not.
+pub(crate) fn own_binary_directory() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.display().to_string())
 }
@@ -2916,17 +2931,26 @@ mod tests {
     /// is layered after it and extends it rather than replacing it.
     #[test]
     fn a_client_supplied_path_is_extended_not_replaced() {
-        let env = daemon_owned_env(
-            &SessionId::new("s"),
-            vec![("PATH".to_string(), "/only/what/the/client/sent".to_string())],
-        );
+        let mut env = vec![("PATH".to_string(), "/only/what/the/client/sent".to_string())];
+        super::lead_path_with("/home/u/.local/bin", &mut env);
         let path = env
             .iter()
             .rev()
             .find(|(key, _)| key == "PATH")
             .map(|(_, value)| value.as_str())
             .expect("a PATH entry");
-        assert!(path.ends_with(":/only/what/the/client/sent"), "{path}");
+        assert_eq!(path, "/home/u/.local/bin:/only/what/the/client/sent");
+    }
+
+    /// The prepend is for boxes the deploy loop installed. On a Mac the
+    /// client reaches sessions through the app's own support copy, and the
+    /// daemon's directory — a bundle Sparkle may have replaced, or a cargo
+    /// checkout holding another channel's `termio` — must never lead a
+    /// session's PATH.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_daemon_never_leads_the_sessions_path() {
+        assert_eq!(super::own_binary_directory(), None);
     }
 
     /// The write token as a plain str, so the assertions read as they did

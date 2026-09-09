@@ -340,9 +340,7 @@ pub async fn status() -> Result<NodeStatus> {
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
     };
-    let client = tokio::task::spawn_blocking(client_beside_this_binary)
-        .await
-        .unwrap_or(None);
+    let client = client_beside_this_binary().await;
     let host_id = paths::stored_host_id();
     let mut daemon = DaemonStatus {
         running: false,
@@ -388,15 +386,32 @@ pub async fn status() -> Result<NodeStatus> {
 /// rather than stat'ed because installed means "answers `--version`": a
 /// half-copied file or a wrong-architecture slice is exactly what the deploy
 /// loop needs to read as something to replace, not something present. An
-/// unanswerable client reports with an empty version, which no build stamp
-/// parses as.
-fn client_beside_this_binary() -> Option<BinaryStatus> {
+/// unanswerable client — one that errors, exits nonzero, or hangs past the
+/// timeout — reports with an empty version, which no build stamp parses as.
+/// The timeout matters because `status` is on the path of every deploy and
+/// attach: before this probe existed, `status` executed nothing beside
+/// itself, and a wedged client must not turn it into a hang.
+async fn client_beside_this_binary() -> Option<BinaryStatus> {
     let exe = std::env::current_exe().ok()?;
     let candidate = exe.parent()?.join("termio");
     if !candidate.is_file() {
         return None;
     }
-    let (_, stamp) = binary_version(&candidate);
+    let answered = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::process::Command::new(&candidate)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let stamp = answered
+        .filter(|output| output.status.success())
+        .and_then(|output| version_stamp(&String::from_utf8_lossy(&output.stdout)));
     Some(BinaryStatus {
         version: stamp.unwrap_or_default(),
         path: candidate.display().to_string(),
@@ -817,8 +832,11 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
 /// `None` is not a failure: it means the version check is skipped and the
 /// handoff is judged on the pid and the reconnect alone. Refusing to hand off
 /// to a binary whose `--version` this build cannot parse would be refusing on
-/// the strength of a string.
-fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
+/// the strength of a string. A nonzero exit is `None` too: a stamp printed on
+/// the way to failing is not an answer, and `verify_client` holds the same
+/// line — a probe that accepted it would mask exactly what verification
+/// exists to catch.
+pub(crate) fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
     let Ok(output) = std::process::Command::new(binary)
         .arg("--version")
         .stdin(std::process::Stdio::null())
@@ -826,15 +844,19 @@ fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
     else {
         return (None, None);
     };
-    let printed = String::from_utf8_lossy(&output.stdout);
-    let stamp = printed
+    if !output.status.success() {
+        return (None, None);
+    }
+    let stamp = version_stamp(&String::from_utf8_lossy(&output.stdout));
+    (stamp.as_deref().and_then(Version::parse), stamp)
+}
+
+/// The first word of `printed` that parses as a build stamp.
+fn version_stamp(printed: &str) -> Option<String> {
+    printed
         .split_whitespace()
         .find(|word| Version::parse(word).is_some())
-        .map(str::to_string);
-    (
-        stamp.as_deref().and_then(Version::parse),
-        stamp,
-    )
+        .map(str::to_string)
 }
 
 /// `termiod handoff` — the CLI around [`handoff`].
@@ -920,14 +942,15 @@ pub trait Node {
     }
 }
 
-/// What [`Node::artifact`] stages: one build, both binaries. The client is not
-/// optional here on purpose — a deploy that shipped only half the build would
-/// recreate exactly the skew the same-pass rule exists to rule out — and a
-/// node with no client to install says so through `client_binary` instead.
+/// What [`Node::artifact`] stages: one build, both binaries. Every build of
+/// this crate produces both, so `client` is `None` only when a developer's
+/// `--bin` override points at a daemon with no client beside it — and that
+/// same override turns the node's client plane off (`client_binary` returns
+/// `None`), so the two stay consistent rather than shipping half a build.
 #[derive(Debug, Clone)]
 pub struct Artifacts {
     pub daemon: PathBuf,
-    pub client: PathBuf,
+    pub client: Option<PathBuf>,
 }
 
 /// See [`Node::rollback_plan`].
@@ -1101,32 +1124,35 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     let label = node.label();
 
     let mut observed = observe(node).await?;
-    let needs_stage = match &observed {
-        Observed::Absent | Observed::OldBinary => true,
+    let plan = match &observed {
+        Observed::Absent | Observed::OldBinary => Some(StagePlan::Full),
         Observed::Reported(status) => match Version::parse(&status.binary.version) {
-            None => true,
-            Some(have) if have < want => true,
+            None => Some(StagePlan::Full),
+            Some(have) if have < want => Some(StagePlan::Full),
             // A newer control plane owns this box, client and all; nothing
             // here may downgrade any part of it.
-            Some(have) if have > want => false,
+            Some(have) if have > want => None,
             // The daemon binary is already this build. The client ships in
             // the same pass, so a box missing it — or holding one from
-            // another build — is staged again anyway.
+            // another build — is staged again, client only: re-renaming the
+            // daemon would destroy `termiod.prev`, the box's one rollback
+            // point, to repair a file the daemon plane never lost.
             Some(_) => {
-                node.client_binary().is_some()
-                    && status
+                let client_current = node.client_binary().is_none()
+                    || status
                         .client
                         .as_ref()
                         .and_then(|client| Version::parse(&client.version))
-                        != Some(want)
+                        == Some(want);
+                (!client_current).then_some(StagePlan::ClientOnly)
             }
         },
     };
-    let mut staged = false;
-    if needs_stage {
+    let mut staged = None;
+    if let Some(plan) = plan {
         eprintln!("[deploy] installing termiod {desired} on {label}…");
-        stage(node).await?;
-        staged = true;
+        stage(node, plan).await?;
+        staged = Some(plan);
         observed = observe(node).await?;
     }
     let Observed::Reported(status) = observed else {
@@ -1244,9 +1270,9 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         }
     }
 
-    match verify(node, want).await {
+    match verify(node, want, staged.is_some()).await {
         Ok((hello, version)) => {
-            if daemon_is_stale || staged {
+            if daemon_is_stale || staged.is_some() {
                 // Best effort: a copy that fails costs the *next* upgrade its
                 // free rollback, not this one anything.
                 if let Some(preserve) = node.preserve_command() {
@@ -1262,15 +1288,31 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         }
         Err(error) => {
             let message = format!("{error:#}");
-            let plan = node.rollback_plan();
-            let rolled_back =
-                (staged || plan.even_unstaged) && roll_back(node, &plan).await.is_ok();
+            // A client-only stage touched nothing but the client, so its
+            // rollback restores nothing but the client: handing the daemon
+            // back to `.prev` here would downgrade a plane that never failed.
+            let rolled_back = match staged {
+                Some(StagePlan::ClientOnly) => roll_back_client(node).await.is_ok(),
+                _ => {
+                    let plan = node.rollback_plan();
+                    (staged.is_some() || plan.even_unstaged)
+                        && roll_back(node, &plan).await.is_ok()
+                }
+            };
             Ok(Outcome::Unhealthy {
                 message,
                 rolled_back,
             })
         }
     }
+}
+
+/// What a reconcile pass needs to put on the node: the whole build, or only
+/// the `termio` client when the daemon plane is already current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StagePlan {
+    Full,
+    ClientOnly,
 }
 
 async fn observe<N: Node>(node: &N) -> Result<Observed> {
@@ -1303,21 +1345,37 @@ async fn observe<N: Node>(node: &N) -> Result<Observed> {
 /// it keeps the old inode until it exits, which is the handover wanted. Linux
 /// refuses to open a running executable for writing (`ETXTBSY`), so writing
 /// in place is the one shape that always fails when a box is in use.
-async fn stage<N: Node>(node: &N) -> Result<()> {
+async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<()> {
     let artifacts = node.artifact().await?;
-    node.put(&artifacts.daemon, "termiod.new").await?;
-    let binary = node.binary();
-    let mut command = format!(
-        "chmod +x {binary}.new && {{ [ ! -e {binary} ] || mv -f {binary} {binary}.prev; }} && mv -f {binary}.new {binary}"
-    );
+    let mut command = String::new();
+    if plan == StagePlan::Full {
+        node.put(&artifacts.daemon, "termiod.new").await?;
+        command = swap_command(&node.binary());
+    }
     // The client lands in the same pass, with the same discipline, activated
     // by the same shell command — the narrowest window there is for a box to
-    // hold one binary of a build without the other.
+    // hold one binary of a build without the other. When the client's half
+    // fails after the daemon's rename succeeded, the daemon is renamed back
+    // in the same command: a failed stage must leave the box as it was, not
+    // holding a new daemon beside an old client — the exact skew this loop
+    // exists to prevent — with `.prev` already spent.
     if let Some(client) = node.client_binary() {
-        node.put(&artifacts.client, "termio.new").await?;
-        command.push_str(&format!(
-            " && chmod +x {client}.new && {{ [ ! -e {client} ] || mv -f {client} {client}.prev; }} && mv -f {client}.new {client}"
-        ));
+        let Some(local) = &artifacts.client else {
+            bail!("no termio client in the build for {}", node.label());
+        };
+        node.put(local, "termio.new").await?;
+        let client_swap = swap_command(&client);
+        command = if command.is_empty() {
+            client_swap
+        } else {
+            format!(
+                "{command} && {{ {client_swap} || {{ {}; false; }}; }}",
+                restore_command(&node.binary())
+            )
+        };
+    }
+    if command.is_empty() {
+        return Ok(());
     }
     let run = node.run(&command).await?;
     if run.code != 0 {
@@ -1330,13 +1388,34 @@ async fn stage<N: Node>(node: &N) -> Result<()> {
     Ok(())
 }
 
+/// Upload-activate for one binary: rename the current file to `.prev`, the
+/// `.new` upload over the path — and if that last rename fails, put `.prev`
+/// straight back, so a partial swap never leaves the path empty. The restore
+/// is scoped inside the swap on purpose: only a `.prev` this very command
+/// created may be moved back, because a stale `.prev` from an earlier deploy
+/// moved over a healthy binary is a silent downgrade.
+fn swap_command(target: &str) -> String {
+    format!(
+        "chmod +x {target}.new && {{ [ ! -e {target} ] || mv -f {target} {target}.prev; }} && {{ mv -f {target}.new {target} || {{ {}; false; }}; }}",
+        restore_command(target)
+    )
+}
+
+/// Move `.prev` back over the path, if there is one.
+fn restore_command(target: &str) -> String {
+    format!("{{ [ ! -e {target}.prev ] || mv -f {target}.prev {target}; }}")
+}
+
 /// The daemon answering as the build wanted, and the client beside it
-/// answering `--version` with the same build's stamp. The client half is
-/// skipped on a box a newer control plane owns — its client is that plane's
-/// to verify — and on a node that installs no client at all.
-async fn verify<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Version)> {
+/// answering `--version` with at least the same build's stamp. The client
+/// half is skipped on a box a newer control plane owns — its client is that
+/// plane's to verify — and on a node that installs no client at all. Unless
+/// this run staged: what this run just put on disk is this run's to verify,
+/// whatever daemon happens to answer — a newer plane racing this one must
+/// not turn an unverified client into a reported success.
+async fn verify<N: Node>(node: &N, want: Version, staged: bool) -> Result<(DaemonHello, Version)> {
     let (hello, version) = verify_daemon(node, want).await?;
-    if version == want {
+    if version == want || staged {
         verify_client(node, want).await?;
     }
     Ok((hello, version))
@@ -1465,9 +1544,7 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
         // previous client to restore.
         let mut restore = format!("mv -f {source} {binary}");
         if let Some(client) = node.client_binary() {
-            restore.push_str(&format!(
-                " && {{ [ ! -e {client}.prev ] || mv -f {client}.prev {client}; }}"
-            ));
+            restore.push_str(&format!(" && {}", client_restore_command(&client)));
         }
         let run = node.run(&restore).await?;
         if run.code != 0 {
@@ -1478,6 +1555,34 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Put the previous client back — the daemon plane was never touched, so
+/// this is the whole rollback for a client-only stage.
+async fn roll_back_client<N: Node>(node: &N) -> Result<()> {
+    let Some(client) = node.client_binary() else {
+        return Ok(());
+    };
+    let label = node.label();
+    eprintln!("[deploy] rolling {label} back to the previous client…");
+    let run = node.run(&client_restore_command(&client)).await?;
+    if run.code != 0 {
+        bail!(
+            "restoring the previous client on {label}: {}",
+            last_line(&run.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// The client's way back: `.prev` over the path when there is one, and the
+/// failed install *removed* when there is not. A first-time client that
+/// failed verification has no previous build to return to, and leaving it in
+/// place would keep a broken binary leading every session's PATH while the
+/// report claims the box was restored — absent is the state the box was in,
+/// so absent is what restored means.
+fn client_restore_command(client: &str) -> String {
+    format!("if [ -e {client}.prev ]; then mv -f {client}.prev {client}; else rm -f {client}; fi")
 }
 
 /// The one line worth showing from a `handoff --json` reply, falling back to
@@ -1780,7 +1885,7 @@ mod tests {
         async fn artifact(&self) -> Result<Artifacts> {
             Ok(Artifacts {
                 daemon: PathBuf::from("/bundle/termiod-aarch64-unknown-linux-musl"),
-                client: PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl"),
+                client: Some(PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl")),
             })
         }
         fn client_binary(&self) -> Option<String> {
@@ -2296,13 +2401,15 @@ mod tests {
 
     /// A box whose daemon is already this build but whose client is missing —
     /// deployed before the client shipped, or half of a copy lost — is staged
-    /// again: the client is part of the build, not an extra.
+    /// again, client only: the repair never re-renames the daemon, so
+    /// `termiod.prev` — the box's one rollback point — survives it, and the
+    /// multi-MB daemon is not uploaded to fix a file it never lost.
     #[tokio::test]
-    async fn a_current_daemon_missing_its_client_is_restaged() {
+    async fn a_current_daemon_missing_its_client_is_restaged_client_only() {
         let node = FakeNode::new(
             vec![
                 ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
-                ok(""), // stage: both binaries, one command
+                ok(""), // stage: the client alone
                 ok(&status_json(WANT, Some(WANT), true)),
                 client_answers(),
             ],
@@ -2310,10 +2417,82 @@ mod tests {
         );
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
-        assert_eq!(node.puts.borrow().len(), 2);
-        // The running daemon is already the wanted build: nothing bounces it.
+        let puts = node.puts.borrow();
+        assert_eq!(puts.len(), 1, "{puts:?}");
+        assert!(puts[0].ends_with("→ termio.new"), "{puts:?}");
+        // The daemon plane is untouched: not bounced, not renamed.
         let commands = node.commands.borrow();
         assert!(!commands.iter().any(|command| command.contains(" stop") || command.ends_with("handoff --json")), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains("termiod.prev")), "{commands:?}");
+    }
+
+    /// A client-only stage that fails verification rolls back the client
+    /// alone — handing the daemon to `.prev` would downgrade a plane that
+    /// never failed — and a first-time client with no `.prev` is removed
+    /// rather than left broken at the head of every session's PATH.
+    #[tokio::test]
+    async fn a_failed_client_only_stage_rolls_back_only_the_client() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
+                ok(""), // stage: the client alone
+                ok(&status_json(WANT, Some(WANT), true)),
+                failed(126, "cannot execute binary file"), // termio --version
+                ok(""), // roll back: restore or remove the client
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        let restore = commands.last().unwrap();
+        assert!(restore.contains("termio.prev"), "{restore}");
+        assert!(restore.contains("rm -f $HOME/.local/bin/termio"), "{restore}");
+        assert!(!commands.iter().any(|command| command.contains("termiod.prev") || command.contains(" stop")), "{commands:?}");
+    }
+
+    /// This run staged the box, so the client is verified even when a newer
+    /// daemon answers — two planes racing must not turn an unverified client
+    /// into `Current { newer: true }`.
+    #[tokio::test]
+    async fn a_staged_box_verifies_its_client_even_under_a_newer_daemon() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // stage
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(1),
+                client_answers(), // verified despite the newer daemon answering
+            ],
+            vec![hello(Some("0.45.0+1700"))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { newer: true, .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        assert!(commands.last().unwrap().ends_with("termio --version"), "{commands:?}");
+    }
+
+    /// The activation command undoes itself: a client half that fails after
+    /// the daemon's rename must put the daemon back in the same command, so a
+    /// failed stage never leaves a new daemon beside an old client with
+    /// `.prev` already spent.
+    #[tokio::test]
+    async fn a_failed_stage_restores_the_daemon_in_the_same_command() {
+        let node = FakeNode::new(
+            vec![
+                failed(127, "bash: termiod: No such file or directory"),
+                failed(1, "mv: cannot overwrite directory"), // stage activation
+            ],
+            vec![],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Failed { .. }), "{report:?}");
+        let activation = node.commands.borrow().last().unwrap().clone();
+        // The client's failure branch restores the daemon's `.prev`.
+        assert!(
+            activation.contains("mv -f $HOME/.local/bin/termiod.prev $HOME/.local/bin/termiod"),
+            "{activation}"
+        );
     }
 
     /// A client that does not answer `--version` fails the deploy the same way
