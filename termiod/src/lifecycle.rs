@@ -1229,14 +1229,6 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             }
         },
     };
-    // What was on the node before this run staged anything, which is what says
-    // whether a `.prev` afterwards is this run's doing. Read here, from the
-    // observation already in hand, because the box cannot answer it later: a
-    // `.prev` on disk may be this run's or an older deploy's, and putting back
-    // the wrong one installs a build some earlier pass had replaced.
-    let daemon_present = !matches!(observed, Observed::Absent);
-    let client_present = matches!(&observed, Observed::Reported(status) if status.client.is_some());
-
     // What this run put on the node, per plane. Every undo below reads this and
     // nothing else: a run that staged only the client may not touch the daemon,
     // and one that staged no client may not touch the client — the box's own,
@@ -1244,8 +1236,6 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     let mut staged = Staged::default();
     if let Some(plan) = plan {
         staged = stage(node, plan).await?;
-        staged.daemon_replaced = staged.daemon && daemon_present;
-        staged.client_replaced = staged.client && client_present;
         match (staged.daemon, staged.client) {
             (true, true) => eprintln!("[deploy] installed termiod {desired} and its client on {label}"),
             (true, false) => eprintln!("[deploy] installed termiod {desired} on {label}"),
@@ -1529,6 +1519,14 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
     if command.is_empty() {
         return Ok(staged);
     }
+    // The activation reports what it renamed aside, because it is the only thing
+    // that looked. Deriving it here from the observation instead read a field
+    // (`status.client`) that only a daemon built from this pass onward reports,
+    // so on the first upgrade of a box already in the field the loop concluded
+    // there had been no client — and a client that then failed verification was
+    // removed rather than put back from the `termio.prev` this very stage had
+    // just written. Every existing box passes through that once.
+    command.push_str(&format!(" && echo \"{STAGE_REPORT} client_replaced=${{termio_replaced:-0}}\""));
     let run = node.run(&command).await?;
     if run.code != 0 {
         bail!(
@@ -1537,8 +1535,17 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
             last_line(&run.stderr)
         );
     }
+    staged.client_replaced = staged.client
+        && run
+            .stdout
+            .lines()
+            .any(|line| line.contains(STAGE_REPORT) && line.contains("client_replaced=1"));
     Ok(staged)
 }
+
+/// Marks the activation's own account of itself, so a login banner on the way
+/// through cannot be mistaken for it.
+const STAGE_REPORT: &str = "termiod-stage:";
 
 /// Which planes a stage actually put on the node. A pass that shipped no client
 /// — because this build has none — turns the client plane off for the rest of
@@ -1547,11 +1554,18 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
 struct Staged {
     daemon: bool,
     client: bool,
-    /// Whether the stage renamed a previous build aside, per plane — the fact an
-    /// undo in a later ssh command needs and cannot read off the disk. Taken
-    /// from the observation this run made before staging: a `.prev` on the box
-    /// says nothing about whose it is.
-    daemon_replaced: bool,
+    /// Whether the stage renamed a previous *client* aside — the fact an undo in
+    /// a later ssh command needs and cannot read off the disk, since a
+    /// `termio.prev` sitting there says nothing about whose it is. Reported by
+    /// the activation command itself, which is the only thing that tested the
+    /// path at the moment it mattered.
+    ///
+    /// There is deliberately no daemon twin. The daemon's `.prev` is the box's
+    /// rollback point and is kept across runs on purpose, so a failed upgrade
+    /// hands back to whatever known-good build is there rather than to nothing;
+    /// the client's is not a rollback point but a skew risk, because a client
+    /// from an earlier build beside this build's daemon is exactly what the
+    /// same-pass rule exists to prevent.
     client_replaced: bool,
 }
 
@@ -2103,6 +2117,12 @@ mod tests {
         }
     }
 
+    /// What the activation echoes when it renamed a client aside, which is what
+    /// the loop reads to know whose `termio.prev` is on the box.
+    fn staged_over_a_client() -> Run {
+        ok("termiod-stage: client_replaced=1")
+    }
+
     fn ok(stdout: &str) -> Run {
         Run {
             code: 0,
@@ -2542,7 +2562,7 @@ mod tests {
         let node = FakeNode::new(
             vec![
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
-                ok(""), // stage: chmod + mv
+                staged_over_a_client(), // stage: chmod + mv
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(3), // the daemon takes the bad image on
                 ok(""),        // roll back: [ -e prev ]
@@ -2816,7 +2836,7 @@ mod tests {
         let node = FakeNode::new(
             vec![
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
-                ok(""), // stage
+                staged_over_a_client(), // stage
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(2),
                 failed(126, "cannot execute binary file"), // termio --version
@@ -2858,6 +2878,45 @@ mod tests {
             commands.last().unwrap(),
             "mv -f $HOME/.local/bin/termio.prev $HOME/.local/bin/termio",
             "{commands:?}"
+        );
+    }
+
+    /// The undo follows what the activation reported, not what the box's status
+    /// implied. A daemon built before this pass reports no `client` field at
+    /// all, so deriving replaced-ness from the status concluded there had been
+    /// no client and *removed* one that failed verification — instead of putting
+    /// back the `termio.prev` the same stage had just written. Every box already
+    /// in the field passes through that on its first upgrade.
+    #[tokio::test]
+    async fn a_client_is_put_back_even_when_the_old_daemon_never_reported_one() {
+        // An older build's status: no `client` key, which `serde(default)`
+        // reads as `None` however many clients are actually on the box.
+        let older_status = serde_json::json!({
+            "binary": { "version": "0.43.0+1500", "path": "/home/u/.local/bin/termiod" },
+            "daemon": { "running": true, "version": "0.43.0+1500", "pid": 4242,
+                        "socket": "/run/user/1001/termiod/termiod.sock" },
+            "sessions": [],
+            "host_id": "h_1",
+            "supervisor": "none"
+        })
+        .to_string();
+        let node = FakeNode::new(
+            vec![
+                ok(&older_status),
+                // The activation says what it found: a client was renamed aside.
+                staged_over_a_client(),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(1),
+                failed(126, "cannot execute binary file"), // termio --version
+                ok(""),                                    // put the client back
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { client: Some(_), .. }), "{report:?}");
+        assert_eq!(
+            node.commands.borrow().last().unwrap(),
+            "mv -f $HOME/.local/bin/termio.prev $HOME/.local/bin/termio"
         );
     }
 

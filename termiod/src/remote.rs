@@ -177,10 +177,23 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
             let mut node = SshNode::new(host);
             if let Some(bin) = bin {
                 let daemon = PathBuf::from(bin);
-                // Resolved before anything is sent: a stale pair is caught by
-                // a local `--version`, not by a failed verify and a daemon
-                // bounce on the box.
-                node.prebuilt_client = client_beside(&daemon)?;
+                // Only a machine that takes a client is paired with one, and
+                // only when this deploy named it: `artifact` sends none
+                // otherwise. Pairing first meant a daemon/client build mismatch
+                // refused the whole deploy over an artifact that was never going
+                // to ship — a `--target aarch64-apple-darwin` run, say, where a
+                // Mac must be sent no client at all.
+                if target.as_deref().is_some_and(target_takes_a_client) {
+                    // Resolved before anything is sent: a stale pair is caught by
+                    // a local `--version`, not by a failed verify and a daemon
+                    // bounce on the box.
+                    node.prebuilt_client = client_beside(&daemon)?;
+                } else if target.is_none() {
+                    eprintln!(
+                        "[deploy] deploying the daemon only; name the machine with --target to \
+                         send the client beside it too"
+                    );
+                }
                 node.prebuilt = Some(daemon);
             }
             node.target = target;
@@ -576,12 +589,6 @@ impl Node for SshNode {
             // on a Mac that manages its own — shadowing the app's copy with one
             // frozen at this build, which no later pass refreshes or removes.
             let ships_client = self.target.as_deref().is_some_and(target_takes_a_client);
-            if !ships_client && self.prebuilt_client.is_some() && self.target.is_none() {
-                eprintln!(
-                    "[deploy] deploying the daemon only; name the machine with --target to send \
-                     the client beside it too"
-                );
-            }
             return Ok(Artifacts {
                 daemon: prebuilt.clone(),
                 client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
