@@ -1373,16 +1373,27 @@ final class TermioStore: ObservableObject {
 
         // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
         var rebuilt = discovered.map { byPath[canonical($0)] ?? Worktree(path: $0) }
-        // …then any git-absent entry that still has a session, so it isn't yanked
-        // away. One row per checkout here too: a worktree whose folder was
-        // deleted and whose row a session keeps alive is this feature's own
-        // case, and duplicates of it took this path rather than the merge above,
-        // so both survived every pass — the sessions moving onto the first and
-        // the second staying forever, empty and unremovable.
+        // …then any entry git no longer offers that still has a reason to stay: a
+        // session is in it, or git still holds a registration for it that only
+        // the user's own Remove can let go of. Dropping that second kind is what
+        // left a deleted-folder worktree unreachable — no row, so no way to
+        // reach the removal, and its registration and branch stayed in the
+        // repository for good. It is kept rather than swept because deregistering
+        // it without being asked would delete that worktree's HEAD, index and
+        // reflogs, and a folder that is merely unreachable — an unmounted share,
+        // a cloud provider that is not running — looks exactly like a deleted
+        // one from here.
+        //
+        // One row per checkout here too: duplicates took this path rather than
+        // the merge above, so both survived every pass — the sessions moving onto
+        // the first and the second staying forever, empty and unremovable.
+        let staleSet = Set(reconciled.stale.map(canonical))
         var kept = discoveredSet
         for worktree in existing {
             let key = canonical(worktree.path)
-            guard !kept.contains(key), sessionAnchored.contains(key) else { continue }
+            guard !kept.contains(key),
+                  sessionAnchored.contains(key) || staleSet.contains(key)
+            else { continue }
             kept.insert(key)
             rebuilt.append(worktree)
         }

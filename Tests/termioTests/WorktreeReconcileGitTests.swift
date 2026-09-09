@@ -1,16 +1,22 @@
 import XCTest
 @testable import termio
 
-/// The reconcile's sweep of registrations whose checkouts are gone, against a
-/// real repository — it deregisters without anyone asking, so what it will and
-/// will not touch is worth holding down.
-final class WorktreeSweepTests: XCTestCase {
+/// What the automatic reconcile does to a repository, against a real one.
+///
+/// The answer has to be *nothing*: it is a background pass, triggered by a
+/// branch-watcher event or the app coming forward, with no user behind it.
+/// `git worktree remove` on a path that is missing deletes that worktree's HEAD,
+/// index, per-worktree refs and reflogs — and a folder that is merely
+/// unreachable, an unmounted share or a cloud provider that is not running,
+/// looks exactly like a deleted one from here. So the pass reports a vanished
+/// checkout and leaves the deregistering to the user's own Remove.
+final class WorktreeReconcileGitTests: XCTestCase {
     private var root: URL!
     private var repo: URL { root.appendingPathComponent("repo") }
 
     override func setUpWithError() throws {
         root = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("worktree-sweep-\(UUID().uuidString)")
+            .appendingPathComponent("worktree-reconcile-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         try git(["init", "--quiet"])
         try git(["commit", "--quiet", "--allow-empty", "-m", "init"])
@@ -20,11 +26,9 @@ final class WorktreeSweepTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// A checkout whose folder is simply gone is deregistered, so the path can be
-    /// used again. Nothing else is: a folder still holding files, an emptied one,
-    /// and one git is holding with `lock` all stay for the user's own Remove to
-    /// decide on — and the sweep never deletes a file to get there.
-    func testOnlyAVanishedCheckoutIsSweptAway() async throws {
+    /// Every registration survives the pass, whatever shape its checkout is in,
+    /// and each unusable one is reported so its row keeps its place.
+    func testTheAutomaticPassDeregistersNothing() async throws {
         for name in ["gone", "work", "empty", "locked"] {
             try git(["worktree", "add", "--quiet", "-b", name, worktree(name).path, "HEAD"])
         }
@@ -39,34 +43,47 @@ final class WorktreeSweepTests: XCTestCase {
         try git(["worktree", "lock", worktree("locked").path])
         try FileManager.default.removeItem(at: worktree("locked"))
 
-        _ = await WorktreeService.reconcile(in: repo.path, against: [])
+        let reconciled = await WorktreeService.reconcile(in: repo.path, against: [])
+        let plan = try XCTUnwrap(reconciled)
 
         // Compared canonically, because git prints realpaths and the temporary
         // directory these live under is reached through a symlink.
         let registered = try registeredPaths()
-        XCTAssertFalse(registered.contains(key("gone")), "a vanished checkout is let go of")
-        XCTAssertTrue(registered.contains(key("work")), "work nobody inspected stays registered")
-        XCTAssertTrue(registered.contains(key("empty")), "an emptied folder is the user's call")
-        XCTAssertTrue(registered.contains(key("locked")), "a locked worktree is git's to hold")
-
+        for name in ["gone", "work", "empty", "locked"] {
+            XCTAssertTrue(registered.contains(key(name)),
+                          "\(name) must still be registered after an automatic pass")
+        }
+        // Nothing on disk is touched either.
         XCTAssertTrue(
             FileManager.default.fileExists(
-                atPath: worktree("work").appendingPathComponent("draft.txt").path),
-            "the sweep deletes no files")
+                atPath: worktree("work").appendingPathComponent("draft.txt").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: worktree("empty").path))
-
-        // The point of letting go: the path is usable again. Before this, the
-        // registration leaked and a later add at the same path was refused.
-        try git(["worktree", "add", "--quiet", "-b", "again", worktree("gone").path, "HEAD"])
-
-        // The branch is left alone — deleting a ref is not something a pass
-        // nobody asked for should do.
         XCTAssertTrue(try branches().contains("gone"))
+
+        // What it does instead: every one git cannot offer is reported stale, so a
+        // row for it keeps its place and the user can reach the removal. None of
+        // these four is usable — each had its folder deleted or its `.git` taken
+        // away — so none is offered as a worktree to open.
+        let stale = Set(plan.stale.map(WorktreeService.canonicalPath))
+        for name in ["gone", "work", "empty", "locked"] {
+            XCTAssertTrue(stale.contains(key(name)), "\(name) must be reported as stale")
+        }
+        XCTAssertTrue(plan.discovered.isEmpty, "\(plan.discovered)")
     }
 
-    /// The sweep leaves what it cannot see. A path whose volume is not mounted
-    /// answers "no such file" for everything on it, and `/Volumes` with the
-    /// volume directory absent is what that looks like.
+    /// A healthy worktree is offered to open and is not reported stale — the
+    /// distinction the row-keeping rests on.
+    func testAHealthyWorktreeIsOfferedRatherThanReportedStale() async throws {
+        try git(["worktree", "add", "--quiet", "-b", "live", worktree("live").path, "HEAD"])
+        let reconciled = await WorktreeService.reconcile(in: repo.path, against: [])
+        let plan = try XCTUnwrap(reconciled)
+        XCTAssertEqual(plan.discovered.map(WorktreeService.canonicalPath), [key("live")])
+        XCTAssertTrue(plan.stale.isEmpty, "\(plan.stale)")
+    }
+
+    /// And the probe the removal leans on still fails closed: a path whose volume
+    /// is not mounted answers "no such file" for everything on it, which must not
+    /// read as a checkout someone deleted.
     func testAnUnmountedVolumeIsNotMistakenForADeletedCheckout() {
         XCTAssertEqual(
             WorktreeService.folderEvidence(at: "/Volumes/TermioNoSuchVolume/repo-wt"),

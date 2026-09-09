@@ -229,10 +229,21 @@ extension TermioStore {
                 // run here — it is repo-wide, so it would take every other
                 // worktree whose folder is missing with it, including ones
                 // holding work this action was never pointed at.
-                guard deregister(registration, at: worktree.path, in: repository) else {
+                switch deregister(registration, at: worktree.path, in: repository) {
+                case .done:
+                    break
+                case .gitRefused:
                     presentWorktreeFailure(
                         title: localized("Couldn’t remove worktree"),
                         message: localized("git still lists “\(displayName)”, so it was not removed.")
+                    )
+                    return
+                // Named for what actually refused. Reported as git's doing, this
+                // pointed at the one thing that had not gone wrong.
+                case .folderRefused:
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t remove worktree"),
+                        message: localized("termio couldn’t remove the empty folder at “\(displayName)”, so the worktree was not removed.")
                     )
                     return
                 }
@@ -313,8 +324,17 @@ extension TermioStore {
         // while the click waits, and a repo with many worktrees on a slow mount
         // paid that twice over for each of them.
         let wanted = canonicalWorktreePath(path)
-        guard let record = registrations
-            .first(where: { canonicalWorktreePath($0.path) == wanted })
+        let spellings = registrations.map { (canonicalWorktreePath($0.path), $0) }
+        // Exactly, then ignoring case. The filesystem under these paths is
+        // case-insensitive by default and so is git's own `fspathcmp` on macOS, so
+        // a row spelled `Repo-wt` against git's `repo-wt` matched no record — and
+        // the removal then refused with "git no longer tracks it", which was the
+        // opposite of the truth and a dead end of exactly the kind this action
+        // exists to clear. The exact match is tried first so a genuinely
+        // case-sensitive volume, where those are two different checkouts, still
+        // gets the one it named.
+        guard let record = spellings.first(where: { $0.0 == wanted })?.1
+            ?? spellings.first(where: { $0.0.compare(wanted, options: .caseInsensitive) == .orderedSame })?.1
         else {
             return decisionWithoutRegistration(for: path, named: displayName)
         }
@@ -435,8 +455,10 @@ extension TermioStore {
     /// answer whether it is gone.
     ///
     /// The empty folder is cleared only when git has *refused* over it, and is
-    /// put back when git then refuses anyway — so a removal that reports nothing
-    /// happened really did leave the path as it found it. Deleting first and
+    /// put back, with the permissions it had, when git then refuses anyway — so a
+    /// removal that reports nothing happened leaves the path as it found it. The
+    /// one thing not put back is the `.DS_Store`: it is Finder's own, which is
+    /// why clearing it was allowed at all, and Finder writes it again. Deleting first and
     /// reporting afterwards is the shape that kept coming back: git refuses while
     /// the path exists, so the clearing is needed, but doing it up front meant
     /// any later refusal — a concurrent git holding `.git/worktrees`, a
@@ -445,15 +467,27 @@ extension TermioStore {
     /// and the registration with it, or both are as they were.
     private func deregister(
         _ registration: StaleRegistration, at path: String, in repository: String
-    ) -> Bool {
-        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return true }
+    ) -> DeregisterOutcome {
+        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return .done }
         // A remove that refuses while the path still exists touches nothing, so
         // there is nothing to undo before trying the one thing that can help.
-        guard registration.mayClearFolder, clearEmptyFolder(at: path) else { return false }
-        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return true }
+        guard registration.mayClearFolder else { return .gitRefused }
+        // Kept so the folder can go back the way it was found, if it has to.
+        let mode = try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions]
+        guard clearEmptyFolder(at: path) else { return .folderRefused }
+        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return .done }
         try? FileManager.default.createDirectory(
-            atPath: path, withIntermediateDirectories: false)
-        return false
+            atPath: path, withIntermediateDirectories: false,
+            attributes: mode.map { [.posixPermissions: $0] })
+        return .gitRefused
+    }
+
+    /// What came of trying to drop git's registration — named so the refusal the
+    /// user reads is the one that actually happened.
+    private enum DeregisterOutcome {
+        case done
+        case gitRefused
+        case folderRefused
     }
 
     /// Remove the empty folder a checkout left behind, so git's targeted remove

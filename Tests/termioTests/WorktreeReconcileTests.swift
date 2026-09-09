@@ -47,7 +47,7 @@ final class WorktreeReconcileTests: XCTestCase {
         // Both spellings are one checkout, which is what git reports.
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: ["/private/tmp/scratch/wt-a"],
+                discovered: ["/private/tmp/scratch/wt-a"], stale: [],
                 canonical: [
                     "/private/tmp/scratch/wt-a": "/tmp/scratch/wt-a",
                     "/tmp/scratch/wt-a": "/tmp/scratch/wt-a",
@@ -69,7 +69,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [],
+                discovered: [], stale: [],
                 canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
             to: projectID)
 
@@ -91,7 +91,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [],
+                discovered: [], stale: [],
                 canonical: [
                     "/private/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
                     "/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
@@ -113,7 +113,7 @@ final class WorktreeReconcileTests: XCTestCase {
         let existing = store.projects[0].worktrees[0].id
 
         store.applyDiscoveredWorktrees(
-            WorktreeService.Reconcile(discovered: ["/tmp/scratch/wt-new"], canonical: [:]),
+            WorktreeService.Reconcile(discovered: ["/tmp/scratch/wt-new"], stale: [], canonical: [:]),
             to: projectID)
 
         let rows = store.projects[0].worktrees

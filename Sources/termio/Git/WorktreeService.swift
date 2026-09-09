@@ -199,6 +199,16 @@ enum WorktreeService {
     struct Reconcile: Sendable {
         /// Linked worktrees git reports and this machine can see, in git's order.
         let discovered: [String]
+        /// Worktrees git still has a registration for but that cannot be used —
+        /// the folder gone, or git itself calling the record `prunable`.
+        ///
+        /// They are deliberately kept out of `discovered`: a row for a folder
+        /// that is not there is a row a session can be started in, and the shell
+        /// then opens somewhere nobody asked for. But a row that already exists
+        /// for one has to *stay*, because it is the only way to reach the removal
+        /// that lets go of the registration and tidies the branch. Dropping it
+        /// left both in the repository for good.
+        let stale: [String]
         /// Canonical spelling for every path the merge compares, by the spelling
         /// it was asked about.
         let canonical: [String: String]
@@ -218,46 +228,21 @@ enum WorktreeService {
     static func reconcile(in repoRoot: String, against known: [String]) async -> Reconcile? {
         await offMain {
             guard let all = records(in: repoRoot) else { return nil }
-            sweepVanishedWorktrees(all, in: repoRoot)
-            let discovered = all.dropFirst()                            // primary checkout
-                .filter { !$0.bare && !$0.prunable }
-                .compactMap { record -> String? in
-                    var isDirectory: ObjCBool = false
-                    guard FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory),
-                          isDirectory.boolValue else { return nil }
-                    return URL(fileURLWithPath: record.path).standardizedFileURL.path
-                }
+            var discovered: [String] = []
+            var stale: [String] = []
+            for record in all.dropFirst() where !record.bare {   // primary checkout
+                let path = URL(fileURLWithPath: record.path).standardizedFileURL.path
+                var isDirectory: ObjCBool = false
+                let usable = !record.prunable
+                    && FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory)
+                    && isDirectory.boolValue
+                if usable { discovered.append(path) } else { stale.append(path) }
+            }
             var canonical: [String: String] = [:]
-            for path in discovered + known where canonical[path] == nil {
+            for path in discovered + stale + known where canonical[path] == nil {
                 canonical[path] = canonicalPath(path)
             }
-            return Reconcile(discovered: discovered, canonical: canonical)
-        }
-    }
-
-    /// Deregister the worktrees whose folders are simply gone.
-    ///
-    /// These rows leave the sidebar on the next pass — `discovered` filters
-    /// `prunable` out — so without this nothing could ever reach them again:
-    /// the registration and its branch stayed in the repo for good, and a later
-    /// `git worktree add` at the same path was refused as already registered.
-    /// A successful removal used to sweep them as a side effect, by running
-    /// `git worktree prune` across the whole repo. That was the wrong tool —
-    /// it also deregistered worktrees holding work nobody had inspected — but
-    /// dropping it left the job undone.
-    ///
-    /// So each one is removed by name, and only where there is nothing to lose:
-    /// `.gone` is the path not being there at all, which is the one shape
-    /// `git worktree remove` settles without touching a file. A folder that
-    /// still holds anything, one this cannot read, one on a volume that is not
-    /// mounted, and one git is holding with `lock` are all left exactly as they
-    /// are for the user's own Remove to decide on. Branches are left alone too:
-    /// deleting a ref is not something a pass nobody asked for should do, and
-    /// the sweep this replaces never did either.
-    private static func sweepVanishedWorktrees(_ records: [Record], in repoRoot: String) {
-        for record in records.dropFirst() where record.prunable && !record.locked {
-            guard folderEvidence(at: record.path) == .gone else { continue }
-            _ = run(["worktree", "remove", record.path], in: repoRoot)
+            return Reconcile(discovered: discovered, stale: stale, canonical: canonical)
         }
     }
 
