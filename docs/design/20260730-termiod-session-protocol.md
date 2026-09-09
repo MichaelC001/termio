@@ -3,7 +3,7 @@ title: termiod Session Protocol
 status: draft
 type: design
 created: 2026-07-30
-updated: 2026-09-08
+updated: 2026-09-09
 related:
   - 20260730-termiod-session-mux.md
   - 20260708-session-daemon-architecture.md
@@ -73,7 +73,14 @@ one is. The Mac makes surfaces for sessions no pane is showing — a phone openi
 one it never displayed — and each of those took the session's size for a frame
 before its first `R` gave it back. Same fact as `R`'s flags byte
 (`20260901-pty-size-is-not-the-write-token.md` §5.1); absent is `true`, so no
-client written before it changes. -->
+client written before it changes.
+2026-09-09: §C.13 gained the `head:` sibling kind — the checkout's HEAD alone
+(`head_changed {branch?, head?}`, full state per batch), read in-process off
+the same workspace watcher with no git child, so a client can keep a branch
+label live for every checkout it shows without the per-event `git status` the
+`git:` kind costs. Gated on the same `git` capability. Implemented in
+`termiod/src/resource.rs` (`head_loop`) and `git.rs` (`read_head`); first
+consumer is the Mac title bar's branch chip for sessions on other machines. -->
 
 
 # Design: termiod Session Protocol
@@ -870,6 +877,24 @@ no verb of its own. Every reply is capped and says so rather than being cut
 silently, and every one of them runs the box's own `git` as a child process
 with `--no-optional-locks` — nothing here reimplements git, and a read cannot
 contend with the agent committing in the terminal beside it.
+
+**The `head:` sibling kind** (2026-09-09) answers the one question a client
+asks about every checkout it *shows* rather than the one it has open: which
+branch is it on. Id `head:<canonical repo root>`, same cursor/ring/gap/linger,
+same `git` capability gate; every batch is the full state, so a gap subscriber
+is simply served the current snapshot:
+
+```
+E {ev:"head_changed", resource:"head:/work/termio", seq:3, branch?, head?}
+```
+
+`branch` absent with `head` set is a detached HEAD at that (short) commit. The
+host reads `.git/HEAD` in-process — resolving a linked worktree's `gitdir`
+pointer file — and spawns nothing, which is what makes the kind affordable
+always-on where `git:`'s per-event status run is reserved for an open Changes
+pane. Like `git:`, it re-reads on any watcher batch, not only `git_meta`: a
+linked worktree's HEAD lives *outside* the watched root, so the checkout that
+moves it arrives here only as the tree it rewrote.
 
 This still deletes the majority of Zed's git surface (mutation RPCs,
 optimistic-update reconciliation, a write-permission model). The mutation and

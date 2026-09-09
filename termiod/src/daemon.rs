@@ -1815,7 +1815,9 @@ async fn process_control(
                     "the resources capability was not negotiated",
                     false,
                 )
-            } else if resource.starts_with("git:") && !connection.capabilities.contains("git") {
+            } else if (resource.starts_with("git:") || resource.starts_with("head:"))
+                && !connection.capabilities.contains("git")
+            {
                 error(
                     seq,
                     ErrorCode::Denied,
@@ -2749,6 +2751,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         // through the roster broadcast, so they never match here.
         Event::FsChanged { .. }
         | Event::GitChanged { .. }
+        | Event::HeadChanged { .. }
         | Event::StatusChanged { .. }
         | Event::SearchResults { .. } => false,
         Event::Unknown => false,

@@ -211,6 +211,80 @@ impl GitBatch {
     }
 }
 
+/// Everything a `head:` resource says: which branch the checkout is on, or the
+/// commit it is detached at. This is the branch label a client keeps beside a
+/// checkout's name — always on, for every checkout a sidebar shows — so it has
+/// to cost nothing: one file read per workspace event, no git child. The full
+/// `git:` kind runs a status per event and is rightly reserved for an open
+/// Changes pane.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadSnapshot {
+    /// The branch `HEAD` names, `None` when detached — the same split the
+    /// `git_changed` metadata carries.
+    pub branch: Option<String>,
+    /// The commit a detached `HEAD` sits at, abbreviated to 7 characters. A
+    /// display label does not need git's ambiguity-aware lengthening, and
+    /// asking for it would cost the child process this kind exists to avoid.
+    pub head: Option<String>,
+}
+
+impl HeadSnapshot {
+    pub fn into_event(self, resource: String, seq: u64) -> Event {
+        Event::HeadChanged {
+            resource,
+            seq,
+            branch: self.branch,
+            head: self.head,
+        }
+    }
+}
+
+/// Read the checkout's HEAD without spawning git: `.git/HEAD` is either
+/// `ref: refs/heads/<branch>` or a bare commit hash. A linked worktree's
+/// `.git` is a *file* holding `gitdir: <admin dir>`, and its HEAD lives there.
+/// Any failure — not a repo, unreadable, garbage — is the empty snapshot: the
+/// client hides the label, the same degrade the Mac's own HEAD parser takes.
+pub fn read_head(root: &str) -> HeadSnapshot {
+    let dot_git = Path::new(root).join(".git");
+    let head_path = if dot_git.is_dir() {
+        dot_git.join("HEAD")
+    } else {
+        let Ok(pointer) = std::fs::read_to_string(&dot_git) else {
+            return HeadSnapshot::default();
+        };
+        let Some(git_dir) = pointer.trim().strip_prefix("gitdir:").map(str::trim) else {
+            return HeadSnapshot::default();
+        };
+        let git_dir = if Path::new(git_dir).is_absolute() {
+            std::path::PathBuf::from(git_dir)
+        } else {
+            Path::new(root).join(git_dir)
+        };
+        git_dir.join("HEAD")
+    };
+    let Ok(raw) = std::fs::read_to_string(&head_path) else {
+        return HeadSnapshot::default();
+    };
+    let content = raw.trim();
+    if let Some(reference) = content.strip_prefix("ref: ") {
+        let label = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        if label.is_empty() {
+            return HeadSnapshot::default();
+        }
+        return HeadSnapshot {
+            branch: Some(label.to_string()),
+            head: None,
+        };
+    }
+    if content.len() >= 7 && content.chars().all(|c| c.is_ascii_hexdigit()) {
+        return HeadSnapshot {
+            branch: None,
+            head: Some(content[..7].to_string()),
+        };
+    }
+    HeadSnapshot::default()
+}
+
 /// Run `git status --porcelain=v2 -z` for the repo at `root`.
 /// `--no-optional-locks` matters: a plain `git status` refreshes the index
 /// file, which the workspace watcher reports as `git_meta`, which would
@@ -2090,5 +2164,94 @@ mod tests {
         assert_eq!(list.branches.len(), BRANCH_CAP);
         assert!(list.truncated);
         assert_eq!(list.current, None);
+    }
+
+    /// `read_head` must agree with git about every HEAD shape a checkout can
+    /// be in — on a branch, detached, and inside a linked worktree, whose
+    /// `.git` is a pointer file rather than a directory — without ever
+    /// spawning git to find out.
+    #[test]
+    fn read_head_names_the_branch_the_detachment_and_the_linked_worktree() {
+        let dir = scratch_repo("read-head");
+        let root = dir.to_string_lossy().into_owned();
+        write(&dir, "a.txt", "one\n");
+        let first = commit(&dir, "first");
+
+        assert_eq!(
+            read_head(&root),
+            HeadSnapshot {
+                branch: Some("main".to_string()),
+                head: None
+            }
+        );
+
+        run_git(&dir, &["checkout", "-q", "-b", "feat/branch-chip"]);
+        assert_eq!(
+            read_head(&root).branch.as_deref(),
+            Some("feat/branch-chip")
+        );
+
+        run_git(&dir, &["checkout", "-q", "--detach", &first]);
+        let detached = read_head(&root);
+        assert_eq!(detached.branch, None);
+        assert_eq!(detached.head.as_deref(), Some(&first[..7]));
+
+        let linked = dir.with_file_name(format!(
+            "termiod-git-read-head-linked-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&linked);
+        run_git(
+            &dir,
+            &["worktree", "add", "-q", "-b", "linked", linked.to_str().unwrap(), "main"],
+        );
+        assert_eq!(
+            read_head(&linked.to_string_lossy()).branch.as_deref(),
+            Some("linked"),
+            "a linked worktree's HEAD is resolved through its gitdir pointer"
+        );
+
+        let _ = std::fs::remove_dir_all(&linked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory git knows nothing about answers the empty snapshot — the
+    /// client hides the label — never an error.
+    #[test]
+    fn read_head_outside_a_repository_is_empty_not_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "termiod-git-read-head-bare-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_head(&dir.to_string_lossy()), HeadSnapshot::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wire shape the Mac decodes: `ev` names the kind, absent halves stay
+    /// off the wire entirely.
+    #[test]
+    fn head_snapshot_serializes_to_the_documented_event() {
+        let event = HeadSnapshot {
+            branch: Some("main".to_string()),
+            head: None,
+        }
+        .into_event("head:/repo".to_string(), 3);
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["ev"], "head_changed");
+        assert_eq!(json["resource"], "head:/repo");
+        assert_eq!(json["seq"], 3);
+        assert_eq!(json["branch"], "main");
+        assert!(json.get("head").is_none(), "a detached hash absent stays off the wire");
+
+        let detached = HeadSnapshot {
+            branch: None,
+            head: Some("abc1234".to_string()),
+        }
+        .into_event("head:/repo".to_string(), 4);
+        let json = serde_json::to_value(&detached).unwrap();
+        assert!(json.get("branch").is_none());
+        assert_eq!(json["head"], "abc1234");
     }
 }

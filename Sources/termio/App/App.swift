@@ -2729,8 +2729,13 @@ private struct BranchPickerToolbarView: View {
     }
 
     private var branch: String? {
-        // No local branch for a remote SSH session — its $HOME launch dir isn't the repo.
-        guard store.selectedSessionID.flatMap(store.session)?.sshHost == nil else { return nil }
+        // A checkout on another machine gets its label from that machine's own
+        // daemon (the `head:` resource) — the local model cannot see it, and a
+        // local path that merely spells the same would be the wrong repo. A box
+        // with no daemon simply never answers, and the chip stays hidden.
+        if let checkout = store.inspectorCheckout, checkout.isOnAnotherDevice {
+            return store.deviceBranch(forCheckout: checkout)
+        }
         guard let folder, let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
         return branch
     }
