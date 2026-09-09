@@ -403,12 +403,12 @@ fn a_session_is_either_listed_or_gone_never_both() {
 /// driveable afterwards. The client's socket dies with the image, which is the
 /// documented cost; the session behind it must not.
 ///
-/// What this does *not* cover is the stale-VT decision — whether an adopted
-/// session declines to reconstruct a screen it cannot know. That needs a real
+/// What this does *not* cover is the unfaithful-ring decision — how an adopted
+/// session serves a screen its ring cannot fully draw. That needs a real
 /// resize, which an observer cannot perform (`attach --observe` has no tty and
 /// no resize handling), so it is asserted against the session actor directly in
 /// `session::tests::a_resize_makes_the_ring_stop_describing_the_screen` and
-/// `an_unfaithful_ring_comes_back_with_a_vt_that_refuses_snapshots`.
+/// `an_unfaithful_ring_comes_back_with_a_vt_that_answers_snapshots`.
 #[test]
 fn a_session_with_a_client_attached_is_still_driveable_afterwards() {
     let dir = TestDir::new();

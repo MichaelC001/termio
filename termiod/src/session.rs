@@ -1758,8 +1758,9 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
 /// screen they drew the first time.
 struct Replay {
     chunks: Vec<Bytes>,
-    /// See `Session::ring_reconstructs_screen`. False means this actor's VT
-    /// must not claim to know what is on the screen.
+    /// See `Session::ring_reconstructs_screen`. False means the replay leaves
+    /// rows this actor's VT cannot know; the adopting actor nudges the program
+    /// to repaint them rather than taking the VT down.
     faithful: bool,
 }
 
@@ -1876,16 +1877,23 @@ fn start(
     // the cap; either way the previous actor's verdict still applies.
     session.ring_reconstructs_screen &= replay.faithful;
     if !session.ring_reconstructs_screen {
-        // The VT this actor started is blank plus a replay, and the replay does
-        // not draw the screen the program believes it is looking at — output
-        // older than the ring is gone, or was written into a different grid.
-        // Snapshots fall back to ring replay, which is wrong in exactly the
-        // same way but is the client's own terminal being wrong about bytes it
-        // was given, not this host asserting a screen it cannot know. The
-        // program repaints on its next output either way.
-        session.mark_vt_stale(
-            "the output that drew this screen did not survive the handoff".to_string(),
-        );
+        // The VT this actor started is blank plus a replay that does not draw
+        // the screen the program believes it is looking at — output older than
+        // the ring is gone, or was written into a different grid. It used to
+        // be declared stale for that, permanently: every attach for the rest
+        // of this image's life then served a raw ring replay smeared over
+        // whatever the client already showed — after every update, every
+        // long-lived session greeted the phone with a garbled screen until it
+        // was closed. The VT stays live instead. From the replay onward it has
+        // eaten every byte, so its screen is a coherent composition — blank
+        // where history is gone — and the snapshot prologue is built to land
+        // that cleanly on a client in any prior state. What the VT cannot
+        // know, the program is asked to say again: the nudge's SIGWINCH makes
+        // a TUI repaint as ordinary output, which corrects this VT and every
+        // attachment at once. (`mark_vt_stale` remains for the one case that
+        // truly cannot heal — a sidecar left behind by the PTY — where nothing
+        // will ever feed the VT the missing bytes.)
+        session.pty.nudge_repaint();
     }
 
     tokio::spawn(run(
@@ -4281,11 +4289,17 @@ mod tests {
         );
     }
 
-    /// A session handed over with a ring that cannot draw its screen comes back
-    /// with its VT stale, so snapshots fall back to ring replay instead of the
-    /// host asserting a grid it reconstructed from bytes it was told are wrong.
+    /// A session handed over with a ring that cannot draw its screen comes
+    /// back with a *live* VT that answers snapshots. Declaring it stale was
+    /// permanent, and the sentence outlived the crime: the VT eats every byte
+    /// from the replay onward, so within one repaint it describes the real
+    /// screen — while the stale path kept smearing raw ring replays over
+    /// whatever each reattaching client still showed, for the rest of the
+    /// image's life. The screen's unknowable rows are handled by the nudge
+    /// (`a_knowingly_wrong_replay_nudges_the_foreground_to_repaint`), not by
+    /// going dark.
     #[tokio::test]
-    async fn an_unfaithful_ring_comes_back_with_a_vt_that_refuses_snapshots() {
+    async fn an_unfaithful_ring_comes_back_with_a_vt_that_answers_snapshots() {
         let session = attached_session().await;
         session.handle.send(SessionMsg::Viewport {
             id: ClientId::new("writer"),
@@ -4304,32 +4318,54 @@ mod tests {
         let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
             .expect("adopting the carried session");
 
-        // The adopting actor declares its VT unusable rather than answering
-        // snapshots from a screen it reconstructed out of bytes it was told
-        // are wrong.
-        let stale = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // A snapshot-capable viewer gets a real snapshot, not the fallback.
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+        let (reply, answer) = oneshot::channel();
+        adopted.send(SessionMsg::AddClient {
+            id: ClientId::new("viewer"),
+            interactive: true,
+            rows: 40,
+            cols: 120,
+            rendering: true,
+            out: client_tx,
+            backlog: Arc::new(ClientBacklog::new()),
+            snapshot: true,
+            scrollback: false,
+            grid_diff: false,
+            reply,
+        });
+        answer.await.expect("attached to the adopted session");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match events_rx.recv().await {
-                    Ok(Event::VtStale { reason, .. }) => return reason,
-                    Ok(_) => continue,
-                    Err(error) => panic!("event stream ended: {error}"),
+                match client_rx.recv().await {
+                    Some(ClientEvent::Snapshot(_)) => return,
+                    Some(_) => continue,
+                    None => panic!("client stream ended before a snapshot"),
                 }
             }
         })
         .await
-        .expect("the adopted session declared its VT stale");
-        assert!(stale.contains("handoff"), "{stale}");
+        .expect("the adopted session answered a snapshot");
+
+        // And nothing declared the VT stale along the way.
+        while let Ok(event) = events_rx.try_recv() {
+            assert!(
+                !matches!(event, Event::VtStale { .. }),
+                "the adopted session must not declare its VT stale"
+            );
+        }
 
         adopted.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
     }
 
-    /// A client handed an unfaithful ring replay must not be left staring at
-    /// it until the program happens to print. An idle program never does, and
-    /// a viewer at the session's own size gets no resize to force a repaint
-    /// either — so the fallback itself nudges the foreground with the SIGWINCH
-    /// a resize would have delivered, and the repaint arrives as fresh output.
+    /// A screen adopted with an unfaithful ring must not sit wrong until the
+    /// program happens to print. An idle program never does, and a viewer at
+    /// the session's own size gets no resize to force a repaint either — so
+    /// the adoption itself nudges the foreground with the SIGWINCH a resize
+    /// would have delivered, and the repaint arrives as fresh output that
+    /// corrects the VT and every attachment at once.
     #[tokio::test]
     async fn a_knowingly_wrong_replay_nudges_the_foreground_to_repaint() {
         let (handle, _events, _on_exit) = start_session(
@@ -4386,22 +4422,13 @@ mod tests {
         use std::os::fd::IntoRawFd as _;
         carried.info.master_fd = carried.master.into_raw_fd();
         let (on_exit, _on_exit_rx) = mpsc::unbounded_channel();
-        let (events, mut events_rx) = broadcast::channel(64);
+        let (events, events_rx) = broadcast::channel(64);
         let adopted = super::adopt(carried.info, Vec::new(), on_exit, events)
             .expect("adopting the carried session");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                match events_rx.recv().await {
-                    Ok(Event::VtStale { .. }) => return,
-                    Ok(_) => continue,
-                    Err(error) => panic!("event stream ended: {error}"),
-                }
-            }
-        })
-        .await
-        .expect("the adopted session declared its VT stale");
+        drop(events_rx);
 
-        // Attach at the session's own size: no resize fires, so without the
+        // Attach at the session's own size, on the raw plane so the child's
+        // repaint arrives as bytes: no resize fires, so without the adopt-time
         // nudge nothing would ever repaint this screen.
         let (client_tx, mut client_rx) = mpsc::unbounded_channel();
         let (reply, answer) = oneshot::channel();
@@ -4413,7 +4440,7 @@ mod tests {
             rendering: true,
             out: client_tx,
             backlog: Arc::new(ClientBacklog::new()),
-            snapshot: true,
+            snapshot: false,
             scrollback: false,
             grid_diff: false,
             reply,
