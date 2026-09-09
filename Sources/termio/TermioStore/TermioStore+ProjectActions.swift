@@ -301,18 +301,40 @@ extension TermioStore {
                 message: localized("git couldn’t read this project’s worktrees, so “\(displayName)” was not removed.")
             )
         }
-        // git holding no registration ends it here: there is nothing to
-        // deregister, no branch of its recording to tidy, and nothing this
-        // action would touch on disk — the sidebar row is the whole of what is
-        // being removed. So the folder's contents are not consulted and cannot
-        // refuse: whatever is in it stays exactly where it is, and telling a
-        // user to delete a folder full of real work in order to clear a stale
-        // row would be asking for the one thing the removal was never going to
-        // do anyway.
+        // git holds no registration: there is nothing to deregister and no
+        // branch of its recording to tidy. But the row is not free to drop on
+        // that alone. Dropping it closes every session in the worktree, and a
+        // reconcile re-adds any row a live session still points at
+        // (`applyDiscoveredWorktrees`), so a removal that spared the sessions
+        // would simply undo itself — leaving refusal as the only way not to
+        // destroy them.
+        //
+        // So the disk decides here as well, and only the shapes with nothing
+        // left on them let go. A folder still holding files is a checkout whose
+        // parent repo was re-cloned or whose admin directory was lost, running
+        // agents and uncommitted work and all; before this it was silently
+        // closed and dropped on one click.
         guard let record = registrations
             .first(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(path) })
         else {
-            return .letGo(branch: nil, registration: nil)
+            switch WorktreeService.folderEvidence(at: path) {
+            case .gone, .emptyFolder, .occupied:
+                // Nothing to protect, and nothing for git to let go of: the
+                // sidebar row is the whole of what is being removed. The folder
+                // is left alone — with no registration, nothing needs the path
+                // cleared.
+                return .letGo(branch: nil, registration: nil)
+            case .mayHoldWork:
+                return .refuse(
+                    title: localized("Couldn’t inspect worktree"),
+                    message: localized("git no longer tracks “\(displayName)”, and its folder still holds files. Delete the folder to remove the worktree.")
+                )
+            case .unreadable:
+                return .refuse(
+                    title: localized("Couldn’t inspect worktree"),
+                    message: localized("termio couldn’t read “\(displayName)”, so it was not removed.")
+                )
+            }
         }
 
         // Locked first, because it is not a shape of brokenness: git marks a
@@ -402,11 +424,25 @@ extension TermioStore {
     /// Answers whether the path is clear afterwards, so a folder that would not
     /// go is reported as itself rather than as git refusing the worktree.
     private func clearEmptyFolder(at path: String) -> Bool {
-        let dsStore = (path as NSString).appendingPathComponent(".DS_Store")
-        _ = dsStore.withCString { unlink($0) }
-        if path.withCString({ rmdir($0) }) == 0 { return true }
+        // `errno` is captured inside the closure: reading it after
+        // `withCString` returns reads it after that call's own cleanup, which is
+        // not guaranteed to leave it alone, and a folder that was already gone
+        // would then be reported as a folder that refused to go.
+        func remove(_ target: String, _ operation: (UnsafePointer<CChar>) -> Int32) -> Int32 {
+            target.withCString { pointer in operation(pointer) == 0 ? 0 : errno }
+        }
+        // `rmdir` first, and `.DS_Store` only once it is the one thing in the
+        // way. Unlinking up front threw away the user's Finder state for the
+        // folder even when a file had appeared beside it and the removal was
+        // then correctly refused — a side effect of an operation that reports
+        // it did nothing.
+        var failure = remove(path, rmdir)
+        if failure == ENOTEMPTY {
+            _ = remove((path as NSString).appendingPathComponent(".DS_Store"), unlink)
+            failure = remove(path, rmdir)
+        }
         // Already gone is the state this wanted; anything else is a real refusal.
-        return errno == ENOENT
+        return failure == 0 || failure == ENOENT
     }
 
     /// See `WorktreeService.canonicalPath`: git's spelling of a path and the one

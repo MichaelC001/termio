@@ -1343,19 +1343,24 @@ final class TermioStore: ObservableObject {
     /// something actually changed, so a stable repo doesn't churn the persisted tree.
     private func applyDiscoveredWorktrees(_ discovered: [String], to projectID: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
-        let discoveredSet = Set(discovered)
+        // Matched the way the removal matches (`WorktreeService.canonicalPath`),
+        // which resolves symlinks rather than only standardizing. Under a
+        // symlinked ancestor git's spelling never equalled a stored row's, so
+        // this appended a *second* row for a checkout that already had one.
+        let canonical = WorktreeService.canonicalPath
+        let discoveredSet = Set(discovered.map(canonical))
         let existing = projects[index].worktrees
-        let byPath = Dictionary(existing.map { (Self.standardizedPath($0.path), $0) },
+        let byPath = Dictionary(existing.map { (canonical($0.path), $0) },
                                 uniquingKeysWith: { first, _ in first })
         let sessionAnchored = Set(projects[index].sessions.compactMap { $0.worktreePath }
-            .map(Self.standardizedPath))
+            .map(canonical))
 
         // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
-        var rebuilt = discovered.map { byPath[$0] ?? Worktree(path: $0) }
+        var rebuilt = discovered.map { byPath[canonical($0)] ?? Worktree(path: $0) }
         // …then any git-absent entry that still has a session, so it isn't yanked away.
         for worktree in existing {
-            let std = Self.standardizedPath(worktree.path)
-            if !discoveredSet.contains(std), sessionAnchored.contains(std) { rebuilt.append(worktree) }
+            let key = canonical(worktree.path)
+            if !discoveredSet.contains(key), sessionAnchored.contains(key) { rebuilt.append(worktree) }
         }
 
         if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }

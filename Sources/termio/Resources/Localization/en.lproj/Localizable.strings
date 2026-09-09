@@ -1606,6 +1606,8 @@
 	<string>git couldn’t read this project’s worktrees, so “%@” was not removed.</string>
 	<key>git couldn’t remove “%@”.</key>
 	<string>git couldn’t remove “%@”.</string>
+	<key>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
+	<string>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</string>
 	<key>git still lists “%@”, so it was not removed.</key>
 	<string>git still lists “%@”, so it was not removed.</string>
 	<key>issue.state.open</key>

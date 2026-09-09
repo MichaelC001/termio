@@ -1606,6 +1606,8 @@
 	<string>git 无法读取此项目的 worktree，因此未移除“%@”。</string>
 	<key>git couldn’t remove “%@”.</key>
 	<string>git 无法移除“%@”。</string>
+	<key>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
+	<string>git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
 	<key>git still lists “%@”, so it was not removed.</key>
 	<string>git 仍列出“%@”，因此未移除。</string>
 	<key>issue.state.open</key>

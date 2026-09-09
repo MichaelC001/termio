@@ -103,14 +103,21 @@ final class WorktreeRecordTests: XCTestCase {
         try manager.removeItem(at: root.appendingPathComponent("real/wts/w1"))
         XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
 
-        // And with the directories above it gone too, down to the symlink the
-        // spellings differ through. (Deleting what that symlink itself points
-        // at is a different shape: the link dangles, Foundation resolves it no
-        // further, and nothing can tell the two spellings are one path. The
-        // symlinked ancestors this matters for — `/tmp`, `/var`, a linked home
-        // — are not the thing anyone deletes.)
+        // And with the directories above it gone too.
         try manager.removeItem(at: root.appendingPathComponent("real/wts"))
         XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
+
+        // Including when what the symlink points at is itself deleted, so the
+        // link dangles. `resolvingSymlinksInPath` gives up there, which used to
+        // make the row unmatchable against git's record — and an unmatchable row
+        // is the one that gets dropped while git keeps its registration for good.
+        try manager.removeItem(at: root.appendingPathComponent("real"))
+        XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
+
+        // A link pointing at itself terminates rather than spinning.
+        let loop = root.appendingPathComponent("loop")
+        try manager.createSymbolicLink(at: loop, withDestinationURL: loop)
+        XCTAssertFalse(WorktreeService.canonicalPath(loop.appendingPathComponent("w1").path).isEmpty)
 
         // Different worktrees still read as different ones.
         XCTAssertNotEqual(

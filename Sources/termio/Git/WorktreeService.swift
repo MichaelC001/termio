@@ -63,11 +63,30 @@ enum WorktreeService {
     static func canonicalPath(_ path: String) -> String {
         var missing: [String] = []
         var probe = URL(fileURLWithPath: path).standardized
+        var hops = 0
         while !FileManager.default.fileExists(atPath: probe.path) {
+            // A symlink whose target is gone still says where it pointed, and
+            // that is the spelling git recorded. `resolvingSymlinksInPath` gives
+            // up on one, which left a worktree under a symlinked ancestor
+            // unmatchable once that target went — the row and its sessions
+            // dropped while git kept the registration for good. The hop count is
+            // for a link that points at itself.
+            if hops < 32,
+               let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: probe.path) {
+                hops += 1
+                probe = (destination.hasPrefix("/")
+                    ? URL(fileURLWithPath: destination)
+                    : probe.deletingLastPathComponent().appendingPathComponent(destination))
+                    .standardized
+                continue
+            }
             let parent = probe.deletingLastPathComponent().standardized
             // The root resolves to itself; without this a path on no existing
-            // volume at all would walk forever.
-            guard parent.path != probe.path else { return probe.path }
+            // volume at all would walk forever. Breaking rather than returning
+            // keeps the components gathered so far, which a bare return dropped
+            // — collapsing every path to `/`, where any row would match any
+            // record.
+            guard parent.path != probe.path else { break }
             missing.append(probe.lastPathComponent)
             probe = parent
         }

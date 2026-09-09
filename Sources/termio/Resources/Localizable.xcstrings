@@ -8164,6 +8164,16 @@
           }
         }
       }
+    },
+    "git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
