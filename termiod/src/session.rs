@@ -1604,7 +1604,48 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
         // which is right whenever this daemon is on the default path too.
         Err(err) => eprintln!("termiod: could not resolve socket path for session env: {err}"),
     }
+    // The daemon's own directory leads the session's PATH, so every terminal
+    // opened through termio finds the `termio` the deploy loop installed
+    // beside this daemon — with no dotfile written, the same principle as
+    // never overriding `~/.ssh/config` (docker-lessons RFC §1.2). A bare SSH
+    // login outside termio keeps whatever the box's own profile does.
+    if let Some(directory) = own_binary_directory() {
+        let inherited = env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var("PATH").ok());
+        if let Some(path) = path_led_by(&directory, inherited.as_deref()) {
+            env.push(("PATH".to_string(), path));
+        }
+    }
     env
+}
+
+/// The directory this daemon's binary lives in — `~/.local/bin` on a box, the
+/// app bundle's Resources on a Mac — which is where the deploy loop puts the
+/// `termio` that matches this daemon's build.
+fn own_binary_directory() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.display().to_string())
+}
+
+/// `directory` put at the front of `path`, or `None` when there is nothing to
+/// do. Prepended even when the directory already appears further back: an
+/// older `termio` earlier on the PATH would otherwise shadow the one shipped
+/// beside this daemon, which is exactly the skew the same-pass deploy exists
+/// to rule out. No PATH at all is left alone — a PATH invented from one
+/// directory would cost the child every standard tool.
+fn path_led_by(directory: &str, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    if path.is_empty() {
+        return Some(directory.to_string());
+    }
+    if path.split(':').next() == Some(directory) {
+        return None;
+    }
+    Some(format!("{directory}:{path}"))
 }
 
 /// Everything a session actor hands over when its daemon is about to `execve`
@@ -2796,7 +2837,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_owned_env, handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog,
+        daemon_owned_env, handle_msg, path_led_by, should_emit_keyframe, spawn_sidecar, ClientBacklog,
         ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
         SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
     };
@@ -2844,6 +2885,48 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("real")
         );
+    }
+
+    /// §1.2 of the docker-lessons RFC: every session this daemon spawns finds
+    /// the `termio` installed beside it, because the daemon's own directory
+    /// leads the session's PATH — and no dotfile is ever written for it.
+    #[test]
+    fn the_daemons_directory_leads_the_sessions_path() {
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("/usr/bin:/bin")),
+            Some("/home/u/.local/bin:/usr/bin:/bin".to_string())
+        );
+        // Already leading: nothing to change.
+        assert_eq!(path_led_by("/home/u/.local/bin", Some("/home/u/.local/bin:/usr/bin")), None);
+        // Present but shadowed: still prepended, so the client shipped beside
+        // this daemon wins over a stray older install.
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("/opt/stale:/home/u/.local/bin")),
+            Some("/home/u/.local/bin:/opt/stale:/home/u/.local/bin".to_string())
+        );
+        // No PATH to prepend to is not a PATH to invent.
+        assert_eq!(path_led_by("/home/u/.local/bin", None), None);
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("")),
+            Some("/home/u/.local/bin".to_string())
+        );
+    }
+
+    /// A client-supplied PATH is the base, not a casualty: the daemon's entry
+    /// is layered after it and extends it rather than replacing it.
+    #[test]
+    fn a_client_supplied_path_is_extended_not_replaced() {
+        let env = daemon_owned_env(
+            &SessionId::new("s"),
+            vec![("PATH".to_string(), "/only/what/the/client/sent".to_string())],
+        );
+        let path = env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .expect("a PATH entry");
+        assert!(path.ends_with(":/only/what/the/client/sent"), "{path}");
     }
 
     /// The write token as a plain str, so the assertions read as they did
