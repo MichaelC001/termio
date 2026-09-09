@@ -216,8 +216,15 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
                 // that is a note rather than a stop.
                 let report = reconcile(&SshNode::new(host.clone()), Options::default()).await;
                 match report.outcome {
+                    // A client that did not verify leaves the box attachable, so
+                    // it is a note here rather than a refusal — but a note it
+                    // must be: the same outcome exits non-zero for `deploy` and
+                    // is logged as an error by the app, and someone reaching a
+                    // box this way would otherwise get no word that the `termio`
+                    // inside its sessions is broken.
+                    lifecycle::Outcome::Current { client: Some(_), .. }
+                    | lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
                     lifecycle::Outcome::Current { .. } => {}
-                    lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
                     _ => bail!("{}", report.describe()),
                 }
             }
@@ -558,6 +565,18 @@ impl Node for SshNode {
     }
 
     async fn artifact(&self) -> Result<Artifacts> {
+        // `--bin` answers before anything is asked of the host. It is the escape
+        // hatch for a machine `uname -sm` does not map to a target — an armv7
+        // board, a BSD — so making it wait on target detection took the one path
+        // that worked without detection and failed it with "pass --target
+        // explicitly", and charged every other `--bin` deploy a round trip.
+        if let Some(prebuilt) = &self.prebuilt {
+            let ships_client = self.target.as_deref().is_none_or(target_takes_a_client);
+            return Ok(Artifacts {
+                daemon: prebuilt.clone(),
+                client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
+            });
+        }
         let target = match &self.target {
             Some(target) => target.clone(),
             None => {
@@ -569,12 +588,6 @@ impl Node for SshNode {
             }
         };
         let ships_client = target_takes_a_client(&target);
-        if let Some(prebuilt) = &self.prebuilt {
-            return Ok(Artifacts {
-                daemon: prebuilt.clone(),
-                client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
-            });
-        }
         if let Some(path) = shipped_binary(&target) {
             eprintln!("[deploy] using the bundled {target} binaries");
             let daemon = PathBuf::from(path);
@@ -956,6 +969,32 @@ mod tests {
             Some("/usr/local/bin/termio")
         );
         assert_eq!(client_bin_beside("termiod").as_deref(), Some("$HOME/.local/bin/termio"));
+    }
+
+    /// `--bin` answers without asking the host anything. It is the escape hatch
+    /// for a machine whose `uname -sm` maps to no target, so resolving one first
+    /// failed exactly the deploys it exists for.
+    #[tokio::test]
+    async fn a_prebuilt_binary_deploys_without_resolving_a_target() {
+        let mut node = SshNode::new("unrecognized-board".into());
+        node.prebuilt = Some(PathBuf::from("/builds/termiod"));
+        node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
+        // No `run`, so any ssh this reached for would fail the test rather than
+        // quietly cost a round trip.
+        let artifacts = node.artifact().await.expect("a prebuilt needs no target");
+        assert_eq!(artifacts.daemon, PathBuf::from("/builds/termiod"));
+        assert_eq!(artifacts.client, Some(PathBuf::from("/builds/termio")));
+    }
+
+    /// …and an explicit `--target` still decides whether the client goes.
+    #[tokio::test]
+    async fn a_prebuilt_binary_sends_no_client_to_a_named_mac() {
+        let mut node = SshNode::new("mac".into());
+        node.prebuilt = Some(PathBuf::from("/builds/termiod"));
+        node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
+        node.target = Some("aarch64-apple-darwin".into());
+        let artifacts = node.artifact().await.expect("a prebuilt needs no uname");
+        assert_eq!(artifacts.client, None);
     }
 
     /// A Linux box gets its client from the deploy; a Mac never does, whichever
