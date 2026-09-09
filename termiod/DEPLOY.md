@@ -107,8 +107,11 @@ rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 
 `termio remote deploy <host>` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
-otherwise — and installs. The `termio` client installs beside the daemon in the
-same pass, so a box's client and daemon are always the same build. Manual build:
+otherwise — and installs. On a Linux box the `termio` client installs beside the
+daemon in the same pass, so a box's client and daemon are always the same build.
+A Mac is sent no client: its own app bundle links one into `/usr/local/bin` and
+keeps it current, and a second copy in `~/.local/bin` would only shadow it.
+Manual build:
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-musl
@@ -158,13 +161,15 @@ does not hold it up. `--force` overrides.
 The version compared is the app's build stamp (`0.44.0+1533`), carried by the
 daemon at `hello`; a box a newer app set up is left alone.
 
-Install path is `~/.local/bin/termiod`, with the `termio` client beside it.
-Override with `TERMIOD_REMOTE_BIN` (e.g. `/usr/local/bin/termiod`) on the
-client for both deploy and attach; the client's path moves with it, unless the
-override also renames the daemon, which deploys the daemon alone rather than
+Install path is `~/.local/bin/termiod`, with the `termio` client beside it on a
+Linux box. Override with `TERMIOD_REMOTE_BIN` (e.g. `/usr/local/bin/termiod`) on
+the client for both deploy and attach; the client's path moves with it, unless
+the override also renames the daemon, which deploys the daemon alone rather than
 renaming the box's own client aside. Verification covers both: the daemon must
-answer `hello` as the new build, and the installed client must answer
-`--version` with the same stamp.
+answer `hello` as the new build, and an installed client must answer `--version`
+with at least that stamp. A client that fails leaves the machine running and
+reported as current with the trouble named — nothing on the box is stopped for
+it, and the next deploy installs the client again.
 
 Sessions find the client without any dotfile write: termiod keeps a directory
 holding one symlink to the paired `termio` and leads every session's `PATH`

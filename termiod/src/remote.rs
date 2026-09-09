@@ -558,12 +558,6 @@ impl Node for SshNode {
     }
 
     async fn artifact(&self) -> Result<Artifacts> {
-        if let Some(prebuilt) = &self.prebuilt {
-            return Ok(Artifacts {
-                daemon: prebuilt.clone(),
-                client: self.prebuilt_client.clone(),
-            });
-        }
         let target = match &self.target {
             Some(target) => target.clone(),
             None => {
@@ -574,10 +568,20 @@ impl Node for SshNode {
                 target_for_uname(uname.stdout.trim())?
             }
         };
+        let ships_client = target_takes_a_client(&target);
+        if let Some(prebuilt) = &self.prebuilt {
+            return Ok(Artifacts {
+                daemon: prebuilt.clone(),
+                client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
+            });
+        }
         if let Some(path) = shipped_binary(&target) {
             eprintln!("[deploy] using the bundled {target} binaries");
             let daemon = PathBuf::from(path);
-            let client = shipped_client(&target, &daemon)?;
+            let client = match ships_client {
+                true => Some(shipped_client(&target, &daemon)?),
+                false => None,
+            };
             return Ok(Artifacts { daemon, client });
         }
         tokio::task::spawn_blocking(move || cross_compile(&target)).await?
@@ -679,37 +683,31 @@ fn shipped_binary(target: &str) -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
-/// The `termio` client that ships beside this executable for `target`,
-/// mirroring [`shipped_binary`]. For a Mac it is the client in the daemon's
-/// own directory — the app bundle's Resources, or a cargo target directory; a
-/// dev bundle names its copy `termio-dev`, and either lands on the box as
-/// `termio`, because argv[0] is what binds a channel and a box has only the
-/// one.
+/// Whether a machine of this target takes a `termio` client from a deploy.
 ///
-/// A missing Linux slice is an error: those exist only because
-/// `scripts/build-app.sh` put them in a bundle's Resources, so absence means a
-/// broken bundle, and shipping half a build from one would recreate the skew
-/// §1.2 rules out. A missing Mac client is not, because `shipped_binary` hands
-/// back `current_exe` for every Darwin target — including a daemon run straight
-/// out of a checkout, where `cargo build --bin termiod` legitimately produced
-/// no client. Failing there would turn a Mac→Mac deploy that worked before this
-/// pass into one that cannot be done at all; it degrades to daemon-only with a
-/// note, exactly as the `--bin` override does.
-fn shipped_client(target: &str, daemon: &Path) -> Result<Option<PathBuf>> {
+/// Every Linux box does: nothing else puts one there. No Mac does. A Mac owns
+/// its client already — its app bundle links one into `/usr/local/bin` — and
+/// `session::client_path_directory` returns `None` on macOS, so a copy planted
+/// in `~/.local/bin` would never be reached deliberately. It would only shadow
+/// the app's own wherever `~/.local/bin` comes first on `PATH`, frozen at
+/// whatever build this deploy left while that Mac's own client moves on with
+/// its app.
+fn target_takes_a_client(target: &str) -> bool {
+    !target.contains("apple-darwin")
+}
+
+/// The `termio` client that ships beside this executable for `target`,
+/// mirroring [`shipped_binary`]. Only ever asked for a target that takes one,
+/// which is every Linux box and no Mac (see [`SshNode::artifact`]).
+///
+/// Missing is an error rather than a smaller deploy: these slices exist only
+/// because `scripts/build-app.sh` put them in a bundle's Resources, so absence
+/// means a broken bundle, and shipping half a build from one would recreate the
+/// skew §1.2 rules out.
+fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
     let directory = daemon
         .parent()
         .with_context(|| format!("{} has no directory", daemon.display()))?;
-    if target.contains("apple-darwin") {
-        let candidates = [directory.join("termio"), directory.join("termio-dev")];
-        let found = candidates.iter().find(|candidate| candidate.is_file()).cloned();
-        if found.is_none() {
-            eprintln!(
-                "[deploy] no termio client beside {}; deploying the daemon only",
-                daemon.display()
-            );
-        }
-        return Ok(found);
-    }
     let candidate = directory.join(format!("termio-{target}"));
     if !candidate.is_file() {
         bail!(
@@ -717,7 +715,7 @@ fn shipped_client(target: &str, daemon: &Path) -> Result<Option<PathBuf>> {
             candidate.display()
         );
     }
-    Ok(Some(candidate))
+    Ok(candidate)
 }
 
 /// The client that pairs with a developer-supplied `--bin` daemon: the
@@ -958,6 +956,16 @@ mod tests {
             Some("/usr/local/bin/termio")
         );
         assert_eq!(client_bin_beside("termiod").as_deref(), Some("$HOME/.local/bin/termio"));
+    }
+
+    /// A Linux box gets its client from the deploy; a Mac never does, whichever
+    /// way its target was arrived at.
+    #[test]
+    fn only_a_box_that_owns_no_client_is_sent_one() {
+        assert!(target_takes_a_client("x86_64-unknown-linux-musl"));
+        assert!(target_takes_a_client("aarch64-unknown-linux-musl"));
+        assert!(!target_takes_a_client("aarch64-apple-darwin"));
+        assert!(!target_takes_a_client("x86_64-apple-darwin"));
     }
 
     /// A daemon the override renamed pairs with no client: deploying one would

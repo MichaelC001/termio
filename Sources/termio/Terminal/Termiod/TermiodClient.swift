@@ -1030,6 +1030,12 @@ extension Termiod {
         let busy: [BusySession]?
         let message: String?
         let rolledBack: Bool?
+        /// What went wrong with the `termio` client the deploy installs beside
+        /// the daemon, when something did. It rides the `current` state because
+        /// the daemon is the build wanted and the machine is usable — the next
+        /// deploy installs the client again — so this is a note about a machine
+        /// that works, never a reason to refuse it.
+        let client: String?
 
         static func decode(_ data: Data) throws -> LifecycleReport {
             let decoder = JSONDecoder()

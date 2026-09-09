@@ -1405,6 +1405,17 @@ extension TermioStore {
                     state: .failed,
                     message: "termiod on \(host) answered without saying which machine it is."))
             }
+            // A client that did not verify does not make the machine unusable:
+            // its daemon is the build wanted and every session on it works, so
+            // the machine is adopted and the trouble is logged. Refusing here
+            // would block a healthy box over the CLI inside its sessions, which
+            // the next deploy installs again anyway.
+            if let clientTrouble = report.client {
+                Log.termiod.error("""
+                termiod on \(host, privacy: .public) is current, but its termio client \
+                is not: \(clientTrouble, privacy: .public)
+                """)
+            }
             return .success(TermiodDevice(
                 id: hostID, daemonVersion: version, routes: [.ssh(host)],
                 negotiatedProtocol: report.proto, lastSeen: Date()))
@@ -1515,6 +1526,10 @@ extension TermioStore {
             // PTY carried. Nothing was at risk, so nobody is asked.
             Log.termiod.info(
                 "this Mac's termiod is current at \(report.version ?? desired, privacy: .public)")
+            if let clientTrouble = report.client {
+                Log.termiod.error(
+                    "this Mac's termio client is not: \(clientTrouble, privacy: .public)")
+            }
         case .staged:
             Log.termiod.info("""
             staged termiod \(report.version ?? desired, privacy: .public) for this Mac's daemon; \
