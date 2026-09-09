@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.52.1",
+    date: "2026-09-09",
+    title: "Updates stop garbling running sessions",
+    changes: {
+      fixed: [
+        "Updating Termio no longer leaves running sessions with garbled screens on the next reattach — a session carried across an update repaints cleanly the moment a phone or a Mac window opens it again.",
+        "Setting up a remote device records what the deploy just observed, so the next connection doesn't re-ask the machine what it already answered.",
+      ],
+    },
+  },
+  {
     version: "0.52.0",
     date: "2026-09-08",
     title: "The phone stops fighting over the width",
