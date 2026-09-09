@@ -18,7 +18,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 
@@ -987,11 +987,13 @@ pub trait Node {
         None
     }
 
-    /// Where this control plane may note that the machine would not take a
-    /// build's client, so a repair that can only fail is not retried on every
-    /// attach. Stamped with the build that failed, so a later build gets its own
-    /// chance and a machine that starts accepting one is forgotten as soon as it
-    /// does.
+    /// Where this control plane may note that a client repair did not take, so
+    /// the next one waits instead of going again on the next attach. The wait
+    /// grows with each failure and stops at a cap, so nothing is ever written
+    /// off: a short upload, a host that dropped and a machine that refuses the
+    /// file all get another attempt, which is why none of them has to be told
+    /// apart from the others. Stamped with the build, so other bytes get their
+    /// own first chance, and forgotten as soon as a client installs.
     ///
     /// `None` turns the memory off, which is right for a node that installs no
     /// client at all — and keeps a node that is not a real machine from writing
@@ -1213,7 +1215,7 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // What this pass will have to say about the client even when it stages
     // nothing for it. A note that stops a doomed repair may not also stop the
     // box from reporting the skew it is carrying.
-    let mut client_skew: Option<String> = None;
+    let mut client_skew: Option<(String, bool)> = None;
     let mut observed = observe(node).await?;
     let plan = match &observed {
         Observed::Absent | Observed::OldBinary => Some(StagePlan::Full),
@@ -1246,26 +1248,32 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                         .and_then(|client| Version::parse(&client.version))
                         .is_some_and(|have| have >= want);
                 if client_current {
-                    // The note is about a client this machine would not take. It
-                    // is plainly obsolete once the machine has one.
-                    remember_client_repair(repair_note.as_deref(), None);
+                    // A delayed repair is plainly moot once the machine has the
+                    // client it was for.
+                    clear_client_repair(repair_note.as_deref());
                     None
-                } else if client_repair_refused(repair_note.as_deref(), desired) {
-                    // Installing this build's client here already failed for a
-                    // reason of the machine's own, so it is not attempted again
-                    // — but the machine is carrying a client that is not this
-                    // build, and it says so on every pass until that changes.
-                    // Silence here would report the exact skew §1.2 exists to
-                    // prevent as a clean bill of health, for good.
-                    client_skew = Some(format!(
-                        "the client on {label} is {}, not {desired}, and installing this build's \
-                         here already failed; a later build installs one again",
-                        status
-                            .client
-                            .as_ref()
-                            .map(|client| client.version.as_str())
-                            .filter(|version| !version.is_empty())
-                            .unwrap_or("missing"),
+                } else if let Some(wait) =
+                    client_repair_waiting(repair_note.as_deref(), desired)
+                {
+                    // Installing this build's client here failed recently, so it
+                    // waits rather than going again on this attach — but the
+                    // machine is carrying a client that is not this build, and it
+                    // says so every pass until that changes. Silence here would
+                    // report the exact skew §1.2 exists to prevent as a clean
+                    // bill of health.
+                    client_skew = Some((
+                        format!(
+                            "the client on {label} is {}, not {desired}; installing this build's \
+                             here failed, and it is tried again in {}",
+                            status
+                                .client
+                                .as_ref()
+                                .map(|client| client.version.as_str())
+                                .filter(|version| !version.is_empty())
+                                .unwrap_or("missing"),
+                            describe_wait(wait),
+                        ),
+                        true,
                     ));
                     None
                 } else {
@@ -1289,15 +1297,18 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             // …") over the CLI inside its sessions.
             Err(error) if plan == StagePlan::ClientOnly => {
                 eprintln!("[deploy] {label}'s client could not be installed ({error:#}); leaving it as it is");
-                // Only a refusal by the machine is remembered. ssh dropping for a
-                // second says nothing about whether this client can live there,
-                // and writing it down would disable client installs on that box
-                // until the next build — the same rule the `Unknown` verdict
-                // keeps below.
-                if error.downcast_ref::<Unreachable>().is_none() {
-                    remember_client_repair(repair_note.as_deref(), Some(desired));
-                }
-                client_skew = Some(format!("{error:#}"));
+                // Put off rather than written off, and with no need to work out
+                // which kind of failure this was: a host that dropped, a control
+                // plane without the slice and a machine that refuses the file all
+                // want another attempt, just not on the next attach. And none of
+                // them establishes anything about the *binary*, which is what
+                // calling it the client's fault would claim — this pass never got
+                // to run it.
+                let wait = delay_client_repair(repair_note.as_deref(), desired);
+                client_skew = Some((
+                    format!("{error:#}; tried again in {}", describe_wait(wait)),
+                    false,
+                ));
                 Staged::default()
             }
             Err(error) => return Err(error),
@@ -1458,10 +1469,10 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // that reading is an execution of the same binary, not a stat — so asking
     // again would spend an ssh round trip, before every attach, to learn what
     // the machine has just said.
-    let mut client_trouble = client_skew.map(|note| (note, true));
+    let mut client_trouble = client_skew;
     if staged.client {
         match verify_client(node, want).await {
-            ClientVerdict::Good => remember_client_repair(repair_note.as_deref(), None),
+            ClientVerdict::Good => clear_client_repair(repair_note.as_deref()),
             // Undo what this run did, which for a client that failed to answer
             // is the client. A Full stage therefore leaves a verified new daemon
             // beside no client rather than beside a broken one: a skew, but a
@@ -1469,19 +1480,20 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             // no session pays for it.
             ClientVerdict::Bad(message) => {
                 let put_back = roll_back_client(node, staged.client_replaced).await.is_ok();
-                // Written down so the next pass does not spend another upload
-                // learning the same thing. A machine that cannot take this build's
-                // client — a noexec mount, a denied exec, a full disk — was
-                // otherwise restaged on every attach, for good.
-                remember_client_repair(repair_note.as_deref(), Some(desired));
+                // Put off, not written off. The copy that answered wrongly may
+                // simply have arrived short — the very thing this probe exists to
+                // catch — and sending the bytes again is what fixes that, so the
+                // next attempt is delayed rather than abandoned.
+                let wait = delay_client_repair(repair_note.as_deref(), desired);
                 client_trouble = Some((
                     format!(
-                        "{message}{}",
+                        "{message}{}; installing it again in {}",
                         if put_back {
-                            "; the previous client is back in place, and a later build installs one again"
+                            "; the previous client is back in place"
                         } else {
-                            "; it could not be put back, and a later build installs one again"
-                        }
+                            "; it could not be put back"
+                        },
+                        describe_wait(wait),
                     ),
                     true,
                 ));
@@ -1520,27 +1532,89 @@ enum StagePlan {
     ClientOnly,
 }
 
-/// Whether this control plane already found that the machine will not take the
-/// client of build `desired`.
-fn client_repair_refused(note: Option<&Path>, desired: &str) -> bool {
-    note.and_then(|path| std::fs::read_to_string(path).ok())
-        .is_some_and(|stamp| stamp.trim() == desired)
+/// How long a client repair waits before it is tried again, and the longest that
+/// wait grows to.
+///
+/// It is a wait rather than a refusal because a repair that did not take says
+/// almost nothing about whether the next one will: a short upload, a host that
+/// dropped, a control plane without the slice, a disk that was full an hour ago.
+/// Those all want another attempt, just not on every attach. The first minute
+/// costs a blip nothing, and the cap means a machine that truly cannot take the
+/// client spends one upload every few hours instead of one each time someone
+/// reaches it.
+const CLIENT_REPAIR_WAIT: Duration = Duration::from_secs(60);
+const CLIENT_REPAIR_WAIT_CAP: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// What a note holds: the build whose client would not install, how many times
+/// it has been tried, and when it may be tried again.
+struct ClientRepairWait {
+    build: String,
+    attempts: u32,
+    after: SystemTime,
 }
 
-/// Write down that `desired`'s client would not install here, or forget it
-/// (`None`) because one just did.
-fn remember_client_repair(note: Option<&Path>, desired: Option<&str>) {
-    let Some(path) = note else { return };
-    match desired {
-        Some(stamp) => {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, stamp);
+/// How much longer a client repair for `desired` should be left alone, or `None`
+/// when it is due — including because nothing is remembered, or because what is
+/// remembered is about another build and this one has not been tried yet.
+fn client_repair_waiting(note: Option<&Path>, desired: &str) -> Option<Duration> {
+    let waiting = read_client_repair(note?)?;
+    if waiting.build != desired {
+        return None;
+    }
+    waiting.after.duration_since(SystemTime::now()).ok()
+}
+
+fn read_client_repair(path: &Path) -> Option<ClientRepairWait> {
+    let written = std::fs::read_to_string(path).ok()?;
+    let mut fields = written.split_whitespace();
+    let build = fields.next()?.to_string();
+    let attempts = fields.next()?.parse().ok()?;
+    let seconds: u64 = fields.next()?.parse().ok()?;
+    Some(ClientRepairWait {
+        build,
+        attempts,
+        after: SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+    })
+}
+
+/// Put a client repair for `desired` off for a while, longer each time it fails.
+fn delay_client_repair(note: Option<&Path>, desired: &str) -> Duration {
+    let attempts = note
+        .and_then(read_client_repair)
+        .filter(|waiting| waiting.build == desired)
+        .map_or(0, |waiting| waiting.attempts)
+        .saturating_add(1);
+    let wait = CLIENT_REPAIR_WAIT
+        .saturating_mul(1u32 << attempts.saturating_sub(1).min(16))
+        .min(CLIENT_REPAIR_WAIT_CAP);
+    if let Some(path) = note {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        None => {
-            let _ = std::fs::remove_file(path);
-        }
+        let due = SystemTime::now() + wait;
+        let seconds = due
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let _ = std::fs::write(path, format!("{desired} {attempts} {seconds}"));
+    }
+    wait
+}
+
+/// Forget a delayed repair, because one just installed.
+fn clear_client_repair(note: Option<&Path>) {
+    if let Some(path) = note {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A wait, for a sentence a person reads.
+fn describe_wait(wait: Duration) -> String {
+    let minutes = wait.as_secs() / 60;
+    match minutes {
+        0 => "shortly".to_string(),
+        1 => "a minute".to_string(),
+        2..=90 => format!("{minutes} minutes"),
+        _ => format!("{} hours", (minutes + 30) / 60),
     }
 }
 
@@ -3147,12 +3221,51 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
     }
 
-    /// Only the machine refusing the client is remembered. ssh dropping for a
-    /// second says nothing about whether this client can live there, and writing
-    /// it down would disable client installs on that box until the next build —
-    /// the same rule the `Unknown` verdict keeps for the probe.
+    /// The wait grows each time and stops growing at the cap, and a due wait is
+    /// no wait at all. Nothing is remembered forever: a repair that failed for
+    /// any reason — a short upload, a host that dropped, a control plane without
+    /// the slice — is always tried again, which is why none of those has to be
+    /// told apart from a machine that truly cannot take the client.
+    #[test]
+    fn a_failed_repair_waits_longer_each_time_and_never_stops_being_retried() {
+        let note = std::path::PathBuf::from(format!(
+            "/tmp/termiod-repair-{}-backoff",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&note);
+
+        // Nothing remembered is nothing to wait for.
+        assert_eq!(client_repair_waiting(Some(&note), WANT), None);
+
+        let first = delay_client_repair(Some(&note), WANT);
+        assert_eq!(first, CLIENT_REPAIR_WAIT);
+        let second = delay_client_repair(Some(&note), WANT);
+        assert!(second > first, "{second:?} should outgrow {first:?}");
+
+        // It is a wait, and a short one: the box is tried again.
+        let waiting = client_repair_waiting(Some(&note), WANT).expect("a wait");
+        assert!(waiting <= second);
+
+        // Growing stops somewhere, so it never becomes a refusal in disguise.
+        let mut wait = second;
+        for _ in 0..32 {
+            wait = delay_client_repair(Some(&note), WANT);
+        }
+        assert_eq!(wait, CLIENT_REPAIR_WAIT_CAP);
+
+        // Another build's client is other bytes, and gets its own first chance.
+        assert_eq!(client_repair_waiting(Some(&note), "0.45.0+1700"), None);
+        // And a client that installs forgets the whole thing.
+        clear_client_repair(Some(&note));
+        assert_eq!(client_repair_waiting(Some(&note), WANT), None);
+    }
+
+    /// A repair that did not take is put off, never written off — and a failure
+    /// that never ran the binary is not reported as the binary's fault. ssh
+    /// dropping for a second says nothing about whether this client can live on
+    /// that box, so it costs a short wait and nothing else.
     #[tokio::test]
-    async fn a_dropped_connection_does_not_disable_the_client_on_a_box() {
+    async fn a_dropped_connection_only_delays_the_next_client_repair() {
         let note = std::path::PathBuf::from(format!(
             "/tmp/termiod-repair-{}-dropped",
             std::process::id()
@@ -3166,20 +3279,25 @@ mod tests {
         node.unreachable_put = true;
         let report = reconcile(&node, WANT, Options::default()).await;
 
-        // Usable, said out loud, and still worth trying again next time.
+        // Usable, said out loud, and not blamed on a binary nothing ran.
         match &report.outcome {
-            Outcome::Current { client: Some(_), .. } => {}
+            Outcome::Current { client: Some(_), client_failed, .. } => {
+                assert!(!client_failed, "{report:?}");
+            }
             other => panic!("expected current with a client note, got {other:?}"),
         }
-        assert!(!note.exists(), "a transport failure is not a verdict on the client");
+        assert_eq!(report.exit_code(), 0, "a dropped connection is not a failed deploy");
+        // Put off by the first wait, not abandoned: the same build is tried again.
+        let waiting = client_repair_waiting(Some(&note), WANT).expect("a wait");
+        assert!(waiting <= CLIENT_REPAIR_WAIT, "{waiting:?}");
         let _ = std::fs::remove_file(&note);
     }
 
-    /// And it is remembered, so the next attach does not spend another upload
+    /// And it is put off, so the next attach does not spend another upload
     /// learning the same thing. A machine that can never take this build's
     /// client was otherwise restaged on every single attach, for good.
     #[tokio::test]
-    async fn a_refused_client_repair_is_not_attempted_again_for_the_same_build() {
+    async fn a_failed_client_repair_is_not_attempted_again_right_away() {
         let note = std::path::PathBuf::from(format!(
             "/tmp/termiod-repair-{}-{}",
             std::process::id(),
@@ -3218,7 +3336,8 @@ mod tests {
         assert_eq!(report.exit_code(), 1, "a skewed box is a failed deploy");
         assert!(again.puts.borrow().is_empty(), "{:?}", again.puts.borrow());
 
-        // A later build is a fresh chance, so the note does not apply to it.
+        // A later build is a fresh chance: the wait was about the bytes that
+        // failed, and these are different ones.
         let mut newer = FakeNode::new(
             vec![
                 ok(&status_json_with_client("0.45.0+1700", None, Some("0.45.0+1700"), true, Vec::new())),
