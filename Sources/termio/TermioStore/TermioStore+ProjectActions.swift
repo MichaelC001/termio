@@ -180,7 +180,11 @@ extension TermioStore {
     private struct StaleRegistration {
         /// git's own spelling of the path, which is what git must be handed.
         let path: String
-        let clearFolderFirst: Bool
+        /// An empty directory is at the path, so clearing it is authorized if
+        /// git refuses to deregister the worktree while it is there. The
+        /// authorization is the point: nothing may delete a folder the decision
+        /// did not find empty.
+        let mayClearFolder: Bool
     }
 
     /// Removes a clean linked checkout, then drops its container and matching flat
@@ -219,25 +223,13 @@ extension TermioStore {
                 // can differ through a symlinked ancestor, and git refuses an
                 // argument it cannot realpath — "is not a working tree" for a
                 // removal that succeeds when handed its own spelling.
-                if registration.clearFolderFirst {
-                    // Reported on its own, before anything is dropped: git will
-                    // refuse to deregister a worktree whose path still exists,
-                    // so "git still lists it" below would blame git for a folder
-                    // that could not be cleared.
-                    guard clearEmptyFolder(at: worktree.path) else {
-                        presentWorktreeFailure(
-                            title: localized("Couldn’t remove worktree"),
-                            message: localized("termio couldn’t remove the empty folder at “\(displayName)”, so the worktree was not removed.")
-                        )
-                        return
-                    }
-                }
-                // With the path cleared, git's own *targeted* remove applies: it
-                // deregisters this worktree and nothing else. `git worktree
-                // prune` is never run — it is repo-wide, so it would take every
-                // other worktree whose folder is missing with it, including ones
+                //
+                // git's own *targeted* remove does the deregistering: it takes
+                // this worktree and nothing else. `git worktree prune` is never
+                // run here — it is repo-wide, so it would take every other
+                // worktree whose folder is missing with it, including ones
                 // holding work this action was never pointed at.
-                guard runGit(["worktree", "remove", registration.path], in: repository) != nil else {
+                guard deregister(registration, at: worktree.path, in: repository) else {
                     presentWorktreeFailure(
                         title: localized("Couldn’t remove worktree"),
                         message: localized("git still lists “\(displayName)”, so it was not removed.")
@@ -316,8 +308,13 @@ extension TermioStore {
             }
             return decisionWithoutRegistration(for: path, named: displayName)
         }
+        // Resolved once, not once per registration: every call walks ancestors
+        // with `fileExists` and `destinationOfSymbolicLink`, on the main actor
+        // while the click waits, and a repo with many worktrees on a slow mount
+        // paid that twice over for each of them.
+        let wanted = canonicalWorktreePath(path)
         guard let record = registrations
-            .first(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(path) })
+            .first(where: { canonicalWorktreePath($0.path) == wanted })
         else {
             return decisionWithoutRegistration(for: path, named: displayName)
         }
@@ -360,12 +357,12 @@ extension TermioStore {
         case .gone:
             return .letGo(
                 branch: record.branch,
-                registration: StaleRegistration(path: record.path, clearFolderFirst: false)
+                registration: StaleRegistration(path: record.path, mayClearFolder: false)
             )
         case .emptyFolder:
             return .letGo(
                 branch: record.branch,
-                registration: StaleRegistration(path: record.path, clearFolderFirst: true)
+                registration: StaleRegistration(path: record.path, mayClearFolder: true)
             )
         case .occupied:
             // git refuses to deregister a worktree whose path exists without a
@@ -432,6 +429,31 @@ extension TermioStore {
                 message: localized("termio couldn’t read “\(displayName)”, so it was not removed.")
             )
         }
+    }
+
+    /// Drop git's registration for a checkout that is no longer there, and
+    /// answer whether it is gone.
+    ///
+    /// The empty folder is cleared only when git has *refused* over it, and is
+    /// put back when git then refuses anyway — so a removal that reports nothing
+    /// happened really did leave the path as it found it. Deleting first and
+    /// reporting afterwards is the shape that kept coming back: git refuses while
+    /// the path exists, so the clearing is needed, but doing it up front meant
+    /// any later refusal — a concurrent git holding `.git/worktrees`, a
+    /// read-only repo — told the user nothing had happened while their folder was
+    /// already deleted. The order here cannot say that: either the path is gone
+    /// and the registration with it, or both are as they were.
+    private func deregister(
+        _ registration: StaleRegistration, at path: String, in repository: String
+    ) -> Bool {
+        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return true }
+        // A remove that refuses while the path still exists touches nothing, so
+        // there is nothing to undo before trying the one thing that can help.
+        guard registration.mayClearFolder, clearEmptyFolder(at: path) else { return false }
+        if runGit(["worktree", "remove", registration.path], in: repository) != nil { return true }
+        try? FileManager.default.createDirectory(
+            atPath: path, withIntermediateDirectories: false)
+        return false
     }
 
     /// Remove the empty folder a checkout left behind, so git's targeted remove

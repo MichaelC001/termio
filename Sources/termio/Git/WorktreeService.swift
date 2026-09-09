@@ -141,25 +141,50 @@ enum WorktreeService {
         return entries.contains { $0 != ".DS_Store" } ? .mayHoldWork : .emptyFolder
     }
 
-    /// Whether `path` names a volume that is not mounted right now.
+    /// Whether `path` is absent because what would hold it is not mounted.
     ///
-    /// macOS mounts what a person plugs in or connects to under `/Volumes`, so a
-    /// path there whose volume directory is absent is an ejected drive or a
-    /// dropped share, not a deleted checkout. That is the case worth telling
-    /// apart: everything on such a volume answers "no such file", and letting go
-    /// of a worktree on that evidence deregisters a checkout that is still on
+    /// That is the case worth telling apart from a deleted checkout: everything
+    /// on an ejected drive or a dropped share answers "no such file", and letting
+    /// go of a worktree on that evidence deregisters a checkout still sitting on
     /// the drive, uncommitted work and all.
     ///
-    /// It reads only the mount point, so a volume left mounted with the checkout
-    /// genuinely deleted still answers `.gone`, and a share mounted somewhere
-    /// other than `/Volumes` is not covered — `git worktree lock` is git's own
-    /// answer for those, and the removal honors it.
+    /// It asks where the path *stops* existing. A mount that is gone leaves its
+    /// mount point gone with it, so the deepest directory still there is the one
+    /// that was holding it — and two kinds of directory hold mounts: `/Volumes`,
+    /// which is where macOS puts what a person plugs in or connects to, and an
+    /// autofs trigger such as `/net`, which mounts on demand and reports its own
+    /// filesystem type. Neither test fires for a checkout deleted from a volume
+    /// that is still mounted: there the deepest existing directory is inside that
+    /// volume, not the container holding it.
+    ///
+    /// A share the user mounts somewhere of their own — `~/mnt/work` — cannot be
+    /// told from a deleted directory once it is unmounted, because nothing on
+    /// disk records that a mount belonged there. `git worktree lock` is git's own
+    /// answer for that, and the removal honors it.
     private static func volumeIsMissing(for path: String) -> Bool {
-        let components = URL(fileURLWithPath: path).standardized.pathComponents
-        // ["/", "Volumes", "<name>", …]
-        guard components.count > 2, components[1] == "Volumes" else { return false }
-        let mountPoint = "/\(components[1])/\(components[2])"
-        return !FileManager.default.fileExists(atPath: mountPoint)
+        guard let ancestor = deepestExistingAncestor(of: path) else { return false }
+        return ancestor == "/Volumes" || filesystemType(at: ancestor) == "autofs"
+    }
+
+    /// The deepest directory on `path` that exists, or `nil` when `path` itself
+    /// does — the caller only asks about paths that are absent.
+    private static func deepestExistingAncestor(of path: String) -> String? {
+        var probe = URL(fileURLWithPath: path).standardized
+        while !FileManager.default.fileExists(atPath: probe.path) {
+            let parent = probe.deletingLastPathComponent().standardized
+            guard parent.path != probe.path else { return nil }
+            probe = parent
+        }
+        return probe.path
+    }
+
+    /// The filesystem mounted at `path`, as the kernel names it.
+    private static func filesystemType(at path: String) -> String? {
+        var info = statfs()
+        guard statfs(path, &info) == 0 else { return nil }
+        return withUnsafeBytes(of: info.f_fstypename) { raw in
+            raw.bindMemory(to: CChar.self).baseAddress.map { String(cString: $0) }
+        }
     }
 
     /// What a reconcile pass needs to merge git's worktrees into a project's,
@@ -193,6 +218,7 @@ enum WorktreeService {
     static func reconcile(in repoRoot: String, against known: [String]) async -> Reconcile? {
         await offMain {
             guard let all = records(in: repoRoot) else { return nil }
+            sweepVanishedWorktrees(all, in: repoRoot)
             let discovered = all.dropFirst()                            // primary checkout
                 .filter { !$0.bare && !$0.prunable }
                 .compactMap { record -> String? in
@@ -206,6 +232,32 @@ enum WorktreeService {
                 canonical[path] = canonicalPath(path)
             }
             return Reconcile(discovered: discovered, canonical: canonical)
+        }
+    }
+
+    /// Deregister the worktrees whose folders are simply gone.
+    ///
+    /// These rows leave the sidebar on the next pass — `discovered` filters
+    /// `prunable` out — so without this nothing could ever reach them again:
+    /// the registration and its branch stayed in the repo for good, and a later
+    /// `git worktree add` at the same path was refused as already registered.
+    /// A successful removal used to sweep them as a side effect, by running
+    /// `git worktree prune` across the whole repo. That was the wrong tool —
+    /// it also deregistered worktrees holding work nobody had inspected — but
+    /// dropping it left the job undone.
+    ///
+    /// So each one is removed by name, and only where there is nothing to lose:
+    /// `.gone` is the path not being there at all, which is the one shape
+    /// `git worktree remove` settles without touching a file. A folder that
+    /// still holds anything, one this cannot read, one on a volume that is not
+    /// mounted, and one git is holding with `lock` are all left exactly as they
+    /// are for the user's own Remove to decide on. Branches are left alone too:
+    /// deleting a ref is not something a pass nobody asked for should do, and
+    /// the sweep this replaces never did either.
+    private static func sweepVanishedWorktrees(_ records: [Record], in repoRoot: String) {
+        for record in records.dropFirst() where record.prunable && !record.locked {
+            guard folderEvidence(at: record.path) == .gone else { continue }
+            _ = run(["worktree", "remove", record.path], in: repoRoot)
         }
     }
 
