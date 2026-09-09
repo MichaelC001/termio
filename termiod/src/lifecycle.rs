@@ -416,21 +416,7 @@ pub async fn status() -> Result<NodeStatus> {
 /// itself, and a wedged client must not turn it into a hang.
 async fn client_beside_this_binary() -> Option<BinaryStatus> {
     let candidate = paired_client()?;
-    let answered = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::process::Command::new(&candidate)
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
-            .ok()
-    })
-    .await
-    .ok()
-    .flatten();
-    let stamp = answered
-        .filter(|output| output.status.success())
-        .and_then(|output| version_stamp(&String::from_utf8_lossy(&output.stdout)));
+    let (_, stamp) = binary_version(&candidate).await;
     Some(BinaryStatus {
         version: stamp.unwrap_or_default(),
         path: candidate.display().to_string(),
@@ -739,7 +725,7 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
     // explicit `--binary` naming an older compatible build is a legitimate
     // request — a rollback — and checking it against this CLI's own stamp would
     // report a handoff that worked as one that failed.
-    let (want, want_text) = binary_version(&binary);
+    let (want, want_text) = binary_version(&binary).await;
 
     let socket = paths::socket_path()?;
     let Some(mut stream) = connect_existing(&socket).await else {
@@ -880,18 +866,25 @@ pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
 /// the way to failing is not an answer, and `verify_client` holds the same
 /// line — a probe that accepted it would mask exactly what verification
 /// exists to catch.
-pub(crate) fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
-    let Ok(output) = std::process::Command::new(binary)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .output()
-    else {
-        return (None, None);
-    };
-    if !output.status.success() {
-        return (None, None);
-    }
-    let stamp = version_stamp(&String::from_utf8_lossy(&output.stdout));
+/// Bounded, because a binary that blocks on `--version` is one of the things
+/// this is looking for: a wrapper waiting on the network, a wedged home
+/// directory. Unbounded, it hung the command that asked with nothing on screen.
+pub(crate) async fn binary_version(binary: &Path) -> (Option<Version>, Option<String>) {
+    let answered = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::process::Command::new(binary)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let stamp = answered
+        .filter(|output| output.status.success())
+        .and_then(|output| version_stamp(&String::from_utf8_lossy(&output.stdout)));
     (stamp.as_deref().and_then(Version::parse), stamp)
 }
 
@@ -991,6 +984,21 @@ pub trait Node {
     /// expects to find it, run after an upgrade verifies. `None` where staging
     /// already left `.prev` behind.
     fn preserve_command(&self) -> Option<String> {
+        None
+    }
+
+    /// Where this control plane may note that the machine would not take a
+    /// build's client, so a repair that can only fail is not retried on every
+    /// attach. Stamped with the build that failed, so a later build gets its own
+    /// chance and a machine that starts accepting one is forgotten as soon as it
+    /// does.
+    ///
+    /// `None` turns the memory off, which is right for a node that installs no
+    /// client at all — and keeps a node that is not a real machine from writing
+    /// anywhere. Only a client-*only* pass consults it: a daemon upgrade is
+    /// sending a build to the machine regardless, and the client rides along for
+    /// almost nothing.
+    fn client_repair_note(&self) -> Option<PathBuf> {
         None
     }
 }
@@ -1225,7 +1233,9 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                         .as_ref()
                         .and_then(|client| Version::parse(&client.version))
                         .is_some_and(|have| have >= want);
-                (!client_current).then_some(StagePlan::ClientOnly)
+                (!client_current
+                    && !client_repair_refused(node.client_repair_note().as_deref(), desired))
+                    .then_some(StagePlan::ClientOnly)
             }
         },
     };
@@ -1233,9 +1243,23 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // nothing else: a run that staged only the client may not touch the daemon,
     // and one that staged no client may not touch the client — the box's own,
     // which it has been using all along, is not this run's to restore or remove.
+    let repair_note = node.client_repair_note();
     let mut staged = Staged::default();
     if let Some(plan) = plan {
-        staged = stage(node, plan).await?;
+        staged = match stage(node, plan).await {
+            Ok(staged) => staged,
+            // A client-only pass may not fail the reconcile. It repairs a machine
+            // whose daemon is already the build wanted, and it runs before every
+            // attach — so an upload that fails, or an activation that does, would
+            // have made a healthy box unreachable ("Couldn't set up termiod on
+            // …") over the CLI inside its sessions.
+            Err(error) if plan == StagePlan::ClientOnly => {
+                eprintln!("[deploy] {label}'s client could not be installed ({error:#}); leaving it as it is");
+                remember_client_repair(repair_note.as_deref(), Some(desired));
+                Staged::default()
+            }
+            Err(error) => return Err(error),
+        };
         match (staged.daemon, staged.client) {
             (true, true) => eprintln!("[deploy] installed termiod {desired} and its client on {label}"),
             (true, false) => eprintln!("[deploy] installed termiod {desired} on {label}"),
@@ -1394,21 +1418,32 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // the machine has just said.
     let mut client_trouble = None;
     if staged.client {
-        if let Err(error) = verify_client(node, want).await {
+        match verify_client(node, want).await {
+            ClientVerdict::Good => remember_client_repair(repair_note.as_deref(), None),
             // Undo what this run did, which for a client that failed to answer
             // is the client. A Full stage therefore leaves a verified new daemon
             // beside no client rather than beside a broken one: a skew, but a
             // bounded one the next pass closes with a `ClientOnly` restage, and
             // no session pays for it.
-            let put_back = roll_back_client(node, staged.client_replaced).await.is_ok();
-            client_trouble = Some(format!(
-                "{error:#}{}",
-                if put_back {
-                    "; the previous client is back in place, and the next deploy installs this build's again"
-                } else {
-                    "; it could not be put back, and the next deploy installs this build's again"
-                }
-            ));
+            ClientVerdict::Bad(message) => {
+                let put_back = roll_back_client(node, staged.client_replaced).await.is_ok();
+                // Written down so the next pass does not spend another upload
+                // learning the same thing. A machine that cannot take this build's
+                // client — a noexec mount, a denied exec, a full disk — was
+                // otherwise restaged on every attach, for good.
+                remember_client_repair(repair_note.as_deref(), Some(desired));
+                client_trouble = Some(format!(
+                    "{message}{}",
+                    if put_back {
+                        "; the previous client is back in place, and a later build installs one again"
+                    } else {
+                        "; it could not be put back, and a later build installs one again"
+                    }
+                ));
+            }
+            // Nothing was learned about the client, so nothing is undone: what
+            // this run installed stays, and the next pass asks again.
+            ClientVerdict::Unknown(message) => client_trouble = Some(message),
         }
     }
 
@@ -1434,6 +1469,30 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
 enum StagePlan {
     Full,
     ClientOnly,
+}
+
+/// Whether this control plane already found that the machine will not take the
+/// client of build `desired`.
+fn client_repair_refused(note: Option<&Path>, desired: &str) -> bool {
+    note.and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|stamp| stamp.trim() == desired)
+}
+
+/// Write down that `desired`'s client would not install here, or forget it
+/// (`None`) because one just did.
+fn remember_client_repair(note: Option<&Path>, desired: Option<&str>) {
+    let Some(path) = note else { return };
+    match desired {
+        Some(stamp) => {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, stamp);
+        }
+        None => {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 async fn observe<N: Node>(node: &N) -> Result<Observed> {
@@ -1467,19 +1526,11 @@ async fn observe<N: Node>(node: &N) -> Result<Observed> {
 /// refuses to open a running executable for writing (`ETXTBSY`), so writing
 /// in place is the one shape that always fails when a box is in use.
 async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
-    let client_only = plan == StagePlan::ClientOnly;
-    let artifacts = match node.artifact(client_only).await {
-        Ok(artifacts) => artifacts,
-        // A client-only pass repairs a machine whose daemon is already the
-        // build wanted, and it runs before every attach. A control plane that
-        // cannot produce the client leaves it alone rather than failing the
-        // reconcile — the alternative made attaching to a healthy box an error.
-        Err(error) if client_only => {
-            eprintln!("[deploy] {}; leaving {}'s client alone", format!("{error:#}"), node.label());
-            return Ok(Staged::default());
-        }
-        Err(error) => return Err(error),
-    };
+    // Every failure here is the caller's to judge: a client-only pass is allowed
+    // to fail without failing the reconcile, and that holds for the artifact it
+    // cannot produce, the upload that does not land, and the activation that does
+    // not run — not only the first of the three.
+    let artifacts = node.artifact(plan == StagePlan::ClientOnly).await?;
     let mut staged = Staged::default();
     let mut command = String::new();
     if plan == StagePlan::Full {
@@ -1625,28 +1676,59 @@ fn restore_command(target: &str, replaced: bool) -> String {
 /// question — `stage` just put it there — but a wrong-architecture slice or a
 /// truncated copy execs and fails, and finding that out here, while `.prev` is
 /// still beside it, is the whole point of verifying before reporting.
-async fn verify_client<N: Node>(node: &N, want: Version) -> Result<()> {
+async fn verify_client<N: Node>(node: &N, want: Version) -> ClientVerdict {
     let Some(client) = node.client_binary() else {
-        return Ok(());
+        return ClientVerdict::Good;
     };
-    let run = node.run(&format!("{client} --version")).await?;
-    if run.code != 0 {
-        bail!(
-            "the client at {client} does not answer --version: {}",
-            last_line(&run.stderr)
-        );
+    // Retried within the same budget the daemon probe uses, and for the same
+    // reason: ssh failing is not the client answering. Taken as a verdict, a
+    // dropped connection during the probe had the loop delete the very client it
+    // had just correctly installed.
+    let deadline = Instant::now() + SETTLE;
+    let mut unreachable = String::new();
+    loop {
+        match node.run(&format!("{client} --version")).await {
+            Ok(run) if run.code != 0 => {
+                return ClientVerdict::Bad(format!(
+                    "the client at {client} does not answer --version: {}",
+                    last_line(&run.stderr)
+                ))
+            }
+            Ok(run) => {
+                return match run.stdout.split_whitespace().find_map(Version::parse) {
+                    Some(stamp) if stamp >= want => ClientVerdict::Good,
+                    Some(_) => ClientVerdict::Bad(format!(
+                        "the client at {client} answers as an older build ({})",
+                        last_line(&run.stdout)
+                    )),
+                    None => ClientVerdict::Bad(format!(
+                        "the client at {client} answers --version with no build stamp ({})",
+                        last_line(&run.stdout)
+                    )),
+                }
+            }
+            Err(error) => unreachable = format!("{error:#}"),
+        }
+        if Instant::now() >= deadline {
+            return ClientVerdict::Unknown(format!(
+                "could not reach {} to check the client at {client}: {unreachable}",
+                node.label()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    match run.stdout.split_whitespace().find_map(Version::parse) {
-        Some(stamp) if stamp >= want => Ok(()),
-        Some(_) => bail!(
-            "the client at {client} answers as an older build ({})",
-            last_line(&run.stdout)
-        ),
-        None => bail!(
-            "the client at {client} answers --version with no build stamp ({})",
-            last_line(&run.stdout)
-        ),
-    }
+}
+
+/// What a probe of the installed client established.
+enum ClientVerdict {
+    /// It answered as the build wanted, or newer.
+    Good,
+    /// It answered, and the answer is the client's own fault.
+    Bad(String),
+    /// The machine could not be asked, so nothing about the client is known.
+    /// Never grounds for undoing an install: a dropped connection is not a
+    /// verdict on a binary, and the next pass asks again.
+    Unknown(String),
 }
 
 /// Handshake with whatever answers now — which, after a stop, is the daemon
@@ -2036,6 +2118,8 @@ mod tests {
         client: Option<String>,
         /// The client this build would ship. `None` is a daemon-only build.
         client_artifact: Option<PathBuf>,
+        /// Where a refused client repair is remembered, when a test cares.
+        repair_note: Option<PathBuf>,
     }
 
     impl FakeNode {
@@ -2049,6 +2133,7 @@ mod tests {
                 preserve: None,
                 client: Some("$HOME/.local/bin/termio".to_string()),
                 client_artifact: Some(PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl")),
+                repair_note: None,
             }
         }
 
@@ -2114,6 +2199,9 @@ mod tests {
         }
         fn preserve_command(&self) -> Option<String> {
             self.preserve.clone()
+        }
+        fn client_repair_note(&self) -> Option<PathBuf> {
+            self.repair_note.clone()
         }
     }
 
@@ -2944,6 +3032,109 @@ mod tests {
         // It records what it renamed aside, which is what the undo reads.
         assert!(activation.contains("termiod_replaced=1"), "{activation}");
         assert!(activation.contains("termio_replaced=1"), "{activation}");
+    }
+
+    /// ssh failing during the client probe is not the client answering. Taken as
+    /// a verdict it deleted the very client the same pass had just correctly
+    /// installed, so an unreachable machine leaves the install alone and says it
+    /// could not tell — the next pass asks again.
+    ///
+    /// Slow on purpose: it waits out the same `SETTLE` budget the daemon probe
+    /// retries within, which is what a network blip needs to pass.
+    #[tokio::test]
+    async fn an_unreachable_box_does_not_cost_the_client_it_just_installed() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
+                staged_over_a_client(),
+                ok(&status_json(WANT, Some(WANT), true)),
+                // Every `termio --version` attempt after this finds no scripted
+                // answer, which the fake reports as a transport error.
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        match &report.outcome {
+            Outcome::Current { client: Some(note), .. } => {
+                assert!(note.contains("could not reach"), "{note}");
+            }
+            other => panic!("expected current with an unknown-client note, got {other:?}"),
+        }
+        // The client it installed is still there: nothing restored, nothing removed.
+        let commands = node.commands.borrow();
+        let client_restore = restore_command("$HOME/.local/bin/termio", false);
+        let client_revert = restore_command("$HOME/.local/bin/termio", true);
+        assert!(
+            !commands.iter().any(|command| command == &client_restore || command == &client_revert),
+            "{commands:?}"
+        );
+    }
+
+    /// A client-only pass whose upload or activation fails leaves the machine
+    /// attachable. Its daemon is the build wanted and every session on it is
+    /// running; failing the reconcile turned reaching a healthy box into
+    /// "Couldn't set up termiod on …" over the CLI inside its sessions.
+    #[tokio::test]
+    async fn a_client_repair_that_will_not_install_still_leaves_the_box_usable() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
+                failed(1, "mv: cannot move: Read-only file system"), // activation
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+    }
+
+    /// And it is remembered, so the next attach does not spend another upload
+    /// learning the same thing. A machine that can never take this build's
+    /// client was otherwise restaged on every single attach, for good.
+    #[tokio::test]
+    async fn a_refused_client_repair_is_not_attempted_again_for_the_same_build() {
+        let note = std::path::PathBuf::from(format!(
+            "/tmp/termiod-repair-{}-{}",
+            std::process::id(),
+            "refused"
+        ));
+        let _ = std::fs::remove_file(&note);
+        let mut node = FakeNode::new(
+            vec![
+                ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
+                failed(1, "mv: cannot move: Read-only file system"),
+            ],
+            vec![hello(Some(WANT))],
+        );
+        node.repair_note = Some(note.clone());
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+
+        // The next pass: the same box, the same build, and nothing sent.
+        let mut again = FakeNode::new(
+            vec![ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new()))],
+            vec![hello(Some(WANT))],
+        );
+        again.repair_note = Some(note.clone());
+        let report = reconcile(&again, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        assert!(again.puts.borrow().is_empty(), "{:?}", again.puts.borrow());
+
+        // A later build is a fresh chance, so the note does not apply to it.
+        let mut newer = FakeNode::new(
+            vec![
+                ok(&status_json_with_client("0.45.0+1700", None, Some("0.45.0+1700"), true, Vec::new())),
+                staged_over_a_client(),
+                ok(&status_json("0.45.0+1700", Some("0.45.0+1700"), true)),
+                ok("termio 0.45.0+1700 (release)"),
+            ],
+            vec![hello(Some("0.45.0+1700"))],
+        );
+        newer.repair_note = Some(note.clone());
+        let report = reconcile(&newer, "0.45.0+1700", Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { client: None, .. }), "{report:?}");
+        assert_eq!(newer.puts.borrow().len(), 1);
+
+        let _ = std::fs::remove_file(&note);
     }
 
     /// A client-only pass on a control plane that cannot produce a client leaves

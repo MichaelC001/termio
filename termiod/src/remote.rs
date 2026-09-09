@@ -187,7 +187,7 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
                     // Resolved before anything is sent: a stale pair is caught by
                     // a local `--version`, not by a failed verify and a daemon
                     // bounce on the box.
-                    node.prebuilt_client = client_beside(&daemon)?;
+                    node.prebuilt_client = client_beside(&daemon).await?;
                 } else if target.is_none() {
                     eprintln!(
                         "[deploy] deploying the daemon only; name the machine with --target to \
@@ -638,6 +638,29 @@ impl Node for SshNode {
         remote_client_bin()
     }
 
+    fn client_repair_note(&self) -> Option<PathBuf> {
+        // One file per host, named after the alias the user reaches it by. Kept
+        // in this machine's own durable state: it is this control plane's note
+        // about a box, not state the box should carry.
+        let named: String = self
+            .host
+            .chars()
+            .map(|character| match character {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => character,
+                _ => '_',
+            })
+            .collect();
+        if named.is_empty() {
+            return None;
+        }
+        Some(
+            crate::paths::durable_state_dir()
+                .ok()?
+                .join("client-repair")
+                .join(named),
+        )
+    }
+
     async fn hello(&self) -> Result<DaemonHello> {
         let mut child = self
             .ssh()
@@ -771,7 +794,7 @@ fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
 /// daemon over a skew a local check already saw. A pair that cannot answer
 /// locally — cross-built for another machine — ships as found, and the box's
 /// own verify judges it.
-fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
+async fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
     let candidate = daemon
         .parent()
         .map(|directory| directory.join("termio"))
@@ -783,8 +806,8 @@ fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
         );
         return Ok(None);
     };
-    let (daemon_stamp, daemon_text) = lifecycle::binary_version(daemon);
-    let (client_stamp, client_text) = lifecycle::binary_version(&client);
+    let (daemon_stamp, daemon_text) = lifecycle::binary_version(daemon).await;
+    let (client_stamp, client_text) = lifecycle::binary_version(&client).await;
     if let (Some(daemon_stamp), Some(client_stamp)) = (daemon_stamp, client_stamp) {
         if daemon_stamp != client_stamp {
             bail!(
