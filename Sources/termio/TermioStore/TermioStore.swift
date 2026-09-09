@@ -106,6 +106,9 @@ final class TermioStore: ObservableObject {
                 // forced past the coalesce window since it's a deliberate user action.
                 if let pid = project(for: id)?.id { noteProjectActivity(pid, force: true) }
             }
+            // The title bar's branch chip follows the selection onto whatever
+            // machine its checkout lives on.
+            syncDeviceBranchWatch()
             // Debounced, not inline: moving the selection is the most frequent
             // edit in the app — every row click, every ⌘⇧], every workspace
             // switch — and a synchronous encode-and-write of the whole tree on
@@ -946,6 +949,11 @@ final class TermioStore: ObservableObject {
     /// from here, so a `git checkout` inside a session updates the UI on its own.
     let branchModel = BranchModel()
 
+    /// The same label for checkouts on other machines, fed by each device's
+    /// `head:` resource instead of a local file watch. The title bar reads the
+    /// selected session's from here (see `deviceBranch(forCheckout:)`).
+    let deviceBranchModel = DeviceBranchModel()
+
     /// Realized file trees per root directory, so returning to a checkout hands the
     /// outline its tree back instead of rebuilding it. Lives here, beside the
     /// surface cache, for the same reason that one does: the model has to outlive
@@ -1065,6 +1073,7 @@ final class TermioStore: ObservableObject {
     private(set) var lastHostGridRows: Int
     private var settingsObserver: AnyCancellable?
     private var branchObserver: AnyCancellable?
+    private var deviceBranchObserver: AnyCancellable?
     private var linkObserver: AnyCancellable?
     private var appActiveObserver: AnyCancellable?
     /// Debounces the worktree re-scan so a burst of git-dir events (a rebase, a fetch)
@@ -1199,6 +1208,9 @@ final class TermioStore: ObservableObject {
         branchObserver = branchModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.objectWillChange.send() }
+        deviceBranchObserver = deviceBranchModel.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.objectWillChange.send() }
 
         // Cmd-clicking a link in any terminal surface republishes here (see `TerminalLinkOpening`):
         // route local files into the read-only preview overlay and hand web links to the system.
@@ -1225,6 +1237,9 @@ final class TermioStore: ObservableObject {
             return nil
         }
         syncWatchedFolders()
+        // The designated init set the selection without firing its didSet, so
+        // the selected checkout's device watch has to be armed by hand once.
+        syncDeviceBranchWatch()
 
         // Keep the worktree list honest against git, so worktrees made on the CLI show up
         // and ones removed drop out. Re-scan the affected project when a watched folder's
@@ -1238,6 +1253,9 @@ final class TermioStore: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.scheduleWorktreeReconcile()
+                // Also the retry for a device branch watch whose box was
+                // unreachable when the selection landed on it.
+                self.syncDeviceBranchWatch()
                 // Re-assert agent hooks on refocus: a third-party tool can overwrite the
                 // shared hooks file while termio is backgrounded, wiping ours. Re-installing
                 // restores them (and drops the conflicting entries); skipped when the file
@@ -1281,6 +1299,24 @@ final class TermioStore: ObservableObject {
             }
         }
         branchModel.setWatched(folders)
+    }
+
+    /// The live branch label for a checkout on another machine, from that
+    /// device's `head:` resource. `nil` — no daemon over there, no repo at the
+    /// root, no answer yet — hides the chip, exactly as the local model does.
+    func deviceBranch(forCheckout checkout: Checkout) -> String? {
+        deviceBranchModel.branch(for: checkout)
+    }
+
+    /// Tells the DeviceBranchModel which checkout to keep a live label for: the
+    /// selected session's, when it lives on another machine. One checkout
+    /// rather than the whole tree, because the title bar names only the
+    /// selection and every armed watch is a subscription the box holds open.
+    /// Called on every selection change and when the app becomes active — the
+    /// reconcile is idempotent, and re-calling it is also what retries a watch
+    /// whose device was unreachable the first time.
+    func syncDeviceBranchWatch() {
+        deviceBranchModel.setWatched([inspectorCheckout].compactMap { $0 })
     }
 
     /// Coalesces a burst of git-state events into a single re-scan a beat later,

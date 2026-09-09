@@ -1468,6 +1468,20 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         total: Option<u64>,
     },
+    /// The checkout's HEAD for a `head:` resource — the branch it is on, or
+    /// the commit it is detached at (`branch` absent, `head` a short hash).
+    /// Full state, not a delta: each batch replaces what the subscriber holds,
+    /// so the label beside a checkout's name can be kept live for every
+    /// checkout a client shows without the per-event `git status` the `git:`
+    /// kind costs.
+    HeadChanged {
+        resource: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+    },
     /// Roster delta used by control-channel `subscribe`.
     Roster {
         session: String,

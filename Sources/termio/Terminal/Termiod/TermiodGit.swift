@@ -27,6 +27,31 @@ extension Termiod {
     /// The `git:` resource id for a checkout — `resource.rs` `GIT_PREFIX`.
     static func gitResource(root: String) -> String { "git:\(root)" }
 
+    /// The `head:` resource id for a checkout — `resource.rs` `HEAD_PREFIX`.
+    static func headResource(root: String) -> String { "head:\(root)" }
+
+    /// One `head_changed` batch. Full state, not a delta: the branch the
+    /// checkout is on, or the commit it is detached at — each batch replaces
+    /// what the subscriber holds.
+    struct HeadChangedPayload: Sendable {
+        let seq: UInt64
+        /// The branch HEAD names, `nil` when detached — or when the root is
+        /// not a repository, which is how the label knows to hide.
+        let branch: String?
+        /// The short hash a detached HEAD sits at.
+        let head: String?
+    }
+
+    static func decodeHeadChanged(_ payload: Data) throws -> HeadChangedPayload {
+        struct WireHeadChanged: Decodable {
+            let seq: UInt64?
+            let branch: String?
+            let head: String?
+        }
+        let wire = try gitDecoder().decode(WireHeadChanged.self, from: payload)
+        return HeadChangedPayload(seq: wire.seq ?? 0, branch: wire.branch, head: wire.head)
+    }
+
     /// One `git_changed` batch: a delta against the subscriber's baseline, with
     /// branch metadata carried whole so a client never merges it.
     struct GitChangedPayload: Sendable {
@@ -252,6 +277,32 @@ extension Termiod {
                 since: since,
                 onEvent: { payload in
                     guard let batch = try? decodeGitChanged(payload) else { return }
+                    onBatch(batch)
+                },
+                onInterrupted: onInterrupted)
+        }
+    }
+
+    /// Subscribes to the checkout's HEAD alone. Unlike `git:`, whose every
+    /// event costs the device a `git status` run and is rightly reserved for
+    /// an open Changes pane, a `head:` event costs one file read — cheap
+    /// enough to keep armed while the checkout is merely on screen, which is
+    /// what a branch label beside a name needs.
+    static func watchHead(
+        route: TermiodRoute,
+        root: String,
+        since: UInt64? = nil,
+        onBatch: @escaping @Sendable (HeadChangedPayload) -> Void,
+        onInterrupted: @escaping @Sendable () -> Void
+    ) async throws -> (subscription: ResourceSubscription, gap: Bool, seq: UInt64) {
+        try await offMain {
+            try subscribeResource(
+                route: route,
+                caps: gitCapabilities,
+                resource: headResource(root: root),
+                since: since,
+                onEvent: { payload in
+                    guard let batch = try? decodeHeadChanged(payload) else { return }
                     onBatch(batch)
                 },
                 onInterrupted: onInterrupted)

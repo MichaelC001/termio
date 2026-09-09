@@ -65,6 +65,9 @@ pub const STATUS_ID: &str = "status:";
 /// The `git:` resource id prefix (§C.13). Ids are `git:<canonical repo root>`.
 pub const GIT_PREFIX: &str = "git:";
 
+/// The `head:` resource id prefix. Ids are `head:<canonical repo root>`.
+pub const HEAD_PREFIX: &str = "head:";
+
 /// Extra quiet window between a watcher batch reaching the git loop and the
 /// `git status` run, so one `git checkout` costs one status run, not one per
 /// batch.
@@ -154,6 +157,12 @@ impl ResourceBatch for StatusBatch {
 impl ResourceBatch for crate::git::GitBatch {
     fn into_event(self, resource: String, seq: u64) -> Event {
         crate::git::GitBatch::into_event(self, resource, seq)
+    }
+}
+
+impl ResourceBatch for crate::git::HeadSnapshot {
+    fn into_event(self, resource: String, seq: u64) -> Event {
+        crate::git::HeadSnapshot::into_event(self, resource, seq)
     }
 }
 
@@ -315,6 +324,18 @@ struct GitEntry {
     snapshot: Arc<Mutex<crate::git::GitSnapshot>>,
 }
 
+/// A `head:` resource: the checkout's HEAD alone. Like `git:` it owns no
+/// watcher — it rides the workspace's `fs:` watch — but its refresh is one
+/// in-process file read, never a git child, which is what makes it affordable
+/// to keep armed for every checkout a client shows a label beside. Every batch
+/// is the full state, so `snapshot` and the ring answer a gap identically:
+/// with what HEAD says now.
+#[derive(Clone)]
+struct HeadEntry {
+    state: Arc<Mutex<ResourceState<crate::git::HeadSnapshot>>>,
+    snapshot: Arc<Mutex<crate::git::HeadSnapshot>>,
+}
+
 /// The `status:` resource. Like `git:` it owns no watcher — the session actors
 /// produce its batches — but unlike `git:` it cannot rescan on gap: a status is
 /// a history of transitions, and only the roster says what is true *now*. A gap
@@ -326,6 +347,7 @@ type StatusEntry = Arc<Mutex<ResourceState<StatusBatch>>>;
 enum ResourceEntry {
     Fs(WatchEntry),
     Git(GitEntry),
+    Head(HeadEntry),
     Status(StatusEntry),
 }
 
@@ -363,13 +385,16 @@ impl Registry {
         if spec == STATUS_ID {
             return Ok(STATUS_ID.to_string());
         }
-        if let Some(root) = spec.strip_prefix(GIT_PREFIX) {
+        for prefix in [GIT_PREFIX, HEAD_PREFIX] {
+            let Some(root) = spec.strip_prefix(prefix) else {
+                continue;
+            };
             let canonical = Registry::fs_resource_id(root)?;
             let canonical = canonical.trim_start_matches(FS_PREFIX);
             if !Path::new(canonical).join(".git").exists() {
                 return Err(anyhow!("not a git repository: {root}"));
             }
-            return Ok(format!("{GIT_PREFIX}{canonical}"));
+            return Ok(format!("{prefix}{canonical}"));
         }
         Registry::fs_resource_id(spec.strip_prefix(FS_PREFIX).unwrap_or(spec))
     }
@@ -416,6 +441,9 @@ impl Registry {
         if resource.starts_with(GIT_PREFIX) {
             return self.subscribe_git(resource, client, tx, since);
         }
+        if resource.starts_with(HEAD_PREFIX) {
+            return self.subscribe_head(resource, client, tx, since);
+        }
         let root = resource
             .strip_prefix(FS_PREFIX)
             .ok_or_else(|| anyhow!("unknown resource kind: {resource}"))?
@@ -441,9 +469,7 @@ impl Registry {
     ) -> Result<WatchEntry> {
         match watches.get(resource) {
             Some(ResourceEntry::Fs(existing)) => Ok(existing.clone()),
-            Some(ResourceEntry::Git(_)) | Some(ResourceEntry::Status(_)) => {
-                Err(anyhow!("resource id kind collision: {resource}"))
-            }
+            Some(_) => Err(anyhow!("resource id kind collision: {resource}")),
             None => {
                 let created = self.start_watch(resource.to_string(), root)?;
                 watches.insert(resource.to_string(), ResourceEntry::Fs(created.clone()));
@@ -516,9 +542,7 @@ impl Registry {
             let mut watches = self.watches.lock().unwrap();
             match watches.get(resource) {
                 Some(ResourceEntry::Git(existing)) => existing.clone(),
-                Some(ResourceEntry::Fs(_)) | Some(ResourceEntry::Status(_)) => {
-                    return Err(anyhow!("resource id kind collision: {resource}"))
-                }
+                Some(_) => return Err(anyhow!("resource id kind collision: {resource}")),
                 None => {
                     let created =
                         self.start_git_watch(&mut watches, resource.to_string(), &root)?;
@@ -598,6 +622,85 @@ impl Registry {
         Ok(entry)
     }
 
+    /// Subscribe to a `head:` resource: the same cursor/ring/gap/linger as
+    /// every resource. Every batch carries the full state, so a gap subscriber
+    /// is simply served the current snapshot at the current seq.
+    fn subscribe_head(
+        &self,
+        resource: &str,
+        client: ClientId,
+        tx: mpsc::UnboundedSender<Event>,
+        since: Option<u64>,
+    ) -> Result<SubscribeReply> {
+        let root = resource
+            .strip_prefix(HEAD_PREFIX)
+            .ok_or_else(|| anyhow!("unknown resource kind: {resource}"))?
+            .to_string();
+
+        let entry = {
+            let mut watches = self.watches.lock().unwrap();
+            match watches.get(resource) {
+                Some(ResourceEntry::Head(existing)) => existing.clone(),
+                Some(_) => return Err(anyhow!("resource id kind collision: {resource}")),
+                None => {
+                    let created =
+                        self.start_head_watch(&mut watches, resource.to_string(), &root)?;
+                    watches.insert(resource.to_string(), ResourceEntry::Head(created.clone()));
+                    created
+                }
+            }
+        };
+
+        let mut guard = entry.state.lock().unwrap();
+        let snapshot = entry.snapshot.clone();
+        let resource_id = resource.to_string();
+        // Same lock discipline as `subscribe_git`, with none of its weight:
+        // the snapshot is two small strings, and `refresh_head` releases it
+        // before touching the state, so the two never nest the other way.
+        Ok(guard.attach(resource, client, tx, since, move |seq| {
+            (seq > 0).then(|| {
+                let full = snapshot.lock().unwrap().clone();
+                vec![crate::git::HeadSnapshot::into_event(full, resource_id, seq)]
+            })
+        }))
+    }
+
+    /// Start the machinery behind one `head:` resource: ensure the workspace's
+    /// `fs:` watch is running, register an internal subscriber on it, and spawn
+    /// the loop that turns its batches into HEAD re-reads.
+    fn start_head_watch(
+        &self,
+        watches: &mut HashMap<String, ResourceEntry>,
+        resource: String,
+        root: &str,
+    ) -> Result<HeadEntry> {
+        let fs_id = Registry::fs_resource_id(root)?;
+        let fs_entry = self.fs_entry_locked(watches, &fs_id, Path::new(root))?;
+
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel::<Event>();
+        let internal_client = ClientId::internal(format!("head-signal:{resource}"));
+        {
+            let mut guard = fs_entry.state.lock().unwrap();
+            guard.subscribers.insert(internal_client.clone(), signal_tx);
+            guard.idle_since = None;
+        }
+
+        let entry = HeadEntry {
+            state: Arc::new(Mutex::new(ResourceState::new(None))),
+            snapshot: Arc::new(Mutex::new(crate::git::HeadSnapshot::default())),
+        };
+        tokio::spawn(head_loop(
+            resource,
+            root.to_string(),
+            signal_rx,
+            entry.clone(),
+            self.clone(),
+            fs_id,
+            internal_client,
+        ));
+        Ok(entry)
+    }
+
     /// Drop one client's interest. Returns whether the client had been
     /// subscribed. The watch keeps running for `LINGER` so the same client can
     /// come back and resume from its cursor — detach ≠ kill, applied to the
@@ -618,6 +721,7 @@ impl Registry {
         match watches.get(resource) {
             Some(ResourceEntry::Fs(entry)) => drop_interest(&entry.state, client),
             Some(ResourceEntry::Git(entry)) => drop_interest(&entry.state, client),
+            Some(ResourceEntry::Head(entry)) => drop_interest(&entry.state, client),
             Some(ResourceEntry::Status(state)) => drop_interest(state, client),
             None => false,
         }
@@ -700,6 +804,62 @@ async fn git_loop(
     }
     registry.watches.lock().unwrap().remove(&resource);
     registry.unsubscribe(&fs_resource, &internal_client);
+}
+
+/// Drive one `head:` resource: coalesce the workspace watcher's signal,
+/// re-read HEAD in-process, publish when it moved. Retires itself — and its
+/// grip on the `fs:` watch — when its own linger runs out.
+///
+/// Every batch triggers a re-read, not only `git_meta` ones, for the same
+/// reason `git_loop` runs on every batch — with the roles reversed: a linked
+/// worktree's HEAD lives *outside* the watched root (in the primary checkout's
+/// `.git/worktrees/<name>`), so the checkout that moves it never arrives as
+/// `git_meta` here. What does arrive is the tree the checkout rewrote, and a
+/// HEAD read costs too little to gate.
+async fn head_loop(
+    resource: String,
+    root: String,
+    mut signal_rx: mpsc::UnboundedReceiver<Event>,
+    entry: HeadEntry,
+    registry: Registry,
+    fs_resource: String,
+    internal_client: ClientId,
+) {
+    refresh_head(&resource, &root, &entry);
+    loop {
+        match tokio::time::timeout(IDLE_TICK, signal_rx.recv()).await {
+            Ok(Some(_)) => {
+                while let Ok(Some(_)) =
+                    tokio::time::timeout(GIT_DEBOUNCE, signal_rx.recv()).await
+                {}
+                refresh_head(&resource, &root, &entry);
+            }
+            Ok(None) => break,
+            Err(_) => {
+                if entry.state.lock().unwrap().expired() {
+                    break;
+                }
+            }
+        }
+    }
+    registry.watches.lock().unwrap().remove(&resource);
+    registry.unsubscribe(&fs_resource, &internal_client);
+}
+
+/// Re-read HEAD and publish only when it moved — an `index` refresh must not
+/// spend a ring slot restating the same branch. The snapshot lock is released
+/// before the state lock is taken, the `subscribe_head` ordering's other half.
+fn refresh_head(resource: &str, root: &str, entry: &HeadEntry) {
+    let fresh = crate::git::read_head(root);
+    let changed = {
+        let mut snapshot = entry.snapshot.lock().unwrap();
+        let changed = *snapshot != fresh;
+        *snapshot = fresh.clone();
+        changed
+    };
+    if changed {
+        entry.state.lock().unwrap().publish(resource, fresh);
+    }
 }
 
 async fn refresh_git(resource: &str, root: &str, entry: &GitEntry) {
@@ -1183,6 +1343,74 @@ mod tests {
             }
         }
         assert_eq!(seqs, vec![2, 3], "exactly what the cursor had not seen");
+    }
+
+    /// The `head:` kind end to end, against a real repository and the real
+    /// workspace watcher: a first subscriber is delivered the current branch,
+    /// and a `git checkout` on the box reaches it as a live batch. This is the
+    /// one watcher-backed test in the module, because the plane it proves —
+    /// fs event → debounce → HEAD re-read → publish — has no seam to fake.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_head_subscriber_learns_the_branch_and_follows_a_checkout() {
+        let dir = std::env::temp_dir().join(format!(
+            "termiod-head-resource-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .args(args)
+                .output()
+                .expect("git is on PATH");
+            assert!(output.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@termio.sh"]);
+        git(&["config", "user.name", "termio test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+
+        let registry = Registry::new();
+        let resource =
+            Registry::resource_id(&format!("head:{}", dir.display())).expect("a repo");
+        assert!(resource.starts_with(HEAD_PREFIX));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        registry
+            .subscribe(&resource, ClientId::new("mac"), tx, None)
+            .expect("subscribe");
+
+        let branch_of = |event: Event| match event {
+            Event::HeadChanged { branch, .. } => branch,
+            other => panic!("head resources only emit head_changed, got {other:?}"),
+        };
+        let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the initial HEAD read is published promptly")
+            .expect("channel open");
+        assert_eq!(branch_of(first).as_deref(), Some("main"));
+
+        git(&["checkout", "-q", "-b", "feat/live"]);
+        // The checkout may fan out as several batches; the branch settles on
+        // the new name within the debounce windows.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let event = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .expect("a checkout must reach the subscriber")
+                .expect("channel open");
+            if branch_of(event).as_deref() == Some("feat/live") {
+                break;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Publishing before anyone has ever asked must not conjure a ring: there is
