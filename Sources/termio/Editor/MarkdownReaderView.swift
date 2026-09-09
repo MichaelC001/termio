@@ -278,8 +278,9 @@ private final class ContextMenuWebView: WKWebView {
 
 /// Serves local files to the reader page over the custom scheme. Only ever reached for
 /// URLs the sanitized document generated (relative image/link paths); the page runs no
-/// script (the sanitizer strips it), so a hostile path can at worst paint pixels — it
-/// has no way to read them back or send them anywhere.
+/// script from content (the sanitizer strips it) and its own viewer script fetches
+/// nothing, so a hostile path can at worst paint pixels — it has no way to read them
+/// back or send them anywhere.
 private final class LocalFileSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let url = urlSchemeTask.request.url,
