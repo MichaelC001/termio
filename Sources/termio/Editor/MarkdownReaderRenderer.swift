@@ -2,7 +2,8 @@ import Foundation
 
 /// Assembles a self-contained HTML document for `MarkdownReaderView`: the reader `<head>`
 /// (viewport, embedded fonts, theme variables, reading stylesheet) wrapped around
-/// `MarkdownHTML`'s output.
+/// `MarkdownHTML`'s output, plus the reader's own full-screen viewer script (see
+/// `viewerScript` for why that one script doesn't break the no-script-from-content rule).
 ///
 /// The stylesheet is a document-reading skin — capped measure, generous vertical rhythm, a
 /// clear type scale — the Apple-docs / iA-Writer register, distinct from the Issues
@@ -37,6 +38,7 @@ enum MarkdownReaderRenderer {
         <body class="reader\(isCJK(body) ? " cjk" : "")">
         \(frontmatter.map(frontmatterHTML) ?? "")
         \(MarkdownHTML.html(body, softBreaksAsBreaks: false, documentMode: true))
+        <script>\(viewerScript)</script>
         </body>
         </html>
         """
@@ -378,5 +380,102 @@ enum MarkdownReaderRenderer {
       font-size: 15px; color: var(--muted); }
     .reader .footnotes li { margin: 0.5em 0; }
     .reader .footnote-back { margin-left: 0.4em; }
+    /* Full screen (see `viewerScript`). A diagram doesn't look clickable, so it gets a
+       hover chip as the affordance; an image gets the zoom-in cursor viewers have taught.
+       The chip appears on the next frame, no fade — hover cues snap in this app. */
+    .reader figure.mermaid { position: relative; cursor: zoom-in; }
+    .reader figure.mermaid .zoom { position: absolute; top: 6px; right: 6px; display: none;
+      width: 26px; height: 26px; padding: 5px; border: none; border-radius: 6px;
+      appearance: none; background: var(--soft); color: var(--muted); cursor: pointer; }
+    .reader figure.mermaid:hover .zoom { display: block; }
+    .reader figure.mermaid .zoom svg { display: block; width: 100%; height: 100%; fill: none;
+      stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .reader img.zoomable { cursor: zoom-in; }
+    /* The overlay is the page's own background, opaque: full screen means the document
+       steps aside, not a web-style dimmed modal. It opens and closes in one frame. */
+    .lightbox { display: none; position: fixed; inset: 0; z-index: 10; background: var(--bg);
+      cursor: zoom-out; align-items: center; justify-content: center; padding: 3vh 3vw; }
+    .lightbox.open { display: flex; }
+    html.lightbox-open, html.lightbox-open body { overflow: hidden; }
+    /* A diagram is vector, so it grows to fill the pane (the viewBox keeps its aspect);
+       a raster image never scales past its natural size — enlarged pixels read as a bug. */
+    .lightbox svg { width: 100%; height: 100%; }
+    .lightbox img { max-width: 100%; max-height: 100%; width: auto; height: auto;
+      border-radius: 6px; }
     """
+
+    /// The one piece of script the reader page runs, and it is the *page's own*, never
+    /// content's: `HTMLSanitizer` still strips every script, handler and `javascript:` URL
+    /// from the document, so nothing here can be reached or influenced by what a file says
+    /// beyond which picture gets shown. It only clones a node already in the page and
+    /// toggles a class — it fetches nothing, so the `termio-md` scheme handler's threat
+    /// model (a hostile path can at worst paint pixels) still holds.
+    private static let viewerScript = #"""
+    (() => {
+      "use strict";
+      const lightbox = document.createElement("div");
+      lightbox.className = "lightbox";
+      document.body.appendChild(lightbox);
+      const close = () => {
+        lightbox.classList.remove("open");
+        lightbox.replaceChildren();
+        document.documentElement.classList.remove("lightbox-open");
+      };
+      const open = (node) => {
+        lightbox.replaceChildren(node);
+        lightbox.classList.add("open");
+        document.documentElement.classList.add("lightbox-open");
+      };
+      lightbox.addEventListener("click", close);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && lightbox.classList.contains("open")) {
+          event.preventDefault();
+          close();
+        }
+      });
+
+      // Hugeicons "arrow-expand-01", the same glyph Zoom Split uses in the app chrome.
+      const expandIcon = () => {
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 24 24");
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", "M16.4999 3.26621C17.3443 3.25421 20.1408 2.67328 20.7337 "
+          + "3.26621C21.3266 3.85913 20.7457 6.65559 20.7337 7.5M20.5059 3.49097L13.5021 "
+          + "10.4961 M3.26636 16.5001C3.25436 17.3445 2.67343 20.141 3.26636 20.7339C3.85928 "
+          + "21.3268 6.65574 20.7459 7.50015 20.7339M10.502 13.4976L3.49824 20.5027");
+        svg.appendChild(path);
+        return svg;
+      };
+
+      for (const figure of document.querySelectorAll("figure.mermaid")) {
+        const button = document.createElement("button");
+        button.className = "zoom";
+        button.setAttribute("aria-label", "Full Screen");
+        button.appendChild(expandIcon());
+        figure.appendChild(button);
+        figure.addEventListener("click", () => {
+          const diagram = figure.querySelector(":scope > svg");
+          if (!diagram) { return; }
+          const copy = diagram.cloneNode(true);
+          // Mermaid pins its own width in these attributes; the lightbox sizes the copy.
+          copy.removeAttribute("style");
+          copy.removeAttribute("width");
+          copy.removeAttribute("height");
+          open(copy);
+        });
+      }
+
+      for (const image of document.querySelectorAll("img")) {
+        // A linked image (badge, linked screenshot) keeps its link.
+        if (image.closest("a")) { continue; }
+        image.classList.add("zoomable");
+        image.addEventListener("click", () => {
+          const copy = document.createElement("img");
+          copy.src = image.currentSrc || image.src;
+          copy.alt = image.alt;
+          open(copy);
+        });
+      }
+    })();
+    """#
 }
