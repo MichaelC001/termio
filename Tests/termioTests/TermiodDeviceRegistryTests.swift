@@ -179,4 +179,64 @@ final class TermiodDeviceRegistryTests: XCTestCase {
         XCTAssertEqual(device?.negotiatedProtocol, 1)
         XCTAssertNotNil(device?.observedAt)
     }
+
+    // MARK: - The registry's second writer
+
+    // A CLI deploy stamps its handshake's observation into `devices.json`
+    // (termiod/src/remote.rs) while this app may hold an older picture in
+    // memory — and `save` writes the whole map from memory. These pin the merge
+    // that keeps the newer observation, whichever side made it.
+
+    private func write(_ json: String) throws {
+        try Data(json.utf8).write(to: directory.appendingPathComponent("devices.json"))
+    }
+
+    func testAHandshakeKeepsANewerObservationWrittenBehindItsBack() throws {
+        try write("""
+        [{"id": "h_box", "daemonVersion": "0.50.0+1913", "proto": 1,
+          "observedAt": "2026-09-08T08:47:17Z", "routes": ["ssh:box"]}]
+        """)
+        let registry = makeRegistry()
+        // A CLI deploy stamps a fresh observation while the app holds the old one.
+        try write("""
+        [{"id": "h_box", "daemonVersion": "0.52.0+1944", "proto": 1,
+          "observedAt": "2026-09-08T17:58:00Z", "routes": ["ssh:box"]}]
+        """)
+        registry.record(hostID: "h_mac", daemonVersion: macDaemon, route: .local)
+
+        let box = makeRegistry().device(id: "h_box")
+        XCTAssertEqual(box?.daemonVersion, "0.52.0+1944",
+                       "the save must not write the stale in-memory row over the deploy's stamp")
+        XCTAssertNotNil(makeRegistry().device(id: "h_mac"))
+    }
+
+    func testAnOlderRowOnDiskNeverRollsMemoryBack() throws {
+        try write("""
+        [{"id": "h_box", "daemonVersion": "0.52.0+1944", "proto": 1,
+          "observedAt": "2026-09-08T17:58:00Z", "routes": ["ssh:box"]}]
+        """)
+        let registry = makeRegistry()
+        try write("""
+        [{"id": "h_box", "daemonVersion": "0.50.0+1913", "proto": 1,
+          "observedAt": "2026-09-08T08:47:17Z", "routes": ["ssh:box"]}]
+        """)
+        registry.record(hostID: "h_mac", daemonVersion: macDaemon, route: .local)
+
+        XCTAssertEqual(makeRegistry().device(id: "h_box")?.daemonVersion, "0.52.0+1944")
+    }
+
+    /// The first-ever deploy to a box happens from the CLI, before the app has
+    /// ever attached: the row exists only on disk and is adopted whole.
+    func testADeviceFirstSeenByTheCliIsAdoptedWhole() throws {
+        try write("[]")
+        let registry = makeRegistry()
+        try write("""
+        [{"id": "h_new", "daemonVersion": "0.52.0+1944", "proto": 1,
+          "observedAt": "2026-09-08T17:58:00Z", "routes": ["ssh:box"]}]
+        """)
+        registry.record(hostID: "h_mac", daemonVersion: macDaemon, route: .local)
+
+        XCTAssertEqual(registry.device(for: .ssh("box"))?.id, "h_new")
+        XCTAssertEqual(makeRegistry().all.count, 2)
+    }
 }

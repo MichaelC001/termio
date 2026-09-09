@@ -911,6 +911,10 @@ pub enum Outcome {
     Current {
         version: String,
         host_id: String,
+        /// The protocol the verifying handshake negotiated (`hello_ok.proto`).
+        /// Optional so a report written by an older build still parses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proto: Option<u32>,
         /// Another control plane put a newer build here. Left alone.
         newer: bool,
     },
@@ -955,6 +959,7 @@ impl Report {
                 version,
                 host_id,
                 newer,
+                ..
             } => format!(
                 "{node}: termiod {version} is running (host {host_id}){}",
                 if *newer {
@@ -1179,6 +1184,7 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             Ok(Outcome::Current {
                 version: hello.version.unwrap_or_default(),
                 host_id: hello.host_id,
+                proto: Some(hello.proto),
                 newer: version > want,
             })
         }
