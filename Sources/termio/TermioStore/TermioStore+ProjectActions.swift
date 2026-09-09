@@ -161,14 +161,26 @@ extension TermioStore {
         /// git can still inspect the checkout, and it came back clean: git removes
         /// the folder and the registration itself.
         case removeCheckout(branch: String?, registration: String)
-        /// Nothing on disk is left to protect. `registration` is git's own
-        /// spelling of the path when it still lists the worktree, and `nil` when
-        /// it does not and only the sidebar row remains. `emptyFolder` says an
-        /// empty directory is still at the path and has to be cleared before git
-        /// will deregister the worktree.
-        case letGo(branch: String?, registration: String?, emptyFolder: Bool)
+        /// Nothing on disk is left to protect. `registration` is what git still
+        /// holds, or `nil` when git holds nothing and the sidebar row is all
+        /// there is to remove.
+        case letGo(branch: String?, registration: StaleRegistration?)
         /// Leave everything as it is, and say why.
         case refuse(title: String, message: String)
+    }
+
+    /// A registration git still holds for a checkout that is no longer there.
+    ///
+    /// The two travel together because the clearing exists only to serve the
+    /// deregistration: git refuses to let go of a worktree whose path still
+    /// exists, so an empty folder has to go first. Kept apart, the clearing ran
+    /// on its own and deleted a directory git did not track — and refused the
+    /// whole removal when `rmdir` failed, stranding the sidebar row this action
+    /// exists to clear.
+    private struct StaleRegistration {
+        /// git's own spelling of the path, which is what git must be handed.
+        let path: String
+        let clearFolderFirst: Bool
     }
 
     /// Removes a clean linked checkout, then drops its container and matching flat
@@ -198,32 +210,34 @@ extension TermioStore {
             }
             branch = checkedOutBranch
 
-        case let .letGo(registeredBranch, registration, emptyFolder):
-            // Filesystem work goes to the path the evidence was gathered at;
-            // git is addressed by the spelling git itself printed. The two can
-            // differ through a symlinked ancestor, and git refuses an argument
-            // it cannot realpath — "is not a working tree" for a removal that
-            // succeeds when handed its own spelling.
-            if emptyFolder {
-                // Reported on its own, before anything is dropped: git will
-                // refuse to deregister a worktree whose path still exists, so
-                // "git still lists it" below would blame git for a folder that
-                // could not be cleared.
-                guard clearEmptyFolder(at: worktree.path) else {
-                    presentWorktreeFailure(
-                        title: localized("Couldn’t remove worktree"),
-                        message: localized("termio couldn’t remove the empty folder at “\(displayName)”, so the worktree was not removed.")
-                    )
-                    return
-                }
-            }
+        case let .letGo(registeredBranch, registration):
+            // Nothing happens on disk or in git without a registration to drop:
+            // with none, the sidebar row is the whole of what is being removed.
             if let registration {
+                // Filesystem work goes to the path the evidence was gathered at;
+                // git is addressed by the spelling git itself printed. The two
+                // can differ through a symlinked ancestor, and git refuses an
+                // argument it cannot realpath — "is not a working tree" for a
+                // removal that succeeds when handed its own spelling.
+                if registration.clearFolderFirst {
+                    // Reported on its own, before anything is dropped: git will
+                    // refuse to deregister a worktree whose path still exists,
+                    // so "git still lists it" below would blame git for a folder
+                    // that could not be cleared.
+                    guard clearEmptyFolder(at: worktree.path) else {
+                        presentWorktreeFailure(
+                            title: localized("Couldn’t remove worktree"),
+                            message: localized("termio couldn’t remove the empty folder at “\(displayName)”, so the worktree was not removed.")
+                        )
+                        return
+                    }
+                }
                 // With the path cleared, git's own *targeted* remove applies: it
                 // deregisters this worktree and nothing else. `git worktree
                 // prune` is never run — it is repo-wide, so it would take every
                 // other worktree whose folder is missing with it, including ones
                 // holding work this action was never pointed at.
-                guard runGit(["worktree", "remove", registration], in: repository) != nil else {
+                guard runGit(["worktree", "remove", registration.path], in: repository) != nil else {
                     presentWorktreeFailure(
                         title: localized("Couldn’t remove worktree"),
                         message: localized("git still lists “\(displayName)”, so it was not removed.")
@@ -287,14 +301,25 @@ extension TermioStore {
                 message: localized("git couldn’t read this project’s worktrees, so “\(displayName)” was not removed.")
             )
         }
-        let record = registrations
+        // git holding no registration ends it here: there is nothing to
+        // deregister, no branch of its recording to tidy, and nothing this
+        // action would touch on disk — the sidebar row is the whole of what is
+        // being removed. So the folder's contents are not consulted and cannot
+        // refuse: whatever is in it stays exactly where it is, and telling a
+        // user to delete a folder full of real work in order to clear a stale
+        // row would be asking for the one thing the removal was never going to
+        // do anyway.
+        guard let record = registrations
             .first(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(path) })
+        else {
+            return .letGo(branch: nil, registration: nil)
+        }
 
         // Locked first, because it is not a shape of brokenness: git marks a
         // locked worktree `locked` and never `prunable`, even with its folder
         // deleted, which is how a checkout on removable media survives being
         // unplugged. Asked after `prunable`, this could never fire.
-        if let record, record.locked {
+        if record.locked {
             return .refuse(
                 title: localized("Worktree is locked"),
                 message: localized("Unlock “\(displayName)” (git worktree unlock) before removing it.")
@@ -303,7 +328,7 @@ extension TermioStore {
 
         // A checkout git can still inspect answers for itself, and its answer is
         // the only thing that authorizes deleting files.
-        if let record, !record.prunable {
+        if !record.prunable {
             guard let status = runGit(["status", "--porcelain"], in: path) else {
                 return .refuse(
                     title: localized("Couldn’t inspect worktree"),
@@ -319,17 +344,22 @@ extension TermioStore {
             return .removeCheckout(branch: record.branch, registration: record.path)
         }
 
-        // Everything else reaches the same gate: a `prunable` record, where git
-        // lost its way to the checkout, and no record at all, where git never
-        // knew it or the user already pruned it. Both leave the disk as the only
-        // witness, and both used to have their own way through — the second with
-        // no check whatsoever, closing a live session and dropping the row on one
-        // click of a menu item that asks nothing first.
+        // What is left is a `prunable` record: git still holds a registration
+        // but has lost its way to the checkout, so it can no longer be asked
+        // about the folder and the disk is the only witness. Only here does the
+        // removal have both something to drop in git and something it might
+        // disturb on disk, which is what these refusals protect.
         switch WorktreeService.folderEvidence(at: path) {
         case .gone:
-            return .letGo(branch: record?.branch, registration: record?.path, emptyFolder: false)
+            return .letGo(
+                branch: record.branch,
+                registration: StaleRegistration(path: record.path, clearFolderFirst: false)
+            )
         case .emptyFolder:
-            return .letGo(branch: record?.branch, registration: record?.path, emptyFolder: true)
+            return .letGo(
+                branch: record.branch,
+                registration: StaleRegistration(path: record.path, clearFolderFirst: true)
+            )
         case .occupied:
             // git refuses to deregister a worktree whose path exists without a
             // `.git` in it — `--force` included — and what is sitting there is
@@ -340,10 +370,9 @@ extension TermioStore {
                 message: localized("Something other than a folder is at “\(displayName)”. Move or delete it, then remove the worktree.")
             )
         case .mayHoldWork:
-            // "Can no longer inspect", not "no longer tracks": this arm is also
-            // reached with a `prunable` record, where `git worktree list` does
-            // still name the worktree and a user who checked would find the
-            // opposite of what the alert said.
+            // "Can no longer inspect", not "no longer tracks": git does still
+            // name this worktree — it is `prunable`, not absent — and a user who
+            // checked would find the opposite of what the alert said.
             return .refuse(
                 title: localized("Couldn’t inspect worktree"),
                 message: localized("git can no longer inspect “\(displayName)”, and its folder still holds files. Delete the folder to remove the worktree.")
@@ -372,7 +401,6 @@ extension TermioStore {
     /// not called for it.
     /// Answers whether the path is clear afterwards, so a folder that would not
     /// go is reported as itself rather than as git refusing the worktree.
-    @discardableResult
     private func clearEmptyFolder(at path: String) -> Bool {
         let dsStore = (path as NSString).appendingPathComponent(".DS_Store")
         _ = dsStore.withCString { unlink($0) }
