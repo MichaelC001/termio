@@ -1604,12 +1604,13 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
         // which is right whenever this daemon is on the default path too.
         Err(err) => eprintln!("termiod: could not resolve socket path for session env: {err}"),
     }
-    // The daemon's own directory leads the session's PATH, so every terminal
-    // opened through termio finds the `termio` the deploy loop installed
-    // beside this daemon — with no dotfile written, the same principle as
-    // never overriding `~/.ssh/config` (docker-lessons RFC §1.2). A bare SSH
-    // login outside termio keeps whatever the box's own profile does.
-    if let Some(directory) = own_binary_directory() {
+    // A directory holding just the paired `termio` leads the session's PATH,
+    // so every terminal opened through termio finds the client the deploy loop
+    // installed beside this daemon — with no dotfile written, the same
+    // principle as never overriding `~/.ssh/config` (docker-lessons RFC §1.2).
+    // A bare SSH login outside termio keeps whatever the box's own profile
+    // does.
+    if let Some(directory) = client_path_directory() {
         lead_path_with(&directory, &mut env);
     }
     env
@@ -1627,9 +1628,17 @@ fn lead_path_with(directory: &str, env: &mut Vec<(String, String)>) {
     }
 }
 
-/// The directory this daemon's binary lives in — `~/.local/bin` on a box —
-/// which is where the deploy loop puts the `termio` that matches this
-/// daemon's build.
+/// A daemon-owned directory holding one symlink — `termio`, pointing at the
+/// client installed beside this daemon — for a session's PATH to lead with.
+///
+/// The client's own directory is deliberately *not* what leads the PATH. It
+/// works only where the daemon is installed somewhere private; where it is
+/// shared (`TERMIOD_REMOTE_BIN=/usr/local/bin/termiod`, or a `/usr/bin`
+/// install) leading with it would put that whole directory ahead of the user's
+/// own PATH, so every session would resolve `node`, `python` and `git` from
+/// there while a plain ssh login resolved them normally. A directory with
+/// exactly one thing in it can be led with safely, and nothing else on the box
+/// changes meaning.
 ///
 /// `None` on a Mac, always. The Mac's client reaches sessions through the
 /// app's own support copy, never through this prepend, and the directory the
@@ -1638,12 +1647,35 @@ fn lead_path_with(directory: &str, env: &mut Vec<(String, String)>) {
 /// `termio` (the cross-channel skew the `termio-dev` naming exists to
 /// prevent), and after a Sparkle update the still-serving old daemon's
 /// bundle path names a client from a build it is not.
-pub(crate) fn own_binary_directory() -> Option<String> {
+///
+/// `None` too when there is no client to point at — a box the deploy loop has
+/// not reached yet — because a prepend that guarantees nothing is only a way
+/// to change a PATH for no reason.
+pub(crate) fn client_path_directory() -> Option<String> {
     if cfg!(target_os = "macos") {
         return None;
     }
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.display().to_string())
+    let client = crate::lifecycle::paired_client()?;
+    let directory = crate::paths::durable_state_dir().ok()?.join("bin");
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("termiod: could not create {}: {error}", directory.display());
+        return None;
+    }
+    let link = directory.join("termio");
+    // Re-pointed rather than trusted: a client-only redeploy can move the
+    // client under a daemon that keeps running, and a link left pointing at
+    // the old path would hand sessions a build the box no longer has.
+    match std::fs::read_link(&link) {
+        Ok(existing) if existing == client => {}
+        _ => {
+            let _ = std::fs::remove_file(&link);
+            if let Err(error) = std::os::unix::fs::symlink(&client, &link) {
+                eprintln!("termiod: could not link {}: {error}", link.display());
+                return None;
+            }
+        }
+    }
+    Some(directory.display().to_string())
 }
 
 /// `directory` put at the front of `path`, or `None` when there is nothing to
@@ -2950,7 +2982,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_mac_daemon_never_leads_the_sessions_path() {
-        assert_eq!(super::own_binary_directory(), None);
+        assert_eq!(super::client_path_directory(), None);
     }
 
     /// The write token as a plain str, so the assertions read as they did

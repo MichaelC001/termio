@@ -160,16 +160,25 @@ daemon at `hello`; a box a newer app set up is left alone.
 
 Install path is `~/.local/bin/termiod`, with the `termio` client beside it.
 Override with `TERMIOD_REMOTE_BIN` (e.g. `/usr/local/bin/termiod`) on the
-client for both deploy and attach; the client's path moves with it. Verification
-covers both: the daemon must answer `hello` as the new build, and the installed
-client must answer `--version` with the same stamp.
+client for both deploy and attach; the client's path moves with it, unless the
+override also renames the daemon, which deploys the daemon alone rather than
+renaming the box's own client aside. Verification covers both: the daemon must
+answer `hello` as the new build, and the installed client must answer
+`--version` with the same stamp.
 
-Sessions the daemon spawns find both binaries without any dotfile write: termiod
-prepends its own directory to the `PATH` of every session it starts. A bare SSH
-login outside termio keeps whatever the box's own profile does, so make sure
-`~/.local/bin` is on the remote `PATH` if you want to run `termiod` bare over
-SSH; the `remote` subcommands always call the absolute path, so this is only
-for your own convenience.
+Sessions find the client without any dotfile write: termiod keeps a directory
+holding one symlink to the paired `termio` and leads every session's `PATH`
+with it. A directory of its own rather than the daemon's — leading with, say,
+`/usr/local/bin` would put every binary in it ahead of the user's own `PATH`.
+
+A session started with a command (every agent) re-asserts that entry on the
+login shell's own command line, after its startup files have run. A plain
+terminal has no such line, so on a box whose `/etc/profile` reassigns `PATH`
+outright — Debian and Ubuntu do — a plain terminal resolves `termio` only if
+the install directory is on the `PATH` that profile builds. `~/.local/bin` is,
+for the shells that read `~/.profile`. So put the install directory on the
+remote `PATH` if you want to type `termio` in a plain terminal there; the
+`remote` subcommands and the agent hooks always have it.
 
 ## Starting the daemon: on-demand (default)
 

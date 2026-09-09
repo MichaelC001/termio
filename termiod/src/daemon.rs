@@ -522,21 +522,35 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
     if !spec.argv.is_empty() {
         return spec.argv.clone();
     }
-    let Some(command) = spec.command.as_ref().filter(|line| !line.trim().is_empty()) else {
-        return Vec::new();
-    };
-    let shell = crate::agent::machine::login_shell();
-    let line = login_shell_command(
-        command,
-        crate::session::own_binary_directory().as_deref(),
-        &shell,
-    );
-    vec![shell, "-ilc".to_string(), line]
+    let command = spec
+        .command
+        .as_ref()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty());
+    let client_directory = crate::session::client_path_directory();
+    match command {
+        Some(command) => {
+            let shell = crate::agent::machine::login_shell();
+            let line = login_shell_command(command, client_directory.as_deref(), &shell);
+            vec![shell, "-ilc".to_string(), line]
+        }
+        // A plain terminal *is* the shell, so there is no `-c` line to hang a
+        // re-assertion on: it runs as `Pty::spawn`'s own login shell, carrying
+        // the environment prepend and whatever its startup files then do to
+        // `PATH`. Wrapping it in a second shell to re-assert was tried and
+        // rejected — `Pty::spawn` routes exactly one zsh startup through the
+        // OSC 133 shim (`shell_integration`), and the wrapper shell consumes
+        // it, leaving the interactive shell the user actually types into with
+        // no prompt marks and the host with no rows it may blank on resize.
+        // Trading the reflow those marks carry for a `PATH` entry is the wrong
+        // way round; `DEPLOY.md` says plainly where the prepend survives.
+        None => Vec::new(),
+    }
 }
 
 /// The `-c` line a login shell runs for a `command` spec.
 ///
-/// The daemon's directory is prepended to the session's `PATH` in its
+/// The client's directory is prepended to the session's `PATH` in its
 /// environment (`session::daemon_owned_env`), but a *login* shell's startup
 /// files rebuild `PATH` after that — Debian's `/etc/profile` reassigns it
 /// unconditionally — which is exactly the stale-`termio` skew the prepend
@@ -546,19 +560,23 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
 /// login shell reads no `/etc/profile`, so the environment prepend survives
 /// there on its own.
 fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &str) -> String {
-    let posix = matches!(
-        std::path::Path::new(shell)
-            .file_name()
-            .and_then(|name| name.to_str()),
-        Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "ash")
-    );
-    match client_directory.filter(|_| posix) {
+    match client_directory.filter(|_| shell_is_posix(shell)) {
         Some(directory) => format!(
             "PATH={}:\"$PATH\" exec {command}",
             crate::lifecycle::shell_quote(directory)
         ),
         None => format!("exec {command}"),
     }
+}
+
+/// Whether `shell` takes `VAR=value command` and `-c` the way POSIX says.
+fn shell_is_posix(shell: &str) -> bool {
+    matches!(
+        std::path::Path::new(shell)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "ash")
+    )
 }
 
 /// Soft `RLIMIT_NOFILE` values to try for the daemon and everything it spawns,

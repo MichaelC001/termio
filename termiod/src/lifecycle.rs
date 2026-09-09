@@ -392,11 +392,7 @@ pub async fn status() -> Result<NodeStatus> {
 /// attach: before this probe existed, `status` executed nothing beside
 /// itself, and a wedged client must not turn it into a hang.
 async fn client_beside_this_binary() -> Option<BinaryStatus> {
-    let exe = std::env::current_exe().ok()?;
-    let candidate = exe.parent()?.join("termio");
-    if !candidate.is_file() {
-        return None;
-    }
+    let candidate = paired_client()?;
     let answered = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::process::Command::new(&candidate)
             .arg("--version")
@@ -416,6 +412,31 @@ async fn client_beside_this_binary() -> Option<BinaryStatus> {
         version: stamp.unwrap_or_default(),
         path: candidate.display().to_string(),
     })
+}
+
+/// The `termio` client installed beside this daemon binary, or `None` when
+/// there is none there.
+///
+/// The directory comes from `argv[0]` whenever this process was started by an
+/// absolute path, and from `current_exe` otherwise. The two differ exactly
+/// where the daemon's path is a symlink: `current_exe` resolves it
+/// (`/proc/self/exe` on Linux), so a daemon installed at
+/// `~/.local/bin/termiod` pointing into `/opt/termio` would report a client at
+/// `/opt/termio/termio` while the control plane stages and verifies
+/// `~/.local/bin/termio`. The two halves then disagree forever — the box
+/// verifies as unhealthy while being healthy, or restages every pass. `argv[0]`
+/// is the name the control plane actually used, so it is the one that answers.
+pub(crate) fn paired_client() -> Option<PathBuf> {
+    let invoked = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let directory = match invoked {
+        Some(path) => path.parent().map(Path::to_path_buf)?,
+        None => std::env::current_exe().ok()?.parent().map(Path::to_path_buf)?,
+    };
+    let candidate = directory.join("termio");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Which init owns the daemon, if any. This is what decides what "restart"
@@ -1150,7 +1171,14 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     };
     let mut staged = None;
     if let Some(plan) = plan {
-        eprintln!("[deploy] installing termiod {desired} on {label}…");
+        match plan {
+            StagePlan::Full => eprintln!("[deploy] installing termiod {desired} on {label}…"),
+            // The daemon is deliberately untouched on this pass; saying it is
+            // being installed would describe the one plan that does not.
+            StagePlan::ClientOnly => {
+                eprintln!("[deploy] installing the termio {desired} client on {label}…")
+            }
+        }
         stage(node, plan).await?;
         staged = Some(plan);
         observed = observe(node).await?;
@@ -1389,11 +1417,8 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<()> {
 }
 
 /// Upload-activate for one binary: rename the current file to `.prev`, the
-/// `.new` upload over the path — and if that last rename fails, put `.prev`
-/// straight back, so a partial swap never leaves the path empty. The restore
-/// is scoped inside the swap on purpose: only a `.prev` this very command
-/// created may be moved back, because a stale `.prev` from an earlier deploy
-/// moved over a healthy binary is a silent downgrade.
+/// `.new` upload over the path — and if that last rename fails, undo it, so a
+/// partial swap never leaves the path empty.
 fn swap_command(target: &str) -> String {
     format!(
         "chmod +x {target}.new && {{ [ ! -e {target} ] || mv -f {target} {target}.prev; }} && {{ mv -f {target}.new {target} || {{ {}; false; }}; }}",
@@ -1401,9 +1426,16 @@ fn swap_command(target: &str) -> String {
     )
 }
 
-/// Move `.prev` back over the path, if there is one.
+/// Put a path back the way this run found it: the previous build over it when
+/// there is one, and *gone* when there is not.
+///
+/// The removal half is what makes "a failed stage leaves the box as it was"
+/// true on a first install. There, the swap renamed nothing aside (the path
+/// held nothing to rename), so a restore that only knew how to move `.prev`
+/// back was a no-op and the box kept a binary from a stage that had failed —
+/// reported as `Failed` while the new build sat on disk.
 fn restore_command(target: &str) -> String {
-    format!("{{ [ ! -e {target}.prev ] || mv -f {target}.prev {target}; }}")
+    format!("if [ -e {target}.prev ]; then mv -f {target}.prev {target}; else rm -f {target}; fi")
 }
 
 /// The daemon answering as the build wanted, and the client beside it
@@ -1539,19 +1571,28 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
     if plan.restores_path {
         // The rename keeps the old inode alive for the daemon now exec'd from
         // it, while the path serves the build that worked to the next
-        // autostart. The client comes back with it — same pass in, same pass
-        // out — guarded because a box first deployed by this build has no
-        // previous client to restore.
-        let mut restore = format!("mv -f {source} {binary}");
-        if let Some(client) = node.client_binary() {
-            restore.push_str(&format!(" && {}", client_restore_command(&client)));
-        }
-        let run = node.run(&restore).await?;
+        // autostart.
+        let run = node.run(&format!("mv -f {source} {binary}")).await?;
         if run.code != 0 {
             bail!(
                 "restoring the previous binary on {label}: {}",
                 last_line(&run.stderr)
             );
+        }
+        // The client comes back in its own command, and its failure is a note
+        // rather than the rollback's. Chained onto the daemon's restore and
+        // judged by one exit code, a client that would not move back reported
+        // the whole rollback as failed — telling an operator the box was left
+        // on the build that broke it, while the daemon had in fact already
+        // been put back, and inviting recovery the box did not need.
+        if let Some(client) = node.client_binary() {
+            let restored = node.run(&restore_command(&client)).await;
+            if !matches!(&restored, Ok(run) if run.code == 0) {
+                eprintln!(
+                    "[deploy] {label} is back on the previous daemon, but its client could not be \
+                     restored; the next deploy replaces it"
+                );
+            }
         }
     }
     Ok(())
@@ -1565,7 +1606,7 @@ async fn roll_back_client<N: Node>(node: &N) -> Result<()> {
     };
     let label = node.label();
     eprintln!("[deploy] rolling {label} back to the previous client…");
-    let run = node.run(&client_restore_command(&client)).await?;
+    let run = node.run(&restore_command(&client)).await?;
     if run.code != 0 {
         bail!(
             "restoring the previous client on {label}: {}",
@@ -1573,16 +1614,6 @@ async fn roll_back_client<N: Node>(node: &N) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// The client's way back: `.prev` over the path when there is one, and the
-/// failed install *removed* when there is not. A first-time client that
-/// failed verification has no previous build to return to, and leaving it in
-/// place would keep a broken binary leading every session's PATH while the
-/// report claims the box was restored — absent is the state the box was in,
-/// so absent is what restored means.
-fn client_restore_command(client: &str) -> String {
-    format!("if [ -e {client}.prev ]; then mv -f {client}.prev {client}; else rm -f {client}; fi")
 }
 
 /// The one line worth showing from a `handoff --json` reply, falling back to
@@ -2343,6 +2374,7 @@ mod tests {
                 ok(""),        // roll back: [ -e prev ]
                 handed_off(3), // roll back: handoff --binary prev
                 ok(""),        // roll back: mv prev back
+                ok(""),        // roll back: the client, in its own command
             ],
             (0..40)
                 .map(|_| Err(anyhow::anyhow!("no protocol reply")))
@@ -2356,7 +2388,36 @@ mod tests {
             "{commands:?}"
         );
         assert!(!commands.iter().any(|command| command.contains(" stop")), "{commands:?}");
-        assert!(commands.last().unwrap().starts_with("mv -f"), "{commands:?}");
+        assert!(
+            commands.iter().any(|command| command == "mv -f $HOME/.local/bin/termiod.prev $HOME/.local/bin/termiod"),
+            "{commands:?}"
+        );
+        assert!(commands.last().unwrap().contains("termio.prev"), "{commands:?}");
+    }
+
+    /// The daemon is what a rollback is judged on. A client that will not move
+    /// back is a note, not a failed rollback: the box really is on the build
+    /// that worked, and saying otherwise sends an operator after a recovery
+    /// that already happened.
+    #[tokio::test]
+    async fn a_client_that_cannot_be_restored_does_not_fail_the_rollback() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // stage
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(3),
+                ok(""), // roll back: [ -e prev ]
+                handed_off(3),
+                ok(""), // roll back: the daemon is back
+                failed(1, "mv: cannot move: Read-only file system"), // the client is not
+            ],
+            (0..40)
+                .map(|_| Err(anyhow::anyhow!("no protocol reply")))
+                .collect(),
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
     }
 
     /// A new daemon that never verifies and cannot hand back is rolled back the
@@ -2374,6 +2435,7 @@ mod tests {
                 failed(1, "the daemon did not answer hello in time"), // roll back: handoff
                 ok(""), // roll back: stop --force
                 ok(""), // roll back: mv prev
+                ok(""), // roll back: the client
             ],
             (0..40)
                 .map(|_| Err(anyhow::anyhow!("no protocol reply")))
@@ -2383,7 +2445,10 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
         let commands = node.commands.borrow();
         assert!(commands.iter().any(|command| command.contains("stop --force")), "{commands:?}");
-        assert!(commands.last().unwrap().contains("termiod.prev"), "{commands:?}");
+        assert!(
+            commands.iter().any(|command| command.contains("termiod.prev")),
+            "{commands:?}"
+        );
     }
 
     /// A box another, newer control plane set up is left alone and reported as
@@ -2508,7 +2573,8 @@ mod tests {
                 failed(126, "cannot execute binary file"), // termio --version
                 ok(""),        // roll back: [ -e prev ]
                 handed_off(2), // roll back: handoff --binary prev
-                ok(""),        // roll back: mv prev back, client too
+                ok(""),        // roll back: the daemon
+                ok(""),        // roll back: the client
             ],
             vec![hello(Some(WANT))],
         );
@@ -2521,9 +2587,15 @@ mod tests {
             other => panic!("expected unhealthy, got {other:?}"),
         }
         let commands = node.commands.borrow();
-        let restore = commands.last().unwrap();
-        assert!(restore.contains("mv -f $HOME/.local/bin/termiod.prev $HOME/.local/bin/termiod"), "{restore}");
-        assert!(restore.contains("mv -f $HOME/.local/bin/termio.prev $HOME/.local/bin/termio"), "{restore}");
+        assert!(
+            commands.iter().any(|command| command == "mv -f $HOME/.local/bin/termiod.prev $HOME/.local/bin/termiod"),
+            "{commands:?}"
+        );
+        // The client's restore names the removal too: a first-time client has
+        // no `.prev` to come back from, and must not be left in place.
+        let client = commands.last().unwrap();
+        assert!(client.contains("mv -f $HOME/.local/bin/termio.prev $HOME/.local/bin/termio"), "{client}");
+        assert!(client.contains("rm -f $HOME/.local/bin/termio"), "{client}");
     }
 
     /// ssh failing is `unreachable`, kept apart from a step that ran and failed.

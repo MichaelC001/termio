@@ -30,19 +30,31 @@ pub fn remote_bin() -> String {
 /// Where the `termio` client is installed on the remote host: beside the
 /// daemon, under the name a person types (docker-lessons RFC §1.2 — the
 /// client ships everywhere the daemon does). `TERMIOD_REMOTE_BIN` moves both.
-pub fn remote_client_bin() -> String {
+/// `None` when the override renamed the daemon, which pairs with no client.
+pub fn remote_client_bin() -> Option<String> {
     client_bin_beside(&remote_bin())
 }
 
-fn client_bin_beside(daemon: &str) -> String {
-    match daemon.rsplit_once('/') {
-        Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
+/// The client that belongs to a daemon at `daemon`, or `None` when nothing on
+/// the box does.
+///
+/// The daemon's *basename* decides, not just its directory. `TERMIOD_REMOTE_BIN`
+/// is the knob for a custom install path and for pointing tests at a binary of
+/// their own, so `/usr/local/bin/termiod-test` is a shape someone will use —
+/// and deriving the client from the directory alone would have that deploy
+/// rename `/usr/local/bin/termio`, the box's real client, out from under
+/// everything using it. A daemon that is not named `termiod` is a daemon this
+/// loop installs alone.
+fn client_bin_beside(daemon: &str) -> Option<String> {
+    let (directory, name) = match daemon.rsplit_once('/') {
+        Some((directory, name)) if !directory.is_empty() => (directory, name),
         // A bare daemon name still installs into `$HOME/.local/bin` (see
         // `install_directory`), so the client is named by that path: its
         // activation and verification must reach the file scp put there, not
         // whatever a non-login shell's PATH happens to resolve.
-        _ => "$HOME/.local/bin/termio".to_string(),
-    }
+        _ => ("$HOME/.local/bin", daemon),
+    };
+    (name == "termiod").then(|| format!("{directory}/termio"))
 }
 
 /// SSH options shared by every outbound connection.
@@ -577,7 +589,7 @@ impl Node for SshNode {
         if self.prebuilt.is_some() && self.prebuilt_client.is_none() {
             return None;
         }
-        Some(remote_client_bin())
+        remote_client_bin()
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
@@ -922,9 +934,25 @@ mod tests {
     /// default install directory, where scp actually puts the file.
     #[test]
     fn the_client_installs_beside_the_daemon() {
-        assert_eq!(client_bin_beside("$HOME/.local/bin/termiod"), "$HOME/.local/bin/termio");
-        assert_eq!(client_bin_beside("/usr/local/bin/termiod"), "/usr/local/bin/termio");
-        assert_eq!(client_bin_beside("termiod"), "$HOME/.local/bin/termio");
+        assert_eq!(
+            client_bin_beside("$HOME/.local/bin/termiod").as_deref(),
+            Some("$HOME/.local/bin/termio")
+        );
+        assert_eq!(
+            client_bin_beside("/usr/local/bin/termiod").as_deref(),
+            Some("/usr/local/bin/termio")
+        );
+        assert_eq!(client_bin_beside("termiod").as_deref(), Some("$HOME/.local/bin/termio"));
+    }
+
+    /// A daemon the override renamed pairs with no client: deploying one would
+    /// rename the box's real `termio` aside to install a build under a name
+    /// that was never asked for.
+    #[test]
+    fn a_renamed_daemon_deploys_without_touching_the_boxs_client() {
+        assert_eq!(client_bin_beside("/usr/local/bin/termiod-test"), None);
+        assert_eq!(client_bin_beside("$HOME/builds/termiod.debug"), None);
+        assert_eq!(client_bin_beside("termiod-test"), None);
     }
 
     /// What `uname -sm` actually prints on the machines Termio is pointed at.

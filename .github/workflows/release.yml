@@ -137,19 +137,27 @@ jobs:
       # work at all and they are plain files in Resources, so nothing else would
       # notice them going missing: the app would install, launch, and fail only
       # when someone pointed it at a VPS.
-      - name: Verify the daemons survived into the DMG
+      #
+      # The `termio` clients ship beside them and sit in exactly that position:
+      # a deploy refuses outright when the client slice for a box's target is
+      # missing (`remote::shipped_client`), so a lost one turns deploying from
+      # something that works into something that cannot be done at all.
+      - name: Verify the daemons and clients survived into the DMG
         run: |
           mount_point="$RUNNER_TEMP/dmg-check"
           mkdir -p "$mount_point"
           hdiutil attach "$DMG_PATH" -mountpoint "$mount_point" -nobrowse -quiet
           resources="$mount_point/${APP_NAME}.app/Contents/Resources"
           status=0
-          for daemon in \
+          for binary in \
             "termiod:Mach-O" \
             "termiod-x86_64-unknown-linux-musl:ELF 64-bit" \
-            "termiod-aarch64-unknown-linux-musl:ELF 64-bit"; do
-            name="${daemon%%:*}"
-            want="${daemon#*:}"
+            "termiod-aarch64-unknown-linux-musl:ELF 64-bit" \
+            "termio:Mach-O" \
+            "termio-x86_64-unknown-linux-musl:ELF 64-bit" \
+            "termio-aarch64-unknown-linux-musl:ELF 64-bit"; do
+            name="${binary%%:*}"
+            want="${binary#*:}"
             if [ ! -f "$resources/$name" ]; then
               echo "error: $name is missing from the shipped app" >&2
               status=1
