@@ -71,6 +71,70 @@ final class WorktreeRecordTests: XCTestCase {
         XCTAssertFalse(records[1].prunable)
     }
 
+    /// The disk is the only witness left once git cannot inspect a checkout, so
+    /// this probe decides whether a worktree may be deregistered and its sessions
+    /// closed. Every failure has to land on the refusing side: a folder nothing
+    /// could read is not a folder known to be empty.
+    func testFolderEvidenceFailsClosedOnAFolderItCannotRead() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("worktree-evidence-\(ProcessInfo.processInfo.processIdentifier)")
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let unreadable = root.appendingPathComponent("denied")
+        try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+        try "uncommitted work".write(
+            to: unreadable.appendingPathComponent("draft.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadable.path) }
+
+        // Running as root defeats the permission bits, so the denial this asserts
+        // on would not happen; the case is real for the user the app runs as.
+        try XCTSkipIf(getuid() == 0, "root reads a 000 directory")
+        XCTAssertEqual(WorktreeService.folderEvidence(at: unreadable.path), .unreadable)
+    }
+
+    func testFolderEvidenceSeparatesAnEmptyCheckoutFromOneHoldingWork() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("worktree-evidence-shapes-\(ProcessInfo.processInfo.processIdentifier)")
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Deleted out from under git: nothing to lose.
+        XCTAssertEqual(
+            WorktreeService.folderEvidence(at: root.appendingPathComponent("gone").path),
+            .nothingToProtect
+        )
+
+        // Emptied and recreated, including the one Finder leaves behind.
+        let emptied = root.appendingPathComponent("emptied")
+        try FileManager.default.createDirectory(at: emptied, withIntermediateDirectories: true)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .nothingToProtect)
+        try "".write(to: emptied.appendingPathComponent(".DS_Store"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: emptied.path), .nothingToProtect)
+
+        // The `.git` gitfile deleted with the work still there: git marks this
+        // prunable, and the files are exactly what must not be let go of.
+        let working = root.appendingPathComponent("working")
+        try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
+        try "uncommitted".write(
+            to: working.appendingPathComponent("draft.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(WorktreeService.folderEvidence(at: working.path), .mayHoldWork)
+
+        // A path that is no longer a directory holds no checkout.
+        let replaced = root.appendingPathComponent("replaced")
+        try "not a checkout".write(to: replaced, atomically: true, encoding: .utf8)
+        XCTAssertEqual(WorktreeService.folderEvidence(at: replaced.path), .nothingToProtect)
+    }
+
     func testABareEntryIsMarkedAndALockReasonStillReadsAsLocked() {
         let listing = """
         worktree /Users/u/repo.git

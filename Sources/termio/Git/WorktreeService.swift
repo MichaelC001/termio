@@ -24,6 +24,58 @@ enum WorktreeService {
         let prunable: Bool
     }
 
+    /// What a disk read can say about a checkout git can no longer inspect — the
+    /// only evidence left once a worktree's `.git` gitfile is gone or git never
+    /// knew the path at all.
+    enum FolderEvidence: Equatable {
+        /// Nothing at the path, or a directory with nothing in it worth keeping.
+        case nothingToProtect
+        /// Entries are present, and nothing can tell whether they are work.
+        case mayHoldWork
+        /// The path could not be read, so nothing at all is known about it.
+        case unreadable
+    }
+
+    /// What is at `path`, for the callers that have no git left to ask.
+    ///
+    /// Fails closed, and that is the whole point of the return type: a read that
+    /// throws answers `.unreadable`, never `.nothingToProtect`. A folder behind a
+    /// permission or TCC denial is one nothing has looked inside, and reading that
+    /// as "empty, safe to let go of" is how an unreadable checkout full of
+    /// uncommitted work gets deregistered.
+    ///
+    /// `.DS_Store` is Finder's, not the user's: a folder emptied in the Finder
+    /// keeps one, and counting it as work would dead-end a removal on a worktree
+    /// with nothing in it.
+    static func folderEvidence(at path: String) -> FolderEvidence {
+        let manager = FileManager.default
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try manager.attributesOfItem(atPath: path)
+        } catch let error as NSError
+            where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            return .nothingToProtect
+        } catch let error as NSError
+            where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+            return .nothingToProtect
+        } catch {
+            // Something is there, and this could not find out what.
+            return .unreadable
+        }
+        // A path that is not a directory holds no checkout — deleted and replaced
+        // by a plain file, or a dangling symlink. Nothing here ever removes it.
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            return .nothingToProtect
+        }
+        let entries: [String]
+        do {
+            entries = try manager.contentsOfDirectory(atPath: path)
+        } catch {
+            return .unreadable
+        }
+        return entries.contains { $0 != ".DS_Store" } ? .mayHoldWork : .nothingToProtect
+    }
+
     /// The linked worktree paths for `repoRoot`, primary checkout excluded and paths
     /// standardized. `nil` when `git worktree list` fails (not a work tree, or a git
     /// error) — the caller treats `nil` as "leave the current list alone" and `[]` as
