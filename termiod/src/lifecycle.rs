@@ -1058,14 +1058,20 @@ pub enum Outcome {
         proto: Option<u32>,
         /// Another control plane put a newer build here. Left alone.
         newer: bool,
-        /// What went wrong with the `termio` client beside the daemon, when
-        /// something did. The daemon is still the build wanted and the machine
-        /// is still usable — that is why this rides `Current` rather than a
-        /// failure: a report that could not name the host would have every
-        /// reader treat a healthy box as unusable. The next reconcile restages
-        /// the client on its own.
+        /// What is wrong with the `termio` client beside the daemon, or what
+        /// could not be learned about it. The daemon is still the build wanted
+        /// and the machine is still usable — that is why this rides `Current`
+        /// rather than a failure: a report that could not name the host would
+        /// have every reader treat a healthy box as unusable.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client: Option<String>,
+        /// Whether that note is the client's own fault rather than something
+        /// this pass could not find out. Only a fault fails the deploy: ssh
+        /// being flaky for the seconds of a `--version` probe is not a reason
+        /// to call an otherwise perfect deploy failed, and it must still be
+        /// *said*, which is why it is a separate question from `client`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        client_failed: bool,
     },
     /// The binary is in place and the daemon still running is the old one.
     /// `busy` is why it was not stopped — empty when stopping was not asked for.
@@ -1096,9 +1102,10 @@ pub struct Report {
 impl Report {
     pub fn exit_code(&self) -> i32 {
         match self.outcome {
-            // A client that did not verify is still a failed deploy for whoever
-            // ran one, even though the machine came out of it working.
-            Outcome::Current { client: Some(_), .. } => 1,
+            // A client at fault is still a failed deploy for whoever ran one,
+            // even though the machine came out of it working. One this pass
+            // merely could not reach is not.
+            Outcome::Current { client_failed: true, .. } => 1,
             Outcome::Current { .. } => 0,
             Outcome::Staged { .. } => EXIT_BUSY,
             _ => 1,
@@ -1202,6 +1209,11 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         .with_context(|| format!("desired version {desired:?} is not a build stamp"))?;
     let label = node.label();
 
+    let repair_note = node.client_repair_note();
+    // What this pass will have to say about the client even when it stages
+    // nothing for it. A note that stops a doomed repair may not also stop the
+    // box from reporting the skew it is carrying.
+    let mut client_skew: Option<String> = None;
     let mut observed = observe(node).await?;
     let plan = match &observed {
         Observed::Absent | Observed::OldBinary => Some(StagePlan::Full),
@@ -1233,9 +1245,32 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                         .as_ref()
                         .and_then(|client| Version::parse(&client.version))
                         .is_some_and(|have| have >= want);
-                (!client_current
-                    && !client_repair_refused(node.client_repair_note().as_deref(), desired))
-                    .then_some(StagePlan::ClientOnly)
+                if client_current {
+                    // The note is about a client this machine would not take. It
+                    // is plainly obsolete once the machine has one.
+                    remember_client_repair(repair_note.as_deref(), None);
+                    None
+                } else if client_repair_refused(repair_note.as_deref(), desired) {
+                    // Installing this build's client here already failed for a
+                    // reason of the machine's own, so it is not attempted again
+                    // — but the machine is carrying a client that is not this
+                    // build, and it says so on every pass until that changes.
+                    // Silence here would report the exact skew §1.2 exists to
+                    // prevent as a clean bill of health, for good.
+                    client_skew = Some(format!(
+                        "the client on {label} is {}, not {desired}, and installing this build's \
+                         here already failed; a later build installs one again",
+                        status
+                            .client
+                            .as_ref()
+                            .map(|client| client.version.as_str())
+                            .filter(|version| !version.is_empty())
+                            .unwrap_or("missing"),
+                    ));
+                    None
+                } else {
+                    Some(StagePlan::ClientOnly)
+                }
             }
         },
     };
@@ -1243,7 +1278,6 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // nothing else: a run that staged only the client may not touch the daemon,
     // and one that staged no client may not touch the client — the box's own,
     // which it has been using all along, is not this run's to restore or remove.
-    let repair_note = node.client_repair_note();
     let mut staged = Staged::default();
     if let Some(plan) = plan {
         staged = match stage(node, plan).await {
@@ -1255,7 +1289,15 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             // …") over the CLI inside its sessions.
             Err(error) if plan == StagePlan::ClientOnly => {
                 eprintln!("[deploy] {label}'s client could not be installed ({error:#}); leaving it as it is");
-                remember_client_repair(repair_note.as_deref(), Some(desired));
+                // Only a refusal by the machine is remembered. ssh dropping for a
+                // second says nothing about whether this client can live there,
+                // and writing it down would disable client installs on that box
+                // until the next build — the same rule the `Unknown` verdict
+                // keeps below.
+                if error.downcast_ref::<Unreachable>().is_none() {
+                    remember_client_repair(repair_note.as_deref(), Some(desired));
+                }
+                client_skew = Some(format!("{error:#}"));
                 Staged::default()
             }
             Err(error) => return Err(error),
@@ -1416,7 +1458,7 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     // that reading is an execution of the same binary, not a stat — so asking
     // again would spend an ssh round trip, before every attach, to learn what
     // the machine has just said.
-    let mut client_trouble = None;
+    let mut client_trouble = client_skew.map(|note| (note, true));
     if staged.client {
         match verify_client(node, want).await {
             ClientVerdict::Good => remember_client_repair(repair_note.as_deref(), None),
@@ -1432,18 +1474,24 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                 // client — a noexec mount, a denied exec, a full disk — was
                 // otherwise restaged on every attach, for good.
                 remember_client_repair(repair_note.as_deref(), Some(desired));
-                client_trouble = Some(format!(
-                    "{message}{}",
-                    if put_back {
-                        "; the previous client is back in place, and a later build installs one again"
-                    } else {
-                        "; it could not be put back, and a later build installs one again"
-                    }
+                client_trouble = Some((
+                    format!(
+                        "{message}{}",
+                        if put_back {
+                            "; the previous client is back in place, and a later build installs one again"
+                        } else {
+                            "; it could not be put back, and a later build installs one again"
+                        }
+                    ),
+                    true,
                 ));
             }
             // Nothing was learned about the client, so nothing is undone: what
             // this run installed stays, and the next pass asks again.
-            ClientVerdict::Unknown(message) => client_trouble = Some(message),
+            // Reported, never counted as a fault: nothing was learned, and a
+            // deploy that installed everything correctly must not be called
+            // failed because ssh was flaky for the length of one probe.
+            ClientVerdict::Unknown(message) => client_trouble = Some((message, false)),
         }
     }
 
@@ -1459,7 +1507,8 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         host_id: hello.host_id,
         proto: Some(hello.proto),
         newer: version > want,
-        client: client_trouble,
+        client: client_trouble.as_ref().map(|(note, _)| note.clone()),
+        client_failed: client_trouble.is_some_and(|(_, fault)| fault),
     })
 }
 
@@ -2120,6 +2169,8 @@ mod tests {
         client_artifact: Option<PathBuf>,
         /// Where a refused client repair is remembered, when a test cares.
         repair_note: Option<PathBuf>,
+        /// Makes `put` fail the way ssh does when the host drops.
+        unreachable_put: bool,
     }
 
     impl FakeNode {
@@ -2134,6 +2185,7 @@ mod tests {
                 client: Some("$HOME/.local/bin/termio".to_string()),
                 client_artifact: Some(PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl")),
                 repair_note: None,
+                unreachable_put: false,
             }
         }
 
@@ -2172,6 +2224,9 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("unscripted command: {command}"))
         }
         async fn put(&self, local: &Path, name: &str) -> Result<()> {
+            if self.unreachable_put {
+                return Err(Unreachable("ssh: connect to host box port 22: Broken pipe".into()).into());
+            }
             self.puts.borrow_mut().push(format!("{} → {name}", local.display()));
             Ok(())
         }
@@ -3055,11 +3110,16 @@ mod tests {
         );
         let report = reconcile(&node, WANT, Options::default()).await;
         match &report.outcome {
-            Outcome::Current { client: Some(note), .. } => {
+            Outcome::Current { client: Some(note), client_failed, .. } => {
                 assert!(note.contains("could not reach"), "{note}");
+                // Said, but not counted against the deploy: everything installed
+                // correctly and the daemon verified, and ssh being flaky for the
+                // seconds of one probe is not the client's fault.
+                assert!(!client_failed, "{note}");
             }
             other => panic!("expected current with an unknown-client note, got {other:?}"),
         }
+        assert_eq!(report.exit_code(), 0);
         // The client it installed is still there: nothing restored, nothing removed.
         let commands = node.commands.borrow();
         let client_restore = restore_command("$HOME/.local/bin/termio", false);
@@ -3087,6 +3147,34 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
     }
 
+    /// Only the machine refusing the client is remembered. ssh dropping for a
+    /// second says nothing about whether this client can live there, and writing
+    /// it down would disable client installs on that box until the next build —
+    /// the same rule the `Unknown` verdict keeps for the probe.
+    #[tokio::test]
+    async fn a_dropped_connection_does_not_disable_the_client_on_a_box() {
+        let note = std::path::PathBuf::from(format!(
+            "/tmp/termiod-repair-{}-dropped",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&note);
+        let mut node = FakeNode::new(
+            vec![ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new()))],
+            vec![hello(Some(WANT))],
+        );
+        node.repair_note = Some(note.clone());
+        node.unreachable_put = true;
+        let report = reconcile(&node, WANT, Options::default()).await;
+
+        // Usable, said out loud, and still worth trying again next time.
+        match &report.outcome {
+            Outcome::Current { client: Some(_), .. } => {}
+            other => panic!("expected current with a client note, got {other:?}"),
+        }
+        assert!(!note.exists(), "a transport failure is not a verdict on the client");
+        let _ = std::fs::remove_file(&note);
+    }
+
     /// And it is remembered, so the next attach does not spend another upload
     /// learning the same thing. A machine that can never take this build's
     /// client was otherwise restaged on every single attach, for good.
@@ -3109,14 +3197,25 @@ mod tests {
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
 
-        // The next pass: the same box, the same build, and nothing sent.
+        // The next pass: the same box, the same build, and nothing sent — but
+        // the box is carrying a client that is not this build, and a note that
+        // stops a doomed repair may not also stop it saying so. Silence here
+        // would report the very skew §1.2 exists to prevent as a clean bill of
+        // health, on every pass, for good.
         let mut again = FakeNode::new(
-            vec![ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new()))],
+            vec![ok(&status_json_with_client(WANT, Some("0.43.0+1500"), Some(WANT), true, Vec::new()))],
             vec![hello(Some(WANT))],
         );
         again.repair_note = Some(note.clone());
         let report = reconcile(&again, WANT, Options::default()).await;
-        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        match &report.outcome {
+            Outcome::Current { client: Some(note), .. } => {
+                assert!(note.contains("0.43.0+1500"), "{note}");
+                assert!(note.contains(WANT), "{note}");
+            }
+            other => panic!("expected current naming the skew, got {other:?}"),
+        }
+        assert_eq!(report.exit_code(), 1, "a skewed box is a failed deploy");
         assert!(again.puts.borrow().is_empty(), "{:?}", again.puts.borrow());
 
         // A later build is a fresh chance, so the note does not apply to it.
@@ -3170,7 +3269,14 @@ mod tests {
             }
         }
         let report = reconcile(&NoClientBuild, WANT, Options::default()).await;
-        assert!(matches!(report.outcome, Outcome::Current { client: None, .. }), "{report:?}");
+        // Usable, and honest about it: the machine is reachable and its daemon
+        // is the build wanted, while the client it is missing is still named.
+        match &report.outcome {
+            Outcome::Current { client: Some(note), .. } => {
+                assert!(note.contains("no bundled client"), "{note}")
+            }
+            other => panic!("expected current with a client note, got {other:?}"),
+        }
     }
 
     /// A Mac reachable over ssh is current with no client of the deploy's: it
@@ -3252,6 +3358,7 @@ mod tests {
                 proto: Some(1),
                 newer: false,
                 client: Some("the client at ~/.local/bin/termio does not answer --version".into()),
+                client_failed: true,
             },
         };
         let json: serde_json::Value =
@@ -3260,6 +3367,9 @@ mod tests {
         assert_eq!(json["host_id"], "h_1");
         assert_eq!(json["version"], WANT);
         assert!(json["client"].as_str().unwrap().contains("--version"));
+        // The app reads this to tell a client at fault from one it could not
+        // check, and says a different sentence for each.
+        assert_eq!(json["client_failed"], true);
 
         // And a healthy one carries no such key at all, so nothing downstream
         // has to tell "absent" from "empty".
@@ -3272,11 +3382,13 @@ mod tests {
                 proto: Some(1),
                 newer: false,
                 client: None,
+                client_failed: false,
             },
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&healthy).unwrap()).unwrap();
         assert!(json.get("client").is_none(), "{json}");
+        assert!(json.get("client_failed").is_none(), "{json}");
     }
 
     /// ssh failing is `unreachable`, kept apart from a step that ran and failed.

@@ -1411,9 +1411,12 @@ extension TermioStore {
             // would block a healthy box over the CLI inside its sessions, which
             // the next deploy installs again anyway.
             if let clientTrouble = report.client {
+                let summary = report.clientFailed == true
+                    ? "is current, but its termio client is not"
+                    : "is current; its termio client could not be checked"
                 Log.termiod.error("""
-                termiod on \(host, privacy: .public) is current, but its termio client \
-                is not: \(clientTrouble, privacy: .public)
+                termiod on \(host, privacy: .public) \(summary, privacy: .public): \
+                \(clientTrouble, privacy: .public)
                 """)
             }
             return .success(TermiodDevice(
@@ -1527,8 +1530,10 @@ extension TermioStore {
             Log.termiod.info(
                 "this Mac's termiod is current at \(report.version ?? desired, privacy: .public)")
             if let clientTrouble = report.client {
-                Log.termiod.error(
-                    "this Mac's termio client is not: \(clientTrouble, privacy: .public)")
+                let summary = report.clientFailed == true
+                    ? "this Mac's termio client is not"
+                    : "this Mac's termio client could not be checked"
+                Log.termiod.error("\(summary, privacy: .public): \(clientTrouble, privacy: .public)")
             }
         case .staged:
             Log.termiod.info("""
