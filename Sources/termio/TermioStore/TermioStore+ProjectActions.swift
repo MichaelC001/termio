@@ -166,21 +166,34 @@ extension TermioStore {
 
         // One `git worktree list --porcelain` read answers everything the removal
         // decides on: whether git still knows this checkout, whether git itself
-        // judges it gone (`prunable` covers the folder-deleted shape *and* the
-        // damaged ones — an emptied folder, a deleted `.git` gitfile, a path
-        // replaced by a plain file — none of which `git status` can inspect), and
-        // which branch to tidy afterward. The branch comes from the repo's records
-        // for both arms: the checkout can't be asked once its folder is damaged,
-        // and a detached HEAD simply carries no branch line, so no sentinel string
-        // is needed. Raw disk checks are deliberately not consulted — git's own
-        // verdict is what decides, including its escape hatch: a worktree on
-        // removable media is protected by `git worktree lock`, which is honored
-        // below.
-        let record = WorktreeService.records(in: repository)?
+        // judges it gone (`prunable`), whether git is holding on to it (`locked`),
+        // and which branch to tidy afterward. The branch comes from the repo's
+        // records for every arm: the checkout can't be asked once its folder is
+        // damaged, and a detached HEAD simply carries no branch line, so no
+        // sentinel string is needed.
+        //
+        // A read that fails is not an answer. Treating it as "git doesn't know
+        // this worktree" would skip both the dirty check and the deregistration
+        // while still closing the sessions and dropping the row, so a repo git
+        // could not read for a moment would cost the user the row and the work
+        // behind it.
+        guard let registrations = WorktreeService.records(in: repository) else {
+            presentWorktreeFailure(
+                title: localized("Couldn’t inspect worktree"),
+                message: localized("git couldn’t read this project’s worktrees, so “\(displayName)” was not removed.")
+            )
+            return
+        }
+        let record = registrations
             .first(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(worktree.path) })
         let branch = record?.branch
 
-        if let record, record.prunable {
+        if let record {
+            // Locked comes first because it is not a shape of brokenness: git
+            // marks a locked worktree `locked` and never `prunable`, even with
+            // its folder deleted, which is exactly how a checkout on removable
+            // media survives being unplugged. Checking it inside the prunable
+            // arm would never fire.
             guard !record.locked else {
                 presentWorktreeFailure(
                     title: localized("Worktree is locked"),
@@ -188,51 +201,65 @@ extension TermioStore {
                 )
                 return
             }
-            // A targeted remove deregisters just this worktree when its folder is
-            // gone. The damaged-folder shapes fail its validation, and for those
-            // pruning is the only tool git offers — repo-wide, so it is the
-            // fallback rather than the first resort.
-            if runGit(["worktree", "remove", worktree.path], in: repository) == nil {
-                runGit(["worktree", "prune"], in: repository)
-            }
-            // Success is the registration actually being gone — a prune that
-            // silently skipped this worktree must not be reported as a removal,
-            // or the row would reappear on the next discovery pass.
-            let gone = WorktreeService.records(in: repository)
-                .map { records in
-                    !records.contains { canonicalWorktreePath($0.path) == canonicalWorktreePath(worktree.path) }
-                } ?? false
-            guard gone else {
-                presentWorktreeFailure(
-                    title: localized("Couldn’t remove worktree"),
-                    message: localized("git still lists “\(displayName)”, so it was not removed.")
-                )
-                return
-            }
-        } else if record != nil {
-            guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
-                presentWorktreeFailure(
-                    title: localized("Couldn’t inspect worktree"),
-                    message: localized("git couldn’t check “\(displayName)” for changes, so it was not removed.")
-                )
-                return
-            }
-            guard status.isEmpty else {
-                presentWorktreeFailure(
-                    title: localized("Worktree has changes"),
-                    message: localized("Commit or discard the changes in “\(displayName)” before removing it.")
-                )
-                return
-            }
-            guard runGit(["worktree", "remove", worktree.path], in: repository) != nil else {
-                presentWorktreeFailure(
-                    title: localized("Couldn’t remove worktree"),
-                    message: localized("git couldn’t remove “\(displayName)”.")
-                )
-                return
+            if record.prunable {
+                // `prunable` says git lost its way to the checkout, not that the
+                // work is gone: a worktree whose `.git` gitfile was deleted is
+                // marked prunable with every file still on disk. Nothing can
+                // inspect those files for changes — that is what being prunable
+                // costs — so a folder that still holds anything is left alone
+                // rather than deregistered out from under work nobody can see.
+                guard !folderHoldsFiles(at: worktree.path) else {
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t inspect worktree"),
+                        message: localized("git can no longer read “\(displayName)”, and its folder still holds files. Delete the folder to remove the worktree.")
+                    )
+                    return
+                }
+                // A targeted remove deregisters just this worktree when its folder
+                // is gone. The damaged-folder shapes fail its validation, and for
+                // those pruning is the only tool git offers — repo-wide, so it is
+                // the fallback rather than the first resort.
+                if runGit(["worktree", "remove", worktree.path], in: repository) == nil {
+                    runGit(["worktree", "prune"], in: repository)
+                }
+                // A prune that silently skipped this worktree must not be reported
+                // as a removal, or the row would reappear on the next discovery
+                // pass. Only git still naming the worktree proves that: a read
+                // that fails here says nothing about a removal that already ran,
+                // and refusing on it would strand a row git has let go of.
+                if let remaining = WorktreeService.records(in: repository),
+                   remaining.contains(where: { canonicalWorktreePath($0.path) == canonicalWorktreePath(worktree.path) }) {
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t remove worktree"),
+                        message: localized("git still lists “\(displayName)”, so it was not removed.")
+                    )
+                    return
+                }
+            } else {
+                guard let status = runGit(["status", "--porcelain"], in: worktree.path) else {
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t inspect worktree"),
+                        message: localized("git couldn’t check “\(displayName)” for changes, so it was not removed.")
+                    )
+                    return
+                }
+                guard status.isEmpty else {
+                    presentWorktreeFailure(
+                        title: localized("Worktree has changes"),
+                        message: localized("Commit or discard the changes in “\(displayName)” before removing it.")
+                    )
+                    return
+                }
+                guard runGit(["worktree", "remove", worktree.path], in: repository) != nil else {
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t remove worktree"),
+                        message: localized("git couldn’t remove “\(displayName)”.")
+                    )
+                    return
+                }
             }
         }
-        // A worktree git no longer lists at all has nothing left to remove; the
+        // A worktree git lists nowhere has nothing left to deregister; the
         // sidebar row and its sessions are all that remain of it.
 
         // Best-effort tidy of the auto-created branch. `-d` (not `-D`) refuses to drop a
@@ -255,6 +282,22 @@ extension TermioStore {
     /// ancestor (a linked home directory, `/tmp`) would otherwise defeat the match.
     private func canonicalWorktreePath(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Whether anything is left in a checkout git can no longer inspect — the only
+    /// question a disk read can still answer once the `.git` gitfile is gone.
+    ///
+    /// A path that isn't a directory holds no checkout (deleted, or replaced by a
+    /// plain file the removal never touches), and `.DS_Store` is Finder's, not the
+    /// user's: a folder emptied in the Finder keeps one, and counting it would
+    /// dead-end the removal on a worktree with nothing in it.
+    private func folderHoldsFiles(at path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: path)
+        else { return false }
+        return entries.contains { $0 != ".DS_Store" }
     }
 
     /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly

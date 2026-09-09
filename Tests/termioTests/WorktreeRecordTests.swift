@@ -49,6 +49,28 @@ final class WorktreeRecordTests: XCTestCase {
         XCTAssertNil(records[4].branch)
     }
 
+    /// Verbatim output for a locked worktree whose folder was deleted (git 2.47):
+    /// git marks it `locked` and *not* `prunable`, which is why `removeWorktree`
+    /// has to test `locked` before it branches on `prunable` — inside that branch
+    /// the check could never fire, and a checkout on unplugged removable media
+    /// would take the deregistration path instead of the locked message.
+    func testALockedWorktreeIsNeverMarkedPrunableEvenWithItsFolderGone() {
+        let listing = """
+        worktree /Users/u/repo
+        HEAD 1a96c165970cec53355f4dc6c1b58b2fa79850ae
+        branch refs/heads/main
+
+        worktree /Users/u/w1
+        HEAD 1a96c165970cec53355f4dc6c1b58b2fa79850ae
+        branch refs/heads/b1
+        locked
+        """
+        let records = WorktreeService.records(from: listing)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertTrue(records[1].locked)
+        XCTAssertFalse(records[1].prunable)
+    }
+
     func testABareEntryIsMarkedAndALockReasonStillReadsAsLocked() {
         let listing = """
         worktree /Users/u/repo.git
