@@ -577,7 +577,7 @@ impl Node for SshNode {
         if let Some(path) = shipped_binary(&target) {
             eprintln!("[deploy] using the bundled {target} binaries");
             let daemon = PathBuf::from(path);
-            let client = Some(shipped_client(&target, &daemon)?);
+            let client = shipped_client(&target, &daemon)?;
             return Ok(Artifacts { daemon, client });
         }
         tokio::task::spawn_blocking(move || cross_compile(&target)).await?
@@ -684,25 +684,40 @@ fn shipped_binary(target: &str) -> Option<String> {
 /// own directory — the app bundle's Resources, or a cargo target directory; a
 /// dev bundle names its copy `termio-dev`, and either lands on the box as
 /// `termio`, because argv[0] is what binds a channel and a box has only the
-/// one. Missing is an error rather than a smaller deploy: a bundle built from
-/// this code always carries both, so absence means a broken bundle, and
-/// shipping half a build would recreate the skew §1.2 rules out.
-fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
+/// one.
+///
+/// A missing Linux slice is an error: those exist only because
+/// `scripts/build-app.sh` put them in a bundle's Resources, so absence means a
+/// broken bundle, and shipping half a build from one would recreate the skew
+/// §1.2 rules out. A missing Mac client is not, because `shipped_binary` hands
+/// back `current_exe` for every Darwin target — including a daemon run straight
+/// out of a checkout, where `cargo build --bin termiod` legitimately produced
+/// no client. Failing there would turn a Mac→Mac deploy that worked before this
+/// pass into one that cannot be done at all; it degrades to daemon-only with a
+/// note, exactly as the `--bin` override does.
+fn shipped_client(target: &str, daemon: &Path) -> Result<Option<PathBuf>> {
     let directory = daemon
         .parent()
         .with_context(|| format!("{} has no directory", daemon.display()))?;
-    let candidates = if target.contains("apple-darwin") {
-        vec![directory.join("termio"), directory.join("termio-dev")]
-    } else {
-        vec![directory.join(format!("termio-{target}"))]
-    };
-    match candidates.iter().find(|candidate| candidate.is_file()) {
-        Some(found) => Ok(found.clone()),
-        None => bail!(
-            "the bundled daemon has no termio client beside it ({}); the client deploys with the daemon",
-            candidates[0].display()
-        ),
+    if target.contains("apple-darwin") {
+        let candidates = [directory.join("termio"), directory.join("termio-dev")];
+        let found = candidates.iter().find(|candidate| candidate.is_file()).cloned();
+        if found.is_none() {
+            eprintln!(
+                "[deploy] no termio client beside {}; deploying the daemon only",
+                daemon.display()
+            );
+        }
+        return Ok(found);
     }
+    let candidate = directory.join(format!("termio-{target}"));
+    if !candidate.is_file() {
+        bail!(
+            "the bundled daemon has no termio client beside it ({}); the client deploys with the daemon",
+            candidate.display()
+        );
+    }
+    Ok(Some(candidate))
 }
 
 /// The client that pairs with a developer-supplied `--bin` daemon: the

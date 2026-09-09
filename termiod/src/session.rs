@@ -1661,21 +1661,56 @@ pub(crate) fn client_path_directory() -> Option<String> {
         eprintln!("termiod: could not create {}: {error}", directory.display());
         return None;
     }
-    let link = directory.join("termio");
-    // Re-pointed rather than trusted: a client-only redeploy can move the
-    // client under a daemon that keeps running, and a link left pointing at
-    // the old path would hand sessions a build the box no longer has.
-    match std::fs::read_link(&link) {
-        Ok(existing) if existing == client => {}
-        _ => {
-            let _ = std::fs::remove_file(&link);
-            if let Err(error) = std::os::unix::fs::symlink(&client, &link) {
-                eprintln!("termiod: could not link {}: {error}", link.display());
-                return None;
-            }
+    match place_client_link(&directory, &client) {
+        Ok(()) => Some(directory.display().to_string()),
+        Err(error) => {
+            eprintln!(
+                "termiod: could not point {}/termio at {}: {error}",
+                directory.display(),
+                client.display()
+            );
+            None
         }
     }
-    Some(directory.display().to_string())
+}
+
+/// Distinguishes the staging names two spawns in this process may need at the
+/// same instant — the pid alone does not, and both would then write one path.
+static LINK_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Point `<directory>/termio` at `client`, replacing whatever is there.
+///
+/// Re-pointed rather than trusted: a client-only redeploy can move the client
+/// under a daemon that keeps running, and a link left pointing at the old path
+/// would hand sessions a build the box no longer has.
+///
+/// Replaced by rename, never by remove-then-create. Two sessions spawning at
+/// once both take this path on the first spawn after a daemon starts, and
+/// unlinking first gave them a window where the link was missing — a child
+/// exec'ing at that instant finding nothing, and the loser of the race failing
+/// `EEXIST` and handing its session no `PATH` entry at all. `rename` is atomic:
+/// every reader sees the old link or the new one, and concurrent placements
+/// all succeed.
+fn place_client_link(
+    directory: &std::path::Path,
+    client: &std::path::Path,
+) -> std::io::Result<()> {
+    let link = directory.join("termio");
+    if std::fs::read_link(&link).ok().as_deref() == Some(client) {
+        return Ok(());
+    }
+    let staging = directory.join(format!(
+        "termio.{}.{}",
+        std::process::id(),
+        LINK_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&staging);
+    std::os::unix::fs::symlink(client, &staging)?;
+    if let Err(error) = std::fs::rename(&staging, &link) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// `directory` put at the front of `path`, or `None` when there is nothing to
@@ -2983,6 +3018,74 @@ mod tests {
     #[test]
     fn a_mac_daemon_never_leads_the_sessions_path() {
         assert_eq!(super::client_path_directory(), None);
+    }
+
+    /// Sessions spawning at once all get a usable link. Removing the old link
+    /// before creating the new one failed both halves of that: the loser of the
+    /// race got `EEXIST` and its session no `PATH` entry at all, and until the
+    /// winner finished there was an instant with no link for a child to exec.
+    #[test]
+    fn concurrent_spawns_all_get_the_client_link() {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/termiod-link-{}-{}",
+            std::process::id(),
+            "concurrent"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test directory");
+        let client = root.join("termio-real");
+        std::fs::write(&client, b"#!/bin/sh\n").expect("client");
+        let directory = root.join("bin");
+        std::fs::create_dir_all(&directory).expect("link directory");
+        // A stale link, so every caller takes the replacing path rather than
+        // the read-link fast path.
+        std::os::unix::fs::symlink(root.join("termio-old"), directory.join("termio"))
+            .expect("stale link");
+
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let absent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let directory = directory.clone();
+                let client = client.clone();
+                let failures = std::sync::Arc::clone(&failures);
+                scope.spawn(move || {
+                    if super::place_client_link(&directory, &client).is_err() {
+                        failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+            // A reader standing in for a child about to exec. What it must never
+            // see is the link *gone*, which is what unlinking first produced;
+            // `rename` leaves the name occupied throughout.
+            let link = directory.join("termio");
+            let absent = std::sync::Arc::clone(&absent);
+            scope.spawn(move || {
+                for _ in 0..2_000 {
+                    if matches!(
+                        std::fs::read_link(&link),
+                        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+                    ) {
+                        absent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        });
+
+        assert_eq!(failures.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(absent.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            std::fs::read_link(directory.join("termio")).expect("a link"),
+            client
+        );
+        // Nothing is left behind but the link itself.
+        let entries: Vec<_> = std::fs::read_dir(&directory)
+            .expect("read")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The write token as a plain str, so the assertions read as they did
