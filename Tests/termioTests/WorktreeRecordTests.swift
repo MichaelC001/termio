@@ -71,6 +71,54 @@ final class WorktreeRecordTests: XCTestCase {
         XCTAssertFalse(records[1].prunable)
     }
 
+    /// The removal matches a sidebar row against git's own records by canonical
+    /// path, and it has to keep matching after the folder is deleted — which is
+    /// the case the whole feature exists for.
+    ///
+    /// A worktree under a symlinked ancestor is stored with the spelling that
+    /// created it while git prints the resolved one. Canonicalizing the leaf
+    /// alone worked only while the folder existed: `resolvingSymlinksInPath`
+    /// returns a missing path unchanged, so the two stopped matching the moment
+    /// the folder went, the record read as absent, and the row was dropped while
+    /// git kept the registration for good — the branch never tidied, the row
+    /// never coming back to retry, and a later `git worktree add` at that path
+    /// refused as "already registered".
+    func testAPathKeepsOneSpellingAfterItsFolderIsDeleted() throws {
+        let manager = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("worktree-canon-\(ProcessInfo.processInfo.processIdentifier)")
+        try? manager.removeItem(at: root)
+        try manager.createDirectory(at: root.appendingPathComponent("real/wts/w1"),
+                                    withIntermediateDirectories: true)
+        try manager.createSymbolicLink(at: root.appendingPathComponent("linked"),
+                                       withDestinationURL: root.appendingPathComponent("real"))
+        defer { try? manager.removeItem(at: root) }
+
+        // What the sidebar row keeps, and what `git worktree list` prints.
+        let stored = root.appendingPathComponent("linked/wts/w1").path
+        let git = root.appendingPathComponent("real/wts/w1").path
+        XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
+
+        // The folder is deleted by another tool: they must still agree.
+        try manager.removeItem(at: root.appendingPathComponent("real/wts/w1"))
+        XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
+
+        // And with the directories above it gone too, down to the symlink the
+        // spellings differ through. (Deleting what that symlink itself points
+        // at is a different shape: the link dangles, Foundation resolves it no
+        // further, and nothing can tell the two spellings are one path. The
+        // symlinked ancestors this matters for — `/tmp`, `/var`, a linked home
+        // — are not the thing anyone deletes.)
+        try manager.removeItem(at: root.appendingPathComponent("real/wts"))
+        XCTAssertEqual(WorktreeService.canonicalPath(stored), WorktreeService.canonicalPath(git))
+
+        // Different worktrees still read as different ones.
+        XCTAssertNotEqual(
+            WorktreeService.canonicalPath(root.appendingPathComponent("real/wts/w1").path),
+            WorktreeService.canonicalPath(root.appendingPathComponent("real/wts/w2").path)
+        )
+    }
+
     /// The disk is the only witness left once git cannot inspect a checkout, so
     /// this probe decides whether a worktree may be deregistered and its sessions
     /// closed. Every failure has to land on the refusing side: a folder nothing
@@ -138,6 +186,21 @@ final class WorktreeRecordTests: XCTestCase {
         let replaced = root.appendingPathComponent("replaced")
         try "not a checkout".write(to: replaced, atomically: true, encoding: .utf8)
         XCTAssertEqual(WorktreeService.folderEvidence(at: replaced.path), .occupied)
+
+        // An unmounted volume answers "no such file" for everything on it. That
+        // must not read as a deleted checkout: the worktree is still on the
+        // drive, and letting go of it would deregister work that is merely
+        // unplugged.
+        XCTAssertEqual(
+            WorktreeService.folderEvidence(at: "/Volumes/TermioNoSuchVolume/repo-wt"),
+            .unreadable
+        )
+        // A volume that *is* mounted still reports a genuinely deleted checkout
+        // as gone — the root volume stands in for one here.
+        XCTAssertEqual(
+            WorktreeService.folderEvidence(at: root.appendingPathComponent("still-gone").path),
+            .gone
+        )
 
         // A symlink is `.occupied` too, and deliberately not followed: whatever
         // is on the other side was never part of the checkout, and classifying

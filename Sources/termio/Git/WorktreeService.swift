@@ -47,6 +47,37 @@ enum WorktreeService {
         case unreadable
     }
 
+    /// One spelling for a worktree path however it reaches us: git prints
+    /// realpaths, while a stored `Worktree.path` keeps whatever spelling created
+    /// it, so a symlinked ancestor (`/tmp`, `/var`, a linked home) makes the two
+    /// disagree.
+    ///
+    /// The resolution has to survive the path being *gone*, which is the whole
+    /// case this exists for. `resolvingSymlinksInPath` returns a path that does
+    /// not exist unchanged, so canonicalizing the leaf directly stopped working
+    /// at exactly the moment a worktree's folder was deleted: the stored row and
+    /// git's record no longer matched, the record read as absent, and a removal
+    /// dropped the row while git kept the registration for good. So the deepest
+    /// *existing* ancestor is resolved — that part is real, and both spellings
+    /// share it — and the missing components are appended back to it.
+    static func canonicalPath(_ path: String) -> String {
+        var missing: [String] = []
+        var probe = URL(fileURLWithPath: path).standardized
+        while !FileManager.default.fileExists(atPath: probe.path) {
+            let parent = probe.deletingLastPathComponent().standardized
+            // The root resolves to itself; without this a path on no existing
+            // volume at all would walk forever.
+            guard parent.path != probe.path else { return probe.path }
+            missing.append(probe.lastPathComponent)
+            probe = parent
+        }
+        var resolved = probe.resolvingSymlinksInPath()
+        for component in missing.reversed() {
+            resolved.appendPathComponent(component)
+        }
+        return resolved.path
+    }
+
     /// What is at `path`, for the callers that have no git left to ask.
     ///
     /// Fails closed, and that is the whole point of the return type: a read that
@@ -64,11 +95,14 @@ enum WorktreeService {
         do {
             attributes = try manager.attributesOfItem(atPath: path)
         } catch let error as NSError
-            where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
-            return .gone
-        } catch let error as NSError
-            where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
-            return .gone
+            where (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError)
+            || (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT)) {
+            // Absent is only "deleted" when the volume it would be on is here to
+            // say so. An unplugged drive answers `ENOENT` for everything on it,
+            // which would read as "nothing to protect" for a checkout sitting
+            // safely on the drive — the one shape this probe must not fail open
+            // on.
+            return volumeIsMissing(for: path) ? .unreadable : .gone
         } catch {
             // Something is there, and this could not find out what.
             return .unreadable
@@ -86,6 +120,27 @@ enum WorktreeService {
             return .unreadable
         }
         return entries.contains { $0 != ".DS_Store" } ? .mayHoldWork : .emptyFolder
+    }
+
+    /// Whether `path` names a volume that is not mounted right now.
+    ///
+    /// macOS mounts what a person plugs in or connects to under `/Volumes`, so a
+    /// path there whose volume directory is absent is an ejected drive or a
+    /// dropped share, not a deleted checkout. That is the case worth telling
+    /// apart: everything on such a volume answers "no such file", and letting go
+    /// of a worktree on that evidence deregisters a checkout that is still on
+    /// the drive, uncommitted work and all.
+    ///
+    /// It reads only the mount point, so a volume left mounted with the checkout
+    /// genuinely deleted still answers `.gone`, and a share mounted somewhere
+    /// other than `/Volumes` is not covered — `git worktree lock` is git's own
+    /// answer for those, and the removal honors it.
+    private static func volumeIsMissing(for path: String) -> Bool {
+        let components = URL(fileURLWithPath: path).standardized.pathComponents
+        // ["/", "Volumes", "<name>", …]
+        guard components.count > 2, components[1] == "Volumes" else { return false }
+        let mountPoint = "/\(components[1])/\(components[2])"
+        return !FileManager.default.fileExists(atPath: mountPoint)
     }
 
     /// The linked worktree paths for `repoRoot`, primary checkout excluded and paths

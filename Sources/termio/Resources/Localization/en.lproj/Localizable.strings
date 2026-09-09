@@ -1630,6 +1630,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</string>
 	<key>termio couldn’t read “%@”, so it was not removed.</key>
 	<string>termio couldn’t read “%@”, so it was not removed.</string>
+	<key>termio couldn’t remove the empty folder at “%@”, so the worktree was not removed.</key>
+	<string>termio couldn’t remove the empty folder at “%@”, so the worktree was not removed.</string>
 	<key>termiod on %@ never opened its listener.
 %@</key>
 	<string>termiod on %@ never opened its listener.

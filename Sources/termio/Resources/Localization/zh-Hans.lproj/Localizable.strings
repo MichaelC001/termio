@@ -1630,6 +1630,8 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
 	<key>termio couldn’t read “%@”, so it was not removed.</key>
 	<string>termio 无法读取“%@”，因此未移除。</string>
+	<key>termio couldn’t remove the empty folder at “%@”, so the worktree was not removed.</key>
+	<string>termio 无法删除“%@”处的空文件夹，因此未移除 worktree。</string>
 	<key>termiod on %@ never opened its listener.
 %@</key>
 	<string>%1$@ 上的 termiod 始终没有打开监听器。

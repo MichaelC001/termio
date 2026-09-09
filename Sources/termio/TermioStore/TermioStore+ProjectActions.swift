@@ -205,7 +205,17 @@ extension TermioStore {
             // it cannot realpath — "is not a working tree" for a removal that
             // succeeds when handed its own spelling.
             if emptyFolder {
-                clearEmptyFolder(at: worktree.path)
+                // Reported on its own, before anything is dropped: git will
+                // refuse to deregister a worktree whose path still exists, so
+                // "git still lists it" below would blame git for a folder that
+                // could not be cleared.
+                guard clearEmptyFolder(at: worktree.path) else {
+                    presentWorktreeFailure(
+                        title: localized("Couldn’t remove worktree"),
+                        message: localized("termio couldn’t remove the empty folder at “\(displayName)”, so the worktree was not removed.")
+                    )
+                    return
+                }
             }
             if let registration {
                 // With the path cleared, git's own *targeted* remove applies: it
@@ -360,17 +370,22 @@ extension TermioStore {
     /// symlink this would reach into a directory the decision never inspected.
     /// `folderEvidence` classifies that path `.occupied` instead, and this is
     /// not called for it.
-    private func clearEmptyFolder(at path: String) {
+    /// Answers whether the path is clear afterwards, so a folder that would not
+    /// go is reported as itself rather than as git refusing the worktree.
+    @discardableResult
+    private func clearEmptyFolder(at path: String) -> Bool {
         let dsStore = (path as NSString).appendingPathComponent(".DS_Store")
         _ = dsStore.withCString { unlink($0) }
-        _ = path.withCString { rmdir($0) }
+        if path.withCString({ rmdir($0) }) == 0 { return true }
+        // Already gone is the state this wanted; anything else is a real refusal.
+        return errno == ENOENT
     }
 
-    /// One spelling for a worktree path however it reaches us: git prints realpaths
-    /// while `Worktree.path` keeps whatever spelling created it, so a symlinked
-    /// ancestor (a linked home directory, `/tmp`) would otherwise defeat the match.
+    /// See `WorktreeService.canonicalPath`: git's spelling of a path and the one
+    /// a sidebar row carries have to be compared in one form, including after
+    /// the folder is gone.
     private func canonicalWorktreePath(_ path: String) -> String {
-        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        WorktreeService.canonicalPath(path)
     }
 
     /// Copies the git-ignored files a repo lists in `.worktreeinclude` into a freshly
