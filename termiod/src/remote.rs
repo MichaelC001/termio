@@ -18,13 +18,28 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use crate::lifecycle::{self, DaemonHello, Node, Options, Report, Run, Unreachable};
+use crate::lifecycle::{self, Artifacts, DaemonHello, Node, Options, Report, Run, Unreachable};
 
 /// Where the binary is installed on the remote host. `$HOME` is expanded by
 /// the remote shell. Overridable with `TERMIOD_REMOTE_BIN` for custom install
 /// paths (and to point tests at a local binary).
 pub fn remote_bin() -> String {
     std::env::var("TERMIOD_REMOTE_BIN").unwrap_or_else(|_| "$HOME/.local/bin/termiod".to_string())
+}
+
+/// Where the `termio` client is installed on the remote host: beside the
+/// daemon, under the name a person types (docker-lessons RFC §1.2 — the
+/// client ships everywhere the daemon does). `TERMIOD_REMOTE_BIN` moves both.
+pub fn remote_client_bin() -> String {
+    client_bin_beside(&remote_bin())
+}
+
+fn client_bin_beside(daemon: &str) -> String {
+    match daemon.rsplit_once('/') {
+        Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
+        // A bare `termiod` resolves on the remote PATH; so does its client.
+        _ => "termio".to_string(),
+    }
 }
 
 /// SSH options shared by every outbound connection.
@@ -515,9 +530,12 @@ impl Node for SshNode {
         Ok(())
     }
 
-    async fn artifact(&self) -> Result<PathBuf> {
+    async fn artifact(&self) -> Result<Artifacts> {
         if let Some(prebuilt) = &self.prebuilt {
-            return Ok(prebuilt.clone());
+            return Ok(Artifacts {
+                daemon: prebuilt.clone(),
+                client: client_beside(prebuilt)?,
+            });
         }
         let target = match &self.target {
             Some(target) => target.clone(),
@@ -530,11 +548,16 @@ impl Node for SshNode {
             }
         };
         if let Some(path) = shipped_binary(&target) {
-            eprintln!("[deploy] using the bundled {target} binary");
-            return Ok(PathBuf::from(path));
+            eprintln!("[deploy] using the bundled {target} binaries");
+            let daemon = PathBuf::from(path);
+            let client = shipped_client(&target, &daemon)?;
+            return Ok(Artifacts { daemon, client });
         }
-        let built = tokio::task::spawn_blocking(move || cross_compile(&target)).await??;
-        Ok(PathBuf::from(built))
+        tokio::task::spawn_blocking(move || cross_compile(&target)).await?
+    }
+
+    fn client_binary(&self) -> Option<String> {
+        Some(remote_client_bin())
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
@@ -624,6 +647,48 @@ fn shipped_binary(target: &str) -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
+/// The `termio` client that ships beside this executable for `target`,
+/// mirroring [`shipped_binary`]. For a Mac it is the client in the daemon's
+/// own directory — the app bundle's Resources, or a cargo target directory; a
+/// dev bundle names its copy `termio-dev`, and either lands on the box as
+/// `termio`, because argv[0] is what binds a channel and a box has only the
+/// one. Missing is an error rather than a smaller deploy: a bundle built from
+/// this code always carries both, so absence means a broken bundle, and
+/// shipping half a build would recreate the skew §1.2 rules out.
+fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
+    let directory = daemon
+        .parent()
+        .with_context(|| format!("{} has no directory", daemon.display()))?;
+    let candidates = if target.contains("apple-darwin") {
+        vec![directory.join("termio"), directory.join("termio-dev")]
+    } else {
+        vec![directory.join(format!("termio-{target}"))]
+    };
+    match candidates.iter().find(|candidate| candidate.is_file()) {
+        Some(found) => Ok(found.clone()),
+        None => bail!(
+            "the bundled daemon has no termio client beside it ({}); the client deploys with the daemon",
+            candidates[0].display()
+        ),
+    }
+}
+
+/// The client that pairs with a developer-supplied `--bin` daemon: the
+/// `termio` beside it, which a `cargo build` of this crate always produces.
+fn client_beside(daemon: &Path) -> Result<PathBuf> {
+    let candidate = daemon
+        .parent()
+        .map(|directory| directory.join("termio"))
+        .filter(|path| path.is_file());
+    match candidate {
+        Some(path) => Ok(path),
+        None => bail!(
+            "no termio client beside {}; the client deploys with the daemon (a `cargo build` produces both)",
+            daemon.display()
+        ),
+    }
+}
+
 /// The `uname -sm` half of target detection, split out so the mapping can be
 /// checked without a machine to ask.
 ///
@@ -679,9 +744,9 @@ fn find_tool(directories: &[String], binary: &str) -> Option<String> {
     })
 }
 
-/// `cargo build --release --target <triple>` for this crate; returns the
-/// binary path. Falls back to a clear message if the cross-linker is missing.
-fn cross_compile(target: &str) -> Result<String> {
+/// `cargo build --release --target <triple>` for this crate; returns both
+/// built binaries. Falls back to a clear message if the cross-linker is missing.
+fn cross_compile(target: &str) -> Result<Artifacts> {
     let manifest = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
     let path = toolchain_path();
     let Some(cargo) = find_tool(&path, "cargo") else {
@@ -734,12 +799,17 @@ fn cross_compile(target: &str) -> Result<String> {
         );
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    // With a workspace-less crate, target/ sits next to Cargo.toml.
-    let bin = format!("{dir}/target/{target}/release/termiod");
-    if !std::path::Path::new(&bin).exists() {
-        bail!("expected built binary at {bin} but it is missing");
+    // With a workspace-less crate, target/ sits next to Cargo.toml. One build
+    // produces both binaries — the crate declares both `[[bin]]`s — so the
+    // client costs the cross-compile nothing extra.
+    let daemon = PathBuf::from(format!("{dir}/target/{target}/release/termiod"));
+    let client = PathBuf::from(format!("{dir}/target/{target}/release/termio"));
+    for binary in [&daemon, &client] {
+        if !binary.exists() {
+            bail!("expected built binary at {} but it is missing", binary.display());
+        }
     }
-    Ok(bin)
+    Ok(Artifacts { daemon, client })
 }
 
 /// Run an interactive/remote command over SSH. `tty` requests a PTY (`-t`),
@@ -801,6 +871,15 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The client installs beside the daemon, wherever the daemon goes — a
+    /// `TERMIOD_REMOTE_BIN` override moves both, and a bare name stays bare.
+    #[test]
+    fn the_client_installs_beside_the_daemon() {
+        assert_eq!(client_bin_beside("$HOME/.local/bin/termiod"), "$HOME/.local/bin/termio");
+        assert_eq!(client_bin_beside("/usr/local/bin/termiod"), "/usr/local/bin/termio");
+        assert_eq!(client_bin_beside("termiod"), "termio");
+    }
 
     /// What `uname -sm` actually prints on the machines Termio is pointed at.
     #[test]

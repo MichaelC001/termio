@@ -336,17 +336,22 @@ else
                 rustup target add "$linux_target" >/dev/null 2>&1 || true
                 cargo build --release --target "$linux_target"
             )
-            built="$repo_root/termiod/target/$linux_target/release/$daemon_name"
-            # A binary that links is not a binary that runs on the VPS. Asserted
-            # here as well as in CI, because this is the copy users receive.
-            if ! file "$built" | grep -q "ELF 64-bit"; then
-                echo "error: $built is not a Linux ELF binary — $(file "$built")" >&2
-                exit 1
-            fi
-            cp "$built" "$resources_dir/$daemon_name-$linux_target"
-            chmod +x "$resources_dir/$daemon_name-$linux_target"
+            # The client deploys to boxes in the same pass as the daemon
+            # (issue #628); the cargo build above already produced both, so
+            # shipping it is only a copy.
+            for built_name in "$daemon_name" termio; do
+                built="$repo_root/termiod/target/$linux_target/release/$built_name"
+                # A binary that links is not a binary that runs on the VPS. Asserted
+                # here as well as in CI, because this is the copy users receive.
+                if ! file "$built" | grep -q "ELF 64-bit"; then
+                    echo "error: $built is not a Linux ELF binary — $(file "$built")" >&2
+                    exit 1
+                fi
+                cp "$built" "$resources_dir/$built_name-$linux_target"
+                chmod +x "$resources_dir/$built_name-$linux_target"
+            done
         done
-        echo "==> Bundled Linux $daemon_name slices: x86_64 + aarch64"
+        echo "==> Bundled Linux $daemon_name + termio slices: x86_64 + aarch64"
     fi
 fi
 

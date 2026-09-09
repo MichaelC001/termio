@@ -235,6 +235,11 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStatus {
     pub binary: BinaryStatus,
+    /// The `termio` client installed beside the daemon binary. Absent when the
+    /// file is not there — or when the report comes from a build too old to
+    /// look for it, which the loop reads the same way: something to install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<BinaryStatus>,
     pub daemon: DaemonStatus,
     pub sessions: Vec<SessionSummary>,
     /// The identity written on the daemon's first start. Present without a
@@ -335,6 +340,9 @@ pub async fn status() -> Result<NodeStatus> {
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
     };
+    let client = tokio::task::spawn_blocking(client_beside_this_binary)
+        .await
+        .unwrap_or(None);
     let host_id = paths::stored_host_id();
     let mut daemon = DaemonStatus {
         running: false,
@@ -368,10 +376,30 @@ pub async fn status() -> Result<NodeStatus> {
     }
     Ok(NodeStatus {
         binary,
+        client,
         daemon,
         sessions,
         host_id,
         supervisor: detect_supervisor().await,
+    })
+}
+
+/// The `termio` client beside this binary, answering for itself. Executed
+/// rather than stat'ed because installed means "answers `--version`": a
+/// half-copied file or a wrong-architecture slice is exactly what the deploy
+/// loop needs to read as something to replace, not something present. An
+/// unanswerable client reports with an empty version, which no build stamp
+/// parses as.
+fn client_beside_this_binary() -> Option<BinaryStatus> {
+    let exe = std::env::current_exe().ok()?;
+    let candidate = exe.parent()?.join("termio");
+    if !candidate.is_file() {
+        return None;
+    }
+    let (_, stamp) = binary_version(&candidate);
+    Some(BinaryStatus {
+        version: stamp.unwrap_or_default(),
+        path: candidate.display().to_string(),
     })
 }
 
@@ -410,6 +438,17 @@ async fn detect_supervisor() -> Supervisor {
 
 pub fn print_status(status: &NodeStatus) {
     println!("binary:  {} ({})", status.binary.version, status.binary.path);
+    if let Some(client) = &status.client {
+        println!(
+            "client:  {} ({})",
+            if client.version.is_empty() {
+                "does not answer --version"
+            } else {
+                &client.version
+            },
+            client.path
+        );
+    }
     match (&status.daemon.running, &status.daemon.version, status.daemon.pid) {
         (false, _, _) => println!("daemon:  not running ({})", status.daemon.socket),
         (true, version, pid) => println!(
@@ -847,8 +886,16 @@ pub trait Node {
     fn run(&self, command: &str) -> impl std::future::Future<Output = Result<Run>> + Send;
     /// Copy `local` to `<name>` beside the daemon binary on the node.
     fn put(&self, local: &Path, name: &str) -> impl std::future::Future<Output = Result<()>> + Send;
-    /// The daemon this control plane would install on the node.
-    fn artifact(&self) -> impl std::future::Future<Output = Result<PathBuf>> + Send;
+    /// The build this control plane would install on the node — the daemon,
+    /// and the `termio` client that ships beside it in the same pass
+    /// (docker-lessons RFC §1.2), so a box's client and daemon are always the
+    /// same build and skew between them is structurally impossible.
+    fn artifact(&self) -> impl std::future::Future<Output = Result<Artifacts>> + Send;
+    /// The client binary's path on the node, as the node's own shell should
+    /// see it — or `None` on a node whose client ships another way (this
+    /// Mac's lives inside the app bundle), which turns every client step of
+    /// the loop off.
+    fn client_binary(&self) -> Option<String>;
     /// Handshake with the node's daemon, starting it if nothing answers —
     /// which is the contact that brings a freshly staged binary up.
     fn hello(&self) -> impl std::future::Future<Output = Result<DaemonHello>> + Send;
@@ -871,6 +918,16 @@ pub trait Node {
     fn preserve_command(&self) -> Option<String> {
         None
     }
+}
+
+/// What [`Node::artifact`] stages: one build, both binaries. The client is not
+/// optional here on purpose — a deploy that shipped only half the build would
+/// recreate exactly the skew the same-pass rule exists to rule out — and a
+/// node with no client to install says so through `client_binary` instead.
+#[derive(Debug, Clone)]
+pub struct Artifacts {
+    pub daemon: PathBuf,
+    pub client: PathBuf,
 }
 
 /// See [`Node::rollback_plan`].
@@ -1046,9 +1103,24 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
     let mut observed = observe(node).await?;
     let needs_stage = match &observed {
         Observed::Absent | Observed::OldBinary => true,
-        Observed::Reported(status) => {
-            Version::parse(&status.binary.version).map_or(true, |have| have < want)
-        }
+        Observed::Reported(status) => match Version::parse(&status.binary.version) {
+            None => true,
+            Some(have) if have < want => true,
+            // A newer control plane owns this box, client and all; nothing
+            // here may downgrade any part of it.
+            Some(have) if have > want => false,
+            // The daemon binary is already this build. The client ships in
+            // the same pass, so a box missing it — or holding one from
+            // another build — is staged again anyway.
+            Some(_) => {
+                node.client_binary().is_some()
+                    && status
+                        .client
+                        .as_ref()
+                        .and_then(|client| Version::parse(&client.version))
+                        != Some(want)
+            }
+        },
     };
     let mut staged = false;
     if needs_stage {
@@ -1232,12 +1304,21 @@ async fn observe<N: Node>(node: &N) -> Result<Observed> {
 /// refuses to open a running executable for writing (`ETXTBSY`), so writing
 /// in place is the one shape that always fails when a box is in use.
 async fn stage<N: Node>(node: &N) -> Result<()> {
-    let artifact = node.artifact().await?;
-    node.put(&artifact, "termiod.new").await?;
+    let artifacts = node.artifact().await?;
+    node.put(&artifacts.daemon, "termiod.new").await?;
     let binary = node.binary();
-    let command = format!(
+    let mut command = format!(
         "chmod +x {binary}.new && {{ [ ! -e {binary} ] || mv -f {binary} {binary}.prev; }} && mv -f {binary}.new {binary}"
     );
+    // The client lands in the same pass, with the same discipline, activated
+    // by the same shell command — the narrowest window there is for a box to
+    // hold one binary of a build without the other.
+    if let Some(client) = node.client_binary() {
+        node.put(&artifacts.client, "termio.new").await?;
+        command.push_str(&format!(
+            " && chmod +x {client}.new && {{ [ ! -e {client} ] || mv -f {client} {client}.prev; }} && mv -f {client}.new {client}"
+        ));
+    }
     let run = node.run(&command).await?;
     if run.code != 0 {
         bail!(
@@ -1249,10 +1330,50 @@ async fn stage<N: Node>(node: &N) -> Result<()> {
     Ok(())
 }
 
+/// The daemon answering as the build wanted, and the client beside it
+/// answering `--version` with the same build's stamp. The client half is
+/// skipped on a box a newer control plane owns — its client is that plane's
+/// to verify — and on a node that installs no client at all.
+async fn verify<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Version)> {
+    let (hello, version) = verify_daemon(node, want).await?;
+    if version == want {
+        verify_client(node, want).await?;
+    }
+    Ok((hello, version))
+}
+
+/// Run the installed client over the node's own shell. Existence is not the
+/// question — `stage` just put it there — but a wrong-architecture slice or a
+/// truncated copy execs and fails, and finding that out here, while `.prev` is
+/// still beside it, is the whole point of verifying before reporting.
+async fn verify_client<N: Node>(node: &N, want: Version) -> Result<()> {
+    let Some(client) = node.client_binary() else {
+        return Ok(());
+    };
+    let run = node.run(&format!("{client} --version")).await?;
+    if run.code != 0 {
+        bail!(
+            "the client at {client} does not answer --version: {}",
+            last_line(&run.stderr)
+        );
+    }
+    match run.stdout.split_whitespace().find_map(Version::parse) {
+        Some(stamp) if stamp >= want => Ok(()),
+        Some(_) => bail!(
+            "the client at {client} answers as an older build ({})",
+            last_line(&run.stdout)
+        ),
+        None => bail!(
+            "the client at {client} answers --version with no build stamp ({})",
+            last_line(&run.stdout)
+        ),
+    }
+}
+
 /// Handshake with whatever answers now — which, after a stop, is the daemon
 /// autostart brings up from the staged binary — and check it is the build
 /// wanted, or a newer one.
-async fn verify<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Version)> {
+async fn verify_daemon<N: Node>(node: &N, want: Version) -> Result<(DaemonHello, Version)> {
     let deadline = Instant::now() + SETTLE;
     let mut last_error = None;
     while Instant::now() < deadline {
@@ -1339,8 +1460,16 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan) -> Result<()> {
     if plan.restores_path {
         // The rename keeps the old inode alive for the daemon now exec'd from
         // it, while the path serves the build that worked to the next
-        // autostart.
-        let run = node.run(&format!("mv -f {source} {binary}")).await?;
+        // autostart. The client comes back with it — same pass in, same pass
+        // out — guarded because a box first deployed by this build has no
+        // previous client to restore.
+        let mut restore = format!("mv -f {source} {binary}");
+        if let Some(client) = node.client_binary() {
+            restore.push_str(&format!(
+                " && {{ [ ! -e {client}.prev ] || mv -f {client}.prev {client}; }}"
+            ));
+        }
+        let run = node.run(&restore).await?;
         if run.code != 0 {
             bail!(
                 "restoring the previous binary on {label}: {}",
@@ -1404,8 +1533,14 @@ impl Node for LocalNode {
         bail!("this machine's termiod ships inside the app; update the app to update it")
     }
 
-    async fn artifact(&self) -> Result<PathBuf> {
+    async fn artifact(&self) -> Result<Artifacts> {
         bail!("this machine's termiod ships inside the app; update the app to update it")
+    }
+
+    fn client_binary(&self) -> Option<String> {
+        // The Mac's client ships inside the app bundle and reaches PATH
+        // through the app's own support copy; the loop installs nothing here.
+        None
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
@@ -1588,6 +1723,7 @@ mod tests {
         puts: RefCell<Vec<String>>,
         plan: Option<RollbackPlan>,
         preserve: Option<String>,
+        client: Option<String>,
     }
 
     impl FakeNode {
@@ -1599,11 +1735,13 @@ mod tests {
                 puts: RefCell::new(Vec::new()),
                 plan: None,
                 preserve: None,
+                client: Some("$HOME/.local/bin/termio".to_string()),
             }
         }
 
         /// The local node's shape: a stash instead of `.prev`, no path
-        /// restore, rollback attempted even unstaged.
+        /// restore, rollback attempted even unstaged, and no client to
+        /// install — the Mac's ships inside the app bundle.
         fn local_style(mut self) -> FakeNode {
             self.plan = Some(RollbackPlan {
                 source: "/state/termiod.prev".to_string(),
@@ -1612,6 +1750,7 @@ mod tests {
             });
             self.preserve =
                 Some("mkdir -p /state && cp -f $HOME/.local/bin/termiod /state/termiod.prev".to_string());
+            self.client = None;
             self
         }
     }
@@ -1638,8 +1777,14 @@ mod tests {
             self.puts.borrow_mut().push(format!("{} → {name}", local.display()));
             Ok(())
         }
-        async fn artifact(&self) -> Result<PathBuf> {
-            Ok(PathBuf::from("/bundle/termiod-aarch64-unknown-linux-musl"))
+        async fn artifact(&self) -> Result<Artifacts> {
+            Ok(Artifacts {
+                daemon: PathBuf::from("/bundle/termiod-aarch64-unknown-linux-musl"),
+                client: PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl"),
+            })
+        }
+        fn client_binary(&self) -> Option<String> {
+            self.client.clone()
         }
         async fn hello(&self) -> Result<DaemonHello> {
             self.hellos
@@ -1685,11 +1830,25 @@ mod tests {
         running: bool,
         sessions: Vec<SessionSummary>,
     ) -> String {
+        status_json_with_client(binary, Some(binary), daemon, running, sessions)
+    }
+
+    fn status_json_with_client(
+        binary: &str,
+        client: Option<&str>,
+        daemon: Option<&str>,
+        running: bool,
+        sessions: Vec<SessionSummary>,
+    ) -> String {
         serde_json::to_string(&NodeStatus {
             binary: BinaryStatus {
                 version: binary.to_string(),
                 path: "/home/u/.local/bin/termiod".to_string(),
             },
+            client: client.map(|version| BinaryStatus {
+                version: version.to_string(),
+                path: "/home/u/.local/bin/termio".to_string(),
+            }),
             daemon: DaemonStatus {
                 running,
                 version: daemon.map(str::to_string),
@@ -1745,6 +1904,11 @@ mod tests {
         failed(2, "error: unrecognized subcommand 'handoff'")
     }
 
+    /// What the freshly installed client answers `--version`.
+    fn client_answers() -> Run {
+        ok(&format!("termio {WANT} (release)"))
+    }
+
     const WANT: &str = "0.44.0+1600";
 
     /// Install from an empty box: the binary is staged, nothing is stopped, and
@@ -1754,15 +1918,25 @@ mod tests {
         let node = FakeNode::new(
             vec![
                 failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
-                ok(""), // chmod + mv
+                ok(""), // chmod + mv, both binaries
                 ok(&status_json(WANT, None, false)),
+                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Current { ref version, newer: false, .. } if version == WANT), "{report:?}");
-        assert_eq!(node.puts.borrow().len(), 1);
-        assert!(!node.commands.borrow().iter().any(|command| command.contains(" stop")));
+        // The client ships in the same pass: two uploads, one activation
+        // command carrying the rename-over discipline for both binaries.
+        let puts = node.puts.borrow();
+        assert_eq!(puts.len(), 2, "{puts:?}");
+        assert!(puts[0].ends_with("→ termiod.new"), "{puts:?}");
+        assert!(puts[1].ends_with("→ termio.new"), "{puts:?}");
+        let commands = node.commands.borrow();
+        assert!(commands[1].contains("mv -f $HOME/.local/bin/termiod.new $HOME/.local/bin/termiod"), "{}", commands[1]);
+        assert!(commands[1].contains("mv -f $HOME/.local/bin/termio.new $HOME/.local/bin/termio"), "{}", commands[1]);
+        assert!(commands.last().unwrap().ends_with("termio --version"), "{commands:?}");
+        assert!(!commands.iter().any(|command| command.contains(" stop")));
     }
 
     /// A binary too old to answer `status` is staged first and asked again with
@@ -1777,6 +1951,7 @@ mod tests {
                 ok(&status_json(WANT, None, true)), // old daemon: running, no version
                 cannot_hand_off(),
                 ok(""), // stop
+                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -1798,6 +1973,7 @@ mod tests {
                 ok(""), // chmod + mv
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(3),
+                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -1818,6 +1994,7 @@ mod tests {
                 ok(""),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(1),
+                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -1910,6 +2087,7 @@ mod tests {
                 cannot_hand_off(),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)), // still empty
                 ok(""),                                            // stop
+                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2116,6 +2294,59 @@ mod tests {
         assert!(node.puts.borrow().is_empty());
     }
 
+    /// A box whose daemon is already this build but whose client is missing —
+    /// deployed before the client shipped, or half of a copy lost — is staged
+    /// again: the client is part of the build, not an extra.
+    #[tokio::test]
+    async fn a_current_daemon_missing_its_client_is_restaged() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
+                ok(""), // stage: both binaries, one command
+                ok(&status_json(WANT, Some(WANT), true)),
+                client_answers(),
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        assert_eq!(node.puts.borrow().len(), 2);
+        // The running daemon is already the wanted build: nothing bounces it.
+        let commands = node.commands.borrow();
+        assert!(!commands.iter().any(|command| command.contains(" stop") || command.ends_with("handoff --json")), "{commands:?}");
+    }
+
+    /// A client that does not answer `--version` fails the deploy the same way
+    /// an unhealthy daemon does: the box is rolled back, client included.
+    #[tokio::test]
+    async fn a_client_that_cannot_answer_version_rolls_the_box_back() {
+        let node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                ok(""), // stage
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                handed_off(2),
+                failed(126, "cannot execute binary file"), // termio --version
+                ok(""),        // roll back: [ -e prev ]
+                handed_off(2), // roll back: handoff --binary prev
+                ok(""),        // roll back: mv prev back, client too
+            ],
+            vec![hello(Some(WANT))],
+        );
+        let report = reconcile(&node, WANT, Options::default()).await;
+        match &report.outcome {
+            Outcome::Unhealthy { message, rolled_back } => {
+                assert!(*rolled_back, "{report:?}");
+                assert!(message.contains("--version"), "{message}");
+            }
+            other => panic!("expected unhealthy, got {other:?}"),
+        }
+        let commands = node.commands.borrow();
+        let restore = commands.last().unwrap();
+        assert!(restore.contains("mv -f $HOME/.local/bin/termiod.prev $HOME/.local/bin/termiod"), "{restore}");
+        assert!(restore.contains("mv -f $HOME/.local/bin/termio.prev $HOME/.local/bin/termio"), "{restore}");
+    }
+
     /// ssh failing is `unreachable`, kept apart from a step that ran and failed.
     #[tokio::test]
     async fn a_transport_failure_is_unreachable() {
@@ -2133,8 +2364,11 @@ mod tests {
             async fn put(&self, _: &Path, _: &str) -> Result<()> {
                 unreachable!()
             }
-            async fn artifact(&self) -> Result<PathBuf> {
+            async fn artifact(&self) -> Result<Artifacts> {
                 unreachable!()
+            }
+            fn client_binary(&self) -> Option<String> {
+                None
             }
             async fn hello(&self) -> Result<DaemonHello> {
                 unreachable!()

@@ -107,7 +107,8 @@ rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 
 `termio remote deploy <host>` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
-otherwise — and installs. Manual build:
+otherwise — and installs. The `termio` client installs beside the daemon in the
+same pass, so a box's client and daemon are always the same build. Manual build:
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-musl
@@ -157,12 +158,18 @@ does not hold it up. `--force` overrides.
 The version compared is the app's build stamp (`0.44.0+1533`), carried by the
 daemon at `hello`; a box a newer app set up is left alone.
 
-Install path is `~/.local/bin/termiod`. Override with `TERMIOD_REMOTE_BIN`
-(e.g. `/usr/local/bin/termiod`) on the client for both deploy and attach.
+Install path is `~/.local/bin/termiod`, with the `termio` client beside it.
+Override with `TERMIOD_REMOTE_BIN` (e.g. `/usr/local/bin/termiod`) on the
+client for both deploy and attach; the client's path moves with it. Verification
+covers both: the daemon must answer `hello` as the new build, and the installed
+client must answer `--version` with the same stamp.
 
-Make sure `~/.local/bin` is on the remote `PATH` if you want to run `termiod`
-bare over SSH; the `remote` subcommands always call the absolute path, so this
-is only for your own convenience.
+Sessions the daemon spawns find both binaries without any dotfile write: termiod
+prepends its own directory to the `PATH` of every session it starts. A bare SSH
+login outside termio keeps whatever the box's own profile does, so make sure
+`~/.local/bin` is on the remote `PATH` if you want to run `termiod` bare over
+SSH; the `remote` subcommands always call the absolute path, so this is only
+for your own convenience.
 
 ## Starting the daemon: on-demand (default)
 
