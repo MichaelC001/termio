@@ -71,6 +71,33 @@ final class WorktreeReconcileGitTests: XCTestCase {
         XCTAssertTrue(plan.discovered.isEmpty, "\(plan.discovered)")
     }
 
+    /// Stale is not the same question as having nowhere to work. git calls a
+    /// worktree prunable the moment its `.git` gitfile goes, with every one of the
+    /// user's files still sitting there — and a terminal opened in that folder is
+    /// exactly how they get those files out. Marking it absent took the verbs away
+    /// while the removal refused with advice that would have deleted the work.
+    func testAFolderThatStillHoldsFilesIsStaleButNotAbsent() async throws {
+        try git(["worktree", "add", "--quiet", "-b", "work", worktree("work").path, "HEAD"])
+        try "uncommitted".write(to: worktree("work").appendingPathComponent("draft.txt"),
+                                atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: worktree("work").appendingPathComponent(".git"))
+
+        try git(["worktree", "add", "--quiet", "-b", "vanished", worktree("vanished").path, "HEAD"])
+        try FileManager.default.removeItem(at: worktree("vanished"))
+
+        let reconciled = await WorktreeService.reconcile(in: repo.path, against: [])
+        let plan = try XCTUnwrap(reconciled)
+        let stale = Set(plan.stale.map(WorktreeService.canonicalPath))
+        let absent = Set(plan.absent.map(WorktreeService.canonicalPath))
+
+        // Neither can be offered as a worktree to open…
+        XCTAssertTrue(stale.contains(key("work")))
+        XCTAssertTrue(stale.contains(key("vanished")))
+        // …but only one of them has nowhere to work.
+        XCTAssertFalse(absent.contains(key("work")), "its folder and the user's files are right there")
+        XCTAssertTrue(absent.contains(key("vanished")))
+    }
+
     /// A healthy worktree is offered to open and is not reported stale — the
     /// distinction the row-keeping rests on.
     func testAHealthyWorktreeIsOfferedRatherThanReportedStale() async throws {

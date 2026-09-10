@@ -840,12 +840,18 @@ private struct ProjectHeader: View {
             ]
             : []
         if let worktree {
+            // A separator only ever divides, so nothing adds one while the list is
+            // still empty: a row with no session verbs would otherwise open its
+            // menu on a rule with nothing above it.
+            func divide() {
+                if !items.isEmpty { items.append(.separator) }
+            }
             if let cloneTo = cloneToDeviceMenuItem(
                 store: store, folder: worktree.path, project: project.id) {
-                items.append(.separator)
+                divide()
                 items.append(cloneTo)
             }
-            items.append(.separator)
+            divide()
             items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
                 store.toggleWorktreePinned(worktree.id)
             })

@@ -199,7 +199,7 @@ enum WorktreeService {
     struct Reconcile: Sendable {
         /// Linked worktrees git reports and this machine can see, in git's order.
         let discovered: [String]
-        /// Worktrees git still has a registration for but that cannot be used —
+        /// Worktrees git still has a registration for but that cannot be offered —
         /// the folder gone, or git itself calling the record `prunable`.
         ///
         /// They are deliberately kept out of `discovered`: a row for a folder
@@ -209,6 +209,12 @@ enum WorktreeService {
         /// that lets go of the registration and tidies the branch. Dropping it
         /// left both in the repository for good.
         let stale: [String]
+        /// Of the stale ones, those with nowhere to work at all: the path gone, or
+        /// something that is not a directory sitting at it. A row for one of these
+        /// offers no way to start a session, because there is nowhere to start it
+        /// — while a stale row whose folder is still full keeps every verb, since
+        /// opening a terminal in it is how the user reaches their own files.
+        let absent: [String]
         /// Canonical spelling for every path the merge compares, by the spelling
         /// it was asked about.
         let canonical: [String: String]
@@ -220,29 +226,50 @@ enum WorktreeService {
     /// git error): the caller treats `nil` as "leave the current list alone" and
     /// an empty `discovered` as "git genuinely reports no linked worktrees".
     ///
-    /// A `prunable` worktree — its directory deleted out from under git — is
-    /// skipped, as is any path that no longer exists on disk. Without this, a
-    /// stale worktree would show in the sidebar and a session started there would
-    /// launch with a missing cwd, so the shell silently falls back to `/` (the
-    /// bug this guards against).
+    /// A worktree git calls `prunable`, and any whose path is not a directory,
+    /// is reported `stale` rather than offered: no row is created for one, because
+    /// a row for a checkout that cannot be opened is a row a session starts in,
+    /// and the shell then lands somewhere nobody asked for. A row that already
+    /// exists keeps its place, so the removal stays reachable.
+    ///
+    /// `absent` is the narrower question of whether there is anywhere to work at
+    /// all, which is a different thing from git having lost track: a worktree
+    /// whose `.git` gitfile was deleted is `prunable` with every one of the user's
+    /// files still in place, and a terminal opened there is exactly what they need
+    /// to get those files out.
     static func reconcile(in repoRoot: String, against known: [String]) async -> Reconcile? {
         await offMain {
             guard let all = records(in: repoRoot) else { return nil }
             var discovered: [String] = []
             var stale: [String] = []
+            var absent: [String] = []
             for record in all.dropFirst() where !record.bare {   // primary checkout
                 let path = URL(fileURLWithPath: record.path).standardizedFileURL.path
                 var isDirectory: ObjCBool = false
-                let usable = !record.prunable
-                    && FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory)
+                let openable = FileManager.default
+                    .fileExists(atPath: record.path, isDirectory: &isDirectory)
                     && isDirectory.boolValue
-                if usable { discovered.append(path) } else { stale.append(path) }
+                if !record.prunable && openable {
+                    discovered.append(path)
+                    continue
+                }
+                stale.append(path)
+                // Only where there is no folder to work in. A directory that is
+                // still there — even one git has lost its way to — can be opened,
+                // and telling the user otherwise left them with a row they could
+                // neither use nor remove and advice that would have deleted their
+                // files.
+                switch folderEvidence(at: record.path) {
+                case .gone, .occupied: absent.append(path)
+                case .emptyFolder, .mayHoldWork, .unreadable: break
+                }
             }
             var canonical: [String: String] = [:]
             for path in discovered + stale + known where canonical[path] == nil {
                 canonical[path] = canonicalPath(path)
             }
-            return Reconcile(discovered: discovered, stale: stale, canonical: canonical)
+            return Reconcile(
+                discovered: discovered, stale: stale, absent: absent, canonical: canonical)
         }
     }
 

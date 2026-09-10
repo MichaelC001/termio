@@ -1070,6 +1070,11 @@ final class TermioStore: ObservableObject {
     /// Debounces the worktree re-scan so a burst of git-dir events (a rebase, a fetch)
     /// coalesces into one `git worktree list`.
     private var worktreeReconcileWork: DispatchWorkItem?
+    /// Issued to each reconcile pass, and the newest one each project has applied.
+    /// A pass that finishes after a newer one has landed is dropped rather than
+    /// overwriting what the newer one learned.
+    private var worktreeReconcileTicket = 0
+    private var appliedWorktreeReconcile: [Project.ID: Int] = [:]
     /// The folders whose git state changed since the last reconcile pass, plus whether
     /// a full pass (app activation) was requested meanwhile. One `.git` change used to
     /// re-scan *every* folder project — N git spawns for one repo's event; scoping the
@@ -1319,11 +1324,21 @@ final class TermioStore: ObservableObject {
             // resolved off the main actor with the git read.
             let known = project.worktrees.map(\.path)
                 + project.sessions.compactMap(\.worktreePath)
+            // Stamped so a pass that was overtaken cannot land on top of a newer
+            // one. The debounce cancels work that has not started; it cannot
+            // cancel a git read already running, and a result from before a
+            // worktree's folder came back would mark that row unusable again —
+            // stripping its verbs until some unrelated git event.
+            worktreeReconcileTicket += 1
+            let ticket = worktreeReconcileTicket
             Task { [weak self] in
                 // `nil` means git errored (not a repo, transient) → leave the list untouched.
                 guard let reconciled = await WorktreeService.reconcile(in: path, against: known)
                 else { return }
-                await MainActor.run { self?.applyDiscoveredWorktrees(reconciled, to: id) }
+                await MainActor.run {
+                    guard let self, self.acceptWorktreeReconcile(ticket, for: id) else { return }
+                    self.applyDiscoveredWorktrees(reconciled, to: id)
+                }
             }
         }
     }
@@ -1340,6 +1355,15 @@ final class TermioStore: ObservableObject {
                folders.contains(Self.standardizedPath(path)) { return true }
         }
         return false
+    }
+
+    /// Whether a finished reconcile is still the newest word on this project, and
+    /// claims that standing when it is. An older pass landing after a newer one
+    /// would undo what the newer one learned.
+    private func acceptWorktreeReconcile(_ ticket: Int, for projectID: Project.ID) -> Bool {
+        guard ticket > appliedWorktreeReconcile[projectID] ?? 0 else { return false }
+        appliedWorktreeReconcile[projectID] = ticket
+        return true
     }
 
     /// Merges git's linked-worktree paths into one project's `worktrees`, in git's order.
@@ -1393,6 +1417,9 @@ final class TermioStore: ObservableObject {
         // the merge above, so both survived every pass — the sessions moving onto
         // the first and the second staying forever, empty and unremovable.
         let staleSet = Set(reconciled.stale.map(canonical))
+        // Marked for having nowhere to work, not for git having lost track: a
+        // folder that is still there can be opened whatever git thinks of it.
+        let absentSet = Set(reconciled.absent.map(canonical))
         var kept = discoveredSet
         for worktree in existing {
             let key = canonical(worktree.path)
@@ -1404,7 +1431,7 @@ final class TermioStore: ObservableObject {
             // Marked so nothing offers to start a session in a checkout that is
             // not there. The row stays, because removing it is what the user
             // still needs to be able to do.
-            row.missing = staleSet.contains(key)
+            row.missing = absentSet.contains(key)
             rebuilt.append(row)
         }
 

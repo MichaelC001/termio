@@ -47,7 +47,7 @@ final class WorktreeReconcileTests: XCTestCase {
         // Both spellings are one checkout, which is what git reports.
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: ["/private/tmp/scratch/wt-a"], stale: [],
+                discovered: ["/private/tmp/scratch/wt-a"], stale: [], absent: [],
                 canonical: [
                     "/private/tmp/scratch/wt-a": "/tmp/scratch/wt-a",
                     "/tmp/scratch/wt-a": "/tmp/scratch/wt-a",
@@ -69,7 +69,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [], stale: [],
+                discovered: [], stale: [], absent: [],
                 canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
             to: projectID)
 
@@ -91,7 +91,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [], stale: [],
+                discovered: [], stale: [], absent: [],
                 canonical: [
                     "/private/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
                     "/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone",
@@ -113,7 +113,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [], stale: ["/tmp/scratch/wt-gone"],
+                discovered: [], stale: ["/tmp/scratch/wt-gone"], absent: ["/tmp/scratch/wt-gone"],
                 canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
             to: projectID)
 
@@ -123,7 +123,7 @@ final class WorktreeReconcileTests: XCTestCase {
         // The folder comes back and git offers the worktree again.
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: ["/tmp/scratch/wt-gone"], stale: [],
+                discovered: ["/tmp/scratch/wt-gone"], stale: [], absent: [],
                 canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
             to: projectID)
         XCTAssertFalse(store.projects[0].worktrees[0].missing)
@@ -138,7 +138,7 @@ final class WorktreeReconcileTests: XCTestCase {
 
         store.applyDiscoveredWorktrees(
             WorktreeService.Reconcile(
-                discovered: [], stale: [],
+                discovered: [], stale: [], absent: [],
                 canonical: ["/tmp/scratch/wt-live": "/tmp/scratch/wt-live"]),
             to: projectID)
 
@@ -156,7 +156,7 @@ final class WorktreeReconcileTests: XCTestCase {
         let existing = store.projects[0].worktrees[0].id
 
         store.applyDiscoveredWorktrees(
-            WorktreeService.Reconcile(discovered: ["/tmp/scratch/wt-new"], stale: [], canonical: [:]),
+            WorktreeService.Reconcile(discovered: ["/tmp/scratch/wt-new"], stale: [], absent: [], canonical: [:]),
             to: projectID)
 
         let rows = store.projects[0].worktrees
