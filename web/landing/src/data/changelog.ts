@@ -17,6 +17,21 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.53.0",
+    date: "2026-09-10",
+    title: "The branch label goes remote",
+    changes: {
+      new: [
+        "A session's branch label stays live when its repo is on another machine — switch branches on the box and the sidebar follows, no SSH round-trip.",
+        "Every remote deploy now ships the termio command beside the session host, and sessions find it first on their PATH, so agents on a box report working / needs-you the same way they do on this Mac.",
+        "Diagrams and images in the reader open full screen.",
+      ],
+      fixed: [
+        "Deleting a worktree's folder outside Termio no longer strands its row — the sidebar matches rows to git's own record and lets go of what git no longer tracks, and a checkout that isn't there offers no session.",
+      ],
+    },
+  },
+  {
     version: "0.52.1",
     date: "2026-09-09",
     title: "Updates stop garbling running sessions",
