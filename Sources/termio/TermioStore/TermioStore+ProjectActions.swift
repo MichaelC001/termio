@@ -324,7 +324,6 @@ extension TermioStore {
         // while the click waits, and a repo with many worktrees on a slow mount
         // paid that twice over for each of them.
         let wanted = canonicalWorktreePath(path)
-        let spellings = registrations.map { (canonicalWorktreePath($0.path), $0) }
         // Exactly, then ignoring case. The filesystem under these paths is
         // case-insensitive by default and so is git's own `fspathcmp` on macOS, so
         // a row spelled `Repo-wt` against git's `repo-wt` matched no record — and
@@ -333,8 +332,16 @@ extension TermioStore {
         // exists to clear. The exact match is tried first so a genuinely
         // case-sensitive volume, where those are two different checkouts, still
         // gets the one it named.
-        guard let record = spellings.first(where: { $0.0 == wanted })?.1
-            ?? spellings.first(where: { $0.0.compare(wanted, options: .caseInsensitive) == .orderedSame })?.1
+        //
+        // Lazily, because resolving a path stats it and follows its links: doing
+        // that to every registration up front meant one worktree on a hung mount
+        // blocked the click that removed an unrelated, healthy one.
+        guard let record = registrations.lazy
+            .first(where: { canonicalWorktreePath($0.path) == wanted })
+            ?? registrations.lazy.first(where: {
+                canonicalWorktreePath($0.path).compare(wanted, options: .caseInsensitive)
+                    == .orderedSame
+            })
         else {
             return decisionWithoutRegistration(for: path, named: displayName)
         }

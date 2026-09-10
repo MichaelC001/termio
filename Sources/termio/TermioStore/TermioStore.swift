@@ -1372,7 +1372,12 @@ final class TermioStore: ObservableObject {
             .map(canonical))
 
         // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
-        var rebuilt = discovered.map { byPath[canonical($0)] ?? Worktree(path: $0) }
+        var rebuilt = discovered.map { path -> Worktree in
+            var row = byPath[canonical(path)] ?? Worktree(path: path)
+            // git offers it again: whatever was wrong with it no longer is.
+            row.missing = false
+            return row
+        }
         // …then any entry git no longer offers that still has a reason to stay: a
         // session is in it, or git still holds a registration for it that only
         // the user's own Remove can let go of. Dropping that second kind is what
@@ -1395,7 +1400,12 @@ final class TermioStore: ObservableObject {
                   sessionAnchored.contains(key) || staleSet.contains(key)
             else { continue }
             kept.insert(key)
-            rebuilt.append(worktree)
+            var row = worktree
+            // Marked so nothing offers to start a session in a checkout that is
+            // not there. The row stays, because removing it is what the user
+            // still needs to be able to do.
+            row.missing = staleSet.contains(key)
+            rebuilt.append(row)
         }
 
         if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }

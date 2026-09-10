@@ -103,6 +103,49 @@ final class WorktreeReconcileTests: XCTestCase {
         XCTAssertEqual(project.sessions[0].worktreePath, project.worktrees[0].path)
     }
 
+    /// A row git still registers but cannot offer is kept *and* marked, so the
+    /// sidebar stops offering to start work in a checkout that is not there while
+    /// the row itself stays reachable for removal. The mark clears the moment git
+    /// offers the worktree again.
+    func testAStaleRowIsKeptButMarkedSoNothingStartsWorkInIt() {
+        let store = makeStore(worktrees: ["/tmp/scratch/wt-gone"])
+        let projectID = store.projects[0].id
+
+        store.applyDiscoveredWorktrees(
+            WorktreeService.Reconcile(
+                discovered: [], stale: ["/tmp/scratch/wt-gone"],
+                canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
+            to: projectID)
+
+        XCTAssertEqual(store.projects[0].worktrees.count, 1, "the row stays, so Remove is reachable")
+        XCTAssertTrue(store.projects[0].worktrees[0].missing)
+
+        // The folder comes back and git offers the worktree again.
+        store.applyDiscoveredWorktrees(
+            WorktreeService.Reconcile(
+                discovered: ["/tmp/scratch/wt-gone"], stale: [],
+                canonical: ["/tmp/scratch/wt-gone": "/tmp/scratch/wt-gone"]),
+            to: projectID)
+        XCTAssertFalse(store.projects[0].worktrees[0].missing)
+    }
+
+    /// A row kept only because a session is in it is not marked: git still offers
+    /// that checkout, so there is somewhere to work.
+    func testARowHeldBySessionAloneIsNotMarkedMissing() {
+        let store = makeStore(
+            worktrees: ["/tmp/scratch/wt-live"], sessionPath: "/tmp/scratch/wt-live")
+        let projectID = store.projects[0].id
+
+        store.applyDiscoveredWorktrees(
+            WorktreeService.Reconcile(
+                discovered: [], stale: [],
+                canonical: ["/tmp/scratch/wt-live": "/tmp/scratch/wt-live"]),
+            to: projectID)
+
+        XCTAssertEqual(store.projects[0].worktrees.count, 1)
+        XCTAssertFalse(store.projects[0].worktrees[0].missing)
+    }
+
     /// A path the off-main pass never saw — a row added since it started — is
     /// compared lexically for this round rather than resolved here, because
     /// resolving it would mean a `stat` on the main actor, on the very reconcile
