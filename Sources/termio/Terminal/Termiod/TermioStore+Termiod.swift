@@ -1454,9 +1454,12 @@ extension TermioStore {
         let names = (report.busy ?? [])
             .map { "• \($0.label)" }
             .joined(separator: "\n")
+        // The client rides this rung too, and a machine whose `termio` did not
+        // install says so wherever it says anything else.
+        let client = report.client.map { "\n\($0)" } ?? ""
         return "termiod \(report.desired) is ready on \(label) and takes over once "
             + "this finishes:\n\(names)\n"
-            + "Update Anyway stops it now."
+            + "Update Anyway stops it now.\(client)"
     }
 
     // MARK: - This Mac's own daemon
