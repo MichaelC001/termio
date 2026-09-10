@@ -18,13 +18,43 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use crate::lifecycle::{self, DaemonHello, Node, Options, Report, Run, Unreachable};
+use crate::lifecycle::{self, Artifacts, DaemonHello, Node, Options, Report, Run, Unreachable};
 
 /// Where the binary is installed on the remote host. `$HOME` is expanded by
 /// the remote shell. Overridable with `TERMIOD_REMOTE_BIN` for custom install
 /// paths (and to point tests at a local binary).
 pub fn remote_bin() -> String {
     std::env::var("TERMIOD_REMOTE_BIN").unwrap_or_else(|_| "$HOME/.local/bin/termiod".to_string())
+}
+
+/// Where the `termio` client is installed on the remote host: beside the
+/// daemon, under the name a person types (docker-lessons RFC §1.2 — the
+/// client ships everywhere the daemon does). `TERMIOD_REMOTE_BIN` moves both.
+/// `None` when the override renamed the daemon, which pairs with no client.
+pub fn remote_client_bin() -> Option<String> {
+    client_bin_beside(&remote_bin())
+}
+
+/// The client that belongs to a daemon at `daemon`, or `None` when nothing on
+/// the box does.
+///
+/// The daemon's *basename* decides, not just its directory. `TERMIOD_REMOTE_BIN`
+/// is the knob for a custom install path and for pointing tests at a binary of
+/// their own, so `/usr/local/bin/termiod-test` is a shape someone will use —
+/// and deriving the client from the directory alone would have that deploy
+/// rename `/usr/local/bin/termio`, the box's real client, out from under
+/// everything using it. A daemon that is not named `termiod` is a daemon this
+/// loop installs alone.
+fn client_bin_beside(daemon: &str) -> Option<String> {
+    let (directory, name) = match daemon.rsplit_once('/') {
+        Some((directory, name)) if !directory.is_empty() => (directory, name),
+        // A bare daemon name still installs into `$HOME/.local/bin` (see
+        // `install_directory`), so the client is named by that path: its
+        // activation and verification must reach the file scp put there, not
+        // whatever a non-login shell's PATH happens to resolve.
+        _ => ("$HOME/.local/bin", daemon),
+    };
+    (name == "termiod").then(|| format!("{directory}/termio"))
 }
 
 /// SSH options shared by every outbound connection.
@@ -145,7 +175,27 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
             json,
         } => {
             let mut node = SshNode::new(host);
-            node.prebuilt = bin.map(PathBuf::from);
+            if let Some(bin) = bin {
+                let daemon = PathBuf::from(bin);
+                // Only a machine that takes a client is paired with one, and
+                // only when this deploy named it: `artifact` sends none
+                // otherwise. Pairing first meant a daemon/client build mismatch
+                // refused the whole deploy over an artifact that was never going
+                // to ship — a `--target aarch64-apple-darwin` run, say, where a
+                // Mac must be sent no client at all.
+                if target.as_deref().is_some_and(target_takes_a_client) {
+                    // Resolved before anything is sent: a stale pair is caught by
+                    // a local `--version`, not by a failed verify and a daemon
+                    // bounce on the box.
+                    node.prebuilt_client = client_beside(&daemon).await?;
+                } else if target.is_none() {
+                    eprintln!(
+                        "[deploy] deploying the daemon only; name the machine with --target to \
+                         send the client beside it too"
+                    );
+                }
+                node.prebuilt = Some(daemon);
+            }
             node.target = target;
             let report = reconcile(
                 &node,
@@ -179,8 +229,15 @@ pub async fn run(cmd: RemoteCmd) -> Result<()> {
                 // that is a note rather than a stop.
                 let report = reconcile(&SshNode::new(host.clone()), Options::default()).await;
                 match report.outcome {
+                    // A client that did not verify leaves the box attachable, so
+                    // it is a note here rather than a refusal — but a note it
+                    // must be: the same outcome exits non-zero for `deploy` and
+                    // is logged as an error by the app, and someone reaching a
+                    // box this way would otherwise get no word that the `termio`
+                    // inside its sessions is broken.
+                    lifecycle::Outcome::Current { client: Some(_), .. }
+                    | lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
                     lifecycle::Outcome::Current { .. } => {}
-                    lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
                     _ => bail!("{}", report.describe()),
                 }
             }
@@ -418,6 +475,10 @@ pub struct SshNode {
     pub host: String,
     /// A binary to install instead of choosing one — the developer override.
     pub prebuilt: Option<PathBuf>,
+    /// The client paired with `prebuilt`, validated by [`client_beside`].
+    /// `None` alongside a `prebuilt` daemon means a daemon-only deploy: the
+    /// client plane is off for this node rather than half-staged.
+    pub prebuilt_client: Option<PathBuf>,
     /// A Rust target triple instead of asking `uname`.
     pub target: Option<String>,
 }
@@ -427,6 +488,7 @@ impl SshNode {
         SshNode {
             host,
             prebuilt: None,
+            prebuilt_client: None,
             target: None,
         }
     }
@@ -515,9 +577,22 @@ impl Node for SshNode {
         Ok(())
     }
 
-    async fn artifact(&self) -> Result<PathBuf> {
+    async fn artifact(&self, client_only: bool) -> Result<Artifacts> {
+        // `--bin` answers before anything is asked of the host. It is the escape
+        // hatch for a machine `uname -sm` does not map to a target — an armv7
+        // board, a BSD — so making it wait on target detection took the one path
+        // that worked without detection and failed it with "pass --target
+        // explicitly", and charged every other `--bin` deploy a round trip.
         if let Some(prebuilt) = &self.prebuilt {
-            return Ok(prebuilt.clone());
+            // Unknown means no client. The host is not asked what it is on this
+            // path, and guessing "it takes one" plants a `~/.local/bin/termio`
+            // on a Mac that manages its own — shadowing the app's copy with one
+            // frozen at this build, which no later pass refreshes or removes.
+            let ships_client = self.target.as_deref().is_some_and(target_takes_a_client);
+            return Ok(Artifacts {
+                daemon: prebuilt.clone(),
+                client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
+            });
         }
         let target = match &self.target {
             Some(target) => target.clone(),
@@ -529,12 +604,61 @@ impl Node for SshNode {
                 target_for_uname(uname.stdout.trim())?
             }
         };
+        let ships_client = target_takes_a_client(&target);
         if let Some(path) = shipped_binary(&target) {
-            eprintln!("[deploy] using the bundled {target} binary");
-            return Ok(PathBuf::from(path));
+            eprintln!("[deploy] using the bundled {target} binaries");
+            let daemon = PathBuf::from(path);
+            let client = match ships_client {
+                true => Some(shipped_client(&target, &daemon)?),
+                false => None,
+            };
+            return Ok(Artifacts { daemon, client });
         }
-        let built = tokio::task::spawn_blocking(move || cross_compile(&target)).await??;
-        Ok(PathBuf::from(built))
+        if client_only {
+            // Repairing a client is not worth building a daemon for. A control
+            // plane run out of a checkout reaches this on every attach to a box
+            // whose client is missing, and cross-compiling there needs a
+            // toolchain it may not have — which turned an attach to a healthy
+            // machine into a failure. `stage` reads this as "leave the client
+            // alone" rather than as a failed deploy.
+            bail!(
+                "no bundled {target} client to repair {} with; a client-only pass does not build one",
+                self.host
+            );
+        }
+        tokio::task::spawn_blocking(move || cross_compile(&target)).await?
+    }
+
+    fn client_binary(&self) -> Option<String> {
+        // A `--bin` override with no client beside it deploys the daemon
+        // alone; every other artifact source carries both binaries.
+        if self.prebuilt.is_some() && self.prebuilt_client.is_none() {
+            return None;
+        }
+        remote_client_bin()
+    }
+
+    fn client_repair_note(&self) -> Option<PathBuf> {
+        // One file per host, named after the alias the user reaches it by. Kept
+        // in this machine's own durable state: it is this control plane's note
+        // about a box, not state the box should carry.
+        let named: String = self
+            .host
+            .chars()
+            .map(|character| match character {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => character,
+                _ => '_',
+            })
+            .collect();
+        if named.is_empty() {
+            return None;
+        }
+        Some(
+            crate::paths::durable_state_dir()
+                .ok()?
+                .join("client-repair")
+                .join(named),
+        )
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
@@ -624,6 +748,79 @@ fn shipped_binary(target: &str) -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
+/// Whether a machine of this target takes a `termio` client from a deploy.
+///
+/// Every Linux box does: nothing else puts one there. No Mac does. A Mac owns
+/// its client already — its app bundle links one into `/usr/local/bin` — and
+/// `session::client_path_directory` returns `None` on macOS, so a copy planted
+/// in `~/.local/bin` would never be reached deliberately. It would only shadow
+/// the app's own wherever `~/.local/bin` comes first on `PATH`, frozen at
+/// whatever build this deploy left while that Mac's own client moves on with
+/// its app.
+fn target_takes_a_client(target: &str) -> bool {
+    !target.contains("apple-darwin")
+}
+
+/// The `termio` client that ships beside this executable for `target`,
+/// mirroring [`shipped_binary`]. Only ever asked for a target that takes one,
+/// which is every Linux box and no Mac (see [`SshNode::artifact`]).
+///
+/// Missing is an error rather than a smaller deploy: these slices exist only
+/// because `scripts/build-app.sh` put them in a bundle's Resources, so absence
+/// means a broken bundle, and shipping half a build from one would recreate the
+/// skew §1.2 rules out.
+fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
+    let directory = daemon
+        .parent()
+        .with_context(|| format!("{} has no directory", daemon.display()))?;
+    let candidate = directory.join(format!("termio-{target}"));
+    if !candidate.is_file() {
+        bail!(
+            "the bundled daemon has no termio client beside it ({}); the client deploys with the daemon",
+            candidate.display()
+        );
+    }
+    Ok(candidate)
+}
+
+/// The client that pairs with a developer-supplied `--bin` daemon: the
+/// `termio` beside it, when there is one of the same build.
+///
+/// `None` — a daemon-only deploy, with a note — rather than an error when
+/// the file is absent: `cargo build --bin termiod` legitimately produces no
+/// client, and the box keeps whatever client it has. But a client that *is*
+/// there and answers `--version` as another build is refused here, before a
+/// byte ships: sending it would fail verification on the box and bounce the
+/// daemon over a skew a local check already saw. A pair that cannot answer
+/// locally — cross-built for another machine — ships as found, and the box's
+/// own verify judges it.
+async fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
+    let candidate = daemon
+        .parent()
+        .map(|directory| directory.join("termio"))
+        .filter(|path| path.is_file());
+    let Some(client) = candidate else {
+        eprintln!(
+            "[deploy] no termio client beside {}; deploying the daemon only",
+            daemon.display()
+        );
+        return Ok(None);
+    };
+    let (daemon_stamp, daemon_text) = lifecycle::binary_version(daemon).await;
+    let (client_stamp, client_text) = lifecycle::binary_version(&client).await;
+    if let (Some(daemon_stamp), Some(client_stamp)) = (daemon_stamp, client_stamp) {
+        if daemon_stamp != client_stamp {
+            bail!(
+                "the termio beside {} is another build ({} where the daemon is {}); rebuild so the pair matches",
+                daemon.display(),
+                client_text.as_deref().unwrap_or("unstamped"),
+                daemon_text.as_deref().unwrap_or("unstamped")
+            );
+        }
+    }
+    Ok(Some(client))
+}
+
 /// The `uname -sm` half of target detection, split out so the mapping can be
 /// checked without a machine to ask.
 ///
@@ -679,9 +876,9 @@ fn find_tool(directories: &[String], binary: &str) -> Option<String> {
     })
 }
 
-/// `cargo build --release --target <triple>` for this crate; returns the
-/// binary path. Falls back to a clear message if the cross-linker is missing.
-fn cross_compile(target: &str) -> Result<String> {
+/// `cargo build --release --target <triple>` for this crate; returns both
+/// built binaries. Falls back to a clear message if the cross-linker is missing.
+fn cross_compile(target: &str) -> Result<Artifacts> {
     let manifest = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
     let path = toolchain_path();
     let Some(cargo) = find_tool(&path, "cargo") else {
@@ -734,12 +931,20 @@ fn cross_compile(target: &str) -> Result<String> {
         );
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    // With a workspace-less crate, target/ sits next to Cargo.toml.
-    let bin = format!("{dir}/target/{target}/release/termiod");
-    if !std::path::Path::new(&bin).exists() {
-        bail!("expected built binary at {bin} but it is missing");
+    // With a workspace-less crate, target/ sits next to Cargo.toml. One build
+    // produces both binaries — the crate declares both `[[bin]]`s — so the
+    // client costs the cross-compile nothing extra.
+    let daemon = PathBuf::from(format!("{dir}/target/{target}/release/termiod"));
+    let client = PathBuf::from(format!("{dir}/target/{target}/release/termio"));
+    for binary in [&daemon, &client] {
+        if !binary.exists() {
+            bail!("expected built binary at {} but it is missing", binary.display());
+        }
     }
-    Ok(bin)
+    Ok(Artifacts {
+        daemon,
+        client: Some(client),
+    })
 }
 
 /// Run an interactive/remote command over SSH. `tty` requests a PTY (`-t`),
@@ -801,6 +1006,71 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The client installs beside the daemon, wherever the daemon goes — a
+    /// `TERMIOD_REMOTE_BIN` override moves both, and a bare name means the
+    /// default install directory, where scp actually puts the file.
+    #[test]
+    fn the_client_installs_beside_the_daemon() {
+        assert_eq!(
+            client_bin_beside("$HOME/.local/bin/termiod").as_deref(),
+            Some("$HOME/.local/bin/termio")
+        );
+        assert_eq!(
+            client_bin_beside("/usr/local/bin/termiod").as_deref(),
+            Some("/usr/local/bin/termio")
+        );
+        assert_eq!(client_bin_beside("termiod").as_deref(), Some("$HOME/.local/bin/termio"));
+    }
+
+    /// `--bin` answers without asking the host anything. It is the escape hatch
+    /// for a machine whose `uname -sm` maps to no target, so resolving one first
+    /// failed exactly the deploys it exists for.
+    #[tokio::test]
+    async fn a_prebuilt_binary_deploys_without_resolving_a_target() {
+        let mut node = SshNode::new("unrecognized-board".into());
+        node.prebuilt = Some(PathBuf::from("/builds/termiod"));
+        node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
+        // No `run`, so any ssh this reached for would fail the test rather than
+        // quietly cost a round trip.
+        let artifacts = node.artifact(false).await.expect("a prebuilt needs no target");
+        assert_eq!(artifacts.daemon, PathBuf::from("/builds/termiod"));
+        // And no client, because nothing here knows what the machine is: sending
+        // one to a Mac plants a copy that shadows the app's own for good. Naming
+        // the target with `--target` is what asks for it.
+        assert_eq!(artifacts.client, None);
+    }
+
+    /// …and an explicit `--target` decides it, either way.
+    #[tokio::test]
+    async fn a_prebuilt_binary_sends_no_client_to_a_named_mac() {
+        let mut node = SshNode::new("mac".into());
+        node.prebuilt = Some(PathBuf::from("/builds/termiod"));
+        node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
+        node.target = Some("aarch64-apple-darwin".into());
+        let artifacts = node.artifact(false).await.expect("a prebuilt needs no uname");
+        assert_eq!(artifacts.client, None);
+    }
+
+    /// A Linux box gets its client from the deploy; a Mac never does, whichever
+    /// way its target was arrived at.
+    #[test]
+    fn only_a_box_that_owns_no_client_is_sent_one() {
+        assert!(target_takes_a_client("x86_64-unknown-linux-musl"));
+        assert!(target_takes_a_client("aarch64-unknown-linux-musl"));
+        assert!(!target_takes_a_client("aarch64-apple-darwin"));
+        assert!(!target_takes_a_client("x86_64-apple-darwin"));
+    }
+
+    /// A daemon the override renamed pairs with no client: deploying one would
+    /// rename the box's real `termio` aside to install a build under a name
+    /// that was never asked for.
+    #[test]
+    fn a_renamed_daemon_deploys_without_touching_the_boxs_client() {
+        assert_eq!(client_bin_beside("/usr/local/bin/termiod-test"), None);
+        assert_eq!(client_bin_beside("$HOME/builds/termiod.debug"), None);
+        assert_eq!(client_bin_beside("termiod-test"), None);
+    }
 
     /// What `uname -sm` actually prints on the machines Termio is pointed at.
     #[test]

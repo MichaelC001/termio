@@ -522,14 +522,66 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
     if !spec.argv.is_empty() {
         return spec.argv.clone();
     }
-    let Some(command) = spec.command.as_ref().filter(|line| !line.trim().is_empty()) else {
-        return Vec::new();
-    };
-    vec![
-        crate::agent::machine::login_shell(),
-        "-ilc".to_string(),
-        format!("exec {command}"),
-    ]
+    let command = spec
+        .command
+        .as_ref()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty());
+    let client_directory = crate::session::client_path_directory();
+    match command {
+        Some(command) => {
+            let shell = crate::agent::machine::login_shell();
+            let line = login_shell_command(command, client_directory.as_deref(), &shell);
+            vec![shell, "-ilc".to_string(), line]
+        }
+        // A plain terminal *is* the shell, so there is no `-c` line to hang a
+        // re-assertion on: it runs as `Pty::spawn`'s own login shell, carrying
+        // the environment prepend and whatever its startup files then do to
+        // `PATH`. Wrapping it in a second shell to re-assert was tried and
+        // rejected — `Pty::spawn` routes exactly one zsh startup through the
+        // OSC 133 shim (`shell_integration`), and the wrapper shell consumes
+        // it, leaving the interactive shell the user actually types into with
+        // no prompt marks and the host with no rows it may blank on resize.
+        // Trading the reflow those marks carry for a `PATH` entry is the wrong
+        // way round; `DEPLOY.md` says plainly where the prepend survives.
+        None => Vec::new(),
+    }
+}
+
+/// The `-c` line a login shell runs for a `command` spec.
+///
+/// The client's directory is prepended to the session's `PATH` in its
+/// environment (`session::daemon_owned_env`), but a *login* shell's startup
+/// files rebuild `PATH` after that — Debian's `/etc/profile` reassigns it
+/// unconditionally — which is exactly the stale-`termio` skew the prepend
+/// exists to rule out. The `-c` line runs after every startup file, so
+/// re-asserting the prepend here is the one place the login shell cannot
+/// undo it. Only for shells whose assignment syntax is POSIX; a fish or csh
+/// login shell reads no `/etc/profile`, so the environment prepend survives
+/// there on its own.
+fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &str) -> String {
+    match client_directory.filter(|_| shell_is_posix(shell)) {
+        // `${PATH:+…}` keeps the separator off an empty `PATH`. A trailing empty
+        // field is the *working directory* to POSIX, so `PATH=dir:"$PATH"` would
+        // put whatever the session happens to be sitting in on its own search
+        // path — with this directory leading it. `path_led_by` guards the same
+        // case on the environment side.
+        Some(directory) => format!(
+            "PATH={}${{PATH:+\":$PATH\"}} exec {command}",
+            crate::lifecycle::shell_quote(directory)
+        ),
+        None => format!("exec {command}"),
+    }
+}
+
+/// Whether `shell` takes `VAR=value command` and `-c` the way POSIX says.
+fn shell_is_posix(shell: &str) -> bool {
+    matches!(
+        std::path::Path::new(shell)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "ash")
+    )
 }
 
 /// Soft `RLIMIT_NOFILE` values to try for the daemon and everything it spawns,
@@ -3189,7 +3241,31 @@ mod spawn_argv_tests {
         let argv = resolve_spawn_argv(&spec);
         assert_eq!(argv.len(), 3);
         assert_eq!(argv[1], "-ilc");
-        assert_eq!(argv[2], "exec claude --continue");
+        assert!(argv[2].ends_with("exec claude --continue"), "{}", argv[2]);
+    }
+
+    /// The `-c` line re-asserts the client-directory prepend after the login
+    /// shell's startup files have rebuilt `PATH` — but only in shells whose
+    /// assignment syntax is POSIX, and only when there is a directory to lead
+    /// with.
+    #[test]
+    fn the_command_line_reasserts_the_path_prepend_after_startup_files() {
+        use super::login_shell_command;
+        // The `${PATH:+…}` guard is what keeps an empty `PATH` from gaining a
+        // trailing empty field, which POSIX resolves as the working directory.
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/.local/bin"), "/bin/bash"),
+            "PATH=/home/u/.local/bin${PATH:+\":$PATH\"} exec claude"
+        );
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/my bin"), "/usr/bin/zsh"),
+            "PATH='/home/u/my bin'${PATH:+\":$PATH\"} exec claude"
+        );
+        assert_eq!(
+            login_shell_command("claude", Some("/home/u/.local/bin"), "/usr/bin/fish"),
+            "exec claude"
+        );
+        assert_eq!(login_shell_command("claude", None, "/bin/bash"), "exec claude");
     }
 
     #[test]

@@ -107,7 +107,11 @@ rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 
 `termio remote deploy <host>` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
-otherwise — and installs. Manual build:
+otherwise — and installs. On a Linux box the `termio` client installs beside the
+daemon in the same pass, so a box's client and daemon are always the same build.
+A Mac is sent no client: its own app bundle links one into `/usr/local/bin` and
+keeps it current, and a second copy in `~/.local/bin` would only shadow it.
+Manual build:
 
 ```sh
 cargo build --release --target x86_64-unknown-linux-musl
@@ -157,12 +161,29 @@ does not hold it up. `--force` overrides.
 The version compared is the app's build stamp (`0.44.0+1533`), carried by the
 daemon at `hello`; a box a newer app set up is left alone.
 
-Install path is `~/.local/bin/termiod`. Override with `TERMIOD_REMOTE_BIN`
-(e.g. `/usr/local/bin/termiod`) on the client for both deploy and attach.
+Install path is `~/.local/bin/termiod`, with the `termio` client beside it on a
+Linux box. Override with `TERMIOD_REMOTE_BIN` (e.g. `/usr/local/bin/termiod`) on
+the client for both deploy and attach; the client's path moves with it, unless
+the override also renames the daemon, which deploys the daemon alone rather than
+renaming the box's own client aside. Verification covers both: the daemon must
+answer `hello` as the new build, and an installed client must answer `--version`
+with at least that stamp. A client that fails leaves the machine running and
+reported as current with the trouble named — nothing on the box is stopped for
+it, and the next deploy installs the client again.
 
-Make sure `~/.local/bin` is on the remote `PATH` if you want to run `termiod`
-bare over SSH; the `remote` subcommands always call the absolute path, so this
-is only for your own convenience.
+Sessions find the client without any dotfile write: termiod keeps a directory
+holding one symlink to the paired `termio` and leads every session's `PATH`
+with it. A directory of its own rather than the daemon's — leading with, say,
+`/usr/local/bin` would put every binary in it ahead of the user's own `PATH`.
+
+A session started with a command (every agent) re-asserts that entry on the
+login shell's own command line, after its startup files have run. A plain
+terminal has no such line, so on a box whose `/etc/profile` reassigns `PATH`
+outright — Debian and Ubuntu do — a plain terminal resolves `termio` only if
+the install directory is on the `PATH` that profile builds. `~/.local/bin` is,
+for the shells that read `~/.profile`. So put the install directory on the
+remote `PATH` if you want to type `termio` in a plain terminal there; the
+`remote` subcommands and the agent hooks always have it.
 
 ## Starting the daemon: on-demand (default)
 

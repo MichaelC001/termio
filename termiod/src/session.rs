@@ -1604,7 +1604,130 @@ fn daemon_owned_env(id: &SessionId, mut env: Vec<(String, String)>) -> Vec<(Stri
         // which is right whenever this daemon is on the default path too.
         Err(err) => eprintln!("termiod: could not resolve socket path for session env: {err}"),
     }
+    // A directory holding just the paired `termio` leads the session's PATH,
+    // so every terminal opened through termio finds the client the deploy loop
+    // installed beside this daemon — with no dotfile written, the same
+    // principle as never overriding `~/.ssh/config` (docker-lessons RFC §1.2).
+    // A bare SSH login outside termio keeps whatever the box's own profile
+    // does.
+    if let Some(directory) = client_path_directory() {
+        lead_path_with(&directory, &mut env);
+    }
     env
+}
+
+fn lead_path_with(directory: &str, env: &mut Vec<(String, String)>) {
+    let inherited = env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok());
+    if let Some(path) = path_led_by(directory, inherited.as_deref()) {
+        env.push(("PATH".to_string(), path));
+    }
+}
+
+/// A daemon-owned directory holding one symlink — `termio`, pointing at the
+/// client installed beside this daemon — for a session's PATH to lead with.
+///
+/// The client's own directory is deliberately *not* what leads the PATH. It
+/// works only where the daemon is installed somewhere private; where it is
+/// shared (`TERMIOD_REMOTE_BIN=/usr/local/bin/termiod`, or a `/usr/bin`
+/// install) leading with it would put that whole directory ahead of the user's
+/// own PATH, so every session would resolve `node`, `python` and `git` from
+/// there while a plain ssh login resolved them normally. A directory with
+/// exactly one thing in it can be led with safely, and nothing else on the box
+/// changes meaning.
+///
+/// `None` on a Mac, always. The Mac's client reaches sessions through the
+/// app's own support copy, never through this prepend, and the directory the
+/// daemon runs from there is actively wrong to advertise: a checkout-run
+/// daemon's `target/release` holds cargo's unsuffixed release-channel
+/// `termio` (the cross-channel skew the `termio-dev` naming exists to
+/// prevent), and after a Sparkle update the still-serving old daemon's
+/// bundle path names a client from a build it is not.
+///
+/// `None` too when there is no client to point at — a box the deploy loop has
+/// not reached yet — because a prepend that guarantees nothing is only a way
+/// to change a PATH for no reason.
+pub(crate) fn client_path_directory() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        return None;
+    }
+    let client = crate::lifecycle::paired_client()?;
+    let directory = crate::paths::durable_state_dir().ok()?.join("bin");
+    if let Err(error) = std::fs::create_dir_all(&directory) {
+        eprintln!("termiod: could not create {}: {error}", directory.display());
+        return None;
+    }
+    match place_client_link(&directory, &client) {
+        Ok(()) => Some(directory.display().to_string()),
+        Err(error) => {
+            eprintln!(
+                "termiod: could not point {}/termio at {}: {error}",
+                directory.display(),
+                client.display()
+            );
+            None
+        }
+    }
+}
+
+/// Distinguishes the staging names two spawns in this process may need at the
+/// same instant — the pid alone does not, and both would then write one path.
+static LINK_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Point `<directory>/termio` at `client`, replacing whatever is there.
+///
+/// Re-pointed rather than trusted: a client-only redeploy can move the client
+/// under a daemon that keeps running, and a link left pointing at the old path
+/// would hand sessions a build the box no longer has.
+///
+/// Replaced by rename, never by remove-then-create. Two sessions spawning at
+/// once both take this path on the first spawn after a daemon starts, and
+/// unlinking first gave them a window where the link was missing — a child
+/// exec'ing at that instant finding nothing, and the loser of the race failing
+/// `EEXIST` and handing its session no `PATH` entry at all. `rename` is atomic:
+/// every reader sees the old link or the new one, and concurrent placements
+/// all succeed.
+fn place_client_link(
+    directory: &std::path::Path,
+    client: &std::path::Path,
+) -> std::io::Result<()> {
+    let link = directory.join("termio");
+    if std::fs::read_link(&link).ok().as_deref() == Some(client) {
+        return Ok(());
+    }
+    let staging = directory.join(format!(
+        "termio.{}.{}",
+        std::process::id(),
+        LINK_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&staging);
+    std::os::unix::fs::symlink(client, &staging)?;
+    if let Err(error) = std::fs::rename(&staging, &link) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// `directory` put at the front of `path`, or `None` when there is nothing to
+/// do. Prepended even when the directory already appears further back: an
+/// older `termio` earlier on the PATH would otherwise shadow the one shipped
+/// beside this daemon, which is exactly the skew the same-pass deploy exists
+/// to rule out. No PATH at all is left alone — a PATH invented from one
+/// directory would cost the child every standard tool.
+fn path_led_by(directory: &str, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    if path.is_empty() {
+        return Some(directory.to_string());
+    }
+    if path.split(':').next() == Some(directory) {
+        return None;
+    }
+    Some(format!("{directory}:{path}"))
 }
 
 /// Everything a session actor hands over when its daemon is about to `execve`
@@ -2796,7 +2919,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
 #[cfg(test)]
 mod tests {
     use super::{
-        daemon_owned_env, handle_msg, should_emit_keyframe, spawn_sidecar, ClientBacklog,
+        daemon_owned_env, handle_msg, path_led_by, should_emit_keyframe, spawn_sidecar, ClientBacklog,
         ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
         SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
     };
@@ -2844,6 +2967,125 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("real")
         );
+    }
+
+    /// §1.2 of the docker-lessons RFC: every session this daemon spawns finds
+    /// the `termio` installed beside it, because the daemon's own directory
+    /// leads the session's PATH — and no dotfile is ever written for it.
+    #[test]
+    fn the_daemons_directory_leads_the_sessions_path() {
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("/usr/bin:/bin")),
+            Some("/home/u/.local/bin:/usr/bin:/bin".to_string())
+        );
+        // Already leading: nothing to change.
+        assert_eq!(path_led_by("/home/u/.local/bin", Some("/home/u/.local/bin:/usr/bin")), None);
+        // Present but shadowed: still prepended, so the client shipped beside
+        // this daemon wins over a stray older install.
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("/opt/stale:/home/u/.local/bin")),
+            Some("/home/u/.local/bin:/opt/stale:/home/u/.local/bin".to_string())
+        );
+        // No PATH to prepend to is not a PATH to invent.
+        assert_eq!(path_led_by("/home/u/.local/bin", None), None);
+        assert_eq!(
+            path_led_by("/home/u/.local/bin", Some("")),
+            Some("/home/u/.local/bin".to_string())
+        );
+    }
+
+    /// A client-supplied PATH is the base, not a casualty: the daemon's entry
+    /// is layered after it and extends it rather than replacing it.
+    #[test]
+    fn a_client_supplied_path_is_extended_not_replaced() {
+        let mut env = vec![("PATH".to_string(), "/only/what/the/client/sent".to_string())];
+        super::lead_path_with("/home/u/.local/bin", &mut env);
+        let path = env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .expect("a PATH entry");
+        assert_eq!(path, "/home/u/.local/bin:/only/what/the/client/sent");
+    }
+
+    /// The prepend is for boxes the deploy loop installed. On a Mac the
+    /// client reaches sessions through the app's own support copy, and the
+    /// daemon's directory — a bundle Sparkle may have replaced, or a cargo
+    /// checkout holding another channel's `termio` — must never lead a
+    /// session's PATH.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_daemon_never_leads_the_sessions_path() {
+        assert_eq!(super::client_path_directory(), None);
+    }
+
+    /// Sessions spawning at once all get a usable link. Removing the old link
+    /// before creating the new one failed both halves of that: the loser of the
+    /// race got `EEXIST` and its session no `PATH` entry at all, and until the
+    /// winner finished there was an instant with no link for a child to exec.
+    #[test]
+    fn concurrent_spawns_all_get_the_client_link() {
+        let root = std::path::PathBuf::from(format!(
+            "/tmp/termiod-link-{}-{}",
+            std::process::id(),
+            "concurrent"
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test directory");
+        let client = root.join("termio-real");
+        std::fs::write(&client, b"#!/bin/sh\n").expect("client");
+        let directory = root.join("bin");
+        std::fs::create_dir_all(&directory).expect("link directory");
+        // A stale link, so every caller takes the replacing path rather than
+        // the read-link fast path.
+        std::os::unix::fs::symlink(root.join("termio-old"), directory.join("termio"))
+            .expect("stale link");
+
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let absent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let directory = directory.clone();
+                let client = client.clone();
+                let failures = std::sync::Arc::clone(&failures);
+                scope.spawn(move || {
+                    if super::place_client_link(&directory, &client).is_err() {
+                        failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+            }
+            // A reader standing in for a child about to exec. What it must never
+            // see is the link *gone*, which is what unlinking first produced;
+            // `rename` leaves the name occupied throughout.
+            let link = directory.join("termio");
+            let absent = std::sync::Arc::clone(&absent);
+            scope.spawn(move || {
+                for _ in 0..2_000 {
+                    if matches!(
+                        std::fs::read_link(&link),
+                        Err(ref error) if error.kind() == std::io::ErrorKind::NotFound
+                    ) {
+                        absent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        });
+
+        assert_eq!(failures.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(absent.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            std::fs::read_link(directory.join("termio")).expect("a link"),
+            client
+        );
+        // Nothing is left behind but the link itself.
+        let entries: Vec<_> = std::fs::read_dir(&directory)
+            .expect("read")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .collect();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The write token as a plain str, so the assertions read as they did

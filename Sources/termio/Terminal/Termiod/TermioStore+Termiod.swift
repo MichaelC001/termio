@@ -1405,6 +1405,20 @@ extension TermioStore {
                     state: .failed,
                     message: "termiod on \(host) answered without saying which machine it is."))
             }
+            // A client that did not verify does not make the machine unusable:
+            // its daemon is the build wanted and every session on it works, so
+            // the machine is adopted and the trouble is logged. Refusing here
+            // would block a healthy box over the CLI inside its sessions, which
+            // the next deploy installs again anyway.
+            if let clientTrouble = report.client {
+                let summary = report.clientFailed == true
+                    ? "is current, but its termio client is not"
+                    : "is current; its termio client could not be checked"
+                Log.termiod.error("""
+                termiod on \(host, privacy: .public) \(summary, privacy: .public): \
+                \(clientTrouble, privacy: .public)
+                """)
+            }
             return .success(TermiodDevice(
                 id: hostID, daemonVersion: version, routes: [.ssh(host)],
                 negotiatedProtocol: report.proto, lastSeen: Date()))
@@ -1440,9 +1454,12 @@ extension TermioStore {
         let names = (report.busy ?? [])
             .map { "• \($0.label)" }
             .joined(separator: "\n")
+        // The client rides this rung too, and a machine whose `termio` did not
+        // install says so wherever it says anything else.
+        let client = report.client.map { "\n\($0)" } ?? ""
         return "termiod \(report.desired) is ready on \(label) and takes over once "
             + "this finishes:\n\(names)\n"
-            + "Update Anyway stops it now."
+            + "Update Anyway stops it now.\(client)"
     }
 
     // MARK: - This Mac's own daemon
@@ -1515,6 +1532,12 @@ extension TermioStore {
             // PTY carried. Nothing was at risk, so nobody is asked.
             Log.termiod.info(
                 "this Mac's termiod is current at \(report.version ?? desired, privacy: .public)")
+            if let clientTrouble = report.client {
+                let summary = report.clientFailed == true
+                    ? "this Mac's termio client is not"
+                    : "this Mac's termio client could not be checked"
+                Log.termiod.error("\(summary, privacy: .public): \(clientTrouble, privacy: .public)")
+            }
         case .staged:
             Log.termiod.info("""
             staged termiod \(report.version ?? desired, privacy: .public) for this Mac's daemon; \
