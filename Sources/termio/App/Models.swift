@@ -203,6 +203,19 @@ struct Worktree: Identifiable, Hashable, Codable {
     /// `applyDiscoveredWorktrees` reuses the existing entry by path rather than
     /// rebuilding it, so the flag rides along. A freshly discovered worktree is unpinned.
     var pinned = false
+    /// Whether git still holds a registration for this worktree but the checkout
+    /// itself is not usable — its folder deleted out from under git, most often.
+    ///
+    /// The row is kept in that state on purpose: it is the only way to reach the
+    /// removal that lets the registration go and tidies the branch. But there is
+    /// nothing to work *in*, so nothing offers to start a session there — a
+    /// folder that is not there would be handed to the daemon as a working
+    /// directory, and the session would open somewhere nobody asked for.
+    ///
+    /// Derived from git on every reconcile rather than persisted: it describes
+    /// the checkout right now, and a folder that came back between launches must
+    /// not read as missing until the first pass says so.
+    var missing = false
 }
 
 extension Worktree {

@@ -1079,6 +1079,11 @@ final class TermioStore: ObservableObject {
     /// Debounces the worktree re-scan so a burst of git-dir events (a rebase, a fetch)
     /// coalesces into one `git worktree list`.
     private var worktreeReconcileWork: DispatchWorkItem?
+    /// Issued to each reconcile pass, and the newest one each project has applied.
+    /// A pass that finishes after a newer one has landed is dropped rather than
+    /// overwriting what the newer one learned.
+    private var worktreeReconcileTicket = 0
+    private var appliedWorktreeReconcile: [Project.ID: Int] = [:]
     /// The folders whose git state changed since the last reconcile pass, plus whether
     /// a full pass (app activation) was requested meanwhile. One `.git` change used to
     /// re-scan *every* folder project — N git spawns for one repo's event; scoping the
@@ -1351,10 +1356,25 @@ final class TermioStore: ObservableObject {
             if let folders, !projectOwns(project, anyOf: folders) { continue }
             let id = project.id
             let path = project.path
+            // The spellings this pass will compare, handed over so they can be
+            // resolved off the main actor with the git read.
+            let known = project.worktrees.map(\.path)
+                + project.sessions.compactMap(\.worktreePath)
+            // Stamped so a pass that was overtaken cannot land on top of a newer
+            // one. The debounce cancels work that has not started; it cannot
+            // cancel a git read already running, and a result from before a
+            // worktree's folder came back would mark that row unusable again —
+            // stripping its verbs until some unrelated git event.
+            worktreeReconcileTicket += 1
+            let ticket = worktreeReconcileTicket
             Task { [weak self] in
                 // `nil` means git errored (not a repo, transient) → leave the list untouched.
-                guard let discovered = await WorktreeService.linkedWorktrees(in: path) else { return }
-                await MainActor.run { self?.applyDiscoveredWorktrees(discovered, to: id) }
+                guard let reconciled = await WorktreeService.reconcile(in: path, against: known)
+                else { return }
+                await MainActor.run {
+                    guard let self, self.acceptWorktreeReconcile(ticket, for: id) else { return }
+                    self.applyDiscoveredWorktrees(reconciled, to: id)
+                }
             }
         }
     }
@@ -1373,28 +1393,115 @@ final class TermioStore: ObservableObject {
         return false
     }
 
+    /// Whether a finished reconcile is still the newest word on this project, and
+    /// claims that standing when it is. An older pass landing after a newer one
+    /// would undo what the newer one learned.
+    private func acceptWorktreeReconcile(_ ticket: Int, for projectID: Project.ID) -> Bool {
+        guard ticket > appliedWorktreeReconcile[projectID] ?? 0 else { return false }
+        appliedWorktreeReconcile[projectID] = ticket
+        return true
+    }
+
     /// Merges git's linked-worktree paths into one project's `worktrees`, in git's order.
     /// A path git no longer reports is pruned — unless a live session still points at it,
     /// so an in-use worktree never vanishes from under its sessions. Only writes back when
     /// something actually changed, so a stable repo doesn't churn the persisted tree.
-    private func applyDiscoveredWorktrees(_ discovered: [String], to projectID: Project.ID) {
+    func applyDiscoveredWorktrees(
+        _ reconciled: WorktreeService.Reconcile, to projectID: Project.ID
+    ) {
         guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
-        let discoveredSet = Set(discovered)
+        // Matched the way the removal matches (`WorktreeService.canonicalPath`),
+        // which resolves symlinks rather than only standardizing. Under a
+        // symlinked ancestor git's spelling never equalled a stored row's, so
+        // this appended a *second* row for a checkout that already had one.
+        //
+        // Looked up, never computed: those spellings were resolved off-main with
+        // the git read. A path that appeared since then — a row added in the last
+        // moments — falls back to the lexical form for this pass and is resolved
+        // on the next one, which is a stale match at worst and never a stalled
+        // main thread.
+        let canonical = { (path: String) in
+            reconciled.canonical[path] ?? Self.standardizedPath(path)
+        }
+        let discovered = reconciled.discovered
+        let discoveredSet = Set(discovered.map(canonical))
         let existing = projects[index].worktrees
-        let byPath = Dictionary(existing.map { (Self.standardizedPath($0.path), $0) },
+        let byPath = Dictionary(existing.map { (canonical($0.path), $0) },
                                 uniquingKeysWith: { first, _ in first })
         let sessionAnchored = Set(projects[index].sessions.compactMap { $0.worktreePath }
-            .map(Self.standardizedPath))
+            .map(canonical))
 
         // Discovered worktrees first (reusing existing entries to preserve id/createdAt)…
-        var rebuilt = discovered.map { byPath[$0] ?? Worktree(path: $0) }
-        // …then any git-absent entry that still has a session, so it isn't yanked away.
+        var rebuilt = discovered.map { path -> Worktree in
+            var row = byPath[canonical(path)] ?? Worktree(path: path)
+            // git offers it again: whatever was wrong with it no longer is.
+            row.missing = false
+            return row
+        }
+        // …then any entry git no longer offers that still has a reason to stay: a
+        // session is in it, or git still holds a registration for it that only
+        // the user's own Remove can let go of. Dropping that second kind is what
+        // left a deleted-folder worktree unreachable — no row, so no way to
+        // reach the removal, and its registration and branch stayed in the
+        // repository for good. It is kept rather than swept because deregistering
+        // it without being asked would delete that worktree's HEAD, index and
+        // reflogs, and a folder that is merely unreachable — an unmounted share,
+        // a cloud provider that is not running — looks exactly like a deleted
+        // one from here.
+        //
+        // One row per checkout here too: duplicates took this path rather than
+        // the merge above, so both survived every pass — the sessions moving onto
+        // the first and the second staying forever, empty and unremovable.
+        let staleSet = Set(reconciled.stale.map(canonical))
+        // Marked for having nowhere to work, not for git having lost track: a
+        // folder that is still there can be opened whatever git thinks of it.
+        let absentSet = Set(reconciled.absent.map(canonical))
+        var kept = discoveredSet
         for worktree in existing {
-            let std = Self.standardizedPath(worktree.path)
-            if !discoveredSet.contains(std), sessionAnchored.contains(std) { rebuilt.append(worktree) }
+            let key = canonical(worktree.path)
+            guard !kept.contains(key),
+                  sessionAnchored.contains(key) || staleSet.contains(key)
+            else { continue }
+            kept.insert(key)
+            var row = worktree
+            // Marked so nothing offers to start a session in a checkout that is
+            // not there. The row stays, because removing it is what the user
+            // still needs to be able to do.
+            row.missing = absentSet.contains(key)
+            rebuilt.append(row)
         }
 
         if projects[index].worktrees != rebuilt { projects[index].worktrees = rebuilt }
+        adoptWorktreeSpellings(in: index, canonical: canonical)
+    }
+
+    /// Moves each session onto the spelling of the worktree row it belongs to.
+    ///
+    /// Sessions are matched to rows by exact path elsewhere in the app, so a
+    /// session left on a spelling no row carries belongs to no row: it drops out
+    /// of the sidebar entirely while staying in the saved roster, and nothing
+    /// short of editing state on disk brings it back. That is what merging two
+    /// rows for one checkout would otherwise do to the loser's sessions — and
+    /// those duplicate rows exist on disk today, made by the lexical matching
+    /// this pass replaces.
+    private func adoptWorktreeSpellings(in index: Int, canonical: (String) -> String) {
+        let rowsByKey = Dictionary(projects[index].worktrees.map { (canonical($0.path), $0.path) },
+                                   uniquingKeysWith: { first, _ in first })
+        // Built whole and assigned once. Writing through `projects` in the loop
+        // fired the store's own `didSet` per session — a synchronous state-file
+        // write each time, on the main actor, in a pass that runs on every git
+        // change. Nothing is assigned at all when no session moved.
+        var sessions = projects[index].sessions
+        var moved = false
+        for position in sessions.indices {
+            guard let path = sessions[position].worktreePath,
+                  let row = rowsByKey[canonical(path)],
+                  row != path
+            else { continue }
+            sessions[position].worktreePath = row
+            moved = true
+        }
+        if moved { projects[index].sessions = sessions }
     }
 
     private static func standardizedPath(_ path: String) -> String {

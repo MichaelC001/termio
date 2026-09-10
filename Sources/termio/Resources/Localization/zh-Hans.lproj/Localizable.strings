@@ -1270,6 +1270,8 @@
 	<string>在你打开之后，有人写入了这个文件。覆盖会替换掉对方的版本。</string>
 	<key>Something else already owns %@.</key>
 	<string>%@ 已被其他程序占用。</string>
+	<key>Something other than a folder is at “%@”. Move or delete it, then remove the worktree.</key>
+	<string>“%@”所在位置现在不是文件夹。请先移走或删除它，再移除 worktree。</string>
 	<key>Something went wrong loading this repository. Try again in a moment.</key>
 	<string>载入该仓库时出错。请稍后重试。</string>
 	<key>Sort</key>
@@ -1358,8 +1360,6 @@
 	<string>该设备无法读取这个对比。</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
-	<key>The folder was removed, but git couldn’t prune its stale worktree metadata.</key>
-	<string>文件夹已移除，但 git 无法清理其残留的 worktree 元数据。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
@@ -1494,6 +1494,8 @@
 	<string>下划线</string>
 	<key>Ungroup</key>
 	<string>取消编组</string>
+	<key>Unlock “%@” (git worktree unlock) before removing it.</key>
+	<string>请先解锁“%@”（git worktree unlock）再移除。</string>
 	<key>Unpin</key>
 	<string>取消固定</string>
 	<key>Unsaved changes — press ⌘S to save to %@</key>
@@ -1562,8 +1564,8 @@
 	<string>工作区</string>
 	<key>Worktree has changes</key>
 	<string>Worktree 存在更改</string>
-	<key>Worktree removed</key>
-	<string>Worktree 已移除</string>
+	<key>Worktree is locked</key>
+	<string>Worktree 已锁定</string>
 	<key>Yesterday</key>
 	<string>昨天</string>
 	<key>You can restore it from the Trash.</key>
@@ -1594,12 +1596,20 @@
 	<string>例如 JetBrains Mono</string>
 	<key>first %1$lld of %2$lld files</key>
 	<string>%2$lld 个文件中的前 %1$lld 个</string>
+	<key>git can no longer inspect “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
+	<string>git 已无法检查“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
 	<key>git couldn’t check “%@” for changes, so it was not removed.</key>
 	<string>git 无法检查“%@”是否有更改，因此未将其移除。</string>
 	<key>git couldn’t create a worktree for “%@”. Is it a git repository with at least one commit?</key>
 	<string>git 无法为“%@”创建 worktree。请确认它是包含至少一个提交的 git 仓库。</string>
+	<key>git couldn’t read this project’s worktrees, so “%@” was not removed.</key>
+	<string>git 无法读取此项目的 worktree，因此未移除“%@”。</string>
 	<key>git couldn’t remove “%@”.</key>
 	<string>git 无法移除“%@”。</string>
+	<key>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</key>
+	<string>git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
+	<key>git still lists “%@”, so it was not removed.</key>
+	<string>git 仍列出“%@”，因此未移除。</string>
 	<key>issue.state.open</key>
 	<string>开放</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>
@@ -1620,6 +1630,10 @@ Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks
 	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。
 
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
+	<key>termio couldn’t read “%@”, so it was not removed.</key>
+	<string>termio 无法读取“%@”，因此未移除。</string>
+	<key>termio couldn’t remove the empty folder at “%@”, so the worktree was not removed.</key>
+	<string>termio 无法删除“%@”处的空文件夹，因此未移除 worktree。</string>
 	<key>termiod on %@ never opened its listener.
 %@</key>
 	<string>%1$@ 上的 termiod 始终没有打开监听器。

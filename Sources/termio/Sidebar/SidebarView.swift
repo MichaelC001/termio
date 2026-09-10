@@ -796,6 +796,15 @@ private struct ProjectHeader: View {
         store.addSession(to: project.id, agent: preset, worktreePath: worktree?.path)
     }
 
+    /// Whether this row has somewhere to start a session. A worktree git still
+    /// registers but whose checkout is gone has not: the path would reach the
+    /// daemon as a working directory that does not exist, and the session would
+    /// open somewhere nobody asked for. The row itself stays, because removing it
+    /// is what the user still needs to reach.
+    private var canStartSession: Bool {
+        worktree?.missing != true
+    }
+
     /// What the hover cluster and the agents submenu offer — the same presets
     /// wherever the project lives, since the far daemon launches agents too.
     private var headerPresets: [AgentPreset] {
@@ -822,19 +831,27 @@ private struct ProjectHeader: View {
         // verb names it outright instead of offering a device submenu whose rows
         // would all be wrong but one.
         if store.isOnAnotherDevice(project) { return remoteMenuItems }
-        var items: [SidebarMenuItem] = [
-            newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
-            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
-                .filter { $0 != .terminal }
-                .map { preset in .agent(preset) { addSession(preset) } }),
-        ]
+        var items: [SidebarMenuItem] = canStartSession
+            ? [
+                newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
+                .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
+                    .filter { $0 != .terminal }
+                    .map { preset in .agent(preset) { addSession(preset) } }),
+            ]
+            : []
         if let worktree {
+            // A separator only ever divides, so nothing adds one while the list is
+            // still empty: a row with no session verbs would otherwise open its
+            // menu on a rule with nothing above it.
+            func divide() {
+                if !items.isEmpty { items.append(.separator) }
+            }
             if let cloneTo = cloneToDeviceMenuItem(
                 store: store, folder: worktree.path, project: project.id) {
-                items.append(.separator)
+                divide()
                 items.append(cloneTo)
             }
-            items.append(.separator)
+            divide()
             items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
                 store.toggleWorktreePinned(worktree.id)
             })
@@ -987,7 +1004,7 @@ private struct ProjectHeader: View {
         // lifecycle actions live in the right-click menu rather than inline.
         .overlay(alignment: .trailing) {
             HStack(spacing: 3) {
-                ForEach(headerPresets) { preset in
+                ForEach(canStartSession ? headerPresets : []) { preset in
                     AgentQuickAddButton(preset: preset, chrome: chrome) {
                         addSession(preset)
                     }
