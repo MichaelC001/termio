@@ -1154,7 +1154,7 @@ impl Report {
                     None => String::new(),
                 }
             ),
-            Outcome::Staged { version, busy, .. } => {
+            Outcome::Staged { version, busy, client, .. } => {
                 let mut text = format!(
                     "{node}: termiod {version} is staged, but the daemon still running there has work in progress:"
                 );
@@ -1167,6 +1167,13 @@ impl Report {
                     ));
                 }
                 text.push_str("\nRun this again once it finishes, or pass --force to stop it now.");
+                // The client rides this rung as much as the others; destructured
+                // away, the note reached the app and the JSON but never the
+                // person reading the command's own output.
+                if let Some(trouble) = client {
+                    text.push('\n');
+                    text.push_str(trouble);
+                }
                 text
             }
             Outcome::Unhealthy {
@@ -1322,9 +1329,13 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
                 // calling it the client's fault would claim — this pass never got
                 // to run it.
                 let wait = delay_client_repair(repair_note.as_deref(), desired);
+                // The same fault the next passes report: this one did the failing
+                // work and left the box on a client that is not this build, so it
+                // would be the odd one out calling that a success while every
+                // later pass that attempts nothing calls it a failure.
                 client_skew = Some((
                     format!("{error:#}; tried again in {}", describe_wait(wait)),
-                    false,
+                    true,
                 ));
                 Staged::default()
             }
@@ -1347,37 +1358,43 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         bail!("termiod was installed on {label} but does not answer `status` there");
     };
 
+    // The client this pass installed is answered for here, before any of the
+    // ways out below. It needs nothing from the daemon — it is one `--version`
+    // over ssh — and every rung that returns early was otherwise leaving a box
+    // holding a client nothing had run, already at the head of every session's
+    // PATH through the daemon's own symlink, with the report silent about it.
+    if staged.client {
+        client_skew = match verify_client(node, want).await {
+            ClientVerdict::Good => {
+                clear_client_repair(repair_note.as_deref());
+                None
+            }
+            ClientVerdict::Bad(message) => {
+                let removed = roll_back_client(node).await.is_ok();
+                let wait = delay_client_repair(repair_note.as_deref(), desired);
+                Some((
+                    format!(
+                        "{message}{}; installing it again in {}",
+                        if removed {
+                            "; it was taken back off the box"
+                        } else {
+                            "; it could not be taken back off the box"
+                        },
+                        describe_wait(wait),
+                    ),
+                    true,
+                ))
+            }
+            ClientVerdict::Unknown(message) => Some((message, false)),
+        };
+    }
+
     if options.stage_only {
-        // The client is still checked here. Stopping at the stage is about not
-        // touching the *daemon*; a client this pass just installed and never ran
-        // is one the box could be left holding broken, with nothing said about it
-        // — and running it touches no daemon at all.
-        if staged.client {
-            client_skew = match verify_client(node, want).await {
-                ClientVerdict::Good => {
-                    clear_client_repair(repair_note.as_deref());
-                    None
-                }
-                ClientVerdict::Bad(message) => {
-                    let removed = roll_back_client(node).await.is_ok();
-                    let wait = delay_client_repair(repair_note.as_deref(), desired);
-                    Some((
-                        format!(
-                            "{message}{}; installing it again in {}",
-                            if removed { "; it was taken back off the box" } else { "; it is still there" },
-                            describe_wait(wait),
-                        ),
-                        true,
-                    ))
-                }
-                ClientVerdict::Unknown(message) => Some((message, false)),
-            };
-        }
         return Ok(Outcome::Staged {
             version: status.binary.version,
             daemon: status.daemon.version,
             busy: Vec::new(),
-            client: client_skew.map(|(note, _)| note),
+            client: client_skew.as_ref().map(|(note, _)| note.clone()),
         });
     }
 
@@ -1511,48 +1528,8 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         }
     };
 
-    // Only a client this run put there is verified here. One that was already
-    // on the box answered for itself in the `status` this pass already read —
-    // that reading is an execution of the same binary, not a stat — so asking
-    // again would spend an ssh round trip, before every attach, to learn what
-    // the machine has just said.
-    let mut client_trouble = client_skew;
-    if staged.client {
-        match verify_client(node, want).await {
-            ClientVerdict::Good => clear_client_repair(repair_note.as_deref()),
-            // Undo what this run did, which for a client that failed to answer
-            // is the client. A Full stage therefore leaves a verified new daemon
-            // beside no client rather than beside a broken one: a skew, but a
-            // bounded one the next pass closes with a `ClientOnly` restage, and
-            // no session pays for it.
-            ClientVerdict::Bad(message) => {
-                let put_back = roll_back_client(node).await.is_ok();
-                // Put off, not written off. The copy that answered wrongly may
-                // simply have arrived short — the very thing this probe exists to
-                // catch — and sending the bytes again is what fixes that, so the
-                // next attempt is delayed rather than abandoned.
-                let wait = delay_client_repair(repair_note.as_deref(), desired);
-                client_trouble = Some((
-                    format!(
-                        "{message}{}; installing it again in {}",
-                        if put_back {
-                            "; the previous client is back in place"
-                        } else {
-                            "; it could not be put back"
-                        },
-                        describe_wait(wait),
-                    ),
-                    true,
-                ));
-            }
-            // Nothing was learned about the client, so nothing is undone: what
-            // this run installed stays, and the next pass asks again.
-            // Reported, never counted as a fault: nothing was learned, and a
-            // deploy that installed everything correctly must not be called
-            // failed because ssh was flaky for the length of one probe.
-            ClientVerdict::Unknown(message) => client_trouble = Some((message, false)),
-        }
-    }
+    // Settled above, before the first way out of this function.
+    let client_trouble = client_skew;
 
     if daemon_is_stale || staged.daemon {
         // Best effort: a copy that fails costs the *next* upgrade its free
@@ -2031,18 +2008,23 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan, staged: Staged) -> Re
     Ok(())
 }
 
-/// Put the previous client back — the daemon plane was never touched, so
-/// this is the whole rollback for a client-only stage.
+/// Take a client that failed verification back off the box.
+///
+/// It is removed, not replaced by the one it displaced: the daemon here is
+/// staying on the new build, and the older client beside it is the skew §1.2
+/// exists to rule out. A machine with no `termio` is a state the next pass
+/// closes — nothing even leads its sessions' PATH with a client that is not
+/// there — and one with the wrong `termio` is not.
 async fn roll_back_client<N: Node>(node: &N) -> Result<()> {
     let Some(client) = node.client_binary() else {
         return Ok(());
     };
     let label = node.label();
-    eprintln!("[deploy] rolling {label} back to the previous client…");
+    eprintln!("[deploy] taking the client that did not verify back off {label}…");
     let run = node.run(&format!("rm -f {client}")).await?;
     if run.code != 0 {
         bail!(
-            "restoring the previous client on {label}: {}",
+            "removing the client that did not verify on {label}: {}",
             last_line(&run.stderr)
         );
     }
@@ -2299,6 +2281,12 @@ mod tests {
         repair_note: Option<PathBuf>,
         /// Makes `put` fail the way ssh does when the host drops.
         unreachable_put: bool,
+        /// What `termio --version` answers. Kept out of the scripted queue so a
+        /// test states what the client does rather than where in the sequence it
+        /// is asked — the loop is free to ask earlier or later. `None` falls
+        /// through to the queue, which is how a test makes the box unreachable
+        /// for the probe.
+        client_version: Option<Run>,
     }
 
     impl FakeNode {
@@ -2314,6 +2302,7 @@ mod tests {
                 client_artifact: Some(PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl")),
                 repair_note: None,
                 unreachable_put: false,
+                client_version: Some(client_answers()),
             }
         }
 
@@ -2346,6 +2335,11 @@ mod tests {
         }
         async fn run(&self, command: &str) -> Result<Run> {
             self.commands.borrow_mut().push(command.to_string());
+            if command.ends_with("termio --version") {
+                if let Some(answer) = self.client_version.clone() {
+                    return Ok(answer);
+                }
+            }
             self.runs
                 .borrow_mut()
                 .pop_front()
@@ -2521,7 +2515,6 @@ mod tests {
                 failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
                 ok(""), // chmod + mv, both binaries
                 ok(&status_json(WANT, None, false)),
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2552,7 +2545,6 @@ mod tests {
                 ok(&status_json(WANT, None, true)), // old daemon: running, no version
                 cannot_hand_off(),
                 ok(""), // stop
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2560,8 +2552,8 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
         let commands = node.commands.borrow();
         assert!(commands[1].contains("termiod.prev"), "{}", commands[1]);
-        assert!(commands[3].ends_with("handoff --json"), "{}", commands[3]);
-        assert!(commands[4].ends_with("stop --json"), "{}", commands[4]);
+        assert!(commands.iter().any(|command| command.ends_with("handoff --json")), "{commands:?}");
+        assert!(commands.iter().any(|command| command.ends_with("stop --json")), "{commands:?}");
     }
 
     /// The whole point: a daemon that can take on the new binary is never
@@ -2574,7 +2566,6 @@ mod tests {
                 ok(""), // chmod + mv
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(3),
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2595,7 +2586,6 @@ mod tests {
                 ok(""),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(1),
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2688,7 +2678,6 @@ mod tests {
                 cannot_hand_off(),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)), // still empty
                 ok(""),                                            // stop
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2941,7 +2930,6 @@ mod tests {
                 ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
                 ok(""), // stage: the client alone
                 ok(&status_json(WANT, Some(WANT), true)),
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -2962,16 +2950,16 @@ mod tests {
     /// rather than left broken at the head of every session's PATH.
     #[tokio::test]
     async fn a_failed_client_only_stage_rolls_back_only_the_client() {
-        let node = FakeNode::new(
+        let mut node = FakeNode::new(
             vec![
                 ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
                 ok(""), // stage: the client alone
                 ok(&status_json(WANT, Some(WANT), true)),
-                failed(126, "cannot execute binary file"), // termio --version
                 ok(""), // roll back: restore or remove the client
             ],
             vec![hello(Some(WANT))],
         );
+        node.client_version = Some(failed(126, "cannot execute binary file"));
         let report = reconcile(&node, WANT, Options::default()).await;
         match &report.outcome {
             Outcome::Current { client: Some(_), .. } => {}
@@ -3058,14 +3046,16 @@ mod tests {
                 ok(""), // stage
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(1),
-                client_answers(), // verified despite the newer daemon answering
             ],
             vec![hello(Some("0.45.0+1700"))],
         );
         let report = reconcile(&node, WANT, Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Current { newer: true, .. }), "{report:?}");
         let commands = node.commands.borrow();
-        assert!(commands.last().unwrap().ends_with("termio --version"), "{commands:?}");
+        assert!(
+            commands.iter().any(|command| command.ends_with("termio --version")),
+            "{commands:?}"
+        );
     }
 
     /// The activation command undoes itself: a client half that fails after
@@ -3113,17 +3103,17 @@ mod tests {
     /// it is still a non-zero exit for whoever ran the deploy.
     #[tokio::test]
     async fn a_client_that_cannot_answer_version_never_touches_the_daemon() {
-        let node = FakeNode::new(
+        let mut node = FakeNode::new(
             vec![
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
                 staged_over_a_client(), // stage
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
                 handed_off(2),
-                failed(126, "cannot execute binary file"), // termio --version
                 ok(""),                                    // put the client back
             ],
             vec![hello(Some(WANT))],
         );
+        node.client_version = Some(failed(126, "cannot execute binary file"));
         let report = reconcile(&node, WANT, Options::default()).await;
         match &report.outcome {
             Outcome::Current {
@@ -3132,7 +3122,7 @@ mod tests {
                 ..
             } => {
                 assert!(trouble.contains("--version"), "{trouble}");
-                assert!(trouble.contains("back in place"), "{trouble}");
+                assert!(trouble.contains("taken back off the box"), "{trouble}");
                 assert_eq!(host_id, "h_1");
             }
             other => panic!("expected current with a client note, got {other:?}"),
@@ -3156,7 +3146,18 @@ mod tests {
         // the daemon here is staying on the new build, and an older client beside
         // it is the skew §1.2 exists to rule out. A missing client is a state the
         // next pass closes; a mismatched one is not.
-        assert_eq!(commands.last().unwrap(), "rm -f $HOME/.local/bin/termio", "{commands:?}");
+        assert!(
+            commands.iter().any(|command| command == "rm -f $HOME/.local/bin/termio"),
+            "{commands:?}"
+        );
+        // And it happened before the daemon was asked anything, which is the
+        // point of settling the client plane first: every way out of the loop
+        // after that carries what was learned about it.
+        let removed = commands
+            .iter()
+            .position(|command| command == "rm -f $HOME/.local/bin/termio");
+        let handed = commands.iter().position(|command| command.ends_with("handoff --json"));
+        assert!(removed < handed, "{commands:?}");
     }
 
     /// The undo follows what the activation reported, not what the box's status
@@ -3221,7 +3222,6 @@ mod tests {
                 failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
                 ok(""),
                 ok(&status_json(WANT, None, false)),
-                client_answers(),
             ],
             vec![hello(Some(WANT))],
         );
@@ -3244,7 +3244,7 @@ mod tests {
     /// retries within, which is what a network blip needs to pass.
     #[tokio::test]
     async fn an_unreachable_box_does_not_cost_the_client_it_just_installed() {
-        let node = FakeNode::new(
+        let mut node = FakeNode::new(
             vec![
                 ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())),
                 staged_over_a_client(),
@@ -3254,6 +3254,9 @@ mod tests {
             ],
             vec![hello(Some(WANT))],
         );
+        // Nothing answers the probe, so it falls through to the queue — which is
+        // empty, and the fake reports that as a transport failure.
+        node.client_version = None;
         let report = reconcile(&node, WANT, Options::default()).await;
         match &report.outcome {
             Outcome::Current { client: Some(note), client_failed, .. } => {
@@ -3332,22 +3335,72 @@ mod tests {
         assert_eq!(client_repair_waiting(Some(&note), WANT), None);
     }
 
+    /// A daemon too busy to be replaced does not excuse the client from being
+    /// answered for. The pass installed one, the running daemon's own symlink
+    /// already leads every session's PATH to it, and the rung that reports the
+    /// box staged used to return without ever running it — so a truncated or
+    /// wrong-architecture `termio` sat there unreported until something else
+    /// happened to look.
+    #[tokio::test]
+    async fn a_box_left_staged_still_answers_for_its_client() {
+        let busy = StopOutcome {
+            stopped: false,
+            busy: vec![SessionSummary {
+                id: "1".into(),
+                name: "claude".into(),
+                command: "claude".into(),
+                title: None,
+                status: "working".into(),
+                attached: 0,
+                running: true,
+                alive: true,
+            }],
+            message: "1 session is in use".into(),
+        };
+        let mut node = FakeNode::new(
+            vec![
+                ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
+                staged_over_a_client(),
+                ok(&status_json(WANT, Some("0.43.0+1500"), true)),
+                ok(""), // take the client that did not verify back off
+                cannot_hand_off(),
+                Run {
+                    code: EXIT_BUSY,
+                    stdout: serde_json::to_string(&busy).unwrap(),
+                    stderr: String::new(),
+                },
+            ],
+            vec![],
+        );
+        node.client_version = Some(failed(126, "cannot execute binary file"));
+        let report = reconcile(&node, WANT, Options::default()).await;
+        match &report.outcome {
+            Outcome::Staged { busy, client: Some(note), .. } => {
+                assert_eq!(busy.len(), 1);
+                assert!(note.contains("--version"), "{note}");
+            }
+            other => panic!("expected staged naming the client trouble, got {other:?}"),
+        }
+        // And the CLI's own line says it, not only the JSON.
+        assert!(report.describe().contains("--version"), "{}", report.describe());
+    }
+
     /// Stopping at the stage still runs the client it just installed. That is
     /// about not touching the *daemon*, and running a client touches none — so a
     /// box was otherwise left holding a client nothing had ever executed, with
     /// the report saying nothing about it.
     #[tokio::test]
     async fn stopping_at_the_stage_still_answers_for_the_client_it_installed() {
-        let node = FakeNode::new(
+        let mut node = FakeNode::new(
             vec![
                 ok(&status_json("0.43.0+1500", Some("0.43.0+1500"), true)),
                 staged_over_a_client(),
                 ok(&status_json(WANT, Some("0.43.0+1500"), true)),
-                failed(126, "cannot execute binary file"), // termio --version
                 ok(""),                                    // take it back off
             ],
             vec![],
         );
+        node.client_version = Some(failed(126, "cannot execute binary file"));
         let options = Options { stage_only: true, ..Options::default() };
         let report = reconcile(&node, WANT, options).await;
         match &report.outcome {
@@ -3442,10 +3495,10 @@ mod tests {
                 ok(&status_json_with_client("0.45.0+1700", None, Some("0.45.0+1700"), true, Vec::new())),
                 staged_over_a_client(),
                 ok(&status_json("0.45.0+1700", Some("0.45.0+1700"), true)),
-                ok("termio 0.45.0+1700 (release)"),
             ],
             vec![hello(Some("0.45.0+1700"))],
         );
+        newer.client_version = Some(ok("termio 0.45.0+1700 (release)"));
         newer.repair_note = Some(note.clone());
         let report = reconcile(&newer, "0.45.0+1700", Options::default()).await;
         assert!(matches!(report.outcome, Outcome::Current { client: None, .. }), "{report:?}");
