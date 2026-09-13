@@ -3,11 +3,10 @@ import TermioShared
 import UIKit
 
 /// One project's page: its sessions as a plain list, with the ＋ (new session
-/// per enabled agent) riding the title — the project-level home for
-/// project-level actions. Pushed from the Projects root; tapping a session
-/// slides its terminal in over everything, so coming back lands here. Tracks
-/// the live roster by the project's stable key and pops itself if the Mac
-/// closes the project.
+/// per enabled agent) beside the project title. Pushed from the Projects root;
+/// tapping a session slides its terminal in over everything, so coming back
+/// lands here. Tracks the live roster by the project's stable key and pops
+/// itself if the Mac closes the project.
 final class ProjectDetailViewController: UIViewController {
     private let store: RosterStore
     private let projectKey: String
@@ -21,6 +20,7 @@ final class ProjectDetailViewController: UIViewController {
     private let addButton = UIButton(type: .system)
     private let emptyState = ListEmptyStateView()
     private var rosterObserver: NSObjectProtocol?
+    private var themeObserver: NSObjectProtocol?
 
     /// `project` is the caller's row — the live roster entry at push time.
     init(store: RosterStore, project: MockProject) {
@@ -34,10 +34,12 @@ final class ProjectDetailViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        themeObserver = installThemeBackdrop()
+        configureAddButton()
         let topBar = configureTopBar()
         configureTable(below: topBar)
         configureEmptyState(below: topBar)
+        configureFab()
         reload()
         rosterObserver = NotificationCenter.default.addObserver(
             forName: RosterStore.didChange, object: nil, queue: .main
@@ -49,6 +51,9 @@ final class ProjectDetailViewController: UIViewController {
     deinit {
         if let rosterObserver {
             NotificationCenter.default.removeObserver(rosterObserver)
+        }
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
         }
     }
 
@@ -66,17 +71,17 @@ final class ProjectDetailViewController: UIViewController {
             return
         }
         project = live
+        addButton.isHidden = store.deviceEndpoint == nil || project.rosterID == nil
         tableView.reloadData()
         updateEmptyState()
     }
 
-    // MARK: - Top bar (back + title + new session)
+    // MARK: - Top bar (back + title)
 
     private func configureTopBar() -> UIView {
         let back = UIButton(type: .system)
         back.applyGlassSymbol("chevron.backward")
-        back.tintColor = .label
-        back.accessibilityLabel = "Back"
+        back.accessibilityLabel = localized("Back")
         back.accessibilityIdentifier = "project.back"
         back.addAction(UIAction { [weak self] _ in
             self?.navigationController?.popViewController(animated: true)
@@ -89,27 +94,11 @@ final class ProjectDetailViewController: UIViewController {
         pageTitle.lineBreakMode = .byTruncatingTail
         pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // The Mac project menu's "New … Session" actions — the ＋ rides the
-        // title, reachable even when every session is closed. Live rosters
-        // only; the bundled mock can't start anything.
-        addButton.applyGlassSymbol("plus")
-        addButton.tintColor = .label
-        addButton.accessibilityLabel = "New session in \(project.name)"
-        addButton.showsMenuAsPrimaryAction = true
-        addButton.menu = UIMenu(children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                guard let self else { return completion([]) }
-                completion(store.newSessionActions(in: project))
-            },
-        ])
-        addButton.isHidden = store.companionURL == nil || project.rosterID == nil
-
         let spacer = UIView()
-        let bar = UIStackView(arrangedSubviews: [back, pageTitle, spacer, addButton])
+        let bar = UIStackView(arrangedSubviews: [back, pageTitle, spacer])
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 10
-        bar.setCustomSpacing(4, after: spacer)
         bar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(bar)
 
@@ -130,11 +119,12 @@ final class ProjectDetailViewController: UIViewController {
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             back.widthAnchor.constraint(equalToConstant: 40),
             back.heightAnchor.constraint(equalToConstant: 40),
-            addButton.widthAnchor.constraint(equalToConstant: 40),
-            addButton.heightAnchor.constraint(equalToConstant: 40),
             // Indented to the title's left edge (past the back chevron).
             context.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 62),
-            context.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            context.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.trailingAnchor,
+                constant: -12
+            ),
             context.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 0),
         ])
 
@@ -149,6 +139,38 @@ final class ProjectDetailViewController: UIViewController {
             anchor.heightAnchor.constraint(equalToConstant: 0),
         ])
         return anchor
+    }
+
+    // MARK: - Add button
+
+    /// The compose ＋ floats in the bottom-right corner as a glass FAB, above
+    /// the native tab bar — matching the Terminals/Chats lists. Added after the
+    /// table so it sits above the rows.
+    private func configureFab() {
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(addButton)
+        NSLayoutConstraint.activate([
+            addButton.trailingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            addButton.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            addButton.widthAnchor.constraint(equalToConstant: 52),
+            addButton.heightAnchor.constraint(equalToConstant: 52),
+        ])
+    }
+
+    /// The Mac project menu's "New … Session" actions. Live rosters only; the
+    /// bundled mock cannot start anything.
+    private func configureAddButton() {
+        addButton.applyGlassIcon(.add, boxSize: 24)
+        addButton.accessibilityLabel = localized("New session in \(project.name)")
+        addButton.showsMenuAsPrimaryAction = true
+        addButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                guard let self else { return completion([]) }
+                completion(store.newSessionActions(in: project))
+            },
+        ])
     }
 
     /// "~/Documents/GitHub/termio" — home-relative, like the Mac's chrome.
@@ -173,6 +195,8 @@ final class ProjectDetailViewController: UIViewController {
         tableView.keyboardDismissMode = .onDrag
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "session")
         tableView.translatesAutoresizingMaskIntoConstraints = false
+        // The native tab controller contributes the correct safe-area and
+        // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 12),
@@ -200,11 +224,11 @@ final class ProjectDetailViewController: UIViewController {
         emptyState.isHidden = !project.sessions.isEmpty
         guard !emptyState.isHidden else { return }
         emptyState.configure(
-            symbol: "tray",
-            title: "No sessions",
+            icon: .inbox,
+            title: localized("No sessions"),
             message: addButton.isHidden
-                ? "Start a session on your Mac and it'll show up here."
-                : "Tap ＋ to start an agent in this project.",
+                ? localized("Start a session on your Mac and it'll show up here.")
+                : localized("Tap ＋ to start an agent in this project."),
             actionTitle: nil,
             busy: false
         )
@@ -244,10 +268,10 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = project.sessions[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }
@@ -260,14 +284,14 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard store.companionURL != nil,
+        guard store.deviceEndpoint != nil,
               let sessionID = project.sessions[indexPath.row].rosterID
         else { return nil }
         let title = project.sessions[indexPath.row].title
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(title: title, children: [
                 UIAction(
-                    title: "Close Session",
+                    title: localized("Close Session"),
                     image: UIImage(systemName: "xmark.circle"),
                     attributes: .destructive
                 ) { _ in

@@ -1,0 +1,7 @@
+{
+  "id": "screenScrapeOnly",
+  "name": "Screen Scrape Only",
+  "command": "scrape",
+  "status": { "working": ["Thinking\\.\\.\\."], "attention": ["Permission Required"] },
+  "icon": { "asset": "crush-favicon", "tint": "#d97757" }
+}

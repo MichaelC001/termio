@@ -1,6 +1,6 @@
 ---
 title: Terminal loses focus after window deactivation
-status: fixed
+status: done
 type: bug
 created: 2026-07-02
 updated: 2026-07-14
@@ -13,7 +13,7 @@ related:
 
 > Fixed on 2026-07-14. The app-side focus driver restores deterministic responder
 > loss automatically, and wrapper-level per-surface `moveFocus` behavior shipped
-> in `libghostty-swift` `1.0.12`, which termio now requires and pins.
+> in `libghostty-swift` `1.0.12`, which Termio now requires and pins.
 
 ## Symptom
 

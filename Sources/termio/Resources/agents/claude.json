@@ -1,0 +1,36 @@
+{
+  "id": "claudeCode",
+  "order": 10,
+  "name": "Claude Code",
+  "wire": "claude",
+  "command": "claude",
+  "permissionBypassFlag": "--dangerously-skip-permissions",
+  "resume": {
+    "create": "--session-id {id}",
+    "resume": "--resume {id}",
+    "storeRoot": "~/.claude/projects",
+    "storeMatch": "file:{id}.jsonl"
+  },
+  "icon": { "vector": "claude" },
+  "install": "https://claude.com/claude-code",
+  "configHome": { "env": "CLAUDE_CONFIG_DIR", "path": "~/.claude" },
+  "skills": { "dir": "~/.claude/skills" },
+  "titleStatus": {
+    "working": ["^[⠀-⣿◐-◓] "]
+  },
+  "hooks": {
+    "type": "json",
+    "file": "~/.claude/settings.json",
+    "dialect": "claude",
+    "capturesTranscript": true,
+    "tool": "tool_name",
+    "events": [
+      { "on": "SessionStart", "state": "idle", "matcher": "clear" },
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "PreToolUse", "state": "working", "matcher": "*" },
+      { "on": "PostToolUse", "state": "working", "matcher": "*" },
+      { "on": "PermissionRequest", "state": "attention", "matcher": "*" },
+      { "on": "Stop", "state": "done" }
+    ]
+  }
+}

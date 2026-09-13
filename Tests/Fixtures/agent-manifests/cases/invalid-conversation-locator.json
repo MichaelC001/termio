@@ -1,0 +1,6 @@
+{
+  "id": "invalidConversationLocator",
+  "name": "Invalid Conversation Locator",
+  "hooks": { "file": "~/.x.json", "conversation": "payload.id",
+             "events": [{ "on": "Stop", "state": "done" }] }
+}

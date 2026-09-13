@@ -1,0 +1,2 @@
+{ "id": "invalidConfigHomeEnvName", "name": "Invalid Config Home Env Name",
+  "configHome": { "env": "$X_HOME", "path": "~/.x" } }

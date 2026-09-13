@@ -1,0 +1,105 @@
+---
+title: Your first session
+description: Open a project, launch an agent in a real terminal, and split the window so a dev server and a shell sit alongside it.
+---
+
+A *session* in Termio is a real terminal running one thing — an agent, a dev
+server, or a plain shell. Here’s the path from a fresh launch to a working setup.
+
+## Open a project
+
+From the welcome screen, choose **Open Project** and pick a folder. Termio adds
+it to the sidebar and remembers it under **Recent** for next time. A project is
+just a working directory — the agents you launch inside it start there.
+
+The project is filed under the workspace you’re in, and opens on the machine
+that workspace is on. With one machine there is nothing to choose; see
+[Workspaces](/docs/workspaces) and [Devices](/docs/devices) once there are two.
+
+<DocsImage
+  src="/screenshots/docs/01-open-project.png"
+  alt="The Termio welcome window with Open Project as the primary action"
+  width={2424}
+  height={1664}
+/>
+
+## Launch an agent
+
+With a project selected, start a new session and pick an agent — Claude Code,
+Codex, Antigravity, or any other CLI you have installed. Termio opens it in a real
+terminal at the project root. You type into it exactly as you would in any
+terminal; the agent’s TUI renders natively.
+
+The sidebar shows the session’s live status — **working**, **idle**, **done**, or
+**needs you**. [Concepts](/docs/concepts#status) explains all four; the one to
+watch for is **needs you**, which means the agent is blocked on a prompt or a
+permission and can’t continue without you.
+
+<Callout type="tip">
+  Kick off a long run in one session, switch to another, and let the sidebar tell
+  you the moment the first agent needs you back.
+</Callout>
+
+<DocsImage
+  src="/screenshots/docs/02-agent-working.png"
+  alt="A focused Codex session working in Termio while its sidebar row reports Working"
+  width={2424}
+  height={1664}
+/>
+
+## Split the window
+
+Most real work wants more than one pane. Split the current pane to the right with
+`⌘D` or downward with `⇧⌘D`, then drop another session into the new pane — an
+agent in one, your dev server in another, a shell in a third. Panes tile as a
+tree, so you can nest splits into any layout.
+
+To rearrange a layout, hover a pane’s header and drag the grab handle that
+appears. A highlight previews where the pane will land: drop on another pane’s
+left, right, top, or bottom half to place it on that side, or on the center to
+swap the two panes.
+
+<DocsVideo
+  src="/screenshots/docs/21-rearrange-pane.mp4"
+  poster="/screenshots/docs/21-rearrange-pane-poster.png"
+  label="A Termio pane is picked up, dragged over another pane, and dropped into a new position"
+/>
+
+Move focus between panes with `⌥⌘` + an arrow key, and temporarily zoom the
+focused pane to fill the window with `⇧⌘↩`. `⌘W` **closes** the focused session,
+the way it closes a browser tab, and its pane collapses with it. Every shortcut is
+rebindable — see [Keyboard shortcuts](/docs/keyboard).
+
+## A note on session lifetime
+
+Sessions are live processes, not saved transcripts — and the process doesn’t
+belong to the window. Every session runs inside `termiod`, the session host on
+the machine that owns it, and Termio attaches to it. Close the window and the
+agent keeps working; reopening from the Dock finds it where you left it.
+
+Long runs survive a relaunch, too. The daemon keeps the process; the app
+reattaches to the session it left rather than starting a new one — same process,
+same output.
+
+<Callout type="note">
+  Ending a session is a deliberate act: `⌘W` closes the focused one. Everything
+  else — closing the window, quitting Termio, losing an SSH connection,
+  relaunching the app — detaches rather than kills.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card href="/docs/agents" title="Running multiple agents">
+    Read live status across a fleet and switch without losing your place.
+  </Card>
+  <Card href="/docs/worktrees" title="Git worktrees">
+    Give each line of parallel agent work its own isolated checkout.
+  </Card>
+  <Card href="/docs/inspector" title="The inspector">
+    Browse files, read the diff, and search the project beside the terminal.
+  </Card>
+  <Card href="/docs/iphone" title="The iPhone companion">
+    Check in on a running session from your phone.
+  </Card>
+</Cards>

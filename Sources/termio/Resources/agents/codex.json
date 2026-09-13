@@ -1,0 +1,42 @@
+{
+  "id": "codex",
+  "order": 20,
+  "name": "Codex",
+  "wire": "codex",
+  "command": "codex",
+  "permissionBypassFlag": "--dangerously-bypass-approvals-and-sandbox",
+  "resume": {
+    "resume": "resume {id}",
+    "discover": {
+      "root": "~/.codex/sessions",
+      "format": "jsonl",
+      "id": "payload.id",
+      "cwd": "payload.cwd"
+    }
+  },
+  "icon": { "vector": "codex" },
+  "install": "https://developers.openai.com/codex/cli",
+  "configHome": { "env": "CODEX_HOME", "path": "~/.codex" },
+  "skills": { "dir": "~/.codex/skills" },
+  "titleStatus": {
+    "working": ["(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"],
+    "attention": ["Action Required"]
+  },
+  "hooks": {
+    "type": "json",
+    "file": "~/.codex/hooks.json",
+    "dialect": "codex",
+    "capturesTranscript": true,
+    "conversation": "session_id",
+    "tool": "tool_name",
+    "promptTitle": "prompt",
+    "events": [
+      { "on": "SessionStart", "state": "idle" },
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "PreToolUse", "state": "working" },
+      { "on": "PostToolUse", "state": "working" },
+      { "on": "PermissionRequest", "state": "attention" },
+      { "on": "Stop", "state": "done" }
+    ]
+  }
+}

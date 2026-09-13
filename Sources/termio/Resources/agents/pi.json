@@ -1,0 +1,28 @@
+{
+  "id": "pi",
+  "order": 40,
+  "name": "Pi",
+  "wire": "pi",
+  "command": "pi",
+  "resume": {
+    "create": "--session-id {id}",
+    "resume": "--session-id {id}",
+    "storeRoot": "~/.pi/agent/sessions",
+    "storeMatch": "file:*_{id}.jsonl",
+    "seed": "session-file"
+  },
+  "icon": { "asset": "pi-favicon" },
+  "install": "https://pi.dev",
+  "skills": { "dir": "~/.pi/agent/skills" },
+  "hooks": {
+    "type": "plugin",
+    "dir": "~/.pi/agent/extensions",
+    "dialect": "pi",
+    "conversation": "context",
+    "events": [
+      { "on": "session_start", "state": "idle" },
+      { "on": "agent_start", "state": "working" },
+      { "on": "agent_end", "state": "done" }
+    ]
+  }
+}

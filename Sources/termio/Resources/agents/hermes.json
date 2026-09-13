@@ -1,0 +1,11 @@
+{
+  "id": "hermes",
+  "order": 90,
+  "name": "Hermes",
+  "wire": "hermes",
+  "command": "hermes",
+  "icon": { "asset": "hermes-favicon" },
+  "install": "https://hermes-agent.nousresearch.com/#downloads",
+  "configHome": { "env": "HERMES_HOME", "path": "~/.hermes" },
+  "skills": { "dir": "~/.hermes/skills" }
+}

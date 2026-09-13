@@ -35,6 +35,18 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         // capture states that gestures can't reach from the CLI.
         let args = ProcessInfo.processInfo.arguments
 
+        // `-pair-device termio://device?…` pairs with a box the way a scanned
+        // QR does, through the same funnel and the same verify-before-save. It
+        // exists because a simulator has no camera and cannot be tapped, and it
+        // authors nothing the invite does not already carry.
+        if let invite = Self.argument("-pair-device", in: args) {
+            CompanionLink.pair(rawAddress: invite) { result in
+                if case .failure(let failure) = result {
+                    Log.device.error("pairing refused: \(failure.message, privacy: .public)")
+                }
+            }
+        }
+
         // Automated companion test drive: `-companion-url ws://localhost:8787`
         // streams the PoC server; add `-companion-session <roster-id>` to
         // attach straight to a real Mac session's PTY.
@@ -44,7 +56,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 MockSession(
                     title: url.host ?? "companion",
                     project: Self.argument("-companion-project", in: args) ?? "",
-                    agent: Self.argument("-companion-agent", in: args).map(AgentKind.init(wire:)) ?? .terminal,
+                    agent: Self.argument("-companion-agent", in: args)
+                        .map(RosterAgent.fallback(wire:)) ?? .terminal,
                     status: .idle,
                     subtitle: "", time: "", rosterID: rosterID,
                     projectRosterID: Self.argument("-companion-projectid", in: args),
@@ -52,7 +65,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 )
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                let terminal = TerminalViewController(companionURL: url, session: session)
+                let terminal = TerminalViewController(
+                    endpoint: DeviceEndpoint(kind: .companion, url: url), session: session)
                 root.open(terminal, sessionKey: session?.key, animated: false)
                 // `-open-inspector` slides the file drawer out once attached,
                 // so simctl runs can screenshot the live tree.
@@ -79,6 +93,20 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
 
+        // `-open-session <title>`: the session twin of `-open-project`, opening
+        // a live session's terminal once the roster carries it. A simulator has
+        // no way to be tapped, and a terminal is the one screen that cannot be
+        // reached any other way.
+        if let title = Self.argument("-open-session", in: args) {
+            var ticks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    ticks += 1
+                    if root.openSessionScreen(titled: title) || ticks > 30 { timer.invalidate() }
+                }
+            }
+        }
+
         if let flagIndex = args.firstIndex(of: "-demo"), args.indices.contains(flagIndex + 1) {
             let mode = args[flagIndex + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -88,6 +116,17 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 // level) for screenshot runs.
                 if mode == "project" {
                     root.openFirstProjectPage()
+                    return
+                }
+                // "settings" opens the settings sheet, the same way the
+                // unpaired zero state's "Connect a Mac" does — the page whose
+                // every color is theme-derived, and the one a simctl run has no
+                // other way to reach.
+                if mode == "settings" {
+                    root.present(
+                        UINavigationController(rootViewController: SettingsViewController()),
+                        animated: false
+                    )
                     return
                 }
                 let session = MockProject.samples[0].sessions[0]
@@ -118,9 +157,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return args[index + 1]
     }
 
-    /// A `WireFile` for `-demo file`: real Swift source (this file's header),
+    /// A `DeviceFile` for `-demo file`: real Swift source (this file's header),
     /// enough lines to exercise highlighting, scrolling, and the footer.
-    private static func sampleFile() -> WireFile {
+    private static func sampleFile() -> DeviceFile {
         let code = """
         import UIKit
 
@@ -145,12 +184,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         """
-        return WireFile(
+        return DeviceFile(
             path: "ios/Sources/RootContainerViewController.swift",
-            base64: Data(code.utf8).base64EncodedString(),
+            data: Data(code.utf8),
             size: code.utf8.count,
-            binary: false,
-            truncated: false
+            isBinary: false,
+            isTruncated: false
         )
     }
 }

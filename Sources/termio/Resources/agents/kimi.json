@@ -1,0 +1,21 @@
+{
+  "id": "kimi",
+  "order": 70,
+  "name": "Kimi",
+  "wire": "kimi",
+  "command": "kimi",
+  "icon": { "asset": "kimi-favicon" },
+  "install": "https://moonshotai.github.io/kimi-code",
+  "configHome": { "env": "KIMI_CODE_HOME", "path": "~/.kimi-code" },
+  "skills": { "dir": "~/.kimi-code/skills" },
+  "hooks": {
+    "type": "toml",
+    "file": "~/.kimi-code/config.toml",
+    "dialect": "kimi",
+    "events": [
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "Stop", "state": "done" },
+      { "on": "Interrupt", "state": "done" }
+    ]
+  }
+}

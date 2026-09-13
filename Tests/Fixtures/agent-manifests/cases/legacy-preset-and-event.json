@@ -1,0 +1,12 @@
+{
+  "id": "legacyShapes",
+  "name": "Legacy Shapes",
+  "resume": "codex",
+  "installURL": "https://example.com/legacy",
+  "icon": { "vector": "CODEX" },
+  "hooks": {
+    "dir": "~/.legacy/hooks",
+    "type": "scripts",
+    "events": [{ "event": "TaskStart", "state": "working" }]
+  }
+}

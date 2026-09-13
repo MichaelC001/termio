@@ -2,6 +2,7 @@ import Highlightr
 import QuickLook
 import TermioShared
 import UIKit
+import WebKit
 
 /// Full-screen file view — the phone's counterpart of the macOS editor
 /// overlay: a compact header (name · repo-relative path · close), the content
@@ -16,9 +17,9 @@ import UIKit
 final class FileViewerController: UIViewController {
     private let fileName: String
     private let relativePath: String
-    private let file: WireFile
+    private let file: DeviceFile
 
-    /// Ship edited bytes to the Mac: `(payload, baseMtime)`; 0 forces the
+    /// Ship edited bytes to the device: `(payload, baseModifiedMilliseconds)`; 0 forces the
     /// write past the conflict check. nil = viewer stays read-only (offline
     /// demos, truncated reads).
     var onSave: ((Data, Int) -> Void)?
@@ -33,20 +34,29 @@ final class FileViewerController: UIViewController {
     private let editButton = UIButton(type: .system)
     private var rendered = false
 
+    /// The device-rendered Markdown preview (`DeviceFile.renderedHTML`), shown in a web
+    /// view over the text view. Markdown
+    /// opens in preview; the pencil flips to source (and editing, when
+    /// allowed). One-way per open: the preview HTML was rendered from the
+    /// bytes as fetched, so after edits it would lie — reopening re-renders.
+    private var webView: WKWebView?
+    private var previewing = false
+
     private var editMode = false
-    /// mtime (ms) the current buffer is based on; advanced by each `written`.
-    private var baseMtime: Int
+    /// Modification time (ms) the current buffer is based on; advanced by
+    /// each acknowledged write.
+    private var baseModifiedMilliseconds: Int
     /// The last content the Mac acknowledged, so idle flushes skip no-ops.
     private var savedText: String
     /// Content in flight (sent, not yet acked).
     private var pendingSaveText: String?
     private var saveDebounce: DispatchWorkItem?
 
-    init(file: WireFile) {
+    init(file: DeviceFile) {
         self.file = file
         fileName = (file.path as NSString).lastPathComponent
         relativePath = file.path
-        baseMtime = file.mtime
+        baseModifiedMilliseconds = file.modifiedMilliseconds
         savedText = file.data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
@@ -57,7 +67,7 @@ final class FileViewerController: UIViewController {
 
     /// A Quick Look controller for binary payloads, or nil when writing the
     /// temp file fails. The file keeps its real name so QL sniffs the type.
-    static func quickLook(for file: WireFile) -> UIViewController? {
+    static func quickLook(for file: DeviceFile) -> UIViewController? {
         guard let data = file.data else { return nil }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("companion-preview", isDirectory: true)
@@ -80,6 +90,7 @@ final class FileViewerController: UIViewController {
         let header = configureHeader()
         let footer = configureFooter()
         configureText(below: header, above: footer)
+        configurePreview(below: header, above: footer)
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -97,7 +108,7 @@ final class FileViewerController: UIViewController {
 
     private func configureHeader() -> UIView {
         let close = UIButton(type: .system)
-        close.applyGlassSymbol("xmark")
+        close.applyGlassSymbol("xmark", themed: false)
         close.tintColor = .label
         close.addAction(UIAction { [weak self] _ in
             self?.flushAndClose()
@@ -120,7 +131,7 @@ final class FileViewerController: UIViewController {
         titles.axis = .vertical
         titles.alignment = .center
 
-        editButton.applyGlassSymbol("pencil")
+        editButton.applyGlassSymbol("pencil", themed: false)
         editButton.tintColor = .label
         editButton.isHidden = !canEdit
         editButton.addAction(UIAction { [weak self] _ in
@@ -190,15 +201,45 @@ final class FileViewerController: UIViewController {
         ])
     }
 
+    /// The Markdown preview layer, only when the Mac sent one. Sits over the
+    /// text view with the same frame, and transparent so the themed page's own
+    /// background shows through cleanly.
+    private func configurePreview(below header: UIView, above footer: UIView) {
+        guard let html = file.renderedHTML else { return }
+        let web = WKWebView()
+        web.isOpaque = false
+        web.backgroundColor = .clear
+        web.scrollView.backgroundColor = .clear
+        web.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(web)
+        NSLayoutConstraint.activate([
+            web.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
+            web.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            web.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -4),
+        ])
+        web.loadHTMLString(html, baseURL: nil)
+        webView = web
+        previewing = true
+        textView.isHidden = true
+    }
+
+    private func leavePreview() {
+        previewing = false
+        webView?.removeFromSuperview()
+        webView = nil
+        textView.isHidden = false
+    }
+
     // MARK: - Content
 
     private var canEdit: Bool {
-        onSave != nil && !file.binary && !file.truncated
+        onSave != nil && !file.isBinary && !file.isTruncated
     }
 
     private func render() {
         guard let data = file.data, let text = String(data: data, encoding: .utf8) else {
-            textView.text = "Couldn't decode this file as text."
+            textView.text = localized("Couldn't decode this file as text.")
             footerLabel.text = Self.format(bytes: file.size)
             editButton.isHidden = true
             return
@@ -215,10 +256,10 @@ final class FileViewerController: UIViewController {
 
     private func updateFooter(state: String? = nil) {
         var parts = [
-            CodeHighlighter.language(forFileNamed: fileName) ?? "plain text",
+            CodeHighlighter.language(forFileNamed: fileName) ?? localized("plain text"),
             Self.format(bytes: file.size),
         ]
-        if file.truncated { parts.append("truncated preview") }
+        if file.isTruncated { parts.append(localized("truncated preview")) }
         if let state { parts.append(state) }
         footerLabel.text = parts.joined(separator: " · ")
     }
@@ -230,6 +271,9 @@ final class FileViewerController: UIViewController {
     // MARK: - Editing / auto-save
 
     private func toggleEditing() {
+        // From the Markdown preview, the pencil first drops to the source —
+        // then straight into editing, one tap, like the Mac's Preview→edit flip.
+        if previewing { leavePreview() }
         if editMode {
             // Done: flush whatever is pending and drop the keyboard.
             saveDebounce?.cancel()
@@ -237,12 +281,12 @@ final class FileViewerController: UIViewController {
             editMode = false
             textView.isEditable = false
             textView.resignFirstResponder()
-            editButton.applyGlassSymbol("pencil")
+            editButton.applyGlassSymbol("pencil", themed: false)
         } else {
             editMode = true
             textView.isEditable = true
             textView.becomeFirstResponder()
-            editButton.applyGlassSymbol("checkmark")
+            editButton.applyGlassSymbol("checkmark", themed: false)
             updateFooter(state: "editing")
         }
     }
@@ -260,16 +304,16 @@ final class FileViewerController: UIViewController {
         let text = textView.text ?? ""
         guard force || (text != savedText && pendingSaveText == nil) else { return }
         pendingSaveText = text
-        updateFooter(state: "saving…")
-        onSave(Data(text.utf8), force ? 0 : baseMtime)
+        updateFooter(state: localized("saving…"))
+        onSave(Data(text.utf8), force ? 0 : baseModifiedMilliseconds)
     }
 
     /// The Mac acknowledged the write (routed in by the inspector).
-    func didSave(mtime: Int) {
-        baseMtime = mtime
+    func didSave(modifiedMilliseconds: Int) {
+        baseModifiedMilliseconds = modifiedMilliseconds
         if let pending = pendingSaveText { savedText = pending }
         pendingSaveText = nil
-        updateFooter(state: "saved")
+        updateFooter(state: localized("saved"))
         // Keystrokes landed while the write was in flight — save them too.
         if textView.text != savedText { scheduleSave() }
     }
@@ -279,27 +323,27 @@ final class FileViewerController: UIViewController {
     func saveFailed(_ message: String) {
         pendingSaveText = nil
         guard message.hasPrefix("conflict") else {
-            updateFooter(state: "save failed")
-            let alert = UIAlertController(title: "Couldn't save", message: message, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            updateFooter(state: localized("save failed"))
+            let alert = UIAlertController(title: localized("Couldn't save"), message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
             present(alert, animated: true)
             return
         }
-        updateFooter(state: "conflict")
+        updateFooter(state: localized("conflict"))
         let alert = UIAlertController(
-            title: "File changed on the Mac",
-            message: "\(fileName) was modified since you opened it — likely by the agent.",
+            title: localized("File changed on the Mac"),
+            message: localized("\(fileName) was modified since you opened it — likely by the agent."),
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Reload", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: localized("Reload"), style: .default) { [weak self] _ in
             guard let self else { return }
             let onReload = onReload
             dismiss(animated: true) { onReload?() }
         })
-        alert.addAction(UIAlertAction(title: "Overwrite", style: .destructive) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: localized("Overwrite"), style: .destructive) { [weak self] _ in
             self?.flushSave(force: true)
         })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: localized("Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 

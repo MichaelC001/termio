@@ -1,5 +1,5 @@
 {
-  "originHash" : "c8ac27f9b5fc2d8acbae1a08100e1cb516655f0ed4befaaaac640b743c692a01",
+  "originHash" : "503222484195d1f3ff9622dd488aad22b05ba5dd569733f566e2a4f20b80cbd4",
   "pins" : [
     {
       "identity" : "highlightr",
@@ -13,10 +13,10 @@
     {
       "identity" : "libghostty-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/jiweiyuan/libghostty-swift",
+      "location" : "https://github.com/termio-sh/libghostty-swift",
       "state" : {
-        "revision" : "f908f1e3b5dad822daf01e40e657914e932c6b94",
-        "version" : "1.0.12"
+        "revision" : "7f9687529e1f998aa4df882defc3e7abcd4f88c8",
+        "version" : "1.0.24"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Lakr233/MSDisplayLink.git",
       "state" : {
-        "revision" : "1ba3e769b734e456317fa7e45321fa7f53eefb67",
-        "version" : "2.1.0"
+        "revision" : "87eb0af130744c8cbe2e31b6e1a5bcd659f1c220",
+        "version" : "2.2.0"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle.git",
       "state" : {
-        "revision" : "d46d456107feacc80711b21847b82b07bd9fb46e",
-        "version" : "2.9.3"
+        "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
+        "version" : "2.9.6"
       }
     },
     {

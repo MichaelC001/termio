@@ -1,0 +1,97 @@
+---
+title: 你的第一个会话
+description: 打开项目，在真实终端里启动 Agent，再拆分窗口，让开发服务器和一个 shell 并排待在旁边。
+x-i18n:
+  source_path: first-session.mdx
+  source_hash: df978b945389ae8708b68c2944a963a4cfc6ed8af24bef2d0c2dec7a38a6772f
+  generated_at: 2026-08-30
+---
+
+Termio 里的*会话*就是一个真实终端，跑着一件事——一个 Agent、一个开发服务器，或者
+一个普通 shell。下面是从刚启动到搭好工作台的完整路径。
+
+## 打开项目
+
+在欢迎界面选择 **打开项目**，挑一个文件夹。Termio 会把它加进侧栏，并记在 **最近**
+里方便下次打开。项目就是一个工作目录——你在其中启动的 Agent 都从这里开始。
+
+项目归在你当前所在的工作区下，并在那个工作区所属的机器上打开。只有一台机器时没什么
+可选；有两台之后，见 [工作区](/zh-CN/docs/workspaces)和[设备](/zh-CN/docs/devices)。
+
+<DocsImage
+  src="/screenshots/docs/01-open-project.png"
+  alt="Termio 欢迎窗口，以「打开项目」作为主要操作"
+  width={2424}
+  height={1664}
+/>
+
+## 启动一个 Agent
+
+选中项目后新建会话，挑一个 Agent——Claude Code、Codex、Antigravity，或任何你装过的命令行
+工具。Termio 会在项目根目录用真实终端打开它。你像在任何终端里一样输入；Agent 的 TUI
+原生渲染。
+
+侧栏会显示会话的实时状态——**工作中**、**空闲**、**完成**，或**需要你**。
+[核心概念](/zh-CN/docs/concepts#status) 解释了这四种状态；要留意的是**需要你**，
+它意味着 Agent 被提问或权限确认挡住了，没有你就无法继续。
+
+<Callout type="tip">
+  在一个会话里发起长任务，切到另一个会话，让侧栏在第一个 Agent 需要你时立刻告诉你。
+</Callout>
+
+<DocsImage
+  src="/screenshots/docs/02-agent-working.png"
+  alt="聚焦的 Codex 会话正在 Termio 中工作，侧栏对应行显示「工作中」"
+  width={2424}
+  height={1664}
+/>
+
+## 拆分窗口
+
+真实的工作往往需要不止一个窗格。用 `⌘D` 向右拆分当前窗格，或用 `⇧⌘D` 向下拆分，
+然后把另一个会话放进新窗格——一个跑 Agent，一个跑开发服务器，再来一个 shell。窗格
+以树的形式平铺，所以你可以嵌套出任意布局。
+
+要重新排布，把指针移到窗格标题栏上，拖动出现的抓取手柄。高亮会预示窗格将落在哪里：
+放到另一个窗格的左半、右半、上半或下半，就把它放到那一侧；放在正中则把两个窗格互换。
+
+<DocsVideo
+  src="/screenshots/docs/21-rearrange-pane.mp4"
+  poster="/screenshots/docs/21-rearrange-pane-poster.png"
+  label="一个 Termio 窗格被抓起、拖到另一个窗格上，再放到新的位置"
+/>
+
+用 `⌥⌘` 加方向键在窗格间移动焦点，用 `⇧⌘↩` 把当前窗格临时放大到填满窗口。`⌘W`
+**关闭** 当前会话，就像关掉一个浏览器标签页，会话所在的窗格也随之收起。每个快捷键都可以重新绑定——参见
+[键盘快捷键](/zh-CN/docs/keyboard)。
+
+## 关于会话的生命周期
+
+会话是活着的进程，不是保存下来的记录——而且这个进程不属于窗口。每个会话都跑在它那台
+机器的 Termio server `termiod` 里，Termio 只是附着上去。关掉窗口，Agent 照样干活；从程序坞
+重新打开，它还在你离开时的位置。
+
+长任务也扛得住一次重启：daemon 保住进程，应用重新附着到它离开的那个会话，而不是新开
+一个——同一个进程，同样的输出。
+
+<Callout type="note">
+  结束会话是一件需要你明确去做的事：`⌘W` 关闭当前会话。其余情况——关掉窗口、退出
+  Termio、SSH 断线、重启应用——都只是分离，不会杀掉任何东西。
+</Callout>
+
+## 下一步
+
+<Cards>
+  <Card href="/zh-CN/docs/agents" title="同时运行多个 Agent">
+    读取整支队伍的实时状态，切换时不丢上下文。
+  </Card>
+  <Card href="/zh-CN/docs/worktrees" title="Git worktree">
+    给每条并行的 Agent 工作线一份隔离的检出。
+  </Card>
+  <Card href="/zh-CN/docs/inspector" title="检查器">
+    在终端旁边浏览文件、读差异、搜索项目。
+  </Card>
+  <Card href="/zh-CN/docs/iphone" title="iPhone 伴侣应用">
+    用手机查看正在运行的会话。
+  </Card>
+</Cards>

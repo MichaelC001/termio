@@ -1,0 +1,28 @@
+{
+  "title": "文档",
+  "pages": [
+    "---入门---",
+    "index",
+    "installation",
+    "first-session",
+    "concepts",
+    "---界面---",
+    "sidebar",
+    "navigation",
+    "inspector",
+    "---你的设备---",
+    "devices",
+    "workspaces",
+    "---Agent---",
+    "agents",
+    "custom-agents",
+    "atp",
+    "worktrees",
+    "session-control",
+    "---个性化---",
+    "appearance",
+    "keyboard",
+    "---你的 iPhone---",
+    "iphone"
+  ]
+}

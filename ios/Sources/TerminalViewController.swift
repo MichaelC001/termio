@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 final class TerminalViewController: UIViewController {
     private enum Backend {
         case demoShell
-        case companion(URL)
+        case device(DeviceEndpoint)
     }
 
     private let session: MockSession
@@ -30,13 +30,43 @@ final class TerminalViewController: UIViewController {
     /// freed the surface and raced libghostty's render threads.
     var onRequestBack: (() -> Void)?
 
+    /// Interactive back-swipe hooks (set by RootContainerViewController). The
+    /// rightward drag is finger-tracked instead of a discrete pop: `Began`
+    /// starts the interactive transition, `Changed` reports the horizontal
+    /// finger offset (>= 0, measured in a stable space so moving the screen
+    /// doesn't feed back), `Ended` reports the release velocity and whether the
+    /// drag crossed the commit threshold.
+    var onBackBegan: (() -> Void)?
+    var onBackChanged: ((CGFloat) -> Void)?
+    var onBackEnded: ((_ velocityX: CGFloat, _ commit: Bool) -> Void)?
+
     private lazy var terminalView = DisplayTerminalView(frame: .zero)
+    /// Whether the terminal held the keyboard when an interactive back began, so a
+    /// cancelled (non-committed) swipe can hand focus back instead of leaving the
+    /// keyboard dismissed (the drag resigns it up front, matching `goBack()`).
+    private var terminalWasFirstResponderAtBackBegin = false
     /// Last size actually sent to the engine + the pending coalesced refit —
     /// see viewDidLayoutSubviews for why resizes are rationed.
     private var lastFittedSize: CGSize = .zero
     private var fitDebounce: DispatchWorkItem?
+    /// The area the surface may occupy, pinned by constraints between the
+    /// header and the keyboard. The surface is framed by hand inside it
+    /// (`layoutTerminalSurface`): while the session is sized to another screen,
+    /// the surface has to be laid out at that screen's grid, not this rectangle.
+    private let terminalHost: UIView = {
+        let host = UIView()
+        host.clipsToBounds = true
+        host.translatesAutoresizingMaskIntoConstraints = false
+        return host
+    }()
+    /// The PTY's grid, from the session: the viewport of whichever screen a
+    /// person is in front of. `nil` until the session says.
+    private var sharedGrid: TerminalGrid?
+    /// The live surface's cell size, from the resize delegate. Both the
+    /// letterbox and this screen's own viewport are measured with it.
+    private var surfaceMetrics: TerminalGridMetrics?
     private lazy var shellSession = ShellSession(shell: defaultSandboxShell)
-    private var companion: CompanionTransport?
+    private var companion: DeviceSession?
     private var companionSession: InMemoryTerminalSession?
     private let headerBar = UIStackView()
     private let contextLabel = UILabel()
@@ -59,12 +89,32 @@ final class TerminalViewController: UIViewController {
         return v
     }()
     private var settingsObserver: NSObjectProtocol?
+    /// Background/foreground observers, for the app half of the rendering bit.
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    /// Whether this screen is on screen, and whether the app is frontmost. Both
+    /// have to hold for this phone's viewport to count toward the session's
+    /// size, and they move independently — the container parks a screen without
+    /// tearing it down, and the app can be backgrounded with a session showing.
+    private var screenIsShowing = false
+    private var applicationIsActive = true
+    /// System edit menu over the live selection (Copy/Paste), presented at
+    /// the touch-selection release point.
+    private lazy var editMenuInteraction = UIEditMenuInteraction(delegate: self)
     /// Bottom pin of the surface — its constant tracks the keyboard overlap
     /// (0 when the keyboard is away), see keyboardFrameWillChange.
     private var terminalBottomConstraint: NSLayoutConstraint?
+    /// How much of the screen the keyboard covers right now. The keyboard
+    /// occludes, it never resizes: the declared viewport and the surface grid
+    /// are both measured against the keyboard-hidden height, and the surface is
+    /// slid up so its bottom rows — the prompt, an agent's input box — stay
+    /// visible above the keys. Sizing the PTY to the keyboard-shrunk area sent
+    /// a SIGWINCH on every show/hide, and an agent TUI answers each one with a
+    /// full repaint (the pan-don't-resize rule every mobile terminal converges
+    /// on).
+    private var keyboardOverlap: CGFloat = 0
     /// Main-thread only — fed from the companion byte stream, read on key taps.
     private var altScreenSniffer = AlternateScreenSniffer()
-    private var uploadClient: CompanionClient?
+    private var uploadClient: DeviceClient?
     private var uploadQueue: [(name: String, data: Data)] = []
     private var uploadInFlight = false
     private var uploadTotal = 0
@@ -76,14 +126,19 @@ final class TerminalViewController: UIViewController {
     )
 
     // Drawer
-    private lazy var inspectorNav = UINavigationController(
-        rootViewController: InspectorViewController(
+    private lazy var inspector: InspectorViewController = {
+        let inspector = InspectorViewController(
             session: session,
-            companionURL: {
-                if case .companion(let url) = backend { url } else { nil }
+            endpoint: {
+                if case .device(let endpoint) = backend { endpoint } else { nil }
             }()
         )
-    )
+        inspector.onSendToAgent = { [weak self] text in
+            self?.sendSnippetToPrompt(text)
+        }
+        return inspector
+    }()
+    private lazy var inspectorNav = UINavigationController(rootViewController: inspector)
     private let dimView = UIControl()
     private var drawerOpen = false
     /// Direction the surface pan locked at its start: rightward = back to
@@ -98,15 +153,16 @@ final class TerminalViewController: UIViewController {
         hidesBottomBarWhenPushed = true
     }
 
-    /// A companion terminal: bridges a real Mac session's PTY when `session`
-    /// carries a roster id, else streams whatever the server serves (PoC mode).
-    init(companionURL: URL, session: MockSession? = nil) {
+    /// A live terminal on a paired machine: bridges a real session's PTY when
+    /// `session` carries a roster id, else streams whatever the peer serves
+    /// (the companion proof of concept).
+    init(endpoint: DeviceEndpoint, session: MockSession? = nil) {
         self.session = session ?? MockSession(
-            title: companionURL.host ?? "companion",
-            project: "companion", agent: .terminal, status: .idle,
+            title: endpoint.url.host ?? "companion",
+            project: "companion", agent: RosterAgent.terminal, status: .idle,
             subtitle: "", time: ""
         )
-        backend = .companion(companionURL)
+        backend = .device(endpoint)
         super.init(nibName: nil, bundle: nil)
         hidesBottomBarWhenPushed = true
     }
@@ -117,6 +173,9 @@ final class TerminalViewController: UIViewController {
         restylePump?.invalidate()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
+        }
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -138,6 +197,37 @@ final class TerminalViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyAppearanceSettings() }
         }
+        // A locked phone renders nothing, and `viewWillDisappear` does not fire
+        // on the way to the background — the screen stays "appeared" — so
+        // without this a session left open while the phone locks keeps counting
+        // toward the session's size. `didBecomeActive` rather than
+        // `willEnterForeground` so a link reconnecting on that same
+        // notification finds the viewport already declared.
+        lifecycleObservers = [
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applicationActivityChanged(false) }
+            },
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applicationActivityChanged(true) }
+            },
+        ]
+    }
+
+    private func applicationActivityChanged(_ active: Bool) {
+        guard applicationIsActive != active else { return }
+        applicationIsActive = active
+        publishRendering()
+    }
+
+    /// The session counts this phone's viewport only while there is actually a
+    /// viewer: the screen is up *and* the app is frontmost.
+    private func publishRendering() {
+        guard case .device = backend else { return }
+        companion?.setRendering(screenIsShowing && applicationIsActive)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -165,15 +255,21 @@ final class TerminalViewController: UIViewController {
             switch backend {
             case .demoShell:
                 shellSession.start()
-            case .companion:
-                companion?.start()
+            case .device:
+                // nil only when there was no session to attach to, which
+                // `makeTerminalSession` already fell back to the sandbox shell
+                // for; starting nothing would leave that shell dead on screen.
+                if let companion { companion.start() } else { shellSession.start() }
             }
-        } else if case .companion = backend {
-            // Re-entering a parked session claims the PTY's winsize back —
-            // the Mac may own it, and this view's size didn't change, so no
-            // layout pass would re-send the grid.
+        } else if case .device = backend {
+            // Re-entering a parked session re-sends this phone's viewport: the
+            // device stopped counting it when the screen went away, and this
+            // view's size didn't change, so no layout pass would re-send it.
             companion?.reassertGrid()
         }
+        // Back on screen, so back in the running for the session's size.
+        screenIsShowing = true
+        publishRendering()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -182,11 +278,18 @@ final class TerminalViewController: UIViewController {
         // keyboard with it — otherwise the surface stays first responder and
         // the keyboard + key bar linger over the list.
         terminalView.resignFirstResponder()
+        // The container parks this screen rather than tearing it down, so the
+        // attachment survives. It stops counting toward the session's size the
+        // moment nobody is looking at it, or a session opened once on the phone
+        // would hold a Mac pane at phone width for as long as it stayed open.
+        screenIsShowing = false
+        publishRendering()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutDrawer()
+        layoutTerminalSurface()
         // Refit only when the surface's size actually changed, and coalesce
         // the per-frame passes of keyboard animations into one call
         // after the size settles. Every `setSize` can deadlock against the
@@ -204,6 +307,145 @@ final class TerminalViewController: UIViewController {
         }
         fitDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// Frames the surface inside `terminalHost`, and states what this screen
+    /// could show while it is there.
+    ///
+    /// Normally the surface fills the host. While the session is sized to
+    /// another screen — somebody is working at the Mac — every byte arriving
+    /// here is wrapped for that grid, and a surface at this phone's own width
+    /// re-wraps those lines into a screen a TUI's incremental repaints never
+    /// repair (§C.5 of the session protocol). So the surface is laid out at
+    /// exactly the shared grid, the same picture the Mac has, and the whole
+    /// thing is scaled down to fit, top-aligned and centred. Using the phone —
+    /// typing, or resizing this host — brings the session back to it and the
+    /// surface fills the host again.
+    ///
+    /// Half a cell of slack on each axis: libghostty floors
+    /// `(size − padding) / cell` for its grid, and an exact multiple can round
+    /// to one column short.
+    ///
+    /// This is also where the screen states its *viewport*, measured from the
+    /// host's own geometry. The surface cannot answer that question once it is
+    /// laid out at somebody else's grid: it reports the grid it was scaled to,
+    /// so a screen that declared what its surface reports could never say it had
+    /// room for its own width back, and the session could never return to it
+    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md` §6.1).
+    private func layoutTerminalSurface() {
+        let host = terminalHost.bounds
+        guard host.width > 0, host.height > 0 else { return }
+        // Everything below is measured against the keyboard-hidden height. The
+        // keyboard occludes this rectangle, it never shrinks it: shrinking is a
+        // viewport change, a viewport change is a PTY resize, and a PTY resize
+        // is a full TUI repaint on every show/hide of the keys.
+        let fullHeight = host.height + keyboardOverlap
+        let screen = hostGrid
+        if case .device = backend, let screen {
+            companion?.setViewport(columns: Int(screen.cols), rows: Int(screen.rows))
+        }
+        // A frame set under a transform is undefined; always start from identity.
+        terminalView.transform = .identity
+        guard case .device = backend,
+              let grid = sharedGrid, grid != screen,
+              let cell = cellSize, grid.cols > 0, grid.rows > 0
+        else {
+            // Full-height surface, slid up by exactly the content-aware pan:
+            // enough that the deepest drawn row clears the keys, never more.
+            // The host clips whatever the slide pushes past the top, and the
+            // keyboard covers whatever stays below. With the keys away this
+            // is exactly `host`.
+            lastAppliedPan = keyboardPan
+            terminalView.frame = CGRect(
+                x: 0, y: -lastAppliedPan, width: host.width, height: fullHeight)
+            return
+        }
+        let width = CGFloat(grid.cols) * cell.width + 2 * Self.terminalPaddingX + cell.width / 2
+        let height = CGFloat(grid.rows) * cell.height + 2 * Self.terminalPaddingY + cell.height / 2
+        let fit = min(1, host.width / width, fullHeight / height)
+        terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
+        // The same cursor-anchored slide as the full-size path, in scaled
+        // space: with the keys up, the letterboxed picture rises just enough
+        // to keep the cursor's row above them.
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        var pan: CGFloat = 0
+        if keyboardOverlap > 0, caret.maxY.isFinite, caret.maxY > 0 {
+            let anchor = (caret.maxY + 2 * cell.height) * fit
+            pan = min(max(0, anchor - host.height), max(0, height * fit - host.height))
+        }
+        lastAppliedPan = pan
+        terminalView.center = CGPoint(x: host.midX, y: height * fit / 2 - pan)
+    }
+
+    /// How much of a session this screen could show. The same
+    /// `TerminalGrid.fitting` the Mac pane measures itself with, so the two
+    /// clients declare comparable viewports — the session moves between them and
+    /// a per-platform copy of this arithmetic would drift a column apart. `nil`
+    /// before the surface has reported a cell size, which the device reads as no
+    /// viewport at all rather than as a stand-in.
+    /// How far the surface slides up while the keyboard shows: just enough to
+    /// keep the cursor's row visible above the keys, and not a point more. A
+    /// fresh session with the cursor near the top stays put — the keys cover
+    /// empty grid — while a full transcript slides its input line over them,
+    /// and a full-screen editor follows its own cursor wherever it sits.
+    /// Pushing the whole overlap unconditionally hid a short session's only
+    /// content off the top; never pushing hid a tall session's input line
+    /// under the keys; the cursor is what resolves the two, and it is exact:
+    /// `caretRect` reads the surface's own IME caret (`imePoint`), the same
+    /// geometry the system keyboard places candidate windows with. A couple
+    /// of margin rows keep an agent's box border, drawn just below its
+    /// cursor, in view.
+    private var keyboardPan: CGFloat {
+        guard keyboardOverlap > 0 else { return 0 }
+        guard let cell = cellSize else { return keyboardOverlap }
+        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        guard caret.maxY.isFinite, caret.maxY > 0 else { return keyboardOverlap }
+        let anchor = caret.maxY + 2 * cell.height
+        return min(keyboardOverlap, max(0, anchor - terminalHost.bounds.height))
+    }
+
+    /// The pan the surface was last framed with, so output that moves the
+    /// cursor while the keys are up can re-slide without thrash.
+    private var lastAppliedPan: CGFloat = 0
+
+    /// Called on every output chunk: if the cursor moved enough to change the
+    /// pan while the keyboard is showing, re-frame the surface.
+    private func followContentUnderKeyboard() {
+        guard keyboardOverlap > 0 else { return }
+        guard abs(keyboardPan - lastAppliedPan) > 0.5 else { return }
+        layoutTerminalSurface()
+    }
+
+    private var hostGrid: TerminalGrid? {
+        guard let cell = cellSize else { return nil }
+        // The keyboard-hidden height, always: what this screen could show is a
+        // fact about the screen, not about whether the keys happen to be up.
+        let size = CGSize(
+            width: terminalHost.bounds.width,
+            height: terminalHost.bounds.height + keyboardOverlap)
+        return TerminalGrid.fitting(
+            size, cell: cell,
+            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY)
+    }
+
+    private var cellSize: CGSize? {
+        guard let metrics = surfaceMetrics,
+              metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
+        else { return nil }
+        let scale = max(1, traitCollection.displayScale)
+        return CGSize(
+            width: CGFloat(metrics.cellWidthPixels) / scale,
+            height: CGFloat(metrics.cellHeightPixels) / scale)
+    }
+
+    /// The session's word on the PTY's grid. Not keyed on the write token: the
+    /// screen holding it is letterboxed too whenever the session is sized to
+    /// somebody else's.
+    private func applySharedGrid(_ grid: TerminalGrid) {
+        guard sharedGrid != grid else { return }
+        sharedGrid = grid
+        view.setNeedsLayout()
     }
 
     // MARK: - Header
@@ -227,19 +469,26 @@ final class TerminalViewController: UIViewController {
         statusLabel.font = .preferredFont(forTextStyle: .caption2)
         statusLabel.textColor = .secondaryLabel
         statusLabel.text = switch backend {
-        case .demoShell: "\(session.agent.rawValue) · \(session.time)"
-        case .companion: "Connecting…"
+        case .demoShell: "\(session.agent.name) · \(session.time)"
+        case .device: localized("Connecting…")
         }
         contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
         switch backend {
-        case .companion: contextLabel.isHidden = true // until connected
+        case .device: contextLabel.isHidden = true // until connected
         case .demoShell: break
         }
 
+        // Each line spans the whole width between the two buttons and centers its
+        // text inside it. Sizing the labels to their text instead makes every
+        // title change a layout pass that re-centers the stack, so a title the
+        // agent rewrites as it works visibly jitters left and right.
         let titles = UIStackView(arrangedSubviews: [contextLabel, titleLabel, statusLabel])
         titles.axis = .vertical
-        titles.alignment = .center
+        titles.alignment = .fill
         titles.spacing = 0
+        for label in [contextLabel, titleLabel, statusLabel] {
+            label.textAlignment = .center
+        }
 
         headerBar.axis = .horizontal
         headerBar.alignment = .center
@@ -253,18 +502,17 @@ final class TerminalViewController: UIViewController {
         // 15pt default that reads like a caption glyph.
         back.applyGlassSymbol("chevron.left", pointSize: 18)
         back.accessibilityIdentifier = "terminal.back"
-        back.tintColor = .label
         back.addAction(UIAction { [weak self] _ in
             self?.goBack()
         }, for: .touchUpInside)
         // The right slot balances the back chevron (keeping the title centered)
-        // and holds an overflow menu of per-session actions — View Trace and
-        // Copy Path for a companion session. With nothing to offer (the demo
-        // shell has no Mac transcript or path) it stays an invisible spacer.
+        // and holds an overflow menu of per-session actions — Copy Path for a
+        // companion session. With nothing to offer (the demo shell has no Mac
+        // project path) it stays an invisible spacer.
         let overflow = UIButton(type: .system)
         overflow.applyGlassSymbol("ellipsis", pointSize: 16)
         overflow.accessibilityIdentifier = "terminal.overflow"
-        overflow.tintColor = .secondaryLabel
+        overflow.tintColor = ThemeChrome.secondaryInk
         overflow.showsMenuAsPrimaryAction = true
         let menu = makeOverflowMenu()
         overflow.menu = menu
@@ -288,36 +536,17 @@ final class TerminalViewController: UIViewController {
         ])
     }
 
-    /// The header overflow menu. View Trace and Copy Path appear only for a
-    /// companion session, where there is a Mac transcript and project path to
-    /// reach; the demo shell has neither, so the menu comes back empty and the
-    /// button hides itself.
+    /// The header overflow menu. Copy Path appears only for a companion session,
+    /// where there is a Mac project path to reach; the demo shell has none, so the
+    /// menu comes back empty and the button hides itself.
     private func makeOverflowMenu() -> UIMenu {
         var items: [UIMenuElement] = []
-        if case .companion = backend {
-            items.append(UIAction(
-                title: "View Trace", image: UIImage(systemName: "list.bullet.rectangle")
-            ) { [weak self] _ in self?.showTrace() })
-        }
         if let path = session.projectPath, !path.isEmpty {
             items.append(UIAction(
-                title: "Copy Path", image: UIImage(systemName: "doc.on.doc")
+                title: localized("Copy Path"), image: UIImage(systemName: "doc.on.doc")
             ) { _ in UIPasteboard.general.string = path })
         }
         return UIMenu(children: items)
-    }
-
-    /// Present the session's agent transcript as an in-app HTML trace — the
-    /// phone counterpart of the desktop Info pane's "View Trace". The Mac
-    /// renders it (reusing `SessionTraceRenderer`) and returns the document
-    /// over the companion socket; the sheet shows a spinner until it lands.
-    private func showTrace() {
-        guard case .companion = backend, let companion else { return }
-        let trace = TraceViewController()
-        companion.onTrace = { [weak trace] html in trace?.load(html: html) }
-        let nav = UINavigationController(rootViewController: trace)
-        present(nav, animated: true)
-        companion.requestTrace(dark: traitCollection.userInterfaceStyle == .dark)
     }
 
     /// Called by RootContainerViewController when this parked screen slides
@@ -326,10 +555,10 @@ final class TerminalViewController: UIViewController {
     /// happen on every return.
     func prepareForReappearance() {
         if !drawerOpen { focusInput() }
-        // Re-entering a parked companion session claims the PTY's winsize back —
-        // the Mac may own it, and this view's size didn't change while parked,
-        // so no layout pass would re-send the grid.
-        if case .companion = backend { companion?.reassertGrid() }
+        // Re-entering a parked session re-sends this phone's grid (applied only
+        // while it holds the write token); the view's size didn't change while
+        // parked, so no layout pass would.
+        if case .device = backend { companion?.reassertGrid() }
     }
 
     /// Back to the inbox: the screen parks in the container's keep-alive
@@ -373,6 +602,8 @@ final class TerminalViewController: UIViewController {
 
     private func configureTerminal() {
         terminalView.delegate = self
+        // Long-press → floating Paste menu (see wirePasteMenu).
+        wirePasteMenu()
         // Scrolling the terminal is reading; give the rows back to content.
         // Dropping first responder only hides the keyboard — tapping the
         // surface refocuses (the wrapper's touch path takes it back).
@@ -384,18 +615,18 @@ final class TerminalViewController: UIViewController {
         terminalView.controller = controller
         terminalView.backgroundColor = .clear
         terminalView.isOpaque = false
-        terminalView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(terminalView)
+        view.addSubview(terminalHost)
+        terminalHost.addSubview(terminalView)
 
         // Sits directly above the surface (below the drawer added later),
         // so unhiding it masks libghostty's panel during a rebuild.
         rendererCoverView.backgroundColor = Self.backdropColor()
         view.addSubview(rendererCoverView)
         NSLayoutConstraint.activate([
-            rendererCoverView.topAnchor.constraint(equalTo: terminalView.topAnchor),
-            rendererCoverView.leadingAnchor.constraint(equalTo: terminalView.leadingAnchor),
-            rendererCoverView.trailingAnchor.constraint(equalTo: terminalView.trailingAnchor),
-            rendererCoverView.bottomAnchor.constraint(equalTo: terminalView.bottomAnchor),
+            rendererCoverView.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+            rendererCoverView.leadingAnchor.constraint(equalTo: terminalHost.leadingAnchor),
+            rendererCoverView.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
+            rendererCoverView.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
         ])
 
         // The key bar lives on the terminal (its inputAccessoryView); the
@@ -429,12 +660,17 @@ final class TerminalViewController: UIViewController {
             case .files: self?.presentDocumentPicker()
             }
         }
+        // The transcript types straight into the prompt — no newline, so a
+        // dictation never sends a half-formed prompt on its own.
+        keyBar.onVoiceTranscript = { [weak self] text in
+            self?.terminalView.send(Data(text.utf8))
+        }
         terminalView.setStickyModifierChangeHandler { [weak self] in
             guard let self else { return }
             keyBar.setStickyVisual(.ctrl, Self.stickyVisual(terminalView.stickyActivation(for: .ctrl)))
             keyBar.setStickyVisual(.alt, Self.stickyVisual(terminalView.stickyActivation(for: .alt)))
         }
-        if case .companion = backend, session.projectRosterID != nil {
+        if case .device = backend, session.projectRosterID != nil {
             keyBar.setAttachAvailable(true)
         }
 
@@ -460,12 +696,12 @@ final class TerminalViewController: UIViewController {
     /// ~5 rows of dead space under bottom-anchored TUIs. The notification's
     /// end frame is unambiguous — overlap is what it says, zero when hidden.
     private func activateTerminalConstraints() {
-        let bottom = terminalView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        let bottom = terminalHost.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         terminalBottomConstraint = bottom
         NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            terminalHost.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            terminalHost.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            terminalHost.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottom,
         ])
         NotificationCenter.default.addObserver(
@@ -484,6 +720,7 @@ final class TerminalViewController: UIViewController {
         let endFrame = view.convert(endValue.cgRectValue, from: nil)
         let overlap = max(0, view.bounds.maxY - endFrame.minY)
         guard let constraint = terminalBottomConstraint, constraint.constant != -overlap else { return }
+        keyboardOverlap = overlap
         constraint.constant = -overlap
         let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int ?? 7
@@ -554,13 +791,13 @@ final class TerminalViewController: UIViewController {
         present(picker, animated: true)
     }
 
-    /// Pushes picked bytes to the Mac one file at a time; each reply's
+    /// Pushes picked bytes to the paired machine one file at a time; each reply’s
     /// absolute path is typed into the TUI's own input line — the desktop
-    /// drag-a-file-into-terminal semantic, over the companion link instead
-    /// of SCP. Uploads run sequentially because .uploaded replies carry no
+    /// drag-a-file-into-terminal semantic, over the app's own link instead of
+    /// SCP. Uploads run sequentially because neither backend's reply carries a
     /// correlation id.
     private func enqueueUploads(_ items: [(name: String, data: Data)]) {
-        guard case .companion = backend, session.projectRosterID != nil else { return }
+        guard case .device = backend, session.projectRosterID != nil else { return }
         let oversized = items.filter { $0.data.count > Self.uploadByteCap }
         reportSkipped(oversized: oversized.map(\.name))
         let accepted = items.filter { $0.data.count <= Self.uploadByteCap }
@@ -578,13 +815,16 @@ final class TerminalViewController: UIViewController {
             terminalView.keyBar.setAttachBusy(false)
             return
         }
-        guard case .companion(let url) = backend,
+        guard case .device(let endpoint) = backend,
               let projectID = session.projectRosterID else { return }
         uploadQueue.removeFirst()
         uploadInFlight = true
         terminalView.keyBar.setAttachBusy(true, progress: (done: uploadDone, total: uploadTotal))
         if uploadClient == nil {
-            let client = CompanionClient(url: url)
+            // Scoped to this session: a device files a transfer in the session's
+            // own scratch directory and reaps it when the session dies, so a
+            // pasted screenshot never outlives the conversation it belonged to.
+            let client = DeviceBackends.client(for: endpoint, sessionID: session.rosterID)
             client.onUploaded = { [weak self] path in
                 guard let self else { return }
                 self.typeUploadedPath(path)
@@ -599,63 +839,110 @@ final class TerminalViewController: UIViewController {
                 self.uploadTotal = 0
                 self.uploadDone = 0
                 self.terminalView.keyBar.setAttachBusy(false)
-                self.presentAlert("Upload failed", message)
+                self.presentAlert(localized("Upload failed"), message)
             }
             client.start()
             uploadClient = client
         }
-        uploadClient?.send(
-            .upload(projectID: projectID, name: item.name, base64: item.data.base64EncodedString())
-        )
+        uploadClient?.upload(projectID: projectID, name: item.name, data: item.data)
+    }
+
+    /// Pastes a diff selection into the TUI's input line — the drawer's "Send to Agent",
+    /// and the phone twin of the desktop's "Add to Chat". Bracketed paste keeps the
+    /// whole block one literal insert instead of a line-by-line submit, and the drawer
+    /// steps aside so the prompt it landed in is visible.
+    private func sendSnippetToPrompt(_ text: String) {
+        pasteIntoPrompt(text)
+        setDrawer(open: false, animated: true)
+    }
+
+    /// Bracketed paste: the whole block lands as one literal insert instead of a
+    /// line-by-line submit, and the TUI's own Return still sends it.
+    private func pasteIntoPrompt(_ text: String) {
+        terminalView.send(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
     }
 
     /// Types the uploaded file's Mac path into the TUI's input line, where it
-    /// stays editable and submits with the TUI's own Return. Bracketed paste
-    /// keeps a name with spaces one literal insert; the trailing space
-    /// separates it from whatever gets typed next.
+    /// stays editable. The trailing space separates it from whatever gets typed next.
     private func typeUploadedPath(_ path: String) {
-        terminalView.send(Data(("\u{1B}[200~" + path + " \u{1B}[201~").utf8))
+        pasteIntoPrompt(path + " ")
     }
 
     private func reportSkipped(oversized: [String], unreadable: [String] = []) {
         var lines: [String] = []
         if !oversized.isEmpty {
-            lines.append("Over the 8 MB cap: \(oversized.joined(separator: ", "))")
+            lines.append(localized("Over the 8 MB cap: \(oversized.joined(separator: ", "))"))
         }
         if !unreadable.isEmpty {
-            lines.append("Couldn't read: \(unreadable.joined(separator: ", "))")
+            lines.append(localized("Couldn't read: \(unreadable.joined(separator: ", "))"))
         }
         guard !lines.isEmpty else { return }
-        presentAlert("Some files were skipped", lines.joined(separator: "\n"))
+        presentAlert(localized("Some files were skipped"), lines.joined(separator: "\n"))
     }
 
     private func presentAlert(_ title: String, _ message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: localized("OK"), style: .default))
         present(alert, animated: true)
     }
 
-    /// Demo sessions use ShellCraftKit's sandbox shell; companion sessions
-    /// bridge the surface to the Mac's PTY over the wire — keystrokes out,
-    /// remote bytes in, grid resize → window-change.
+    /// Demo sessions use ShellCraftKit's sandbox shell; a live session bridges
+    /// the surface to a PTY on the paired machine — keystrokes out, remote bytes
+    /// in, grid resize → window-change.
     private func makeTerminalSession() -> InMemoryTerminalSession {
         switch backend {
         case .demoShell:
             return shellSession.terminalSession
-        case .companion(let url):
-            let transport = CompanionTransport(url: url, attachSessionID: session.rosterID)
+        case .device(let endpoint):
+            guard let transport = DeviceBackends.session(
+                for: endpoint, sessionID: session.rosterID
+            ) else {
+                // A device attaches to a session by name and this screen has
+                // none, so there is nothing to show. The sandbox shell is the
+                // honest fallback: it says what it is rather than sitting on a
+                // socket that will never carry anything.
+                Log.device.error("no session id to attach to; falling back to the sandbox shell")
+                return shellSession.terminalSession
+            }
+            // The surface answers the host's terminal queries (XTVERSION, DA,
+            // DSR) on its own, through this same closure. Those are not the
+            // person: they must not claim the write token, and only the
+            // writer's surface may answer at all — an observer's reply lands
+            // late in the agent's input line as literal text, a stray
+            // ">|ghostty 1.3.2…" (`TerminalDeviceReport`).
             let terminalSession = InMemoryTerminalSession(
-                write: { [weak transport] data in transport?.send(data) },
+                write: { [weak transport] data in
+                    if TerminalDeviceReport.isReport(data) {
+                        transport?.sendDeviceReport(data)
+                    } else {
+                        transport?.send(data)
+                    }
+                },
                 resize: { [weak transport] viewport in
-                    transport?.resize(cols: Int(viewport.columns), rows: Int(viewport.rows))
+                    // What the *surface* was laid out at, which is the shared
+                    // grid rather than this screen's whenever the session is
+                    // sized to another one. The viewport the device sizes by is
+                    // measured from the host instead (`layoutTerminalSurface`).
+                    transport?.noteSurfaceGrid(
+                        columns: Int(viewport.columns), rows: Int(viewport.rows))
                 }
             )
             transport.onOutput = { [weak terminalSession, weak self] data in
                 terminalSession?.receive(data)
-                DispatchQueue.main.async { self?.altScreenSniffer.consume(data) }
+                // The sniffer decides what the key bar's scroll-edge keys send
+                // and where the keyboard pan anchors; a TUI switching screens
+                // changes nothing about the grid, which is the writer's and
+                // already what the PTY is.
+                DispatchQueue.main.async {
+                    self?.altScreenSniffer.consume(data)
+                    self?.followContentUnderKeyboard()
+                }
             }
             transport.onState = { [weak self] state in
                 self?.companionStateChanged(state)
+            }
+            transport.onSharedGrid = { [weak self] grid, _ in
+                self?.applySharedGrid(grid)
             }
             companion = transport
             companionSession = terminalSession
@@ -663,43 +950,32 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    private func companionStateChanged(_ state: CompanionTransport.State) {
+    private func companionStateChanged(_ state: DeviceSessionState) {
         // The status line earns its place only while the link is in doubt;
         // once connected it yields to the project · branch context line.
         statusLabel.isHidden = false
         contextLabel.isHidden = true
         switch state {
         case .connecting:
-            statusLabel.text = "Connecting…"
+            statusLabel.text = localized("Connecting…")
         case .reconnecting:
-            statusLabel.text = "Reconnecting…"
+            statusLabel.text = localized("Reconnecting…")
         case .connected:
             statusLabel.isHidden = true
             contextLabel.isHidden = contextLabel.text?.isEmpty ?? true
-            // The Mac wipes this screen on attach and only repaints once our
-            // grid claim lands (it jiggles the PTY so the shell reprints its
-            // prompt). But libghostty dedupes the resize callback at two layers
-            // — the surface coordinator and the in-memory session both drop an
-            // unchanged size — so on a cold attach or a reconnect no fresh
-            // resize fires, and the `sendGrid` at socket-open can race the very
-            // first dispatch. The result is a blank grid under a correct title.
-            // Re-assert the cached grid now that the socket is definitively up,
-            // and once more after the attach wipe has drained, so the last frame
-            // on the wire is our repaint and never a stray wipe.
+            // The attach snapshot paints the screen. The grid goes out once
+            // more in case this phone is the writer and the PTY moved while the
+            // link was down; an observer's re-send is a no-op by design.
             companion?.reassertGrid()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self, case .companion = backend else { return }
-                companion?.reassertGrid()
-            }
         case .failed(let reason):
-            statusLabel.text = "Connection failed"
-            let alert = UIAlertController(title: "Companion connection failed", message: reason, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            statusLabel.text = localized("Connection failed")
+            let alert = UIAlertController(title: localized("Companion connection failed"), message: reason, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: localized("OK"), style: .default) { [weak self] _ in
                 self?.close()
             })
             present(alert, animated: true)
         case .closed:
-            statusLabel.text = "Disconnected"
+            statusLabel.text = localized("Disconnected")
             companionSession?.finish(exitCode: 0, runtimeMilliseconds: 0)
         }
     }
@@ -715,28 +991,36 @@ final class TerminalViewController: UIViewController {
         return TerminalTheme(light: light, dark: dark)
     }
 
-    /// A dynamic color mirroring the active theme slot's background, so the
-    /// canvas behind the transparent surface always matches — including the
-    /// unpainted band under the keyboard guide and the safe areas.
-    private static func backdropColor() -> UIColor {
-        UIColor { traits in
-            let settings = MobileSettings.shared
-            let dark = traits.userInterfaceStyle == .dark
-            let name = dark ? settings.darkThemeName : settings.lightThemeName
-            return GhosttyThemeCatalog.theme(named: name)
-                .flatMap { UIColor(ghosttyHex: $0.background) }
-                ?? (dark ? .black : .white)
-        }
-    }
+    /// The canvas behind the transparent surface — the theme background, shared
+    /// with the app chrome so the terminal and its surrounding pages read as one
+    /// continuous color (covers the unpainted band under the keyboard guide and
+    /// the safe areas too). See `ThemeChrome`.
+    private static func backdropColor() -> UIColor { ThemeChrome.background }
 
     /// The settings-driven half of the surface config — the single place the
     /// appearance keys are named, so creation and the live re-style path
     /// can't drift apart (same rule as the Mac app's applyAppearance).
+    /// The surface's margins in points. Named because `layoutTerminalSurface`
+    /// needs the same numbers to size a surface to an exact grid; Y is
+    /// libghostty's default, which the configuration below leaves alone.
+    private static let terminalPaddingX: CGFloat = 8
+    private static let terminalPaddingY: CGFloat = 2
+
     private static func appearanceConfiguration() -> TerminalConfiguration {
         TerminalConfiguration { builder in
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
-            builder.withWindowPaddingX(8)
+            builder.withWindowPaddingX(Int(Self.terminalPaddingX))
+            // Without a font-family the phone rendered CJK unlike the Mac —
+            // libghostty dropped in proportional PingFang whose metrics fight the
+            // Latin face. Set the chain to match the desktop (see `terminalFontChain`).
+            for family in terminalFontChain() {
+                builder.withFontFamily(family)
+            }
+            // Ghostty blends in `native` (Display P3) on macOS but `linear-corrected`
+            // on every other OS, iOS included. Linear blending thins dark-on-light
+            // glyph edges, so the same theme read softer here than on the Mac.
+            builder.withCustom("alpha-blending", "native")
             // The phone is a viewer, not the scrollback of record — the Mac keeps
             // the full history. libghostty's renderer paints its "non-functional"
             // panel when it exhausts a GPU/allocator resource reflowing scrollback
@@ -748,6 +1032,29 @@ final class TerminalViewController: UIViewController {
             // still ~thousands of lines — plenty for a phone viewer.
             builder.withCustom("scrollback-limit", "256000")
         }
+    }
+
+    /// Ghostty reads repeated `font-family` as a fallback chain — first loadable
+    /// face is the primary and sets cell metrics; later faces only cover glyphs
+    /// it lacks, and unresolvable names are skipped. `SF Mono` matches the Mac's
+    /// default (`Menlo` behind it as the always-present floor); the CJK candidates
+    /// mirror the Mac's, ending on `PingFang SC` so hanzi never fall to an
+    /// arbitrary system face.
+    private static func terminalFontChain() -> [String] {
+        var chain = ["SF Mono", "Menlo"]
+        let cjkCandidates = [
+            "Sarasa Term SC", "Sarasa Mono SC", "Sarasa Fixed SC",
+            "Maple Mono NF CN", "Maple Mono CN",
+            "LXGW WenKai Mono",
+            "Noto Sans Mono CJK SC",
+        ]
+        if let installed = cjkCandidates.first(where: { UIFont(name: $0, size: 12) != nil }) {
+            chain.append(installed)
+        }
+        if UIFont(name: "PingFang SC", size: 12) != nil {
+            chain.append("PingFang SC")
+        }
+        return chain
     }
 
     /// Restyles the live surface in place after a settings change, then
@@ -816,14 +1123,14 @@ final class TerminalViewController: UIViewController {
         dimView.alpha = 0.15 * openness
     }
 
-    func setDrawer(open: Bool, animated: Bool) {
+    func setDrawer(open: Bool, animated: Bool, initialVelocity: CGFloat = 0) {
         drawerOpen = open
         dimView.isUserInteractionEnabled = open
         if open { setTerminalFocused(false) }
         let animations = { self.layoutDrawer() }
         if animated {
             UIView.animate(withDuration: 0.35, delay: 0,
-                           usingSpringWithDamping: 0.9, initialSpringVelocity: 0,
+                           usingSpringWithDamping: 0.9, initialSpringVelocity: initialVelocity,
                            animations: animations)
         } else {
             animations()
@@ -840,10 +1147,46 @@ final class TerminalViewController: UIViewController {
             openPanGoesBack = pan.velocity(in: view).x > 0
         }
         if openPanGoesBack {
-            guard pan.state == .ended else { return }
-            let fling = pan.velocity(in: view).x > 300
-            if fling || pan.translation(in: view).x > view.bounds.width * 0.3 {
-                goBack()
+            // Measure in the window, not `view`: the container drags `view`
+            // itself during the interactive back, so reading translation in a
+            // moving space would feed back on itself.
+            guard let ref = view.window, onBackChanged != nil else {
+                // No interactive host (e.g. a plain nav stack) — discrete pop.
+                if pan.state == .ended {
+                    let fling = pan.velocity(in: view).x > 300
+                    if fling || pan.translation(in: view).x > view.bounds.width * 0.3 {
+                        goBack()
+                    }
+                }
+                return
+            }
+            let tx = pan.translation(in: ref).x
+            switch pan.state {
+            case .began:
+                // Drop the keyboard as the drag starts, matching goBack() — but remember to hand
+                // it back if the swipe is cancelled.
+                terminalWasFirstResponderAtBackBegin = terminalView.isFirstResponder
+                terminalView.resignFirstResponder()
+                onBackBegan?()
+            case .changed:
+                onBackChanged?(max(0, tx))
+            case .ended, .cancelled:
+                let vx = pan.velocity(in: ref).x
+                // A decisive flick wins over position, in *either* direction: a hard left flick
+                // cancels even past the distance threshold. Position only decides a gentle release.
+                let commit: Bool
+                if pan.state == .ended {
+                    commit = abs(vx) > 300 ? vx > 0 : tx > view.bounds.width * 0.3
+                } else {
+                    commit = false
+                }
+                // A non-committed swipe returns to the terminal; restore the keyboard it had.
+                if !commit, terminalWasFirstResponderAtBackBegin {
+                    terminalView.becomeFirstResponder()
+                }
+                onBackEnded?(vx, commit)
+            default:
+                break
             }
             return
         }
@@ -854,8 +1197,17 @@ final class TerminalViewController: UIViewController {
             layoutDrawer(progress: progress)
             dimView.isUserInteractionEnabled = true
         case .ended, .cancelled:
-            let fling = -pan.velocity(in: view).x > 300
-            setDrawer(open: fling || progress > 0.4, animated: true)
+            let vOpen = -pan.velocity(in: view).x   // + = toward open
+            // A decisive flick wins over position in either direction; position only decides a
+            // gentle release. Otherwise a hard flick back the other way still committed the old way.
+            let willOpen = abs(vOpen) > 300 ? vOpen > 0 : progress > 0.4
+            // Normalize the release speed to fractions of the remaining travel per second, toward
+            // the committed target, so a flick that direction carries through and a reversal /
+            // gentle release settles from rest.
+            let remaining = drawerWidth * (willOpen ? (1 - progress) : progress)
+            let towardTarget = willOpen ? vOpen : -vOpen
+            let v = remaining > 1 ? min(max(towardTarget / remaining, 0), 30) : 0
+            setDrawer(open: willOpen, animated: true, initialVelocity: v)
         default:
             break
         }
@@ -868,8 +1220,13 @@ final class TerminalViewController: UIViewController {
         case .changed:
             layoutDrawer(progress: progress)
         case .ended, .cancelled:
-            let fling = pan.velocity(in: view).x > 300
-            setDrawer(open: !(fling || progress < 0.6), animated: true)
+            let vClose = pan.velocity(in: view).x   // + = toward close
+            let willClose = abs(vClose) > 300 ? vClose > 0 : progress < 0.6
+            let open = !willClose
+            let remaining = drawerWidth * (open ? (1 - progress) : progress)
+            let towardTarget = willClose ? vClose : -vClose
+            let v = remaining > 1 ? min(max(towardTarget / remaining, 0), 30) : 0
+            setDrawer(open: open, animated: true, initialVelocity: v)
         default:
             break
         }
@@ -1007,17 +1364,86 @@ extension TerminalViewController: UIImagePickerControllerDelegate, UINavigationC
     }
 }
 
+extension TerminalViewController: TerminalSurfaceGridResizeDelegate {
+    /// Cell metrics for `layoutTerminalSurface`; they change with the font, so
+    /// a pinch re-frames a letterboxed surface at the same grid and re-states
+    /// this screen's viewport at the new cell size.
+    func terminalDidResize(_ size: TerminalGridMetrics) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, surfaceMetrics != size else { return }
+            surfaceMetrics = size
+            view.setNeedsLayout()
+        }
+    }
+}
+
 extension TerminalViewController: TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate {
     func terminalDidChangeTitle(_ title: String) {
         // The agent's OSC title rides the byte stream (Claude Code updates it
-        // as it works), so the bar tracks what the session is doing live.
-        let trimmed = title.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        DispatchQueue.main.async { [weak self] in self?.titleLabel.text = trimmed }
+        // as it works), so the bar tracks what the session is doing live —
+        // sanitized and deduplicated, the same guards the Mac sidebar applies
+        // to this signal.
+        let cleaned = LiveTerminalTitle.sanitized(title)
+        guard !cleaned.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.titleLabel.text != cleaned else { return }
+            self.titleLabel.text = cleaned
+        }
     }
 
     func terminalDidClose(processAlive _: Bool) {
         close()
+    }
+}
+
+extension TerminalViewController: UIEditMenuInteractionDelegate {
+    /// Long-press → the system edit menu with a single Paste (Termius's
+    /// hold-to-paste shape). Cross-app paste is the feature; in-terminal
+    /// selection/copy was tried and cut as not worth its complexity — the
+    /// TUI's own copy affordances cover reading.
+    private func presentPasteMenu(at point: CGPoint) {
+        let config = UIEditMenuConfiguration(
+            identifier: "termio.terminal.paste", sourcePoint: point
+        )
+        // Deterministically above the finger: at the raw touch point the
+        // balloon can flip below it — under the hand — and "when the menu
+        // appeared" becomes "when the hand lifted".
+        config.preferredArrowDirection = .down
+        editMenuInteraction.presentEditMenu(with: config)
+    }
+
+    fileprivate func wirePasteMenu() {
+        terminalView.addInteraction(editMenuInteraction)
+        terminalView.onPasteMenuRequested = { [weak self] point in
+            self?.presentPasteMenu(at: point)
+        }
+    }
+
+    /// An explicit item, NOT the responder-chain suggestions: the system
+    /// builds suggested actions from the first responder, and the terminal
+    /// deliberately isn't one after a bare long-press (becoming it summons
+    /// the keyboard). Relying on suggestions made the menu come up empty in
+    /// any session the user hadn't tapped into first.
+    func editMenuInteraction(
+        _: UIEditMenuInteraction,
+        menuFor _: UIEditMenuConfiguration,
+        suggestedActions _: [UIMenuElement]
+    ) -> UIMenu? {
+        guard UIPasteboard.general.hasStrings else { return nil }
+        return UIMenu(options: .displayInline, children: [
+            UIAction(title: localized("Paste")) { [weak self] _ in
+                self?.terminalView.paste(nil)
+            },
+        ])
+    }
+
+    /// Scope the terminal's resign guard to the menu's actual lifetime.
+    func editMenuInteraction(
+        _: UIEditMenuInteraction,
+        willDismissMenuFor _: UIEditMenuConfiguration,
+        animator _: any UIEditMenuInteractionAnimating
+    ) {
+        terminalView.pasteMenuDidDismiss()
     }
 }
 
@@ -1052,7 +1478,7 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         let existing: InMemoryTerminalSession?
         switch backend {
         case .demoShell: existing = shellSession.terminalSession
-        case .companion: existing = companionSession
+        case .device: existing = companionSession
         }
         guard surfaceConfigured, let session = existing else { return }
 
@@ -1068,8 +1494,8 @@ extension TerminalViewController: TerminalSurfaceRendererHealthDelegate {
         terminalView.fitToSize()
         lastFittedSize = terminalView.bounds.size
         // A rebuilt surface starts blank; the stream won't repaint until the
-        // next byte. Reclaim the grid so the Mac re-sends current content.
-        if case .companion = backend { companion?.reassertGrid() }
+        // next byte. Reclaim the grid so the host re-sends current content.
+        if case .device = backend { companion?.reassertGrid() }
         // Reveal once the rebuilt surface has had a beat to repaint (companion
         // content arrives over the network) so we don't uncover a blank grid.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
@@ -1093,6 +1519,113 @@ private final class DisplayTerminalView: UITerminalView {
     let keyBar = TerminalAccessoryBar()
     override var inputAccessoryView: UIView? { keyBar }
 
+    /// Long-press anywhere → the owner floats a Paste menu at the finger.
+    /// App-owned recognizer (the wrapper's own long-press stays disarmed
+    /// without its selection delegates): cross-app paste is the one
+    /// clipboard feature the phone terminal supports — in-terminal
+    /// selection/copy was cut as not worth its complexity.
+    var onPasteMenuRequested: ((CGPoint) -> Void)?
+    /// The paste menu is on screen (set at gesture `.began`, cleared when
+    /// the menu dismisses — with a next-touch reset as belt-and-braces).
+    /// While set, the wrapper's tap-dismiss must not collapse the keyboard
+    /// under the menu.
+    private var touchSequencePresentedPasteMenu = false
+    private var pasteLongPressInstalled = false
+    private lazy var pasteLongPress: UILongPressGestureRecognizer = {
+        let gesture = UILongPressGestureRecognizer(
+            target: self, action: #selector(pasteLongPressFired(_:))
+        )
+        // 0.3s matches the system text views' long-press feel.
+        gesture.minimumPressDuration = 0.3
+        // 20pt, not the 10pt default: a thumb planted for 300ms drifts a few
+        // points routinely, and a failed press with zero feedback reads as
+        // "the gesture is unreliable". A deliberate scroll blows past 20
+        // immediately.
+        gesture.allowableMovement = 20
+        // Cancel the touch once the menu gesture wins: the wrapper's pan
+        // must not scroll the viewport under the open menu, and the release
+        // arrives as touchesCancelled so the tap-to-keyboard path never runs.
+        gesture.cancelsTouchesInView = true
+        return gesture
+    }()
+
+    /// Warmed at touch-down, fired at gesture `.began`: an unprepared
+    /// generator adds Taptic-Engine spin-up (~50-200ms) to the confirmation
+    /// cue, and time-to-first-feedback is what sets perceived gesture speed.
+    private let pasteHaptic = UIImpactFeedbackGenerator(style: .light)
+
+    /// Cached gate for the paste long-press. `hasStrings` is a synchronous
+    /// XPC round-trip to pasteboardd — too slow for
+    /// `gestureRecognizerShouldBegin`, which runs exactly when the
+    /// long-press timer fires and the user is waiting for feedback.
+    /// Pasteboard changes land while backgrounded, so the foreground
+    /// re-check is mandatory; the changeCount compare keeps it to one query.
+    private var clipboardHasStrings = UIPasteboard.general.hasStrings
+    private var clipboardChangeCount = UIPasteboard.general.changeCount
+    private var clipboardObservers: [NSObjectProtocol] = []
+
+    private func refreshClipboardGate() {
+        let count = UIPasteboard.general.changeCount
+        guard count != clipboardChangeCount else { return }
+        clipboardChangeCount = count
+        clipboardHasStrings = UIPasteboard.general.hasStrings
+    }
+
+    deinit {
+        for observer in clipboardObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    func installPasteLongPressIfNeeded() {
+        guard !pasteLongPressInstalled, window != nil else { return }
+        pasteLongPressInstalled = true
+        addGestureRecognizer(pasteLongPress)
+        clipboardObservers = [
+            NotificationCenter.default.addObserver(
+                forName: UIPasteboard.changedNotification, object: nil, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.refreshClipboardGate() } },
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.refreshClipboardGate() } },
+        ]
+    }
+
+    /// The menu left the screen — the resign guard is scoped to exactly the
+    /// menu's lifetime, so controller-driven resigns (pane close, scroll
+    /// handoff) work again immediately.
+    func pasteMenuDidDismiss() {
+        touchSequencePresentedPasteMenu = false
+    }
+
+    @objc private func pasteLongPressFired(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        touchSequencePresentedPasteMenu = true
+        pasteHaptic.impactOccurred()
+        onPasteMenuRequested?(gesture.location(in: self))
+    }
+
+    /// The wrapper disarms every long-press unless its selection delegates
+    /// are adopted — allow ours through; and only when the clipboard has
+    /// text (cached — see clipboardHasStrings), so a menu with nothing to
+    /// offer never eats the hold.
+    override func gestureRecognizerShouldBegin(
+        _ gestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        if gestureRecognizer === pasteLongPress {
+            return clipboardHasStrings
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    /// The wrapper's tap-dismiss resigns on any unscrolled release; when
+    /// that release just presented the paste menu, keep the keyboard as it
+    /// was — collapsing it would yank the layout under the menu.
+    override func resignFirstResponder() -> Bool {
+        if touchSequencePresentedPasteMenu { return false }
+        return super.resignFirstResponder()
+    }
+
     /// The software keyboard's Return arrives as `insertText("\n")`, and the
     /// wrapper routes it through `sendText` — which rides inside bracketed
     /// paste once the TUI enabled mode 2004, so Claude Code reads a pasted
@@ -1114,6 +1647,7 @@ private final class DisplayTerminalView: UITerminalView {
     /// newline from auto-submitting. A char with a sticky ctrl/alt armed also
     /// stays on the wrapper path, which applies the modifier.
     override func insertText(_ text: String) {
+        deleteRepeat.reset()
         if text == "\n" {
             send(Data([0x0D]))
             return
@@ -1124,6 +1658,134 @@ private final class DisplayTerminalView: UITerminalView {
             return
         }
         super.insertText(text)
+    }
+
+    /// Paste — the long-press menu and hardware Cmd+V both land here. The
+    /// clipboard goes through `insertText`, whose multi-character path rides
+    /// the wrapper's sendText: bracketed once the TUI enabled mode 2004
+    /// (Claude Code's parser only ingests paste in that form), raw before
+    /// then — the same delivery a Mac paste gets. `hasStrings` gates the
+    /// menu item without tripping the system paste prompt; the `.string`
+    /// read waits for the user-initiated action.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(UIResponderStandardEditActions.paste(_:)) {
+            return UIPasteboard.general.hasStrings
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        insertText(text)
+    }
+
+    // MARK: - Software-keyboard delete auto-repeat (phantom document)
+
+    /// Owns the phantom-document state and hold-acceleration policy that make
+    /// the on-screen keyboard's delete key auto-repeat over the terminal. The
+    /// `UITextInput` overrides below are the thin UIKit glue that feed it; the
+    /// reasoning lives in `SoftwareKeyboardDeleteRepeat`.
+    private var deleteRepeat = SoftwareKeyboardDeleteRepeat()
+
+    /// True while an IME (e.g. pinyin) is composing. In that state we defer to
+    /// the wrapper's real geometry so composition, cursor, and candidate
+    /// replacement keep working — the phantom document is only for plain typing.
+    private var isComposingIME: Bool { super.markedTextRange != nil }
+
+    override func deleteBackward() {
+        // IME composition and armed sticky modifiers own the keystroke — never
+        // accelerate those; one delete, real geometry, streak cleared.
+        guard !isComposingIME, !stickyModifierArmed else {
+            deleteRepeat.reset()
+            super.deleteBackward()
+            return
+        }
+        // Re-use the wrapper's own delete encoding (correct per backend,
+        // marked-text-safe) rather than hand-rolling the byte.
+        let count = deleteRepeat.backspaceCount(now: CACurrentMediaTime())
+        for _ in 0..<count { super.deleteBackward() }
+    }
+
+    override var beginningOfDocument: UITextPosition {
+        isComposingIME ? super.beginningOfDocument : PhantomTextPosition(0)
+    }
+
+    override var endOfDocument: UITextPosition {
+        isComposingIME
+            ? super.endOfDocument
+            : PhantomTextPosition(SoftwareKeyboardDeleteRepeat.documentLength)
+    }
+
+    override var selectedTextRange: UITextRange? {
+        get {
+            guard !isComposingIME else { return super.selectedTextRange }
+            let caret = PhantomTextPosition(deleteRepeat.caret)
+            return PhantomTextRange(start: caret, end: caret)
+        }
+        set {
+            guard !isComposingIME else { super.selectedTextRange = newValue; return }
+            if let caret = (newValue?.start as? PhantomTextPosition)?.index {
+                deleteRepeat.moveCaret(to: caret)
+            }
+        }
+    }
+
+    override func textRange(
+        from fromPosition: UITextPosition, to toPosition: UITextPosition
+    ) -> UITextRange? {
+        guard !isComposingIME,
+              let from = fromPosition as? PhantomTextPosition,
+              let to = toPosition as? PhantomTextPosition
+        else { return super.textRange(from: fromPosition, to: toPosition) }
+        return PhantomTextRange(start: from, end: to)
+    }
+
+    override func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        guard !isComposingIME, let pos = position as? PhantomTextPosition else {
+            return super.position(from: position, offset: offset)
+        }
+        let index = pos.index + offset
+        guard index >= 0, index <= SoftwareKeyboardDeleteRepeat.documentLength else { return nil }
+        return PhantomTextPosition(index)
+    }
+
+    override func position(
+        from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int
+    ) -> UITextPosition? {
+        guard !isComposingIME, position is PhantomTextPosition else {
+            return super.position(from: position, in: direction, offset: offset)
+        }
+        return self.position(from: position, offset: offset)
+    }
+
+    override func compare(
+        _ position: UITextPosition, to other: UITextPosition
+    ) -> ComparisonResult {
+        guard !isComposingIME,
+              let lhs = position as? PhantomTextPosition,
+              let rhs = other as? PhantomTextPosition
+        else { return super.compare(position, to: other) }
+        if lhs.index < rhs.index { return .orderedAscending }
+        if lhs.index > rhs.index { return .orderedDescending }
+        return .orderedSame
+    }
+
+    override func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+        guard !isComposingIME,
+              let f = from as? PhantomTextPosition,
+              let t = toPosition as? PhantomTextPosition
+        else { return super.offset(from: from, to: toPosition) }
+        return t.index - f.index
+    }
+
+    override func text(in range: UITextRange) -> String? {
+        guard !isComposingIME, let range = range as? PhantomTextRange else {
+            return super.text(in: range)
+        }
+        // Any non-empty string keeps the keyboard convinced there is content
+        // to delete; the bytes never leave this class.
+        let length = max(0, range.length)
+        return String(repeating: " ", count: min(length, 64))
     }
 
     /// Whether any sticky modifier (key bar's ctrl/alt/cmd chips) is armed or
@@ -1176,7 +1838,7 @@ private final class DisplayTerminalView: UITerminalView {
     /// few it trips its renderer-health failsafe — the "This terminal is
     /// non-functional" panel painted straight into the surface. Coalescing the
     /// drag onto this link caps us at one drawable per frame, so the pool never
-    /// empties. See docs/design/ios-scroll-renderer-health.md.
+    /// empties. See docs/design/20260706-ios-scroll-renderer-health.md.
     private var scrollPump: CADisplayLink?
     /// Set by pan `.changed`; the pump consumes it once per frame during a drag.
     private var needsScrollDraw = false
@@ -1188,6 +1850,7 @@ private final class DisplayTerminalView: UITerminalView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         installScrollHookIfNeeded()
+        installPasteLongPressIfNeeded()
     }
 
     /// The wrapper's own pan-to-scroll recognizer (direct touches, single
@@ -1305,8 +1968,13 @@ private final class DisplayTerminalView: UITerminalView {
             // A finger that lands while the fling pump is alive is stopping or
             // continuing the scroll — never a keyboard tap.
             touchSequenceScrolled = scrollPump != nil
+            touchSequencePresentedPasteMenu = false
             wasFirstResponderAtTouchDown = isFirstResponder
             suppressTouchDownKeyboardRetake = true
+            // Warm the Taptic Engine while the 0.3s hold runs, so the
+            // long-press confirmation lands AT the timer, not after
+            // engine spin-up.
+            if clipboardHasStrings { pasteHaptic.prepare() }
         }
         super.touchesBegan(touches, with: event)
         suppressTouchDownKeyboardRetake = false
@@ -1328,6 +1996,9 @@ private final class DisplayTerminalView: UITerminalView {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesEnded(touches, with: event)
         guard touches.contains(where: { $0.type == .direct }) else { return }
+        // The paste long-press never reaches here: winning the gesture
+        // cancels its touch (touchesCancelled), so an ended touch that
+        // didn't scroll really is a tap.
         let wasTap = !touchSequenceScrolled
         touchSequenceScrolled = false
         if wasTap, !wasFirstResponderAtTouchDown, window != nil {

@@ -1,0 +1,31 @@
+{
+  "id": "opencode",
+  "order": 30,
+  "name": "OpenCode",
+  "wire": "opencode",
+  "command": "opencode",
+  "permissionBypassFlag": "--auto",
+  "resume": {
+    "resume": "--session {id}",
+    "discover": {
+      "root": "~/.local/share/opencode/storage/session",
+      "format": "json",
+      "id": "id",
+      "cwd": "directory"
+    }
+  },
+  "icon": { "asset": "opencode-favicon" },
+  "install": "https://opencode.ai",
+  "skills": { "dir": "~/.config/opencode/skills" },
+  "hooks": {
+    "type": "plugin",
+    "dir": "~/.config/opencode/plugin",
+    "dialect": "opencode",
+    "conversation": "properties.sessionID",
+    "events": [
+      { "on": "session.status", "state": "working", "matcher": "busy" },
+      { "on": "session.idle", "state": "done" },
+      { "on": "permission.updated", "state": "attention" }
+    ]
+  }
+}

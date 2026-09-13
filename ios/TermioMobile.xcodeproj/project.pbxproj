@@ -17,6 +17,8 @@
 		AA10000000000000000000A7 /* TermioMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TermioMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C4B834BC028171A141441B55 /* TermioMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TermioMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F8F08AD2A884AB27376B01C2 /* Shared */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Shared; path = ../Shared; sourceTree = SOURCE_ROOT; };
+		AB10000000000000000000B1 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		AB20000000000000000000C7 /* TermioMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TermioMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -38,10 +40,26 @@
 			path = UITests;
 			sourceTree = "<group>";
 		};
+		AB20000000000000000000C6 /* UnitTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = UnitTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXContainerItemProxy section */
 		AA10000000000000000000A9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C17953834D3FE40E533C7AD5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8A9A92AA1208C58F576BFD9B;
+			remoteInfo = TermioMobile;
+		};
+		AB20000000000000000000C9 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = C17953834D3FE40E533C7AD5 /* Project object */;
 			proxyType = 1;
@@ -55,6 +73,11 @@
 			isa = PBXTargetDependency;
 			target = 8A9A92AA1208C58F576BFD9B /* TermioMobile */;
 			targetProxy = AA10000000000000000000A9 /* PBXContainerItemProxy */;
+		};
+		AB20000000000000000000C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8A9A92AA1208C58F576BFD9B /* TermioMobile */;
+			targetProxy = AB20000000000000000000C9 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -86,6 +109,7 @@
 			children = (
 				C4B834BC028171A141441B55 /* TermioMobile.app */,
 				AA10000000000000000000A7 /* TermioMobileUITests.xctest */,
+				AB20000000000000000000C7 /* TermioMobileTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -93,9 +117,11 @@
 		600AAD319D9C4100B4D7E969 = {
 			isa = PBXGroup;
 			children = (
+				AB10000000000000000000B1 /* Signing.xcconfig */,
 				2D5422DC9B807C0631867802 /* Packages */,
 				566C062F615479EC27FA2BB4 /* Sources */,
 				AA10000000000000000000A6 /* UITests */,
+				AB20000000000000000000C6 /* UnitTests */,
 				2D68D702AE7E832D78AAB302 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -150,6 +176,27 @@
 			productReference = AA10000000000000000000A7 /* TermioMobileUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		AB20000000000000000000C1 /* TermioMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB20000000000000000000C2 /* Build configuration list for PBXNativeTarget "TermioMobileTests" */;
+			buildPhases = (
+				AB20000000000000000000C5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AB20000000000000000000C8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AB20000000000000000000C6 /* UnitTests */,
+			);
+			name = TermioMobileTests;
+			packageProductDependencies = (
+			);
+			productName = TermioMobileTests;
+			productReference = AB20000000000000000000C7 /* TermioMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -162,6 +209,9 @@
 					AA10000000000000000000A1 = {
 						TestTargetID = 8A9A92AA1208C58F576BFD9B;
 					};
+					AB20000000000000000000C1 = {
+						TestTargetID = 8A9A92AA1208C58F576BFD9B;
+					};
 				};
 			};
 			buildConfigurationList = 0813B3B4997A57A3BD1092E8 /* Build configuration list for PBXProject "TermioMobile" */;
@@ -170,6 +220,7 @@
 			knownRegions = (
 				Base,
 				en,
+				"zh-Hans",
 			);
 			mainGroup = 600AAD319D9C4100B4D7E969;
 			minimizedProjectReferenceProxies = 1;
@@ -184,6 +235,7 @@
 			targets = (
 				8A9A92AA1208C58F576BFD9B /* TermioMobile */,
 				AA10000000000000000000A1 /* TermioMobileUITests */,
+				AB20000000000000000000C1 /* TermioMobileTests */,
 			);
 		};
 /* End PBXProject section */
@@ -213,6 +265,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AB20000000000000000000C5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
@@ -222,8 +281,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5Y27G7B6D8;
-				CURRENT_PROJECT_VERSION = 284;
+				CURRENT_PROJECT_VERSION = 285;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -233,7 +291,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -243,6 +301,7 @@
 		};
 		37947DEAB20302949BAD1E74 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AB10000000000000000000B1 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -306,6 +365,7 @@
 		};
 		3FC2334EF47C653AE64E0B2E /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AB10000000000000000000B1 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -366,8 +426,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5Y27G7B6D8;
-				CURRENT_PROJECT_VERSION = 284;
+				CURRENT_PROJECT_VERSION = 285;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -377,7 +436,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -391,11 +450,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5Y27G7B6D8;
-				CURRENT_PROJECT_VERSION = 284;
+				CURRENT_PROJECT_VERSION = 285;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -409,11 +467,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5Y27G7B6D8;
-				CURRENT_PROJECT_VERSION = 284;
+				CURRENT_PROJECT_VERSION = 285;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.5.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -424,6 +481,42 @@
 			name = Release;
 		};
 
+		AB20000000000000000000C3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 285;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TermioMobile.app/TermioMobile";
+			};
+			name = Debug;
+		};
+		AB20000000000000000000C4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 285;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.termio.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TermioMobile.app/TermioMobile";
+			};
+			name = Release;
+		};
 /* Begin XCConfigurationList section */
 		0813B3B4997A57A3BD1092E8 /* Build configuration list for PBXProject "TermioMobile" */ = {
 			isa = XCConfigurationList;
@@ -452,6 +545,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		AB20000000000000000000C2 /* Build configuration list for PBXNativeTarget "TermioMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB20000000000000000000C3 /* Debug */,
+				AB20000000000000000000C4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -464,10 +566,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		E76CADD6045BA4FE33901492 /* XCRemoteSwiftPackageReference "libghostty-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/jiweiyuan/libghostty-swift";
+			repositoryURL = "https://github.com/termio-sh/libghostty-swift";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.11;
+				minimumVersion = 1.0.24;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

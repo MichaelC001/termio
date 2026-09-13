@@ -13,6 +13,14 @@
 //  Local changes, kept minimal:
 //   - `Bundle.module` → `Bundle.termioResources`
 //   - startup theme "pojoaque" → "xcode" (only the two xcode themes ship)
+//   - Swift 6: `safeMainSync` boxes its closure to cross onto the main queue —
+//     the call is synchronous, so the captures never outlive the caller
+//   - two never-read initializations discarded with `_ =` to quiet the build
+//
+//  The `NSScanner` deprecations in `processHTMLString` are left as upstream
+//  wrote them: `scanLocation` is a UTF-16 offset the parser does arithmetic on,
+//  and the modern `String.Index` API is not a mechanical swap. Silent
+//  mistranslation there corrupts highlighting for no user-visible gain.
 //
 
 import Foundation
@@ -58,27 +66,46 @@ open class Highlightr
      */
     public init?(highlightPath: String? = nil)
     {
-        guard let jsContext = JSContext() else { return nil }
-        let window = JSValue(newObjectIn: jsContext)
+        // Each `return nil` says which guard failed. Callers degrade to unhighlighted
+        // text rather than trapping, so without this a failure is invisible until
+        // someone notices their code is not colored.
+        guard let jsContext = JSContext() else
+        {
+            Log.app.error("highlightr: JSContext() returned nil")
+            return nil
+        }
+        _ = JSValue(newObjectIn: jsContext)
 
         let bundle = Bundle.termioResources
         self.bundle = bundle
         guard let hgPath = highlightPath ?? bundle.path(forResource: "highlight.min", ofType: "js") else
         {
+            Log.app.error(
+                "highlightr: highlight.min.js missing from \(bundle.bundleURL.path, privacy: .public)")
             return nil
         }
-        
-        guard let hgJs = try? String.init(contentsOfFile: hgPath) else { return nil }
-        let value = jsContext.evaluateScript(hgJs)
-        guard let hljs = jsContext.objectForKeyedSubscript("hljs") else { return nil }
+
+        guard let hgJs = try? String.init(contentsOfFile: hgPath) else
+        {
+            Log.app.error("highlightr: could not read \(hgPath, privacy: .public)")
+            return nil
+        }
+        _ = jsContext.evaluateScript(hgJs)
+        guard let hljs = jsContext.objectForKeyedSubscript("hljs") else
+        {
+            Log.app.error("highlightr: highlight.min.js defined no hljs global")
+            return nil
+        }
 
         self.hljs = hljs
-        
+
         guard setTheme(to: "xcode") else
         {
+            Log.app.error(
+                "highlightr: xcode.min.css missing from \(bundle.bundleURL.path, privacy: .public)")
             return nil
         }
-        
+
     }
     
     /**
@@ -186,6 +213,10 @@ open class Highlightr
     /**
      Execute the provided block in the main thread synchronously.
      */
+    private struct UncheckedSendableClosure: @unchecked Sendable {
+        let run: () -> ()
+    }
+
     private func safeMainSync(_ block: @escaping ()->())
     {
         if Thread.isMainThread
@@ -193,7 +224,8 @@ open class Highlightr
             block()
         }else
         {
-            DispatchQueue.main.sync { block() }
+            let boxed = UncheckedSendableClosure(run: block)
+            DispatchQueue.main.sync { boxed.run() }
         }
     }
     

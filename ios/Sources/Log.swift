@@ -13,5 +13,8 @@ import OSLog
 enum Log {
     private static let subsystem = "sh.termio.mobile"
     static let companion = Logger(subsystem: subsystem, category: "companion")
+    /// The direct link to a device's own `termiod` — a second backend behind the
+    /// same screens, so its trail has to be filterable apart from the Mac's.
+    static let device = Logger(subsystem: subsystem, category: "device")
     static let terminal = Logger(subsystem: subsystem, category: "terminal")
 }

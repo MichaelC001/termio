@@ -1,0 +1,24 @@
+{
+  "id": "cline",
+  "order": 88,
+  "name": "Cline",
+  "wire": "cline",
+  "command": "cline",
+  "icon": { "asset": "cline-favicon" },
+  "install": "https://docs.cline.bot/cli/overview",
+  "skills": { "dir": "~/.cline/skills" },
+  "hooks": {
+    "type": "scripts",
+    "dir": "~/.cline/hooks",
+    "dialect": "cline",
+    "events": [
+      { "on": "TaskStart", "state": "working" },
+      { "on": "TaskResume", "state": "working" },
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "PreToolUse", "state": "working" },
+      { "on": "PostToolUse", "state": "working" },
+      { "on": "TaskComplete", "state": "done" },
+      { "on": "TaskCancel", "state": "done" }
+    ]
+  }
+}

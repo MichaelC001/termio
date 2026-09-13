@@ -8,33 +8,149 @@ struct IconBadge: View {
     let icon: AgentIcon
 
     init(_ icon: AgentIcon) { self.icon = icon }
-    init(symbol: String) { self.icon = .systemSymbol(symbol) }
 
     var body: some View {
         glyph
-            .frame(width: 22, height: 22)
+            // The same column `SettingsSymbolBadge` occupies. An agent keeps its
+            // own brand mark rather than being forced into a tinted square — the
+            // mark *is* its identity — but it has to start where every other
+            // row's icon starts or the column stops lining up.
+            .frame(width: settingsRowIconWidth, height: settingsRowIconWidth)
     }
 
     @ViewBuilder
     private var glyph: some View {
         switch icon {
-        case .systemSymbol(let name):
+        case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-        case .hugeIcon(let hugeIcon):
-            HugeIconView(icon: hugeIcon, size: 14, color: .secondary)
-        case .brand(let logo):
+        case .terminalGlyph:
+            HugeIconView(icon: .terminal, size: 14, color: .secondary)
+        case .huge(let icon):
+            HugeIconView(icon: icon, size: 14, color: .secondary)
+        case .vector(let logo):
             BrandLogoShape(logo: logo)
                 .fill(logo.tint, style: FillStyle(eoFill: logo.usesEvenOddFill))
                 .frame(width: 13, height: 13)
-        case .brandImage(let asset):
-            BrandImageView(asset: asset, size: 18)
-        case .imageFile(let url):
-            UserAgentIconView(url: url, size: 18)
+        case .image(let url):
+            AgentImageView(url: url, size: 18)
         }
     }
 }
+
+/// A System Settings row icon: a filled, continuous-corner square with the glyph
+/// knocked out in white.
+///
+/// The shape is the cue, not the colour. A macOS list reads as a scannable column
+/// because every row opens with the same filled square at the same size and the
+/// titles line up off its trailing edge. A thin monochrome glyph sitting on the
+/// window background reads as decoration instead, and the column stops existing —
+/// which is most of why the Devices roster did not look like the rest of the
+/// system.
+///
+/// Tints stay semantic and few. This Mac is graphite because it is not somewhere
+/// you connect to; a device is blue because it is. Two colours carrying one
+/// distinction, rather than a palette carrying none.
+struct SettingsSymbolBadge: View {
+    let symbol: String
+    var tint: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(tint.gradient)
+            .frame(width: 26, height: 26)
+            .overlay {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+    }
+}
+
+/// The width every row's leading column occupies, badge or not, so a row without
+/// an icon still lines its title up with the ones that have one.
+let settingsRowIconWidth: CGFloat = 26
+
+/// The gutter AppKit hangs under an editable table — the `+` strip in System
+/// Settings' Login Items and Users & Groups. Sits as the last row of the section
+/// whose list it acts on, wearing its own faint fill so it reads as the list's
+/// chrome rather than as one more entry.
+///
+/// It replaces a full-width "Add Device" / "Add Agent" row, which was the same
+/// height, in the same text column, with the same hit target as the entries
+/// above it — so the roster looked like it contained a device named Add Device.
+///
+/// There is no `−`. AppKit's minus acts on the table's selected row, and these
+/// rosters drill into a pane on click rather than select; the pane a row opens
+/// already carries that row's Remove. Both ways of paying for a minus here were
+/// built and dropped: a pull-down naming its own target is a menu pretending to
+/// be a button, and giving the rows a selection to act on costs the click that
+/// opens them — a mode, a highlight and a double-click, so that a verb one click
+/// away can have a second door.
+struct SettingsListGutter<Content: View>: View {
+    /// The gutter's control — a `SettingsGutterGlyph`, which spans the strip.
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(height: settingsGutterHeight)
+            // Rounded on all four corners rather than square, because the strip cannot
+            // reach the card's own corners and inherit their curve the way an AppKit
+            // table's gutter does: the grouped `Form` insets every row about 10pt from
+            // the card edge, and that inset survives `listRowInsets(EdgeInsets())` both
+            // on the row and on its background — both were tried. Inset and square it
+            // read as a rectangle dropped inside a rounded card; inset and rounded it
+            // reads as the control it actually is.
+            .background(
+                RoundedRectangle(cornerRadius: settingsGutterCornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+            // The Form already rules off the row above; the strip drawing a second
+            // hairline of its own put two lines a row's padding apart.
+            .listRowSeparator(.hidden)
+    }
+}
+
+/// The gutter's control: a glyph parked in the rows' icon column, and behind it a
+/// hit target spanning the whole strip.
+///
+/// AppKit sizes its gutter segments to their glyph, which left a 30pt square to
+/// aim at under a card several hundred points wide — the rest of the strip looked
+/// like a button and wasn't one. A row-wide target costs nothing to draw and is
+/// the size Fitts' law says the only control on a line should be. The hover fill
+/// is what says so before the click: it lands on the next frame, no fade, like
+/// every other hover cue in the app.
+struct SettingsGutterGlyph: View {
+    let symbol: String
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 30)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: settingsGutterHeight)
+        .background(
+            RoundedRectangle(cornerRadius: settingsGutterCornerRadius, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
+/// AppKit's table gutter is a hair shorter than a list row, which is what keeps
+/// it reading as chrome rather than as one more entry.
+private let settingsGutterHeight: CGFloat = 28
+
+/// The strip's own curve. Small enough to read as a control sitting in the card
+/// rather than as a second card inside the first.
+private let settingsGutterCornerRadius: CGFloat = 6
 
 /// A grouped-section header rendered as a badge plus title, replacing the default
 /// uppercased gray caption so each card reads as a labeled group (Dia style).
@@ -50,54 +166,177 @@ struct SectionHeaderLabel: View {
     }
 }
 
-/// The standard settings-row label: an optional leading icon badge, a title, and
-/// an optional wrapping caption underneath (the Xcode/System Settings two-line
-/// idiom). Every explanatory row in the settings tabs uses this so titles, caption
-/// styling, and icon spacing stay identical across tabs instead of being
-/// hand-rolled per row. Primary rows read at `.headline`; pass `titleFont: .body`
-/// for a nested sub-option that should sit visually below its parent row.
+/// The standard settings-row label: a title with an optional wrapping caption
+/// underneath (the System Settings two-line idiom). Every explanatory row in the
+/// settings tabs uses this so titles and caption styling stay identical across
+/// tabs instead of being hand-rolled per row. Settings rows carry no leading
+/// glyph — an icon per row is decoration in a pane that is already labeled by its
+/// section header; badges stay on rows that stand for a *thing* (an agent, a
+/// host, a key). Primary rows read at `.headline`; the `.body` default is for a
+/// nested sub-option that should sit visually below its parent row.
 struct SettingsLabel: View {
-    var icon: AgentIcon?
     let title: String
     var subtext: String?
-    var titleFont: Font = .headline
-
-    /// Icon-led row (a system symbol or agent brand mark).
-    init(_ icon: AgentIcon, title: String, subtext: String? = nil, titleFont: Font = .headline) {
-        self.icon = icon
-        self.title = title
-        self.subtext = subtext
-        self.titleFont = titleFont
-    }
-
-    /// Convenience for the common SF Symbol case, mirroring `IconBadge(symbol:)`.
-    init(symbol: String, title: String, subtext: String? = nil, titleFont: Font = .headline) {
-        self.init(.systemSymbol(symbol), title: title, subtext: subtext, titleFont: titleFont)
-    }
-
-    /// Icon-less row, for a nested sub-option that hangs under an icon-led row.
-    init(title: String, subtext: String? = nil, titleFont: Font = .body) {
-        self.icon = nil
-        self.title = title
-        self.subtext = subtext
-        self.titleFont = titleFont
-    }
+    var titleFont: Font = .body
 
     var body: some View {
-        HStack(spacing: icon == nil ? 0 : 10) {
-            if let icon {
-                IconBadge(icon)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(titleFont)
+            if let subtext {
+                Text(subtext)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(titleFont)
-                if let subtext {
-                    Text(subtext)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// The result of an install button, shown beside it as one caption line.
+///
+/// Installing writes outside the app — a PATH symlink, an agent's config file, a
+/// user-level instruction file — and none of that shows up in the window, so a
+/// click that worked and one that quietly failed look identical. A success fades
+/// on its own once it has been read; a failure stays put, because it names
+/// something the user has to deal with.
+struct InstallFeedback: Equatable {
+    enum Kind { case success, failure }
+    let kind: Kind
+    let message: String
+
+    static func success(_ message: String) -> InstallFeedback {
+        InstallFeedback(kind: .success, message: message)
+    }
+
+    static func failure(_ message: String) -> InstallFeedback {
+        InstallFeedback(kind: .failure, message: message)
+    }
+
+    /// Turns an installer's per-target result into that one line. The targets are
+    /// the point: "Reinstall hooks" writes into several agents' config files the
+    /// settings pane never otherwise names, so naming them is what makes the
+    /// confirmation worth reading. A partial install reports as a failure even
+    /// though something landed — the part that didn't is the part to act on.
+    static func summarizing(
+        _ outcome: InstallOutcome, headline: String, unit: String
+    ) -> InstallFeedback {
+        let installed = InstallOutcome.list(outcome.succeeded, unit: unit)
+        let missed = InstallOutcome.list(outcome.failed, unit: unit)
+        if outcome.isEmpty { return .failure(localized("Nothing to install.")) }
+        if outcome.failed.isEmpty { return .success(localized("\(headline) — \(installed).")) }
+        if outcome.succeeded.isEmpty { return .failure(localized("Couldn’t update \(missed).")) }
+        return .failure(localized("\(headline) — \(installed). Couldn’t update \(missed)."))
+    }
+}
+
+/// The current message plus the click that produced it. The counter is what makes
+/// a *repeat* click honest: keyed on the message alone, pressing the button again
+/// inside the dismissal window would inherit the first click's timer and could
+/// clear the line a moment later — the button reading as if it did nothing, which
+/// is the exact problem this feedback exists to fix.
+struct InstallFeedbackState: Equatable {
+    private(set) var attempt = 0
+    private(set) var feedback: InstallFeedback?
+
+    mutating func show(_ feedback: InstallFeedback) {
+        attempt += 1
+        self.feedback = feedback
+    }
+
+    mutating func clear() {
+        feedback = nil
+    }
+}
+
+/// The message itself: a status glyph and one caption line, sized to sit under or
+/// beside a settings control without competing with it.
+struct InstallFeedbackLabel: View {
+    let feedback: InstallFeedback
+
+    var body: some View {
+        HStack(spacing: 5) {
+            HugeIconView(
+                icon: feedback.kind == .success ? .checkCircle : .infoCircle,
+                size: 12,
+                color: feedback.kind == .success ? .green : .orange)
+            Text(feedback.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // A cross-fade rather than a slide: the reduced-motion-safe form, so this
+        // needs no separate accessibility path.
+        .transition(.opacity)
+    }
+}
+
+extension View {
+    /// Clears a success message a few seconds after it appears — long enough to
+    /// read, short enough that a stale "Installed" never sits next to a button the
+    /// user is about to press again. Failures stay.
+    func autoDismissing(_ state: Binding<InstallFeedbackState>) -> some View {
+        task(id: state.wrappedValue) {
+            guard state.wrappedValue.feedback?.kind == .success else { return }
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            withAnimation { state.wrappedValue.clear() }
+        }
+    }
+}
+
+/// A settings action that writes outside the app, with its result shown next to
+/// the button: the action performs the install and hands back the line to display.
+///
+/// The action is `async` because on a device it is not a function call — it is
+/// dozens of blocking `ssh` round trips. The hook installers read and write one
+/// config per agent, the skill installer probes and writes one more, and every one
+/// of those is a `Process` with `waitUntilExit()`. Run in the button's handler that
+/// is not a slow button, it is a beachball: the main thread sits in `waitUntilExit`
+/// while the window stops drawing.
+///
+/// So the work is awaited, the button disables itself while it runs, and a spinner
+/// stands where the result will be. The caller is what moves the work off the main
+/// actor; this type's job is to not block on it.
+struct InstallButtonRow: View {
+    let title: String
+    /// Laid out as a `LabeledContent` control — the button at the row's
+    /// trailing edge with its result to the left of it — rather than as a
+    /// standalone row that leads with the button.
+    var trailing = false
+    let action: () async -> InstallFeedback
+
+    @State private var state = InstallFeedbackState()
+    @State private var running = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if trailing { result }
+            Button(title) {
+                running = true
+                Task {
+                    let result = await action()
+                    running = false
+                    withAnimation { state.show(result) }
                 }
             }
+            .disabled(running)
+            if !trailing {
+                result
+                Spacer(minLength: 0)
+            }
+        }
+        .autoDismissing($state)
+    }
+
+    @ViewBuilder
+    private var result: some View {
+        if running {
+            ProgressView()
+                .controlSize(.small)
+                .transition(.opacity)
+        } else if let feedback = state.feedback {
+            InstallFeedbackLabel(feedback: feedback)
         }
     }
 }
@@ -143,6 +382,49 @@ enum InstalledFonts {
             guard let font = NSFont(name: family, size: 12) else { return false }
             return font.isFixedPitch
         }.sorted()
+    }
+
+    /// Dual-width CJK monospace faces users commonly install, in preference order —
+    /// each draws hanzi at exactly two terminal cells, so falling back to one keeps
+    /// weight and style consistent with the Latin face.
+    private static let cjkFallbackCandidates = [
+        "Sarasa Term SC", "Sarasa Mono SC", "Sarasa Fixed SC",
+        "Maple Mono NF CN", "Maple Mono CN",
+        "LXGW WenKai Mono",
+        "Noto Sans Mono CJK SC",
+    ]
+
+    /// The first installed candidate, probed once per process — fonts installed mid-run are
+    /// deliberately not tracked (a relaunch picks them up).
+    @MainActor private static let installedCJKCandidate: String? =
+        cjkFallbackCandidates.first { NSFont(name: $0, size: 12) != nil }
+
+    /// Whether a family can draw hanzi, memoized per process: `coveredCharacterSet` allocates
+    /// a full coverage bitmap on every call, and the caller sits on the re-style path that
+    /// runs once per open surface on every settings change.
+    @MainActor private static var hanCoverage: [String: Bool] = [:]
+
+    /// The first installed CJK-capable face to append to the terminal's font chain, or
+    /// `nil` when the chain already covers CJK (checked against U+4E00) or none of the known
+    /// candidates is installed. Silent by design: no setting, just a better fallback than the
+    /// system's proportional PingFang when the user has a purpose-built face on disk.
+    @MainActor static func cjkMonospaceFallback(existingChain: [String]) -> String? {
+        guard let han = Unicode.Scalar(0x4E00) else { return nil }
+        for family in existingChain where !family.isEmpty {
+            let covers: Bool
+            if let cached = hanCoverage[family] {
+                covers = cached
+            } else {
+                covers = NSFont(name: family, size: 12)
+                    .map { ($0.coveredCharacterSet as CharacterSet).contains(han) } ?? false
+                hanCoverage[family] = covers
+            }
+            if covers { return nil }
+        }
+        guard let candidate = installedCJKCandidate, !existingChain.contains(candidate) else {
+            return nil
+        }
+        return candidate
     }
 }
 
@@ -228,10 +510,10 @@ struct FontFamilyField: View {
                     Text(name).tag(name)
                 }
                 Divider()
-                Text("Custom…").tag(Self.customTag)
+                Text(localized("Custom…")).tag(Self.customTag)
             }
             if showingCustomField {
-                TextField("Font name", text: $family, prompt: Text("e.g. JetBrains Mono"))
+                TextField(localized("Font name"), text: $family, prompt: Text(localized("e.g. JetBrains Mono")))
                     .textFieldStyle(.roundedBorder)
                     .focused($customFieldFocused)
                     .padding(.top, 4)
@@ -243,7 +525,7 @@ struct FontFamilyField: View {
                 .truncationMode(.tail)
                 .foregroundStyle(preview.isFallback ? .tertiary : .secondary)
             if preview.isFallback {
-                Text("“\(family)” isn’t installed — showing the system default.")
+                Text(localized("“\(family)” isn’t installed — showing the system default."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

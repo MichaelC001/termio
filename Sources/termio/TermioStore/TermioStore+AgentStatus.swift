@@ -1,24 +1,28 @@
 import Foundation
+import TermioShared
+import os
 
 extension TermioStore {
     /// Brings up the hook socket and aligns `~/.claude/settings.json` with the
     /// current setting. The listener always runs (it is harmless when no hooks are
     /// installed); only the settings-file side is toggled.
+    /// Starts the status upkeep this app still owns. It no longer *receives*
+    /// status — every hook reports to the daemon that owns its PTY, and the app
+    /// reads `E status` off the session's own channel.
+    ///
+    /// What stays is the half that reads a **screen**: the stale-working sweep,
+    /// the streak promotion, and the `OSC 0/2` title classification. They are
+    /// the only status an agent with no hook system has, so they stay until the
+    /// VT itself moves (docs/design/20260819-unify-server-plane.md).
     func startHookMonitoring() {
-        let listener = HookListener { [weak self] report in
-            self?.applyStatusReport(report)
-        }
-        listener.start()
-        hookListener = listener
         installedHooksEnabled = settings.agentHooksEnabled
         syncHooksInstallation()
+    }
 
-        // The timeout it enforces is a handful of seconds (a quiet terminal is the
-        // "turn ended" signal), so the sweep has to tick at that granularity to
-        // clear a stuck spinner promptly. A 2s repeating timer is negligible.
-        staleWorkingSweep = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sweepStaleWorking() }
-        }
+    /// Whether any session is an agent (declared or detected via `effectiveAgent`). Gates
+    /// the "status is off" reminder — a shell-only workspace has nothing to report.
+    var isRunningAnyAgent: Bool {
+        allSessions.contains { effectiveAgent(for: $0) != .terminal }
     }
 
     /// Re-aligns the installed hooks when, and only when, the hooks setting itself
@@ -31,18 +35,22 @@ extension TermioStore {
     }
 
     private func syncHooksInstallation() {
-        AgentStatusHooks.sync(enabled: settings.agentHooksEnabled)
+        syncAgentIntegration()
     }
 
-    /// Brings up the control socket and aligns the agents' awareness note with the
-    /// current setting. Like the hook listener, the socket always runs; only the
-    /// note written into the agent instruction files is toggled.
-    func startSessionControl() {
-        let control = SessionControlListener { [weak self] request in
-            await self?.handleSessionControl(request) ?? Data()
-        }
+    /// Brings up the app socket and aligns the agents' awareness note with the
+    /// current setting. The socket always runs; only the note written into the agent
+    /// instruction files is toggled.
+    func startAppSocket() {
+        let control = AppSocketListener(
+            onRequest: { [weak self] request in
+                await self?.handleSessionControl(request) ?? Data()
+            },
+            onWatch: { [weak self] request in
+                self?.resolveWatchScope(request) ?? (nil, nil, [])
+            })
         control.start()
-        sessionControl = control
+        appSocket = control
         installedSessionControlEnabled = settings.sessionControlEnabled
         syncSessionControlInstallation()
     }
@@ -54,197 +62,208 @@ extension TermioStore {
     }
 
     private func syncSessionControlInstallation() {
-        SessionSkillInstaller.sync(enabled: settings.sessionControlEnabled)
+        syncAgentIntegration()
     }
 
-    /// Maps a normalized agent status report onto the session's status. This is the
-    /// only path that drives `.working`: an agent's hooks expose when a turn (or a
-    /// tool) *starts*, which the surface bell/OSC signals never could. The two
-    /// layers coexist by writing the same `statuses` — hooks add precision when
-    /// installed, the zero-config signals remain the fallback when they are not.
-    private func applyStatusReport(_ report: StatusReport) {
-        guard let id = sessionID(for: report) else { return }
-        // Remember the session's transcript address whenever a hook carries it, so
-        // `sessions send` can hand it back as the place to read the response.
-        if let path = report.transcriptPath, !path.isEmpty {
-            transcriptPaths[id] = path
-            // The hook path is the one signal that can carry a *new* conversation id
-            // (after `/clear`), so advance the resume pin to match — a no-op unless it
-            // actually rotated. See docs/design/agent-resume-identity.md.
-            reconcileResumeID(id, transcriptPath: path)
-        } else if transcriptPaths[id] == nil, let path = resolveTranscriptPath(for: id) {
-            // The hook didn't carry a path (Codex never does; a pre-hook Claude session
-            // never will), so learn it from the agent's own on-disk transcript instead —
-            // same result as Claude's hook-carried path, just discovered.
-            transcriptPaths[id] = path
-        }
-        switch report.state {
-        case "working":
-            // Spin a row only when it's genuinely an agent: a declared agent session,
-            // or a plain terminal we've detected a hand-started agent running in (its
-            // hook carries `TERMIO_SESSION`, so it routes here correctly). A bare
-            // terminal with nothing detected — or a cwd-matched report from a sibling —
-            // stays calm, so only real agent rows show the thinking spinner.
-            guard let session = session(id), effectiveAgent(for: session) != .terminal
-            else { break }
-            statuses[id] = .working
-            currentTool[id] = report.tool
-            // Remember when work was last seen, so a turn that ends abnormally
-            // (the agent crashed and never sent `done`) can be swept back to calm
-            // instead of spinning forever — the failure mode cmux's own tracker
-            // suffers from (issue #3749).
-            lastWorkingAt[id] = Date()
-            // A working agent is the strongest "this project is active" signal, so
-            // float its project up under the "Recent Activity" sort (see `orderedProjects`).
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
-        case "done":
-            // The turn finished. If the user is looking at it, calm; otherwise a
-            // gentle "ready for you" cue — distinct from `needsAttention`, which is
-            // reserved for the agent actually being blocked on the user.
-            clearWorking(id)
-            statuses[id] = (selectedSessionID == id) ? .idle : .done
-        case "attention":
-            // The agent is blocked waiting on the user (a permission prompt or a
-            // free-text answer). Mirror the bell path: only flag a session the user
-            // isn't already looking at.
-            clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
-        case "idle":
-            clearWorking(id)
-            statuses[id] = .idle
-        default:
-            break
-        }
+    /// Asks the local daemon to align this Mac's agent config with the two
+    /// Integration switches.
+    ///
+    /// Both switches go in one message: the daemon writes hooks and the skill in
+    /// one pass, and sending two would install twice for no reason. Fire and
+    /// forget — this runs on launch, on a preference change, and on refocus, and
+    /// none of those has a place to show a failure, so a failure is logged (by
+    /// `AgentIntegrationInstaller`) and the previous state is left alone. The
+    /// place that *does* report is Settings, where the user asked.
+    func syncAgentIntegration() {
+        let hooks: Termiod.AgentHalfAction =
+            settings.agentHooksEnabled ? .install : .remove
+        let skills: Termiod.AgentHalfAction =
+            settings.sessionControlEnabled ? .install : .remove
+        Task { _ = await AgentIntegrationInstaller.sync(hooks: hooks, skills: skills) }
     }
 
-    private func clearWorking(_ id: Session.ID) {
-        currentTool[id] = nil
+    /// Records only the first usable prompt label in a conversation. It stays a
+    /// fallback: `displayTitle` gives an explicit Termio name and a meaningful native
+    /// OSC title higher priority. Persisting it on `Session` keeps resumed tabs named
+    /// before the agent emits any fresh terminal title.
+    func recordPromptTitle(_ raw: String, for id: Session.ID) {
+        guard let session = session(id),
+              session.promptTitle == nil,
+              session.agent != .terminal,
+              session.givenTitle == nil,
+              let title = AgentPromptTitle.normalized(raw)
+        else { return }
+        updateSession(id) { $0.promptTitle = title }
+    }
+
+    /// A reported conversation id, accepted only when it is a bare token — the ids
+    /// every agent mints (UUIDs, `ses_…`) always are. The shell-hook path mines the
+    /// value out of an arbitrary stdin blob, so anything else (pasted JSON, a path,
+    /// whitespace) is treated as no identity rather than adopted into the pin.
+    func conversationToken(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.count <= 128,
+              raw.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) })
+        else { return nil }
+        return raw
+    }
+
+    /// Not private: the termiod status path (`applyTermiodStatus`) ends a turn
+    /// through the same door, so the two cannot drift on what "stopped working"
+    /// clears.
+    func clearWorking(_ id: Session.ID) {
+        setCurrentTool(nil, for: id)
         lastWorkingAt[id] = nil
     }
 
-    /// Refreshes a working session's activity timestamp when the rendered screen
-    /// changed. A genuinely working agent repaints changing content (its ticking
-    /// spinner, streaming tokens) every second, so a changing viewport means the
-    /// turn is still live; the moment the screen goes static (the agent is back at
-    /// its prompt), the timestamp stops advancing and `sweepStaleWorking` can clear
-    /// the spinner. Keying on the *screen* rather than raw bytes is what closes the
-    /// gap for a finished agent that keeps dribbling output at an idle prompt (a
-    /// redraw, a blinking cursor) — the stuck-spinner failure. No-op unless the
-    /// session is actually spinning, so idle sessions cost nothing. Fed by a
-    /// throttled tap on the PTY stream (see `surface(for:in:)`).
-    func noteOutputActivity(_ id: Session.ID, screenChanged: Bool) {
-        guard statuses[id] == .working else { return }
-        guard screenChanged else { return }
-        lastWorkingAt[id] = Date()
+    /// Drops every per-session activity-tracking entry — the one place that
+    /// enumerates these dictionaries, so the teardown paths (close, project
+    /// removal, relaunch) can't drift out of step when a new tracker is added.
+    /// `transcriptPaths` is deliberately not here: a relaunch resumes the same
+    /// conversation, so only the close/remove paths clear it (inline).
+    func clearActivityTracking(for id: Session.ID) {
+        // Whatever banner the session had delivered no longer describes a live turn.
+        TaskNotificationCenter.shared.forget(id)
+        lastWorkingAt[id] = nil
+        lastHookReportAt[id] = nil
+        agentExitStreaks[id] = nil
+        blockingAttention.remove(id)
     }
 
-    /// Drives status from an agent's own screen when it ships no hook system — the path
-    /// for user agents whose `agent.json` declared `status` regex rules (see
-    /// `AgentStatusRules`). Called each throttled viewport tick with the freshly
-    /// classified activity. Status is only rewritten on a *transition*, so an idle
-    /// screen doesn't re-emit `done` every second; a working screen refreshes the
-    /// liveness timestamp every tick so the stale sweep can't clear a live turn whose
-    /// screen briefly stopped changing. Mirrors `applyStatusReport`'s state mapping —
-    /// `attention` only flags a session the user isn't already looking at; a turn that
-    /// just ended reads `done` when unselected, `idle` when selected or merely calm.
-    func applyScreenDetectedActivity(_ activity: AgentStatusRules.Activity, for id: Session.ID) {
-        if activity == .working { lastWorkingAt[id] = Date() }
-        guard lastScreenActivity[id] != activity else { return }
-        let previous = lastScreenActivity[id]
-        lastScreenActivity[id] = activity
-        switch activity {
-        case .working:
-            statuses[id] = .working
-            if let pid = project(for: id)?.id { liveActivity[pid] = Date() }
-        case .attention:
-            clearWorking(id)
-            if selectedSessionID != id { statuses[id] = .needsAttention }
-        case .idle:
-            clearWorking(id)
-            if previous == .working || previous == .attention {
-                statuses[id] = (selectedSessionID == id) ? .idle : .done
-            } else {
-                statuses[id] = .idle
-            }
-        }
+    /// Light the "blocked on you" dot from a genuine, observable blocking condition
+    /// (a hook / screen / title "attention" signal). Unlike a one-shot bell, these
+    /// have a matching "resolved" transition, so the dot is recorded as blocking
+    /// (`blockingAttention`) and survives a click in `markSeen` — looking at a
+    /// permission prompt isn't answering it. Only flags a session the user isn't
+    /// already watching, mirroring the raw `!isViewing` guard it replaces; the flag
+    /// is still set even when the status write is a no-op, so a bell-set dot already
+    /// showing gets *upgraded* to blocking when the real signal arrives.
+    func flagBlockingAttention(for id: Session.ID) {
+        guard !isViewing(id) else { return }
+        blockingAttention.insert(id)
+        setStatus(.needsAttention, for: id)
     }
 
-    /// Records (or clears) the agent detected running in a plain terminal's
-    /// foreground, upgrading the row to a first-class agent while it runs (brand icon,
-    /// adopted live title, working spinner) and reverting it to a plain terminal when
-    /// it exits. Terminal-only (a declared agent session is never reclassified) and
-    /// idempotent (unchanged detection is a no-op, so the once-a-second poll is cheap).
-    /// On clear it also drops the transient agent title and any lingering spinner so
-    /// the row can't be left mid-turn once the agent is gone.
+    /// Reclassifies a shell-backed session to whatever agent runs in its foreground —
+    /// for real, not as a runtime overlay: a hand-started `claude` makes the session
+    /// *become* a Claude Code session (persisted, so a reopened app relaunches it as
+    /// that agent, resuming the conversation its hooks pinned meanwhile), and the
+    /// agent exiting back to the shell demotes it to a plain terminal again. The
+    /// identity always says what the pane runs. Only sessions spawned with a shell
+    /// underneath ever report here (the detection sink exists solely for them), so a
+    /// promoted row keeps polling and the demotion fires when its shell resurfaces.
+    /// Idempotent per poll; an SSH terminal is never reclassified (its foreground is
+    /// the local `ssh`, and the agents run remotely).
     func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
-        guard session(id)?.agent == .terminal else { return }
-        guard detectedAgents[id] != detected else { return }
+        guard let home = locate(id) else { return }
+        var session = self[home]
+        guard !session.isSSH else { return }
         if let detected {
-            detectedAgents[id] = detected
-        } else {
-            detectedAgents[id] = nil
-            liveTitles[id] = nil
-            clearWorking(id)
-            if statuses[id] == .working || statuses[id] == .done { statuses[id] = .idle }
+            // Promote a plain terminal only: an already-promoted row seeing its own
+            // agent is the idempotent no-op, and a *different* foreground under a
+            // promoted row is the agent's own subprocess, not a new identity.
+            guard session.agent == .terminal, detected != .terminal else { return }
+            // Adopt the declared-session title convention (`addSession`) so the row
+            // reads `Claude Code`. Unconditional: a name the user chose lives in
+            // `givenTitle` and outranks this at display time, so there is nothing
+            // here to protect it from.
+            session.title = detected.displayName
+            session.agent = detected
+            self[home] = session
+        } else if session.agent != .terminal {
+            demoteSessionToTerminal(id)
         }
+    }
+
+    /// The one place a session stops being an agent: reverts the row to a plain
+    /// terminal (persisted) and clears the conversation-scoped runtime state — the
+    /// adopted topic title and any lingering spinner — so the row can't be left
+    /// mid-turn once the agent is gone. The resume pin deliberately survives: it is
+    /// dormant on a terminal row, and it still names the conversation this pane last
+    /// hosted. Shared by the foreground poll (agent quit back to its shell) and the
+    /// clean-exit revert of an exec'd agent session (`revertSessionToShell`).
+    func demoteSessionToTerminal(_ id: Session.ID) {
+        guard let home = locate(id) else { return }
+        var session = self[home]
+        guard session.agent != .terminal else { return }
+        // Back to the auto `Terminal N` convention (numbered like `addSession`,
+        // counting this row itself), so display naming — cwd basename for loose
+        // terminals — takes over again. A name the user chose is untouched by this:
+        // it lives in `givenTitle` and still outranks the placeholder.
+        let terminalCount = roster(at: home).filter { $0.agent == .terminal }.count
+        session.title = "Terminal \(terminalCount + 1)"
+        session.agent = .terminal
+        session.liveTitle = nil
+        session.promptTitle = nil
+        self[home] = session
+        setLiveTitle(nil, for: id)
+        // The row is a terminal now; an "agent exited" notice would describe an
+        // identity it no longer has.
+        runtimes[id]?.agentExitNotice = nil
+        clearWorking(id)
+        let current = status(for: id)
+        if current == .working || current == .done { setStatus(.idle, for: id) }
     }
 
     /// Resolves a session's transcript file from disk when its hook hasn't handed
     /// termio one — the source of truth for the Info pane's trace when no hook fired.
-    /// Claude Code names its transcript by the id termio pinned (`Session.resumeID`),
-    /// so it's located directly; Codex/OpenCode fall back to the launch-time file
-    /// match (`AgentSessionStore`). `nil` until a matching transcript exists on disk.
+    /// A pinned-id agent whose store is a file-per-conversation (Claude Code) names its
+    /// transcript by the id termio pinned (`Session.resumeID`), so it's located directly.
+    /// A discovered-id agent with a known pin is likewise looked up by that exact id —
+    /// the launch-time earliest-match below would drift back to a rotated-away record —
+    /// and only an unpinned session falls back to the launch-time file match
+    /// (`AgentSessionStore`). For a directory-based store (Grok: `dir:{id}`), the
+    /// directory itself is located and its contents scanned for a transcript file.
+    /// `nil` until a matching transcript exists on disk.
     func resolveTranscriptPath(for id: Session.ID) -> String? {
         guard let session = session(id), session.launched else { return nil }
-        if session.agent == .claudeCode {
-            return session.resumeID.flatMap(ClaudeConversation.transcriptPath)
+        if let store = session.agent.resumeSpec.store, !store.isDirectory,
+           let resumeID = session.resumeID,
+           let path = SessionStore.locate(store, id: resumeID) {
+            return path
+        }
+        if let store = session.agent.resumeSpec.store, store.isDirectory,
+           let resumeID = session.resumeID,
+           let dirPath = SessionStore.locate(store, id: resumeID) {
+            // Directory-based store: the session is a directory of files. Prefer the
+            // manifest's `transcriptName` when set (Grok: `chat_history.jsonl`). Do not
+            // fall through to sole-jsonl when a name is declared — Grok dirs routinely
+            // hold several `.jsonl` files (`updates.jsonl`, `events.jsonl`, …), and a
+            // briefly-missing named file must not pin a sibling. Sole-jsonl is only for
+            // undeclared names where exactly one candidate exists.
+            if let name = store.transcriptName {
+                return transcriptFile(in: dirPath, named: name)
+            }
+            return soleJSONLFile(in: dirPath)
+        }
+        if session.agent.resumeSpec.discover != nil, let resumeID = session.resumeID {
+            return AgentSessionStore.transcript(agent: session.agent, id: resumeID)
         }
         guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
         return AgentSessionStore.discoverTranscript(
             agent: session.agent, directory: directory, after: session.launchedAt)
     }
 
-    /// Sweeps sessions stuck in `.working` with no activity for a generous window
-    /// back to `.idle`. This only matters while the user is looking elsewhere —
-    /// selecting a session already clears it — so the timeout is long enough never
-    /// to interrupt a genuinely long turn (tool events keep refreshing it), and is
-    /// purely a recovery path for an agent that died mid-turn.
-    private func sweepStaleWorking() {
-        let now = Date()
-        for (id, since) in lastWorkingAt where now.timeIntervalSince(since) > staleWorkingTimeout {
-            if statuses[id] == .working { statuses[id] = .idle }
-            clearWorking(id)
-        }
+    /// Returns the path to a named file inside a directory, or `nil` if it doesn't exist.
+    private func transcriptFile(in directory: String, named name: String) -> String? {
+        let candidate = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDir),
+              !isDir.boolValue else { return nil }
+        return candidate
     }
 
-    /// Resolves a status report back to its session. The exact key is the
-    /// `TERMIO_SESSION` id termio stamped into the PTY and the agent echoed back, so
-    /// this is unambiguous even when several sessions share one project directory.
-    /// `cwd` is only a fallback for an agent whose environment didn't carry the id
-    /// through to the hook.
-    private func sessionID(for report: StatusReport) -> Session.ID? {
-        if let token = report.termioSession,
-           let id = UUID(uuidString: token),
-           session(id) != nil {
-            return id
+    /// Returns the path to the single `.jsonl` file in a directory, or `nil` when there
+    /// are zero or more than one — the transcript is ambiguous with multiple candidates.
+    private func soleJSONLFile(in directory: String) -> String? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: URL(fileURLWithPath: directory), includingPropertiesForKeys: nil)
+        else { return nil }
+        let jsonlFiles = entries.filter {
+            $0.pathExtension.lowercased() == "jsonl"
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         }
-        return sessionID(forCwd: report.cwd)
-    }
-
-    /// Fallback correlation by working directory, for a report that arrived without
-    /// a usable session id. A session's worktree directory is unique, so a single
-    /// match is exact; in a shared directory we don't guess and leave status alone.
-    private func sessionID(forCwd cwd: String?) -> Session.ID? {
-        guard let cwd else { return nil }
-        let target = URL(fileURLWithPath: cwd).standardizedFileURL.path
-        let matches = projects.flatMap { project in
-            project.sessions.filter { session in
-                let directory = session.worktreePath ?? project.path
-                return URL(fileURLWithPath: directory).standardizedFileURL.path == target
-            }
-        }
-        guard matches.count == 1 else { return nil }
-        return matches.first?.id
+        guard jsonlFiles.count == 1 else { return nil }
+        return jsonlFiles[0].path
     }
 
     /// A short description of a session's current agent activity, for the sidebar
@@ -255,7 +274,7 @@ extension TermioStore {
         case .idle:
             return ""
         case .working:
-            if let tool = currentTool[sessionID] { return "Working — \(tool)" }
+            if let tool = runtimes[sessionID]?.currentTool { return "Working — \(tool)" }
             return "Working…"
         case .done:
             return "Done"

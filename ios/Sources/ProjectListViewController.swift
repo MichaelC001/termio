@@ -2,23 +2,41 @@ import SwiftUI
 import TermioShared
 import UIKit
 
-/// The root screen: the project list, with a "Needs You" strip pinned above
-/// it. GitHub-mobile shape — the backbone is "what do I have open" (one row
-/// per project, with a status summary so nothing needs opening to check on),
-/// while the strip keeps the phone's highest-frequency question ("which agent
-/// is waiting on me?") answerable at a glance and one tap from its terminal.
-/// Tapping a project pushes its page (sessions + new-session). Lives at the
-/// root of the home navigation stack inside RootContainerViewController.
+/// The root screen: one workspace's project list, with a "Needs You" strip
+/// pinned above it. GitHub-mobile shape — the backbone is "what do I have open"
+/// (one row per project, with a status summary so nothing needs opening to check
+/// on), while the strip keeps the phone's highest-frequency question ("which
+/// agent is waiting on me?") answerable at a glance and one tap from its
+/// terminal.
+///
+/// Slack's split: the title names the workspace you are in, the rail switches
+/// it, and the list underneath is only ever that one workspace's. The strip is
+/// the deliberate exception — it crosses every workspace, which is what makes
+/// showing one at a time safe.
+///
+/// Tapping a project pushes its page (sessions + new-session). Lives at the root
+/// of the home navigation stack inside RootContainerViewController.
 final class ProjectListViewController: UIViewController {
     private let store: RosterStore
+    /// The workspace on screen. The strip above the list ignores it — see
+    /// `refilter`.
+    private let scope: WorkspaceScope
+    /// Reveal the shell's workspace rail. The shell owns the panel, so the
+    /// title-bar opener only asks for it.
+    var onOpenWorkspaceRail: (() -> Void)?
 
-    private enum Section { case needsYou, projects }
+    private enum Section {
+        case needsYou
+        case projects
+    }
+
     /// The sections currently on screen, rebuilt on every roster change.
     private var sections: [Section] = []
-    /// Cross-project attention sessions (the strip's rows).
+    /// Cross-workspace attention sessions (the strip's rows).
     private var attention: [MockSession] = []
-    /// The store's projects in the chosen order — what the table shows.
-    private var visible: [MockProject] = []
+    /// The workspace's projects, in roster order. Chats- and Terminals-kind
+    /// containers are excluded: they have their own tabs.
+    private var projects: [MockProject] = []
 
     /// Mirrors the Mac sidebar's sort pull-down. The roster arrives in the
     /// Mac's recent-activity order, so "Recent Activity" means "as pushed";
@@ -26,6 +44,15 @@ final class ProjectListViewController: UIViewController {
     private var sortByName = UserDefaults.standard.string(forKey: "sessions.sortOrder") == "name"
 
     private let filterButton = UIButton(type: .system)
+    /// Opens the workspace rail: the title itself is the control, Slack's shape.
+    /// Disabled whenever the rail is absent (one workspace, or none yet), so the
+    /// common case keeps exactly the title bar it had.
+    private let workspaceButton = UIButton(type: .custom)
+    /// The mark that says the title opens something. Absent with the rail.
+    private let workspaceChevron = UIImageView()
+    /// The workspace in scope, and the machine it is on when that needs saying.
+    private let pageTitle = UILabel()
+    private let machineLabel = UILabel()
     private let tableView = UITableView(frame: .zero, style: .grouped)
     /// The Telegram/iMessage-style zero state shown when there are no projects
     /// to list — never fake rows. Its copy tracks `CompanionLink.state`.
@@ -36,9 +63,12 @@ final class ProjectListViewController: UIViewController {
     private var connectingGraceTimer: Timer?
     private var rosterObserver: NSObjectProtocol?
     private var linkStateObserver: NSObjectProtocol?
+    private var themeObserver: NSObjectProtocol?
+    private var workspaceObserver: NSObjectProtocol?
 
-    init(store: RosterStore) {
+    init(store: RosterStore, scope: WorkspaceScope) {
         self.store = store
+        self.scope = scope
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -46,14 +76,12 @@ final class ProjectListViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // A full page, not a drawer: plain system background, like the
-        // Messages inbox.
-        view.backgroundColor = .systemBackground
+        // A full page, not a drawer. Tinted to the terminal theme so the whole
+        // app reads as one canvas (the rows/table draw clear over it).
+        themeObserver = installThemeBackdrop()
         let topBar = configureTopBar()
         configureTable(below: topBar)
         configureEmptyState(below: topBar)
-        // Added last so the floating glass footer layers over the list.
-        configureBottomBar()
         refilter()
         rosterObserver = NotificationCenter.default.addObserver(
             forName: RosterStore.didChange, object: nil, queue: .main
@@ -67,14 +95,17 @@ final class ProjectListViewController: UIViewController {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateEmptyState() }
         }
+        workspaceObserver = NotificationCenter.default.addObserver(
+            forName: WorkspaceScope.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refilter() }
+        }
     }
 
     deinit {
-        if let rosterObserver {
-            NotificationCenter.default.removeObserver(rosterObserver)
-        }
-        if let linkStateObserver {
-            NotificationCenter.default.removeObserver(linkStateObserver)
+        let observers = [rosterObserver, linkStateObserver, themeObserver, workspaceObserver]
+        for observer in observers.compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
         }
         connectingGraceTimer?.invalidate()
     }
@@ -86,16 +117,76 @@ final class ProjectListViewController: UIViewController {
     // MARK: - Top bar (large title + sort)
 
     private func configureTopBar() -> UIView {
-        let pageTitle = UILabel()
-        pageTitle.text = "Projects"
+        // The workspace's own name, not the tab's — the title bar says which
+        // context you are in, and the rail is what changes it. A roster that
+        // never names a workspace (the bundled mock, an older Mac) falls back to
+        // the tab's word, so those screens read exactly as they did.
         pageTitle.font = .systemFont(ofSize: 34, weight: .bold)
         pageTitle.textColor = .label
+        pageTitle.lineBreakMode = .byTruncatingTail
+
+        // Which machine the workspace is on, under its name. It used to ride the
+        // section header; with the header gone the claim belongs to the thing it
+        // qualifies. Hidden for the Mac you paired with — being on that machine
+        // is the absence of a mark.
+        machineLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        machineLabel.textColor = .secondaryLabel
+        machineLabel.lineBreakMode = .byTruncatingTail
+        machineLabel.isHidden = true
+
+        // Slack's workspace switcher: a chevron on the name, not a control beside
+        // it. The name is what changes, so the name is what you press — and the
+        // title bar keeps one object instead of a glass circle competing with it.
+        // Hidden by default: a hidden arranged subview contributes neither width
+        // nor spacing, so a one-workspace title bar is untouched.
+        workspaceChevron.image = UIImage(
+            systemName: "chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .bold)
+        )
+        workspaceChevron.tintColor = .label
+        workspaceChevron.contentMode = .center
+        workspaceChevron.setContentHuggingPriority(.required, for: .horizontal)
+        workspaceChevron.setContentCompressionResistancePriority(.required, for: .horizontal)
+        workspaceChevron.isHidden = true
+
+        let titleRow = UIStackView(arrangedSubviews: [pageTitle, workspaceChevron])
+        titleRow.axis = .horizontal
+        titleRow.alignment = .center
+        titleRow.spacing = 8
+        titleRow.isUserInteractionEnabled = false
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+        workspaceButton.addSubview(titleRow)
+        workspaceButton.accessibilityIdentifier = "home.workspaceRail"
+        // The name is the identity; the sort button never gives way for it. The
+        // whole title unit yields, so the chevron stays glued to the truncation.
+        workspaceButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        workspaceButton.addAction(UIAction { [weak self] _ in
+            self?.onOpenWorkspaceRail?()
+        }, for: .touchUpInside)
+        // The press cue a title-as-button needs, since it has no fill to shade.
+        let pressStates: [(UIControl.Event, CGFloat)] = [
+            (.touchDown, 0.4), (.touchUpInside, 1), (.touchUpOutside, 1),
+            (.touchCancel, 1), (.touchDragExit, 1),
+        ]
+        for (event, alpha) in pressStates {
+            workspaceButton.addAction(UIAction { _ in titleRow.alpha = alpha }, for: event)
+        }
+        NSLayoutConstraint.activate([
+            titleRow.leadingAnchor.constraint(equalTo: workspaceButton.leadingAnchor),
+            titleRow.trailingAnchor.constraint(equalTo: workspaceButton.trailingAnchor),
+            titleRow.topAnchor.constraint(equalTo: workspaceButton.topAnchor),
+            titleRow.bottomAnchor.constraint(equalTo: workspaceButton.bottomAnchor),
+        ])
+
+        let titleStack = UIStackView(arrangedSubviews: [workspaceButton, machineLabel])
+        titleStack.axis = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 0
 
         // The Mac sidebar's sort pull-down, translated to iMessage chrome:
         // a glass circle riding the large title, menu as primary action.
         filterButton.applyGlassSymbol("line.3.horizontal.decrease")
-        filterButton.tintColor = .label
-        filterButton.accessibilityLabel = "Sort"
+        filterButton.accessibilityLabel = localized("Sort")
         filterButton.showsMenuAsPrimaryAction = true
         filterButton.menu = UIMenu(children: [
             UIDeferredMenuElement.uncached { [weak self] completion in
@@ -104,7 +195,7 @@ final class ProjectListViewController: UIViewController {
         ])
 
         let spacer = UIView()
-        let bar = UIStackView(arrangedSubviews: [pageTitle, spacer, filterButton])
+        let bar = UIStackView(arrangedSubviews: [titleStack, spacer, filterButton])
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
@@ -124,10 +215,10 @@ final class ProjectListViewController: UIViewController {
     /// The same two orders as the Mac's sort menu, checkmarked like it too.
     private func sortMenuItems() -> [UIMenuElement] {
         [
-            UIAction(title: "Recent Activity", state: sortByName ? .off : .on) { [weak self] _ in
+            UIAction(title: localized("Recent Activity"), state: sortByName ? .off : .on) { [weak self] _ in
                 self?.setSortByName(false)
             },
-            UIAction(title: "Name", state: sortByName ? .on : .off) { [weak self] _ in
+            UIAction(title: localized("Name"), state: sortByName ? .on : .off) { [weak self] _ in
                 self?.setSortByName(true)
             },
         ]
@@ -139,49 +230,16 @@ final class ProjectListViewController: UIViewController {
         refilter()
     }
 
-    // MARK: - Bottom bar (the floating settings button)
-
-    /// Telegram's iOS 26 tab bar: nothing spans the width. A **detached
-    /// circular glass button** floats bottom-right (settings) and the list
-    /// scrolls under it, so the footer reads as chrome, not a divider. The
-    /// Mac pairing and its live status live in Settings ▸ Connectivity.
-    private func configureBottomBar() {
-        let gear = UIButton(type: .system)
-        gear.setImage(
-            UIImage(systemName: "gearshape", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)),
-            for: .normal
-        )
-        gear.tintColor = .label
-        gear.accessibilityLabel = "Settings"
-        gear.addAction(UIAction { [weak self] _ in
-            self?.presentSettings()
-        }, for: .touchUpInside)
-        let puck = GlassChrome.makeView(interactive: true)
-        gear.translatesAutoresizingMaskIntoConstraints = false
-        puck.contentView.addSubview(gear)
-        puck.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(puck)
-
-        let puckSize: CGFloat = 44
-        puck.layer.cornerRadius = puckSize / 2
-        puck.clipsToBounds = true
-
-        NSLayoutConstraint.activate([
-            puck.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            puck.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            puck.widthAnchor.constraint(equalToConstant: puckSize),
-            puck.heightAnchor.constraint(equalToConstant: puckSize),
-            gear.centerXAnchor.constraint(equalTo: puck.contentView.centerXAnchor),
-            gear.centerYAnchor.constraint(equalTo: puck.contentView.centerYAnchor),
-            gear.widthAnchor.constraint(equalTo: puck.widthAnchor),
-            gear.heightAnchor.constraint(equalTo: puck.heightAnchor),
-        ])
-    }
-
-    private func presentSettings() {
+    private func presentSettings(deepLinkToDevices: Bool = false) {
         // The sheet inherits the window's app-wide Appearance override, same
         // as every other screen.
-        present(UINavigationController(rootViewController: SettingsViewController()), animated: true)
+        let nav = UINavigationController(rootViewController: SettingsViewController())
+        if deepLinkToDevices {
+            // "Connect a Mac" promises pairing, so land on the Devices page
+            // itself; back reveals full Settings, swipe-down dismisses.
+            nav.pushViewController(DevicesSettingsViewController(), animated: false)
+        }
+        present(nav, animated: true)
     }
 
     // MARK: - Table
@@ -207,11 +265,8 @@ final class ProjectListViewController: UIViewController {
             forHeaderFooterViewReuseIdentifier: SectionCapView.reuseID
         )
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        // The floating glass footer sits over the list, so the list runs to the
-        // bottom edge and reserves room with an inset — the last rows clear the
-        // pill instead of butting a divider.
-        tableView.contentInset.bottom = 56
-        tableView.verticalScrollIndicatorInsets.bottom = 56
+        // The native tab controller contributes the correct safe-area and
+        // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
@@ -221,16 +276,51 @@ final class ProjectListViewController: UIViewController {
         ])
     }
 
-    /// Rebuild the section list from the store: the attention strip (only when
-    /// non-empty), then the projects in the chosen order.
+    /// Rebuild the page from the store: the attention strip (only when
+    /// non-empty), then the workspace in scope. The loose funnels (Chats,
+    /// Terminals) belong to their own tabs, so they're kept out of the folder
+    /// list — their attention sessions still surface in the strip here, the
+    /// cross-cutting shortcut.
+    ///
+    /// The roster's order is the Mac sidebar's order; "Name" re-sorts locally.
     private func refilter() {
+        // Read straight from the store, past the workspace scope. "Needs You" is
+        // the cross-workspace question the phone is opened to answer, so it is
+        // never scoped — a blocked agent in a workspace that isn't on screen is
+        // exactly the one that would otherwise go unnoticed. It is also what
+        // makes showing one workspace at a time safe.
         attention = store.attentionSessions
-        visible = sortByName
-            ? store.projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            : store.projects
-        sections = (attention.isEmpty ? [] : [.needsYou]) + [.projects]
+        projects = store.projects.filter {
+            $0.kind != "chats" && $0.kind != "terminals" && scope.admits($0)
+        }
+        if sortByName {
+            projects.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        sections = (attention.isEmpty ? [] : [.needsYou]) + (projects.isEmpty ? [] : [.projects])
+        updateTitle()
         tableView.reloadData()
         updateEmptyState()
+    }
+
+    /// The title names the workspace on screen, with its machine underneath when
+    /// that isn't the paired Mac. The opener beside it appears only when there is
+    /// a second workspace to reach — one workspace is no choice at all, and the
+    /// title then just reads its name.
+    private func updateTitle() {
+        let machines = RailMachine.roster(from: store.projects)
+        let workspace = machines.workspace(id: scope.selectedID)
+        let name = workspace?.name ?? ""
+        pageTitle.text = name.isEmpty ? localized("Projects") : name
+        machineLabel.text = workspace?.machineLabel
+        machineLabel.isHidden = workspace?.machineLabel == nil
+        let hasOtherWorkspaces = machines.workspaceCount > 1
+        workspaceChevron.isHidden = !hasOtherWorkspaces
+        workspaceButton.isEnabled = hasOtherWorkspaces
+        // With nowhere to switch to, the title is a title again: the button stops
+        // being an element of its own so VoiceOver reads the name underneath.
+        workspaceButton.isAccessibilityElement = hasOtherWorkspaces
+        workspaceButton.accessibilityLabel = localized("Workspaces")
+        workspaceButton.accessibilityValue = pageTitle.text
     }
 
     // MARK: - Empty state
@@ -255,7 +345,7 @@ final class ProjectListViewController: UIViewController {
     /// stalled (the Mac isn't answering — offer Try Again), or connected-but-idle
     /// (nudge toward opening a project on the Mac).
     private func updateEmptyState() {
-        emptyState.isHidden = !visible.isEmpty || !attention.isEmpty
+        emptyState.isHidden = !projects.isEmpty || !attention.isEmpty
         guard !emptyState.isHidden else {
             stopConnectingGraceTimer()
             return
@@ -265,10 +355,10 @@ final class ProjectListViewController: UIViewController {
             stopConnectingGraceTimer()
             reconnectStalled = false
             emptyState.configure(
-                symbol: "macbook.and.iphone",
-                title: "No Mac connected",
-                message: "Open termio on your Mac, then pair this phone to see and drive your projects from here.",
-                actionTitle: "Connect a Mac",
+                icon: .devicePair,
+                title: localized("No Mac connected"),
+                message: localized("Open Termio on your Mac, then pair this phone to see and drive your projects from here."),
+                actionTitle: localized("Connect a Mac"),
                 busy: false
             )
         case .connecting where reconnectStalled:
@@ -276,18 +366,18 @@ final class ProjectListViewController: UIViewController {
             // asleep or off-network. Say so, and let the user force a retry —
             // the link keeps trying on its slow heartbeat regardless.
             emptyState.configure(
-                symbol: "wifi.exclamationmark",
-                title: "Can't reach your Mac",
-                message: "It may be asleep or off your network. termio keeps trying — reopen the lid, or tap to retry now.",
-                actionTitle: "Try Again",
+                icon: .wifiError,
+                title: localized("Can't reach your Mac"),
+                message: localized("It may be asleep or off your network. Termio keeps trying — reopen the lid, or tap to retry now."),
+                actionTitle: localized("Try Again"),
                 busy: false
             )
         case .connecting:
             startConnectingGraceTimer()
             emptyState.configure(
-                symbol: nil,
-                title: "Connecting…",
-                message: "Reaching your Mac over the companion link.",
+                icon: nil,
+                title: localized("Connecting…"),
+                message: localized("Reaching your Mac over the companion link."),
                 actionTitle: nil,
                 busy: true
             )
@@ -295,10 +385,20 @@ final class ProjectListViewController: UIViewController {
             stopConnectingGraceTimer()
             reconnectStalled = false
             emptyState.configure(
-                symbol: "folder",
-                title: "No projects open",
-                message: "Open a project in termio on your Mac and it'll show up here.",
+                icon: .folder,
+                title: localized("No projects open"),
+                message: localized("Open a project in Termio on your Mac and it'll show up here."),
                 actionTitle: nil,
+                busy: false
+            )
+        case .failed(let reason):
+            stopConnectingGraceTimer()
+            reconnectStalled = false
+            emptyState.configure(
+                icon: .wifiError,
+                title: localized("Connection failed"),
+                message: reason,
+                actionTitle: localized("Open Settings"),
                 busy: false
             )
         }
@@ -328,7 +428,11 @@ final class ProjectListViewController: UIViewController {
     /// immediate reconnect and drop back to the "Connecting…" copy.
     private func emptyStateAction() {
         if case .unpaired = CompanionLink.state {
-            presentSettings()
+            presentSettings(deepLinkToDevices: true)
+            return
+        }
+        if case .failed = CompanionLink.state {
+            presentSettings(deepLinkToDevices: true)
             return
         }
         reconnectStalled = false
@@ -336,6 +440,10 @@ final class ProjectListViewController: UIViewController {
         store.reconnectNow()
     }
 }
+
+/// The Projects root shows one workspace at a time, so the shell arms the rail's
+/// edge gesture here.
+extension ProjectListViewController: WorkspaceScoped {}
 
 // MARK: - Table data source / delegate
 
@@ -347,23 +455,35 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
         case .needsYou: attention.count
-        case .projects: visible.count
+        case .projects: projects.count
         }
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        // Headers only when the strip splits the page in two; a plain project
-        // list under the "Projects" page title needs no second label.
-        guard sections.count > 1 else { return nil }
-        let header = tableView.dequeueReusableHeaderFooterView(
+        guard showsHeaders else { return nil }
+        guard let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: SectionCapView.reuseID
-        ) as! SectionCapView
-        header.configure(title: sections[section] == .needsYou ? "Needs You" : "Projects")
+        ) as? SectionCapView else { return nil }
+        switch sections[section] {
+        case .needsYou:
+            header.configure(title: localized("Needs You"))
+        case .projects:
+            // "Projects", never the workspace's name: the title above already
+            // says which workspace this is, and a caption repeating it is the
+            // section header the title replaced.
+            header.configure(title: localized("Projects"))
+        }
         return header
     }
 
+    /// Headers only earn their space once the strip splits the page in two —
+    /// with a single section the caption would name what the title just named.
+    private var showsHeaders: Bool {
+        sections.count > 1
+    }
+
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        sections.count > 1 ? 28 : 0
+        showsHeaders ? 28 : 0
     }
 
     /// A whitespace gap below each group — the divider-free separator,
@@ -397,8 +517,8 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         case .projects:
             cell.contentConfiguration = UIHostingConfiguration {
                 ProjectRow(
-                    project: visible[indexPath.row],
-                    showsSeparator: indexPath.row < visible.count - 1
+                    project: projects[indexPath.row],
+                    showsSeparator: indexPath.row < projects.count - 1
                 )
             }
             .margins(.horizontal, 12)
@@ -415,7 +535,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
             store.openSession(attention[indexPath.row])
         case .projects:
             navigationController?.pushViewController(
-                ProjectDetailViewController(store: store, project: visible[indexPath.row]),
+                ProjectDetailViewController(store: store, project: projects[indexPath.row]),
                 animated: true
             )
         }
@@ -426,11 +546,11 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         _ tableView: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        guard sections[indexPath.section] == .needsYou,
-              store.companionURL != nil,
+        guard case .needsYou = sections[indexPath.section],
+              store.deviceEndpoint != nil,
               let sessionID = attention[indexPath.row].rosterID
         else { return nil }
-        let close = UIContextualAction(style: .destructive, title: "Close") { [weak self] _, _, done in
+        let close = UIContextualAction(style: .destructive, title: localized("Close")) { [weak self] _, _, done in
             self?.store.stopSession(sessionID)
             done(true)
         }
@@ -445,9 +565,9 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard sections[indexPath.section] == .projects else { return nil }
-        let project = visible[indexPath.row]
-        guard store.companionURL != nil, project.rosterID != nil else { return nil }
+        guard case .projects = sections[indexPath.section] else { return nil }
+        let project = projects[indexPath.row]
+        guard store.deviceEndpoint != nil, project.rosterID != nil else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(title: project.name, children: self?.store.newSessionActions(in: project) ?? [])
         }
@@ -522,8 +642,9 @@ private struct ProjectRow: View {
 
 // MARK: - Section header
 
-/// A small gray caps label capping a group — only used when the attention
-/// strip splits the root page into two groups.
+/// A small gray caps label capping a group. Mail and Files head their groups the
+/// same way: the caption names what the rows under it are, and the rows say
+/// nothing more about where they live.
 private final class SectionCapView: UITableViewHeaderFooterView {
     static let reuseID = "sectionCap"
 
@@ -537,7 +658,7 @@ private final class SectionCapView: UITableViewHeaderFooterView {
         contentView.addSubview(label)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -22),
             label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
         ])
     }
@@ -546,5 +667,8 @@ private final class SectionCapView: UITableViewHeaderFooterView {
 
     func configure(title: String) {
         label.text = title.uppercased()
+        isAccessibilityElement = true
+        accessibilityTraits = .header
+        accessibilityLabel = title
     }
 }

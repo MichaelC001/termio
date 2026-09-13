@@ -1,0 +1,37 @@
+{
+  "id": "qwen",
+  "order": 75,
+  "name": "Qwen Code",
+  "wire": "qwen",
+  "command": "qwen",
+  "permissionBypassFlag": "--yolo",
+  "resume": {
+    "create": "--session-id {id}",
+    "resume": "--resume {id}",
+    "storeRoot": "~/.qwen/tmp",
+    "storeMatch": "file:chats/{id}.jsonl"
+  },
+  "icon": { "asset": "qwen-favicon" },
+  "install": "https://github.com/QwenLM/qwen-code",
+  "skills": { "dir": "~/.qwen/skills" },
+  "titleStatus": {
+    "working": ["^◐"],
+    "attention": ["^✳"]
+  },
+  "hooks": {
+    "type": "json",
+    "file": "~/.qwen/settings.json",
+    "dialect": "claude",
+    "capturesTranscript": true,
+    "conversation": "session_id",
+    "tool": "tool_name",
+    "promptTitle": "prompt",
+    "events": [
+      { "on": "SessionStart", "state": "idle" },
+      { "on": "UserPromptSubmit", "state": "working" },
+      { "on": "PreToolUse", "state": "working", "matcher": "*" },
+      { "on": "PostToolUse", "state": "working", "matcher": "*" },
+      { "on": "Stop", "state": "done" }
+    ]
+  }
+}

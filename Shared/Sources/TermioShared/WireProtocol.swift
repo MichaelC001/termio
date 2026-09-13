@@ -1,5 +1,52 @@
 import Foundation
 
+/// The companion wire contract's revision. One monotonically increasing
+/// integer, bumped when either end needs to make a compatibility decision — a
+/// new request, a changed meaning for an existing field, a new byte mode — not
+/// for additive fields that already have a safe default.
+///
+/// History:
+///   0: pre-versioning. No `wire` field on the wire; any peer that omits it.
+///   1: 2026-08-07: `wire` declared on `.auth` and `CompanionRoster`.
+///   2: 2026-08-22: `RosterProject` names its workspace and that workspace's
+///      device, and its `branch`/`kind` became required. A v1 peer can't read a
+///      v2 roster, so both minimums move with it: the mismatch has to say
+///      "update the other end" rather than draw an empty project list.
+public enum Wire {
+    /// A peer that predates the field entirely. Absent decodes to this.
+    public static let legacy = 0
+    /// This build's revision.
+    public static let current = 2
+    /// Oldest Mac this phone will talk to.
+    public static let minimumServer = 2
+    /// Oldest phone this Mac will serve.
+    public static let minimumClient = 2
+
+    /// The wire id of a workspace's loose section — the Terminals or Chats
+    /// container the Mac finds-or-creates rather than the user opening it.
+    ///
+    /// Derived from the workspace so it survives a relaunch, and suffixed
+    /// because one workspace has two sections. Both ends build it: the id is how
+    /// the phone names a section the Mac has not created yet, which is what lets
+    /// a `.start` seed the first chat in a workspace instead of waiting for one
+    /// to exist on the desktop first.
+    public static func looseSectionID(workspaceID: String, chats: Bool) -> String {
+        "\(workspaceID)-\(chats ? "chats" : "terminals")"
+    }
+}
+
+/// Why a connection was refused, as a token both ends agree on rather than a
+/// sentence. A refusal is the one server message a person reads and has to act
+/// on, and the Mac cannot know what language the phone is in — so the reason
+/// travels as a code and the phone words it. English prose still rides along in
+/// `message` for a phone too old to know the code.
+public enum WireRefusal {
+    /// The token was wrong, missing, or arrived too late. Re-pair.
+    public static let unauthorized = "unauthorized"
+    /// The phone speaks a `wire` older than `Wire.minimumClient`.
+    public static let clientTooOld = "client_too_old"
+}
+
 /// The companion wire protocol, shared by the Mac companion server and the iOS
 /// client so the two never drift. v1 is deliberately tiny:
 ///
@@ -16,22 +63,76 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// pairing token from the Mac's QR code. Until it lands, the server sends
     /// nothing and refuses every other message — the port may sit behind a
     /// public tunnel URL, where "connected" must not mean "trusted".
-    case auth(token: String)
+    case auth(token: String, wire: Int)
     /// The client asks to bridge a specific session's PTY (roster session id).
     /// Sent once, immediately after the socket opens; the server replays its
     /// recent output and starts streaming.
     case attach(sessionID: String)
     /// The client asks the Mac to create a session in a project — the phone's
     /// equivalent of the sidebar's new-session buttons. Answered with
-    /// `.started` (or `.error`).
-    case start(projectID: String, agent: String)
-    /// A `start` succeeded; the new session is ready to `attach`.
-    case started(sessionID: String)
+    /// `.started` (or `.error`). `agent` nil is the phone's bare "New Chat":
+    /// the Mac resolves the agent itself (pinned → last used → first enabled,
+    /// the same policy behind ⌘N) so the habit lives in exactly one place —
+    /// the phone never re-implements it. Older Macs drop an agent-less start
+    /// (their decoder required the field), which degrades to "nothing
+    /// happens", never to a wrong agent.
+    case start(projectID: String, agent: String?)
+    /// A `start` succeeded; the new session is ready to `attach`. `agent`
+    /// echoes the wire id the Mac actually launched — the client can't know
+    /// it for an agent-less start until the next roster push. nil from an
+    /// older Mac; the client falls back to the agent it asked for.
+    case started(sessionID: String, agent: String?)
+    /// The Terminals tab's ＋ → "New Terminal": open a plain login shell in the
+    /// Mac's loose `.terminals` funnel, the shell twin of the agent-less
+    /// `.start`. It carries no project because the funnel is found-or-created by
+    /// kind on the Mac (like ⌘T), so — unlike `.start` — the phone can seed the
+    /// very first terminal too. Answered with `.started` (agent `"terminal"`).
+    ///
+    /// `workspaceID` names *which* workspace's funnel, because "the funnel" is
+    /// one per workspace and the Mac would otherwise pick the workspace it
+    /// happens to be showing — a choice made by UI state on a device the phone
+    /// user cannot see. Absent means exactly that older behaviour, so an older
+    /// Mac degrades to "the Mac picks" rather than failing.
+    case startTerminal(workspaceID: String?)
+    /// The Terminals tab's ＋ → "New SSH": open a loose terminal that runs
+    /// `ssh <host>` instead of a local shell. `host` is a `~/.ssh/config` alias
+    /// (see `.sshConfigHosts`) or a bare `user@host`. Like `.startTerminal` it
+    /// gathers in the `.terminals` funnel and needs no project. Answered with
+    /// `.started`.
+    ///
+    /// `workspaceID` is the same hint as `.startTerminal`'s, and the same
+    /// optional. It is a preference, not an instruction: an `ssh` shell belongs
+    /// to a workspace on the box it reaches, so the Mac honours it only when the
+    /// named workspace is on `host`.
+    case startSSH(host: String, workspaceID: String?)
     /// The client asks the Mac to close a session (the phone's swipe-to-remove).
     /// No success reply — the next roster push drops the row everywhere.
     case stop(sessionID: String)
-    /// The client's terminal grid changed; the server resizes the PTY.
-    case resize(cols: Int, rows: Int)
+    /// The client's terminal grid changed, or it stopped showing the session.
+    ///
+    /// This is a *viewport* declaration, not a claim on the session: the Mac
+    /// forwards it as its bridge attachment's own viewport, and the daemon sizes
+    /// the session to the screen a person is in front of. The bridge is a byte
+    /// forwarder with no surface of its own — its viewport is this client's, and
+    /// this message is the only thing that gives it one.
+    ///
+    /// `rendering` is false when the client has the session open but is not
+    /// showing it (a parked screen the phone navigated away from). Omitted by
+    /// clients built before the field, which is read as showing.
+    ///
+    /// `surface` is the grid the client's surface is actually laid out at, which
+    /// is *not* the viewport whenever the client is showing a session bigger
+    /// than its screen: it lays out at the session's grid and scales, so the
+    /// bytes are parsed the way every other viewer parses them. Two facts, two
+    /// fields — a client that declared the grid it had been shrunk to could
+    /// never say it had room for more. Absent means the surface fills the
+    /// screen, which is what every client built before the field means.
+    case resize(cols: Int, rows: Int, rendering: Bool, surface: TerminalGrid?)
+    /// The PTY's actual grid and whether this client holds the write token.
+    /// Sent on attach and every time either changes, so a client that is not the
+    /// one the session is sized to can lay its surface out at the grid the bytes
+    /// are wrapped for instead of at its own window.
+    case grid(cols: Int, rows: Int, writer: Bool)
     /// The remote process exited.
     case exit(code: Int32)
     /// The client asks for one directory's entries (`path` relative to the
@@ -40,7 +141,9 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// One directory listing (server → client).
     case fileList(path: String, entries: [WireFileEntry])
     /// The client asks for a file's contents. Answered with `.file` or `.error`.
-    case readFile(projectID: String, path: String)
+    /// `dark` is the client's light/dark trait — the server bakes it into the
+    /// rendered Markdown preview (`WireFile.html`) so the page matches.
+    case readFile(projectID: String, path: String, dark: Bool)
     /// File contents (server → client).
     case file(WireFile)
     /// The client writes edited contents back. `baseMtime` is the mtime (ms)
@@ -67,16 +170,21 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// `truncated` marks that more matched than the returned batch. `query`
     /// echoes the request so a stale reply for an old keystroke is discardable.
     case searchResults(query: String, paths: [String], truncated: Bool)
+    /// The client asks for the project's working-tree changes — the phone's
+    /// Changes pane, the same `git status` the desktop git pane lists. Answered
+    /// with `.changes` (empty when the project isn't a git work tree).
+    case listChanges(projectID: String)
+    /// The working-tree changes (server → client), repo-relative and already
+    /// carrying their `+`/`−` counts so the list needs no second round trip.
+    case changes(files: [WireChange])
+    /// The client asks for one changed file's unified diff, echoing the status letter
+    /// it already holds from `.changes` — an untracked file diffs against nothing, and
+    /// re-deriving that on the Mac would mean a second `git status` walk of the repo per
+    /// tap. Answered with `.diff` or `.error`.
+    case readDiff(projectID: String, path: String, status: String)
+    /// One file's unified diff (server → client).
+    case diff(WireDiff)
     /// The server rejected a request (unknown session, no live PTY).
-    /// Phone → Mac: render this session's agent transcript as an HTML trace
-    /// (the same dashboard-over-conversation the desktop Info pane shows). The
-    /// phone passes its own light/dark trait so the returned page matches.
-    case trace(sessionID: String, dark: Bool)
-
-    /// Mac → phone: the rendered trace document for `sessionID`. The phone drops
-    /// it into a `WKWebView` overlay. Large, so it rides the 8 MB-capped socket.
-    case traceHTML(sessionID: String, html: String)
-
     /// Phone → Mac: list the hosts in the Mac's `~/.ssh/config`. The phone is
     /// sandboxed and has no `~/.ssh`, so the Mac reads it and the phone imports
     /// the results into its own SSH manager.
@@ -85,23 +193,60 @@ public enum CompanionControl: Codable, Sendable, Equatable {
     /// Mac → phone: the parsed `~/.ssh/config` host blocks.
     case sshConfigList(hosts: [WireSSHHost])
 
-    case error(message: String)
+    /// A refusal. `code` names the reason from `WireRefusal` when the phone is
+    /// expected to word it; `message` is the English the Mac would have shown
+    /// on its own, and stays the whole story for a phone too old to know the
+    /// code. Additive with a safe default, so it costs no `wire` bump.
+    case error(message: String, code: String? = nil)
+
+    /// A message this build has no case for — a newer peer's vocabulary. The
+    /// receiver ignores it, but it arrives as a value rather than as `nil` so
+    /// the drop can be logged: "the phone asked for something this Mac is too
+    /// old to do" is the failure mode `wire` exists to explain, and it is
+    /// invisible if an unknown tag decodes to nothing.
+    case unsupported(type: String)
 
     public func encoded() -> String {
         // Small, hand-stable JSON so both ends agree without a schema tool.
         switch self {
-        case .auth(let token):
-            return Self.json(["t": "auth", "token": token])
+        case .auth(let token, let wire):
+            return Self.json(["t": "auth", "token": token, "wire": wire])
         case .attach(let sessionID):
             return #"{"t":"attach","session":"\#(sessionID)"}"#
         case .start(let projectID, let agent):
-            return #"{"t":"start","project":"\#(projectID)","agent":"\#(agent)"}"#
-        case .started(let sessionID):
-            return #"{"t":"started","session":"\#(sessionID)"}"#
+            // A nil agent omits the key (not `null`) so the hand-rolled
+            // decoders on both ends keep reading plain `as? String`.
+            var fields: [String: Any] = ["t": "start", "project": projectID]
+            if let agent { fields["agent"] = agent }
+            return Self.json(fields)
+        case .started(let sessionID, let agent):
+            var fields: [String: Any] = ["t": "started", "session": sessionID]
+            if let agent { fields["agent"] = agent }
+            return Self.json(fields)
+        case .startTerminal(let workspaceID):
+            // A nil workspace omits the key, like `.start`'s agent: the older
+            // shape is still what an older Mac reads, and "absent" is already
+            // the value that means "you pick".
+            var fields: [String: Any] = ["t": "startTerminal"]
+            if let workspaceID { fields["workspace"] = workspaceID }
+            return Self.json(fields)
+        case .startSSH(let host, let workspaceID):
+            var fields: [String: Any] = ["t": "startSSH", "host": host]
+            if let workspaceID { fields["workspace"] = workspaceID }
+            return Self.json(fields)
         case .stop(let sessionID):
             return #"{"t":"stop","session":"\#(sessionID)"}"#
-        case .resize(let cols, let rows):
-            return #"{"t":"resize","cols":\#(cols),"rows":\#(rows)}"#
+        case .resize(let cols, let rows, let rendering, let surface):
+            var fields: [String: Any] = [
+                "t": "resize", "cols": cols, "rows": rows, "rendering": rendering,
+            ]
+            if let surface {
+                fields["surfaceCols"] = Int(surface.cols)
+                fields["surfaceRows"] = Int(surface.rows)
+            }
+            return Self.json(fields)
+        case .grid(let cols, let rows, let writer):
+            return #"{"t":"grid","cols":\#(cols),"rows":\#(rows),"writer":\#(writer)}"#
         case .exit(let code):
             return #"{"t":"exit","code":\#(code)}"#
         // The file messages carry arbitrary user paths, so they go through
@@ -113,14 +258,18 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 "t": "fileList", "path": path,
                 "entries": entries.map { ["name": $0.name, "dir": $0.isDir, "changed": $0.changed] },
             ])
-        case .readFile(let projectID, let path):
-            return Self.json(["t": "readFile", "project": projectID, "path": path])
+        case .readFile(let projectID, let path, let dark):
+            return Self.json(["t": "readFile", "project": projectID, "path": path, "dark": dark])
         case .file(let file):
-            return Self.json([
+            var payload: [String: Any] = [
                 "t": "file", "path": file.path, "data": file.base64,
                 "size": file.size, "binary": file.binary, "truncated": file.truncated,
                 "mtime": file.mtime,
-            ])
+            ]
+            // Only Markdown carries a rendered preview; absent otherwise so the
+            // common case stays small.
+            if let html = file.html { payload["html"] = html }
+            return Self.json(payload)
         case .writeFile(let projectID, let path, let base64, let baseMtime):
             return Self.json([
                 "t": "writeFile", "project": projectID, "path": path,
@@ -138,10 +287,27 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return Self.json([
                 "t": "searchResults", "query": query, "paths": paths, "truncated": truncated,
             ])
-        case .trace(let sessionID, let dark):
-            return Self.json(["t": "trace", "session": sessionID, "dark": dark])
-        case .traceHTML(let sessionID, let html):
-            return Self.json(["t": "traceHTML", "session": sessionID, "html": html])
+        case .listChanges(let projectID):
+            return Self.json(["t": "listChanges", "project": projectID])
+        case .changes(let files):
+            return Self.json([
+                "t": "changes",
+                "files": files.map {
+                    [
+                        "path": $0.path, "status": $0.status,
+                        "add": $0.additions, "del": $0.deletions,
+                        "binary": $0.isBinary, "staged": $0.isStaged,
+                    ]
+                },
+            ])
+        case .readDiff(let projectID, let path, let status):
+            return Self.json([
+                "t": "readDiff", "project": projectID, "path": path, "status": status,
+            ])
+        case .diff(let diff):
+            return Self.json([
+                "t": "diff", "path": diff.path, "text": diff.text, "binary": diff.binary,
+            ])
         case .sshConfigHosts:
             return #"{"t":"sshConfigHosts"}"#
         case .sshConfigList(let hosts):
@@ -151,11 +317,22 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                     ["alias": $0.alias, "hostName": $0.hostName, "user": $0.user, "port": $0.port]
                 },
             ])
-        case .error(let message):
+        case .error(let message, let code):
             let escaped = message
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
-            return #"{"t":"error","message":"\#(escaped)"}"#
+            guard let code else { return #"{"t":"error","message":"\#(escaped)"}"# }
+            let escapedCode = code
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"t":"error","message":"\#(escaped)","code":"\#(escapedCode)"}"#
+        case .unsupported(let type):
+            // The tag is carried under its own envelope rather than re-emitted
+            // as itself. Echoing the raw tag would turn a message this build
+            // could not read into one a peer *can*: forwarding an unsupported
+            // `startTerminal` would spawn a terminal. What was not understood on
+            // the way in must not become a command on the way out.
+            return Self.json(["t": "unsupported", "of": type])
         }
     }
 
@@ -167,23 +344,45 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         switch type {
         case "auth":
             guard let token = obj["token"] as? String else { return nil }
-            return .auth(token: token)
+            return .auth(token: token, wire: obj["wire"] as? Int ?? Wire.legacy)
         case "attach":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .attach(sessionID: sessionID)
         case "start":
-            guard let projectID = obj["project"] as? String,
-                  let agent = obj["agent"] as? String else { return nil }
-            return .start(projectID: projectID, agent: agent)
+            guard let projectID = obj["project"] as? String else { return nil }
+            // Missing agent = "Mac picks" — lenient, so today's phone can talk
+            // to a Mac that still always sends one.
+            return .start(projectID: projectID, agent: obj["agent"] as? String)
         case "started":
             guard let sessionID = obj["session"] as? String else { return nil }
-            return .started(sessionID: sessionID)
+            return .started(sessionID: sessionID, agent: obj["agent"] as? String)
+        case "startTerminal":
+            // Missing workspace = "the Mac picks", which is what every phone
+            // built before the field sends.
+            return .startTerminal(workspaceID: obj["workspace"] as? String)
+        case "startSSH":
+            guard let host = obj["host"] as? String else { return nil }
+            return .startSSH(host: host, workspaceID: obj["workspace"] as? String)
         case "stop":
             guard let sessionID = obj["session"] as? String else { return nil }
             return .stop(sessionID: sessionID)
         case "resize":
             guard let cols = obj["cols"] as? Int, let rows = obj["rows"] as? Int else { return nil }
-            return .resize(cols: cols, rows: rows)
+            var surface: TerminalGrid?
+            if let surfaceCols = obj["surfaceCols"] as? Int,
+               let surfaceRows = obj["surfaceRows"] as? Int {
+                surface = TerminalGrid(
+                    rows: UInt16(clamping: surfaceRows), cols: UInt16(clamping: surfaceCols))
+            }
+            // Missing = showing, which is what every phone built before the
+            // field means by sending a grid at all.
+            return .resize(
+                cols: cols, rows: rows, rendering: obj["rendering"] as? Bool ?? true,
+                surface: surface)
+        case "grid":
+            guard let cols = obj["cols"] as? Int, let rows = obj["rows"] as? Int,
+                  let writer = obj["writer"] as? Bool else { return nil }
+            return .grid(cols: cols, rows: rows, writer: writer)
         case "exit":
             let code = (obj["code"] as? Int).map(Int32.init) ?? 0
             return .exit(code: code)
@@ -206,7 +405,10 @@ public enum CompanionControl: Codable, Sendable, Equatable {
         case "readFile":
             guard let projectID = obj["project"] as? String,
                   let path = obj["path"] as? String else { return nil }
-            return .readFile(projectID: projectID, path: path)
+            return .readFile(
+                projectID: projectID, path: path,
+                dark: obj["dark"] as? Bool ?? false
+            )
         case "file":
             guard let path = obj["path"] as? String,
                   let base64 = obj["data"] as? String else { return nil }
@@ -216,7 +418,8 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 size: obj["size"] as? Int ?? 0,
                 binary: obj["binary"] as? Bool ?? false,
                 truncated: obj["truncated"] as? Bool ?? false,
-                mtime: obj["mtime"] as? Int ?? 0
+                mtime: obj["mtime"] as? Int ?? 0,
+                html: obj["html"] as? String
             ))
         case "writeFile":
             guard let projectID = obj["project"] as? String,
@@ -249,13 +452,36 @@ public enum CompanionControl: Codable, Sendable, Equatable {
                 query: query, paths: paths,
                 truncated: obj["truncated"] as? Bool ?? false
             )
-        case "trace":
-            guard let sessionID = obj["session"] as? String else { return nil }
-            return .trace(sessionID: sessionID, dark: obj["dark"] as? Bool ?? false)
-        case "traceHTML":
-            guard let sessionID = obj["session"] as? String,
-                  let html = obj["html"] as? String else { return nil }
-            return .traceHTML(sessionID: sessionID, html: html)
+        case "listChanges":
+            guard let projectID = obj["project"] as? String else { return nil }
+            return .listChanges(projectID: projectID)
+        case "changes":
+            let raw = obj["files"] as? [[String: Any]] ?? []
+            return .changes(files: raw.compactMap { entry in
+                guard let path = entry["path"] as? String else { return nil }
+                return WireChange(
+                    path: path,
+                    status: entry["status"] as? String ?? "M",
+                    additions: entry["add"] as? Int ?? 0,
+                    deletions: entry["del"] as? Int ?? 0,
+                    isBinary: entry["binary"] as? Bool ?? false,
+                    isStaged: entry["staged"] as? Bool ?? false
+                )
+            })
+        case "readDiff":
+            guard let projectID = obj["project"] as? String,
+                  let path = obj["path"] as? String else { return nil }
+            return .readDiff(
+                projectID: projectID, path: path,
+                status: obj["status"] as? String ?? "M"
+            )
+        case "diff":
+            guard let path = obj["path"] as? String,
+                  let text = obj["text"] as? String else { return nil }
+            return .diff(WireDiff(
+                path: path, text: text,
+                binary: obj["binary"] as? Bool ?? false
+            ))
         case "sshConfigHosts":
             return .sshConfigHosts
         case "sshConfigList":
@@ -272,9 +498,14 @@ public enum CompanionControl: Codable, Sendable, Equatable {
             return .sshConfigList(hosts: hosts)
         case "error":
             guard let message = obj["message"] as? String else { return nil }
-            return .error(message: message)
+            return .error(message: message, code: obj["code"] as? String)
+        case "unsupported":
+            // Only reachable from this build's own `encoded()`; a peer never
+            // originates it. Named so the envelope round-trips instead of
+            // decaying into a second layer of "unsupported".
+            return .unsupported(type: obj["of"] as? String ?? "")
         default:
-            return nil
+            return .unsupported(type: type)
         }
     }
 
@@ -297,6 +528,68 @@ public struct WireFileEntry: Codable, Sendable, Equatable {
         self.name = name
         self.isDir = isDir
         self.changed = changed
+    }
+}
+
+// MARK: - Changes (git working tree)
+
+/// One changed file in the Mac's working tree, as the phone's Changes pane shows it:
+/// the repo-relative path, git's status letter, and the line counts. Deliberately
+/// flatter than the desktop's `GitChange` — the phone lists and diffs, it never stages.
+public struct WireChange: Codable, Sendable, Equatable {
+    public let path: String
+    /// git's status letter, the desktop's own vocabulary: `M`odified, `A`dded,
+    /// `D`eleted, `R`enamed, `C`opied, `U`ntracked, `!` conflicted.
+    public let status: String
+    public let additions: Int
+    public let deletions: Int
+    /// `--numstat` reported `-` for the counts, so `+`/`−` would be a lie.
+    public let isBinary: Bool
+    /// The change sits entirely in the index — what `git commit` would take now.
+    public let isStaged: Bool
+
+    public init(
+        path: String, status: String, additions: Int, deletions: Int,
+        isBinary: Bool = false, isStaged: Bool = false
+    ) {
+        self.path = path
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.isBinary = isBinary
+        self.isStaged = isStaged
+    }
+}
+
+extension WireChange {
+    /// The one-line caption both the Changes row and the diff reader's header show:
+    /// where the file lives and what it gained and lost.
+    public var caption: String {
+        let directory = (path as NSString).deletingLastPathComponent
+        var parts: [String] = directory.isEmpty ? [] : [directory]
+        parts.append(isBinary ? "binary" : "+\(additions) −\(deletions)")
+        if isStaged { parts.append("staged") }
+        return parts.joined(separator: " · ")
+    }
+
+    public var name: String { (path as NSString).lastPathComponent }
+}
+
+/// A `readDiff` reply: one file's unified diff as text, parsed on the phone with
+/// `DiffParser`. Whether a fold can be *expanded* is read off the text itself — a diff
+/// fetched with whole-file context has every line in it, one fetched at git's default
+/// context does not — so nothing here has to describe it separately.
+public struct WireDiff: Codable, Sendable, Equatable {
+    public let path: String
+    public let text: String
+    /// Binary content: `text` is empty and the reader says so rather than
+    /// rendering git's "Binary files differ" line as if it were code.
+    public let binary: Bool
+
+    public init(path: String, text: String, binary: Bool = false) {
+        self.path = path
+        self.text = text
+        self.binary = binary
     }
 }
 
@@ -329,14 +622,23 @@ public struct WireFile: Codable, Sendable, Equatable {
     /// mtime in milliseconds — the base for conflict-checked writes.
     /// 0 when the serving peer predates the write plane.
     public let mtime: Int
+    /// A self-contained rendered preview document, only for Markdown files —
+    /// the Mac renders with the same reader pipeline as its own Preview pane
+    /// and the phone drops it into a `WKWebView`. nil for
+    /// every other file, and when the serving peer predates the field.
+    public let html: String?
 
-    public init(path: String, base64: String, size: Int, binary: Bool, truncated: Bool, mtime: Int = 0) {
+    public init(
+        path: String, base64: String, size: Int, binary: Bool, truncated: Bool,
+        mtime: Int = 0, html: String? = nil
+    ) {
         self.path = path
         self.base64 = base64
         self.size = size
         self.binary = binary
         self.truncated = truncated
         self.mtime = mtime
+        self.html = html
     }
 
     public var data: Data? { Data(base64Encoded: base64) }
@@ -344,9 +646,9 @@ public struct WireFile: Codable, Sendable, Equatable {
 
 // MARK: - Roster (server → client)
 
-/// One session as it appears in the phone's tree. `agent` and `status` are the
-/// raw values of `AgentKind` / `SessionStatus` so the wire stays string-stable
-/// and decoupled from either app's internal enums.
+/// One session as it appears in the phone's tree. `agent` is the stable id into
+/// the roster catalog and `status` is a string token, keeping both apps decoupled
+/// from internal runtime types.
 public struct RosterSession: Codable, Sendable, Equatable {
     public let id: String
     public let title: String
@@ -357,45 +659,136 @@ public struct RosterSession: Codable, Sendable, Equatable {
     /// shows it as the row's preview line, Messages-style. Optional so older
     /// peers that don't send it still decode; nil when there is nothing to say.
     public let subtitle: String?
+    /// The branch of the linked worktree checkout this session runs in — nil
+    /// for sessions in the project's main checkout, so the phone can label
+    /// only the rows that live somewhere other than the project's own branch.
+    public let branch: String?
 
-    public init(id: String, title: String, agent: String, status: String, subtitle: String? = nil) {
+    public init(
+        id: String, title: String, agent: String, status: String,
+        subtitle: String? = nil, branch: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.agent = agent
         self.status = status
         self.subtitle = subtitle
+        self.branch = branch
     }
 }
 
 /// One project and its sessions.
+/// Decodes an array element by element, dropping the ones that fail.
+///
+/// `decodeIfPresent` only tolerates a *missing* key: a key that is present but
+/// whose contents don't match throws, and the throw travels all the way up. On
+/// the roster that turns one unreadable session into an empty tree — the phone
+/// shows nothing at all rather than one row less. A peer is only as forward-
+/// compatible as its least tolerant array.
+///
+/// A failed `decode` leaves the container's cursor where it was, so the slot has
+/// to be consumed by decoding something that always succeeds; without that the
+/// loop never reaches `isAtEnd`.
+private struct SkippedWireElement: Decodable {}
+
+private func decodeLossyArray<Element: Decodable, Key: CodingKey>(
+    _ container: KeyedDecodingContainer<Key>,
+    _ key: Key
+) -> [Element] {
+    typealias Skipped = SkippedWireElement
+    guard var unkeyed = try? container.nestedUnkeyedContainer(forKey: key) else { return [] }
+    var elements: [Element] = []
+    while !unkeyed.isAtEnd {
+        if let element = try? unkeyed.decode(Element.self) {
+            elements.append(element)
+        } else if (try? unkeyed.decode(Skipped.self)) == nil {
+            // Nothing consumed the slot, so the cursor can't advance — stop
+            // rather than spin.
+            break
+        }
+    }
+    return elements
+}
+
+/// One container of sessions as the phone lists it — a project checkout, or a
+/// workspace's loose Terminals or Chats section.
+///
+/// Every container names the workspace it is filed under and the machine that
+/// workspace belongs to, because the Mac's tree is Device → Workspace → Project
+/// → Session and a flat list drops the middle two: a checkout on a Linux VPS and
+/// one on the Mac arrive looking identical. `workspaceID` groups them and
+/// `deviceAlias` says which box the group is on.
 public struct RosterProject: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
     public let path: String
-    /// Current git branch of the checkout, nil for non-repos. Optional so
-    /// older peers that don't send it still decode.
-    public let branch: String?
+    /// The workspace this container is filed under, by the Mac's stable id, so
+    /// the phone groups its list the way the sidebar's scope does.
+    public let workspaceID: String
+    /// That workspace's name, as the Mac's switcher shows it.
+    public let workspaceName: String
+    /// The `~/.ssh/config` alias of the machine the workspace belongs to, and
+    /// nil for the Mac that is serving this roster. One claim, matching
+    /// `Workspace.deviceAlias`: which machine, never "did the user name it".
+    public let deviceAlias: String?
+    /// Current git branch of the checkout, empty for non-repos and for the
+    /// loose sections.
+    public let branch: String
+    /// What this container *is* on the Mac — `ProjectKind` on the wire:
+    /// "folder" (a real project), "terminals" (loose shells), "chats" (loose
+    /// agent sessions).
+    public let kind: String
     public let sessions: [RosterSession]
 
-    public init(id: String, name: String, path: String, branch: String? = nil, sessions: [RosterSession]) {
+    public init(
+        id: String, name: String, path: String,
+        workspaceID: String, workspaceName: String, deviceAlias: String? = nil,
+        branch: String = "", kind: String, sessions: [RosterSession]
+    ) {
         self.id = id
         self.name = name
         self.path = path
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.deviceAlias = deviceAlias
         self.branch = branch
+        self.kind = kind
         self.sessions = sessions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, path, workspaceID, workspaceName, deviceAlias, branch, kind, sessions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decode(String.self, forKey: .path)
+        workspaceID = try c.decode(String.self, forKey: .workspaceID)
+        workspaceName = try c.decode(String.self, forKey: .workspaceName)
+        deviceAlias = try c.decodeIfPresent(String.self, forKey: .deviceAlias)
+        branch = try c.decode(String.self, forKey: .branch)
+        kind = try c.decode(String.self, forKey: .kind)
+        sessions = decodeLossyArray(c, CodingKeys.sessions)
     }
 }
 
 /// One agent the phone may start a new session with — mirrors an entry the user
 /// has left enabled in the Mac's Settings ▸ Agents page. `id` is the wire string
-/// echoed back in a `start` request; `name` is the menu label.
+/// echoed back in a `start` request; `name` is the menu label. Visual metadata is
+/// optional so old clients ignore it and new clients still decode an older Mac.
 public struct RosterAgent: Codable, Sendable, Equatable {
     public let id: String
     public let name: String
+    public let tintHex: String?
+    public let icon: IconRef?
 
-    public init(id: String, name: String) {
+    public init(id: String, name: String, tintHex: String? = nil, icon: IconRef? = nil) {
         self.id = id
         self.name = name
+        self.tintHex = tintHex
+        self.icon = icon
     }
 }
 
@@ -405,6 +798,15 @@ public struct RosterAgent: Codable, Sendable, Equatable {
 /// `"roster"` so it coexists with the small `CompanionControl` messages.
 public struct CompanionRoster: Codable, Sendable, Equatable {
     public let t: String
+    public let wire: Int
+    /// The serving Mac's stable identity — a UUID minted once and persisted on
+    /// the Mac — so the phone can keep several Macs paired and key them by
+    /// something that survives tunnel restarts and DHCP renumbering (the URL
+    /// does neither). nil from an older Mac that predates multi-Mac pairing.
+    public let macID: String?
+    /// The Mac's user-facing computer name ("Jiwei's MacBook Pro"), for the
+    /// phone's paired-Mac list. nil from an older Mac.
+    public let macName: String?
     public let projects: [RosterProject]
     /// The agents the Mac has enabled in Settings ▸ Agents, in preset order —
     /// the phone's new-session menu mirrors this instead of a fixed list. Empty
@@ -412,19 +814,28 @@ public struct CompanionRoster: Codable, Sendable, Equatable {
     /// falls back to its built-in defaults).
     public let agents: [RosterAgent]
 
-    public init(projects: [RosterProject], agents: [RosterAgent] = []) {
+    public init(
+        projects: [RosterProject], agents: [RosterAgent] = [], wire: Int = Wire.current,
+        macID: String? = nil, macName: String? = nil
+    ) {
         t = "roster"
+        self.wire = wire
+        self.macID = macID
+        self.macName = macName
         self.projects = projects
         self.agents = agents
     }
 
-    private enum CodingKeys: String, CodingKey { case t, projects, agents }
+    private enum CodingKeys: String, CodingKey { case t, wire, macID, macName, projects, agents }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         t = try c.decode(String.self, forKey: .t)
-        projects = try c.decodeIfPresent([RosterProject].self, forKey: .projects) ?? []
-        agents = try c.decodeIfPresent([RosterAgent].self, forKey: .agents) ?? []
+        wire = try c.decodeIfPresent(Int.self, forKey: .wire) ?? Wire.legacy
+        macID = try c.decodeIfPresent(String.self, forKey: .macID)
+        macName = try c.decodeIfPresent(String.self, forKey: .macName)
+        projects = decodeLossyArray(c, CodingKeys.projects)
+        agents = decodeLossyArray(c, CodingKeys.agents)
     }
 
     public func encodedJSON() -> String {

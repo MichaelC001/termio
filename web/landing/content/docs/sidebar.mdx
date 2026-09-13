@@ -1,0 +1,92 @@
+---
+title: The sidebar
+description: The sidebar is Termio’s control surface — one workspace at a time, with Terminals, Chats, and Projects grouped in one list and every session reporting a live status.
+---
+
+Everything you run in Termio lives in the sidebar on the left. It’s one scrollable
+list, grouped into sections, where every row is a live session reporting what it’s
+doing right now. Click a row to bring it forward; the rest keep running in the
+background.
+
+## One workspace at a time
+
+The sidebar is scoped to a workspace: the switcher in its toolbar names the one
+you’re in, and the list below holds only what’s filed under it. Switch with `⌘1`
+through `⌘9`, from the switcher, or from `File ▸ Workspace`. Each workspace comes
+back to the session you left it on, with its panes and its inspector tab.
+
+A workspace belongs to one machine, so switching workspaces is also how you move
+between machines — the switcher names the machine beside any workspace whose own
+name doesn’t already say it. See [Workspaces](/docs/workspaces) and
+[Devices](/docs/devices).
+
+## Sections
+
+The sidebar groups your sessions by what they are:
+
+- **Terminals** — standalone shells and agents you start with `⌘T`, not tied to a
+  project. Your scratchpad.
+- **Chats** — throwaway agent sessions for quick questions (see below).
+- **Projects** — the folders you’ve opened. Each project expands to the sessions
+  running inside it, and any git worktrees nest one level deeper. The tree is
+  three levels: project → worktree → session. See [Git
+  worktrees](/docs/worktrees).
+
+Empty sections stay hidden, so the list only shows what you’re actually using.
+
+Sessions the machine is hosting that Termio didn’t start — one you began over
+plain `ssh`, or launched with `termiod` on the box — appear in the list
+automatically as ordinary sessions, filed into the project whose folder they run
+in, or under **Terminals** otherwise. There is no separate section to learn: a
+session is a session, wherever it came from. If a machine can’t be reached, the
+device switcher says so in `ssh`’s own words rather than going quiet.
+
+<DocsImage
+  src="/screenshots/docs/04-project-session-hierarchy.png"
+  alt="The Termio sidebar showing Terminals, Chats, projects, worktrees, and their nested sessions"
+  width={2424}
+  height={1664}
+/>
+
+## Status
+
+Every session row carries a status dot that updates live. There are four states:
+
+| Status | Meaning |
+| --- | --- |
+| **working** | The agent is actively producing output. |
+| **idle** | Nothing pending, or you’re already looking at it. |
+| **done** | Finished a task while you were on another session — a calm “ready” cue, so you notice a completed run without it shouting for attention. |
+| **needs you** | Blocked on a question or a permission prompt. Go back. |
+
+The distinction between **needs you** and **done** is the point: *needs you* means
+an agent is stuck and can’t proceed without you; *done* means it finished on its
+own and is just letting you know. [Concepts](/docs/concepts#status) covers the
+model and where each signal comes from.
+
+<Callout type="tip">
+  Start a long run, switch away, and let the status dots do the watching. When a
+  row flips to **needs you** you know to jump back; when it flips to **done** the
+  work landed while you were elsewhere.
+</Callout>
+
+## Chats
+
+The **Chats** section holds scratch agent sessions — for when you want to ask an
+agent something without opening a project. Press `⌘N` for a **New Chat** and it
+starts in a shared scratch directory (`~/.termio/chats`), never in whatever folder
+you happen to be in. Close them individually, or clear the lot from the section’s
+menu. Treat them as disposable: quick questions, throwaway experiments, nothing
+you need to keep.
+
+## Switching without losing your place
+
+Because each session is a real process running on its machine, an agent doesn’t
+pause when it’s off-screen — or when you switch workspaces, or close the window.
+Click between rows freely, or — once you have more than a handful — jump straight
+to any session by name with `⇧⌘O`. See [Navigation](/docs/navigation).
+
+Rows move by drag. Dropping one in the middle of another groups the two sessions
+into one split; dropping on a row’s top or bottom edge reorders it into that gap.
+A line means *between these*, a lifted row means *into this one*. Dragging a row
+onto a pane groups it in there instead.

@@ -1,0 +1,28 @@
+{
+  "title": "Docs",
+  "pages": [
+    "---Getting Started---",
+    "index",
+    "installation",
+    "first-session",
+    "concepts",
+    "---Interface---",
+    "sidebar",
+    "navigation",
+    "inspector",
+    "---Your machines---",
+    "devices",
+    "workspaces",
+    "---Agents---",
+    "agents",
+    "custom-agents",
+    "atp",
+    "worktrees",
+    "session-control",
+    "---Customize---",
+    "appearance",
+    "keyboard",
+    "---Your iPhone---",
+    "iphone"
+  ]
+}

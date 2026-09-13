@@ -1,0 +1,13 @@
+{
+  "id": "configHomeNested",
+  "name": "Config Home Nested",
+  "configHome": { "env": "NESTED_AGENT_DIR", "path": "~/.nested/agent" },
+  "skills": { "dir": "~/.nested/agent/skills" },
+  "hooks": {
+    "type": "plugin",
+    "dir": "~/.nested/agent/extensions",
+    "dialect": "pi",
+    "conversation": "context",
+    "events": [{ "on": "agent_start", "state": "working" }]
+  }
+}

@@ -6,6 +6,8 @@ DerivedData/
 termio.app/
 termio-dev.app/
 .claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Local state from the omo agent tool (run-continuation cache); not project source.
 .omo/
@@ -22,12 +24,22 @@ sandbox-helper/.build/
 # Vercel project link (local credentials/metadata)
 .vercel/
 
-# SwiftPM build artifacts inside the companion package
-companion/.build/
-
 # xcodebuild derived data for the iOS dev-run script
 ios/build/
 ios/build-sim/
 
 # Per-project termio session state
 /.termio/
+
+# Python bytecode caches left by the repo's own scripts (download stats, icon
+# generation, the termiod smoke tests and bench).
+__pycache__/
+
+# LaTeX build intermediates (talk decks under docs/talks/)
+*.aux
+*.nav
+*.snm
+*.toc
+*.vrb
+docs/talks/**/*.log
+docs/talks/**/*.out
