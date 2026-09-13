@@ -14,7 +14,10 @@
 use crate::id::SessionId;
 use crate::protocol::{DirEntry, EntryKind, PathListing};
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Entries per `fs.list` page (§C.12: "pages capped (~2,000 entries)").
 pub const LIST_PAGE_SIZE: usize = 2000;
@@ -290,14 +293,11 @@ fn read_with_cap(
     })
 }
 
-/// The lazy, paths-only name index behind `fs.match` (§C.12). Built at idle
-/// priority after a workspace's first subscribe, kept incremental by the
-/// watcher's batches, evicted with the watch. It is a cache of names, never
-/// correctness-bearing — `coverage` tells the client how much of the tree it
-/// has seen so "still indexing" is honest instead of silently incomplete.
+/// Partial coverage lets the picker answer before a budgeted scan finishes.
+/// Cached names outlive queries without keeping a retired watch alive.
 pub struct NameIndex {
     root: PathBuf,
-    inner: std::sync::Mutex<IndexInner>,
+    inner: Mutex<IndexInner>,
 }
 
 #[derive(Default)]
@@ -315,84 +315,37 @@ impl NameIndex {
     pub fn new(root: PathBuf) -> NameIndex {
         NameIndex {
             root,
-            inner: std::sync::Mutex::new(IndexInner::default()),
+            inner: Mutex::new(IndexInner::default()),
         }
     }
 
-    /// Walk the tree breadth-first, yielding between directories so the build
-    /// stays idle-priority work. Skips symlinks (external escape) and the
-    /// watcher's ignored dirs — the "never walk them" invariant.
-    pub async fn build(&self) {
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.dirs.clear();
-            inner.walked_dirs = 0;
-            inner.pending_dirs = 1;
-            inner.complete = false;
-        }
-        let mut frontier = std::collections::VecDeque::from([self.root.clone()]);
-        while let Some(dir) = frontier.pop_front() {
-            let (files, subdirs) = list_index_dir(&dir);
-            {
-                let mut inner = self.inner.lock().unwrap();
-                inner.dirs.insert(dir, files);
-                inner.walked_dirs += 1;
-                inner.pending_dirs = inner.pending_dirs.saturating_sub(1) + subdirs.len();
-            }
-            frontier.extend(subdirs);
-            tokio::task::yield_now().await;
-        }
-        self.inner.lock().unwrap().complete = true;
+    #[cfg(test)]
+    async fn build(self: &Arc<Self>) {
+        self.scan_for_test(IndexChanges {
+            full_rescan: true,
+            ..Default::default()
+        })
+        .await;
     }
 
-    /// Apply one watcher batch: re-list exactly the named directories and
-    /// prune index entries beneath any that vanished. `full_rescan`
-    /// invalidates everything; the caller rebuilds instead. All IO happens
-    /// outside the lock so `fs.match` never waits on the filesystem.
-    pub fn apply(&self, changed_dirs: &[String]) {
-        for changed in changed_dirs {
-            let dir = PathBuf::from(changed);
-            if !dir.starts_with(&self.root) {
-                continue;
+    #[cfg(test)]
+    async fn apply(self: &Arc<Self>, changed_dirs: &[String]) {
+        self.scan_for_test(IndexChanges {
+            directories: changed_dirs.iter().map(PathBuf::from).collect(),
+            ..Default::default()
+        })
+        .await;
+    }
+
+    #[cfg(test)]
+    async fn scan_for_test(self: &Arc<Self>, changes: IndexChanges) {
+        let mut scan = IndexScan::new(self.clone(), changes, false);
+        loop {
+            let (next, complete) = scan.next_batch().await.expect("index batch");
+            if complete {
+                break;
             }
-            if dir
-                .file_name()
-                .is_some_and(|name| is_unloaded_dir_name(&name.to_string_lossy()))
-            {
-                continue;
-            }
-            if dir.is_dir() {
-                let (files, subdirs) = list_index_dir(&dir);
-                // A freshly created subtree names only the dirs that received
-                // entries; unseen children get one level here and name their
-                // own children in the batches their contents raised.
-                let unseen: Vec<PathBuf> = {
-                    let inner = self.inner.lock().unwrap();
-                    subdirs
-                        .into_iter()
-                        .filter(|subdir| !inner.dirs.contains_key(subdir))
-                        .collect()
-                };
-                let listed: Vec<(PathBuf, Vec<String>)> = unseen
-                    .into_iter()
-                    .map(|subdir| {
-                        let (files, _) = list_index_dir(&subdir);
-                        (subdir, files)
-                    })
-                    .collect();
-                let mut inner = self.inner.lock().unwrap();
-                inner.dirs.insert(dir.clone(), files);
-                for (subdir, files) in listed {
-                    inner.dirs.insert(subdir, files);
-                }
-            } else {
-                // The dir is gone; everything indexed beneath it is stale.
-                self.inner
-                    .lock()
-                    .unwrap()
-                    .dirs
-                    .retain(|indexed, _| !indexed.starts_with(&dir));
-            }
+            scan = next;
         }
     }
 
@@ -480,57 +433,310 @@ impl NameIndex {
     }
 }
 
-/// Bind a name index to a workspace watch: build lazily at idle priority,
-/// then apply the watcher's batches as they arrive. The watch owns the
-/// sender; when the watch retires, the task ends and the index memory goes
-/// with it — evictable by construction.
+// A per-root limit would multiply the allowance by the number of open repos.
+static INDEX_BUDGET: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+const INDEX_BATCH_TIME: Duration = Duration::from_millis(5);
+const INDEX_BATCH_PAUSE: Duration = Duration::from_millis(45);
+const INDEX_BATCH_ENTRIES: usize = 128;
+
+#[derive(Default)]
+struct IndexChanges {
+    full_rescan: bool,
+    directories: HashSet<PathBuf>,
+    coalesced: usize,
+}
+
+impl IndexChanges {
+    fn absorb(&mut self, batch: crate::resource::FsBatch) {
+        if batch.full_rescan {
+            self.coalesced += usize::from(self.full_rescan) + self.directories.len();
+            self.full_rescan = true;
+            self.directories.clear();
+        }
+        for path in batch.paths {
+            if self.full_rescan || !self.directories.insert(PathBuf::from(path)) {
+                self.coalesced += 1;
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.full_rescan && self.directories.is_empty()
+    }
+}
+
+struct IndexDirectory {
+    path: PathBuf,
+    entries: std::fs::ReadDir,
+    files: Vec<String>,
+    descend: bool,
+}
+
+struct IndexScan {
+    index: Arc<NameIndex>,
+    frontier: VecDeque<(PathBuf, bool)>,
+    directory: Option<IndexDirectory>,
+    full_rescan: bool,
+    initialized: bool,
+    finished: bool,
+    reason: &'static str,
+    started: Instant,
+    visited: usize,
+    coalesced: usize,
+}
+
+impl IndexScan {
+    fn new(index: Arc<NameIndex>, changes: IndexChanges, initial: bool) -> Self {
+        let frontier = if changes.full_rescan {
+            VecDeque::from([(index.root.clone(), true)])
+        } else {
+            changes
+                .directories
+                .into_iter()
+                .map(|path| (path, true))
+                .collect()
+        };
+        Self {
+            index,
+            frontier,
+            directory: None,
+            full_rescan: changes.full_rescan,
+            initialized: false,
+            finished: false,
+            reason: if initial {
+                "initial"
+            } else if changes.full_rescan {
+                "full_rescan"
+            } else {
+                "incremental"
+            },
+            started: Instant::now(),
+            visited: 0,
+            coalesced: changes.coalesced,
+        }
+    }
+
+    async fn next_batch(self) -> Result<(Self, bool)> {
+        let permit = INDEX_BUDGET
+            .acquire()
+            .await
+            .context("acquiring index budget")?;
+        tokio::task::spawn_blocking(move || {
+            // Keep the permit in the blocking task: retiring a watch can drop
+            // its future while this batch is still using the filesystem.
+            let _permit = permit;
+            let mut scan = self;
+            let complete = scan.step(INDEX_BATCH_TIME, INDEX_BATCH_ENTRIES);
+            std::thread::sleep(INDEX_BATCH_PAUSE);
+            (scan, complete)
+        })
+        .await
+        .context("running index batch")
+    }
+
+    fn step(&mut self, time: Duration, limit: usize) -> bool {
+        let started = Instant::now();
+        if !self.initialized {
+            self.initialized = true;
+            if self.full_rescan {
+                let mut inner = self.index.inner.lock().unwrap();
+                *inner = IndexInner {
+                    pending_dirs: 1,
+                    ..Default::default()
+                };
+            }
+        }
+        let mut operations = 0;
+        while operations < limit && started.elapsed() < time {
+            operations += 1;
+            if self.directory.is_none() {
+                let Some((path, descend)) = self.frontier.pop_front() else {
+                    if self.full_rescan {
+                        self.index.inner.lock().unwrap().complete = true;
+                    }
+                    self.finished = true;
+                    self.report("complete");
+                    return true;
+                };
+                if !path.starts_with(&self.index.root)
+                    || path
+                        .file_name()
+                        .is_some_and(|name| is_unloaded_dir_name(&name.to_string_lossy()))
+                {
+                    continue;
+                }
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        self.directory = Some(IndexDirectory {
+                            path,
+                            entries,
+                            files: Vec::new(),
+                            descend,
+                        })
+                    }
+                    Err(error) => {
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                        ) {
+                            self.index
+                                .inner
+                                .lock()
+                                .unwrap()
+                                .dirs
+                                .retain(|indexed, _| !indexed.starts_with(&path));
+                        } else {
+                            eprintln!("termiod: index cannot list {}: {error}", path.display());
+                        }
+                        self.update_coverage();
+                    }
+                }
+                continue;
+            }
+            let Some(directory) = self.directory.as_mut() else {
+                continue;
+            };
+            match directory.entries.next() {
+                Some(Ok(entry)) => {
+                    self.visited += 1;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let metadata = match std::fs::symlink_metadata(entry.path()) {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                eprintln!(
+                                    "termiod: index cannot stat {}: {error}",
+                                    entry.path().display()
+                                );
+                            }
+                            continue;
+                        }
+                    };
+                    if metadata.is_dir() && directory.descend && !is_unloaded_dir_name(&name) {
+                        let path = entry.path();
+                        // Known children have their own watcher events; a
+                        // parent update must not rewalk those subtrees too.
+                        if self.full_rescan
+                            || !self.index.inner.lock().unwrap().dirs.contains_key(&path)
+                        {
+                            self.frontier.push_back((path, self.full_rescan));
+                        }
+                    } else if metadata.is_file() {
+                        directory.files.push(name);
+                    }
+                }
+                Some(Err(error)) => {
+                    self.visited += 1;
+                    eprintln!(
+                        "termiod: index cannot read entry in {}: {error}",
+                        directory.path.display()
+                    );
+                }
+                None => {
+                    if let Some(directory) = self.directory.take() {
+                        self.index
+                            .inner
+                            .lock()
+                            .unwrap()
+                            .dirs
+                            .insert(directory.path, directory.files);
+                    }
+                    self.update_coverage();
+                }
+            }
+        }
+        false
+    }
+
+    fn update_coverage(&self) {
+        if self.full_rescan {
+            let mut inner = self.index.inner.lock().unwrap();
+            inner.walked_dirs += 1;
+            inner.pending_dirs = self.frontier.len();
+        }
+    }
+
+    fn report(&self, outcome: &str) {
+        eprintln!("termiod: index root={} reason={} outcome={outcome} entries={} elapsed_ms={} coalesced={}",
+            self.index.root.display(), self.reason, self.visited,
+            self.started.elapsed().as_millis(), self.coalesced);
+    }
+}
+
+impl Drop for IndexScan {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.report("cancelled");
+        }
+    }
+}
+
+/// Closing the watch's channel must interrupt scans as well as idle waits,
+/// or a retired workspace could keep traversing the rest of its tree.
 pub fn spawn_index(
     root: PathBuf,
 ) -> (
-    std::sync::Arc<NameIndex>,
+    Arc<NameIndex>,
     tokio::sync::mpsc::UnboundedSender<crate::resource::FsBatch>,
 ) {
-    let index = std::sync::Arc::new(NameIndex::new(root));
+    let index = Arc::new(NameIndex::new(root));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::resource::FsBatch>();
     let worker = index.clone();
     tokio::spawn(async move {
-        worker.build().await;
-        while let Some(batch) = rx.recv().await {
-            if batch.full_rescan {
-                worker.build().await;
-            } else if !batch.paths.is_empty() {
-                let apply_on = worker.clone();
-                let _ =
-                    tokio::task::spawn_blocking(move || apply_on.apply(&batch.paths)).await;
+        let mut pending = IndexChanges {
+            full_rescan: true,
+            ..Default::default()
+        };
+        let mut initial = true;
+        loop {
+            while pending.is_empty() {
+                let Some(batch) = rx.recv().await else { return };
+                pending.absorb(batch);
+            }
+            while let Ok(batch) = rx.try_recv() {
+                pending.absorb(batch);
+            }
+            if rx.is_closed() {
+                return;
+            }
+            let mut scan = IndexScan::new(worker.clone(), std::mem::take(&mut pending), initial);
+            initial = false;
+            loop {
+                // Changes received after this scan began belong to the next
+                // pass, even if the current pass has already visited that dir.
+                let batch = scan.next_batch();
+                tokio::pin!(batch);
+                let result = loop {
+                    tokio::select! {
+                        update = rx.recv() => match update {
+                            Some(update) => pending.absorb(update),
+                            None => return,
+                        },
+                        result = &mut batch => break result,
+                    }
+                };
+                match result {
+                    Ok((next, complete)) => {
+                        if rx.is_closed() {
+                            return;
+                        }
+                        if complete {
+                            break;
+                        }
+                        scan = next;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "termiod: index failed for {}: {error:#}",
+                            worker.root.display()
+                        );
+                        return;
+                    }
+                }
             }
         }
     });
     (index, tx)
-}
-
-fn list_index_dir(dir: &Path) -> (Vec<String>, Vec<PathBuf>) {
-    let mut files = Vec::new();
-    let mut subdirs = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (files, subdirs);
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_dir() {
-            if !is_unloaded_dir_name(&name) {
-                subdirs.push(entry.path());
-            }
-        } else if metadata.is_file() {
-            files.push(name);
-        }
-    }
-    (files, subdirs)
 }
 
 /// Filename fuzzy score: higher is better, `None` is no match. Substring
@@ -2257,7 +2463,7 @@ mod tests {
         std::fs::create_dir_all(root.join("deeply/nested")).unwrap();
         touch(&root.join("deeply/nested/main.rs"), b"");
 
-        let index = NameIndex::new(root.clone());
+        let index = Arc::new(NameIndex::new(root.clone()));
         index.build().await;
 
         // "main" hits three files: two by basename, one only by its directory.
@@ -2291,7 +2497,7 @@ mod tests {
         touch(&root.join("src/deep/hidden.rs"), b"");
         std::os::unix::fs::symlink("/", root.join("outside")).unwrap();
 
-        let index = NameIndex::new(root.clone());
+        let index = Arc::new(NameIndex::new(root.clone()));
         index.build().await;
         assert_eq!(index.coverage(), 1.0);
         let (paths, coverage) = index.matches("rs", 10);
@@ -2305,29 +2511,224 @@ mod tests {
 
         // The watcher names a dir; the index re-lists just that dir.
         touch(&root.join("src/fresh.rs"), b"");
-        index.apply(&[root.join("src").display().to_string()]);
+        index.apply(&[root.join("src").display().to_string()]).await;
         let (paths, _) = index.matches("fresh", 10);
         assert_eq!(paths, vec!["src/fresh.rs"]);
 
         // A dir that vanished takes its subtree out of the index.
         std::fs::remove_dir_all(root.join("src/deep")).unwrap();
-        index.apply(&[root.join("src/deep").display().to_string()]);
+        index
+            .apply(&[root.join("src/deep").display().to_string()])
+            .await;
         let (paths, _) = index.matches("hidden", 10);
         assert!(paths.is_empty(), "stale entries must be pruned");
 
         // A subtree created in one batch is picked up via its parent.
         std::fs::create_dir_all(root.join("newdir")).unwrap();
         touch(&root.join("newdir/inside.txt"), b"");
-        index.apply(&[
-            root.display().to_string(),
-            root.join("newdir").display().to_string(),
-        ]);
+        index
+            .apply(&[
+                root.display().to_string(),
+                root.join("newdir").display().to_string(),
+            ])
+            .await;
         let (paths, _) = index.matches("inside", 10);
         assert_eq!(paths, vec!["newdir/inside.txt"]);
 
         let (limited, _) = index.matches("rs", 1);
         assert_eq!(limited.len(), 1, "limit caps the reply");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn index_batches_yield_inside_a_large_directory() {
+        let root = scratch("index-batches");
+        for number in 0..300 {
+            touch(&root.join(format!("{number}.txt")), b"");
+        }
+        let index = Arc::new(NameIndex::new(root.clone()));
+        let mut scan = IndexScan::new(
+            index.clone(),
+            IndexChanges {
+                full_rescan: true,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(!scan.step(Duration::ZERO, 128));
+        assert_eq!(
+            scan.visited, 0,
+            "an exhausted time budget does no traversal"
+        );
+        assert!(!scan.step(Duration::from_secs(60), 17));
+        assert!(
+            scan.directory.is_some(),
+            "the open directory survives a yield"
+        );
+        assert!(scan.visited > 0 && scan.visited <= 17);
+        while !scan.step(Duration::from_secs(60), 17) {}
+        assert_eq!(scan.visited, 300);
+        assert_eq!(index.matches("", 1000).0.len(), 300);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn index_changes_coalesce_without_losing_later_invalidations() {
+        let mut pending = IndexChanges::default();
+        for _ in 0..3 {
+            pending.absorb(crate::resource::FsBatch {
+                paths: vec!["/repo/src".into(), "/repo/tests".into()],
+                ..Default::default()
+            });
+        }
+        assert_eq!(pending.directories.len(), 2);
+        assert_eq!(pending.coalesced, 4);
+        for _ in 0..3 {
+            pending.absorb(crate::resource::FsBatch {
+                full_rescan: true,
+                ..Default::default()
+            });
+        }
+        assert!(pending.full_rescan);
+        assert!(pending.directories.is_empty());
+        assert_eq!(pending.coalesced, 8);
+
+        let running = std::mem::take(&mut pending);
+        pending.absorb(crate::resource::FsBatch {
+            paths: vec!["/repo/src".into()],
+            ..Default::default()
+        });
+        assert!(running.full_rescan);
+        assert!(
+            !pending.is_empty(),
+            "changes after the scan starts need another pass"
+        );
+        assert!(!pending.full_rescan);
+        assert_eq!(pending.directories.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn index_roots_share_the_work_and_pause_budget() {
+        let first = scratch("index-budget-first");
+        let second = scratch("index-budget-second");
+        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let first_index = Arc::new(NameIndex::new(first.clone()));
+        let second_index = Arc::new(NameIndex::new(second.clone()));
+        let first_scan = IndexScan::new(
+            first_index.clone(),
+            IndexChanges {
+                full_rescan: true,
+                ..Default::default()
+            },
+            true,
+        );
+        let second_scan = IndexScan::new(
+            second_index.clone(),
+            IndexChanges {
+                full_rescan: true,
+                ..Default::default()
+            },
+            true,
+        );
+        let first_task = tokio::spawn(first_scan.next_batch());
+        let second_task = tokio::spawn(second_scan.next_batch());
+        tokio::task::yield_now().await;
+        assert!(!first_index.inner.lock().unwrap().complete);
+        assert!(!second_index.inner.lock().unwrap().complete);
+        let started = Instant::now();
+        drop(permit);
+        let (_, first_done) = first_task.await.unwrap().unwrap();
+        let (_, second_done) = second_task.await.unwrap().unwrap();
+        assert!(first_done && second_done);
+        assert!(
+            started.elapsed() >= INDEX_BATCH_PAUSE * 2,
+            "two roots cannot spend the same pause in parallel"
+        );
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
+    }
+
+    async fn wait_for_index(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("index made progress");
+    }
+
+    #[tokio::test]
+    async fn index_preserves_changes_to_a_directory_already_scanned() {
+        let root = scratch("index-mid-scan");
+        std::fs::create_dir(root.join("large")).unwrap();
+        touch(&root.join("old.txt"), b"");
+        for number in 0..600 {
+            touch(&root.join("large").join(format!("{number}.txt")), b"");
+        }
+        let (index, updates) = spawn_index(root.clone());
+        wait_for_index(|| index.inner.lock().unwrap().dirs.contains_key(&root)).await;
+        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        assert!(!index.inner.lock().unwrap().complete);
+        std::fs::remove_file(root.join("old.txt")).unwrap();
+        touch(&root.join("late.txt"), b"");
+        for _ in 0..3 {
+            updates
+                .send(crate::resource::FsBatch {
+                    paths: vec![root.display().to_string()],
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        drop(permit);
+        wait_for_index(|| index.matches("late", 10).0 == vec!["late.txt"]).await;
+        assert!(index.matches("old", 10).0.is_empty());
+
+        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        touch(&root.join("overflow.txt"), b"");
+        for _ in 0..3 {
+            updates
+                .send(crate::resource::FsBatch {
+                    full_rescan: true,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        drop(permit);
+        wait_for_index(|| index.matches("overflow", 10).0 == vec!["overflow.txt"]).await;
+        drop(updates);
+        let remaining = Arc::downgrade(&index);
+        drop(index);
+        wait_for_index(|| remaining.upgrade().is_none()).await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn retiring_an_index_cancels_a_scan_waiting_for_the_shared_budget() {
+        let root = scratch("index-retire");
+        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let (index, updates) = spawn_index(root.clone());
+        tokio::task::yield_now().await;
+        let remaining = Arc::downgrade(&index);
+        drop(index);
+        drop(updates);
+        // The permit stays held: finishing a scan cannot satisfy this test.
+        wait_for_index(|| remaining.upgrade().is_none()).await;
+        drop(permit);
+
+        for number in 0..600 {
+            touch(&root.join(format!("{number}.txt")), b"");
+        }
+        let (index, updates) = spawn_index(root.clone());
+        wait_for_index(|| index.inner.lock().unwrap().pending_dirs > 0).await;
+        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        assert!(!index.inner.lock().unwrap().complete);
+        let remaining = Arc::downgrade(&index);
+        drop(index);
+        drop(updates);
+        wait_for_index(|| remaining.upgrade().is_none()).await;
+        drop(permit);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn hex_sha256(data: &[u8]) -> String {
@@ -2609,4 +3010,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
-
