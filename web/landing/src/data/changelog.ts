@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.53.1",
+    date: "2026-09-13",
+    title: "The sidebar finds the window's left edge",
+    changes: {
+      fixed: [
+        "Section labels and row icons in the sidebar now line up with the traffic lights, and the first section starts at the top of the column instead of below it.",
+        "The navigator button no longer shifts sideways when the sidebar is collapsed or reopened.",
+      ],
+    },
+  },
+  {
     version: "0.53.0",
     date: "2026-09-10",
     title: "The branch label goes remote",
