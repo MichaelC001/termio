@@ -109,9 +109,11 @@ private struct SidebarSectionHeader: View {
         .frame(maxHeight: isFirstSection ? .infinity : nil, alignment: .top)
         .listRowInsets(isFirstSection ? EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0) : nil)
         // No `listRowInsets` override — the header keeps the rows' default inset so both
-        // share one left baseline. The small leading then lands the label's left edge on
-        // the folder/terminal glyph's own inset in its 16pt slot, so they read aligned.
-        .padding(.leading, 2.5 - sidebarLeadingTrim)
+        // share one left baseline, and the same trim as a top-level row (`leadingIndent`
+        // 0) puts the label's left edge on the folder/terminal glyph's. A 15pt glyph in
+        // its 16pt slot leaves no inset to compensate for, so any extra leading here
+        // pushes the section labels off the column the rows below them establish.
+        .padding(.leading, -sidebarLeadingTrim)
         .contentShape(Rectangle())
         .onTapGesture { toggleCollapsed() }
         .background {
