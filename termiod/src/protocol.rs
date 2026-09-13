@@ -257,6 +257,8 @@ pub struct DirEntry {
     /// host too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_kind: Option<EntryKind>,
+    #[serde(default)]
+    pub ignored: bool,
 }
 
 /// The listing for one requested path inside an `fs_listed` reply. A path

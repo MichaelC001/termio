@@ -243,6 +243,7 @@ final class DeviceFileNode: Identifiable {
     /// Whether this browses as a folder — resolved *through* a symlink, so a
     /// link to a directory expands like the directory it points at.
     let isDirectory: Bool
+    fileprivate(set) var isIgnored = false
     let canPreview: Bool
     /// Whether the entry itself is a symlink, so the row can mark it.
     /// Independent of `isDirectory`: a link can point at either kind.
@@ -878,6 +879,7 @@ final class DeviceFileTreeModel: ObservableObject {
                     isOnThisMac: checkout.device.isLocal,
                     model: self)
             }
+            node.isIgnored = entry.isIgnored
             nodesByPath[path] = node
             return node
         }

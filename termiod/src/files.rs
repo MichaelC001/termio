@@ -199,6 +199,7 @@ fn list_one(
             mtime,
             symlink_target,
             target_kind,
+            ignored: false,
         });
     }
 

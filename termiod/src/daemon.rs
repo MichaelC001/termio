@@ -2120,10 +2120,9 @@ async fn process_control(
                     })
                     .await;
                     let response = match listed {
-                        Ok(Ok(listings)) => Control::FsListed {
-                            seq: stamp,
-                            listings,
-                            re: seq,
+                        Ok(Ok(mut listings)) => {
+                            crate::git::decorate_listings(&mut listings).await;
+                            Control::FsListed { seq: stamp, listings, re: seq }
                         },
                         Ok(Err(e)) => error(seq, ErrorCode::Denied, format!("{e:#}"), false),
                         Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),

@@ -682,9 +682,10 @@ public enum Termiod {
         /// root — which the host would refuse to list — and from a host too old
         /// to say.
         public let targetKind: String?
+        public let ignored: Bool
 
         private enum CodingKeys: String, CodingKey {
-            case name, kind, symlinkTarget, targetKind
+            case name, kind, symlinkTarget, targetKind, ignored
         }
 
         public init(from decoder: Decoder) throws {
@@ -693,13 +694,15 @@ public enum Termiod {
             kind = try container.decode(String.self, forKey: .kind)
             symlinkTarget = try container.decodeIfPresent(String.self, forKey: .symlinkTarget)
             targetKind = try container.decodeIfPresent(String.self, forKey: .targetKind)
+            ignored = try container.decodeIfPresent(Bool.self, forKey: .ignored) ?? false
         }
 
-        public init(name: String, kind: String, symlinkTarget: String? = nil, targetKind: String? = nil) {
+        public init(name: String, kind: String, symlinkTarget: String? = nil, targetKind: String? = nil, ignored: Bool = false) {
             self.name = name
             self.kind = kind
             self.symlinkTarget = symlinkTarget
             self.targetKind = targetKind
+            self.ignored = ignored
         }
 
         /// Whether this entry can be descended into, resolved *through* a

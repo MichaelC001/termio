@@ -957,6 +957,15 @@ fn absorb(
         return;
     }
     for path in event.paths {
+        // An ignore rule can change any visible descendant, including a folder
+        // whose contents have never been expanded.
+        if path.file_name().is_some_and(|name| name == ".gitignore")
+            || path.ends_with(".git/info/exclude")
+        {
+            pending.full_rescan = true;
+            pending.paths.clear();
+            seen.clear();
+        }
         match classify(&path) {
             Classified::Ignored => {}
             Classified::GitMeta => pending.git_meta = true,
@@ -1048,6 +1057,17 @@ mod tests {
         FsBatch {
             paths: paths.iter().map(|p| p.to_string()).collect(),
             ..FsBatch::default()
+        }
+    }
+
+    #[test]
+    fn ignore_rule_changes_refresh_all_visible_directories() {
+        for path in ["/repo/.gitignore", "/repo/nested/.gitignore", "/repo/.git/info/exclude"] {
+            let mut pending = FsBatch::default();
+            let mut seen = std::collections::HashSet::new();
+            absorb(Ok(notify::Event::new(notify::EventKind::Modify(
+                notify::event::ModifyKind::Any)).add_path(path.into())), &mut pending, &mut seen);
+            assert!(pending.full_rescan, "{path}");
         }
     }
 

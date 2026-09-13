@@ -96,7 +96,7 @@ final class AppSettings: ObservableObject {
         Key.sessionControlEnabled, Key.githubIntegrationEnabled,
         Key.notifyTaskCompletion, Key.notificationSound,
         Key.analyticsEnabled,
-        Key.projectSortOrder, Key.defaultChatAgent,
+        Key.projectSortOrder, Key.defaultChatAgent, Key.dimIgnoredFiles,
     ]
 
     private enum Key {
@@ -148,6 +148,7 @@ final class AppSettings: ObservableObject {
         static let notifyTaskCompletion = "notifications.taskCompletion"
         static let notificationSound = "notifications.sound"
         static let analyticsEnabled = "privacy.analyticsEnabled"
+        static let dimIgnoredFiles = "files.dimIgnoredFiles"
         static let projectSortOrder = "sidebar.projectSortOrder"
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
@@ -165,6 +166,10 @@ final class AppSettings: ObservableObject {
     /// True when a Ghostty config contributed defaults this launch — surfaces one hint line in
     /// Appearance so inherited values aren't a mystery.
     let inheritsGhosttyDefaults: Bool
+
+    @Published var dimIgnoredFiles: Bool {
+        didSet { store.set(dimIgnoredFiles, forKey: Key.dimIgnoredFiles) }
+    }
 
     /// Terminal font family. Defaults to "SF Mono" (the Apple system monospace,
     /// as used by Xcode/Terminal). Empty means "let libghostty pick its default
@@ -577,6 +582,7 @@ final class AppSettings: ObservableObject {
             Key.backgroundOpacity: 1.0,
             Key.backgroundBlur: 0,
             Key.scrollbackMegabytes: 10,
+            Key.dimIgnoredFiles: true,
             Key.copyOnSelect: false,
             Key.interfaceFontFamily: "",
             Key.interfaceFontSize: 13.0,
@@ -612,6 +618,7 @@ final class AppSettings: ObservableObject {
 
         defaults.register(defaults: registered)
 
+        dimIgnoredFiles = store.bool(Key.dimIgnoredFiles)
         fontFamily = store.string(Key.fontFamily) ?? ""
         fontSize = store.double(Key.fontSize)
         fontThicken = store.bool(Key.fontThicken)

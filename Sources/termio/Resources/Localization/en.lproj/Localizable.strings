@@ -480,6 +480,8 @@
 	<string>Device Unavailable</string>
 	<key>Devices</key>
 	<string>Devices</string>
+	<key>Dim ignored files</key>
+	<string>Dim ignored files</string>
 	<key>Direct Attach</key>
 	<string>Direct Attach</string>
 	<key>Discard %lld Files…</key>
@@ -546,6 +548,8 @@
 	<string>Family</string>
 	<key>File</key>
 	<string>File</string>
+	<key>File Tree</key>
+	<string>File Tree</string>
 	<key>Files</key>
 	<string>Files</string>
 	<key>Files changed</key>
@@ -1244,6 +1248,8 @@
 	<string>Show Project Files</string>
 	<key>Show Replace</key>
 	<string>Show Replace</string>
+	<key>Shows files and folders ignored by Git in a muted color.</key>
+	<string>Shows files and folders ignored by Git in a muted color.</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>

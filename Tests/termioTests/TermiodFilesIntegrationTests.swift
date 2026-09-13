@@ -152,6 +152,20 @@ final class TermiodFilesIntegrationTests: XCTestCase {
 
     private let nestedContents = String(repeating: "nested line\n", count: 400)
 
+    func testIgnoredDecorationsArriveThroughTheSharedFileListing() throws {
+        try Data("sub/\n*.log\n!keep.log\n".utf8).write(to: root.appendingPathComponent(".gitignore"))
+        for name in ["ignored.log", "keep.log", "new.swift"] {
+            try Data("content".utf8).write(to: root.appendingPathComponent(name))
+        }
+        let listing = try XCTUnwrap(Termiod.listDirectories(
+            route: .local, root: root.path, paths: [root.path]).listings.first)
+        let entries = Dictionary(uniqueKeysWithValues: listing.entries.map { ($0.name, $0) })
+        XCTAssertTrue(try XCTUnwrap(entries["sub"]).isIgnored)
+        XCTAssertTrue(try XCTUnwrap(entries["ignored.log"]).isIgnored)
+        XCTAssertFalse(try XCTUnwrap(entries["keep.log"]).isIgnored)
+        XCTAssertFalse(try XCTUnwrap(entries["new.swift"]).isIgnored)
+    }
+
     func testTheRootListsAsTheTreeWouldDrawIt() throws {
         let listings = try Termiod.listDirectories(
             route: .local, root: root.path, paths: [root.path]).listings

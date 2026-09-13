@@ -862,7 +862,7 @@ extension FileEntry {
             name: entry.name,
             kind: Kind(wire: entry.kind) ?? .other,
             target: entry.targetKind.flatMap(Kind.init(wire:)),
-            symlinkTarget: entry.symlinkTarget)
+            symlinkTarget: entry.symlinkTarget, isIgnored: entry.ignored)
     }
 }
 

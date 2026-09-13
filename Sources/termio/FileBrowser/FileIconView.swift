@@ -20,16 +20,17 @@ struct FileIconView: View {
     /// Ink for the Hugeicons resource glyphs, so the file tree can pass the same
     /// chrome foreground its folder rows use and the two read as one family.
     var ink: Color = .primary
+    var foregroundOverride: Color?
 
     var body: some View {
         if let resource = LangIconCatalog.resource(forFileName: url.lastPathComponent),
            let image = LangIconLoader.shared.image(named: resource.name) {
-            if resource.monochrome {
+            if resource.monochrome || foregroundOverride != nil {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
                     .renderingMode(.template)
-                    .foregroundStyle(Color.monochromeInk)
+                    .foregroundStyle(foregroundOverride ?? Color.monochromeInk)
                     .frame(width: size, height: size)
             } else {
                 Image(nsImage: image)
@@ -47,13 +48,13 @@ struct FileIconView: View {
             // the folder rows' full 12-vs-15 ratio) because these file-shaped
             // marks are height-dominant and overshoot the Devicon cap height at
             // 1.25. Only the code-shaped fallbacks below stay SF Symbols.
-            HugeIconView(icon: Self.hugeIcon(for: kind), size: size * 1.15, color: ink)
+            HugeIconView(icon: Self.hugeIcon(for: kind), size: size * 1.15, color: foregroundOverride ?? ink)
                 .frame(width: size)
         } else {
             let icon = FileTypeIcon.icon(for: url)
             Image(systemName: icon.symbol)
                 .font(.system(size: symbolSize))
-                .foregroundStyle(icon.color)
+                .foregroundStyle(foregroundOverride ?? icon.color)
                 .frame(width: size)
         }
     }

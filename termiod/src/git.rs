@@ -54,6 +54,182 @@ fn git_command(root: &str) -> tokio::process::Command {
     command
 }
 
+/// Listings share a quiet window per repository, even across control connections.
+/// Keep only pending work: each re-list asks Git afresh, so index and ignore-rule
+/// edits cannot leave a cached decoration behind.
+#[derive(Default)]
+struct IgnoreBatch {
+    paths: HashSet<String>,
+    replies: Vec<tokio::sync::oneshot::Sender<std::result::Result<HashSet<String>, String>>>,
+    last_request: Option<tokio::time::Instant>,
+}
+
+type IgnoreQueue = tokio::sync::Mutex<HashMap<String, IgnoreBatch>>;
+
+fn ignore_queue() -> &'static IgnoreQueue {
+    static QUEUE: std::sync::OnceLock<IgnoreQueue> = std::sync::OnceLock::new();
+    QUEUE.get_or_init(IgnoreQueue::default)
+}
+
+async fn check_ignored(root: String, paths: Vec<String>) -> Result<HashSet<String>> {
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    let mut queue = ignore_queue().lock().await;
+    let start = !queue.contains_key(&root);
+    let batch = queue.entry(root.clone()).or_default();
+    batch.paths.extend(paths);
+    batch.replies.push(reply);
+    batch.last_request = Some(tokio::time::Instant::now());
+    drop(queue);
+    if start {
+        tokio::spawn(async move {
+            let quiet = std::time::Duration::from_millis(500);
+            loop {
+                tokio::time::sleep(quiet).await;
+                let mut queue = ignore_queue().lock().await;
+                let Some(batch) = queue.get(&root) else {
+                    return;
+                };
+                if batch
+                    .last_request
+                    .is_some_and(|last| last.elapsed() < quiet)
+                {
+                    continue;
+                }
+                let Some(batch) = queue.remove(&root) else {
+                    return;
+                };
+                drop(queue);
+                let result = run_check_ignore(&root, &batch.paths)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+                for reply in batch.replies {
+                    // A closed receiver means its listing was cancelled.
+                    let _ = reply.send(result.clone());
+                }
+                return;
+            }
+        });
+    }
+    receive
+        .await
+        .context("ignore check cancelled")?
+        .map_err(anyhow::Error::msg)
+}
+
+async fn run_check_ignore(root: &str, paths: &HashSet<String>) -> Result<HashSet<String>> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    let mut child = git_command(root)
+        .args(["check-ignore", "-v", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("starting git check-ignore")?;
+    let mut stdin = child.stdin.take().context("git check-ignore stdin")?;
+    let operation = async move {
+        // Drain output while writing: a wide directory can fill both pipes.
+        let (written, output) = tokio::join!(
+            async move {
+                stdin.write_all(&input).await?;
+                stdin.shutdown().await
+            },
+            child.wait_with_output()
+        );
+        let output = output.context("waiting for git check-ignore")?;
+        if !output.status.success() && output.status.code() != Some(1) {
+            bail!(
+                "git check-ignore: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        written.context("writing git check-ignore paths")?;
+        Ok(parse_ignored(&output.stdout))
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), operation)
+        .await
+        .context("git check-ignore timed out")?
+}
+
+fn parse_ignored(output: &[u8]) -> HashSet<String> {
+    // -v -z emits source, line, pattern, pathname as four NUL-separated fields.
+    output
+        .split(|byte| *byte == 0)
+        .collect::<Vec<_>>()
+        .chunks_exact(4)
+        .filter(|fields| !fields[2].is_empty() && !fields[2].starts_with(b"!"))
+        .map(|fields| String::from_utf8_lossy(fields[3]).into_owned())
+        .collect()
+}
+
+pub async fn decorate_listings(listings: &mut [crate::protocol::PathListing]) {
+    let directories: Vec<_> = listings
+        .iter()
+        .map(|listing| listing.path.clone())
+        .collect();
+    let resolved = tokio::task::spawn_blocking(move || {
+        directories
+            .iter()
+            .map(|directory| {
+                let directory = std::fs::canonicalize(directory).ok()?;
+                let root = directory
+                    .ancestors()
+                    .find(|path| path.join(".git").exists())?;
+                Some((root.to_string_lossy().into_owned(), directory))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    let resolved = match resolved {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("[git] resolving ignore roots: {error}");
+            return;
+        }
+    };
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for (listing, location) in listings.iter().zip(&resolved) {
+        if let Some((root, directory)) = location {
+            groups.entry(root.clone()).or_default().extend(
+                listing
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.name != ".git")
+                    .map(|entry| directory.join(&entry.name).to_string_lossy().into_owned()),
+            );
+        }
+    }
+    let results = futures_util::future::join_all(
+        groups
+            .into_iter()
+            .filter(|(_, paths)| !paths.is_empty())
+            .map(|(root, paths)| check_ignored(root, paths)),
+    )
+    .await;
+    let mut ignored = HashSet::new();
+    for result in results {
+        match result {
+            Ok(paths) => ignored.extend(paths),
+            Err(error) => eprintln!("[git] ignored file decorations: {error:#}"),
+        }
+    }
+    for (listing, location) in listings.iter_mut().zip(resolved) {
+        if let Some((_, directory)) = location {
+            for entry in &mut listing.entries {
+                entry.ignored =
+                    ignored.contains(directory.join(&entry.name).to_string_lossy().as_ref());
+            }
+        }
+    }
+}
+
 /// A revision reaches git as a positional argument, so one beginning with `-`
 /// would be read as an option. Refused rather than escaped.
 fn validate_revision(revision: &str) -> Result<()> {
@@ -1347,6 +1523,96 @@ mod tests {
             bytes.push(0);
         }
         bytes
+    }
+
+    #[tokio::test]
+    async fn ignored_listings_distinguish_directories_negations_and_tracked_files() {
+        let directory = scratch_repo("ignored-listings");
+        write(&directory, "tracked.log", "tracked");
+        commit(&directory, "tracked file");
+        write(&directory, ".gitignore", "node_modules/\n*.log\n!keep.log\n\\!literal\n");
+        std::fs::create_dir(directory.join("node_modules")).unwrap();
+        for name in ["new.swift", "debug.log", "keep.log", "!literal", "line\nbreak.log"] {
+            write(&directory, name, "content");
+        }
+        write(&directory, ".git/info/exclude", "local-only\n");
+        write(&directory, "local-only", "excluded");
+        let root = directory.to_string_lossy().into_owned();
+        let mut listings = crate::files::list(&root, &[root.clone()], None).unwrap();
+        decorate_listings(&mut listings).await;
+        let flags: HashMap<_, _> = listings[0].entries.iter()
+            .map(|entry| (entry.name.as_str(), entry.ignored)).collect();
+        for name in ["node_modules", "debug.log", "!literal", "line\nbreak.log", "local-only"] {
+            assert_eq!(flags[name], true, "{name}");
+        }
+        for name in ["new.swift", "tracked.log", "keep.log"] {
+            assert_eq!(flags[name], false, "{name}");
+        }
+        // The same listing must lose its decoration after the rule is removed.
+        write(&directory, ".gitignore", "");
+        decorate_listings(&mut listings).await;
+        assert!(!listings[0].entries.iter().find(|entry| entry.name == "node_modules").unwrap().ignored);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignore_requests_share_one_pending_batch_per_repository() {
+        let directory = scratch_repo("ignored-batch");
+        write(&directory, ".gitignore", "*.log\n!keep.log\n");
+        write(&directory, "first.log", "");
+        write(&directory, "keep.log", "");
+        let root = directory.to_string_lossy().into_owned();
+        let first = directory.join("first.log").to_string_lossy().into_owned();
+        let keep = directory.join("keep.log").to_string_lossy().into_owned();
+        let mut requests = Box::pin(futures_util::future::join_all([
+            check_ignored(root.clone(), vec![first.clone()]),
+            check_ignored(root.clone(), vec![keep.clone()]),
+        ]));
+        tokio::select! {
+            _ = &mut requests => panic!("requests must debounce"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+        {
+            let queue = ignore_queue().lock().await;
+            let batch = queue.get(&root).unwrap();
+            assert_eq!(batch.replies.len(), 2);
+            assert_eq!(batch.paths, HashSet::from([first.clone(), keep.clone()]));
+        }
+        for result in requests.await {
+            assert_eq!(result.unwrap(), HashSet::from([first.clone()]));
+        }
+        assert!(!ignore_queue().lock().await.contains_key(&root));
+        // Exit 1 and a negative-only match both mean nothing is ignored.
+        assert!(run_check_ignore(&root, &HashSet::from([keep])).await.unwrap().is_empty());
+        assert!(run_check_ignore(&root, &HashSet::from(["new.swift".into()])).await.unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignore_listings_resolve_nested_repositories_and_symlinked_roots_on_the_host() {
+        let directory = scratch_repo("ignored-roots");
+        write(&directory, ".gitignore", "*.log\n");
+        let nested = directory.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        run_git(&nested, &["init", "-q"]);
+        write(&nested, ".gitignore", "*.tmp\n");
+        write(&nested, "keep.log", "");
+        write(&nested, "ignored.tmp", "");
+        let alias = directory.join("alias");
+        std::os::unix::fs::symlink(&nested, &alias).unwrap();
+        let root = directory.to_string_lossy().into_owned();
+        let paths = [nested.to_string_lossy().into_owned(), alias.to_string_lossy().into_owned()];
+        let mut listings = crate::files::list(&root, &paths, None).unwrap();
+        decorate_listings(&mut listings).await;
+        for listing in listings {
+            assert!(listing.entries.iter().find(|entry| entry.name == "ignored.tmp").unwrap().ignored);
+            assert!(!listing.entries.iter().find(|entry| entry.name == "keep.log").unwrap().ignored);
+        }
+        std::fs::remove_dir_all(directory.join(".git")).unwrap();
+        let mut plain = crate::files::list(&root, &[root.clone()], None).unwrap();
+        decorate_listings(&mut plain).await;
+        assert!(plain[0].entries.iter().all(|entry| !entry.ignored));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

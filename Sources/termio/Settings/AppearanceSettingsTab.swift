@@ -134,6 +134,13 @@ struct AppearanceSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Toggle(localized("Dim ignored files"), isOn: $settings.dimIgnoredFiles)
+            } header: {
+                SectionHeaderLabel(title: localized("File Tree"))
+            } footer: {
+                Text(localized("Shows files and folders ignored by Git in a muted color."))
+            }
         }
         .formStyle(.grouped)
         .onAppear(perform: reloadUserThemes)

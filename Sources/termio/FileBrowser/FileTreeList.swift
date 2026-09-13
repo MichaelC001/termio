@@ -139,6 +139,13 @@ private struct FileRow: View {
 
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
 
+    private var ignoredForeground: Color? {
+        guard settings.dimIgnoredFiles, node.isIgnored else { return nil }
+        return colorScheme == .dark
+            ? Color(red: 140 / 255, green: 140 / 255, blue: 140 / 255)
+            : Color(red: 142 / 255, green: 142 / 255, blue: 144 / 255)
+    }
+
     /// The file this row addresses on this Mac, or `nil` for a checkout on
     /// another device. Every write-shaped affordance below hangs off it.
     private var localURL: URL? { node.localURL }
@@ -190,7 +197,7 @@ private struct FileRow: View {
                 HugeIconView(
                     icon: node.isSymbolicLink ? .folderSymlink : .folder,
                     size: 15,
-                    color: chrome?.foreground ?? .primary
+                    color: ignoredForeground ?? chrome?.foreground ?? .primary
                 )
                 .frame(width: 16, alignment: .leading)
             } else {
@@ -207,10 +214,11 @@ private struct FileRow: View {
                 // the row menu's Show Original carry it instead.
                 // Only the last component is read, so the synthetic form a device
                 // path takes is enough.
-                FileIconView(url: node.url, size: 12, symbolSize: 11, ink: chrome?.foreground ?? .primary)
+                FileIconView(url: node.url, size: 12, symbolSize: 11, ink: chrome?.foreground ?? .primary, foregroundOverride: ignoredForeground)
                     .frame(width: 16, alignment: .leading)
             }
             Text(node.name)
+                .foregroundStyle(ignoredForeground ?? chrome?.foreground ?? .primary)
                 .font(font)
                 .lineLimit(1)
                 .truncationMode(.middle)
