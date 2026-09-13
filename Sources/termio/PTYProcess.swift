@@ -625,14 +625,14 @@ final class PTYProcess: @unchecked Sendable {
     }
 
     /// Host input reclaims the size — typing on the Mac means the user is
-    /// there. Also the hand-back when the last companion detaches. A no-op
-    /// while the host already owns it, so it is cheap on every keystroke.
+    /// there. Also the hand-back when the last companion detaches. Flush a
+    /// pending host resize even when ownership hasn't changed: the surface
+    /// already uses that grid, so input must not reach a TUI at the old size.
+    /// The size comparison below keeps unchanged grids cheap on every keystroke.
     func claimHostOwnership() {
         lock.lock()
-        guard sizeOwner != .host else {
-            lock.unlock()
-            return
-        }
+        hostApplyWork?.cancel()
+        hostApplyWork = nil
         sizeOwner = .host
         applyWindowSizeAndUnlock(cols: hostCols, rows: hostRows)
     }
