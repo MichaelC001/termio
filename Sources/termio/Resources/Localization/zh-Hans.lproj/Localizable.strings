@@ -480,6 +480,8 @@
 	<string>设备不可用</string>
 	<key>Devices</key>
 	<string>设备</string>
+	<key>Dim ignored files</key>
+	<string>淡化已忽略的文件</string>
 	<key>Direct Attach</key>
 	<string>直接连接</string>
 	<key>Discard %lld Files…</key>
@@ -546,6 +548,8 @@
 	<string>系列</string>
 	<key>File</key>
 	<string>文件</string>
+	<key>File Tree</key>
+	<string>文件树</string>
 	<key>Files</key>
 	<string>文件</string>
 	<key>Files changed</key>
@@ -1244,6 +1248,8 @@
 	<string>显示项目文件</string>
 	<key>Show Replace</key>
 	<string>显示替换</string>
+	<key>Shows files and folders ignored by Git in a muted color.</key>
+	<string>以较淡的颜色显示 Git 忽略的文件和文件夹。</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>
 	<string>为远程仓库位于 GitHub 的项目在检查器中显示 Issues 窗格。</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</key>

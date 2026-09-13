@@ -15,6 +15,7 @@ struct FileEntry: Sendable {
         case other
     }
 
+    let isIgnored: Bool
     let name: String
     let kind: Kind
     /// What a symlink resolves to, and only when the target stays inside the
@@ -25,7 +26,8 @@ struct FileEntry: Sendable {
     /// Where a symlink points, verbatim, for the row's tooltip.
     let symlinkTarget: String?
 
-    init(name: String, kind: Kind, target: Kind? = nil, symlinkTarget: String? = nil) {
+    init(name: String, kind: Kind, target: Kind? = nil, symlinkTarget: String? = nil, isIgnored: Bool = false) {
+        self.isIgnored = isIgnored
         self.name = name
         self.kind = kind
         self.target = target

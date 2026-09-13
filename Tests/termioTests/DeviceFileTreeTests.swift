@@ -27,6 +27,36 @@ final class DeviceFileTreeTests: XCTestCase {
             root: root)
     }
 
+    func testIgnoredDecorationUpdatesReusedDirectoriesWithoutCollapsing() throws {
+        let tree = model()
+        func rootListing(ignored: Bool) -> Termiod.DirectoryListing {
+            Termiod.DirectoryListing(path: root, entries: [
+                FileEntry(name: "generated", kind: .directory, isIgnored: ignored),
+                FileEntry(name: "new.swift", kind: .file)
+            ], error: nil)
+        }
+        tree.apply([rootListing(ignored: true)])
+        let directory = try XCTUnwrap(tree.node(at: "\(root)/generated"))
+        XCTAssertTrue(directory.isIgnored)
+        XCTAssertEqual(tree.loadedDirectories(), [])
+        XCTAssertFalse(try XCTUnwrap(tree.node(at: "\(root)/new.swift")).isIgnored)
+        tree.apply([listing("\(root)/generated", [("file.swift", .file)])])
+        tree.apply([rootListing(ignored: false)])
+        XCTAssertTrue(directory === tree.node(at: "\(root)/generated"))
+        XCTAssertFalse(directory.isIgnored)
+        XCTAssertEqual(directory.children?.map(\.name), ["file.swift"])
+    }
+
+    func testIgnoredWireFieldDefaultsToFalseForOlderDaemons() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        for ignored in ["", ",\"ignored\":true"] {
+            let payload = Data("{\"name\":\"generated\",\"kind\":\"dir\"\(ignored)}".utf8)
+            let wire = try decoder.decode(Termiod.DirEntryPayload.self, from: payload)
+            XCTAssertEqual(FileEntry(wire: wire).isIgnored, !ignored.isEmpty)
+        }
+    }
+
     /// The header names the folder, as the local explorer does — not the device,
     /// which titled every project on one box with the box's name.
     func testHeaderNamesTheRootFolderNotTheDevice() {

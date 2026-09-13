@@ -2333,6 +2333,16 @@
         }
       }
     },
+    "Dim ignored files": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "淡化已忽略的文件"
+          }
+        }
+      }
+    },
     "Direct Attach": {
       "localizations": {
         "zh-Hans": {
@@ -2659,6 +2669,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "文件"
+          }
+        }
+      }
+    },
+    "File Tree": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件树"
           }
         }
       }
@@ -6144,6 +6164,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示替换"
+          }
+        }
+      }
+    },
+    "Shows files and folders ignored by Git in a muted color.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以较淡的颜色显示 Git 忽略的文件和文件夹。"
           }
         }
       }
