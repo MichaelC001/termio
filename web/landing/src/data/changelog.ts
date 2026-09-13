@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.53.2",
+    date: "2026-09-13",
+    title: "The navigator button holds its line in full screen",
+    changes: {
+      fixed: [
+        "The navigator button no longer sits far right of the sidebar in full screen, where there are no traffic lights for it to clear.",
+      ],
+    },
+  },
+  {
     version: "0.53.1",
     date: "2026-09-13",
     title: "The sidebar finds the window's left edge",
