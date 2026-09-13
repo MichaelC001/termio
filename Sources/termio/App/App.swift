@@ -2839,8 +2839,9 @@ private struct PaneToggleToolbarView: View {
 
 /// Reports its own leading edge in the window along with the trailing edge of the traffic lights,
 /// so a toolbar item can place itself against the buttons rather than against whatever edge the
-/// toolbar handed it. The buttons' edge is `nil` while they are hidden (fullscreen, until the
-/// titlebar is summoned).
+/// toolbar handed it. The buttons' edge is `nil` while they are hidden — but not in fullscreen,
+/// where they stay unhidden at their windowed frame with no titlebar drawing them; that one is the
+/// caller's to know.
 ///
 /// AppKit moves the item without anything inside it changing, so there is nothing for SwiftUI's own
 /// geometry to react to. Every ancestor's frame notification is watched instead — one of them is
@@ -2850,7 +2851,13 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
 
     func makeNSView(context: Context) -> LeadingReaderView { LeadingReaderView(report: report) }
 
-    func updateNSView(_ view: LeadingReaderView, context: Context) { view.report = report }
+    func updateNSView(_ view: LeadingReaderView, context: Context) {
+        view.report = report
+        // Entering fullscreen changes what the reading means without necessarily moving this view
+        // again afterwards. The state that drives this update is the same state that flipped, so
+        // taking a fresh reading here is what catches the transition's last word.
+        view.refresh()
+    }
 
     final class LeadingReaderView: NSView {
         var report: (CGFloat, CGFloat?) -> Void
@@ -2875,6 +2882,8 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
             readLeadingEdge()
         }
 
+        func refresh() { readLeadingEdge() }
+
         private func watchAncestors() {
             let center = NotificationCenter.default
             center.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
@@ -2897,10 +2906,17 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
         private func readLeadingEdge() {
             guard let window else { return }
             let leading = convert(bounds, to: nil).minX
-            // The zoom button is the last of the three, and `isHidden` is what fullscreen sets on
-            // them — a hidden button keeps its frame, so the frame alone can't answer this.
+            // The zoom button is the last of the three, so its trailing edge is where the buttons
+            // end — when there are buttons on screen at all. Whether there are is not a question
+            // this view can answer: in fullscreen all three stay unhidden at the frame they held
+            // while windowed, and the window they are read from does not report itself as
+            // fullscreen either. The caller knows it from the window delegate's own transitions;
+            // this only measures.
             let zoom = window.standardWindowButton(.zoomButton)
-            let buttonsEnd = zoom.map { $0.isHidden ? nil : $0.frame.maxX } ?? nil
+            let buttonsEnd: CGFloat? = zoom.flatMap { button in
+                guard !button.isHiddenOrHasHiddenAncestor else { return nil }
+                return button.convert(button.bounds, to: nil).maxX
+            }
             guard reported?.0 != leading || reported?.1 != buttonsEnd else { return }
             reported = (leading, buttonsEnd)
             // The caller's state drives the layout this is being read from, so hand it back after
@@ -2929,13 +2945,16 @@ private struct NavigatorToggleToolbarView: View {
     /// gap on screen is a few points past this.
     private static let nameSpacing: CGFloat = 6
 
-    /// With nothing holding the toolbar's leading edge open the item lands flush against the window
-    /// edge, several points left of everything in the column below. This inset puts the glyph's
-    /// leading edge on the same line the section labels and rows start on (`sidebarLeadingTrim`
-    /// pulls that column back to meet it), so the sidebar has one left margin rather than two.
-    /// That line is the close button's own leading edge, so windowed and fullscreen share it even
-    /// though only one of them has traffic lights to show for it.
-    private static let flushLeadingInset: CGFloat = 5
+    /// Where the sidebar's contents start, in window coordinates: the close button's own leading
+    /// edge, which AppKit puts at 19pt. With no traffic lights to clear — fullscreen — the item
+    /// pads itself onto that line, the same one `sidebarLeadingTrim` pulls the section labels and
+    /// rows back to, so the sidebar has one left margin rather than two.
+    private static let columnLeading: CGFloat = 19
+
+    /// What the item pads itself by before the first reading has been through, when there is no
+    /// measured edge to work from. Windowed, the toolbar holds its own edge open past the buttons
+    /// already; fullscreen lands it flush, a few points short of the column's line.
+    private static let assumedFlushInset: CGFloat = 5
 
     /// How far past the last traffic light the item's own leading edge sits whenever the buttons
     /// are on screen. NSToolbar's answer to that is not stable: the item rides the sidebar's
@@ -2955,11 +2974,13 @@ private struct NavigatorToggleToolbarView: View {
     private var leadingInset: CGFloat {
         // Before the first reading, fall back to what the window can say for itself: windowed, the
         // buttons are always up.
-        guard let itemLeading else { return store.windowIsFullScreen ? Self.flushLeadingInset : 0 }
-        // No buttons on screen (fullscreen, titlebar not summoned): nothing to clear, so the item
-        // sits on the column's own left margin instead.
-        guard let trafficLightsEnd else { return Self.flushLeadingInset }
-        return max(0, trafficLightsEnd + Self.trafficLightsGap - itemLeading)
+        guard let itemLeading else { return store.windowIsFullScreen ? Self.assumedFlushInset : 0 }
+        // Fullscreen draws no buttons, whatever the ones still on the window report, so there is
+        // nothing to clear and the item sits on the column's own left margin instead. Reading them
+        // anyway is what pushed the toggle ~80pt into the column there, off every line below it.
+        let buttonsEnd = store.windowIsFullScreen ? nil : trafficLightsEnd
+        let target = buttonsEnd.map { $0 + Self.trafficLightsGap } ?? Self.columnLeading
+        return max(0, target - itemLeading)
     }
 
     var body: some View {

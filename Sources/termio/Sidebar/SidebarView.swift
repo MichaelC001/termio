@@ -19,7 +19,7 @@ extension AppSettings {
 /// points right of the close button's leading edge, which AppKit puts at 19pt. Every row and
 /// section label pulls back by this much so the column starts on the traffic lights' line: the
 /// window's own left margin, and the one the navigator toggle above the column shares in
-/// fullscreen (`NavigatorToggleToolbarView.flushLeadingInset` is the same measurement from the
+/// fullscreen (`NavigatorToggleToolbarView.columnLeading` is the same line read from the
 /// other side). The hover chip stays outside that line rather than on it — a highlight whose edge
 /// touches the glyph it lifts reads as a crop, so it keeps the 6pt gutter Finder's own selection
 /// pill carries around its items.
