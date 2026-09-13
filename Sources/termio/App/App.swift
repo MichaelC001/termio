@@ -2837,24 +2837,26 @@ private struct PaneToggleToolbarView: View {
     }
 }
 
-/// Reports its own leading edge in the window, so a toolbar item can tell whether the toolbar has
-/// already opened that edge past the traffic lights or has laid it flush.
+/// Reports its own leading edge in the window along with the trailing edge of the traffic lights,
+/// so a toolbar item can place itself against the buttons rather than against whatever edge the
+/// toolbar handed it. The buttons' edge is `nil` while they are hidden (fullscreen, until the
+/// titlebar is summoned).
 ///
 /// AppKit moves the item without anything inside it changing, so there is nothing for SwiftUI's own
 /// geometry to react to. Every ancestor's frame notification is watched instead — one of them is
 /// the item the toolbar repositions.
 private struct ToolbarItemLeadingReader: NSViewRepresentable {
-    let report: (CGFloat) -> Void
+    let report: (CGFloat, CGFloat?) -> Void
 
     func makeNSView(context: Context) -> LeadingReaderView { LeadingReaderView(report: report) }
 
     func updateNSView(_ view: LeadingReaderView, context: Context) { view.report = report }
 
     final class LeadingReaderView: NSView {
-        var report: (CGFloat) -> Void
-        private var reported: CGFloat?
+        var report: (CGFloat, CGFloat?) -> Void
+        private var reported: (CGFloat, CGFloat?)?
 
-        init(report: @escaping (CGFloat) -> Void) {
+        init(report: @escaping (CGFloat, CGFloat?) -> Void) {
             self.report = report
             super.init(frame: .zero)
         }
@@ -2893,13 +2895,17 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
         }
 
         private func readLeadingEdge() {
-            guard window != nil else { return }
+            guard let window else { return }
             let leading = convert(bounds, to: nil).minX
-            guard reported != leading else { return }
-            reported = leading
+            // The zoom button is the last of the three, and `isHidden` is what fullscreen sets on
+            // them — a hidden button keeps its frame, so the frame alone can't answer this.
+            let zoom = window.standardWindowButton(.zoomButton)
+            let buttonsEnd = zoom.map { $0.isHidden ? nil : $0.frame.maxX } ?? nil
+            guard reported?.0 != leading || reported?.1 != buttonsEnd else { return }
+            reported = (leading, buttonsEnd)
             // The caller's state drives the layout this is being read from, so hand it back after
             // the pass rather than inside it.
-            DispatchQueue.main.async { [report] in report(leading) }
+            DispatchQueue.main.async { [report] in report(leading, buttonsEnd) }
         }
     }
 }
@@ -2927,24 +2933,33 @@ private struct NavigatorToggleToolbarView: View {
     /// edge, several points left of everything in the column below. This inset puts the glyph's
     /// leading edge on the same line the section labels and rows start on (`sidebarLeadingTrim`
     /// pulls that column back to meet it), so the sidebar has one left margin rather than two.
-    private static let flushLeadingInset: CGFloat = 10.5
+    /// That line is the close button's own leading edge, so windowed and fullscreen share it even
+    /// though only one of them has traffic lights to show for it.
+    private static let flushLeadingInset: CGFloat = 5
 
-    /// Past this, the traffic lights are on screen and the toolbar has already opened its leading
-    /// edge past them — they end around 80pt in, where flush is around 10. Fullscreen has the item
-    /// in both places (the buttons are hidden until the titlebar is summoned), so the inset can't
-    /// key off `windowIsFullScreen`: adding it on top of the toolbar's own offset leaves a hole
-    /// between the last button and the glyph.
-    private static let trafficLightsClearance: CGFloat = 40
+    /// How far past the last traffic light the item's own leading edge sits whenever the buttons
+    /// are on screen. NSToolbar's answer to that is not stable: the item rides the sidebar's
+    /// toolbar region while the column is open and the main region once it collapses, and the two
+    /// start 5pt apart — so the glyph slid sideways on every collapse, changing its distance from
+    /// the buttons beside it. Measuring from the buttons instead holds one distance through the
+    /// toggle. It is the larger of the two edges AppKit hands out, so the item is only ever padded
+    /// forward, never pulled back past the leading edge it was given.
+    private static let trafficLightsGap: CGFloat = 22
 
-    /// The item's own leading edge in window coordinates, read from AppKit rather than assumed.
-    /// `nil` until the first layout pass has been through.
+    /// The item's own leading edge in window coordinates, and the trailing edge of the traffic
+    /// lights — both read from AppKit rather than assumed. `nil` until the first layout pass has
+    /// been through; the buttons' edge stays `nil` while they are hidden.
     @State private var itemLeading: CGFloat?
+    @State private var trafficLightsEnd: CGFloat?
 
     private var leadingInset: CGFloat {
         // Before the first reading, fall back to what the window can say for itself: windowed, the
         // buttons are always up.
         guard let itemLeading else { return store.windowIsFullScreen ? Self.flushLeadingInset : 0 }
-        return itemLeading < Self.trafficLightsClearance ? Self.flushLeadingInset : 0
+        // No buttons on screen (fullscreen, titlebar not summoned): nothing to clear, so the item
+        // sits on the column's own left margin instead.
+        guard let trafficLightsEnd else { return Self.flushLeadingInset }
+        return max(0, trafficLightsEnd + Self.trafficLightsGap - itemLeading)
     }
 
     var body: some View {
@@ -2958,7 +2973,7 @@ private struct NavigatorToggleToolbarView: View {
         // After the padding, so the reader sits on the edge the toolbar gave the item rather than
         // on the one this view just moved.
         .background(alignment: .leading) {
-            ToolbarItemLeadingReader { itemLeading = $0 }
+            ToolbarItemLeadingReader { itemLeading = $0; trafficLightsEnd = $1 }
         }
     }
 

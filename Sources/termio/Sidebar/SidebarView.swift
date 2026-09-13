@@ -13,11 +13,18 @@ extension AppSettings {
     }
 }
 
-/// SwiftUI's `.sidebar` list style insets every row about 18pt from the column's leading edge —
-/// two points past the 16pt baseline the navigator toggle above the column sits on. Every row and
-/// section label pulls back by this much, so the whole left side of the sidebar — the toggle in
-/// the toolbar, the section labels, the project and session rows — starts on one line.
-private let sidebarLeadingTrim: CGFloat = 2
+/// SwiftUI's `.sidebar` list style hands every row an inset the column can't set: the list's own
+/// leading margin plus the 16pt strip `NSTableView.sourceList` reserves for a disclosure column a
+/// flat list never uses. Left alone it lands the first glyph's ink at 24.5pt — five and a half
+/// points right of the close button's leading edge, which AppKit puts at 19pt. Every row and
+/// section label pulls back by this much so the column starts on the traffic lights' line: the
+/// window's own left margin, and the one the navigator toggle above the column shares in
+/// fullscreen (`NavigatorToggleToolbarView.flushLeadingInset` is the same measurement from the
+/// other side). The hover chip stays outside that line rather than on it — a highlight whose edge
+/// touches the glyph it lifts reads as a crop, so it keeps the 6pt gutter Finder's own selection
+/// pill carries around its items.
+private let sidebarLeadingTrim: CGFloat = 7.5
+
 
 /// Left column: projects, each a section containing its sessions. Hovering a
 /// project header reveals VSCode-style quick-add buttons (one per agent preset).
@@ -56,6 +63,10 @@ private struct SidebarSectionHeader: View {
     let title: String
     let chrome: ChromeTheme?
     var isCollapsed: Bool = false
+    /// The first section has no group above it to separate from, so it drops the
+    /// separator padding and pins its label to the very top of the scroll content —
+    /// otherwise the column reads as starting late, below where the scroller begins.
+    var isFirstSection: Bool = false
     var toggleCollapsed: () -> Void = {}
     var menuItems: [SidebarMenuItem] = []
     @State private var isMenuOpen = false
@@ -80,13 +91,23 @@ private struct SidebarSectionHeader: View {
             Spacer(minLength: 4)
         }
         // Generous top padding is the separator between sections — whitespace, not a
-        // rule — so each group reads as its own block without a hairline. The first
-        // section carries it too: that gap used to come from the list's `contentMargins`,
-        // but a scroll-content inset is recomputed whenever the split view relayouts the
-        // sidebar, so toggling the inspector dropped it for a frame and the rows jumped.
-        // Padding inside a row cannot be recomputed.
-        .padding(.top, 12)
+        // rule — so each group reads as its own block without a hairline. It lives in
+        // the row, not in the list's `contentMargins`: a scroll-content inset is
+        // recomputed whenever the split view relayouts the sidebar, so toggling the
+        // inspector dropped it for a frame and the rows jumped. Padding inside a row
+        // cannot be recomputed.
+        .padding(.top, isFirstSection ? 0 : 12)
         .padding(.bottom, 2)
+        // Dropping the padding alone doesn't lift the first label: a `.sidebar` list
+        // floors every row at 32pt, and a header's content is barely half that, so the
+        // row keeps its height and just re-centers the label inside it. The two lines
+        // below take that reclaimed space instead of leaving it above the text —
+        // top-alignment pins the label to the row's top edge, and zeroed row insets
+        // drop the 4pt SwiftUI reserves there. Horizontal insets come from the table's
+        // own cell indent, not from here, so zeroing these keeps the left baseline the
+        // rows share.
+        .frame(maxHeight: isFirstSection ? .infinity : nil, alignment: .top)
+        .listRowInsets(isFirstSection ? EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0) : nil)
         // No `listRowInsets` override — the header keeps the rows' default inset so both
         // share one left baseline. The small leading then lands the label's left edge on
         // the folder/terminal glyph's own inset in its 16pt slot, so they read aligned.
@@ -213,6 +234,7 @@ struct SidebarView: View {
                     title: localized("Pinned"),
                     chrome: chrome,
                     isCollapsed: pinnedCollapsed,
+                    isFirstSection: true,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { pinnedCollapsed.toggle() }
                     }
@@ -243,6 +265,7 @@ struct SidebarView: View {
                     title: localized("Terminals"),
                     chrome: chrome,
                     isCollapsed: terminalsCollapsed,
+                    isFirstSection: !hasPinned,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { terminalsCollapsed.toggle() }
                     },
@@ -273,6 +296,7 @@ struct SidebarView: View {
                     title: localized("Chats"),
                     chrome: chrome,
                     isCollapsed: chatsCollapsed,
+                    isFirstSection: !hasPinned && !hasTerminals,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { chatsCollapsed.toggle() }
                     },
@@ -299,6 +323,7 @@ struct SidebarView: View {
                     title: localized("Projects"),
                     chrome: chrome,
                     isCollapsed: projectsCollapsed,
+                    isFirstSection: !hasPinned && !hasTerminals && !hasChats,
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { projectsCollapsed.toggle() }
                     }
