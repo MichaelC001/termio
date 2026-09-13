@@ -4,21 +4,44 @@ import Darwin
 import Foundation
 import TermioShared
 
-/// Whether any of this app's windows is mid live-resize — the user dragging a
-/// window edge, as AppKit reports it. The app's own layout animations (opening
-/// a session, toggling the sidebar) move a pane's size too but are not window
-/// live-resizes, so this stays false through them; `scheduleViewportLocked`
-/// reads it to tell a real drag from those and pick its cadence.
-final class WindowLiveResizeTracker: @unchecked Sendable {
-    static let shared = WindowLiveResizeTracker()
+/// Whether a person currently has their hands on this app's geometry — a
+/// window edge, a split divider, an inspector divider.
+///
+/// The cadence a viewport declaration goes out on turns on this one question
+/// (`scheduleViewportLocked`): a size the user is choosing streams, everything
+/// else debounces so the app's own layout animations never declare a size
+/// nobody picked. AppKit answers it for a window edge and for nothing else —
+/// `NSSplitView` posts no gesture boundary, and termio's own pane divider is a
+/// SwiftUI gesture AppKit cannot see — so those report themselves through
+/// `beginDrag`/`endDrag`.
+///
+/// A reported drag must be ended exactly once — an unpaired `beginDrag` pins
+/// every later declaration to the streaming cadence and the animation debounce
+/// stops protecting anything. Both callers close their own gesture, including
+/// the case where it is torn down rather than released.
+final class GeometryDragTracker: @unchecked Sendable {
+    static let shared = GeometryDragTracker()
 
     private let lock = NSLock()
     private var resizingWindows = 0
+    private var reportedDrags = 0
 
     var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return resizingWindows > 0
+        return resizingWindows > 0 || reportedDrags > 0
+    }
+
+    func beginDrag() {
+        lock.lock()
+        reportedDrags += 1
+        lock.unlock()
+    }
+
+    func endDrag() {
+        lock.lock()
+        reportedDrags = max(0, reportedDrags - 1)
+        lock.unlock()
     }
 
     private init() {
@@ -1292,6 +1315,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last viewport actually written as an `R` frame, so an unchanged
     /// declaration isn't re-sent while the daemon is still applying the first.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
+    /// Whether the viewport now pending was measured while a person was
+    /// dragging geometry. See `setViewport`.
+    private var viewportIsUserDriven = false
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
@@ -1668,14 +1694,40 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// a separate question, and answering it here is what used to turn a stray
     /// byte into a resize loop
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
-    func setViewport(rows: Int, cols: Int) {
+    /// `userDriven` is whether a person had their hands on the geometry at the
+    /// moment it was measured, which decides the cadence below. Sampled by the
+    /// caller rather than read from `GeometryDragTracker` here: this runs on
+    /// `workQueue`, a drag is an AppKit fact, and the two are not the same
+    /// instant. It also keeps the answer *per declaration* — the phone bridge
+    /// declares through this same door (`CompanionServer.applyClientViewport`)
+    /// and a divider being dragged on the Mac says nothing about the phone.
+    func setViewport(rows: Int, cols: Int, userDriven: Bool = false) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
+            viewportIsUserDriven = userDriven
             guard attached else { return }
             updateGrowingViewportLocked()
             scheduleViewportLocked()
+        }
+    }
+
+    /// Sends the pending viewport now instead of on its timer, for the end of a
+    /// drag.
+    ///
+    /// The streaming cadence leads — it writes a frame and starts a 150ms
+    /// window — so the last size of a drag is routinely still sitting on a
+    /// timer when the user lets go. Without this the settling declaration waits
+    /// out that window, or worse falls back to the 400ms debounce once the drag
+    /// flag clears, and the pane spends a third of a second showing a grid the
+    /// session no longer has. Costs nothing when there is nothing pending:
+    /// `sendViewportLocked` skips a declaration the daemon already holds.
+    func flushViewport() {
+        workQueue.async { [self] in
+            guard !closed, attached else { return }
+            viewportGeneration &+= 1
+            flushViewportLocked()
         }
     }
 
@@ -1912,10 +1964,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// glued, miswrapped rows after every session open.
     private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(400)
 
-    /// The cadence a window drag streams at instead. Every size under the
-    /// user's hand is one they chose, so the transient-width argument above
-    /// does not apply — what applies is Ghostty's behaviour, where the screen
-    /// reflows continuously while the edge moves. Per-frame is an in-process
+    /// The cadence a drag streams at instead. Every size under the user's hand
+    /// is one they chose, so the transient-width argument above does not apply
+    /// — what applies is Ghostty's behaviour, where the screen reflows
+    /// continuously while the edge moves. A split divider is as much under the
+    /// hand as a window edge; it only lacked a way to say so
+    /// (`GeometryDragTracker`). Per-frame is an in-process
     /// luxury; over the daemon socket each declaration is a resize barrier
     /// with a keyframe to every attached device, so the stream is throttled
     /// to a handful per second, which reads as live.
@@ -1929,18 +1983,18 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// send may write its frame. See `scheduleViewportLocked`.
     private var viewportGeneration: UInt64 = 0
 
-    /// Schedules the viewport send, on one of two cadences: a window drag
-    /// streams on a leading-edge throttle so the session reflows under the
-    /// user's hand, everything else debounces so the app's own layout
-    /// animations don't declare a size nobody chose. Generation-stamped rather
-    /// than cancelled, so the send re-reads the size at fire time and only the
-    /// newest one writes.
+    /// Schedules the viewport send, on one of two cadences: a drag streams on a
+    /// leading-edge throttle so the session reflows under the user's hand,
+    /// everything else debounces so the app's own layout animations don't
+    /// declare a size nobody chose. Generation-stamped rather than cancelled,
+    /// so the send re-reads the size at fire time and only the newest one
+    /// writes.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
         viewportGeneration &+= 1
         let generation = viewportGeneration
-        if WindowLiveResizeTracker.shared.isActive {
+        if viewportIsUserDriven {
             let now = DispatchTime.now()
             let elapsed = now.uptimeNanoseconds - lastViewportFlush.uptimeNanoseconds
             if elapsed >= Self.liveResizeStreamNanoseconds {

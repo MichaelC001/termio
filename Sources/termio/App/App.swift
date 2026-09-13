@@ -132,6 +132,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // divider 1, leaving its hairline stranded beside the real divider. The explicit re-binds
     // cover the known mutation sites; this observer covers the rest.
     private var splitResizeObserver: NSObjectProtocol?
+    private var detailFrameObserver: NSObjectProtocol?
+    private weak var terminalContainerView: NSView?
+    /// Whether the split view's dividers are under the pointer right now. See
+    /// `noteSplitViewResize`.
+    private var splitDividerDragActive = false
+    private var splitDividerDragSettle: DispatchWorkItem?
     private var separatorReassertSettle: DispatchWorkItem?
     // Divider 1's position at the last re-bind, so a settle that moved nothing (including the
     // relayout a re-bind itself may cause) doesn't re-bind again.
@@ -315,7 +321,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             forName: NSSplitView.didResizeSubviewsNotification,
             object: splitViewController?.splitView, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleSeparatorReassert() }
+            MainActor.assumeIsolated {
+                self?.scheduleSeparatorReassert()
+                self?.noteSplitViewResize()
+            }
         }
         // Re-resolve the window background whenever the OS flips light↔dark under `.system` mode
         // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
@@ -668,6 +677,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // pane stretch and leaves the window frame to `contentMinSize` — same fix as
         // `FileBrowserHostingController`.
         detail.sizingOptions = []
+        // Diagnostic only, and deliberately not a second source of truth.
+        //
+        // Every pane's size descends from one `GeometryReader` over this
+        // controller's view (`TerminalPane`'s body); the panes themselves are
+        // then explicitly framed from it, so an AppKit probe placed *inside* a
+        // pane would inherit the very number it was meant to check. This is the
+        // one place the two can disagree: AppKit's own frame for the container,
+        // against what SwiftUI proposed for it. A window change that moves this
+        // and never reaches a `measure` line is the missed-resize bug; if they
+        // never disagree there is nothing to fix here, and the traffic light is
+        // macOS declining to un-fill an already-filled window.
+        detail.view.postsFrameChangedNotifications = true
+        terminalContainerView = detail.view
+        detailFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: detail.view, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logTerminalContainerBounds() }
+        }
         let detailItem = NSSplitViewItem(viewController: detail)
         // The toolbar is sectioned by tracking separators, so each pane must stay at least as
         // wide as its toolbar items — the content section carries the branch-picker title.
@@ -887,6 +914,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         inspectorResizeSettle = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// The AppKit half of the container trace installed in
+    /// `makeContentSplitViewController`.
+    private func logTerminalContainerBounds() {
+        guard let size = terminalContainerView?.bounds.size else { return }
+        Log.termiod.info("resize-trace container appkit=\(size.width, privacy: .public)x\(size.height, privacy: .public)")
+    }
+
+    /// Tells the viewport scheduler that this relayout is a person dragging the
+    /// sidebar or inspector divider, so the sessions it resizes stream at the
+    /// drag cadence instead of waiting out the 400ms animation debounce — the
+    /// "the terminal only reflows after I let go" report.
+    ///
+    /// The classification is the pointer, not `NSSplitViewDividerIndex`. That
+    /// key looks like the right answer and is not: `NSSplitView.h` records that
+    /// since macOS 12 AppKit ships the user-info dictionary "during resize and
+    /// layout events as well", so its presence stopped meaning a drag. Nor is
+    /// a pressed mouse button enough on its own — clicking the sidebar toggle
+    /// starts exactly the layout animation the debounce exists to protect,
+    /// with the button still down. Button *and* pointer-on-a-divider is the
+    /// pair that separates them.
+    ///
+    /// Ended by a settle timer rather than a mouse-up: `NSSplitView` tracks a
+    /// divider drag in its own event loop, which may swallow the release before
+    /// a monitor sees it. No further notification is the reliable end signal.
+    private func noteSplitViewResize() {
+        guard let splitView = splitViewController?.splitView,
+              isPointerOnDivider(of: splitView) else { return }
+        if !splitDividerDragActive {
+            splitDividerDragActive = true
+            GeometryDragTracker.shared.beginDrag()
+        }
+        splitDividerDragSettle?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.splitDividerDragActive else { return }
+                self.splitDividerDragActive = false
+                GeometryDragTracker.shared.endDrag()
+                // The stream leads, so the last size of the drag is still on a
+                // timer when the hand comes off. Send it now.
+                self.store.flushViewports()
+            }
+        }
+        splitDividerDragSettle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// Whether the primary button is down with the pointer over one of this
+    /// split view's dividers. The slop matches AppKit's own divider hit area,
+    /// which is wider than the drawn line.
+    private func isPointerOnDivider(of splitView: NSSplitView) -> Bool {
+        guard NSEvent.pressedMouseButtons & 1 != 0, let window = splitView.window else {
+            return false
+        }
+        let panes = splitView.arrangedSubviews
+        guard panes.count > 1 else { return false }
+        let local = splitView.convert(
+            window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let slop: CGFloat = 4
+        let thickness = splitView.dividerThickness + 2 * slop
+        for index in 0..<(panes.count - 1) {
+            let leading = panes[index].frame
+            let rect = splitView.isVertical
+                ? NSRect(x: leading.maxX - slop, y: splitView.bounds.minY,
+                         width: thickness, height: splitView.bounds.height)
+                : NSRect(x: splitView.bounds.minX, y: leading.maxY - slop,
+                         width: splitView.bounds.width, height: thickness)
+            if rect.contains(local) { return true }
+        }
+        return false
     }
 
     func windowDidDeminiaturize(_ notification: Notification) {

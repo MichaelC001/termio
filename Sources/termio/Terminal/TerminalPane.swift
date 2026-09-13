@@ -197,9 +197,12 @@ struct TerminalPane: View {
             }
             if let layout, !zoomed {
                 ForEach(layout.dividers) { divider in
-                    SplitDividerHandle(spec: divider) { ratio in
-                        store.updateSplitRatio(branchID: divider.id, ratio: ratio)
-                    }
+                    SplitDividerHandle(
+                        spec: divider,
+                        onRatioChange: { ratio in
+                            store.updateSplitRatio(branchID: divider.id, ratio: ratio)
+                        },
+                        onDragEnded: { store.flushViewports() })
                 }
             }
             // The handle that starts a rearrange, on the pane the pointer is
@@ -1181,6 +1184,7 @@ private struct PaneDragOverlay: View {
 private struct SplitDividerHandle: View {
     let spec: SplitNode.DividerSpec
     let onRatioChange: (Double) -> Void
+    let onDragEnded: () -> Void
     @State private var anchorRatio: Double?
 
     /// Whether the divider line runs vertically (panes side by side).
@@ -1207,13 +1211,37 @@ private struct SplitDividerHandle: View {
                             coordinateSpace: .named(TerminalPane.splitCoordinateSpace))
                     .onChanged { value in
                         let start = anchorRatio ?? spec.ratio
-                        if anchorRatio == nil { anchorRatio = start }
+                        // The first change *is* the gesture's beginning — the
+                        // anchor is nil exactly once per drag. AppKit never
+                        // sees this drag (it is a SwiftUI gesture over a
+                        // ZStack, not an NSSplitView divider), so without this
+                        // the panes it resizes declare on the 400ms animation
+                        // debounce and the session only reflows after release.
+                        if anchorRatio == nil {
+                            anchorRatio = start
+                            GeometryDragTracker.shared.beginDrag()
+                        }
                         guard spec.span > 0 else { return }
                         let delta = verticalLine ? value.translation.width : value.translation.height
                         onRatioChange(start + Double(delta / spec.span))
                     }
-                    .onEnded { _ in anchorRatio = nil }
+                    .onEnded { _ in
+                        guard anchorRatio != nil else { return }
+                        anchorRatio = nil
+                        GeometryDragTracker.shared.endDrag()
+                        // Paired with `onDisappear` below: a gesture whose view
+                        // is torn down mid-drag never delivers this.
+                        // The release's own layout pass is still ahead of us;
+                        // flush after it so the settling size goes out at once
+                        // instead of waiting out the stream's window.
+                        DispatchQueue.main.async { onDragEnded() }
+                    }
             )
             .position(x: spec.frame.midX, y: spec.frame.midY)
+            .onDisappear {
+                guard anchorRatio != nil else { return }
+                anchorRatio = nil
+                GeometryDragTracker.shared.endDrag()
+            }
     }
 }
