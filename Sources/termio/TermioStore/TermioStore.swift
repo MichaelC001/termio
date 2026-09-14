@@ -401,6 +401,34 @@ final class TermioStore: ObservableObject {
     /// resets to `false` when the last detail closes, so the list is back for the next browse.
     @Published var inspectorListCollapsed = false
 
+    /// Whether the inspector is currently wide enough to carry the list beside the detail, reported
+    /// by `InspectorRoot` as its width crosses `InspectorRoot.twoColumnMinWidth`. The detail's header
+    /// renders in its own hosting view (`DetailHost`) and can't read that geometry, so the list
+    /// toggle asks here instead of trusting `inspectorListCollapsed` alone: below the threshold the
+    /// detail covers the list whatever the flag says.
+    @Published private(set) var inspectorFitsTwoColumns = false
+
+    /// Asks the window to widen the inspector to at least this thickness. Sent when the list toggle
+    /// is used in a panel too narrow to hold both columns — flipping the flag there changed nothing
+    /// on screen, so the button sat inert while its tooltip promised a column.
+    let inspectorWidenRequest = PassthroughSubject<CGFloat, Never>()
+
+    /// Whether the list column is actually on screen beside the detail — the flag *and* the room for
+    /// it. What the toggle's label and its next action read.
+    var inspectorListColumnVisible: Bool { inspectorFitsTwoColumns && !inspectorListCollapsed }
+
+    func noteInspectorFitsTwoColumns(_ fits: Bool) {
+        guard inspectorFitsTwoColumns != fits else { return }
+        inspectorFitsTwoColumns = fits
+    }
+
+    /// Shows or hides the detail's leading list column. Showing it in a panel that has no room for
+    /// both also asks the window to widen the inspector, so the click lands either way.
+    func setInspectorListColumn(visible: Bool, widenTo thickness: CGFloat) {
+        inspectorListCollapsed = !visible
+        if visible && !inspectorFitsTwoColumns { inspectorWidenRequest.send(thickness) }
+    }
+
     /// Recomputes `isDetailPresented` from the three detail properties and drops the maximize
     /// state once nothing is left to show. Called from each detail setter's `didSet`.
     private func refreshDetailPresentation() {

@@ -26,7 +26,9 @@ struct InspectorRoot: View {
     private static let maxListWidth: CGFloat = 460
     /// Below this the list ‖ detail split leaves the detail too narrow, so the detail takes the whole
     /// panel and the list hides until the inspector is widened (or a tab switch brings it back).
-    private static let twoColumnMinWidth: CGFloat = 600
+    /// Read by the detail's list toggle too — it widens the panel to this rather than flipping a flag
+    /// that a narrow inspector would swallow.
+    static let twoColumnMinWidth: CGFloat = 600
     /// The named space the resize drag reads its pointer x in — the list column's leading edge is its
     /// origin, so the pointer's x *is* the target column width.
     private static let dragSpace = "inspectorList"
@@ -85,6 +87,12 @@ struct InspectorRoot: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .coordinateSpace(.named(Self.dragSpace))
+            // The detail's header lives in its own hosting view and can't see this geometry, so the
+            // store carries the one bit it needs. Only the threshold crossing is published, not the
+            // width, so a divider drag doesn't wake every store observer on each frame.
+            .onChange(of: geo.size.width >= Self.twoColumnMinWidth, initial: true) { _, fits in
+                store.noteInspectorFitsTwoColumns(fits)
+            }
             // Opening and closing a detail cross-fades over the list. Maximizing does not touch
             // this: the slot stays mounted through it, so there is nothing here to animate.
             .animation(.easeOut(duration: 0.12), value: store.isDetailPresented)
@@ -275,10 +283,18 @@ struct InspectorDetailChromeButtons: View {
             // at this size than the busy sidebar-rail mark. Meaningless once the detail already
             // fills the whole window, so it's dropped while maximized.
             if !store.inspectorMaximized {
+                // Reads the *visible* state, not the flag: an inspector too narrow for both columns
+                // covers the list however the flag stands, so keying off the flag alone offered to
+                // hide a column that wasn't there and then did nothing. Showing one from there
+                // widens the panel until it fits.
+                let showing = store.inspectorListColumnVisible
                 DetailChromeButton(
                     icon: .layoutColumns, size: 15,
-                    help: store.inspectorListCollapsed ? "Show the list column" : "Hide the list column"
-                ) { store.inspectorListCollapsed.toggle() }
+                    help: showing ? "Hide the list column" : "Show the list column"
+                ) {
+                    store.setInspectorListColumn(visible: !showing,
+                                                 widenTo: InspectorRoot.twoColumnMinWidth)
+                }
             }
             DetailChromeButton(
                 icon: store.inspectorMaximized ? .collapse : .expand, size: 14,

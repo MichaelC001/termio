@@ -109,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var maximizeObserver: AnyCancellable?
     // Un-collapses the inspector when the user opens a detail (see `store.detailDidOpen`).
     private var detailOpenObserver: AnyCancellable?
+    // Widens the inspector when the detail's list toggle needs room for both columns
+    // (see `store.inspectorWidenRequest`).
+    private var inspectorWidenObserver: AnyCancellable?
     // Previous maximize state, so the observer re-binds the tracking separator on the restore
     // transition (handing the host back relayouts the inspector) and not every tick.
     private var detailWasMaximized = false
@@ -354,6 +357,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     // inert (the centered-tabs / missing-divider glitch). Re-bind once it settles.
                     DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
                 }
+            }
+
+        // The detail's list toggle, used in a panel too narrow to carry both columns: the split, not
+        // the SwiftUI tree, owns the inspector's width, so the request comes out here.
+        inspectorWidenObserver = store.inspectorWidenRequest
+            .receive(on: RunLoop.main)
+            .sink { [weak self] thickness in
+                MainActor.assumeIsolated { self?.widenInspector(to: thickness) }
             }
 
         // The maximize button itself: applied synchronously, in the same turn the flag flips, so
@@ -1361,6 +1372,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             item.isCollapsed = false
             setInspectorSwitchVisible(true)
         }
+    }
+
+    /// Grows the inspector to `thickness` so a detail's list column has room beside it. Clamped to
+    /// the item's golden-ratio maximum — on a window too narrow for both columns the panel opens as
+    /// far as it goes rather than refusing the click outright. Only ever widens: pulling the divider
+    /// back in stays the user's move.
+    private func widenInspector(to thickness: CGFloat) {
+        guard let item = filesInspectorItem, !item.isCollapsed,
+              let splitView = splitViewController?.splitView,
+              let index = splitView.arrangedSubviews.firstIndex(of: item.viewController.view),
+              index > 0
+        else { return }
+        let target = min(thickness, item.maximumThickness)
+        guard target > item.viewController.view.frame.width else { return }
+        // Set synchronously rather than through `animator()`, for the same reason the un-collapse in
+        // `revealInspectorForDetail` is: the separator re-bind below has to read settled geometry,
+        // and mid-animation it reads the width the drag started from.
+        splitView.setPosition(splitView.frame.width - splitView.dividerThickness - target,
+                              ofDividerAt: index - 1)
+        // Moving divider 1 is exactly the relayout that leaves `.inspectorTrackingSeparator` inert;
+        // re-bind once the move settles.
+        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
     }
 
     /// Brings the window into or out of the maximized-detail mode. Idempotent, and reached from two
