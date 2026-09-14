@@ -1285,16 +1285,6 @@ struct TerminalKeyframeHold {
     }
 }
 
-enum TerminalViewportGrowth {
-    static func canLeadSurface(
-        viewport: TerminalGrid, authoritativeGrid: TerminalGrid?
-    ) -> Bool {
-        guard let authoritativeGrid, viewport != authoritativeGrid else { return false }
-        return viewport.rows >= authoritativeGrid.rows
-            && viewport.cols >= authoritativeGrid.cols
-    }
-}
-
 /// One session's attach channel — everything this app knows about a running
 /// session. Owns the socket, forwards surface
 /// input as `D` frames and grid changes as `R` frames, and delivers the
@@ -1353,8 +1343,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// A local viewport growth that has not reached the daemon yet. While this
     /// is true the surface may widen with the pane instead of letterboxing at
     /// the old session grid; shrinking never takes this path.
-    private var growingViewportPending = false
-    private var growingViewportGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1482,9 +1470,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
-    /// Raised only while this pane is growing beyond the session's grid. The UI
-    /// uses it to remove the outward-drag letterbox until the daemon answers.
-    var onGrowingViewportPending: ((Bool) -> Void)?
     /// Whether this session's host sizes by policy, from the handshake. A pane
     /// on an older host must not letterbox: there the writer's grid is the
     /// size, so a difference is an unanswered declaration rather than another
@@ -1737,7 +1722,6 @@ final class TermiodSessionLink: @unchecked Sendable {
             viewportGrid = size
             viewportIsUserDriven = userDriven
             guard attached else { return }
-            updateGrowingViewportLocked()
             scheduleViewportLocked()
         }
     }
@@ -1759,33 +1743,6 @@ final class TermiodSessionLink: @unchecked Sendable {
             flushViewportLocked()
         }
     }
-
-    /// A local growth may lead the daemon because widening cannot split a row
-    /// at a width the child never drew. The deadline restores the authoritative
-    /// letterbox if another device wins the size policy instead.
-    ///
-    /// Must run on `workQueue`.
-    private func updateGrowingViewportLocked() {
-        growingViewportGeneration &+= 1
-        let generation = growingViewportGeneration
-        let mayLead = hostSizesByPolicy && TerminalViewportGrowth.canLeadSurface(
-            viewport: viewportGrid, authoritativeGrid: authoritativeGrid)
-        setGrowingViewportPendingLocked(mayLead)
-        guard mayLead else { return }
-        workQueue.asyncAfter(deadline: .now() + Self.growingViewportDeadline) { [self] in
-            guard !closed, generation == growingViewportGeneration else { return }
-            setGrowingViewportPendingLocked(false)
-        }
-    }
-
-    /// Must run on `workQueue`.
-    private func setGrowingViewportPendingLocked(_ pending: Bool) {
-        guard growingViewportPending != pending else { return }
-        growingViewportPending = pending
-        DispatchQueue.main.async { [self] in onGrowingViewportPending?(pending) }
-    }
-
-    private static let growingViewportDeadline = DispatchTimeInterval.milliseconds(600)
 
     /// Whether this pane is on screen. A hidden pane is not rendering and stops
     /// counting toward the session's size; showing it again puts its viewport
@@ -2483,12 +2440,6 @@ final class TermiodSessionLink: @unchecked Sendable {
             \(grid.cols, privacy: .public)
             """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
-            if grid == viewportGrid || !TerminalViewportGrowth.canLeadSurface(
-                viewport: viewportGrid, authoritativeGrid: grid)
-            {
-                growingViewportGeneration &+= 1
-                setGrowingViewportPendingLocked(false)
-            }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }
             Log.termiod.info("""

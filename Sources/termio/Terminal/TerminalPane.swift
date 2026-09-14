@@ -517,15 +517,32 @@ private struct SharedGridLetterbox<Content: View>: View {
     /// cut off beats a complete one that is scrambled. It also keeps the promise
     /// the resync depends on — the surface *reaches* the shared grid, so the
     /// link can ask for the keyframe that paints it (`repaintPending`).
+    ///
+    /// Growing used to be exempt: a widening pane let its surface run ahead of
+    /// the daemon, on the reasoning that widening only rejoins rows and cannot
+    /// split one at a width the child never drew. That is true of the content
+    /// already on screen and says nothing about the bytes still arriving. While
+    /// the lead was open the app's VT was at the new width and the daemon's was
+    /// at the old one, so every byte the child wrote in that window — computed
+    /// for the old width, because that is the winsize it had — was parsed here
+    /// at the new one. A TUI redrawing its own borders is exactly that, which is
+    /// why widening a window showed two box borders at two widths and narrowing
+    /// it never did.
+    ///
+    /// Ghostty cannot have that bug: one terminal behind one mutex, so there is
+    /// only ever one width and nothing to lead (`renderer/State.zig` holds a
+    /// *pointer* to the live terminal, and `termio/Termio.zig`'s resize reflows
+    /// it inside the renderer lock). Termio cannot share the object — the
+    /// session outlives the client — but it can hold the same invariant: at any
+    /// instant one width is authoritative and no parser is anywhere else. The
+    /// lead was the only place that broke it, and it bought a cosmetic gain,
+    /// filling the pane one round trip sooner. That trip is 19ms at the median
+    /// and 55ms at p90 over the local socket.
     private var letterboxSize: CGSize? {
         // A pane already the session's size fills the pane exactly, with none of
         // the half-cell slack a letterbox needs, so the common case looks the
         // way it always did.
-        //
-        // Shrinking stays pinned: it would split rows at widths the child never
-        // drew. Growing may follow the pane because it only rejoins rows, while
-        // the keyframe hold covers a layout that trails the daemon's answer.
-        guard runtime.sizesByPolicy, !runtime.growingViewportPending,
+        guard runtime.sizesByPolicy,
               let grid = runtime.sharedGrid, grid != paneGrid, let cell = cellSize
         else { return nil }
         let paddingY = CGFloat(TermioStore.terminalWindowPaddingY)
