@@ -19,6 +19,7 @@ on:
       - "Package.resolved"
       - ".swiftlint.yml"
       - "scripts/check-strings.sh"
+      - "scripts/ci-swift-test.sh"
       - "scripts/compile-strings.sh"
       - ".github/workflows/macos.yml"
   pull_request:
@@ -30,6 +31,7 @@ on:
       - "Package.resolved"
       - ".swiftlint.yml"
       - "scripts/check-strings.sh"
+      - "scripts/ci-swift-test.sh"
       - "scripts/compile-strings.sh"
       - ".github/workflows/macos.yml"
 
@@ -69,8 +71,11 @@ jobs:
       - name: Build
         run: swift build
 
+      # Under a watchdog: a test that never returns would otherwise be waited
+      # out until the job cap, which force-cancels the run and takes the log
+      # with it. See scripts/ci-swift-test.sh.
       - name: Test
-        run: swift test
+        run: ./scripts/ci-swift-test.sh
 
       # The shipped bundle is universal, but release.yml only ever cross-compiles
       # the Intel slice on a version tag — so a dependency that loses its x86_64
@@ -99,7 +104,7 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test
+        run: ./scripts/ci-swift-test.sh
 
       - name: Verify the built binary is x86_64
         run: |
