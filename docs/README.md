@@ -62,6 +62,7 @@ from the real front matter).
 | approved | design | [Refresh session identity when Claude Code /clear rotates the conversation](design/20260720-clear-conversation-rotation.md) |
 | approved | design | [Worktree information architecture](design/20260628-worktree-information-architecture.md) |
 | approved | rfc | [Theme store — browse 50, install on demand, library is truth](design/20260814-theme-store.md) |
+| archived | bug | [Input during a pending host resize](bug/terminal-input-pending-resize.md) |
 | archived | design | [移动端 Agent UI 协议 —— PTY 之上的旁路结构面（ACP 词汇）](design/20260711-mobile-agent-ui-protocol.md) |
 | archived | design | [Agent permission questions on the phone](design/20260803-agent-permission-questions.md) |
 | archived | design | [iOS scroll-draw coalescing (vsync-capped surface draws)](design/20260706-ios-scroll-renderer-health.md) |
