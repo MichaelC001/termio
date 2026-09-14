@@ -142,29 +142,13 @@ The Termio iOS mirrors every session live — full TUI. A key bar puts esc, tab,
 Every session lives in `termiod`. Clients only attach. Closing a client does not kill the agent. One protocol; only the pipe changes.
 
 ```
-  ┌─────────────────┐ unix  ┌────────────┐         ┌─────────────────┐
-  │ Mac app         │──────►│            │         │                 │
-  ├─────────────────┤ unix  │            │         │                 │
-  │ Windows (soon)  │──────►│            │         │                 │
-  ├─────────────────┤ wss   │            │         │                 │
-  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
-  ├─────────────────┤ unix  │   (Mac)    │         │                 │
-  │ TUI (soon)      │──────►│            │         │                 │
-  ├─────────────────┤ wss   │            │         │                 │
-  │ Android (soon)  │──────►│            │         │                 │
-  └─────────────────┘       └────────────┘         └─────────────────┘
-
-  ┌─────────────────┐ ssh   ┌────────────┐         ┌─────────────────┐
-  │ Mac app         │──────►│            │         │                 │
-  ├─────────────────┤ ssh   │            │         │                 │
-  │ Windows (soon)  │──────►│            │         │                 │
-  ├─────────────────┤ wss   │            │         │                 │
-  │ iPhone          │──────►│  termiod   │── PTY ─►│  shell / agent  │
-  ├─────────────────┤ ssh   │  (Linux)   │         │                 │
-  │ TUI (soon)      │──────►│            │         │                 │
-  ├─────────────────┤ wss   │            │         │                 │
-  │ Android (soon)  │──────►│            │         │                 │
-  └─────────────────┘       └────────────┘         └─────────────────┘
+Mac app        ─ unix/ssh ─┐
+TUI (soon)     ─ unix/ssh ─┤
+                           ├──► termiod
+iPhone         ─ wss ──────┤       │
+Android (soon) ─ wss ──────┘       │ PTY
+                                   ▼
+                            shell / agent
 ```
 
 The phone attaches to `termiod` on the box, not through the Mac. A session on a VPS is the same object as one on your laptop.
