@@ -10,7 +10,10 @@ updated: 2026-09-13
 
 > Historical investigation for [issue #633](https://github.com/termio-sh/termio/issues/633).
 > The affected Swift PTY implementation was removed before this patch reached
-> `main`. The reported visual symptom remains unverified on the current backend.
+> `main`, and the current `termiod` backend prevents the timing defect by
+> construction (see "Resolution against main"). The reported visual symptom was
+> never reproduced, so its absence on the current backend cannot be proven, only
+> its known cause ruled out.
 
 Reported September 13, 2026: Claude input and its cursor sometimes appear above
 the prompt line after switching away and back. The exact visual symptom has
@@ -43,18 +46,22 @@ merged tree because it depends on the deleted `PTYProcess` class.
 
 ## Resolution against main
 
-`main` at `cebe4716` owns PTYs in `termiod/src/pty.rs`.
-`Sources/termio/Terminal/Termiod/TermiodClient.swift` queues input on its work
-queue and declares viewports separately. For hosts that support size policy,
-`applyWriter` deliberately does not reassert the writer's grid. The daemon
-chooses a shared grid from rendering attachments; an input-side host-size
-claim from the old implementation has no direct equivalent here.
+`main` owns PTYs in `termiod/src/pty.rs`, and the resize-before-input ordering the
+old patch had to restore now holds by construction. Input and viewport frames
+travel one connection in order (`TermiodClient.send`, `TermiodClient.swift`), and
+the daemon handles `Input` and `Viewport` in a single actor loop, so a frame is
+resolved before the one behind it (`session.rs`, `SessionMsg::Input` /
+`SessionMsg::Viewport`). The `Input` arm calls `apply_size_policy` immediately
+before forwarding the bytes, and `apply_size_policy` applies `TIOCSWINSZ`
+synchronously in-line (`session.rs` → `pty.rs` `set_winsize`) — no deferred
+callback. So the kernel PTY is always at the current grid before input reaches
+the child, which is the exact opposite of the 50 ms coalescing window that made
+the old defect possible. There is no equivalent path on the current backend.
 
 The merge keeps that implementation and removes the obsolete Swift class and
 its standalone test. There is no production-code change relative to `main`.
-This records a superseded patch, not a verified fix for the screenshot on the
-current backend.
 
-Still needed: reproduce repeated app/session switches with Claude while it
-streams output and while editing a multiline prompt, with and without window
-or pane resizing. Confirm both the input text and cursor remain in the prompt.
+The known mechanism is therefore ruled out on the current backend. What is not
+proven is the reported visual symptom itself: it was intermittent and never
+reproduced, so this records the elimination of its only identified cause, not a
+reproduction. Reopen #633 only if the misalignment recurs on a current build.
