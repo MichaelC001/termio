@@ -319,14 +319,10 @@ impl Drop for NameIndex {
     }
 }
 
-// Cancellation can release the last owner on a runtime worker. A detached drop
-// keeps large allocations off that worker without delaying traversal.
+// Drop can run while Tokio holds its blocking-pool lock during shutdown.
+// An OS thread avoids re-entering that pool and keeps large frees off workers.
 fn drop_index_value(value: impl Send + 'static) {
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        runtime.spawn_blocking(move || drop(value));
-    } else {
-        drop(value);
-    }
+    std::thread::spawn(move || drop(value));
 }
 
 impl NameIndex {
@@ -2794,7 +2790,7 @@ mod tests {
     }
 
     #[test]
-    fn retiring_a_large_index_detaches_its_drop_from_the_runtime_worker() {
+    fn retiring_a_large_index_does_not_use_the_tokio_blocking_pool() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .max_blocking_threads(1)
@@ -2824,16 +2820,16 @@ mod tests {
                 );
             }
             let index_alive = Arc::downgrade(&index);
+            tokio::task::yield_now().await;
             drop(index);
             drop(updates);
             wait_for_index(|| index_alive.upgrade().is_none()).await;
-            assert!(
-                map_alive.upgrade().is_some(),
-                "the map must wait in the blocking queue, not drop on this runtime worker"
-            );
+            // Disposal must finish before the only Tokio blocking thread is
+            // released, including when the scan is cancelled awaiting budget.
+            wait_for_index(|| map_alive.upgrade().is_none()).await;
+            assert!(!blocker.is_finished());
             release.send(()).unwrap();
             blocker.await.unwrap();
-            wait_for_index(|| map_alive.upgrade().is_none()).await;
             drop(permit);
             std::fs::remove_dir_all(root).unwrap();
         });
