@@ -70,51 +70,59 @@ brew install --cask termio-sh/tap/termio
 
 <table>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="Termio 側邊欄，顯示終端機、聊天、專案、worktree 及其巢狀的工作階段" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>專案裝著工作階段</h3>
 <p>一個 checkout 一個專案，它的終端機和 Agent 都在下面。聊天排在專案上方——不屬於任何專案的一次性 Agent 工作階段。</p>
-<img alt="Termio 側邊欄，顯示終端機、聊天、專案、worktree 及其巢狀的工作階段" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="Termio 側邊欄裡的一個 worktree，帶著巢狀的工作階段和一個新增 worktree 的快捷選單" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>Git worktree</h3>
 <p>一條分支對應一項並行任務，從側邊欄建立。Worktree 巢狀在它來自的專案下面。</p>
-<img alt="Termio 側邊欄裡的一個 worktree，帶著巢狀的工作階段和一個新增 worktree 的快捷選單" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="Termio 裡一個 Codex 工作階段和兩個 shell 窗格並排成群組" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>分割窗格</h3>
 <p>⌘D 向右分割，⇧⌘D 向下分割。一個 Agent、一個開發伺服器、一個 shell，同一個視窗。</p>
-<img alt="Termio 裡一個 Codex 工作階段和兩個 shell 窗格並排成群組" src="web/landing/public/screenshots/docs/03-grouped-panes.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="Termio 側邊欄回報工作中、完成和需要你，終端機裡同時跑著 termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>狀態一眼看清</h3>
 <p>工作中、閒置、完成，還是<em>需要你</em>——每一列都有標記。同一份清單就是 <code>termio sessions list</code>。</p>
-<img alt="Termio 側邊欄回報工作中、完成和需要你，終端機裡同時跑著 termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="Termio 的檔案檢閱器裡開著一個 Swift 檔案，語法高亮的編輯器旁邊是終端機" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>檔案編輯器</h3>
 <p>在檔案樹裡點一個檔案。語法高亮、自動儲存。提交仍然在終端機裡做。</p>
-<img alt="Termio 的檔案檢閱器裡開著一個 Swift 檔案，語法高亮的編輯器旁邊是終端機" src="web/landing/public/screenshots/docs/06-files-editor.png" />
-</td>
-<td width="50%" valign="top">
-<h3>變更</h3>
-<p>唯讀的 git 面板，顯示目前的統一 diff。提交、推送和開 PR 仍然在終端機裡。</p>
-<img alt="Termio 的變更分頁選中了一個檔案，紅綠統一 diff 顯示在終端機旁邊" src="web/landing/public/screenshots/docs/07-changes-diff.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="Termio 的變更分頁選中了一個檔案，紅綠統一 diff 顯示在終端機旁邊" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>變更</h3>
+<p>唯讀的 git 面板，顯示目前的統一 diff。提交、推送和開 PR 仍然在終端機裡。</p>
+</td>
+</tr>
+<tr>
+<td width="62%"><img alt="Termio 的搜尋分頁列出 DiffGapText 在四個檔案裡的結果" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>搜尋</h3>
 <p>專案層級的內容搜尋，點一下就跳到編輯器裡符合的那一行。</p>
-<img alt="Termio 的搜尋分頁列出 DiffGapText 在四個檔案裡的結果" src="web/landing/public/screenshots/docs/09-project-search.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="Termio 的命令面板輸入 split，選中了向右分割" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>命令面板</h3>
 <p>⌘⇧P。分割、聚焦，一切你本來要翻選單找的東西。</p>
-<img alt="Termio 的命令面板輸入 split，選中了向右分割" src="web/landing/public/screenshots/docs/10-command-palette.png" />
 </td>
 </tr>
 </table>
