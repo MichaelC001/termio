@@ -309,6 +309,24 @@ struct IndexInner {
     walked_dirs: usize,
     pending_dirs: usize,
     complete: bool,
+    #[cfg(test)]
+    drop_probe: Option<Arc<()>>,
+}
+
+impl Drop for NameIndex {
+    fn drop(&mut self) {
+        drop_index_value(std::mem::take(self.inner.get_mut().unwrap()));
+    }
+}
+
+// Cancellation can release the last owner on a runtime worker. A detached drop
+// keeps large allocations off that worker without delaying traversal.
+fn drop_index_value(value: impl Send + 'static) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn_blocking(move || drop(value));
+    } else {
+        drop(value);
+    }
 }
 
 impl NameIndex {
@@ -492,9 +510,6 @@ struct IndexScan {
     index: Arc<NameIndex>,
     frontier: VecDeque<(PathBuf, bool)>,
     directory: Option<IndexDirectory>,
-    retired_dirs: BTreeMap<PathBuf, Vec<String>>,
-    retired_files: Vec<String>,
-    pruning: Option<PathBuf>,
     full_rescan: bool,
     initialized: bool,
     finished: bool,
@@ -519,9 +534,6 @@ impl IndexScan {
             index,
             frontier,
             directory: None,
-            retired_dirs: BTreeMap::new(),
-            retired_files: Vec::new(),
-            pruning: None,
             full_rescan: changes.full_rescan,
             initialized: false,
             finished: false,
@@ -552,19 +564,18 @@ impl IndexScan {
         if !self.initialized {
             self.initialized = true;
             if self.full_rescan {
-                let mut inner = self.index.inner.lock().unwrap();
-                self.retired_dirs = std::mem::take(&mut inner.dirs);
-                inner.walked_dirs = 0;
-                inner.pending_dirs = 1;
-                inner.complete = false;
+                let previous = {
+                    let mut inner = self.index.inner.lock().unwrap();
+                    let previous = std::mem::take(&mut *inner);
+                    inner.pending_dirs = 1;
+                    previous
+                };
+                drop_index_value(previous);
             }
         }
         let mut operations = 0;
         while operations < limit && started.elapsed() < time {
             operations += 1;
-            if self.retire_entry() {
-                continue;
-            }
             if self.directory.is_none() {
                 let Some((path, descend)) = self.frontier.pop_front() else {
                     if self.full_rescan {
@@ -595,7 +606,7 @@ impl IndexScan {
                             error.kind(),
                             std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                         ) {
-                            self.pruning = Some(path);
+                            self.prune(&path);
                         } else {
                             eprintln!("termiod: index cannot list {}: {error}", path.display());
                         }
@@ -652,7 +663,7 @@ impl IndexScan {
                             .unwrap()
                             .dirs
                             .insert(directory.path, directory.files);
-                        self.retired_files = previous.unwrap_or_default();
+                        drop(previous);
                     }
                     self.update_coverage();
                 }
@@ -661,37 +672,25 @@ impl IndexScan {
         false
     }
 
-    fn retire_entry(&mut self) -> bool {
-        // Free names individually under the same budget as traversal. Even a
-        // single directory's old listing can contain millions of allocations.
-        if self.retired_files.pop().is_some() {
-            return true;
-        }
-        if let Some((_, files)) = self.retired_dirs.pop_first() {
-            self.retired_files = files;
-            return true;
-        }
-        if let Some(path) = &self.pruning {
-            // Ordered keys let pruning resume without rescanning the whole map
-            // or holding the query lock while dropping a subtree's contents.
+    fn prune(&self, path: &Path) {
+        // Bound each lock hold to one directory; free its names outside the
+        // query lock, without spending traversal slots on deallocation.
+        loop {
             let removed = {
                 let mut inner = self.index.inner.lock().unwrap();
                 let next = inner
                     .dirs
-                    .range(path.clone()..)
+                    .range(path.to_path_buf()..)
                     .next()
                     .filter(|(indexed, _)| indexed.starts_with(path))
                     .map(|(indexed, _)| indexed.clone());
                 next.and_then(|next| inner.dirs.remove_entry(&next))
             };
-            if let Some((_, files)) = removed {
-                self.retired_files = files;
-            } else {
-                self.pruning = None;
+            if removed.is_none() {
+                break;
             }
-            return true;
+            drop(removed);
         }
-        false
     }
 
     fn update_coverage(&self) {
@@ -713,6 +712,7 @@ impl Drop for IndexScan {
     fn drop(&mut self) {
         if !self.finished {
             self.report("cancelled");
+            drop_index_value((self.directory.take(), std::mem::take(&mut self.frontier)));
         }
     }
 }
@@ -2739,110 +2739,104 @@ mod tests {
         std::fs::remove_dir_all(healthy_root).unwrap();
     }
 
-    async fn match_during_index_cleanup(mut scan: IndexScan, expected: &[&str]) {
-        let index = scan.index.clone();
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let cleanup_barrier = barrier.clone();
-        let cleanup = tokio::task::spawn_blocking(move || {
-            cleanup_barrier.wait();
-            let complete = scan.step(INDEX_BATCH_TIME, INDEX_BATCH_ENTRIES);
-            (scan, complete)
-        });
-        let query = tokio::task::spawn_blocking(move || {
-            barrier.wait();
-            index.matches("sentinel", 10).0
-        });
-        let matches = tokio::time::timeout(Duration::from_secs(2), query)
-            .await
-            .expect("cleanup must not starve fs.match")
-            .unwrap();
-        assert_eq!(matches, expected);
-        let (scan, complete) = cleanup.await.unwrap();
-        assert!(!complete, "large cleanup must span multiple batches");
-        assert!(!scan.retired_dirs.is_empty() || !scan.retired_files.is_empty());
-    }
-
     #[tokio::test]
-    async fn index_invalidation_and_prune_bound_cleanup_and_allow_matches() {
-        let root = scratch("index-cleanup");
-        let vanished = root.join("gone");
+    async fn index_rebuild_and_replacement_do_not_wait_for_old_names() {
+        let root = scratch("index-rebuild-large-map");
+        touch(&root.join("sentinel.txt"), b"");
+        let index = Arc::new(NameIndex::new(root.clone()));
         for full_rescan in [true, false] {
-            let index = Arc::new(NameIndex::new(root.clone()));
-            {
-                let mut inner = index.inner.lock().unwrap();
-                for number in 0..4096 {
-                    inner.dirs.insert(
-                        vanished.join(number.to_string()),
-                        (0..32).map(|file| format!("old-{file}.txt")).collect(),
-                    );
-                }
-                inner
-                    .dirs
-                    .insert(root.join("gone-other"), vec!["sentinel.txt".into()]);
-            }
-            let mut scan = IndexScan::new(
-                index.clone(),
-                IndexChanges {
-                    full_rescan,
-                    directories: HashSet::from([vanished.clone()]),
-                    ..Default::default()
-                },
-                false,
+            index.inner.lock().unwrap().dirs.insert(
+                root.clone(),
+                (0..100_000)
+                    .map(|number| format!("old-{number}.txt"))
+                    .collect(),
             );
-            assert!(!scan.step(Duration::from_secs(60), 1));
-            if full_rescan {
-                assert!(index.inner.lock().unwrap().dirs.is_empty());
-                assert_eq!(
-                    scan.retired_dirs.len(),
-                    4096,
-                    "invalidation swaps the map, then retires one directory per operation"
-                );
-            } else {
-                assert_eq!(index.inner.lock().unwrap().dirs.len(), 4097);
-                assert!(!scan.step(Duration::from_secs(60), 17));
-                assert_eq!(
-                    index.inner.lock().unwrap().dirs.len(),
-                    4096,
-                    "pruning yields within the removed listing, not after the whole subtree"
-                );
-            }
-            match_during_index_cleanup(
-                scan,
-                if full_rescan {
-                    &[]
-                } else {
-                    &["gone-other/sentinel.txt"]
-                },
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                index.scan_for_test(IndexChanges {
+                    full_rescan,
+                    directories: HashSet::from([root.clone()]),
+                    ..Default::default()
+                }),
             )
-            .await;
+            .await
+            .expect("old names must not cost hundreds of traversal slots");
+            assert_eq!(index.matches("", 10).0, vec!["sentinel.txt"]);
         }
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
-    async fn index_listing_replacement_retires_old_names_in_batches() {
-        let root = scratch("index-replace-large-listing");
-        touch(&root.join("sentinel.txt"), b"");
+    async fn index_pruning_does_not_pace_deallocation_or_remove_siblings() {
+        let root = scratch("index-prune-large-map");
+        let vanished = root.join("gone");
         let index = Arc::new(NameIndex::new(root.clone()));
-        index.inner.lock().unwrap().dirs.insert(
-            root.clone(),
-            (0..100_000)
-                .map(|number| format!("old-{number}.txt"))
-                .collect(),
-        );
-        let mut scan = IndexScan::new(
-            index.clone(),
-            IndexChanges {
-                directories: HashSet::from([root.clone()]),
-                ..Default::default()
-            },
-            false,
-        );
-        assert!(!scan.step(Duration::from_secs(60), 17));
-        assert!(scan.retired_files.len() >= 100_000 - 17);
-        assert_eq!(index.matches("sentinel", 10).0, vec!["sentinel.txt"]);
-        match_during_index_cleanup(scan, &["sentinel.txt"]).await;
+        {
+            let mut inner = index.inner.lock().unwrap();
+            for number in 0..4096 {
+                inner.dirs.insert(
+                    vanished.join(number.to_string()),
+                    (0..32).map(|file| format!("old-{file}.txt")).collect(),
+                );
+            }
+            inner
+                .dirs
+                .insert(root.join("gone-other"), vec!["sentinel.txt".into()]);
+        }
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            index.apply(&[vanished.display().to_string()]),
+        )
+        .await
+        .expect("pruning is not paced");
+        assert_eq!(index.matches("", 10).0, vec!["gone-other/sentinel.txt"]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retiring_a_large_index_detaches_its_drop_from_the_runtime_worker() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let root = scratch("index-retire-large-map");
+            let permit = INDEX_BUDGET.lock().await;
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                entered.send(()).unwrap();
+                let _ = blocked.recv();
+            });
+            waiting.await.unwrap();
+            let (index, updates) = spawn_index(root.clone());
+            let probe = Arc::new(());
+            let map_alive = Arc::downgrade(&probe);
+            {
+                let mut inner = index.inner.lock().unwrap();
+                inner.drop_probe = Some(probe);
+                inner.dirs.insert(
+                    root.clone(),
+                    (0..100_000)
+                        .map(|number| format!("old-{number}.txt"))
+                        .collect(),
+                );
+            }
+            let index_alive = Arc::downgrade(&index);
+            drop(index);
+            drop(updates);
+            wait_for_index(|| index_alive.upgrade().is_none()).await;
+            assert!(
+                map_alive.upgrade().is_some(),
+                "the map must wait in the blocking queue, not drop on this runtime worker"
+            );
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            wait_for_index(|| map_alive.upgrade().is_none()).await;
+            drop(permit);
+            std::fs::remove_dir_all(root).unwrap();
+        });
     }
 
     async fn wait_for_index(mut ready: impl FnMut() -> bool) {
