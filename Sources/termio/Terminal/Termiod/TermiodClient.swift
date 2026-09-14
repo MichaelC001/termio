@@ -1232,6 +1232,12 @@ struct TerminalKeyframeHold {
     /// trip later. Dropping it instead leaves the last correct screen up until
     /// the resync lands. The live bytes still go out: they are the child's, and
     /// this is not the layer that may discard them.
+    ///
+    /// This is the *flood* ending, where the tail is large by definition — a
+    /// build log, a `cat` of something long — and is content in its own right.
+    /// A resync restores the screen and not the scrollback that went past it,
+    /// so dropping it here would lose output nothing brings back. The
+    /// deadline's ending is `discard`, where the opposite is true.
     mutating func abandon() -> [Data] {
         guard keyframe != nil else { return [] }
         keyframe = nil
@@ -1240,6 +1246,29 @@ struct TerminalKeyframeHold {
         let behind = queued
         queued.removeAll(keepingCapacity: false)
         return behind.isEmpty ? [] : [behind]
+    }
+
+    /// Stop waiting and drop the keyframe *and* what queued behind it.
+    ///
+    /// The deadline's ending. The tail here is at most a few hundred
+    /// milliseconds of output, and after a resize it is the child's answer to
+    /// SIGWINCH: increments computed against the screen this keyframe carried,
+    /// cursor-addressed and relative to a base the surface never received.
+    /// Flushing them onto the previous screen draws the new width's rows over
+    /// rows still standing at the old one — two box borders at two widths,
+    /// layered, which is what a window resize left on screen.
+    ///
+    /// The resync the caller arms carries a whole screen that supersedes every
+    /// one of them, so nothing is lost that the repair does not bring back, and
+    /// until it lands the last coherent screen stays up. That is the trade the
+    /// flood ending cannot make, because its tail is content rather than a
+    /// repaint.
+    mutating func discard() {
+        guard keyframe != nil else { return }
+        keyframe = nil
+        keyframeGrid = nil
+        epoch &+= 1
+        queued.removeAll(keepingCapacity: false)
     }
 
     /// Stop waiting and paint. Only teardown ends here — a surface that is going
@@ -1885,11 +1914,25 @@ final class TermiodSessionLink: @unchecked Sendable {
                 outputLock.unlock()
                 return
             }
-            for chunk in hold.abandon() { onOutput?(chunk) }
+            hold.discard()
             outputLock.unlock()
             Log.termiod.info("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-held-out
             """)
+            // Ask for the repair here, not when the surface finally arrives.
+            //
+            // The screen on the surface is now the pre-resize one, and the
+            // increments that would have carried it forward went with the
+            // keyframe they were computed against. Waiting for `noteSurfaceGrid`
+            // to notice and arm the resync left a stale screen up for the rest
+            // of the layout — measured at 322ms on a busy app, on top of the
+            // 250ms hold that had already passed. Nothing else is coming that
+            // repairs this, so it is asked for the moment the hold is given up.
+            //
+            // `paintImmediately` lets the answering keyframe through the hold
+            // rather than queueing behind another wait: it is the repair, and
+            // holding the repair is how a stale screen becomes a permanent one.
+            requestResyncLocked()
             armRepaintLocked()
         }
     }
