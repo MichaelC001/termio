@@ -14,7 +14,7 @@
 use crate::id::SessionId;
 use crate::protocol::{DirEntry, EntryKind, PathListing};
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -305,7 +305,7 @@ struct IndexInner {
     /// Files per directory (absolute dir → file names). Per-dir granularity is
     /// what makes watcher batches cheap to apply: one changed dir = one
     /// re-list, not a walk.
-    dirs: std::collections::HashMap<PathBuf, Vec<String>>,
+    dirs: BTreeMap<PathBuf, Vec<String>>,
     walked_dirs: usize,
     pending_dirs: usize,
     complete: bool,
@@ -433,11 +433,27 @@ impl NameIndex {
     }
 }
 
-// A per-root limit would multiply the allowance by the number of open repos.
-static INDEX_BUDGET: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+// Space starts globally without holding a permit across filesystem calls: a
+// hung mount must consume only its own root's blocking task, not every root's turn.
+static INDEX_BUDGET: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
 const INDEX_BATCH_TIME: Duration = Duration::from_millis(5);
 const INDEX_BATCH_PAUSE: Duration = Duration::from_millis(45);
 const INDEX_BATCH_ENTRIES: usize = 128;
+
+async fn run_index_batch<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T> {
+    {
+        let mut next_start = INDEX_BUDGET.lock().await;
+        if let Some(deadline) = *next_start {
+            tokio::time::sleep_until(deadline.into()).await;
+        }
+        *next_start = Some(Instant::now() + INDEX_BATCH_TIME + INDEX_BATCH_PAUSE);
+    }
+    tokio::task::spawn_blocking(work)
+        .await
+        .context("running index batch")
+}
 
 #[derive(Default)]
 struct IndexChanges {
@@ -476,6 +492,9 @@ struct IndexScan {
     index: Arc<NameIndex>,
     frontier: VecDeque<(PathBuf, bool)>,
     directory: Option<IndexDirectory>,
+    retired_dirs: BTreeMap<PathBuf, Vec<String>>,
+    retired_files: Vec<String>,
+    pruning: Option<PathBuf>,
     full_rescan: bool,
     initialized: bool,
     finished: bool,
@@ -500,6 +519,9 @@ impl IndexScan {
             index,
             frontier,
             directory: None,
+            retired_dirs: BTreeMap::new(),
+            retired_files: Vec::new(),
+            pruning: None,
             full_rescan: changes.full_rescan,
             initialized: false,
             finished: false,
@@ -517,21 +539,12 @@ impl IndexScan {
     }
 
     async fn next_batch(self) -> Result<(Self, bool)> {
-        let permit = INDEX_BUDGET
-            .acquire()
-            .await
-            .context("acquiring index budget")?;
-        tokio::task::spawn_blocking(move || {
-            // Keep the permit in the blocking task: retiring a watch can drop
-            // its future while this batch is still using the filesystem.
-            let _permit = permit;
+        run_index_batch(move || {
             let mut scan = self;
             let complete = scan.step(INDEX_BATCH_TIME, INDEX_BATCH_ENTRIES);
-            std::thread::sleep(INDEX_BATCH_PAUSE);
             (scan, complete)
         })
         .await
-        .context("running index batch")
     }
 
     fn step(&mut self, time: Duration, limit: usize) -> bool {
@@ -540,15 +553,18 @@ impl IndexScan {
             self.initialized = true;
             if self.full_rescan {
                 let mut inner = self.index.inner.lock().unwrap();
-                *inner = IndexInner {
-                    pending_dirs: 1,
-                    ..Default::default()
-                };
+                self.retired_dirs = std::mem::take(&mut inner.dirs);
+                inner.walked_dirs = 0;
+                inner.pending_dirs = 1;
+                inner.complete = false;
             }
         }
         let mut operations = 0;
         while operations < limit && started.elapsed() < time {
             operations += 1;
+            if self.retire_entry() {
+                continue;
+            }
             if self.directory.is_none() {
                 let Some((path, descend)) = self.frontier.pop_front() else {
                     if self.full_rescan {
@@ -579,12 +595,7 @@ impl IndexScan {
                             error.kind(),
                             std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                         ) {
-                            self.index
-                                .inner
-                                .lock()
-                                .unwrap()
-                                .dirs
-                                .retain(|indexed, _| !indexed.starts_with(&path));
+                            self.pruning = Some(path);
                         } else {
                             eprintln!("termiod: index cannot list {}: {error}", path.display());
                         }
@@ -634,16 +645,51 @@ impl IndexScan {
                 }
                 None => {
                     if let Some(directory) = self.directory.take() {
-                        self.index
+                        let previous = self
+                            .index
                             .inner
                             .lock()
                             .unwrap()
                             .dirs
                             .insert(directory.path, directory.files);
+                        self.retired_files = previous.unwrap_or_default();
                     }
                     self.update_coverage();
                 }
             }
+        }
+        false
+    }
+
+    fn retire_entry(&mut self) -> bool {
+        // Free names individually under the same budget as traversal. Even a
+        // single directory's old listing can contain millions of allocations.
+        if self.retired_files.pop().is_some() {
+            return true;
+        }
+        if let Some((_, files)) = self.retired_dirs.pop_first() {
+            self.retired_files = files;
+            return true;
+        }
+        if let Some(path) = &self.pruning {
+            // Ordered keys let pruning resume without rescanning the whole map
+            // or holding the query lock while dropping a subtree's contents.
+            let removed = {
+                let mut inner = self.index.inner.lock().unwrap();
+                let next = inner
+                    .dirs
+                    .range(path.clone()..)
+                    .next()
+                    .filter(|(indexed, _)| indexed.starts_with(path))
+                    .map(|(indexed, _)| indexed.clone());
+                next.and_then(|next| inner.dirs.remove_entry(&next))
+            };
+            if let Some((_, files)) = removed {
+                self.retired_files = files;
+            } else {
+                self.pruning = None;
+            }
+            return true;
         }
         false
     }
@@ -2611,7 +2657,7 @@ mod tests {
     async fn index_roots_share_the_work_and_pause_budget() {
         let first = scratch("index-budget-first");
         let second = scratch("index-budget-second");
-        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let permit = INDEX_BUDGET.lock().await;
         let first_index = Arc::new(NameIndex::new(first.clone()));
         let second_index = Arc::new(NameIndex::new(second.clone()));
         let first_scan = IndexScan::new(
@@ -2641,11 +2687,162 @@ mod tests {
         let (_, second_done) = second_task.await.unwrap().unwrap();
         assert!(first_done && second_done);
         assert!(
-            started.elapsed() >= INDEX_BATCH_PAUSE * 2,
-            "two roots cannot spend the same pause in parallel"
+            started.elapsed() >= INDEX_BATCH_TIME + INDEX_BATCH_PAUSE,
+            "two roots must share the spacing between batch starts"
         );
         std::fs::remove_dir_all(first).unwrap();
         std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_index_root_does_not_block_other_roots_after_retirement() {
+        let stalled_root = scratch("index-stalled");
+        let healthy_root = scratch("index-healthy");
+        touch(&healthy_root.join("ready.txt"), b"");
+        let stalled_index = Arc::new(NameIndex::new(stalled_root.clone()));
+        let remaining = Arc::downgrade(&stalled_index);
+        let mut scan = IndexScan::new(
+            stalled_index,
+            IndexChanges {
+                full_rescan: true,
+                ..Default::default()
+            },
+            true,
+        );
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let stalled = tokio::spawn(run_index_batch(move || {
+            entered.send(()).unwrap();
+            // Model a filesystem call that cannot be cancelled with its async
+            // owner. Keep the scan alive until the test releases that call.
+            blocked.recv().unwrap();
+            scan.step(INDEX_BATCH_TIME, INDEX_BATCH_ENTRIES)
+        }));
+        waiting.await.unwrap();
+        stalled.abort();
+        assert!(remaining.upgrade().is_some());
+
+        let (healthy, updates) = spawn_index(healthy_root.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            wait_for_index(|| healthy.matches("ready", 10).0 == vec!["ready.txt"]).await;
+        })
+        .await
+        .expect("another root must progress while the syscall is still blocked");
+        assert!(
+            remaining.upgrade().is_some(),
+            "the stalled call is still running"
+        );
+        release.send(()).unwrap();
+        wait_for_index(|| remaining.upgrade().is_none()).await;
+        drop(updates);
+        std::fs::remove_dir_all(stalled_root).unwrap();
+        std::fs::remove_dir_all(healthy_root).unwrap();
+    }
+
+    async fn match_during_index_cleanup(mut scan: IndexScan, expected: &[&str]) {
+        let index = scan.index.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let cleanup_barrier = barrier.clone();
+        let cleanup = tokio::task::spawn_blocking(move || {
+            cleanup_barrier.wait();
+            let complete = scan.step(INDEX_BATCH_TIME, INDEX_BATCH_ENTRIES);
+            (scan, complete)
+        });
+        let query = tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            index.matches("sentinel", 10).0
+        });
+        let matches = tokio::time::timeout(Duration::from_secs(2), query)
+            .await
+            .expect("cleanup must not starve fs.match")
+            .unwrap();
+        assert_eq!(matches, expected);
+        let (scan, complete) = cleanup.await.unwrap();
+        assert!(!complete, "large cleanup must span multiple batches");
+        assert!(!scan.retired_dirs.is_empty() || !scan.retired_files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn index_invalidation_and_prune_bound_cleanup_and_allow_matches() {
+        let root = scratch("index-cleanup");
+        let vanished = root.join("gone");
+        for full_rescan in [true, false] {
+            let index = Arc::new(NameIndex::new(root.clone()));
+            {
+                let mut inner = index.inner.lock().unwrap();
+                for number in 0..4096 {
+                    inner.dirs.insert(
+                        vanished.join(number.to_string()),
+                        (0..32).map(|file| format!("old-{file}.txt")).collect(),
+                    );
+                }
+                inner
+                    .dirs
+                    .insert(root.join("gone-other"), vec!["sentinel.txt".into()]);
+            }
+            let mut scan = IndexScan::new(
+                index.clone(),
+                IndexChanges {
+                    full_rescan,
+                    directories: HashSet::from([vanished.clone()]),
+                    ..Default::default()
+                },
+                false,
+            );
+            assert!(!scan.step(Duration::from_secs(60), 1));
+            if full_rescan {
+                assert!(index.inner.lock().unwrap().dirs.is_empty());
+                assert_eq!(
+                    scan.retired_dirs.len(),
+                    4096,
+                    "invalidation swaps the map, then retires one directory per operation"
+                );
+            } else {
+                assert_eq!(index.inner.lock().unwrap().dirs.len(), 4097);
+                assert!(!scan.step(Duration::from_secs(60), 17));
+                assert_eq!(
+                    index.inner.lock().unwrap().dirs.len(),
+                    4096,
+                    "pruning yields within the removed listing, not after the whole subtree"
+                );
+            }
+            match_during_index_cleanup(
+                scan,
+                if full_rescan {
+                    &[]
+                } else {
+                    &["gone-other/sentinel.txt"]
+                },
+            )
+            .await;
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn index_listing_replacement_retires_old_names_in_batches() {
+        let root = scratch("index-replace-large-listing");
+        touch(&root.join("sentinel.txt"), b"");
+        let index = Arc::new(NameIndex::new(root.clone()));
+        index.inner.lock().unwrap().dirs.insert(
+            root.clone(),
+            (0..100_000)
+                .map(|number| format!("old-{number}.txt"))
+                .collect(),
+        );
+        let mut scan = IndexScan::new(
+            index.clone(),
+            IndexChanges {
+                directories: HashSet::from([root.clone()]),
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(!scan.step(Duration::from_secs(60), 17));
+        assert!(scan.retired_files.len() >= 100_000 - 17);
+        assert_eq!(index.matches("sentinel", 10).0, vec!["sentinel.txt"]);
+        match_during_index_cleanup(scan, &["sentinel.txt"]).await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     async fn wait_for_index(mut ready: impl FnMut() -> bool) {
@@ -2668,7 +2865,7 @@ mod tests {
         }
         let (index, updates) = spawn_index(root.clone());
         wait_for_index(|| index.inner.lock().unwrap().dirs.contains_key(&root)).await;
-        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let permit = INDEX_BUDGET.lock().await;
         assert!(!index.inner.lock().unwrap().complete);
         std::fs::remove_file(root.join("old.txt")).unwrap();
         touch(&root.join("late.txt"), b"");
@@ -2684,7 +2881,7 @@ mod tests {
         wait_for_index(|| index.matches("late", 10).0 == vec!["late.txt"]).await;
         assert!(index.matches("old", 10).0.is_empty());
 
-        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let permit = INDEX_BUDGET.lock().await;
         touch(&root.join("overflow.txt"), b"");
         for _ in 0..3 {
             updates
@@ -2706,7 +2903,7 @@ mod tests {
     #[tokio::test]
     async fn retiring_an_index_cancels_a_scan_waiting_for_the_shared_budget() {
         let root = scratch("index-retire");
-        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let permit = INDEX_BUDGET.lock().await;
         let (index, updates) = spawn_index(root.clone());
         tokio::task::yield_now().await;
         let remaining = Arc::downgrade(&index);
@@ -2721,7 +2918,7 @@ mod tests {
         }
         let (index, updates) = spawn_index(root.clone());
         wait_for_index(|| index.inner.lock().unwrap().pending_dirs > 0).await;
-        let permit = INDEX_BUDGET.acquire().await.unwrap();
+        let permit = INDEX_BUDGET.lock().await;
         assert!(!index.inner.lock().unwrap().complete);
         let remaining = Arc::downgrade(&index);
         drop(index);
