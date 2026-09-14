@@ -319,6 +319,18 @@ impl ClientPlane {
         superseded
     }
 
+    /// Hand back the data buffered behind this attachment's open barrier,
+    /// leaving the barrier itself open and its deferred events alone.
+    ///
+    /// The caller has just queued the snapshot that covers these bytes. They
+    /// are not owed any more: see `request_snapshot`.
+    fn take_pending_data(&mut self) -> VecDeque<Metered> {
+        match self.delivery_mut() {
+            Some(ClientDelivery::SnapshotPending { data, .. }) => std::mem::take(data),
+            _ => VecDeque::new(),
+        }
+    }
+
     /// Queue an event behind this attachment's open barrier. `false` when there
     /// is no barrier and the caller should send it straight out.
     fn defer(&mut self, event: ClientEvent) -> bool {
@@ -698,6 +710,32 @@ impl Session {
             scrollback,
         }) {
             self.finish_snapshot(&client_id, request_id, Err(sidecar::UNAVAILABLE.to_string()));
+            return;
+        }
+        // The snapshot boundary is *here*, at the enqueue, not where the
+        // barrier opened and not where the answer comes back.
+        //
+        // The sidecar drains writes in order and stops batching at a non-write
+        // command, so every byte written before this command is already in the
+        // screen it will answer with. A resize opens its barrier immediately
+        // and captures up to 40ms later, and in that gap the child's answer to
+        // SIGWINCH takes both paths at once — parsed into the VT by
+        // `write_sidecar`, buffered for this client by `fan_out`. Replaying
+        // that buffer on top of the snapshot applies the redraw twice, and a
+        // repaint is cursor addressing and relative motion, so the second
+        // application lands its text over rows the first already wrote. That
+        // is the doubled, interleaved screen a window resize left behind, and
+        // it never repaired itself: both sides agree on the grid, so nothing
+        // ever armed a resync.
+        //
+        // `open_snapshot_barrier` already retires the buffer *it* supersedes,
+        // for exactly this reason. Deferred control events are untouched —
+        // they are owed regardless of which screen carries the bytes.
+        if let Some(entry) = self.clients.get_mut(&client_id) {
+            if entry.plane.pending_request() == Some(request_id) {
+                let covered = entry.plane.take_pending_data();
+                release_buffered(&entry.backlog, covered);
+            }
         }
     }
 
@@ -4003,6 +4041,79 @@ mod tests {
         assert!(
             !painted.contains("STALE"),
             "the keyframe painted the screen the child had already replaced: {painted:?}"
+        );
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// The screen a resize hands a client must contain the child's redraw
+    /// exactly once.
+    ///
+    /// One PTY chunk goes down two paths — `write_sidecar` into the
+    /// authoritative VT, `fan_out` toward the clients — and a resize opens the
+    /// barrier before the child has answered. So the answer is *buffered* for
+    /// the client while it is *parsed* into the VT, and the capture is asked
+    /// for after those writes, which puts the redraw inside the snapshot. If
+    /// the buffer is then drained on top of that snapshot, the client applies
+    /// the redraw twice.
+    ///
+    /// Nothing about a repaint is idempotent: it is cursor addressing and
+    /// relative motion, so a second application lands its text somewhere the
+    /// first already wrote. Doubled, interleaved rows after a window resize are
+    /// what that looks like on screen, and they never repair — the grids agree,
+    /// so no resync is ever armed.
+    ///
+    /// The older test beside this one drives the redraw through `write_sidecar`
+    /// alone and never calls `fan_out`, which is exactly the half that cannot
+    /// see this.
+    #[tokio::test]
+    async fn a_resize_does_not_replay_what_its_keyframe_already_contains() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (mut client, _backlog) = attach_snapshot_client(&mut session, "viewer");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(
+            drain(&mut client),
+            vec![Received::Snapshot, Received::Ready],
+            "the attach bootstrap never landed, so this test proves nothing"
+        );
+
+        session.begin_resize_snapshot_barrier();
+
+        // The child's answer to SIGWINCH, taking both paths the way a real PTY
+        // byte does (see the read loop: `write_sidecar(chunk.clone())` then
+        // `fan_out(chunk)`).
+        let redraw = Bytes::from_static(b"\x1b[2J\x1b[HREDRAWN");
+        session.write_sidecar(redraw.clone());
+        session.fan_out(redraw);
+
+        session.capture_resize_snapshots();
+        pump_sidecar(&mut session, &mut results, 1).await;
+
+        let received = drain(&mut client);
+        let painted_after_snapshot: Vec<Vec<u8>> = received
+            .iter()
+            .skip_while(|event| !matches!(event, Received::Snapshot))
+            .filter_map(|event| match event {
+                Received::Data(payload) => Some(payload.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            painted_after_snapshot.is_empty(),
+            "the keyframe already carried the child's redraw, and it was replayed \
+             on top of itself — the client applies it twice: {:?}",
+            painted_after_snapshot
+                .iter()
+                .map(|payload| String::from_utf8_lossy(payload).to_string())
+                .collect::<Vec<_>>()
         );
 
         session.vt.shut_down();
