@@ -67,51 +67,59 @@ brew install --cask termio-sh/tap/termio
 
 <table>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="ターミナル、チャット、プロジェクト、worktree とそのネストしたセッションを表示する Termio のサイドバー" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>プロジェクトがセッションを持つ</h3>
 <p>チェックアウトごとに 1 プロジェクト、その下にターミナルとエージェント。チャットはその上 — どのプロジェクトにも属さない使い捨てのエージェントセッションです。</p>
-<img alt="ターミナル、チャット、プロジェクト、worktree とそのネストしたセッションを表示する Termio のサイドバー" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="Termio のサイドバー内の worktree、ネストしたセッションと worktree を追加するコンテキストメニュー" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>Git worktree</h3>
 <p>並行タスク 1 つにつき 1 ブランチ、サイドバーから作成できます。worktree は元のプロジェクトの下にネストします。</p>
-<img alt="Termio のサイドバー内の worktree、ネストしたセッションと worktree を追加するコンテキストメニュー" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="Codex セッションと 2 つのシェルペインをグループ化した Termio" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>ペイン分割</h3>
 <p>⌘D で右に、⇧⌘D で下に分割。エージェント、開発サーバー、シェルを 1 つのウインドウに。</p>
-<img alt="Codex セッションと 2 つのシェルペインをグループ化した Termio" src="web/landing/public/screenshots/docs/03-grouped-panes.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="作業中・完了・要対応を報告する Termio のサイドバーと、ターミナルの termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>ひと目でわかるステータス</h3>
 <p>作業中、アイドル、完了、<em>要対応</em> — すべての行にマークが付きます。同じ一覧が <code>termio sessions list</code> です。</p>
-<img alt="作業中・完了・要対応を報告する Termio のサイドバーと、ターミナルの termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="ターミナルの横で Swift ファイルをシンタックスハイライト付きで開いた Termio のファイルインスペクタ" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>ファイルエディタ</h3>
 <p>ツリーでファイルをクリック。シンタックスハイライトと自動保存。コミットはこれまでどおりターミナルで。</p>
-<img alt="ターミナルの横で Swift ファイルをシンタックスハイライト付きで開いた Termio のファイルインスペクタ" src="web/landing/public/screenshots/docs/06-files-editor.png" />
-</td>
-<td width="50%" valign="top">
-<h3>変更</h3>
-<p>現在の統合 diff を表示する読み取り専用の git ペイン。コミット、プッシュ、PR はターミナルのままです。</p>
-<img alt="ファイルを選択し、赤と緑の統合 diff をターミナルの横に表示した Termio の変更タブ" src="web/landing/public/screenshots/docs/07-changes-diff.png" />
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top">
+<td width="62%"><img alt="ファイルを選択し、赤と緑の統合 diff をターミナルの横に表示した Termio の変更タブ" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>変更</h3>
+<p>現在の統合 diff を表示する読み取り専用の git ペイン。コミット、プッシュ、PR はターミナルのままです。</p>
+</td>
+</tr>
+<tr>
+<td width="62%"><img alt="4 つのファイルにまたがる DiffGapText の一致を並べた Termio の検索タブ" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>検索</h3>
 <p>プロジェクト全体の内容検索。エディタの該当行にそのままジャンプします。</p>
-<img alt="4 つのファイルにまたがる DiffGapText の一致を並べた Termio の検索タブ" src="web/landing/public/screenshots/docs/09-project-search.png" />
 </td>
-<td width="50%" valign="top">
+</tr>
+<tr>
+<td width="62%"><img alt="split と入力し「右に分割」を選択している Termio のコマンドパレット" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
+<td width="38%" valign="top">
 <h3>コマンドパレット</h3>
 <p>⌘⇧P。分割、フォーカス、メニューを探し回るような操作はすべてここから。</p>
-<img alt="split と入力し「右に分割」を選択している Termio のコマンドパレット" src="web/landing/public/screenshots/docs/10-command-palette.png" />
 </td>
 </tr>
 </table>
