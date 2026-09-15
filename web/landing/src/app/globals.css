@@ -125,7 +125,7 @@
      which this site never defined. An undefined var() with no fallback makes the
      whole declaration invalid, so `border-color: var(--sidebar-border)` fell back
      to the inherited colour — a near-black rule down the side of the page. */
-  --sidebar: var(--light-background);
+  --sidebar: var(--light-card);
   --sidebar-foreground: var(--light-foreground);
   --sidebar-border: var(--light-border);
   --sidebar-accent: var(--light-secondary);
@@ -175,7 +175,7 @@
   --input: var(--dark-input);
   --code: var(--dark-code);
   --selection: var(--dark-selection);
-  --sidebar: var(--dark-background);
+  --sidebar: var(--dark-card);
   --sidebar-foreground: var(--dark-foreground);
   --sidebar-border: var(--dark-border);
   --sidebar-accent: var(--dark-secondary);
@@ -192,7 +192,16 @@ html:has(.docs-surface) {
     "Microsoft YaHei", "Noto Sans SC";
   --light-background: #f7f7f4;
   --light-foreground: #26251e;
-  --light-card: #f7f7f4;
+  /* The sidebar's surface, a step off the page — the `bg-card` against
+     `bg-background` that Cursor's docs use, #F0EFEA on #F7F7F4. It is what
+     separates the tree from the text now that neither rail carries a border.
+
+     It reaches the sidebar through `--sidebar`, not through this token directly:
+     fumadocs paints `#nd-sidebar` from an unlayered rule reading the shadcn
+     `--sidebar*` family, so the `bg-fd-card` class on the aside never wins. Dark
+     already had the split (--dark-card sits above --dark-background); light had
+     card equal to background, so the sidebar vanished into the page. */
+  --light-card: #f0efea;
   --light-popover: #f7f7f4;
   --light-primary: #26251e;
   --light-primary-foreground: #f7f7f4;
@@ -258,7 +267,7 @@ html:has(.docs-surface) {
        which this site never defined. An undefined var() with no fallback makes the
        whole declaration invalid, so `border-color: var(--sidebar-border)` fell back
        to the inherited colour — a near-black rule down the side of the page. */
-    --sidebar: var(--light-background);
+    --sidebar: var(--light-card);
     --sidebar-foreground: var(--light-foreground);
     --sidebar-border: var(--light-border);
     --sidebar-accent: var(--light-secondary);
@@ -315,7 +324,7 @@ html[data-docs-theme="light"]:has(.docs-surface) {
      which this site never defined. An undefined var() with no fallback makes the
      whole declaration invalid, so `border-color: var(--sidebar-border)` fell back
      to the inherited colour — a near-black rule down the side of the page. */
-  --sidebar: var(--light-background);
+  --sidebar: var(--light-card);
   --sidebar-foreground: var(--light-foreground);
   --sidebar-border: var(--light-border);
   --sidebar-accent: var(--light-secondary);
@@ -388,13 +397,49 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   --color-fd-accent: var(--accent);
   --color-fd-accent-foreground: var(--accent-foreground);
   --color-fd-ring: var(--ring);
-  --sidebar: var(--dark-background);
+  --sidebar: var(--dark-card);
   --sidebar-foreground: var(--dark-foreground);
   --sidebar-border: var(--dark-border);
   --sidebar-accent: var(--dark-secondary);
   --sidebar-accent-foreground: var(--dark-foreground);
   --sidebar-ring: var(--dark-foreground);
   --sidebar-primary-foreground: var(--dark-primary-foreground);
+}
+
+/* No scrim behind the search dialog. The library dims the page and blurs it
+   (`bg-fd-overlay` plus `backdrop-blur-xs`); Cursor's docs let the page stay put
+   and the panel simply sits above it. Dimming a page this light buys no contrast
+   the dialog's own border and shadow are not already providing, and the blur
+   costs a full-viewport re-rasterisation on every open.
+
+   The element stays — it is what catches a click outside to close — it just
+   stops painting. Unlayered for the same reason the sidebar rule is: the
+   library's own declarations are unlayered, and no `@layer` can outrank them. */
+html:has(.docs-surface) .bg-fd-overlay {
+  background-color: transparent;
+  backdrop-filter: none;
+}
+
+/* With nothing dimming behind it, the panel has to hold its own edge: its surface
+   is the same colour as the page and a hairline alone does not separate them.
+   Elevation replaces the scrim — the shadow is what says "above", and it costs
+   one composited layer instead of a full-viewport blur. */
+html:has(.docs-surface) [role="dialog"] {
+  box-shadow:
+    0 16px 48px -12px rgb(38 37 30 / 0.18),
+    0 4px 12px -6px rgb(38 37 30 / 0.12);
+}
+html[data-docs-theme="dark"]:has(.docs-surface) [role="dialog"] {
+  box-shadow:
+    0 16px 48px -12px rgb(0 0 0 / 0.6),
+    0 4px 12px -6px rgb(0 0 0 / 0.45);
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-docs-theme]):has(.docs-surface) [role="dialog"] {
+    box-shadow:
+      0 16px 48px -12px rgb(0 0 0 / 0.6),
+      0 4px 12px -6px rgb(0 0 0 / 0.45);
+  }
 }
 
 @layer base {
