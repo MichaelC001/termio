@@ -1155,6 +1155,7 @@ extension Termiod {
 /// and the one part of it a screenshot could never show, so it is the part that
 /// is pinned by tests.
 struct TerminalKeyframeHold {
+    var surfaceReadyAfter: DispatchTime = .now()
     /// The grid libghostty last reported this surface laid out at.
     private(set) var surfaceGrid: TerminalGrid
     /// Bumped whenever a hold opens or closes, so a deadline armed for an older
@@ -1192,7 +1193,7 @@ struct TerminalKeyframeHold {
         epoch &+= 1
         let asked = painting
         painting = false
-        guard grid != surfaceGrid, !asked else {
+        if DispatchTime.now() >= surfaceReadyAfter, grid == surfaceGrid || asked {
             keyframe = nil
             keyframeGrid = nil
             return [repaint]
@@ -1775,15 +1776,27 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// around it. Never sent: it would tell the daemon this pane has room for
     /// only what it was already shrunk to, and the session could never grow.
     ///
-    /// Arriving at a keyframe's grid is the one moment the surface can paint it,
-    /// so that is where the held keyframe is released. Leaving it — a font
+    /// Geometry arrives before the parser's queued resize. This experiment
+    /// waits past ghostty's 25ms coalescing window before releasing the hold.
+    /// Leaving the grid — a font
     /// change reports the old frame at new cell metrics before the letterbox
     /// puts it back — arms the resync, so the bytes parsed in between are
     /// repainted too.
     func noteSurfaceGrid(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
-        workQueue.async { [self] in
-            guard !closed else { return }
+        let readyAfter = DispatchTime.now() + .milliseconds(30)
+        outputLock.lock()
+        hold.surfaceReadyAfter = readyAfter
+        outputLock.unlock()
+        workQueue.asyncAfter(deadline: readyAfter) { [self] in
+            outputLock.lock()
+            guard !closed, hold.surfaceReadyAfter == readyAfter else {
+                outputLock.unlock()
+                return
+            }
+            let (paint, painted) = hold.surfaceReached(size)
+            for chunk in paint { onOutput?(chunk) }
+            outputLock.unlock()
             let changed = surfaceGrid != size
             surfaceGrid = size
             if changed {
@@ -1793,7 +1806,6 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(size.cols, privacy: .public)
                 """)
             }
-            let painted = releaseKeyframe(at: size)
             guard attached else { return }
             if painted {
                 // The keyframe that was waiting for this grid has just been
@@ -1929,16 +1941,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// pass — always wins it, so the backstop only ever fires for a surface that
     /// genuinely settled somewhere else.
     private static let repaintBackstop = DispatchTimeInterval.milliseconds(500)
-
-    /// Paints a keyframe that was waiting for exactly this grid, and says
-    /// whether it did — the caller reads that as "the repaint has happened".
-    private func releaseKeyframe(at grid: TerminalGrid) -> Bool {
-        outputLock.lock()
-        defer { outputLock.unlock() }
-        let (paint, painted) = hold.surfaceReached(grid)
-        for chunk in paint { onOutput?(chunk) }
-        return painted
-    }
 
     /// How long a moving pane must hold still before its size goes to the
     /// daemon, and the shortest gap between two declarations.
