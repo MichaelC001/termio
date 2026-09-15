@@ -81,6 +81,20 @@ pub(crate) struct Foreground {
 }
 
 impl Foreground {
+    /// Pins the sampled argv so a test can ask what the size policy would do
+    /// with a given program on screen, without a real process group.
+    #[cfg(test)]
+    pub(super) fn set_argv_for_tests(&mut self, argv: Option<Vec<String>>) {
+        self.sample.argv = argv;
+    }
+
+    /// Pins the job bit the same way: whether the sampled group is something
+    /// the child put in the foreground rather than the child itself.
+    #[cfg(test)]
+    pub(super) fn set_job_for_tests(&mut self, job: bool) {
+        self.sample.job = job;
+    }
+
     pub(super) fn current(&self) -> &ForegroundSample {
         &self.sample
     }

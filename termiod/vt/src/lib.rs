@@ -11,9 +11,9 @@ use std::rc::Rc;
 
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, Dirty, RenderState, RowIterator};
-use libghostty_vt::screen::{CellContentTag, RowSemanticPrompt, Screen, TrackedGridRef};
+use libghostty_vt::screen::{CellContentTag, RowSemanticPrompt, Screen};
 use libghostty_vt::style::{RgbColor, StyleColor};
-use libghostty_vt::terminal::{Mode, Point, PointCoordinate, PointSpace};
+use libghostty_vt::terminal::{Mode, Point, PointCoordinate};
 use libghostty_vt::{Error, Terminal, TerminalOptions};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -170,113 +170,6 @@ fn last_occurrence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .rposition(|window| window == needle)
 }
 
-#[derive(Default)]
-enum ResizeSequence {
-    #[default]
-    Ground,
-    Escape,
-    EscapeIntermediate,
-    Csi(Vec<u8>),
-    String {
-        osc: bool,
-        bytes: Vec<u8>,
-        escape: bool,
-    },
-}
-
-#[derive(Clone, Copy)]
-enum ResizeObservation {
-    CursorAddressed,
-    FlowBoundary,
-}
-
-impl ResizeSequence {
-    // Observe only layout intent; Ghostty remains the parser and supplies the
-    // actual cursor position. String payloads must never look like CSI commands.
-    fn advance(&mut self, byte: u8) -> Option<ResizeObservation> {
-        if matches!(byte, 0x18 | 0x1a) {
-            *self = Self::Ground;
-            return None;
-        }
-        match self {
-            Self::Ground => {
-                if byte == 0x1b {
-                    *self = Self::Escape;
-                }
-            }
-            Self::Escape => {
-                *self = match byte {
-                    b'[' => Self::Csi(Vec::new()),
-                    b']' => Self::String {
-                        osc: true,
-                        bytes: Vec::new(),
-                        escape: false,
-                    },
-                    b'P' | b'_' | b'^' | b'X' => Self::String {
-                        osc: false,
-                        bytes: Vec::new(),
-                        escape: false,
-                    },
-                    0x1b => Self::Escape,
-                    0x20..=0x2f => Self::EscapeIntermediate,
-                    0x00..=0x1f | 0x7f => Self::Escape,
-                    _ => Self::Ground,
-                };
-                if byte == b'c' {
-                    return Some(ResizeObservation::FlowBoundary);
-                }
-            }
-            Self::EscapeIntermediate => {
-                if byte == 0x1b {
-                    *self = Self::Escape;
-                } else if (0x30..=0x7e).contains(&byte) {
-                    *self = Self::Ground;
-                }
-            }
-            Self::Csi(parameters) => {
-                if byte == 0x1b {
-                    *self = Self::Escape;
-                } else if (0x40..=0x7e).contains(&byte) {
-                    let cleared = byte == b'J' && matches!(parameters.as_slice(), b"2" | b"3");
-                    let addressed = matches!(byte, b'A' | b'F' | b'H' | b'f' | b'd')
-                        && parameters.iter().all(|b| b.is_ascii_digit() || *b == b';');
-                    *self = Self::Ground;
-                    if cleared {
-                        return Some(ResizeObservation::FlowBoundary);
-                    }
-                    if addressed {
-                        return Some(ResizeObservation::CursorAddressed);
-                    }
-                } else if parameters.len() < 64 {
-                    parameters.push(byte);
-                }
-            }
-            Self::String { osc, bytes, escape } => {
-                if (*osc && byte == 7) || (*escape && byte == b'\\') {
-                    let boundary = *osc
-                        && [b"133;A".as_slice(), b"133;C", b"133;D"]
-                            .iter()
-                            .any(|prefix| {
-                                bytes == prefix
-                                    || (bytes.starts_with(prefix)
-                                        && bytes.get(prefix.len()) == Some(&b';'))
-                            });
-                    *self = Self::Ground;
-                    if boundary {
-                        return Some(ResizeObservation::FlowBoundary);
-                    }
-                } else {
-                    *escape = byte == 0x1b;
-                    if !*escape && bytes.len() < 64 {
-                        bytes.push(byte);
-                    }
-                }
-            }
-        }
-        None
-    }
-}
-
 /// A terminal plus reusable render iterators. This type is deliberately
 /// `!Send`/`!Sync`; construct and use it on the sidecar thread that owns it.
 pub struct VtTerminal {
@@ -284,13 +177,6 @@ pub struct VtTerminal {
     render_state: RenderState<'static>,
     row_iterator: RowIterator<'static>,
     row_cells: CellIterator<'static>,
-    resize_sequence: ResizeSequence,
-    pending_input: Vec<u8>,
-    utf8_remaining: u8,
-    input_passthrough: bool,
-    canvas_start: Option<TrackedGridRef>,
-    canvas_addressed: bool,
-    printed_since_boundary: bool,
     _thread_confined: PhantomData<Rc<()>>,
 }
 
@@ -308,163 +194,34 @@ impl VtTerminal {
             render_state: check(RenderState::new(), "RenderState::new")?,
             row_iterator: check(RowIterator::new(), "RowIterator::new")?,
             row_cells: check(CellIterator::new(), "CellIterator::new")?,
-            resize_sequence: ResizeSequence::default(),
-            pending_input: Vec::new(),
-            utf8_remaining: 0,
-            input_passthrough: false,
-            canvas_start: None,
-            canvas_addressed: false,
-            printed_since_boundary: false,
             _thread_confined: PhantomData,
         })
     }
 
     pub fn vt_write(&mut self, bytes: &[u8]) {
-        // Keep an incomplete escape or UTF-8 prefix out of the engine so our
-        // resize edits cannot accidentally finish/cancel the child's sequence.
-        // A snapshot carries this prefix after its state restoration.
-        let mut input = std::mem::take(&mut self.pending_input);
-        let scanned = input.len();
-        input.extend_from_slice(bytes);
-        let mut start = 0;
-        let mut complete = 0;
-        for index in scanned..input.len() {
-            let byte = input[index];
-            if matches!(self.resize_sequence, ResizeSequence::Ground) {
-                if byte == b'\n' && !self.canvas_addressed {
-                    self.canvas_start = None;
-                }
-                if byte >= 0x20 && byte != 0x7f {
-                    self.printed_since_boundary = true;
-                }
-                self.utf8_remaining = match byte {
-                    0x80..=0xbf if self.utf8_remaining > 0 => self.utf8_remaining - 1,
-                    0xc2..=0xdf => 1,
-                    0xe0..=0xef => 2,
-                    0xf0..=0xf4 => 3,
-                    _ => 0,
-                };
-            }
-            if let Some(observation) = self.resize_sequence.advance(byte) {
-                self.terminal.vt_write(&input[start..=index]);
-                start = index + 1;
-                if let Err(error) = self.observe_resize_intent(observation) {
-                    eprintln!("termiod-vt: tracking resize intent failed: {error}");
-                }
-            }
-            if matches!(self.resize_sequence, ResizeSequence::Ground) && self.utf8_remaining == 0 {
-                complete = index + 1;
-            }
-        }
-        if self.input_passthrough || input.len().saturating_sub(complete) > 1024 * 1024 {
-            // Large control strings stream into Ghostty's own bounded parser.
-            // Until they terminate, a reconstructable snapshot is unavailable.
-            self.terminal.vt_write(&input[start..]);
-            self.input_passthrough = complete != input.len();
-        } else {
-            self.terminal.vt_write(&input[start..complete.max(start)]);
-            self.pending_input
-                .extend_from_slice(&input[complete.max(start)..]);
-        }
+        self.terminal.vt_write(bytes);
     }
 
-    fn observe_resize_intent(&mut self, observation: ResizeObservation) -> Result<()> {
-        if check(self.terminal.active_screen(), "active_screen")? == Screen::Alternate {
-            return Ok(());
-        }
-        match observation {
-            ResizeObservation::FlowBoundary => {
-                self.canvas_start = None;
-                self.canvas_addressed = false;
-                self.printed_since_boundary = false;
-            }
-            ResizeObservation::CursorAddressed => {
-                self.canvas_addressed |= self.printed_since_boundary;
-                let row = u32::from(check(self.terminal.cursor_y(), "cursor_y")?);
-                let previous = self
-                    .canvas_start
-                    .as_ref()
-                    .map(|start| check(start.point(PointSpace::Active), "canvas_start.point"))
-                    .transpose()?
-                    .flatten();
-                if previous.is_none_or(|point| row < point.y) {
-                    self.canvas_start = Some(check(
-                        self.terminal
-                            .track_grid_ref(Point::Active(PointCoordinate { x: 0, y: row })),
-                        "track canvas start",
-                    )?);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Cursor-addressed regions keep their physical rows; text above them
-    /// still reflows. OSC 133 boundaries return the screen to flowing output.
-    pub fn resize_for_content(&mut self, rows: u16, cols: u16) -> Result<()> {
-        if self.input_passthrough {
-            return self.resize_reflowing(rows, cols);
-        }
-        if check(self.terminal.active_screen(), "active_screen")? == Screen::Alternate {
-            // Ghostty truncates the alternate canvas and reflows primary history.
-            return self.resize_reflowing(rows, cols);
-        }
-        if self.current_prompt_start()?.is_some() {
-            self.canvas_start = None;
-            return self.resize_for_shell(rows, cols);
-        }
-        if self.canvas_addressed {
-            if let Some(start) = self
-                .canvas_start
-                .as_ref()
-                .map(|start| check(start.point(PointSpace::Active), "canvas_start.point"))
-                .transpose()?
-                .flatten()
-            {
-                self.truncate_canvas_rows(start.y as u16, cols)?;
-            }
-        }
-        self.resize_reflowing(rows, cols)
-    }
-
-    // Clip only the cursor-managed region before reflow. Turning off DECAWM
-    // for the whole resize would also truncate history nobody will redraw.
-    fn truncate_canvas_rows(&mut self, start: u16, cols: u16) -> Result<()> {
-        let old_cols = check(self.terminal.cols(), "cols")?;
-        if cols == 0 || cols >= old_cols {
-            return Ok(());
-        }
-        let rows = check(self.terminal.rows(), "rows")?;
-        let x = check(self.terminal.cursor_x(), "cursor_x")?.min(cols - 1);
-        let y = check(self.terminal.cursor_y(), "cursor_y")?;
-        let origin = check(self.terminal.mode(Mode::ORIGIN), "origin")?;
-        let background = check(self.terminal.cursor_style(), "cursor_style")?.bg_color;
-        check(
-            self.terminal.set_mode(Mode::ORIGIN, false),
-            "disable origin",
-        )?;
-        self.terminal.vt_write(b"\x1b[49m");
-        for row in start..rows {
-            self.terminal
-                .vt_write(format!("\x1b[{};{}H\x1b[K", row + 1, cols + 1).as_bytes());
-        }
-        let background = match background {
-            StyleColor::None => "\x1b[49m".to_string(),
-            StyleColor::Palette(index) => format!("\x1b[48;5;{}m", index.0),
-            StyleColor::Rgb(color) => format!("\x1b[48;2;{};{};{}m", color.r, color.g, color.b),
-        };
-        self.terminal.vt_write(background.as_bytes());
-        self.terminal
-            .vt_write(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
-        check(
-            self.terminal.set_mode(Mode::ORIGIN, origin),
-            "restore origin",
-        )?;
-        Ok(())
-    }
-
-    /// Truncate without clearing prompts. This also truncates scrollback;
-    /// ordinary session resizes use `resize_for_content` to preserve history.
+    /// Resize the authoritative screen **without reflowing** it — tmux/xterm
+    /// semantics, not Ghostty.app's.
+    ///
+    /// Shells' SIGWINCH redisplay assumes the terminal did not rewrap the old
+    /// prompt: zsh moves the cursor up by a row count computed from the *old*
+    /// width and repaints from there. A reflowing resize rewraps the prompt
+    /// and moves the cursor down, so that repaint lands one row low and the
+    /// stale prompt copy above it survives — once per split, which is the
+    /// ⌘D duplicated-prompt report. Ghostty.app escapes this only because it
+    /// injects shell integration and clears OSC 133-marked prompt rows before
+    /// reflowing (and its engine's post-1.3.1 clear-after-reflow ordering,
+    /// dde3d4d6b, re-breaks the wrapped case even then). This is the
+    /// marks-free behaviour every shell is written against — truncate, don't
+    /// rewrap — and it stays the fallback whenever `resize_for_shell` finds no
+    /// marks under the cursor.
+    ///
+    /// The engine gates reflow on DECAWM (mode ?7), so wraparound is parked
+    /// off across the resize and restored to whatever the program had chosen.
+    /// Every attachment repaints from the post-resize keyframe, so clients
+    /// converge on this screen regardless of what their own surfaces did.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         let wraparound = check(self.terminal.mode(Mode::WRAPAROUND), "mode(WRAPAROUND)")?;
         if wraparound {
@@ -485,7 +242,22 @@ impl VtTerminal {
         resized
     }
 
-    /// Apply Ghostty's reflow to primary-screen content and history.
+    /// Resize **with** reflow — Ghostty.app's semantics — for when the shell is
+    /// not the thing on screen.
+    ///
+    /// `resize` above is right whenever the shell will redisplay: its redraw
+    /// assumes the old wrap points, and rewrapping under it duplicates the
+    /// prompt. That assumption belongs to the shell, and the shell only makes
+    /// it while it holds the terminal. When a job does — an agent TUI, an
+    /// editor, anything the session spawned — nobody is doing width-relative
+    /// cursor arithmetic against the old screen, and truncating instead costs
+    /// what a user sees as a mangled window: a line the program wrapped stays
+    /// broken where it was broken, so widening leaves rows starting mid-word
+    /// (`widening_does_not_re_join_a_wrapped_line`). Ghostty never shows that
+    /// because it always reflows; this is the same behaviour, restricted to the
+    /// case where it is safe.
+    ///
+    /// Also the reflow the crate's own tests reproduce the duplicate with.
     pub fn resize_reflowing(&mut self, rows: u16, cols: u16) -> Result<()> {
         // Pixel dimensions are not used by the daemon snapshot sidecar; fixed
         // cell metrics still give libghostty-vt consistent total dimensions.
@@ -516,7 +288,7 @@ impl VtTerminal {
         match self.current_prompt_start()? {
             Some(prompt_row) => {
                 let clear = format!("\x1b7\x1b[{};1H\x1b[J\x1b8", u32::from(prompt_row) + 1);
-                self.terminal.vt_write(clear.as_bytes());
+                self.vt_write(clear.as_bytes());
                 self.resize_reflowing(rows, cols)
             }
             None => self.resize(rows, cols),
@@ -583,11 +355,6 @@ impl VtTerminal {
     /// The payload carries its own prologue (`SNAPSHOT_PROLOGUE`), so a client
     /// applies it raw and must not prepend a reset of its own.
     pub fn format_vt(&mut self) -> Result<Vec<u8>> {
-        if self.input_passthrough {
-            return Err(VtError(
-                "incomplete control string exceeds the snapshot prefix limit".to_string(),
-            ));
-        }
         let options = FormatterOptions::new()
             .with_format(Format::Vt)
             .with_unwrap(false)
@@ -686,16 +453,10 @@ impl VtTerminal {
                 .as_bytes(),
             );
         }
-        formatted.extend_from_slice(&self.pending_input);
         Ok(formatted)
     }
 
     pub fn snapshot(&mut self) -> Result<Snapshot> {
-        if self.input_passthrough {
-            return Err(VtError(
-                "incomplete control string exceeds the snapshot prefix limit".to_string(),
-            ));
-        }
         let rows = check(self.terminal.rows(), "Terminal::rows")?;
         let cols = check(self.terminal.cols(), "Terminal::cols")?;
         let cursor_x = check(self.terminal.cursor_x(), "Terminal::cursor_x")?;

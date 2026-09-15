@@ -86,11 +86,6 @@ pub(crate) struct ScreenTick {
     pub(crate) text: Option<String>,
 }
 
-pub(crate) enum ResizeMode {
-    Content,
-    Reflow,
-}
-
 pub(crate) enum SidecarCommand {
     Write(Bytes),
     /// What the status engine wants sampled. `screen` off stops the once-a-second
@@ -102,7 +97,13 @@ pub(crate) enum SidecarCommand {
     Resize {
         rows: u16,
         cols: u16,
-        mode: ResizeMode,
+        /// Whether the screen may be rewrapped unconditionally. True when a
+        /// job holds the terminal, which repaints from its own model. False
+        /// while the shell does, because its SIGWINCH redisplay assumes the
+        /// old wrap points — the VT then reflows only if the screen carries
+        /// OSC 133 prompt marks to clear first, and truncates otherwise
+        /// (`termiod_vt::VtTerminal::resize_for_shell`).
+        reflow: bool,
     },
     Snapshot {
         client_id: ClientId,
