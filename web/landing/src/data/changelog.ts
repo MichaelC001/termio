@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.53.3",
+    date: "2026-09-15",
+    title: "Widening a terminal no longer leaves pieces of the old one behind",
+    changes: {
+      fixed: [
+        "Widening a terminal — by dragging a split divider or a window edge, or by maximising the window — no longer leaves stray fragments of the previous width on screen.",
+        "Dragging a split divider now reflows the session while you drag, instead of only after you let go.",
+      ],
+    },
+  },
+  {
     version: "0.53.2",
     date: "2026-09-13",
     title: "The navigator button holds its line in full screen",
