@@ -6,27 +6,13 @@ import defaultMdxComponents from "fumadocs-ui/mdx";
 import { Keybindings } from "@/components/docs/keybindings";
 import { cn } from "@/lib/utils";
 
-// Typed callouts — a quiet note by default, with tip/warning accents. Modeled on
-// the admonitions Warp and the JetBrains AI docs use to flag prerequisites and
-// gotchas, kept within the site's hairline-panel aesthetic.
+// Glyphs and optional titles identify the callout type without adding colour.
 type CalloutType = "note" | "tip" | "warning";
 
-const CALLOUT_STYLES: Record<
-  CalloutType,
-  { edge: string; icon: ReactNode }
-> = {
-  note: {
-    edge: "border-l-brand-teal/50",
-    icon: <InfoIcon className="h-4 w-4 text-brand-teal" />,
-  },
-  tip: {
-    edge: "border-l-brand-green/50",
-    icon: <BulbIcon className="h-4 w-4 text-brand-green" />,
-  },
-  warning: {
-    edge: "border-l-brand-amber/60",
-    icon: <WarnIcon className="h-4 w-4 text-brand-amber" />,
-  },
+const CALLOUT_ICONS: Record<CalloutType, ReactNode> = {
+  note: <InfoIcon className="h-4 w-4 text-foreground" />,
+  tip: <BulbIcon className="h-4 w-4 text-foreground" />,
+  warning: <WarnIcon className="h-4 w-4 text-foreground" />,
 };
 
 function Callout({
@@ -40,21 +26,23 @@ function Callout({
   title?: string;
   className?: string;
 }) {
-  const style = CALLOUT_STYLES[type];
+  const icon = CALLOUT_ICONS[type];
+  // The title stays above the body rather than on its first line, which is where
+  // opencode puts it: their aside titles are one word ("Tip", "Note") and sit in
+  // front of the sentence the way a label does. These titles are whole sentences —
+  // "Workspace" means the sidebar's scope — and a sentence set beside a paragraph
+  // leaves both of them in a third of the column.
   return (
     <div
       className={cn(
-        "my-6 rounded-xl border border-border border-l-2 bg-secondary/40 px-4 py-3.5",
-        style.edge,
+        "my-6 rounded-xl border border-border bg-secondary/40 px-4 py-3",
         className,
       )}
     >
       <div className="flex gap-3">
-        <span className="mt-0.5 shrink-0">{style.icon}</span>
-        <div className="min-w-0 text-[15px] leading-[1.65] text-foreground/80 [&>:first-child]:mt-0">
-          {title && (
-            <p className="mb-1 font-semibold text-foreground">{title}</p>
-          )}
+        <span className="mt-0.5 shrink-0">{icon}</span>
+        <div className="min-w-0 leading-[1.7] text-foreground/80 [&>:first-child]:mt-0">
+          {title && <p className="mb-1 font-medium text-foreground">{title}</p>}
           {children}
         </div>
       </div>

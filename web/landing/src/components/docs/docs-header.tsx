@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { SearchTrigger } from "fumadocs-ui/layouts/shared/slots/search-trigger";
+import { FullSearchTrigger } from "fumadocs-ui/layouts/shared/slots/search-trigger";
 import { Logo } from "@/components/logo";
 import { GitHubMark } from "@/components/section-label";
 import { ThemeSwitch } from "@/components/docs/theme-switch";
@@ -28,37 +28,30 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
     // scroll. The landing's pill can afford the effect because it floats over a
     // hero; here there is nothing behind the bar worth seeing through it.
     <header className="sticky top-0 z-50 border-b border-border bg-background">
-      {/* 97rem is the docs grid's `--fd-layout-width`, and 1.5rem − 1px is the
-          sidebar's row inset: sharing both puts the wordmark on the same vertical
-          line as the sidebar links. */}
-      <div className="mx-auto flex h-14 w-full max-w-[97rem] items-center gap-3 px-5 md:pe-8 md:ps-[calc(1.5rem-1px)]">
-        <Link
-          href={home}
-          className="group flex shrink-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
-          aria-label="Termio"
-        >
-          <Logo />
-        </Link>
-        {/* Says which section of the site you're in, the way better-auth's bar
-            carries a version tag — quiet, and a link back to the docs root. */}
-        <Link
-          href={docsHome}
-          className="hidden rounded-md border border-border px-2 py-0.5 text-[12px] text-muted-foreground no-underline transition-colors hover:text-foreground sm:inline-block"
-        >
-          {chrome.docsLabel}
-        </Link>
-
-        <div className="ml-auto flex items-center gap-2">
-          {/* Below `md` the sidebar is not rendered at all, and it is what holds
-              the search field — so on a phone there was no way to search. The
-              trigger opens the library's own dialog, which lives in `RootProvider`
-              above this header. (Its sidebar trigger cannot be used here: that one
-              reads a context published inside `DocsLayout`, which this bar sits
-              outside of. The page tree is handled by the menu below instead.) */}
-          <SearchTrigger
-            aria-label={chrome.searchTrigger}
-            className="md:hidden"
-          />
+      {/* Equal outer columns keep search centred when either cluster changes width. */}
+      <div className="docs-header-bar mx-auto grid h-14 w-full max-w-[97rem] items-center gap-3 px-5">
+        <div className="flex items-center gap-3 justify-self-start">
+          <Link
+            href={home}
+            className="group flex shrink-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+            aria-label="Termio"
+          >
+            <Logo />
+          </Link>
+          {/* Says which section of the site you're in, the way better-auth's bar
+              carries a version tag — quiet, and a link back to the docs root. */}
+          <Link
+            href={docsHome}
+            className="hidden rounded-md border border-border px-2 py-0.5 text-[12px] text-muted-foreground no-underline transition-colors hover:text-foreground sm:inline-block"
+          >
+            {chrome.docsLabel}
+          </Link>
+        </div>
+        <FullSearchTrigger
+          aria-label={chrome.searchTrigger}
+          className="docs-header-search"
+        />
+        <div className="flex items-center gap-2 justify-self-end">
           <ThemeSwitch chrome={chrome} />
           <span
             className="hidden h-5 w-px bg-border sm:block"
