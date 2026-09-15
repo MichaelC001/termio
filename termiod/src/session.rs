@@ -26,7 +26,7 @@ pub(crate) use backlog::{ClientBacklog, Metered};
 
 mod sidecar;
 
-pub(crate) use sidecar::{SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult, Vt};
+pub(crate) use sidecar::{ResizeMode, SidecarCapture, SidecarCommand, SidecarQueue, SidecarResult, Vt};
 
 mod foreground;
 
@@ -1102,59 +1102,6 @@ impl Session {
             .and_then(|entry| entry.viewport)
     }
 
-    /// Whether the thing on screen is a shell, which is the one class of
-    /// program a rewrapping resize breaks.
-    ///
-    /// A shell answers SIGWINCH by moving the cursor up a number of rows it
-    /// computed from the *old* width and repainting its prompt from there.
-    /// Rewrap under that and the repaint lands in the wrong place, leaving a
-    /// stale prompt above it — the ⌘D duplicate. Nothing else on a terminal
-    /// does width-relative arithmetic against a screen it cannot see: an agent
-    /// TUI, an editor, a pager all repaint from their own model, and truncating
-    /// *their* screen is what leaves a window looking mangled after a drag.
-    ///
-    /// This asks the foreground rather than the session's spawn command,
-    /// because the two are routinely different in both directions: a session
-    /// launched as `zsh -ilc exec claude` has no shell in it at all — `exec`
-    /// replaced the image, so the child *is* the agent and the old
-    /// "is a job running under the shell" test was false for exactly the
-    /// sessions that needed rewrapping most — and a plain shell session running
-    /// `vim` has no prompt on screen to protect.
-    ///
-    /// A closed set of names, matched on the executable's basename with the
-    /// login-shell `-` stripped. Name matching is the wrong instinct for
-    /// agents, whose set is open and whose behaviour termio reads from a
-    /// manifest; it is the right one here, because "programs that redraw a
-    /// prompt from an old width" is a small set that has not grown in decades.
-    /// When the foreground cannot be read, the answer is "shell": the
-    /// truncating resize is the conservative one, and it is what shipped.
-    fn foreground_is_a_shell(&self) -> bool {
-        const SHELLS: [&str; 9] = [
-            "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu",
-        ];
-        let sample = self.foreground.current();
-        // A job holding the terminal is not the shell whose redisplay the
-        // truncating resize protects, whatever its name says. The name check
-        // alone called an agent's tool subshell a shell, so a resize landing
-        // mid-command truncated a screen the agent's TUI had painted — tails
-        // lost from rows the resize should have rewrapped (the phone's
-        // stale-tail blend). Only the session's own child at the prompt does
-        // old-width cursor arithmetic; a nested interactive shell loses this
-        // protection, which is the cheaper edge by far.
-        if sample.job {
-            return false;
-        }
-        let Some(argv0) = sample.argv.as_ref().and_then(|argv| argv.first()) else {
-            return true;
-        };
-        let name = argv0
-            .rsplit('/')
-            .next()
-            .unwrap_or(argv0)
-            .trim_start_matches('-');
-        SHELLS.contains(&name)
-    }
-
     /// Records that a person is on this attachment's device, so the session
     /// sizes to its screen from now on.
     ///
@@ -1217,7 +1164,6 @@ impl Session {
             );
             return;
         }
-        let reflow = !self.foreground_is_a_shell();
         // The VT's resize is enqueued *before* the ioctl that raises
         // SIGWINCH. The shell answers that signal by redrawing its prompt,
         // and those bytes travel the same FIFO as this command — enqueueing
@@ -1227,7 +1173,11 @@ impl Session {
         // repainted it: the session sat at a bare cursor (the "prompt
         // disappeared" report), because zsh may skip its redisplay for a
         // nudge that changes nothing.
-        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
+        self.send_sidecar(SidecarCommand::Resize {
+            rows,
+            cols,
+            mode: ResizeMode::Content,
+        });
         let applied = match self.pty.resize(rows, cols) {
             Ok(applied) => applied,
             Err(error) => {
@@ -1242,7 +1192,7 @@ impl Session {
                 self.send_sidecar(SidecarCommand::Resize {
                     rows: self.rows,
                     cols: self.cols,
-                    reflow: true,
+                    mode: ResizeMode::Reflow,
                 });
                 return;
             }
@@ -1262,7 +1212,7 @@ impl Session {
             self.send_sidecar(SidecarCommand::Resize {
                 rows: applied.0,
                 cols: applied.1,
-                reflow: true,
+                mode: ResizeMode::Reflow,
             });
         }
         let (rows, cols) = applied;
@@ -2282,13 +2232,12 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                             }
                         }
                     }
-                    SidecarCommand::Resize { rows, cols, reflow } => {
+                    SidecarCommand::Resize { rows, cols, mode } => {
                         if fault.is_none() {
                             if let Some(terminal) = terminal.as_mut() {
-                                let resized = if reflow {
-                                    terminal.resize_reflowing(rows, cols)
-                                } else {
-                                    terminal.resize_for_shell(rows, cols)
+                                let resized = match mode {
+                                    ResizeMode::Content => terminal.resize_for_content(rows, cols),
+                                    ResizeMode::Reflow => terminal.resize_reflowing(rows, cols),
                                 };
                                 if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
@@ -2981,7 +2930,7 @@ mod tests {
     use super::{
         daemon_owned_env, handle_msg, path_led_by, should_emit_keyframe, spawn_sidecar, ClientBacklog,
         ClientDelivery, ClientEntry, ClientEvent, ClientPlane, ClientRole, Session, SessionHandle,
-        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, Vt,
+        SessionMsg, Sidecar, SidecarCommand, SidecarQueue, SidecarResult, ResizeMode, Vt,
     };
     use crate::id::{ClientId, SessionId};
     use crate::protocol::{Control, ErrorCode, Event, SessionInfo};
@@ -3166,6 +3115,63 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_resize_protects_cursor_addressed_rows() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 74).unwrap();
+        let before = format!(
+            "\x1b[1;1H{}\x1b[2;1H❯ \x1b[3;1H{}",
+            "─".repeat(74),
+            "─".repeat(74)
+        );
+        let after = format!(
+            "\x1b[2A\r\x1b[J{}\r\n❯ \r\n{}",
+            "─".repeat(55),
+            "─".repeat(55)
+        );
+        assert!(queue.try_reserve(before.len()));
+        commands
+            .send(SidecarCommand::Write(Bytes::from(before)))
+            .unwrap();
+        commands
+            .send(SidecarCommand::Resize {
+                rows: 24,
+                cols: 55,
+                mode: ResizeMode::Content,
+            })
+            .unwrap();
+        assert!(queue.try_reserve(after.len()));
+        commands
+            .send(SidecarCommand::Write(Bytes::from(after)))
+            .unwrap();
+        commands
+            .send(SidecarCommand::Snapshot {
+                client_id: ClientId::new("canvas"),
+                request_id: 1,
+                scrollback: false,
+            })
+            .unwrap();
+        let SidecarResult::Snapshot { result, .. } = results.blocking_recv().unwrap() else {
+            panic!("expected snapshot");
+        };
+        let snapshot = result.unwrap().snapshot;
+        assert_eq!(snapshot.cols, 55);
+        assert_eq!(
+            snapshot
+                .cells
+                .chunks(55)
+                .filter(|row| row[0].codepoint == u32::from('─'))
+                .count(),
+            2
+        );
+        commands.send(SidecarCommand::Shutdown).unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
     fn resize_snapshot_request_is_an_exact_sidecar_fifo_boundary() {
         let Sidecar {
             commands: sidecar,
@@ -3179,7 +3185,11 @@ mod tests {
             .send(SidecarCommand::Write(Bytes::from_static(b"BEFORE")))
             .unwrap();
         sidecar
-            .send(SidecarCommand::Resize { rows: 3, cols: 20, reflow: false })
+            .send(SidecarCommand::Resize {
+                rows: 3,
+                cols: 20,
+                mode: ResizeMode::Content,
+            })
             .unwrap();
         sidecar
             .send(SidecarCommand::Snapshot {
@@ -3740,57 +3750,6 @@ mod tests {
         // And it is not muted for good: putting that pane on screen is using it.
         declare_viewport(&mut session, "offscreen", 50, 200, true);
         assert_eq!(session.policy_size(), Some((50, 200)));
-
-        session.vt.shut_down();
-        let _ = thread.join();
-    }
-
-    /// The rule the reflow policy turns on, and the case that made the previous
-    /// one wrong: `zsh -ilc exec claude` leaves no shell in the session at all,
-    /// so "is a job running under the shell" was false for exactly the sessions
-    /// a truncating resize mangles. A shell gets the mark-gated resize
-    /// (`resize_for_shell`): reflow when its prompt rows are OSC 133-marked,
-    /// truncation when they are not.
-    #[tokio::test]
-    async fn only_a_shell_gets_the_mark_gated_resize() {
-        let Sidecar {
-            commands,
-            results: _results,
-            queue,
-            thread,
-        } = spawn_sidecar(24, 80).unwrap();
-        let (mut session, _events) = test_session(commands, queue);
-
-        for shell in ["/bin/zsh", "-zsh", "bash", "/usr/local/bin/fish"] {
-            session.foreground.set_argv_for_tests(Some(vec![shell.to_string()]));
-            assert!(
-                session.foreground_is_a_shell(),
-                "{shell} redraws its prompt from the old width"
-            );
-        }
-        for program in ["claude", "/opt/homebrew/bin/codex", "vim", "less"] {
-            session.foreground.set_argv_for_tests(Some(vec![program.to_string()]));
-            assert!(
-                !session.foreground_is_a_shell(),
-                "{program} repaints from its own model and wants the rewrap"
-            );
-        }
-        // Unreadable is treated as a shell: the truncating resize is the
-        // conservative one.
-        session.foreground.set_argv_for_tests(None);
-        assert!(session.foreground_is_a_shell());
-
-        // A shell running as a *job* — an agent's tool subshell, `claude`
-        // shelling out mid-turn — is not the shell whose redisplay the
-        // truncating resize protects: the screen it would truncate belongs to
-        // the TUI that spawned it.
-        session.foreground.set_argv_for_tests(Some(vec!["/bin/zsh".to_string()]));
-        session.foreground.set_job_for_tests(true);
-        assert!(
-            !session.foreground_is_a_shell(),
-            "a tool subshell must not switch the resize to truncation"
-        );
-        session.foreground.set_job_for_tests(false);
 
         session.vt.shut_down();
         let _ = thread.join();
