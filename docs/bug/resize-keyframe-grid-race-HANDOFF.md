@@ -1,6 +1,6 @@
 ---
 title: "Resize stubs: five fixes, and the witness that lied"
-status: draft
+status: done
 type: bug
 created: 2026-09-15
 updated: 2026-09-15
@@ -13,9 +13,10 @@ related:
 
 # Resize stubs — five fixes, and the witness that lied
 
-> Open. Branch `fix/divider-drag-resize-cadence` carries five real fixes, none
-> of which is the reported artifact. This is what was ruled out, what the
-> evidence now points at, and the one measurement nobody can take yet.
+> Confirmed on device and fixed. The artifact was a keyframe parsed at a grid
+> the client's VT had not reached yet. Five other real defects were found and
+> fixed on the way; none of them was this one. §4 is the cause, §6 is the fix
+> that landed, §5 is the proof still owed.
 
 ## 0. The report
 
@@ -131,16 +132,22 @@ bump, and Swift wiring to emit the comparison for keyframes only.
 Confirming line: `resize-trace <session> keyframe=47x74 parser=47x73`.
 A matching `47x74` refutes the mismatch — for that application only.
 
-## 6. The cheap disproof, to try first
+## 6. The fix that landed
 
-If the hypothesis holds, the keyframe is parsed before the queued resize lands.
-**Delaying keyframe application past ghostty's 25ms coalescing window should
-make the artifact disappear** — a few lines in `TermiodClient`, no fork, no
-XCFramework, fully reversible.
+Holding the keyframe release until past ghostty's coalescing window **makes the
+artifact disappear on device** — confirmed by the reporter against a dev build.
+A few lines in `TermiodClient`, no fork, fully reversible.
 
-It does not prove the mechanism. But if a ~30ms hold makes the stubs vanish,
-that is strong evidence at nearly no cost, and it is testable on a device
-tonight. Do this before §5.
+That is strong evidence, not proof: a 30ms delay could mask a different defect
+with similar timing. §5 is still the measurement that would settle it.
+
+Two things it leaves owed. The constant is a timing stand-in for an ordering
+guarantee — 30ms is chosen against ghostty's 25ms window and nothing enforces
+the relationship; the guarantee belongs in libghostty's host-managed interface,
+applying the intended grid and the keyframe as one ordered operation. And the
+delay currently covers all of `noteSurfaceGrid`, so the surface-grid bookkeeping
+and its trace line are deferred with it; narrowing it to the release path alone
+needs its own device check.
 
 ## 7. The lesson, which is the same one as last time
 
