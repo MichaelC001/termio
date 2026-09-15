@@ -155,9 +155,6 @@ extension TermioStore {
         link.onSharedGrid = { [weak self] grid in
             self?.runtime(for: session.id).sharedGrid = grid
         }
-        link.onGrowingViewportPending = { [weak self] pending in
-            self?.runtime(for: session.id).growingViewportPending = pending
-        }
         // What the device knows about the process, gated exactly where the
         // in-process PTY's own kernel poll is gated: that poll is installed only
         // on a row declared `.terminal` (a declared agent's foreground is its own
@@ -196,7 +193,22 @@ extension TermioStore {
     /// used, and a pane that just changed shape is one somebody has their hands
     /// on — so this is both the Mac's declaration and its claim to the size.
     func reportViewport(_ grid: TerminalGrid, for id: Session.ID) {
-        termiodLinks[id]?.setViewport(rows: Int(grid.rows), cols: Int(grid.cols))
+        // Sampled here, on the main thread, at the moment the pane measured:
+        // whether a person is dragging is an AppKit fact, and the link's work
+        // queue reads it a scheduling hop later, when the drag may be over.
+        termiodLinks[id]?.setViewport(
+            rows: Int(grid.rows), cols: Int(grid.cols),
+            userDriven: GeometryDragTracker.shared.isActive)
+    }
+
+    /// Sends every pane's pending viewport now — the end of a drag.
+    ///
+    /// A drag streams on a leading edge, so its final size is usually still on
+    /// a timer when the user lets go, and the pane would hold a grid the
+    /// session no longer has for the rest of that window. Broadcast rather than
+    /// aimed at one link because a single divider moves both sides of a split.
+    func flushViewports() {
+        for link in termiodLinks.values { link.flushViewport() }
     }
 
     /// Whether this pane is on screen. A hidden pane keeps its viewport and

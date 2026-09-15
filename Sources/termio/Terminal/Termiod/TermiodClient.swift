@@ -4,21 +4,44 @@ import Darwin
 import Foundation
 import TermioShared
 
-/// Whether any of this app's windows is mid live-resize — the user dragging a
-/// window edge, as AppKit reports it. The app's own layout animations (opening
-/// a session, toggling the sidebar) move a pane's size too but are not window
-/// live-resizes, so this stays false through them; `scheduleViewportLocked`
-/// reads it to tell a real drag from those and pick its cadence.
-final class WindowLiveResizeTracker: @unchecked Sendable {
-    static let shared = WindowLiveResizeTracker()
+/// Whether a person currently has their hands on this app's geometry — a
+/// window edge, a split divider, an inspector divider.
+///
+/// The cadence a viewport declaration goes out on turns on this one question
+/// (`scheduleViewportLocked`): a size the user is choosing streams, everything
+/// else debounces so the app's own layout animations never declare a size
+/// nobody picked. AppKit answers it for a window edge and for nothing else —
+/// `NSSplitView` posts no gesture boundary, and termio's own pane divider is a
+/// SwiftUI gesture AppKit cannot see — so those report themselves through
+/// `beginDrag`/`endDrag`.
+///
+/// A reported drag must be ended exactly once — an unpaired `beginDrag` pins
+/// every later declaration to the streaming cadence and the animation debounce
+/// stops protecting anything. Both callers close their own gesture, including
+/// the case where it is torn down rather than released.
+final class GeometryDragTracker: @unchecked Sendable {
+    static let shared = GeometryDragTracker()
 
     private let lock = NSLock()
     private var resizingWindows = 0
+    private var reportedDrags = 0
 
     var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return resizingWindows > 0
+        return resizingWindows > 0 || reportedDrags > 0
+    }
+
+    func beginDrag() {
+        lock.lock()
+        reportedDrags += 1
+        lock.unlock()
+    }
+
+    func endDrag() {
+        lock.lock()
+        reportedDrags = max(0, reportedDrags - 1)
+        lock.unlock()
     }
 
     private init() {
@@ -1132,6 +1155,7 @@ extension Termiod {
 /// and the one part of it a screenshot could never show, so it is the part that
 /// is pinned by tests.
 struct TerminalKeyframeHold {
+    var surfaceReadyAfter: DispatchTime = .now()
     /// The grid libghostty last reported this surface laid out at.
     private(set) var surfaceGrid: TerminalGrid
     /// Bumped whenever a hold opens or closes, so a deadline armed for an older
@@ -1169,7 +1193,7 @@ struct TerminalKeyframeHold {
         epoch &+= 1
         let asked = painting
         painting = false
-        guard grid != surfaceGrid, !asked else {
+        if DispatchTime.now() >= surfaceReadyAfter, grid == surfaceGrid || asked {
             keyframe = nil
             keyframeGrid = nil
             return [repaint]
@@ -1209,6 +1233,12 @@ struct TerminalKeyframeHold {
     /// trip later. Dropping it instead leaves the last correct screen up until
     /// the resync lands. The live bytes still go out: they are the child's, and
     /// this is not the layer that may discard them.
+    ///
+    /// This is the *flood* ending, where the tail is large by definition — a
+    /// build log, a `cat` of something long — and is content in its own right.
+    /// A resync restores the screen and not the scrollback that went past it,
+    /// so dropping it here would lose output nothing brings back. The
+    /// deadline's ending is `discard`, where the opposite is true.
     mutating func abandon() -> [Data] {
         guard keyframe != nil else { return [] }
         keyframe = nil
@@ -1217,6 +1247,29 @@ struct TerminalKeyframeHold {
         let behind = queued
         queued.removeAll(keepingCapacity: false)
         return behind.isEmpty ? [] : [behind]
+    }
+
+    /// Stop waiting and drop the keyframe *and* what queued behind it.
+    ///
+    /// The deadline's ending. The tail here is at most a few hundred
+    /// milliseconds of output, and after a resize it is the child's answer to
+    /// SIGWINCH: increments computed against the screen this keyframe carried,
+    /// cursor-addressed and relative to a base the surface never received.
+    /// Flushing them onto the previous screen draws the new width's rows over
+    /// rows still standing at the old one — two box borders at two widths,
+    /// layered, which is what a window resize left on screen.
+    ///
+    /// The resync the caller arms carries a whole screen that supersedes every
+    /// one of them, so nothing is lost that the repair does not bring back, and
+    /// until it lands the last coherent screen stays up. That is the trade the
+    /// flood ending cannot make, because its tail is content rather than a
+    /// repaint.
+    mutating func discard() {
+        guard keyframe != nil else { return }
+        keyframe = nil
+        keyframeGrid = nil
+        epoch &+= 1
+        queued.removeAll(keepingCapacity: false)
     }
 
     /// Stop waiting and paint. Only teardown ends here — a surface that is going
@@ -1230,16 +1283,6 @@ struct TerminalKeyframeHold {
         let behind = queued
         queued.removeAll(keepingCapacity: false)
         return behind.isEmpty ? [repaint] : [repaint, behind]
-    }
-}
-
-enum TerminalViewportGrowth {
-    static func canLeadSurface(
-        viewport: TerminalGrid, authoritativeGrid: TerminalGrid?
-    ) -> Bool {
-        guard let authoritativeGrid, viewport != authoritativeGrid else { return false }
-        return viewport.rows >= authoritativeGrid.rows
-            && viewport.cols >= authoritativeGrid.cols
     }
 }
 
@@ -1292,14 +1335,15 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// The last viewport actually written as an `R` frame, so an unchanged
     /// declaration isn't re-sent while the daemon is still applying the first.
     private var sentViewport: (grid: TerminalGrid, rendering: Bool)?
+    /// Whether the viewport now pending was measured while a person was
+    /// dragging geometry. See `setViewport`.
+    private var viewportIsUserDriven = false
     /// The grid libghostty says this surface is actually laid out at. Read only
     /// by the repaint arming below — it is never what goes on the wire.
     private var surfaceGrid: TerminalGrid
     /// A local viewport growth that has not reached the daemon yet. While this
     /// is true the surface may widen with the pane instead of letterboxing at
     /// the old session grid; shrinking never takes this path.
-    private var growingViewportPending = false
-    private var growingViewportGeneration: UInt64 = 0
     /// Whether the daemon said it sizes sessions by policy. Without it this is
     /// an older host that reads `R` as "set the PTY size", and the five-byte
     /// form it has never seen would drop the connection.
@@ -1427,9 +1471,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// grid the bytes are wrapped for, and the surface that shows them has to
     /// be laid out at it — see `SessionRuntime.sharedGrid`.
     var onSharedGrid: ((TerminalGrid) -> Void)?
-    /// Raised only while this pane is growing beyond the session's grid. The UI
-    /// uses it to remove the outward-drag letterbox until the daemon answers.
-    var onGrowingViewportPending: ((Bool) -> Void)?
     /// Whether this session's host sizes by policy, from the handshake. A pane
     /// on an older host must not letterbox: there the writer's grid is the
     /// size, so a difference is an unanswered declaration rather than another
@@ -1668,43 +1709,41 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// a separate question, and answering it here is what used to turn a stray
     /// byte into a resize loop
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
-    func setViewport(rows: Int, cols: Int) {
+    /// `userDriven` is whether a person had their hands on the geometry at the
+    /// moment it was measured, which decides the cadence below. Sampled by the
+    /// caller rather than read from `GeometryDragTracker` here: this runs on
+    /// `workQueue`, a drag is an AppKit fact, and the two are not the same
+    /// instant. It also keeps the answer *per declaration* — the phone bridge
+    /// declares through this same door (`CompanionServer.applyClientViewport`)
+    /// and a divider being dragged on the Mac says nothing about the phone.
+    func setViewport(rows: Int, cols: Int, userDriven: Bool = false) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         workQueue.async { [self] in
             guard !closed, viewportGrid != size else { return }
             viewportGrid = size
+            viewportIsUserDriven = userDriven
             guard attached else { return }
-            updateGrowingViewportLocked()
             scheduleViewportLocked()
         }
     }
 
-    /// A local growth may lead the daemon because widening cannot split a row
-    /// at a width the child never drew. The deadline restores the authoritative
-    /// letterbox if another device wins the size policy instead.
+    /// Sends the pending viewport now instead of on its timer, for the end of a
+    /// drag.
     ///
-    /// Must run on `workQueue`.
-    private func updateGrowingViewportLocked() {
-        growingViewportGeneration &+= 1
-        let generation = growingViewportGeneration
-        let mayLead = hostSizesByPolicy && TerminalViewportGrowth.canLeadSurface(
-            viewport: viewportGrid, authoritativeGrid: authoritativeGrid)
-        setGrowingViewportPendingLocked(mayLead)
-        guard mayLead else { return }
-        workQueue.asyncAfter(deadline: .now() + Self.growingViewportDeadline) { [self] in
-            guard !closed, generation == growingViewportGeneration else { return }
-            setGrowingViewportPendingLocked(false)
+    /// The streaming cadence leads — it writes a frame and starts a 150ms
+    /// window — so the last size of a drag is routinely still sitting on a
+    /// timer when the user lets go. Without this the settling declaration waits
+    /// out that window, or worse falls back to the 400ms debounce once the drag
+    /// flag clears, and the pane spends a third of a second showing a grid the
+    /// session no longer has. Costs nothing when there is nothing pending:
+    /// `sendViewportLocked` skips a declaration the daemon already holds.
+    func flushViewport() {
+        workQueue.async { [self] in
+            guard !closed, attached else { return }
+            viewportGeneration &+= 1
+            flushViewportLocked()
         }
     }
-
-    /// Must run on `workQueue`.
-    private func setGrowingViewportPendingLocked(_ pending: Bool) {
-        guard growingViewportPending != pending else { return }
-        growingViewportPending = pending
-        DispatchQueue.main.async { [self] in onGrowingViewportPending?(pending) }
-    }
-
-    private static let growingViewportDeadline = DispatchTimeInterval.milliseconds(600)
 
     /// Whether this pane is on screen. A hidden pane is not rendering and stops
     /// counting toward the session's size; showing it again puts its viewport
@@ -1737,15 +1776,27 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// around it. Never sent: it would tell the daemon this pane has room for
     /// only what it was already shrunk to, and the session could never grow.
     ///
-    /// Arriving at a keyframe's grid is the one moment the surface can paint it,
-    /// so that is where the held keyframe is released. Leaving it — a font
+    /// Geometry arrives before the parser's queued resize. This experiment
+    /// waits past ghostty's 25ms coalescing window before releasing the hold.
+    /// Leaving the grid — a font
     /// change reports the old frame at new cell metrics before the letterbox
     /// puts it back — arms the resync, so the bytes parsed in between are
     /// repainted too.
     func noteSurfaceGrid(rows: Int, cols: Int) {
         let size = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
-        workQueue.async { [self] in
-            guard !closed else { return }
+        let readyAfter = DispatchTime.now() + .milliseconds(30)
+        outputLock.lock()
+        hold.surfaceReadyAfter = readyAfter
+        outputLock.unlock()
+        workQueue.asyncAfter(deadline: readyAfter) { [self] in
+            outputLock.lock()
+            guard !closed, hold.surfaceReadyAfter == readyAfter else {
+                outputLock.unlock()
+                return
+            }
+            let (paint, painted) = hold.surfaceReached(size)
+            for chunk in paint { onOutput?(chunk) }
+            outputLock.unlock()
             let changed = surfaceGrid != size
             surfaceGrid = size
             if changed {
@@ -1755,7 +1806,6 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(size.cols, privacy: .public)
                 """)
             }
-            let painted = releaseKeyframe(at: size)
             guard attached else { return }
             if painted {
                 // The keyframe that was waiting for this grid has just been
@@ -1833,11 +1883,25 @@ final class TermiodSessionLink: @unchecked Sendable {
                 outputLock.unlock()
                 return
             }
-            for chunk in hold.abandon() { onOutput?(chunk) }
+            hold.discard()
             outputLock.unlock()
             Log.termiod.info("""
             resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-held-out
             """)
+            // Ask for the repair here, not when the surface finally arrives.
+            //
+            // The screen on the surface is now the pre-resize one, and the
+            // increments that would have carried it forward went with the
+            // keyframe they were computed against. Waiting for `noteSurfaceGrid`
+            // to notice and arm the resync left a stale screen up for the rest
+            // of the layout — measured at 322ms on a busy app, on top of the
+            // 250ms hold that had already passed. Nothing else is coming that
+            // repairs this, so it is asked for the moment the hold is given up.
+            //
+            // `paintImmediately` lets the answering keyframe through the hold
+            // rather than queueing behind another wait: it is the repair, and
+            // holding the repair is how a stale screen becomes a permanent one.
+            requestResyncLocked()
             armRepaintLocked()
         }
     }
@@ -1878,16 +1942,6 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// genuinely settled somewhere else.
     private static let repaintBackstop = DispatchTimeInterval.milliseconds(500)
 
-    /// Paints a keyframe that was waiting for exactly this grid, and says
-    /// whether it did — the caller reads that as "the repaint has happened".
-    private func releaseKeyframe(at grid: TerminalGrid) -> Bool {
-        outputLock.lock()
-        defer { outputLock.unlock() }
-        let (paint, painted) = hold.surfaceReached(grid)
-        for chunk in paint { onOutput?(chunk) }
-        return painted
-    }
-
     /// How long a moving pane must hold still before its size goes to the
     /// daemon, and the shortest gap between two declarations.
     ///
@@ -1912,10 +1966,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// glued, miswrapped rows after every session open.
     private static let viewportCoalescingInterval = DispatchTimeInterval.milliseconds(400)
 
-    /// The cadence a window drag streams at instead. Every size under the
-    /// user's hand is one they chose, so the transient-width argument above
-    /// does not apply — what applies is Ghostty's behaviour, where the screen
-    /// reflows continuously while the edge moves. Per-frame is an in-process
+    /// The cadence a drag streams at instead. Every size under the user's hand
+    /// is one they chose, so the transient-width argument above does not apply
+    /// — what applies is Ghostty's behaviour, where the screen reflows
+    /// continuously while the edge moves. A split divider is as much under the
+    /// hand as a window edge; it only lacked a way to say so
+    /// (`GeometryDragTracker`). Per-frame is an in-process
     /// luxury; over the daemon socket each declaration is a resize barrier
     /// with a keyframe to every attached device, so the stream is throttled
     /// to a handful per second, which reads as live.
@@ -1929,18 +1985,18 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// send may write its frame. See `scheduleViewportLocked`.
     private var viewportGeneration: UInt64 = 0
 
-    /// Schedules the viewport send, on one of two cadences: a window drag
-    /// streams on a leading-edge throttle so the session reflows under the
-    /// user's hand, everything else debounces so the app's own layout
-    /// animations don't declare a size nobody chose. Generation-stamped rather
-    /// than cancelled, so the send re-reads the size at fire time and only the
-    /// newest one writes.
+    /// Schedules the viewport send, on one of two cadences: a drag streams on a
+    /// leading-edge throttle so the session reflows under the user's hand,
+    /// everything else debounces so the app's own layout animations don't
+    /// declare a size nobody chose. Generation-stamped rather than cancelled,
+    /// so the send re-reads the size at fire time and only the newest one
+    /// writes.
     ///
     /// Must run on `workQueue`.
     private func scheduleViewportLocked() {
         viewportGeneration &+= 1
         let generation = viewportGeneration
-        if WindowLiveResizeTracker.shared.isActive {
+        if viewportIsUserDriven {
             let now = DispatchTime.now()
             let elapsed = now.uptimeNanoseconds - lastViewportFlush.uptimeNanoseconds
             if elapsed >= Self.liveResizeStreamNanoseconds {
@@ -2386,12 +2442,6 @@ final class TermiodSessionLink: @unchecked Sendable {
             \(grid.cols, privacy: .public)
             """)
             DispatchQueue.main.async { [self] in onSharedGrid?(grid) }
-            if grid == viewportGrid || !TerminalViewportGrowth.canLeadSurface(
-                viewport: viewportGrid, authoritativeGrid: grid)
-            {
-                growingViewportGeneration &+= 1
-                setGrowingViewportPendingLocked(false)
-            }
             repaintPending = grid != surfaceGrid
             guard grid != viewportGrid else { return }
             Log.termiod.info("""

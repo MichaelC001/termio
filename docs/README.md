@@ -75,6 +75,7 @@ from the real front matter).
 | archived | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
 | archived | rfc | [Review — One path, local sessions run through termiod too](design/20260817-one-path-local-through-termiod.review-claude.md) |
 | archived | rfc | [RFC: Per-project agent sandbox (Apple Seatbelt)](design/20260630-sandbox-seatbelt.md) |
+| done | bug | ["Resize stubs: five fixes, and the witness that lied"](bug/resize-keyframe-grid-race-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | bug | [HANDOFF: a pane renders at the wrong grid while a phone is attached](bug/phone-attached-resize-HANDOFF.md) |
 | done | bug | [HANDOFF: terminal content does not reflow on window resize](bug/terminal-resize-no-reflow-HANDOFF.md) |

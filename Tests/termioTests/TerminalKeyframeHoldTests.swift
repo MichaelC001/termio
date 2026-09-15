@@ -104,15 +104,37 @@ final class TerminalKeyframeHoldTests: XCTestCase {
     /// somewhere the daemon never put it. Leaving the last correct screen up and
     /// asking for a resync is the cheaper wrong answer, and the only one that
     /// never shows the user a scrambled frame.
-    func testGivingUpDropsTheKeyframeAndKeepsWhatWasQueuedBehindIt() {
+    ///
+    /// What queued behind it goes too. This used to flush, on the reasoning that
+    /// live bytes are the child's and this is not the layer that discards them —
+    /// but they are the child's *increments against the screen that was just
+    /// dropped*, cursor-addressed and relative to a base the surface never
+    /// received. Painting them onto the previous screen draws the new width's
+    /// rows over rows still standing at the old one, which is the two-widths-at-
+    /// once artifact a window resize left behind. They are superseded whole by
+    /// the resync the caller arms on the way out of here.
+    func testGivingUpDropsTheKeyframeAndTheIncrementsThatNeededIt() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
         XCTAssertTrue(hold.receive(output: bytes("live"), limit: limit).emit.isEmpty)
 
-        XCTAssertEqual(joined(hold.abandon()), "live")
+        hold.discard()
         XCTAssertFalse(hold.isHolding)
-        XCTAssertTrue(hold.abandon().isEmpty)
+        hold.discard()
         XCTAssertTrue(hold.release().isEmpty, "an abandoned keyframe must not paint later")
+    }
+
+    /// Output that arrives once the hold is over is ordinary live output again,
+    /// not part of the dropped keyframe's tail — the drop must not turn into a
+    /// mute.
+    func testOutputAfterAGiveUpFlowsStraightThrough() {
+        var hold = TerminalKeyframeHold(surfaceGrid: old)
+        XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("dropped"), limit: limit).emit.isEmpty)
+        hold.discard()
+
+        let after = hold.receive(output: bytes("after"), limit: limit)
+        XCTAssertEqual(joined(after.emit), "after")
     }
 
     /// Teardown is the one ending that still paints: a surface that is going
@@ -133,7 +155,7 @@ final class TerminalKeyframeHoldTests: XCTestCase {
     func testAKeyframeAnsweringARepaintWeAskedForIsNotHeld() {
         var hold = TerminalKeyframeHold(surfaceGrid: old)
         XCTAssertTrue(hold.receive(keyframe: bytes("held"), at: new).isEmpty)
-        XCTAssertEqual(joined(hold.abandon()), "")
+        hold.discard()
 
         hold.paintNextKeyframe()
         XCTAssertEqual(joined(hold.receive(keyframe: bytes("resync"), at: new)), "resync")
