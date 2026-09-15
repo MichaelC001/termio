@@ -18,7 +18,6 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
   // The wordmark always goes to the site root: only the docs are translated, so
   // `/zh-CN` is not a page — it 404s. The locale lives on the Docs link below.
   const home = "/";
-  const docsHome = lang === "en" ? "/docs" : `/${lang}/docs`;
   const tree = source.getPageTree(lang);
 
   return (
@@ -30,21 +29,13 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
     <header className="sticky top-0 z-50 border-b border-border bg-background">
       {/* Equal outer columns keep search centred when either cluster changes width. */}
       <div className="docs-header-bar mx-auto grid h-14 w-full max-w-[97rem] items-center gap-3 px-5">
-        <div className="flex items-center gap-3 justify-self-start">
+        <div className="flex items-center justify-self-start">
           <Link
             href={home}
             className="group flex shrink-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
             aria-label="Termio"
           >
             <Logo />
-          </Link>
-          {/* Says which section of the site you're in, the way better-auth's bar
-              carries a version tag — quiet, and a link back to the docs root. */}
-          <Link
-            href={docsHome}
-            className="hidden rounded-md border border-border px-2 py-0.5 text-[12px] text-muted-foreground no-underline transition-colors hover:text-foreground sm:inline-block"
-          >
-            {chrome.docsLabel}
           </Link>
         </div>
         <FullSearchTrigger
