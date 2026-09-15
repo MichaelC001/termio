@@ -253,7 +253,8 @@ extension TermioStore {
     /// that is running, that never ran, or whose tombstone has aged out of the
     /// daemon's capped graveyard.
     ///
-    /// The reason is the host's word (`exited` · `killed` · `daemon_lost`);
+    /// The reason is the host's word (`exited` · `killed` · `daemon_stopped` ·
+    /// `daemon_lost`);
     /// turning it into something a person reads is the caller's job, because the
     /// host describes state and never decides presentation.
     func termiodEndReason(for session: Session) -> Termiod.SessionTombstone? {
