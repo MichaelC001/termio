@@ -1559,8 +1559,8 @@ private struct SessionRow: View {
 }
 
 /// A row whose session the device buried. The reason is the host's word
-/// (`exited` · `killed` · `daemon_lost`) turned into something a person reads —
-/// the host describes state and never decides presentation.
+/// (`exited` · `killed` · `daemon_stopped` · `daemon_lost`) turned into something
+/// a person reads — the host describes state and never decides presentation.
 ///
 /// It stays clickable: opening it spawns the session again under the same name,
 /// which is what the user means by clicking a row that used to work.
@@ -1589,7 +1589,11 @@ private struct EndedSessionRow: View {
             return status == 0 ? localized("Ended") : localized("Ended — exit \(status)")
         case "killed": return localized("Closed")
         case "daemon_lost": return localized("The session host went away")
-        default: return tombstone.reason
+        case "daemon_stopped": return localized("The session host stopped")
+        // A reason a newer daemon added and this build has no words for. The
+        // fallback is the plainest true thing, never the wire word: the daemon's
+        // vocabulary is protocol, and printing it puts `daemon_stopped` on screen.
+        default: return localized("Ended")
         }
     }
 

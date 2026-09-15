@@ -1143,7 +1143,8 @@ public enum Termiod {
         public let name: String
         public let cwd: String
         public let command: String
-        /// `exited` · `killed` · `daemon_lost`, or whatever a newer daemon adds.
+        /// `exited` · `killed` · `daemon_stopped` · `daemon_lost`, or whatever a
+        /// newer daemon adds.
         public let reason: String
         /// The process's exit code. Absent for `daemon_lost` — the daemon that
         /// would have reaped the child died first, so there is no honest answer.
