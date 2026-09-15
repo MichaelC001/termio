@@ -222,7 +222,14 @@ private struct RemoteHostListRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            SettingsSymbolBadge(symbol: "server.rack", tint: .blue)
+            // The same glyph, size and ink the main sidebar gives a remote
+            // machine — whose comment already claims it matches "its host row in
+            // Settings", which was untrue while this drew a filled accent-blue
+            // square with an SF Symbol in it. Every row in this list is the same
+            // kind of thing, so a tinted chip repeated down the column
+            // distinguished nothing and just pulled the eye off the names.
+            HugeIconView(icon: .serverStack, size: 15, color: .secondary)
+                .frame(width: settingsRowIconWidth, alignment: .center)
             VStack(alignment: .leading, spacing: 2) {
                 Text(machine.name)
                 if !detail.isEmpty {

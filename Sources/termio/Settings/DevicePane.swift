@@ -72,10 +72,11 @@ struct DevicePane: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            SettingsSymbolBadge(
-                symbol: machine.isLocal ? "laptopcomputer" : "server.rack",
-                tint: machine.isLocal ? .secondary : .blue)
-                .scaleEffect(1.4)
+            // One glyph for both entrances, and no branch: what this pane is
+            // about is the machine's termiod, which this Mac runs as much as a
+            // VPS does. Line ink rather than a filled accent square — the
+            // accent colour is reserved for controls, and a hero mark is not one.
+            HugeIconView(icon: .serverStack, size: 22, color: .secondary)
                 .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 2) {
                 Text(machine.name)

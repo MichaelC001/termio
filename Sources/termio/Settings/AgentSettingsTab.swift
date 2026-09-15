@@ -376,10 +376,10 @@ private struct IntegrationGapRow: View {
     let machine: IntegrationGap
 
     var body: some View {
+        // No leading mark: there are at most a handful of these, the machine's
+        // name is the whole point of the row, and a glyph that only says "this is
+        // a machine" repeats what the name already said.
         HStack(spacing: 12) {
-            SettingsSymbolBadge(
-                symbol: machine.device.isLocal ? "laptopcomputer" : "server.rack",
-                tint: machine.isFault ? .orange : .secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(machine.device.name)
                 Text(machine.detail)

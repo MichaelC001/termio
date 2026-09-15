@@ -36,7 +36,8 @@ struct MobileSettingsTab: View {
                     ForEach(remoteHosts) { machine in
                         NavigationLink(value: ServingRoute(key: machine.settingsKey)) {
                             HStack(spacing: 12) {
-                                SettingsSymbolBadge(symbol: "server.rack", tint: .blue)
+                                HugeIconView(icon: .serverStack, size: 15, color: .secondary)
+                                    .frame(width: settingsRowIconWidth, alignment: .center)
                                 Text(machine.name)
                                 Spacer(minLength: 4)
                             }
