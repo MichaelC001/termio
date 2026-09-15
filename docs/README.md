@@ -108,6 +108,7 @@ from the real front matter).
 | done | rfc | [Loose terminals as first-class entities](design/20260713-loose-terminal-entity.md) |
 | done | rfc | [Remote git — the pane's verbs run on the device](design/20260818-remote-git-plane.md) |
 | done | rfc | [Session identity survives the agent](design/20260830-session-identity-survives-the-agent.md) |
+| draft | bug | ["Resize stubs: five fixes, and the witness that lied"](bug/resize-keyframe-grid-race-HANDOFF.md) |
 | draft | design | [分享 Agent 会话（带密码的实时分享链接）](design/20260628-session-share.md) |
 | draft | design | [调研：下一批 AgentAdapter 的落盘格式（OpenCode / Pi / Amp / Cursor / Kimi）](design/20260711-agent-transcript-survey.md) |
 | draft | design | [Agent Plugins](design/20260812-agent-plugins.md) |
