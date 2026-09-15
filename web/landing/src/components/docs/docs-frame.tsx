@@ -62,6 +62,7 @@ export function DocsFrame({
         <DocsLayout
           tree={source.getPageTree(lang)}
           nav={{ enabled: false }}
+          searchToggle={{ enabled: false }}
           themeSwitch={{ enabled: false }}
           githubUrl={githubUrl}
           // No collapse toggle: our header already brands the page, so that row

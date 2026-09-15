@@ -1,3 +1,6 @@
+import type { ReactNode } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { File01Icon } from "@hugeicons/core-free-icons";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
@@ -28,6 +31,24 @@ function cardUrl(slug: string[]): string {
 /** The raw-Markdown twin of a page — /docs/<slug>.md, rewritten to /docs-md. */
 function markdownUrl(url: string): string {
   return url.endsWith("/docs") ? `${url}/index.md` : `${url}.md`;
+}
+
+/** The tree section a page sits in — "Getting Started", "Agents", "Customize".
+ *
+ *  Not the library's breadcrumb: that is built from folders, and this tree has
+ *  none. Its sections are the `---Getting Started---` separators in meta.json,
+ *  which are siblings of the pages rather than parents of them, so the section a
+ *  page belongs to is simply the last separator above it. */
+function sectionOf(
+  tree: ReturnType<typeof source.getPageTree>,
+  url: string,
+): ReactNode | undefined {
+  let section: ReactNode | undefined;
+  for (const node of tree.children) {
+    if (node.type === "separator") section = node.name;
+    else if (node.type === "page" && node.url === url) return section;
+  }
+  return undefined;
 }
 
 export async function docPageMetadata(
@@ -92,6 +113,7 @@ export async function DocPage({
   if (!page) notFound();
 
   const chrome = docsChrome(lang);
+  const section = sectionOf(source.getPageTree(lang), page.url);
   const MDX = page.data.body;
   const raw = await page.data.getText("raw");
 
@@ -154,11 +176,51 @@ export async function DocPage({
     },
   ];
 
+  const actions = (
+    <div className="docs-page-actions shrink-0 border-t border-fd-border py-3">
+      <CopyMarkdownButton
+        markdown={raw}
+        labels={{
+          copy: chrome.copyForLLM,
+          copied: chrome.copied,
+          aria: chrome.copyAriaLabel,
+        }}
+      />
+      <AskAIMenu
+        labels={{
+          trigger: chrome.askAI,
+          aria: chrome.askAIAriaLabel,
+          claude: chrome.askClaude,
+          chatgpt: chrome.askChatGPT,
+          prompt: chrome.askPrompt.replace(
+            "{url}",
+            `${siteUrl}${markdownUrl(page.url)}`,
+          ),
+        }}
+      />
+      <a
+        href={markdownUrl(page.url)}
+        aria-label={chrome.markdownAriaLabel}
+        className="docs-page-action text-fd-muted-foreground"
+      >
+        <HugeiconsIcon icon={File01Icon} size={16} aria-hidden="true" />
+        {chrome.markdown}
+      </a>
+    </div>
+  );
+
   return (
     <DocsPage
       toc={page.data.toc}
       full={page.data.full}
-      tableOfContent={{ style: "clerk" }}
+      tableOfContent={{
+        list: { className: "docs-toc-list", thumbBox: false },
+        footer: actions,
+      }}
+      tableOfContentPopover={{
+        list: { className: "docs-toc-list", thumbBox: false },
+        footer: actions,
+      }}
       footer={{ enabled: !curatesNextSteps }}
       editOnGithub={{
         owner: "termio-sh",
@@ -168,57 +230,18 @@ export async function DocPage({
         path: `web/landing/content/docs/${page.path}`,
       }}
     >
-      {/* Actions sit on the title's row, hard right: they are page-level tools,
-          not part of the prose, and below the description they read as the first
-          thing to do rather than something available throughout. */}
-      {/* One row only where there is room for one. On a phone the two actions eat
-          most of the width, which left the title colliding with them and the
-          description wrapping one or two words at a time. */}
-      <div className="mb-8 flex flex-col items-start gap-3 sm:mb-0 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-        {/* The library sizes a page title at 1.75em — the same 28px its own h2
-            headings get, so a title read as the first section rather than the
-            name of the page. It is set here rather than in CSS because these are
-            Tailwind utilities on the library's components, and `cn` replaces a
-            conflicting one; a stylesheet rule in a lower layer would not. */}
-        <div className="min-w-0">
-          <DocsTitle className="text-[2.125rem] leading-[1.15] tracking-[-0.021em]">
-            {page.data.title}
-          </DocsTitle>
-          <DocsDescription className="mb-0 mt-3 max-w-[40rem] text-[1.1875rem] leading-[1.55] sm:mb-9">
-            {page.data.description}
-          </DocsDescription>
-        </div>
-        <div className="mt-1 flex shrink-0 items-center gap-1">
-          <CopyMarkdownButton
-            markdown={raw}
-            labels={{
-              copy: chrome.copyForLLM,
-              copied: chrome.copied,
-              aria: chrome.copyAriaLabel,
-            }}
-          />
-          <AskAIMenu
-            labels={{
-              trigger: chrome.askAI,
-              aria: chrome.askAIAriaLabel,
-              claude: chrome.askClaude,
-              chatgpt: chrome.askChatGPT,
-              prompt: chrome.askPrompt.replace(
-                "{url}",
-                `${siteUrl}${markdownUrl(page.url)}`,
-              ),
-            }}
-          />
-          <a
-            href={markdownUrl(page.url)}
-            aria-label={chrome.markdownAriaLabel}
-            className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fd-muted-foreground no-underline transition-colors hover:bg-fd-accent hover:text-fd-accent-foreground"
-          >
-            <MarkdownIcon className="h-3.5 w-3.5" />
-            {chrome.markdown}
-          </a>
-        </div>
-      </div>
+      {/* The tree section provides context without repeating the page title. */}
+      {section && (
+        <p className="docs-eyebrow -mb-2 text-[14px] leading-normal text-muted-foreground">
+          {section}
+        </p>
+      )}
+      <DocsTitle className="text-[33.75px] font-normal leading-[40.5px] tracking-[-0.02em]">
+        {page.data.title}
+      </DocsTitle>
+      <DocsDescription className="page-description mb-8 mt-3 text-[15px] leading-[1.625] sm:mb-9">
+        {page.data.description}
+      </DocsDescription>
       {/* The skip link in the docs frame lands here — the library's page has no
           anchor of its own, and the frame and the page always render together. */}
       <DocsBody id="docs-content" tabIndex={-1}>
@@ -231,15 +254,5 @@ export async function DocPage({
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
     </DocsPage>
-  );
-}
-
-function MarkdownIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
-      <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-      <path d="M5 8V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-3" />
-      <path d="M2 12h6v5M2 17v-5l3 3 3-3" />
-    </svg>
   );
 }

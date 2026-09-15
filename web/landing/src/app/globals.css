@@ -184,6 +184,41 @@
   --sidebar-primary-foreground: var(--dark-primary-foreground);
 }
 
+/* Scoped raw palettes also reach portaled menus without changing the landing. */
+html:has(.docs-surface) {
+  --ring: var(--foreground);
+  --font-docs-sans: cursorSans, "cursorSans Fallback", system-ui, "Helvetica Neue",
+    Helvetica, Arial, sans-serif, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC";
+  --light-background: #f7f7f4;
+  --light-foreground: #26251e;
+  --light-card: #f7f7f4;
+  --light-popover: #f7f7f4;
+  --light-primary: #26251e;
+  --light-primary-foreground: #f7f7f4;
+  --light-secondary: #eeeee9;
+  --light-muted-foreground: #7a7974;
+  --light-accent: #e8e8e2;
+  --light-border: #ddddd5;
+  --light-input: #ddddd5;
+  --light-code: #eeeee9;
+  --light-selection: rgba(38, 37, 30, 0.1);
+
+  --dark-background: #1b1b18;
+  --dark-foreground: #eeeee8;
+  --dark-card: #21211d;
+  --dark-popover: #242420;
+  --dark-primary: #eeeee8;
+  --dark-primary-foreground: #1b1b18;
+  --dark-secondary: #292924;
+  --dark-muted-foreground: #a2a29a;
+  --dark-border: #383831;
+  --dark-input: #46463d;
+  --dark-code: #242420;
+  --dark-selection: rgba(238, 238, 232, 0.16);
+
+}
+
 /* The docs are a reading surface, not part of the site's dark object, so they get
    their own appearance: the reader's system by default, overridable by the switch
    in the docs header. `<html class="dark">` still governs the landing page, which is
@@ -994,6 +1029,47 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   }
 }
 
+/* Fumadocs' Shiki rules are unlayered and follow the landing's permanent .dark
+   class. These must also be unlayered, with the docs appearance taking priority. */
+html:not([data-docs-theme]):has(.docs-surface),
+html[data-docs-theme="dark"]:has(.docs-surface) {
+  .shiki:not(.not-fumadocs-codeblock *) code span,
+  code.shiki:not(.not-fumadocs-code *) span {
+    color: var(--shiki-dark);
+    font-style: var(--shiki-dark-font-style);
+  }
+
+  figure.shiki {
+    background-color: var(--shiki-dark-bg, var(--code));
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  html:not([data-docs-theme]):has(.docs-surface) {
+    .shiki:not(.not-fumadocs-codeblock *) code span,
+    code.shiki:not(.not-fumadocs-code *) span {
+      color: var(--shiki-light);
+      font-style: var(--shiki-light-font-style);
+    }
+
+    figure.shiki {
+      background-color: var(--shiki-light-bg, var(--code));
+    }
+  }
+}
+
+html[data-docs-theme="light"]:has(.docs-surface) {
+  .shiki:not(.not-fumadocs-codeblock *) code span,
+  code.shiki:not(.not-fumadocs-code *) span {
+    color: var(--shiki-light);
+    font-style: var(--shiki-light-font-style);
+  }
+
+  figure.shiki {
+    background-color: var(--shiki-light-bg, var(--code));
+  }
+}
+
 /* The docs prose lives in `utilities`, not `components`, because that is where
    fumadocs' typography plugin puts `.prose`. Layer order outranks specificity in
    the cascade, so a `.docs-surface article .prose` rule one layer down loses to a bare
@@ -1001,47 +1077,25 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
    the same layer, specificity decides and these win. The same applies to the
    library's chrome, which carries Tailwind utilities of its own. */
 @layer utilities {
-  /* ── Square corners, docs only ───────────────────────────────────────────
-     The docs are the one surface where the terminal aesthetic wins over the
-     Apple-HIG rounding the landing page uses: the reader is here to look at
-     code blocks and terminal screenshots, both of which are rectangles, and a
-     1rem radius on a 36px sidebar row rendered as a capsule — the shape macOS
-     reserves for a tag, not a list item.
-
-     Scoped to the docs *page* rather than the `.docs-surface` subtree: popovers
-     are portaled to `document.body`, so the language switcher and its rows sat
-     outside the subtree and kept their radius while everything around them went
-     square. The landing page never renders `.docs-surface`, so it is untouched —
-     the same `html:has()` test the scrollbar rule above uses. Two things opt out:
-     anything genuinely round (circles by nature, not rounded rectangles) and
-     inline code, whose small radius keeps a `code` chip legible as one object
-     inside a line of prose. */
-  html:has(.docs-surface) *:not([class*="rounded-full"]) {
-    border-radius: 0;
-  }
-  .docs-surface article .prose :not(pre) > code {
-    border-radius: 3px;
+  /* The document scope includes the search and language menus portaled to body. */
+  html:has(.docs-surface) body {
+    font-family: var(--font-docs-sans);
+    font-size: 15px;
+    line-height: 1.625;
   }
 
-  /* ── Docs prose typography ───────────────────────────────────────────────
-     fumadocs ships a Tailwind-typography `.prose` tuned for a column as wide as
-     the page. Here that was 836px of 16px text — about 104 characters a line,
-     where reading comfort tops out around 75. Everything below hangs off fixing
-     that: a reading measure, body copy a notch larger to suit it, and headings
-     that take their space from above rather than below.
+  .docs-surface :is(h1, h2, h3, h4) {
+    letter-spacing: -0.02em;
+    font-weight: 400;
+  }
 
-     Every rule is scoped through `article`, because `.prose` is not only the page
-     body — the library puts it on each table-of-contents link too, so that inline
-     code in a heading renders styled there. Matching `.prose` alone turned every
-     TOC entry into a flex column and sized it like body copy. */
+  /* Shared right edges keep prose, tables and figures aligned within the grid. */
   .docs-surface article .prose {
-    --docs-measure: 40rem;
-    /* The gap between two elements of the same section. Space above a heading is
-       this plus the heading's own margin, because margins do not collapse in a
-       flex container — the two add, which is the point. */
-    --docs-prose-gap: 1.25rem;
-    font-size: 1.0625rem;
-    line-height: 1.7;
+    --docs-prose-gap: 1.4rem;
+    max-width: none;
+    font-size: 15px;
+    line-height: 1.625;
+    color: var(--foreground);
 
     /* Vertical rhythm comes from one gap, not from margins meeting each other.
        With margins, the space between two blocks is the larger of the pair, so
@@ -1059,26 +1113,26 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     margin-block: 0;
   }
 
-  /* One measure for everything read as a sentence, expressed as a token rather
-     than an exception list: an element opts out by setting `--docs-measure` on
-     itself, and because custom properties inherit, a container can opt out its
-     whole subtree the same way. Three kinds of thing opt out here, and each is a
-     figure rather than prose — media (screenshots and video, which carry
-     `not-prose`), tables, whose width comes from their columns, and code blocks:
-     the longest line in these docs is 97 characters, so a block held to the text
-     measure would scroll horizontally on every CLI page. */
-  .docs-surface article .prose > * {
-    max-width: var(--docs-measure);
-  }
-  .docs-surface article .prose > :is(table, pre, figure, .not-prose),
-  .docs-surface article .prose > :has(> :is(table, pre)) {
-    --docs-measure: none;
-  }
-
-  /* A section head belongs to the text under it: the space above it is what
-     separates two sections, and it is several times the space below. */
   .docs-surface article .prose :is(h2, h3, h4) {
-    letter-spacing: -0.018em;
+    color: var(--foreground);
+  }
+  .docs-surface article .prose h2 {
+    font-size: 1.375rem;
+  }
+  .docs-surface article .prose h3 {
+    font-size: 1.125rem;
+  }
+  .docs-surface article .prose h4 {
+    font-size: 1rem;
+  }
+  .docs-surface article .prose :is(strong, b) {
+    color: var(--foreground);
+    font-weight: 600;
+  }
+  .docs-surface article .prose a {
+    color: var(--foreground);
+    text-underline-offset: 0.2em;
+    text-decoration-thickness: 1px;
   }
   .docs-surface article .prose h2 {
     margin-top: 2.25rem;
@@ -1097,24 +1151,18 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     margin-block: 0.75rem;
   }
 
-  /* The library's code block is a white card with a lift. This site already has a
-     token for the surface code sits on — `--code`, grey in light and near-black
-     in dark — and builds its panels from hairlines, so the card takes that colour
-     and drops the shadow. On a white page a white block reads as nothing at all. */
   .docs-surface article .prose figure.shiki {
-    background: var(--code);
     box-shadow: none;
   }
 
-  /* Inline code sits inside a line of prose, so it is tuned against the sans
-     text around it rather than styled as its own object: the mono face runs
-     optically low next to SF, and `vertical-align` lifts it without changing the
-     line box the way a margin or a transform would. Long identifiers may break —
-     `termio://session/<uuid>` in a 40rem column would otherwise force the line
-     to overflow rather than wrap. */
+  /* Long identifiers must wrap instead of widening the reading column. */
   .docs-surface article .prose :not(pre) > code {
-    vertical-align: 0.045em;
+    font-size: 0.875em;
     white-space: break-spaces;
+    border-radius: 3px;
+    border: none;
+    background: var(--secondary);
+    padding: 0.1em 0.3em;
   }
   /* In a heading, code is part of the heading: it takes its size and weight and
      drops the chip, so `## The \`termio\` command-line tool` reads as one line of
@@ -1150,14 +1198,7 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     opacity: 0.7;
   }
 
-  /* Tables as hairline rows. The library's table is a rounded bordered card
-     with a filled header band and a rule between every cell; on a page built
-     from hairlines that reads as a spreadsheet pasted into the prose. These
-     tables are reference lists — the status model, the shortcut catalog — so
-     they get row rules only, and the mono uppercase column label the rest of
-     the site already uses for the same job. Selectors are deliberately
-     `table th` rather than `th`: the library's own rules are specific enough to
-     outrank the shorter form. */
+  /* Row rules separate reference entries without boxing in every cell. */
   .docs-surface article .prose table {
     border: none;
     border-radius: 0;
@@ -1168,8 +1209,8 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
        command it belongs to; tables with sentences in them still fill. */
     width: auto;
     max-width: 100%;
-    font-size: 0.9375rem;
-    line-height: 1.55;
+    font-size: 0.875rem;
+    line-height: 1.6;
   }
   .docs-surface article .prose table :is(th, td) {
     border: none;
@@ -1180,11 +1221,10 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     vertical-align: top;
   }
   .docs-surface article .prose table th {
-    font-family: var(--font-mono-stack);
-    font-size: 0.6875rem;
+    font-family: inherit;
+    font-size: 0.875rem;
     font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: normal;
     color: var(--muted-foreground);
   }
   .docs-surface article .prose table tbody tr:last-child td {
@@ -1196,22 +1236,122 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
     white-space: nowrap;
   }
 
-  /* CJK copy needs a little more air between lines than Latin at the same size,
-     and Chinese punctuation shouldn't start a line. */
-  .docs-surface:lang(zh-CN) article .prose,
-  .docs-surface:lang(zh-CN) article .prose p,
-  .docs-surface:lang(zh-CN) article .prose li {
-    @apply leading-[1.85];
+  .docs-surface #nd-sidebar a {
+    color: var(--muted-foreground);
   }
+  .docs-surface #nd-sidebar a:hover,
+  .docs-surface #nd-sidebar a[data-active="true"] {
+    background: none;
+    color: var(--foreground);
+  }
+  .docs-surface #nd-sidebar a[data-active="true"] {
+    font-weight: 500;
+  }
+  .docs-surface #nd-sidebar a[data-active="true"]::before {
+    content: none;
+  }
+  /* Fumadocs' default list also draws SVG tracks. The text hierarchy is enough
+     to show position, just as it is in the sidebar. */
+  .docs-surface .docs-toc-list > div.absolute,
+  .docs-surface .docs-toc-list > a > svg {
+    display: none;
+  }
+  .docs-surface .docs-toc-list > a {
+    /* Remove the library's 20px track gutter while retaining its depth offsets. */
+    margin-inline-start: -20px;
+    padding-block: 4px;
+    border: none;
+    background: none;
+    color: var(--muted-foreground);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+  }
+  .docs-surface .docs-toc-list > a:hover,
+  .docs-surface .docs-toc-list > a[data-active="true"] {
+    color: var(--foreground);
+  }
+  .docs-surface .docs-toc-list > a[data-active="true"] {
+    font-weight: 500;
+  }
+  .docs-surface .docs-page-action {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 8px;
+    padding-block: 6px;
+    text-align: start;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    text-decoration: none;
+    transition: color 150ms;
+  }
+  .docs-surface .docs-page-action > svg {
+    flex-shrink: 0;
+  }
+  .docs-surface .docs-page-action:hover,
+  .docs-surface .docs-page-action[data-popup-open] {
+    color: var(--foreground);
+  }
+  .docs-surface .docs-header-bar {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+  .docs-surface .docs-header-search {
+    width: clamp(40px, calc(100vw - 256px), 360px);
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    padding-inline: 12px;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  .docs-surface .docs-header-search > svg {
+    flex-shrink: 0;
+  }
+  /* Keep the search control available without crowding the logo or appearance
+     controls; the shortcut hint returns when the full field has room for it. */
+  @media (width < 1024px) {
+    .docs-surface .docs-header-search > div {
+      display: none;
+    }
+  }
+  @media (width < 380px) {
+    .docs-surface .docs-header-search {
+      justify-content: center;
+      gap: 0;
+      font-size: 0;
+    }
+  }
+  @media (width >= 640px) {
+    .docs-surface .docs-header-search {
+      width: clamp(40px, calc(100vw - 384px), 360px);
+    }
+  }
+  @media (width >= 768px) {
+    .docs-surface .docs-header-search {
+      width: clamp(40px, calc(100vw - 544px), 360px);
+    }
+  }
+  .docs-surface #nd-sidebar p {
+    color: var(--muted-foreground);
+    font-weight: 400;
+    letter-spacing: normal;
+  }
+  .docs-surface #nd-sidebar,
+  .docs-surface #nd-toc {
+    font-size: 14px;
+  }
+  /* No rule down either rail. The page is built from one column of text with
+     margins either side of it; a border there draws two panels that are not
+     panels, and the whitespace already separates them. */
+  .docs-surface #nd-sidebar,
+  .docs-surface #nd-toc {
+    border-inline: none;
+  }
+  /* Chinese punctuation should not start a line. */
   .docs-surface:lang(zh-CN) article .prose {
     line-break: strict;
-  }
-  /* The mono uppercase column label is a Latin device: `text-transform` does
-     nothing to Chinese, and 11px leaves a Han character unreadable. Translated
-     tables get the same quiet head at a legible size in the text face. */
-  .docs-surface:lang(zh-CN) article .prose table th {
-    font-family: inherit;
-    font-size: 0.8125rem;
-    letter-spacing: 0.02em;
   }
 }

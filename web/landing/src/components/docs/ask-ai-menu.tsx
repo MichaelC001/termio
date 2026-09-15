@@ -1,5 +1,11 @@
 "use client";
 
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  BubbleChatIcon,
+  ArrowDown01Icon,
+  ArrowUpRight01Icon,
+} from "@hugeicons/core-free-icons";
 import { Menu } from "@base-ui/react/menu";
 
 // Hands the page to an assistant instead of an "Ask AI" chat panel. A panel means
@@ -31,15 +37,25 @@ export function AskAIMenu({
     <Menu.Root>
       <Menu.Trigger
         aria-label={labels.aria}
-        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-fd-muted-foreground transition-colors hover:bg-fd-accent hover:text-fd-accent-foreground data-[popup-open]:bg-fd-accent data-[popup-open]:text-fd-accent-foreground"
+        className="docs-page-action text-fd-muted-foreground"
       >
-        <SparkIcon className="h-3.5 w-3.5" />
+        <HugeiconsIcon icon={BubbleChatIcon} size={16} aria-hidden="true" />
         {labels.trigger}
-        <ChevronIcon className="h-3 w-3 opacity-70" />
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          size={12}
+          className="ml-auto opacity-70"
+          aria-hidden="true"
+        />
       </Menu.Trigger>
       <Menu.Portal>
-        <Menu.Positioner sideOffset={6} align="end" className="z-50">
-          <Menu.Popup className="min-w-[11rem] rounded-xl border border-fd-border bg-fd-popover p-1 text-fd-popover-foreground shadow-lg outline-none">
+        <Menu.Positioner
+          sideOffset={6}
+          align="start"
+          collisionPadding={8}
+          className="z-50"
+        >
+          <Menu.Popup className="w-[11rem] max-w-[var(--available-width)] max-h-[var(--available-height)] overflow-y-auto rounded-xl border border-fd-border bg-fd-popover p-1 text-fd-popover-foreground shadow-lg outline-none">
             {destinations.map((destination) => (
               <Menu.Item
                 key={destination.name}
@@ -53,37 +69,17 @@ export function AskAIMenu({
                 }
               >
                 {destination.name}
-                <ExternalIcon className="ml-auto h-3 w-3 opacity-50" />
+                <HugeiconsIcon
+                  icon={ArrowUpRight01Icon}
+                  size={12}
+                  className="ml-auto opacity-50"
+                  aria-hidden="true"
+                />
               </Menu.Item>
             ))}
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>
     </Menu.Root>
-  );
-}
-
-function SparkIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
-      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
-      <path d="M18 16.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" />
-    </svg>
-  );
-}
-
-function ChevronIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  );
-}
-
-function ExternalIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
-      <path d="M7 17 17 7M9 7h8v8" />
-    </svg>
   );
 }
