@@ -442,6 +442,21 @@ html[data-docs-theme="dark"]:has(.docs-surface) [role="dialog"] {
   }
 }
 
+/* The one-frame guard the appearance switch sets while it flips the palette
+   (components/docs/theme-switch.tsx). Three different durations are in play on a
+   docs page — none on the page background, 150ms on the hover-styled controls,
+   250ms on the library's sidebar — so a theme change without this crosses the
+   screen as a wipe instead of landing at once.
+
+   Unlayered and `!important`: the declarations it has to beat are the library's
+   own, which are unlayered themselves. It is deliberately blunt and it is only
+   ever on for a single frame. */
+html[data-theme-switching] *,
+html[data-theme-switching] *::before,
+html[data-theme-switching] *::after {
+  transition: none !important;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
