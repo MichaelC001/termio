@@ -1,0 +1,73 @@
+---
+title: 问题排查
+description: 会出问题的就那么几样——状态点不动、命令行说 disabled、重启后会话没了、某台机器不应答了——以及怎么去查，而不是靠猜。
+x-i18n:
+  source_path: troubleshooting.mdx
+  source_hash: 0f6404fb2d3b359497b385e54094808da16ebb4393df38f763d874ae6038ac80
+  generated_at: 2026-09-16
+---
+
+看起来像 Termio 出 bug 的情况，多半是下面五种之一。每一种都有办法查，而不用猜。
+
+## 状态点一直不动
+
+侧栏的[状态点](/docs/sidebar#status)来自装在每个 Agent 自己配置里的 hooks，而且是
+**按机器**安装的。一台在你打开这个功能之前就设置好的机器，上面的 Agent 没有 hooks，所以
+什么都不汇报，Termio 只能退回去读屏幕。
+
+打开**设置 ▸ 设备**，选中那台机器，在 Hooks 那行按**重新安装**。参见
+[状态 hooks 与会话控制](/docs/session-control)。
+
+## `termio sessions` 说 `disabled`
+
+编排 API 是可选的。打开**设置 ▸ Agent ▸ 会话控制**，它同时会安装 `termio` 技能，让
+Agent 知道这些命令存在。
+
+命令行的每个错误都是同一种形状，并且退出码非零，所以脚本可以按 `error` 分支，而不必去解析
+人话——错误码列在 [JSON 契约](/docs/cli#json-contract)。
+
+## 重启之后会话没了
+
+没有 service 时，server 只活到你这次登录结束。装上一个，它就能挺过登出、崩溃和重启：
+
+```bash
+termiod service install
+termiod service status
+```
+
+这是远程机器上最常见的意外——那种机器上没人会交互式登录。参见
+[Termio server](/docs/server)。
+
+## 某台机器不应答了
+
+从外往里查。如果普通的 `ssh` 都连不上，Termio 也连不上——它用的就是你自己的
+`~/.ssh/config`，从不自带凭据。
+
+```bash
+ssh mybox true                 # SSH 本身通不通？
+termiod list --host mybox      # 那台机器上的 server 应答吗？
+termiod deploy --host mybox    # 重新安装并校验
+```
+
+`deploy` 是一次调和，所以对着一台状态不对的机器跑它是安全的。
+
+## 哪里不对劲，你想要证据
+
+没有观察者连着的时候，server 会把发生的事记进日志——而 bug 往往正好落在那段窗口里。
+
+```bash
+termiod logs -n 200            # 最近的尾巴
+termiod logs -f                # 实时跟随
+termiod logs --path            # 日志文件本身，方便附进 bug 报告
+```
+
+<Callout type="tip">
+  在任何一台机器上，`termiod status` 都是最快的第一个问题：它会说装的是哪个二进制、什么
+  版本，以及 socket 上是不是真的有守护进程在应答。相当多的「它坏了」到这里就结束了。
+</Callout>
+
+## 还是卡住
+
+到 [github.com/termio-sh/termio](https://github.com/termio-sh/termio/issues)
+开一个 issue，附上 `termiod status` 的输出和 `termiod logs` 的尾巴。维护者本来要问的问题，
+这两样基本都答了。

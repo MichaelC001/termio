@@ -113,6 +113,67 @@ function checkChangelog() {
   notes.push(`changelog: newest entry ${newestEntry[1]} covers v${tag}`);
 }
 
+
+// The mechanical half of the translation conventions in
+// content/docs/.i18n/glossary.<locale>.json — the rules a reader feels as
+// "this was typed carefully" and that drift silently otherwise: a half-width
+// space between Chinese and Latin (盘古之白), full-width Chinese punctuation,
+// half-width digits and Latin.
+//
+// Only CJK locales are checked, and only prose: code spans and fences, front
+// matter, MDX tags, link targets, URLs and explicit anchor ids are blanked out
+// first, because `git worktree add` and `## 设备 [#device]` are correct exactly
+// as written and would otherwise trip every rule here.
+const CJK = "\\u4e00-\\u9fff\\u3400-\\u4dbf";
+
+function proseOnly(text) {
+  const out = text.split("");
+  // Newlines survive the blanking, or every reported line number would be short
+  // by however many lines the front matter and fenced blocks span.
+  const blank = (match, index) => {
+    for (let i = index; i < index + match.length; i += 1) {
+      if (out[i] !== "\n") out[i] = "\u0000";
+    }
+  };
+  const patterns = [
+    /```[\s\S]*?```/g,
+    /`[^`\n]*`/g,
+    /^---\n[\s\S]*?\n---/gm,
+    /\[#[^\]]+\]/g,
+    /<[^>\n]+>/g,
+    /\]\([^)]*\)/g,
+    /https?:\/\/\S+/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) blank(match[0], match.index);
+  }
+  return out.join("");
+}
+
+function checkTypography(name, text) {
+  const prose = proseOnly(text);
+  const rules = [
+    {
+      re: new RegExp(`[${CJK}][A-Za-z0-9]|[A-Za-z0-9][${CJK}]`, "g"),
+      why: "needs a half-width space between Chinese and Latin or digits",
+    },
+    {
+      re: new RegExp(`[${CJK}]\\s*[,.;:!?]\\s*[${CJK}]`, "g"),
+      why: "uses half-width punctuation between Chinese — use 。，、：；！？",
+    },
+    {
+      re: /[\uff21-\uff3a\uff41-\uff5a\uff10-\uff19]/g,
+      why: "uses full-width Latin or digits — those stay half-width",
+    },
+  ];
+  for (const rule of rules) {
+    const hit = rule.re.exec(prose);
+    if (!hit) continue;
+    const line = prose.slice(0, hit.index).split("\n").length;
+    fail(`i18n: ${name}:${line} ${rule.why} — "${hit[0]}"`);
+  }
+}
+
 // --------------------------------------------------------------------- i18n
 
 /** `<name>.mdx` → English source pages, excluding translations. */
@@ -327,6 +388,8 @@ function checkI18n() {
             `(expected source_hash ${sourceHash(sourceText)})`,
         );
       }
+
+      if (/^zh/.test(locale)) checkTypography(translatedName, translatedText);
 
       const sourceOutline = headingOutline(sourceText);
       const translatedOutline = headingOutline(translatedText);
