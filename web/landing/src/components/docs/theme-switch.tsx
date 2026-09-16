@@ -13,6 +13,14 @@ export const DOCS_THEME_KEY = "termio-docs-theme";
 
 function apply(theme: DocsTheme) {
   const root = document.documentElement;
+  // Switch every colour on the same frame. The page background has no transition,
+  // the hover-styled controls carry a 150ms one, and the library's sidebar carries
+  // 250ms — so without this the new theme arrives as a staggered wipe across a
+  // quarter of a second rather than as one change, which reads as a flicker.
+  // The attribute suppresses transitions for exactly one frame (see globals.css);
+  // hover and focus keep their easing the rest of the time.
+  root.dataset.themeSwitching = "";
+
   if (theme === "system") {
     delete root.dataset.docsTheme;
     localStorage.removeItem(DOCS_THEME_KEY);
@@ -20,6 +28,29 @@ function apply(theme: DocsTheme) {
     root.dataset.docsTheme = theme;
     localStorage.setItem(DOCS_THEME_KEY, theme);
   }
+
+  // Flush the new colours while the guard is still on. Toggling a universal
+  // `transition: none` rule around the change makes Chrome drop the repaint that
+  // the changed custom properties should have triggered: the sidebar kept the
+  // previous theme's background until something else forced a reflow, even though
+  // `--sidebar` already read the new value. Reading a computed style here forces
+  // that recalculation at the one moment transitions are suppressed.
+  void window.getComputedStyle(document.body).backgroundColor;
+
+  // Two frames: the first lets the new colours paint with transitions still off,
+  // the second takes the guard away. Removing it in a single rAF can land in the
+  // same frame as the paint, which puts the transitions back before the colours
+  // have changed and reinstates the wipe.
+  //
+  // The timer is not redundant. A hidden or throttled tab does not run rAF at all,
+  // so a switch made as the tab goes to the background would strand the guard and
+  // leave every transition on the page dead until the next one. Whichever fires
+  // first wins; removing an absent attribute is harmless.
+  const release = () => {
+    delete root.dataset.themeSwitching;
+  };
+  requestAnimationFrame(() => requestAnimationFrame(release));
+  setTimeout(release, 120);
 }
 
 // The `data-docs-theme` attribute on <html> is the state — not this component.
