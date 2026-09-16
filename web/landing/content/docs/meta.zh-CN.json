@@ -12,6 +12,7 @@
     "inspector",
     "---你的设备---",
     "devices",
+    "server",
     "workspaces",
     "---Agent---",
     "agents",
@@ -19,10 +20,13 @@
     "atp",
     "worktrees",
     "session-control",
+    "cli",
     "---个性化---",
     "appearance",
     "keyboard",
     "---你的 iPhone---",
-    "iphone"
+    "iphone",
+    "---帮助---",
+    "troubleshooting"
   ]
 }

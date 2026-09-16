@@ -1,0 +1,86 @@
+---
+title: The Termio server
+description: What runs on a machine so sessions outlive the app — how termiod is installed, kept alive, updated in place, and inspected when something looks wrong.
+---
+
+Every session runs inside `termiod`, the Termio server, on the machine that owns
+it — including the ones on this Mac. The app, the iPhone companion and the CLI
+are all *viewers*: they attach to a session and detach from it. Nothing about a
+session belongs to the window you were looking at.
+
+That is the whole reason quitting Termio does not kill your agents.
+
+## What it is
+
+`termiod` is a session host, not a window manager. It owns the PTY, keeps the
+scrollback, and hands a viewer a snapshot when one attaches. Locally a viewer
+reaches it over a Unix socket; remotely the app opens an SSH pipe to the same
+binary on the far box. One protocol, both ways — which is why a session on a VPS
+behaves like a session here.
+
+Panes, splits and layout are the app's business and never the server's.
+
+## Getting it onto a machine
+
+Adding a box under **Settings ▸ Devices** and pressing **Set Up** copies one
+binary into `~/.local/bin` over SSH and starts it. There is no package to
+install and no root involved.
+
+```bash
+termiod deploy                      # install or update it here, then verify
+termiod deploy --host mybox         # same, over your own SSH config
+```
+
+`deploy` is the only install path, and it is a reconcile: run it against a box
+in any state and it ends in the same one. Termio reads `~/.ssh/config` to find
+the host, so a machine you can already `ssh` to needs nothing new. See
+[Devices](/docs/devices).
+
+## Keeping it running
+
+```bash
+termiod service install    # launchd on macOS, systemd --user on Linux
+```
+
+Without a service the server lives as long as your login session. With one it
+comes back after a crash and after a reboot, which is what you want on a box you
+only ever reach remotely.
+
+## Updating without dropping sessions
+
+A new build replaces the running one **in place**: the process keeps its id and
+its PTYs, and the sessions never notice.
+
+```bash
+termiod handoff
+```
+
+That is also what happens when the app updates itself — the reason a Termio
+update does not cost you your running agents.
+
+## Looking at it
+
+Three commands answer nearly every "is it me or is it Termio" question:
+
+| Command | What it tells you |
+| --- | --- |
+| `termiod status` | What this machine has: the binary, its version, and whether a daemon is answering on the socket. |
+| `termiod list` | The sessions the host is holding — add `--host <box>` to ask another machine. |
+| `termiod logs` | What the server recorded while nobody was attached. `-f` follows it; `--path` prints the file for a bug report. |
+
+<Callout type="note">
+  `termiod` is the server's own command, and separate from the
+  [`termio` command-line tool](/docs/cli) the app installs for you. You rarely
+  need `termiod` by hand — the app runs these for you — but it is there when a
+  box is misbehaving and you want to look rather than guess.
+</Callout>
+
+## Stopping it
+
+```bash
+termiod stop
+```
+
+It declines while a command is still running or a viewer is attached, so a stray
+`stop` cannot take an agent's work with it. Sessions end when their process ends,
+or when you close them.
