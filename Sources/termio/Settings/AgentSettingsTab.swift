@@ -226,9 +226,9 @@ struct AgentSettingsTab: View {
     }
 
     /// Writes both halves on this Mac as the switches ask, then stamps it when
-    /// the write was clean — the stamp is what the rows above read, so a repair
-    /// that does not clear it leaves the user answering a warning they have
-    /// already answered.
+    /// the write was clean. This Mac is never one of the rows below, so nothing
+    /// on this page changes shape — the stamp is for everywhere else the
+    /// machine's currency is read.
     ///
     /// The same pair, the same stamp and the same daemon call as the machine
     /// pane's *Reinstall Hooks and Skill*: one operation reachable from either
@@ -242,9 +242,6 @@ struct AgentSettingsTab: View {
             DeviceStateCache.stampIntegration(
                 AppInfo.buildStamp, for: KnownDevice.thisMac.settingsKey)
         }
-        // The row this may have just cleared is read from the device file, not
-        // from the outcome, so it only goes away once that file is re-read.
-        await refreshIntegrationGap()
         return .summarizing(
             outcome, headline: localized("Installed"), unit: localized("agents"))
     }
@@ -267,7 +264,12 @@ struct AgentSettingsTab: View {
             behind = []
             return
         }
-        let roster = devices
+        // This Mac is never a row: the button above *is* its fix, and the row
+        // would push to Settings ▸ Server, which carries no hooks or skill to
+        // repair — they live on a machine's Agents page, and this Mac's is this
+        // page. A chevron that promises a fix elsewhere and lands on a pane
+        // without one is worse than no row.
+        let roster = devices.filter { !$0.isLocal }
         behind = await Task.detached(priority: .utility) {
             roster.compactMap { device -> IntegrationGap? in
                 let state = DeviceStateCache.load(device.settingsKey)
