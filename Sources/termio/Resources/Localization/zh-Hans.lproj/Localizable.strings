@@ -1390,6 +1390,8 @@
 	<string>Termio server 有回应，但返回的不是配对邀请。</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
 	<string>%@ 上的 Termio server。断开连接后，会话仍在那里继续运行。</string>
+	<key>The session host stopped</key>
+	<string>Termio server 已停止</string>
 	<key>The session host went away</key>
 	<string>Termio server 消失了</string>
 	<key>The sidebar shows this workspace</key>

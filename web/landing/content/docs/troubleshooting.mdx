@@ -1,0 +1,76 @@
+---
+title: Troubleshooting
+description: The handful of things that go wrong — a status dot that never moves, a CLI that says disabled, sessions missing after a reboot, a box that stopped answering — and how to look rather than guess.
+---
+
+Most of what looks like a Termio bug is one of five things. Each has a way to
+check rather than guess.
+
+## A status dot never changes
+
+The sidebar's [status dots](/docs/sidebar#status) come from hooks installed into
+each agent's own config, and they are installed **per machine**. An agent on a
+box you set up before turning the feature on has no hooks, so it reports nothing
+and Termio falls back to reading the screen.
+
+Open **Settings ▸ Devices**, pick the machine, and press **Reinstall** on the
+Hooks row. See [Status hooks & session control](/docs/session-control).
+
+## `termio sessions` says `disabled`
+
+The orchestration API is opt-in. Turn on **Settings ▸ Agents ▸ Session control**,
+which also installs the `termio` skill that teaches agents the commands exist.
+
+Every CLI error has the same shape and a nonzero exit code, so a script can
+branch on `error` rather than parse prose — the codes are listed in the
+[JSON contract](/docs/cli#json-contract).
+
+## Sessions are gone after a reboot
+
+Without a service, the server lives as long as your login session. Install one
+and it survives logouts, crashes and reboots:
+
+```bash
+termiod service install
+termiod service status
+```
+
+This is the usual surprise on a remote box, where nobody logs in interactively.
+See [The Termio server](/docs/server).
+
+## A machine stopped answering
+
+Work from the outside in. If plain `ssh` fails, Termio will too — it uses your
+own `~/.ssh/config` and never carries its own credentials.
+
+```bash
+ssh mybox true                 # does SSH itself work?
+termiod list --host mybox      # is the server answering there?
+termiod deploy --host mybox    # reinstall and verify it
+```
+
+`deploy` is a reconcile, so running it against a box in a bad state is safe.
+
+## Something looks wrong and you want evidence
+
+The server keeps a log of what happened while nobody was attached — which is
+exactly the window a bug tends to fall into.
+
+```bash
+termiod logs -n 200            # the recent tail
+termiod logs -f                # follow it live
+termiod logs --path            # the file itself, for a bug report
+```
+
+<Callout type="tip">
+  `termiod status` is the fastest first question on any machine: it says which
+  binary is installed, which version, and whether a daemon is actually answering
+  on the socket. A surprising number of "it broke" reports end there.
+</Callout>
+
+## Still stuck
+
+Open an issue at
+[github.com/termio-sh/termio](https://github.com/termio-sh/termio/issues) with
+the output of `termiod status` and the tail of `termiod logs`. Those two answer
+most of the questions a maintainer would otherwise have to ask.

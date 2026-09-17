@@ -6868,6 +6868,16 @@
         }
       }
     },
+    "The session host stopped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio server 已停止"
+          }
+        }
+      }
+    },
     "The session host went away": {
       "localizations": {
         "zh-Hans": {

@@ -1390,6 +1390,8 @@
 	<string>The session host answered, but not with a pairing invite.</string>
 	<key>The session host on %@. Sessions keep running there after you disconnect.</key>
 	<string>The session host on %@. Sessions keep running there after you disconnect.</string>
+	<key>The session host stopped</key>
+	<string>The session host stopped</string>
 	<key>The session host went away</key>
 	<string>The session host went away</string>
 	<key>The sidebar shows this workspace</key>

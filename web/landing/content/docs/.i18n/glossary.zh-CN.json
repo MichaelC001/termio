@@ -62,5 +62,17 @@
     "session control": "会话控制",
     "companion": "伴侣应用",
     "menu-bar tray": "菜单栏托盘"
-  }
+  },
+  "conventions": [
+    "Terms: the `terms` map wins over anything that reads better. A term left in English there — Agent, worktree, hooks, Issues — is the app's own choice, not a gap to fill.",
+    "Leave untranslated: commands, code spans and blocks, file paths, config keys, URLs, MDX component calls (<Keybindings />), and product names. `~/.ssh/config` and `git worktree add` stay exactly as written.",
+    "Keyboard shortcuts keep the English page's glyphs and order, untranslated: ⌘1, ⇧⌘O, ⌘W.",
+    "UI strings must match what the app actually shows in Simplified Chinese, menu paths included: Settings ▸ Agents ▸ Live agent status becomes the app's own wording, never a fresh translation of it.",
+    "Structure is fixed: same heading levels in the same order, same lists, same table columns, same code blocks, same components. `pnpm docs:check` compares heading structure and fails on a mismatch.",
+    "Every heading other pages link to carries an explicit English id — `## 设备 [#device]` — so an anchor keeps working in every locale.",
+    "One half-width space between Chinese and Latin or digits (盘古之白): 多个编程 Agent 的终端. Chinese punctuation is full-width (。，：、「」), digits and Latin stay half-width, and an em dash is ——.",
+    "Voice: the English docs are direct, concrete and unshowy (see VOICE.md). Translate literally and keep that restraint — do not add emphasis, idiom or hedging the English does not have.",
+    "Translate what is there: no added explanations, no dropped sentences. Something true only for Chinese readers belongs in the English page first.",
+    "Front matter: keep `x-i18n.source_path` and refresh `source_hash` via `pnpm docs:stamp` after retranslating, so a stale page fails the build instead of drifting quietly."
+  ]
 }

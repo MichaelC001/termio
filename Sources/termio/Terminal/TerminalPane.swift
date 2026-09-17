@@ -172,25 +172,6 @@ struct TerminalPane: View {
                     )
                 }
                 .frame(width: rect.width, height: rect.height)
-                // Dropping a file (dragged from the file-tree inspector, the Issues list or
-                // the Finder) inserts its shell-quoted path at the prompt — the prebuilt
-                // libghostty surface does not register for file drops itself, so each pane
-                // catches them and feeds the path to *its own* session. No trailing return,
-                // so the path is inserted for the user (or the agent) to act on rather than run.
-                //
-                // This must sit above `.position`, which grows the modified view to fill the
-                // whole terminal group: a drop destination applied after it would accept the
-                // drag anywhere, and the topmost pane in the stack would swallow every drop.
-                // One destination per pane, for every kind of drop. Two destinations over
-                // the same pane cannot be made to agree: whichever one loses the drop is
-                // never told the drag left, and its highlight stays on screen forever.
-                .onDrop(of: [.url, .fileURL, .text], delegate: PaneDropDelegate(
-                    pane: id,
-                    size: rect.size,
-                    isVisible: isVisible,
-                    store: store,
-                    send: { sendPaths($0, to: id) }
-                ))
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(isVisible ? 1 : 0)
                 .allowsHitTesting(isVisible)
@@ -228,6 +209,22 @@ struct TerminalPane: View {
             // the payload is typed at its prompt; a half means the layout changes.
             PaneDropWash(rect: dropWashRect(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed))
         }
+        // One destination for the whole group, never one per pane. A pane's own
+        // destination cannot be taken out of the running when the pane is hidden:
+        // `.allowsHitTesting(false)` does not suppress a drop destination, an empty
+        // type list still claims the region, and a destination that refuses does not
+        // hand the drag to the pane beneath it — so whichever pane was mounted last,
+        // visible or not, swallowed every drop (issue #610). The pointer resolves the
+        // pane here instead, against the same frames the layout already computed.
+        .onDrop(of: [.url, .fileURL, .text], delegate: GroupDropDelegate(
+            bounds: bounds,
+            frames: paneFrames,
+            visible: store.visiblePaneIDs,
+            zoomed: zoomed,
+            selected: store.selectedSessionID,
+            store: store,
+            send: { urls, id in sendPaths(urls, to: id) }
+        ))
         // Ghostty's own timing (`SurfaceDragSource`): the handle fades in and
         // brightens rather than blinking. The drag overlay animates its own
         // pieces — the highlight slides, the preview must not.
@@ -988,37 +985,51 @@ struct SessionDropTarget: Equatable {
     var zone: PaneDropZone
 }
 
-/// One drop destination per pane, for every kind of drop.
+/// One drop destination for the whole terminal group, resolving the pane under the
+/// pointer itself.
 ///
 /// A file, a folder or an issue link is inserted at that pane's prompt. A session
-/// dragged out of the sidebar means one thing only — group it in beside this pane,
-/// on the side you released over — so every part of the pane is a live edge, and a
-/// pane it cannot join declines the drag instead of doing something else with it.
+/// dragged out of the sidebar means one thing only — group it in beside the pane it
+/// was released over, on the side it was released on — so every part of a pane is a
+/// live edge, and a pane it cannot join declines the drag instead of doing something
+/// else with it.
 ///
-/// One destination covering every type, never a second layered over the first:
-/// SwiftUI's `URL` transferable imports from plain text, so both would see a
-/// session drag, only one would perform the drop, and the loser is never told the
-/// drag left — its highlight then stays on screen for good.
-///
-/// A `DropDelegate` rather than a `dropDestination` because only `dropUpdated`
-/// carries the pointer; `isTargeted:` is a Bool, which is all a whole-pane wash
-/// ever needed.
-private struct PaneDropDelegate: DropDelegate {
-    let pane: Session.ID
-    /// The pane's own size — the space `PaneDropZone` reads `info.location` in.
-    let size: CGSize
-    let isVisible: Bool
+/// One destination for the group rather than one per pane, because a pane's own
+/// destination cannot be withdrawn when the pane is hidden: SwiftUI consults a
+/// hidden pane's delegate anyway, and its refusal ends the drag rather than passing
+/// it to the pane beneath (issue #610). Only the visible panes are candidates here,
+/// so a hidden one can never take a drop meant for the pane on screen.
+private struct GroupDropDelegate: DropDelegate {
+    let bounds: CGRect
+    let frames: [Session.ID: CGRect]
+    let visible: [Session.ID]
+    let zoomed: Bool
+    let selected: Session.ID?
     let store: TermioStore
-    let send: ([URL]) -> Bool
+    let send: ([URL], Session.ID) -> Bool
 
-    /// A session drag is refused by every pane it cannot join — its own pane,
-    /// another project, another worktree — so the pointer shows the no-drop cursor
-    /// rather than accepting a release that would do nothing. Anything that is not
-    /// one of our rows is a payload for the prompt, and always lands.
+    /// The visible pane under `point`, with the rect it occupies. A zoomed pane owns
+    /// the whole group; an ungrouped one has no split frame and fills it.
+    private func pane(at point: CGPoint) -> (id: Session.ID, rect: CGRect)? {
+        if zoomed {
+            guard let selected, visible.contains(selected) else { return nil }
+            return (selected, bounds)
+        }
+        for id in visible {
+            let rect = frames[id] ?? bounds
+            if rect.contains(point) { return (id, rect) }
+        }
+        return nil
+    }
+
+    /// A session drag is refused by every pane it cannot join — its own pane, another
+    /// project, another worktree — so the pointer shows the no-drop cursor rather than
+    /// accepting a release that would do nothing. Anything that is not one of our rows
+    /// is a payload for the prompt, and always lands.
     func validateDrop(info: DropInfo) -> Bool {
-        guard isVisible else { return false }
+        guard let target = pane(at: info.location) else { return false }
         guard let moved = store.resolveDraggedSession() else { return true }
-        return store.canGroup(moved, with: pane)
+        return store.canGroup(moved, with: target.id)
     }
 
     func dropEntered(info: DropInfo) {
@@ -1026,16 +1037,17 @@ private struct PaneDropDelegate: DropDelegate {
         track(info)
     }
 
+    /// The pane under the pointer changes without any enter/exit now that one
+    /// destination spans the group, so the cue is recomputed on every move.
     func dropUpdated(info: DropInfo) -> DropProposal? {
         track(info)
+        guard let target = pane(at: info.location) else { return DropProposal(operation: .forbidden) }
+        if let moved = store.draggingSessionID, !store.canGroup(moved, with: target.id) {
+            return DropProposal(operation: .forbidden)
+        }
         return DropProposal(operation: .copy)
     }
 
-    /// Cleared unconditionally rather than only when the cue is this pane's.
-    /// Moving between panes can report the new pane's entry before the old pane's
-    /// exit, so this can wipe a cue that was just set — but the new pane's next
-    /// `dropUpdated` puts it straight back, a frame later at worst. A cue that
-    /// heals itself while the pointer moves beats one that can be left behind.
     func dropExited(info: DropInfo) {
         guard store.sessionDropTarget != nil else { return }
         store.sessionDropTarget = nil
@@ -1045,32 +1057,40 @@ private struct PaneDropDelegate: DropDelegate {
         let moved = store.resolveDraggedSession()
         store.sessionDropTarget = nil
         store.draggingSessionID = nil
-        guard let moved else { return insert(info) }
-        guard store.canGroup(moved, with: pane) else { return false }
-        store.dropSession(moved, onto: pane, zone: PaneDropZone.edge(at: info.location, in: size))
+        guard let target = pane(at: info.location) else { return false }
+        guard let moved else { return insert(info, into: target.id) }
+        guard store.canGroup(moved, with: target.id) else { return false }
+        let local = CGPoint(x: info.location.x - target.rect.minX,
+                            y: info.location.y - target.rect.minY)
+        store.dropSession(moved, onto: target.id,
+                          zone: PaneDropZone.edge(at: local, in: target.rect.size))
         return true
     }
 
-    /// Lights what the release would commit: the half this pane would give up to a
+    /// Lights what the release would commit: the half a pane would give up to a
     /// session being grouped in, or the whole pane for a payload being typed.
     ///
     /// Published only when it changes. `dropUpdated` fires at pointer rate, and a
     /// write to any `@Published` on the store invalidates every view observing it —
     /// the whole sidebar list and the pane tree — so republishing the zone the cue
-    /// is already showing redraws the app for nothing. Same rule, and the same
-    /// reason, as `PaneDragRearrange.setHover`.
+    /// is already showing redraws the app for nothing.
     private func track(_ info: DropInfo) {
-        guard isVisible else { return }
+        guard let target = pane(at: info.location) else {
+            if store.sessionDropTarget != nil { store.sessionDropTarget = nil }
+            return
+        }
+        let local = CGPoint(x: info.location.x - target.rect.minX,
+                            y: info.location.y - target.rect.minY)
         let zone = store.draggingSessionID == nil
-            ? .center : PaneDropZone.edge(at: info.location, in: size)
-        let target = SessionDropTarget(pane: pane, zone: zone)
-        guard store.sessionDropTarget != target else { return }
-        store.sessionDropTarget = target
+            ? .center : PaneDropZone.edge(at: local, in: target.rect.size)
+        let next = SessionDropTarget(pane: target.id, zone: zone)
+        guard store.sessionDropTarget != next else { return }
+        store.sessionDropTarget = next
     }
 
     /// Everything that ends up at the prompt: files and folders from the Finder or
     /// the file tree, an issue's link from the Issues list.
-    private func insert(_ info: DropInfo) -> Bool {
+    private func insert(_ info: DropInfo, into pane: Session.ID) -> Bool {
         let providers = info.itemProviders(for: [.url])
         guard !providers.isEmpty else { return false }
         Task { @MainActor in
@@ -1078,7 +1098,7 @@ private struct PaneDropDelegate: DropDelegate {
             for provider in providers {
                 if let url = await provider.droppedURL() { dropped.append(url) }
             }
-            _ = send(dropped)
+            _ = send(dropped, pane)
         }
         return true
     }
