@@ -171,6 +171,16 @@
         }
       }
     },
+    "%@ isn’t available on this machine yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 暂不支持这台设备。"
+          }
+        }
+      }
+    },
     "%@ isn’t installed on %@": {
       "localizations": {
         "zh-Hans": {
@@ -381,6 +391,26 @@
         }
       }
     },
+    "%lld installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装 %lld 个"
+          }
+        }
+      }
+    },
+    "%lld not installed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个未安装"
+          }
+        }
+      }
+    },
     "%lld of %lld": {
       "localizations": {
         "zh-Hans": {
@@ -541,6 +571,16 @@
         }
       }
     },
+    "A phone can attach straight to one of these instead, and keep working when this Mac is asleep.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机也可以直接连到其中一台，这台 Mac 睡眠时仍能继续用。"
+          }
+        }
+      }
+    },
     "A port is a number from 1 to 65535.": {
       "localizations": {
         "zh-Hans": {
@@ -631,12 +671,32 @@
         }
       }
     },
+    "Add Remote Host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加远程主机"
+          }
+        }
+      }
+    },
     "Add SSH Host": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "添加 SSH 主机"
+          }
+        }
+      }
+    },
+    "Add a host you reach over SSH and Termio can run sessions on it, with agents that keep working after you disconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加一台你用 SSH 连接的主机，Termio 就能在上面运行会话；断开连接后 Agent 仍会继续工作。"
           }
         }
       }
@@ -707,6 +767,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agent"
+          }
+        }
+      }
+    },
+    "Agents on %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 Agent"
           }
         }
       }
@@ -1123,6 +1193,16 @@
       }
     },
     "Can’t check on %lld devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %lld 台设备上检查"
+          }
+        }
+      }
+    },
+    "Can’t check on %lld machines": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -1608,6 +1688,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "命令行"
+          }
+        }
+      }
+    },
+    "Command paths": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令路径"
           }
         }
       }
@@ -2473,6 +2563,16 @@
         }
       }
     },
+    "Drag an agent onto another to reorder. Readiness covers every machine you work on.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把一个 Agent 拖到另一个上可重新排序。就绪状态涵盖你使用的每台设备。"
+          }
+        }
+      }
+    },
     "Drag the list to change the order agents appear in.": {
       "localizations": {
         "zh-Hans": {
@@ -3044,6 +3144,16 @@
         }
       }
     },
+    "Host Unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主机不可用"
+          }
+        }
+      }
+    },
     "Host block": {
       "localizations": {
         "zh-Hans": {
@@ -3190,16 +3300,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "安装到 %@"
-          }
-        }
-      }
-    },
-    "Install on All Devices": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安装到所有设备"
           }
         }
       }
@@ -3404,6 +3504,16 @@
         }
       }
     },
+    "Language, GitHub, and privacy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语言、GitHub 和隐私"
+          }
+        }
+      }
+    },
     "Language, notifications, and GitHub": {
       "localizations": {
         "zh-Hans": {
@@ -3460,6 +3570,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "启动"
+          }
+        }
+      }
+    },
+    "Leave a path empty to launch the agent the way %@’s login shell would. Which agents appear at all is Settings ▸ Agents.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "留空则按 %@ 的登录 shell 的方式启动该 Agent。要显示哪些 Agent 在“设置 ▸ Agents”中设定。"
           }
         }
       }
@@ -3604,6 +3724,16 @@
         }
       }
     },
+    "Machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备"
+          }
+        }
+      }
+    },
     "Machines": {
       "localizations": {
         "zh-Hans": {
@@ -3655,6 +3785,16 @@
       }
     },
     "Missing on %lld devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 台设备上缺失"
+          }
+        }
+      }
+    },
+    "Missing on %lld machines": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -3800,6 +3940,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "导航器"
+          }
+        }
+      }
+    },
+    "Needs Live agent status above: without it, nothing tells Termio an agent finished.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要上面的“实时 Agent 状态”：没有它，就没有东西告诉 Termio 一个 Agent 完成了。"
           }
         }
       }
@@ -4394,6 +4544,16 @@
         }
       }
     },
+    "None found": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到"
+          }
+        }
+      }
+    },
     "None of this project’s remotes point at github.com, so there is no issue tracker to show.": {
       "localizations": {
         "zh-Hans": {
@@ -4435,6 +4595,16 @@
         }
       }
     },
+    "Not checked yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未检查"
+          }
+        }
+      }
+    },
     "Not installed": {
       "localizations": {
         "zh-Hans": {
@@ -4471,6 +4641,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "尚未推送到上游"
+          }
+        }
+      }
+    },
+    "Not running yet. Sessions start it, and keep running after you quit Termio.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未运行。会话会启动它，并在你退出 Termio 后继续运行。"
+          }
+        }
+      }
+    },
+    "Not set up yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未设置"
           }
         }
       }
@@ -4727,6 +4917,16 @@
         }
       }
     },
+    "Open a machine to put them there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开一台设备，把它们装到那里。"
+          }
+        }
+      }
+    },
     "Open in %@": {
       "localizations": {
         "zh-Hans": {
@@ -4813,6 +5013,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "打开定义该设备的 ~/.ssh/config 条目。"
+          }
+        }
+      }
+    },
+    "Other machines": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他设备"
           }
         }
       }
@@ -5387,6 +5597,16 @@
         }
       }
     },
+    "Reinstall Hooks and Skill": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新安装 Hooks 和技能"
+          }
+        }
+      }
+    },
     "Reinstall hooks": {
       "localizations": {
         "zh-Hans": {
@@ -5403,6 +5623,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新安装技能"
+          }
+        }
+      }
+    },
+    "Reinstalled": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已重新安装"
           }
         }
       }
@@ -5443,6 +5673,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "远程"
+          }
+        }
+      }
+    },
+    "Remote Hosts": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程主机"
           }
         }
       }
@@ -6008,6 +6248,16 @@
         }
       }
     },
+    "Server": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio server"
+          }
+        }
+      }
+    },
     "Serving": {
       "localizations": {
         "zh-Hans": {
@@ -6078,12 +6328,32 @@
         }
       }
     },
+    "Set up this Mac": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置这台 Mac"
+          }
+        }
+      }
+    },
     "Set up this device": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "设置此设备"
+          }
+        }
+      }
+    },
+    "Set up this host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置这台主机"
           }
         }
       }
@@ -6648,6 +6918,26 @@
         }
       }
     },
+    "Termio notifies you about the agents above, wherever they run.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无论上面的 Agent 在哪里运行，Termio 都会通知你。"
+          }
+        }
+      }
+    },
+    "Termio server": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio server"
+          }
+        }
+      }
+    },
     "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.": {
       "localizations": {
         "zh-Hans": {
@@ -6798,12 +7088,42 @@
         }
       }
     },
+    "The machine couldn’t read this checkout.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备无法读取这个检出。"
+          }
+        }
+      }
+    },
+    "The machine couldn’t read this comparison.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备无法读取这个对比。"
+          }
+        }
+      }
+    },
     "The machine everything filed under this workspace lives on.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "归入这个工作区的一切所在的机器。"
+          }
+        }
+      }
+    },
+    "The machines you reach from this Mac": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你从这台 Mac 连接的设备"
           }
         }
       }
@@ -7188,6 +7508,16 @@
         }
       }
     },
+    "This host is no longer in your configuration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台主机已不在你的配置中。"
+          }
+        }
+      }
+    },
     "This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.": {
       "localizations": {
         "zh-Hans": {
@@ -7208,12 +7538,72 @@
         }
       }
     },
+    "This machine didn’t answer. Its termiod may be too old to search.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备没有响应。它的 termiod 版本可能过旧，无法搜索。"
+          }
+        }
+      }
+    },
+    "This machine sent a name the file tree can’t show.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备发来的名称文件树无法显示。"
+          }
+        }
+      }
+    },
+    "This machine’s termiod is too old to browse files.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法浏览文件。"
+          }
+        }
+      }
+    },
+    "This machine’s termiod is too old to install agent integration.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法安装 Agent 集成。"
+          }
+        }
+      }
+    },
     "This machine’s termiod is too old to list folders.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "这台机器上的 termiod 版本太旧，列不出文件夹。"
+          }
+        }
+      }
+    },
+    "This machine’s termiod is too old to read git.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法读取 git。"
+          }
+        }
+      }
+    },
+    "This machine’s termiod is too old to report its agents.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该设备上的 termiod 版本过旧，无法查询其 Agent。"
           }
         }
       }
@@ -7384,6 +7774,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "关闭后 iPhone 将断开连接；配对会保留。"
+          }
+        }
+      }
+    },
+    "Turned off in Settings ▸ Agents, so Termio removes it from %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在“设置 ▸ Agents”中关闭，因此 Termio 会把它从 %@ 上移除。"
+          }
+        }
+      }
+    },
+    "Turned off in Settings ▸ Agents, so Termio removes them from %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在“设置 ▸ Agents”中关闭，因此 Termio 会把它们从 %@ 上移除。"
           }
         }
       }
@@ -7569,6 +7979,16 @@
         }
       }
     },
+    "Version %@ on %@. Sessions keep running there after you disconnect.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的版本 %@。断开连接后，会话仍在那里继续运行。"
+          }
+        }
+      }
+    },
     "View": {
       "localizations": {
         "zh-Hans": {
@@ -7629,12 +8049,32 @@
         }
       }
     },
+    "What Termio writes into each agent’s config on %@ so it can report. Reinstall after hand-editing one.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 写入 %@ 上每个 Agent 配置里的内容，让它能回报状态。手工改过某个配置后请重新安装。"
+          }
+        }
+      }
+    },
     "What the daemon said": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "守护进程的原始输出"
+          }
+        }
+      }
+    },
+    "What this Mac runs, and what Termio installed on it": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 运行什么，以及 Termio 装了什么"
           }
         }
       }
@@ -7669,6 +8109,26 @@
         }
       }
     },
+    "Where each machine launches %@ from. Leave empty to use its default.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每台设备从哪里启动 %@。留空则使用其默认值。"
+          }
+        }
+      }
+    },
+    "Where everything filed under this workspace lives.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "归入这个工作区的一切所在的位置。"
+          }
+        }
+      }
+    },
     "Whether you want these at all, and putting them on every device.": {
       "localizations": {
         "zh-Hans": {
@@ -7685,6 +8145,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "是否启用这些功能，以及把它们装到这台 Mac 上。"
+          }
+        }
+      }
+    },
+    "Whether you want these at all. Termio puts them on each machine as you set it up.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "是否启用这些功能。Termio 会在你设置每台设备时装上它们。"
+          }
+        }
+      }
+    },
+    "Which agent CLIs are on %@, where each launches from, and what Termio installed into their configs.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上有哪些 Agent 命令行工具、各自从哪里启动，以及 Termio 往它们的配置里装了什么。"
           }
         }
       }
@@ -7971,6 +8451,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "macOS 尚未请求允许 Termio 发送通知。"
+          }
+        }
+      }
+    },
+    "machines": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "台设备"
           }
         }
       }
