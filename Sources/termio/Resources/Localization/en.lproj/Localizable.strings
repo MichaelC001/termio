@@ -40,6 +40,8 @@
 	<string>%@ isn’t a UTF-8 text file.</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ isn’t available on this device yet.</string>
+	<key>%@ isn’t available on this machine yet.</key>
+	<string>%@ isn’t available on this machine yet.</string>
 	<key>%@ isn’t installed on %@</key>
 	<string>%@ isn’t installed on %@</string>
 	<key>%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.</key>
@@ -84,6 +86,10 @@
 	<string>%lld files</string>
 	<key>%lld in your Themes folder</key>
 	<string>%lld in your Themes folder</string>
+	<key>%lld installed</key>
+	<string>%lld installed</string>
+	<key>%lld not installed</key>
+	<string>%lld not installed</string>
 	<key>%lld of %lld</key>
 	<string>%lld of %lld</string>
 	<key>%lld pt</key>
@@ -116,6 +122,8 @@
 	<string>A name can’t contain spaces — it’s what you type after `ssh`.</string>
 	<key>A password can’t contain a line break.</key>
 	<string>A password can’t contain a line break.</string>
+	<key>A phone can attach straight to one of these instead, and keep working when this Mac is asleep.</key>
+	<string>A phone can attach straight to one of these instead, and keep working when this Mac is asleep.</string>
 	<key>A port is a number from 1 to 65535.</key>
 	<string>A port is a number from 1 to 65535.</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
@@ -134,8 +142,12 @@
 	<string>Add Host</string>
 	<key>Add Host…</key>
 	<string>Add Host…</string>
+	<key>Add Remote Host</key>
+	<string>Add Remote Host</string>
 	<key>Add SSH Host</key>
 	<string>Add SSH Host</string>
+	<key>Add a host you reach over SSH and Termio can run sessions on it, with agents that keep working after you disconnect.</key>
+	<string>Add a host you reach over SSH and Termio can run sessions on it, with agents that keep working after you disconnect.</string>
 	<key>Add to Chat</key>
 	<string>Add to Chat</string>
 	<key>Address</key>
@@ -150,6 +162,8 @@
 	<string>Agent skill</string>
 	<key>Agents</key>
 	<string>Agents</string>
+	<key>Agents on %@</key>
+	<string>Agents on %@</string>
 	<key>Agents on %@ can run, and report their status back here.</key>
 	<string>Agents on %@ can run, and report their status back here.</string>
 	<key>Agents on %@ can run.</key>
@@ -238,6 +252,8 @@
 	<string>Can’t check on %@</string>
 	<key>Can’t check on %lld devices</key>
 	<string>Can’t check on %lld devices</string>
+	<key>Can’t check on %lld machines</key>
+	<string>Can’t check on %lld machines</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
@@ -334,6 +350,8 @@
 	<string>Command Palette…</string>
 	<key>Command line</key>
 	<string>Command line</string>
+	<key>Command paths</key>
+	<string>Command paths</string>
 	<key>Command-line tool</key>
 	<string>Command-line tool</string>
 	<key>Commit or discard the changes in “%@” before removing it.</key>
@@ -508,6 +526,8 @@
 	<string>Drag an agent onto another to reorder.</string>
 	<key>Drag an agent onto another to reorder. Readiness covers every device you work on.</key>
 	<string>Drag an agent onto another to reorder. Readiness covers every device you work on.</string>
+	<key>Drag an agent onto another to reorder. Readiness covers every machine you work on.</key>
+	<string>Drag an agent onto another to reorder. Readiness covers every machine you work on.</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
 	<key>Duplicate to Themes Folder</key>
@@ -622,6 +642,8 @@
 	<string>Hooks reinstalled</string>
 	<key>Host</key>
 	<string>Host</string>
+	<key>Host Unavailable</key>
+	<string>Host Unavailable</string>
 	<key>Host block</key>
 	<string>Host block</string>
 	<key>Host not found</key>
@@ -692,6 +714,8 @@
 	<string>Labels</string>
 	<key>Language</key>
 	<string>Language</string>
+	<key>Language, GitHub, and privacy</key>
+	<string>Language, GitHub, and privacy</string>
 	<key>Language, notifications, and GitHub</key>
 	<string>Language, notifications, and GitHub</string>
 	<key>Last 30 days</key>
@@ -704,6 +728,8 @@
 	<string>Later</string>
 	<key>Launch</key>
 	<string>Launch</string>
+	<key>Leave a path empty to launch the agent the way %@’s login shell would. Which agents appear at all is Settings ▸ Agents.</key>
+	<string>Leave a path empty to launch the agent the way %@’s login shell would. Which agents appear at all is Settings ▸ Agents.</string>
 	<key>Let your agents coordinate?</key>
 	<string>Let your agents coordinate?</string>
 	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
@@ -732,6 +758,8 @@
 	<string>Looking for agent CLIs…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>Lost the connection to %@. The session is still running there.</string>
+	<key>Machine</key>
+	<string>Machine</string>
 	<key>Machines</key>
 	<string>Machines</string>
 	<key>Match Case</key>
@@ -744,6 +772,8 @@
 	<string>Minimize</string>
 	<key>Missing on %lld devices</key>
 	<string>Missing on %lld devices</string>
+	<key>Missing on %lld machines</key>
+	<string>Missing on %lld machines</string>
 	<key>Mobile</key>
 	<string>Mobile</string>
 	<key>Mobile Access</key>
@@ -772,6 +802,8 @@
 	<string>Navigation</string>
 	<key>Navigator</key>
 	<string>Navigator</string>
+	<key>Needs Live agent status above: without it, nothing tells Termio an agent finished.</key>
+	<string>Needs Live agent status above: without it, nothing tells Termio an agent finished.</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
 	<string>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</string>
 	<key>New</key>
@@ -890,6 +922,8 @@
 	<string>No tunnel selected.</string>
 	<key>None</key>
 	<string>None</string>
+	<key>None found</key>
+	<string>None found</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
 	<key>Not Now</key>
@@ -898,6 +932,8 @@
 	<string>Not a Git Repository</string>
 	<key>Not a valid regular expression</key>
 	<string>Not a valid regular expression</string>
+	<key>Not checked yet</key>
+	<string>Not checked yet</string>
 	<key>Not installed</key>
 	<string>Not installed</string>
 	<key>Not installed on %@</key>
@@ -906,6 +942,10 @@
 	<string>Not installed on %@.</string>
 	<key>Not pushed to upstream</key>
 	<string>Not pushed to upstream</string>
+	<key>Not running yet. Sessions start it, and keep running after you quit Termio.</key>
+	<string>Not running yet. Sessions start it, and keep running after you quit Termio.</string>
+	<key>Not set up yet</key>
+	<string>Not set up yet</string>
 	<key>Nothing to Compare</key>
 	<string>Nothing to Compare</string>
 	<key>Nothing to install.</key>
@@ -956,6 +996,8 @@
 	<string>Open a Folder</string>
 	<key>Open a Project on %@</key>
 	<string>Open a Project on %@</string>
+	<key>Open a machine to put them there.</key>
+	<string>Open a machine to put them there.</string>
 	<key>Open in %@</key>
 	<string>Open in %@</string>
 	<key>Open in Browser</key>
@@ -976,6 +1018,8 @@
 %@</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>Opens the ~/.ssh/config entry this machine is defined in.</string>
+	<key>Other machines</key>
+	<string>Other machines</string>
 	<key>Overwrite</key>
 	<string>Overwrite</string>
 	<key>Padding: %lld pt</key>
@@ -1096,6 +1140,8 @@
 	<string>Reinstall hooks</string>
 	<key>Reinstall skill</key>
 	<string>Reinstall skill</string>
+	<key>Reinstalled</key>
+	<string>Reinstalled</string>
 	<key>Relaunch Now</key>
 	<string>Relaunch Now</string>
 	<key>Relaunch Termio to switch language?</key>
@@ -1104,6 +1150,8 @@
 	<string>Reload</string>
 	<key>Remote</key>
 	<string>Remote</string>
+	<key>Remote Hosts</key>
+	<string>Remote Hosts</string>
 	<key>Remove</key>
 	<string>Remove</string>
 	<key>Remove Project</key>
@@ -1216,6 +1264,8 @@
 	<string>Selection</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
 	<string>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</string>
+	<key>Server</key>
+	<string>Server</string>
 	<key>Serving</key>
 	<string>Serving</string>
 	<key>Session</key>
@@ -1230,8 +1280,12 @@
 	<string>Set Up Key</string>
 	<key>Set Up Key…</key>
 	<string>Set Up Key…</string>
+	<key>Set up this Mac</key>
+	<string>Set up this Mac</string>
 	<key>Set up this device</key>
 	<string>Set up this device</string>
+	<key>Set up this host</key>
+	<string>Set up this host</string>
 	<key>Settings</key>
 	<string>Settings</string>
 	<key>Settings…</key>
@@ -1346,6 +1400,10 @@
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
+	<key>Termio notifies you about the agents above, wherever they run.</key>
+	<string>Termio notifies you about the agents above, wherever they run.</string>
+	<key>Termio server</key>
+	<string>Termio server</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
@@ -1376,8 +1434,14 @@
 	<string>The machine Termio is running on</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
+	<key>The machine couldn’t read this checkout.</key>
+	<string>The machine couldn’t read this checkout.</string>
+	<key>The machine couldn’t read this comparison.</key>
+	<string>The machine couldn’t read this comparison.</string>
 	<key>The machine everything filed under this workspace lives on.</key>
 	<string>The machine everything filed under this workspace lives on.</string>
+	<key>The machines you reach from this Mac</key>
+	<string>The machines you reach from this Mac</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1454,12 +1518,26 @@
 	<string>This folder has no git “origin” remote to clone.</string>
 	<key>This folder isn’t tracked by Git.</key>
 	<string>This folder isn’t tracked by Git.</string>
+	<key>This host is no longer in your configuration.</key>
+	<string>This host is no longer in your configuration.</string>
 	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
 	<string>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</string>
+	<key>This machine didn’t answer. Its termiod may be too old to search.</key>
+	<string>This machine didn’t answer. Its termiod may be too old to search.</string>
+	<key>This machine sent a name the file tree can’t show.</key>
+	<string>This machine sent a name the file tree can’t show.</string>
+	<key>This machine’s termiod is too old to browse files.</key>
+	<string>This machine’s termiod is too old to browse files.</string>
+	<key>This machine’s termiod is too old to install agent integration.</key>
+	<string>This machine’s termiod is too old to install agent integration.</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>This machine’s termiod is too old to list folders.</string>
+	<key>This machine’s termiod is too old to read git.</key>
+	<string>This machine’s termiod is too old to read git.</string>
+	<key>This machine’s termiod is too old to report its agents.</key>
+	<string>This machine’s termiod is too old to report its agents.</string>
 	<key>This month</key>
 	<string>This month</string>
 	<key>This pull request changes no files.</key>
@@ -1494,6 +1572,10 @@
 	<string>Tunnel</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>Turn off to disconnect your iPhone; pairing is kept.</string>
+	<key>Turned off in Settings ▸ Agents, so Termio removes it from %@.</key>
+	<string>Turned off in Settings ▸ Agents, so Termio removes it from %@.</string>
+	<key>Turned off in Settings ▸ Agents, so Termio removes them from %@.</key>
+	<string>Turned off in Settings ▸ Agents, so Termio removes them from %@.</string>
 	<key>Type this code at github.com/login/device to approve Termio. Waiting for approval…</key>
 	<string>Type this code at github.com/login/device to approve Termio. Waiting for approval…</string>
 	<key>URL Pattern</key>
@@ -1532,6 +1614,8 @@
 	<string>User</string>
 	<key>Uses %@</key>
 	<string>Uses %@</string>
+	<key>Version %@ on %@. Sessions keep running there after you disconnect.</key>
+	<string>Version %@ on %@. Sessions keep running there after you disconnect.</string>
 	<key>View</key>
 	<string>View</string>
 	<key>View on %@</key>
@@ -1544,18 +1628,30 @@
 	<string>WeChat</string>
 	<key>WeChat group</key>
 	<string>WeChat group</string>
+	<key>What Termio writes into each agent’s config on %@ so it can report. Reinstall after hand-editing one.</key>
+	<string>What Termio writes into each agent’s config on %@ so it can report. Reinstall after hand-editing one.</string>
 	<key>What the daemon said</key>
 	<string>What the daemon said</string>
+	<key>What this Mac runs, and what Termio installed on it</key>
+	<string>What this Mac runs, and what Termio installed on it</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>What this workspace is called in the sidebar.</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>When on, selecting text copies it straight to the clipboard.</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
 	<string>Where each device launches %@ from. Leave empty to use its default.</string>
+	<key>Where each machine launches %@ from. Leave empty to use its default.</key>
+	<string>Where each machine launches %@ from. Leave empty to use its default.</string>
+	<key>Where everything filed under this workspace lives.</key>
+	<string>Where everything filed under this workspace lives.</string>
 	<key>Whether you want these at all, and putting them on every device.</key>
 	<string>Whether you want these at all, and putting them on every device.</string>
 	<key>Whether you want these at all, and putting them on this Mac.</key>
 	<string>Whether you want these at all, and putting them on this Mac.</string>
+	<key>Whether you want these at all. Termio puts them on each machine as you set it up.</key>
+	<string>Whether you want these at all. Termio puts them on each machine as you set it up.</string>
+	<key>Which agent CLIs are on %@, where each launches from, and what Termio installed into their configs.</key>
+	<string>Which agent CLIs are on %@, where each launches from, and what Termio installed into their configs.</string>
 	<key>Which machine your iPhone connects to. Each one serves its own sessions.</key>
 	<string>Which machine your iPhone connects to. Each one serves its own sessions.</string>
 	<key>Window</key>
@@ -1622,6 +1718,8 @@
 	<string>Open</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>
 	<string>macOS hasn’t been asked to allow Termio’s notifications yet.</string>
+	<key>machines</key>
+	<string>machines</string>
 	<key>nothing</key>
 	<string>nothing</string>
 	<key>optional</key>

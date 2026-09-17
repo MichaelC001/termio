@@ -3,8 +3,8 @@ title: 问题排查
 description: 会出问题的就那么几样——状态点不动、命令行说 disabled、重启后会话没了、某台机器不应答了——以及怎么去查，而不是靠猜。
 x-i18n:
   source_path: troubleshooting.mdx
-  source_hash: 0f6404fb2d3b359497b385e54094808da16ebb4393df38f763d874ae6038ac80
-  generated_at: 2026-09-16
+  source_hash: a1f7bc5e78dcaa67b7de5aff1c6e823acafd314686e1e4b80587a2c7b3e7589b
+  generated_at: 2026-09-17
 ---
 
 看起来像 Termio 出 bug 的情况，多半是下面五种之一。每一种都有办法查，而不用猜。
@@ -15,7 +15,8 @@ x-i18n:
 **按机器**安装的。一台在你打开这个功能之前就设置好的机器，上面的 Agent 没有 hooks，所以
 什么都不汇报，Termio 只能退回去读屏幕。
 
-打开**设置 ▸ 设备**，选中那台机器，在 Hooks 那行按**重新安装**。参见
+打开**设置 ▸ 远程主机**，选中那台机器，进入它的 **Agents** 页面，按**重新安装 Hooks 和技能**。
+本机的同一个按钮在**设置 ▸ Agents** 上。参见
 [状态 hooks 与会话控制](/docs/session-control)。
 
 ## `termio sessions` 说 `disabled`

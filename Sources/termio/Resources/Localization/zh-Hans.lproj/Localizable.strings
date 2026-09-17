@@ -40,6 +40,8 @@
 	<string>%@ 不是 UTF-8 文本文件。</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ 暂不支持这台设备。</string>
+	<key>%@ isn’t available on this machine yet.</key>
+	<string>%@ 暂不支持这台设备。</string>
 	<key>%@ isn’t installed on %@</key>
 	<string>%1$@ 未安装在 %2$@ 上</string>
 	<key>%@ isn’t installed on %@, and Termio doesn’t ship a build of it. Install it there, then try again.</key>
@@ -84,6 +86,10 @@
 	<string>%lld 个文件</string>
 	<key>%lld in your Themes folder</key>
 	<string>主题文件夹里有 %lld 个</string>
+	<key>%lld installed</key>
+	<string>已安装 %lld 个</string>
+	<key>%lld not installed</key>
+	<string>%lld 个未安装</string>
 	<key>%lld of %lld</key>
 	<string>第 %lld 项（共 %lld 项）</string>
 	<key>%lld pt</key>
@@ -116,6 +122,8 @@
 	<string>名称不能包含空格——它就是你在 `ssh` 后面输入的内容。</string>
 	<key>A password can’t contain a line break.</key>
 	<string>密码不能包含换行。</string>
+	<key>A phone can attach straight to one of these instead, and keep working when this Mac is asleep.</key>
+	<string>手机也可以直接连到其中一台，这台 Mac 睡眠时仍能继续用。</string>
 	<key>A port is a number from 1 to 65535.</key>
 	<string>端口是 1 到 65535 之间的数字。</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
@@ -134,8 +142,12 @@
 	<string>添加主机</string>
 	<key>Add Host…</key>
 	<string>添加主机…</string>
+	<key>Add Remote Host</key>
+	<string>添加远程主机</string>
 	<key>Add SSH Host</key>
 	<string>添加 SSH 主机</string>
+	<key>Add a host you reach over SSH and Termio can run sessions on it, with agents that keep working after you disconnect.</key>
+	<string>添加一台你用 SSH 连接的主机，Termio 就能在上面运行会话；断开连接后 Agent 仍会继续工作。</string>
 	<key>Add to Chat</key>
 	<string>添加到聊天</string>
 	<key>Address</key>
@@ -150,6 +162,8 @@
 	<string>Agent 技能</string>
 	<key>Agents</key>
 	<string>Agent</string>
+	<key>Agents on %@</key>
+	<string>%@ 上的 Agent</string>
 	<key>Agents on %@ can run, and report their status back here.</key>
 	<string>%@ 上的 Agent 可以运行，并把状态报告回这里。</string>
 	<key>Agents on %@ can run.</key>
@@ -237,6 +251,8 @@
 	<key>Can’t check on %@</key>
 	<string>无法在 %@ 上检查</string>
 	<key>Can’t check on %lld devices</key>
+	<string>无法在 %lld 台设备上检查</string>
+	<key>Can’t check on %lld machines</key>
 	<string>无法在 %lld 台设备上检查</string>
 	<key>Can’t open as text</key>
 	<string>无法以文本打开</string>
@@ -334,6 +350,8 @@
 	<string>命令面板…</string>
 	<key>Command line</key>
 	<string>命令行</string>
+	<key>Command paths</key>
+	<string>命令路径</string>
 	<key>Command-line tool</key>
 	<string>命令行工具</string>
 	<key>Commit or discard the changes in “%@” before removing it.</key>
@@ -508,6 +526,8 @@
 	<string>把一个 agent 拖到另一个上面即可调整顺序。</string>
 	<key>Drag an agent onto another to reorder. Readiness covers every device you work on.</key>
 	<string>把一个 agent 拖到另一个上面即可调整顺序。就绪状态覆盖你用到的每台设备。</string>
+	<key>Drag an agent onto another to reorder. Readiness covers every machine you work on.</key>
+	<string>把一个 Agent 拖到另一个上可重新排序。就绪状态涵盖你使用的每台设备。</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
 	<key>Duplicate to Themes Folder</key>
@@ -622,6 +642,8 @@
 	<string>Hooks 已重新安装</string>
 	<key>Host</key>
 	<string>主机</string>
+	<key>Host Unavailable</key>
+	<string>主机不可用</string>
 	<key>Host block</key>
 	<string>Host 配置块</string>
 	<key>Host not found</key>
@@ -692,6 +714,8 @@
 	<string>标签</string>
 	<key>Language</key>
 	<string>语言</string>
+	<key>Language, GitHub, and privacy</key>
+	<string>语言、GitHub 和隐私</string>
 	<key>Language, notifications, and GitHub</key>
 	<string>语言、通知和 GitHub</string>
 	<key>Last 30 days</key>
@@ -704,6 +728,8 @@
 	<string>稍后</string>
 	<key>Launch</key>
 	<string>启动</string>
+	<key>Leave a path empty to launch the agent the way %@’s login shell would. Which agents appear at all is Settings ▸ Agents.</key>
+	<string>留空则按 %@ 的登录 shell 的方式启动该 Agent。要显示哪些 Agent 在“设置 ▸ Agents”中设定。</string>
 	<key>Let your agents coordinate?</key>
 	<string>让你的 Agent 相互协作？</string>
 	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
@@ -732,6 +758,8 @@
 	<string>正在查找 Agent 命令行工具…</string>
 	<key>Lost the connection to %@. The session is still running there.</key>
 	<string>与 %@ 的连接已断开。会话仍在那台机器上运行。</string>
+	<key>Machine</key>
+	<string>设备</string>
 	<key>Machines</key>
 	<string>设备</string>
 	<key>Match Case</key>
@@ -743,6 +771,8 @@
 	<key>Minimize</key>
 	<string>最小化</string>
 	<key>Missing on %lld devices</key>
+	<string>%lld 台设备上缺失</string>
+	<key>Missing on %lld machines</key>
 	<string>%lld 台设备上缺失</string>
 	<key>Mobile</key>
 	<string>手机</string>
@@ -772,6 +802,8 @@
 	<string>导航</string>
 	<key>Navigator</key>
 	<string>导航器</string>
+	<key>Needs Live agent status above: without it, nothing tells Termio an agent finished.</key>
+	<string>需要上面的“实时 Agent 状态”：没有它，就没有东西告诉 Termio 一个 Agent 完成了。</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
 	<string>需要先在那台机器上运行 `ngrok config add-authtoken`。免费版的地址每次重启都会变。</string>
 	<key>New</key>
@@ -890,6 +922,8 @@
 	<string>尚未选择隧道。</string>
 	<key>None</key>
 	<string>无</string>
+	<key>None found</key>
+	<string>未找到</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
 	<key>Not Now</key>
@@ -898,6 +932,8 @@
 	<string>不是 Git 仓库</string>
 	<key>Not a valid regular expression</key>
 	<string>不是有效的正则表达式</string>
+	<key>Not checked yet</key>
+	<string>尚未检查</string>
 	<key>Not installed</key>
 	<string>未安装</string>
 	<key>Not installed on %@</key>
@@ -906,6 +942,10 @@
 	<string>未安装在 %@ 上。</string>
 	<key>Not pushed to upstream</key>
 	<string>尚未推送到上游</string>
+	<key>Not running yet. Sessions start it, and keep running after you quit Termio.</key>
+	<string>尚未运行。会话会启动它，并在你退出 Termio 后继续运行。</string>
+	<key>Not set up yet</key>
+	<string>尚未设置</string>
 	<key>Nothing to Compare</key>
 	<string>没有可对比的分支</string>
 	<key>Nothing to install.</key>
@@ -956,6 +996,8 @@
 	<string>打开文件夹</string>
 	<key>Open a Project on %@</key>
 	<string>在 %@ 上打开项目</string>
+	<key>Open a machine to put them there.</key>
+	<string>打开一台设备，把它们装到那里。</string>
 	<key>Open in %@</key>
 	<string>在 %@ 中打开</string>
 	<key>Open in Browser</key>
@@ -976,6 +1018,8 @@
 %@</string>
 	<key>Opens the ~/.ssh/config entry this machine is defined in.</key>
 	<string>打开定义该设备的 ~/.ssh/config 条目。</string>
+	<key>Other machines</key>
+	<string>其他设备</string>
 	<key>Overwrite</key>
 	<string>覆盖</string>
 	<key>Padding: %lld pt</key>
@@ -1096,6 +1140,8 @@
 	<string>重新安装 hooks</string>
 	<key>Reinstall skill</key>
 	<string>重新安装技能</string>
+	<key>Reinstalled</key>
+	<string>已重新安装</string>
 	<key>Relaunch Now</key>
 	<string>立即重新启动</string>
 	<key>Relaunch Termio to switch language?</key>
@@ -1104,6 +1150,8 @@
 	<string>重新载入</string>
 	<key>Remote</key>
 	<string>远程</string>
+	<key>Remote Hosts</key>
+	<string>远程主机</string>
 	<key>Remove</key>
 	<string>移除</string>
 	<key>Remove Project</key>
@@ -1216,6 +1264,8 @@
 	<string>选择</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
 	<string>每天发送一条匿名事件，用于统计活跃安装数。不含项目路径、终端内容和账号。</string>
+	<key>Server</key>
+	<string>Termio server</string>
 	<key>Serving</key>
 	<string>对外服务</string>
 	<key>Session</key>
@@ -1230,8 +1280,12 @@
 	<string>设置密钥</string>
 	<key>Set Up Key…</key>
 	<string>设置密钥…</string>
+	<key>Set up this Mac</key>
+	<string>设置这台 Mac</string>
 	<key>Set up this device</key>
 	<string>设置此设备</string>
+	<key>Set up this host</key>
+	<string>设置这台主机</string>
 	<key>Settings</key>
 	<string>设置</string>
 	<key>Settings…</key>
@@ -1346,6 +1400,10 @@
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio notifies you about the agents above, wherever they run.</key>
+	<string>无论上面的 Agent 在哪里运行，Termio 都会通知你。</string>
+	<key>Termio server</key>
+	<string>Termio server</string>
 	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
 	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
@@ -1376,8 +1434,14 @@
 	<string>Termio 正在运行的设备</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
+	<key>The machine couldn’t read this checkout.</key>
+	<string>该设备无法读取这个检出。</string>
+	<key>The machine couldn’t read this comparison.</key>
+	<string>该设备无法读取这个对比。</string>
 	<key>The machine everything filed under this workspace lives on.</key>
 	<string>归入这个工作区的一切所在的机器。</string>
+	<key>The machines you reach from this Mac</key>
+	<string>你从这台 Mac 连接的设备</string>
 	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
 	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
@@ -1454,12 +1518,26 @@
 	<string>这个文件夹没有 git “origin” 远程，无法克隆。</string>
 	<key>This folder isn’t tracked by Git.</key>
 	<string>这个文件夹没有被 Git 跟踪。</string>
+	<key>This host is no longer in your configuration.</key>
+	<string>这台主机已不在你的配置中。</string>
 	<key>This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，而 ~/.ssh 里没有 ssh 会自动尝试的密钥——先用 ssh-keygen 生成一个，再回到这里设置。</string>
 	<key>This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it.</key>
 	<string>这台主机接受密码登录。Termio 用密钥登录，设置一次之后，会话、文件树和远程终端都能连上它。</string>
+	<key>This machine didn’t answer. Its termiod may be too old to search.</key>
+	<string>该设备没有响应。它的 termiod 版本可能过旧，无法搜索。</string>
+	<key>This machine sent a name the file tree can’t show.</key>
+	<string>该设备发来的名称文件树无法显示。</string>
+	<key>This machine’s termiod is too old to browse files.</key>
+	<string>该设备上的 termiod 版本过旧，无法浏览文件。</string>
+	<key>This machine’s termiod is too old to install agent integration.</key>
+	<string>该设备上的 termiod 版本过旧，无法安装 Agent 集成。</string>
 	<key>This machine’s termiod is too old to list folders.</key>
 	<string>这台机器上的 termiod 版本太旧，列不出文件夹。</string>
+	<key>This machine’s termiod is too old to read git.</key>
+	<string>该设备上的 termiod 版本过旧，无法读取 git。</string>
+	<key>This machine’s termiod is too old to report its agents.</key>
+	<string>该设备上的 termiod 版本过旧，无法查询其 Agent。</string>
 	<key>This month</key>
 	<string>本月</string>
 	<key>This pull request changes no files.</key>
@@ -1494,6 +1572,10 @@
 	<string>隧道</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>关闭后 iPhone 将断开连接；配对会保留。</string>
+	<key>Turned off in Settings ▸ Agents, so Termio removes it from %@.</key>
+	<string>已在“设置 ▸ Agents”中关闭，因此 Termio 会把它从 %@ 上移除。</string>
+	<key>Turned off in Settings ▸ Agents, so Termio removes them from %@.</key>
+	<string>已在“设置 ▸ Agents”中关闭，因此 Termio 会把它们从 %@ 上移除。</string>
 	<key>Type this code at github.com/login/device to approve Termio. Waiting for approval…</key>
 	<string>在 github.com/login/device 输入此代码以授权 Termio。正在等待批准…</string>
 	<key>URL Pattern</key>
@@ -1532,6 +1614,8 @@
 	<string>用户</string>
 	<key>Uses %@</key>
 	<string>使用 %@</string>
+	<key>Version %@ on %@. Sessions keep running there after you disconnect.</key>
+	<string>%@ 上的版本 %@。断开连接后，会话仍在那里继续运行。</string>
 	<key>View</key>
 	<string>显示</string>
 	<key>View on %@</key>
@@ -1544,18 +1628,30 @@
 	<string>微信</string>
 	<key>WeChat group</key>
 	<string>微信群</string>
+	<key>What Termio writes into each agent’s config on %@ so it can report. Reinstall after hand-editing one.</key>
+	<string>Termio 写入 %@ 上每个 Agent 配置里的内容，让它能回报状态。手工改过某个配置后请重新安装。</string>
 	<key>What the daemon said</key>
 	<string>守护进程的原始输出</string>
+	<key>What this Mac runs, and what Termio installed on it</key>
+	<string>这台 Mac 运行什么，以及 Termio 装了什么</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>这个工作区在侧栏中显示的名称。</string>
 	<key>When on, selecting text copies it straight to the clipboard.</key>
 	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
 	<string>每台设备从哪里启动 %@。留空则使用其默认值。</string>
+	<key>Where each machine launches %@ from. Leave empty to use its default.</key>
+	<string>每台设备从哪里启动 %@。留空则使用其默认值。</string>
+	<key>Where everything filed under this workspace lives.</key>
+	<string>归入这个工作区的一切所在的位置。</string>
 	<key>Whether you want these at all, and putting them on every device.</key>
 	<string>是否启用这些功能，以及把它们装到每台设备上。</string>
 	<key>Whether you want these at all, and putting them on this Mac.</key>
 	<string>是否启用这些功能，以及把它们装到这台 Mac 上。</string>
+	<key>Whether you want these at all. Termio puts them on each machine as you set it up.</key>
+	<string>是否启用这些功能。Termio 会在你设置每台设备时装上它们。</string>
+	<key>Which agent CLIs are on %@, where each launches from, and what Termio installed into their configs.</key>
+	<string>%@ 上有哪些 Agent 命令行工具、各自从哪里启动，以及 Termio 往它们的配置里装了什么。</string>
 	<key>Which machine your iPhone connects to. Each one serves its own sessions.</key>
 	<string>iPhone 连接到哪台机器。每台机器各自提供自己的会话。</string>
 	<key>Window</key>
@@ -1622,6 +1718,8 @@
 	<string>开放</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>
 	<string>macOS 尚未请求允许 Termio 发送通知。</string>
+	<key>machines</key>
+	<string>台设备</string>
 	<key>nothing</key>
 	<string>无</string>
 	<key>optional</key>
