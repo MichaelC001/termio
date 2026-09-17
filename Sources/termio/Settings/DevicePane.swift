@@ -57,8 +57,21 @@ struct DevicePane: View {
             }
             reachedBySection
             serverSection
-            agentsSection
-            integrationSection
+            // Only for a box. This Mac's answer to "which agent CLIs are here,
+            // where do they launch from, what did Termio write into them" is
+            // already on Settings ▸ Agents — every row's subtext is
+            // `<readiness> · <command>`, each agent's Launch section carries the
+            // path, and the Integration switches install the hooks and the skill
+            // here without leaving the page. A link to a transposed copy of that
+            // is a second editor for one matrix (`setCommandPath(_:for:on:)`),
+            // which is how the two panes drift.
+            //
+            // A box is the opposite case: nothing there is known until it is
+            // probed, the probe answers for the whole machine at once, and
+            // installing on it can fail in ways only its own pane can report —
+            // so "what does *this box* have" stays a page of its own.
+            if !machine.isLocal { agentsSection }
+            commandLineSection
             // What a machine serves to phones is Settings ▸ Mobile, not a second
             // copy here: one set of controls, one place they live.
         }
@@ -216,7 +229,7 @@ struct DevicePane: View {
     /// forward is what *Set Up* does, and a second button for the same loop was
     /// the same action under two verbs.
     ///
-    /// This Mac used to have no such row at all: `integrationSection` spent the
+    /// This Mac used to have no such row at all: the integration card spent the
     /// local branch on the CLI, so the one daemon the user could actually see
     /// running was the only one whose version the app never showed.
     private var serverSection: some View {
@@ -306,7 +319,7 @@ struct DevicePane: View {
             NavigationLink(value: MachineAgentsRoute(key: machine.settingsKey)) {
                 SettingsLabel(
                     title: agentsSummary,
-                    subtext: localized("Which agent CLIs are on \(machine.name), and where each one launches from."),
+                    subtext: localized("Which agent CLIs are on \(machine.name), where each launches from, and what Termio installed into their configs."),
                     titleFont: .headline
                 )
             }
@@ -328,63 +341,25 @@ struct DevicePane: View {
         return localized("\(available) installed")
     }
 
-    /// The facts behind the one line: what the two Agents switches asked for, and
-    /// whether this machine is carrying it.
-    ///
-    /// **One Reinstall, not one per half.** Each half used to carry its own
-    /// button passing `.leave` for the other, and neither touched the machine's
-    /// integration stamp — so a config repaired here still read as "not
-    /// installed" everywhere the stamp is consulted. The daemon writes both
-    /// halves in one pass anyway (`AgentIntegrationInstaller.sync` takes the
-    /// pair), so two buttons were two names for one write, and only the one that
-    /// does what the switches say can honestly claim the machine is current.
-    ///
-    /// The `termio` CLI rides here on this Mac only: it is the local twin of the
-    /// daemon rung, and there is no CLI to link onto a box the user never types
-    /// into directly.
-    private var integrationSection: some View {
-        Section {
-            if machine.isLocal {
-                CommandLineToolRow()
-            }
-            SettingsLabel(
-                title: localized("Hooks"),
-                subtext: settings.agentHooksEnabled
-                    ? localized("Report each agent’s status back to Termio.")
-                    : localized("Turned off in Settings ▸ Agents, so Termio removes them from \(machine.name)."),
-                titleFont: .headline
-            )
-            SettingsLabel(
-                title: localized("Skill"),
-                subtext: settings.sessionControlEnabled
-                    ? localized("Teaches agents the termio session commands.")
-                    : localized("Turned off in Settings ▸ Agents, so Termio removes it from \(machine.name)."),
-                titleFont: .headline
-            )
-            InstallButtonRow(title: localized("Reinstall")) { await reinstallIntegration() }
-        } header: {
-            SectionHeaderLabel(title: localized("Installed by Termio"))
-        } footer: {
-            Text(localized("What Termio puts on \(machine.name) so its agents can report. Reinstall after hand-editing an agent’s config."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
+    // MARK: Command line — this Mac's own foundation rung
 
-    /// Writes both halves as the switches ask, then stamps the machine when the
-    /// write was clean — the stamp is what "Not installed on \(machine.name)"
-    /// reads, so a repair that does not clear it leaves the user chasing a
-    /// warning they have already answered.
-    private func reinstallIntegration() async -> InstallFeedback {
-        let outcome = await AgentIntegrationInstaller.sync(
-            hooks: settings.agentHooksEnabled ? .install : .remove,
-            skills: settings.sessionControlEnabled ? .install : .remove,
-            target: machine.integrationTarget)
-        if outcome.failure == nil && outcome.failed.isEmpty {
-            model.stampIntegration()
+    /// The `termio` CLI, on this Mac only: there is no CLI to link onto a box the
+    /// user never types into directly.
+    ///
+    /// Its own section now that the hooks and the skill have left. Those three
+    /// shared a card called "Installed by Termio", which was true of all of them
+    /// and useful about none: the CLI is a binary on *your* PATH that you run,
+    /// and the other two are files written into each agent's config. Only the
+    /// second pair is about agents, so only the second pair moved.
+    @ViewBuilder
+    private var commandLineSection: some View {
+        if machine.isLocal {
+            Section {
+                CommandLineToolRow()
+            } header: {
+                SectionHeaderLabel(title: localized("Command line"))
+            }
         }
-        return .summarizing(
-            outcome, headline: localized("Reinstalled"), unit: localized("agents"))
     }
 }
 
@@ -544,14 +519,80 @@ private struct MachineAgentsPane: View {
                         )
                     }
                 }
+            } header: {
+                SectionHeaderLabel(title: localized("Command paths"))
             } footer: {
                 Text(localized("Leave a path empty to launch the agent the way \(machine.name)’s login shell would. Which agents appear at all is Settings ▸ Agents."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Hooks and the skill are files written **into each agent's own
+            // config directory**, so this is the page they belong on: the one
+            // about agents on this machine. They sat on the machine's pane in a
+            // card called "Installed by Termio", a section header that named the
+            // author rather than the subject, one level above the agents they are
+            // written for.
+            //
+            // They stay machine-level rows rather than a column on the list
+            // above, because that is the truth of what is stored: one stamp per
+            // machine (`DeviceDiscoveredState.integrationVersion`), written when
+            // the daemon writes both halves for every agent in one pass. A tick
+            // per agent row would be a claim the data cannot support.
+            Section {
+                SettingsLabel(
+                    title: localized("Hooks"),
+                    subtext: settings.agentHooksEnabled
+                        ? localized("Report each agent’s status back to Termio.")
+                        : localized("Turned off in Settings ▸ Agents, so Termio removes them from \(machine.name)."),
+                    titleFont: .headline
+                )
+                SettingsLabel(
+                    title: localized("Skill"),
+                    subtext: settings.sessionControlEnabled
+                        ? localized("Teaches agents the termio session commands.")
+                        : localized("Turned off in Settings ▸ Agents, so Termio removes it from \(machine.name)."),
+                    titleFont: .headline
+                )
+                // Named, not a bare "Reinstall": one button serves both rows above
+                // it, but sitting last it reads as the Skill row's own — leaving
+                // Hooks looking like the one thing here with no way to repair it.
+                InstallButtonRow(title: localized("Reinstall Hooks and Skill")) {
+                    await reinstallIntegration()
+                }
+            } header: {
+                SectionHeaderLabel(title: localized("Installed by Termio"))
+            } footer: {
+                Text(localized("What Termio writes into each agent’s config on \(machine.name) so it can report. Reinstall after hand-editing one."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .navigationTitle(localized("Agents on \(machine.name)"))
+    }
+
+    /// Writes both halves as the switches ask, then stamps the machine when the
+    /// write was clean — the stamp is what "Not installed on \(machine.name)"
+    /// reads on the Agents tab, so a repair that does not clear it leaves the
+    /// user chasing a warning they have already answered.
+    ///
+    /// **One Reinstall, not one per half.** Each half used to carry its own
+    /// button passing `.leave` for the other, and neither touched the stamp. The
+    /// daemon writes both halves in one pass anyway
+    /// (`AgentIntegrationInstaller.sync` takes the pair), so two buttons were two
+    /// names for one write, and only the one that does what both switches say can
+    /// honestly claim the machine is current.
+    private func reinstallIntegration() async -> InstallFeedback {
+        let outcome = await AgentIntegrationInstaller.sync(
+            hooks: settings.agentHooksEnabled ? .install : .remove,
+            skills: settings.sessionControlEnabled ? .install : .remove,
+            target: machine.integrationTarget)
+        if outcome.failure == nil && outcome.failed.isEmpty {
+            model.stampIntegration()
+        }
+        return .summarizing(
+            outcome, headline: localized("Reinstalled"), unit: localized("agents"))
     }
 
     /// The machine's answer under each name. Always present rather than shown

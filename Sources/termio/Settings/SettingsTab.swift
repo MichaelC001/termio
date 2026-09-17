@@ -17,9 +17,9 @@ import SwiftUI
 /// The last two used to be one group called Machines, and that group was the
 /// split's own point left unmade: it put the box you are sitting at next to boxes
 /// that may not exist, when the whole reason Server and Remote Hosts are separate
-/// tabs is that those are different kinds of thing. **Everything above Mobile is
-/// this Mac**; Mobile and Remote Hosts are the two tabs about something else on
-/// the other end of a connection — a phone, and a box you reach over SSH.
+/// tabs is that those are different kinds of thing. **Everything above Remote
+/// Hosts is this Mac**; Remote Hosts and Mobile are the two tabs about something
+/// else on the other end of a connection — a box you reach over SSH, and a phone.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
@@ -34,23 +34,21 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// actually runs, because `DevicePane` spent the local branch on the CLI row.
     /// Promoting it is what gives the local `termiod` a place to be looked at.
     ///
-    /// It *opens* the group that holds Agents, Usage and Workspaces rather than
+    /// It *opens* the group that holds Workspaces, Agents and Usage rather than
     /// standing in one of its own: those three are what this machine runs and
     /// what is filed on it, so they belong under the same gap, with the box named
     /// first. A group of one would have made the machine look like a fifth kind
     /// of setting instead of the subject of the three below it.
+    ///
+    /// Workspaces comes directly under it and Agents and Usage after, widest
+    /// scope first: a workspace is where work is filed on this Mac, an agent is a
+    /// CLI installed on it, and Usage is that agent's meter. Usage reads as a
+    /// detail of the row above it, which is why the two stay adjacent and in that
+    /// order.
     case server
+    case workspaces
     case agents
     case usage
-    case workspaces
-    /// Pairing an iPhone, and the tunnel that carries it.
-    ///
-    /// Kept first-level rather than folded into the machine that serves it: the
-    /// QR is the one step a new user cannot guess at, and three levels down a tab
-    /// named after something else is where it went unfound. The scope objection
-    /// is answered by navigation instead of a picker — this renders the Mac's own
-    /// serving, and a remote host's is pushed from its row.
-    case mobile
     /// Every other machine sessions can run on, one row apiece, drilling into how
     /// that machine is reached and what it runs.
     ///
@@ -63,26 +61,36 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// forbids is a *picker* that silently re-points a page, and it blesses a
     /// page "chosen by navigation" in the same table.
     ///
-    /// **Last of the settings tabs**, because it is the only one that can be
-    /// empty. Most installs never add a host, and a tab about machines that do
-    /// not exist belongs below the ones about machines that do — Server, which
-    /// every install has, and Mobile, whose QR is what a new user is hunting for.
-    /// It shares Mobile's group: both answer for something at the far end of a
-    /// connection. Community still sits below: that is About, not a setting.
+    /// **Opens the far-end group**, closing the machine arc that Server began:
+    /// this Mac, what runs on it, what is filed on it, then the other boxes
+    /// sessions can run on. Mobile follows rather than leads because a phone is a
+    /// client, not a host — its own subtitle names "the machines you work on", and
+    /// naming them first is the same rule that puts Server ahead of Agents and
+    /// Workspaces. That this tab is the one that can be empty does not sink it:
+    /// empty here is an Add Remote Host button, which is the tab doing its job,
+    /// not a dead end. Community still sits below: that is About, not a setting.
     ///
     /// The raw value stays `ssh` because it is the value persisted under
     /// `lastOpenKey`; changing it would reopen Settings on another tab for
     /// everyone who left this one showing. It has now survived five renamings,
     /// which is the point of it.
     case remoteHosts = "ssh"
+    /// Pairing an iPhone, and the tunnel that carries it.
+    ///
+    /// Kept first-level rather than folded into the machine that serves it: the
+    /// QR is the one step a new user cannot guess at, and three levels down a tab
+    /// named after something else is where it went unfound. The scope objection
+    /// is answered by navigation instead of a picker — this renders the Mac's own
+    /// serving, and a remote host's is pushed from its row.
+    case mobile
     case community
 
     var id: String { rawValue }
 
     /// Opens a new sidebar group. `server` opens the group about this machine —
-    /// the box itself, then what runs on it; `mobile` opens the two tabs about
-    /// the far end of a connection; `community` stands alone because it leaves
-    /// the app entirely.
+    /// the box itself, then what runs on it; `remoteHosts` opens the two tabs
+    /// about the far end of a connection; `community` stands alone because it
+    /// leaves the app entirely.
     ///
     /// Grouped rather than run flat. Collapsing every local tab into one block
     /// would tell the top-level story in a single stroke — this Mac, then what
@@ -90,7 +98,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// set out to fix, and finding Usage among eight is worse than finding it
     /// among three. The gaps are cheap; the chunking is not.
     var startsGroup: Bool {
-        self == .server || self == .mobile || self == .community
+        self == .server || self == .remoteHosts || self == .community
     }
 
     /// `allCases` cut into the sidebar's groups, which System Settings separates

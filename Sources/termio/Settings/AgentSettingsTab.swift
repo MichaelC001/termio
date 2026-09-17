@@ -94,22 +94,35 @@ struct AgentSettingsTab: View {
                     )
                 }
                 .toggleStyle(.switch)
+                // The one machine this page may install on, and only while a
+                // switch asks for something — with both off there is nothing to
+                // put anywhere, and a button that writes nothing is worse than
+                // no button.
+                //
+                // What used to be here installed on **every** machine at once,
+                // and that is the part not coming back: it was the only control
+                // that fired ssh at every configured host on one click, which one
+                // sleeping VPS was enough to stall, and a preference tab has
+                // nowhere honest to report a per-machine failure.
+                //
+                // This Mac carries none of that cost. The call is local IPC and
+                // `Transport.open` starts the daemon when nothing answers, so it
+                // cannot hang on a box that is switched off. It earns its place
+                // because the reconcile behind the switches is silent and the
+                // stamp has one documented blind spot — a config hand-edited
+                // after Termio wrote it still reads as installed — so without a
+                // button this page had nothing to press in exactly the case that
+                // needs pressing, and the row below never appears for it.
+                //
+                // Every other machine stays a row: installing there is a machine
+                // operation and happens on the machine (RFC §D1).
+                if settings.agentHooksEnabled || settings.sessionControlEnabled {
+                    InstallButtonRow(title: localized("Install on \(KnownDevice.thisMac.name)")) {
+                        await installOnThisMac()
+                    }
+                }
                 // The machines that are not carrying what the switches ask for,
                 // one row each, each opening the machine that can fix it.
-                //
-                // There was a button here that installed on every machine at
-                // once, and it was the same operation's fourth caller: this Mac
-                // reconciles itself whenever a switch moves
-                // (`TermioStore.syncAgentIntegration`), and a remote box is
-                // brought current by its own "Set Up" — so on a single Mac the
-                // button re-did what flipping the switch had just done, and its
-                // failure path sent the user to the machine's pane regardless. It
-                // was also the only control that fired ssh at every configured
-                // host on one click, which one sleeping VPS was enough to stall.
-                //
-                // What is left is the half a preference tab may honestly own: the
-                // intent, and a report naming who is behind. Installing is a
-                // machine operation and happens on the machine (RFC §D1).
                 ForEach(behind) { machine in
                     Button { onOpenMachine(machine.device) } label: {
                         IntegrationGapRow(machine: machine)
@@ -210,6 +223,30 @@ struct AgentSettingsTab: View {
     private var integrationKey: String {
         "\(devices.map(\.settingsKey).joined(separator: "|"))"
             + "#\(settings.agentHooksEnabled)#\(settings.sessionControlEnabled)"
+    }
+
+    /// Writes both halves on this Mac as the switches ask, then stamps it when
+    /// the write was clean — the stamp is what the rows above read, so a repair
+    /// that does not clear it leaves the user answering a warning they have
+    /// already answered.
+    ///
+    /// The same pair, the same stamp and the same daemon call as the machine
+    /// pane's *Reinstall Hooks and Skill*: one operation reachable from either
+    /// page, not two that could drift on what "current" means.
+    private func installOnThisMac() async -> InstallFeedback {
+        let outcome = await AgentIntegrationInstaller.sync(
+            hooks: settings.agentHooksEnabled ? .install : .remove,
+            skills: settings.sessionControlEnabled ? .install : .remove,
+            target: .thisMac)
+        if outcome.failure == nil && outcome.failed.isEmpty {
+            DeviceStateCache.stampIntegration(
+                AppInfo.buildStamp, for: KnownDevice.thisMac.settingsKey)
+        }
+        // The row this may have just cleared is read from the device file, not
+        // from the outcome, so it only goes away once that file is re-read.
+        await refreshIntegrationGap()
+        return .summarizing(
+            outcome, headline: localized("Installed"), unit: localized("agents"))
     }
 
     /// Which machines are not carrying what the switches ask for.

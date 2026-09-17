@@ -652,8 +652,6 @@
 	<string>Install Page</string>
 	<key>Install on %@</key>
 	<string>Install on %@</string>
-	<key>Install on All Devices</key>
-	<string>Install on All Devices</string>
 	<key>Installed</key>
 	<string>Installed</string>
 	<key>Installed by Termio</key>
@@ -1092,6 +1090,8 @@
 	<string>Refresh</string>
 	<key>Reinstall</key>
 	<string>Reinstall</string>
+	<key>Reinstall Hooks and Skill</key>
+	<string>Reinstall Hooks and Skill</string>
 	<key>Reinstall hooks</key>
 	<string>Reinstall hooks</string>
 	<key>Reinstall skill</key>

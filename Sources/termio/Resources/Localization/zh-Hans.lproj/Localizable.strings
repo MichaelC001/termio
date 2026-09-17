@@ -652,8 +652,6 @@
 	<string>安装页面</string>
 	<key>Install on %@</key>
 	<string>安装到 %@</string>
-	<key>Install on All Devices</key>
-	<string>安装到所有设备</string>
 	<key>Installed</key>
 	<string>已安装</string>
 	<key>Installed by Termio</key>
@@ -1092,6 +1090,8 @@
 	<string>刷新</string>
 	<key>Reinstall</key>
 	<string>重新安装</string>
+	<key>Reinstall Hooks and Skill</key>
+	<string>重新安装 Hooks 和技能</string>
 	<key>Reinstall hooks</key>
 	<string>重新安装 hooks</string>
 	<key>Reinstall skill</key>
