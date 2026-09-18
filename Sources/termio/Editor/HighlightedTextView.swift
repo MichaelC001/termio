@@ -13,6 +13,9 @@ struct HighlightedTextView: NSViewRepresentable {
     /// Extra leading between lines (points), from the configured code line height.
     let lineSpacing: CGFloat
     let backgroundColor: NSColor
+    /// Base ink for text the highlighter has not colored. The storage is seeded with it and
+    /// unhighlighted buffers keep it, so it has to be readable on `backgroundColor`.
+    let textColor: NSColor
     let caretColor: NSColor
     let lineNumberColor: NSColor
     /// The full-width wash under the caret's line (Xcode-style), already dimmed to sit on any
@@ -298,16 +301,23 @@ struct HighlightedTextView: NSViewRepresentable {
         return leading + baselineOffset(lineSpacing: lineSpacing)
     }
 
-    /// The layout metrics every glyph carries from its first frame: the code face, the fixed line
-    /// box, and the centering lift. Highlightr's theme is configured with exactly these, so its
-    /// pass swaps colors onto text that already sits where it belongs and nothing reflows. They
-    /// also stand alone — a file past `highlightByteLimit`, or in a language hljs doesn't know,
-    /// never gets a highlight pass at all.
+    /// The attributes every glyph carries from its first frame: the code face, the fixed line box,
+    /// the centering lift, and the base ink. Highlightr's theme is configured with the same
+    /// metrics, so its pass swaps colors onto text that already sits where it belongs and nothing
+    /// reflows. They also stand alone — a file past `highlightByteLimit`, or in a language hljs
+    /// doesn't know, never gets a highlight pass at all.
+    ///
+    /// `foregroundColor` belongs in this list because an `NSTextView` whose storage carries no
+    /// color draws AppKit's built-in black no matter what the theme says, and the editor paints an
+    /// opaque terminal background: on the dark side that was black ink on `#212121`. Only text the
+    /// highlighter had already passed over escaped it, which is why a plain-text `LICENSE` read as
+    /// blank while the same file with a grammar looked fine.
     private var baseAttributes: [NSAttributedString.Key: Any] {
         [
             .font: font,
             .paragraphStyle: Self.paragraphStyle(font: font, lineSpacing: lineSpacing),
             .baselineOffset: Self.baselineOffset(lineSpacing: lineSpacing),
+            .foregroundColor: textColor,
         ]
     }
 
@@ -318,6 +328,10 @@ struct HighlightedTextView: NSViewRepresentable {
         // when the configured font genuinely changed; the re-highlight rebuilds the variants.
         if textView.font != font { textView.font = font }
         textView.backgroundColor = backgroundColor
+        // Gated like the font: `textColor` is a whole-document setter, so an unconditional
+        // assignment would re-stamp the plain ink over every syntax color on each keystroke.
+        // It still rides an appearance switch, which re-highlights right afterwards.
+        if textView.textColor != textColor { textView.textColor = textColor }
         textView.insertionPointColor = caretColor
         let style = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
         textView.defaultParagraphStyle = style
