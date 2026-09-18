@@ -1289,6 +1289,11 @@ final class TermioStore: ObservableObject {
                 // Also the retry for a device branch watch whose box was
                 // unreachable when the selection landed on it.
                 self.syncDeviceBranchWatch()
+                // Somebody coming back to the app is the best evidence there is
+                // that a box which was unreachable may not be any more — better
+                // than any backoff timer — so every session whose link is down
+                // tries again right now.
+                self.retryLostSessionsNow()
                 // Re-assert agent hooks on refocus: a third-party tool can overwrite the
                 // shared hooks file while termio is backgrounded, wiping ours. Re-installing
                 // restores them (and drops the conflicting entries); skipped when the file
@@ -1657,6 +1662,13 @@ final class TermioStore: ObservableObject {
     /// shell"), or `nil` while the agent runs. See `noteDeclaredAgentForeground`.
     func agentExitNotice(for sessionID: Session.ID) -> String? {
         runtimes[sessionID]?.agentExitNotice
+    }
+
+    /// Why a row's pane is not showing its session — the link is down and the
+    /// app is reconnecting — or `nil` while the connection is fine. See
+    /// `applyTermiodConnectionLost`.
+    func connectionNotice(for sessionID: Session.ID) -> String? {
+        runtimes[sessionID]?.connectionNotice
     }
 
     /// The live working directory a session last reported (shell `OSC 7`), or `nil`.

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import TermioShared
 import UIKit
 
 /// One self-healing WebSocket, and the only place the app's link behaviour

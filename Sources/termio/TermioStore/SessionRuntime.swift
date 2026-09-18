@@ -37,6 +37,12 @@ final class SessionRuntime {
     /// foreground-demotion streak (RFC 20260830 §D2), cleared the moment the
     /// foreground stops being the shell or the agent reports working again.
     var agentExitNotice: String?
+    /// The row's second line while the link to this session's device is down
+    /// and the app is reconnecting ("Reconnecting…", then "Can't reach <box>"
+    /// once the fast burst has been through). The session itself is untouched —
+    /// it keeps running on its box — so this says the *connection* is out, and
+    /// it clears the moment a retry gets back in.
+    var connectionNotice: String?
     /// The PTY's real grid, from the daemon: the viewport of whichever screen a
     /// person is in front of. The bytes on the wire are wrapped for it, and the
     /// only faithful way to show them is a surface laid out at it — letterboxed

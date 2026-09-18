@@ -1368,9 +1368,44 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// queued behind it. Guarded by `outputLock`.
     private var hold: TerminalKeyframeHold
 
-    /// Set on any deliberate teardown so the reader's EOF is not misread as a
-    /// daemon crash.
+    /// Set whenever the socket goes down — deliberately or not — so nothing
+    /// writes into a dead transport. True between two attach attempts as well,
+    /// which is why it is `retired`, not this, that says the link is finished.
     private var closed = false
+    /// Set when this link is finished for good — detached at quit, or killed by
+    /// Close Session. This is what the reconnect loop stops on.
+    ///
+    /// Lock-guarded rather than queue-confined, together with whether a socket
+    /// is up, because `detach()` has to read both *before* deciding to wait on
+    /// the work queue: that queue may be inside an attempt against a box that
+    /// is gone, and app quit must not block behind one to flush a detach frame
+    /// down a socket that does not exist.
+    private let lifecycleLock = NSLock()
+    private var retiredFlag = false
+    private var transportUp = false
+    private var retired: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return retiredFlag
+    }
+    private var hasTransport: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return transportUp
+    }
+    /// The reconnect cadence, shared with the phone's companion links: a fast
+    /// burst, then a 30s heartbeat, never giving up.
+    private var policy = ReconnectPolicy()
+    /// A reattach already on the clock, so one failure does not put two timers
+    /// on it.
+    private var reattachPending = false
+    /// Which round of retrying is current. A timer carries the generation it
+    /// was scheduled in and does nothing if that has moved on, so a `retryNow`
+    /// that overtakes a sleeping timer retires it instead of running alongside
+    /// it — otherwise every app activation during a long outage would leave
+    /// another retry chain behind, and a box that came back would be met by a
+    /// burst of them at once.
+    private var reattachGeneration = 0
     private var exitDelivered = false
     private var connectionLostDelivered = false
     private var startRefusedDelivered = false
@@ -1433,13 +1468,20 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// running" would be a different lie from the one this file set out to fix.
     /// Carries the daemon's own words, which name the cause.
     var onStartRefused: ((String) -> Void)?
-    /// Fired once on the main queue when the *connection* ends without the
-    /// session having ended: the daemon went away, the SSH pipe broke, the
-    /// network dropped. Deliberately not `onExit` — the child is almost
-    /// certainly still running, which is the entire point of it living in a
-    /// daemon, and reporting an exit for it invents a status the process never
-    /// produced and parks the pane over an error that does not exist.
-    var onConnectionLost: (() -> Void)?
+    /// Fired on the main queue when the *connection* ends without the session
+    /// having ended: the daemon went away, the SSH pipe broke, the network
+    /// dropped. Deliberately not `onExit` — the child is almost certainly still
+    /// running, which is the entire point of it living in a daemon, and
+    /// reporting an exit for it invents a status the process never produced and
+    /// parks the pane over an error that does not exist.
+    ///
+    /// Not a dead end either: the link is already retrying when this arrives,
+    /// and the count of consecutive failed attempts rides along so the UI can
+    /// tell a blip (say so quietly, once) from a box that is simply gone.
+    var onConnectionLost: ((Int) -> Void)?
+    /// Fired on the main queue when a retry got back in — the session is live
+    /// in the pane again, repainted from the attach snapshot.
+    var onReattached: (() -> Void)?
     /// Fired once on the main queue with the exit status, elapsed milliseconds
     /// since this link started (the daemon does not report the child's true
     /// runtime; elapsed-since-attach serves ghostty's abnormal-exit heuristic the
@@ -1500,117 +1542,149 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Kicks off connect → hello → attach in the background. The caller wires
     /// `onOutput`/`onExit` first; input arriving meanwhile is buffered.
     func start() {
-        workQueue.async { [self] in
-            do {
-                let channel = try Termiod.Transport.open(route)
-                transport = channel
-                let handshake = try Termiod.performHello(
-                    channel, role: "attach", caps: Termiod.attachCapabilities)
-                clientID = handshake.clientID
-                hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
-                let sizesByPolicy = hostSizesByPolicy
-                DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
-                let device = handshake.device
-                DispatchQueue.main.async { [self] in onDevice?(device) }
-                // A spec that names an agent command must not reach a host that
-                // predates the field: the host would drop it and spawn a plain
-                // shell, and a pane labeled Claude Code holding someone's login
-                // shell is worse than a pane that says why it refused.
-                if specification.command != nil,
-                   !handshake.capabilities.contains(Termiod.spawnCommandCapability) {
-                    throw TermiodClientError.requestFailed(localized(
-                        "This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines."))
-                }
-                let requested = viewportGrid
-                // An old host has no rendering concept at all — it reads every
-                // attachment as one somebody is looking at, and there is no
-                // form of this frame that tells it otherwise.
-                let declaredRendering = hostSizesByPolicy ? rendering : true
-                let payload = try Termiod.attachPayload(
-                    target: sessionName,
-                    specification: specification,
-                    rows: requested.rows,
-                    cols: requested.cols,
-                    rendering: declaredRendering
-                )
-                try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
-                let reply = try Termiod.readFrame(channel.readDescriptor)
-                guard reply.kind == .control else {
-                    throw TermiodClientError.handshakeRejected("attach was not acknowledged")
-                }
-                let acknowledgement = try Termiod.decodeControl(reply.payload)
-                // A refusal names its own cause — the directory that is not
-                // there, the spawn it would not perform. Carrying that message
-                // instead of a generic one is the whole reason the refusal is
-                // told apart from a lost connection: the pane can say *why*
-                // rather than only that something failed.
-                if case .error(let refusal) = acknowledgement {
-                    throw TermiodClientError.requestFailed(refusal.message)
-                }
-                guard case .attached(let attachedPayload) = acknowledgement else {
-                    throw TermiodClientError.handshakeRejected("attach was not acknowledged")
-                }
-                attached = true
-                isWriter = attachedPayload.writer
-                DispatchQueue.main.async { [self] in
-                    onDaemonSessionID?(attachedPayload.sessionId)
-                }
-                // The initial state has to be announced too, not just later
-                // changes: a client that attaches as an observer, or that opens
-                // a session a phone is already holding, is read-only from its
-                // first frame and has to be able to say so. `applyWriter` only
-                // ever fires on a transition, so nothing else covers this.
-                DispatchQueue.main.async { [self] in onWriter?(attachedPayload.writer) }
-                // `attached` reports the size the session settled at once this
-                // attachment's viewport was counted — the daemon applies the
-                // policy before it answers — so this is the grid the bytes
-                // arriving on this channel are already wrapped for.
-                let sharedGrid = TerminalGrid(
-                    rows: attachedPayload.rows, cols: attachedPayload.cols)
-                authoritativeGrid = sharedGrid
-                DispatchQueue.main.async { [self] in onSharedGrid?(sharedGrid) }
-                // The attach control carried this viewport and whether anyone
-                // is in front of it, so the daemon has already counted both;
-                // re-sending them would be a barrier for nothing.
-                sentViewport = (requested, declaredRendering)
-                repaintPending = sharedGrid != surfaceGrid
-                Log.termiod.info("""
-                attached session=\(self.sessionName, privacy: .public) \
-                device=\(device.id, privacy: .public) \
-                route=\(self.route.description, privacy: .public) \
-                writer=\(attachedPayload.writer, privacy: .public) \
-                caps=\(handshake.capabilities.sorted().joined(separator: ","), privacy: .public) \
-                \(attachedPayload.rows, privacy: .public)x\(attachedPayload.cols, privacy: .public)
-                """)
-                // Only a writer may inject the keystrokes buffered during connect;
-                // an observer's input would be rejected frame-by-frame by the
-                // daemon. (This client always attaches `interact` today, so it is
-                // normally the writer — this keeps it correct if observe is used.)
-                if isWriter, !pendingInput.isEmpty {
-                    try sendDataLocked(pendingInput)
-                }
-                pendingInput.removeAll(keepingCapacity: false)
-                startReader(channel.readDescriptor)
-            } catch {
-                Log.termiod.error("""
-                attach session=\(self.sessionName, privacy: .public) failed: \
-                \(error.localizedDescription, privacy: .public)
-                """)
-                teardownLocked()
-                // Three outcomes, not two. Widening this arm to "lost
-                // connection" was too coarse: it also catches a daemon that is
-                // perfectly reachable and said no, and reporting that as a
-                // session still running elsewhere is its own lie.
-                switch error {
-                case TermiodClientError.handshakeRejected(let message),
-                     TermiodClientError.requestFailed(let message):
-                    deliverStartRefusedLocked(message)
-                default:
-                    // Could not reach it, or it stopped talking mid-handshake.
-                    // Same class as losing it mid-session; neither carries an
-                    // exit status.
-                    deliverConnectionLostLocked()
-                }
+        workQueue.async { [self] in attemptAttachLocked() }
+    }
+
+    /// Must run on `workQueue`. One connect → hello → attach, and the decision
+    /// about what a failure means: the daemon refusing is final, anything else
+    /// puts the next attempt on the clock.
+    ///
+    /// Every attempt after the first runs against the wreckage of the last one,
+    /// so the per-connection state is cleared here rather than assumed fresh
+    /// from `init` — including `closed`, which `teardownLocked` set to keep
+    /// input off a dead socket and which opening a new one lifts.
+    private func attemptAttachLocked() {
+        reattachPending = false
+        reattachGeneration &+= 1
+        // `attached` here is a timer firing behind a `retryNow` that already
+        // got in: the link is up, so there is nothing to attempt.
+        guard !retired, !attached else { return }
+        let resuming = connectionLostDelivered
+        closed = false
+        isWriter = false
+        claimingWriter = false
+        clientID = nil
+        sentViewport = nil
+        do {
+            let channel = try Termiod.Transport.open(route)
+            transport = channel
+            noteTransport(up: true)
+            let handshake = try Termiod.performHello(
+                channel, role: "attach", caps: Termiod.attachCapabilities)
+            clientID = handshake.clientID
+            hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+            let sizesByPolicy = hostSizesByPolicy
+            DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
+            let device = handshake.device
+            DispatchQueue.main.async { [self] in onDevice?(device) }
+            // A spec that names an agent command must not reach a host that
+            // predates the field: the host would drop it and spawn a plain
+            // shell, and a pane labeled Claude Code holding someone's login
+            // shell is worse than a pane that says why it refused.
+            if specification.command != nil,
+               !handshake.capabilities.contains(Termiod.spawnCommandCapability) {
+                throw TermiodClientError.requestFailed(localized(
+                    "This device’s termiod is too old to launch agents. Set up the device again in Settings › Machines."))
+            }
+            let requested = viewportGrid
+            // An old host has no rendering concept at all — it reads every
+            // attachment as one somebody is looking at, and there is no
+            // form of this frame that tells it otherwise.
+            let declaredRendering = hostSizesByPolicy ? rendering : true
+            let payload = try Termiod.attachPayload(
+                target: sessionName,
+                specification: specification,
+                rows: requested.rows,
+                cols: requested.cols,
+                rendering: declaredRendering
+            )
+            try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
+            let reply = try Termiod.readFrame(channel.readDescriptor)
+            guard reply.kind == .control else {
+                throw TermiodClientError.handshakeRejected("attach was not acknowledged")
+            }
+            let acknowledgement = try Termiod.decodeControl(reply.payload)
+            // A refusal names its own cause — the directory that is not
+            // there, the spawn it would not perform. Carrying that message
+            // instead of a generic one is the whole reason the refusal is
+            // told apart from a lost connection: the pane can say *why*
+            // rather than only that something failed.
+            if case .error(let refusal) = acknowledgement {
+                throw TermiodClientError.requestFailed(refusal.message)
+            }
+            guard case .attached(let attachedPayload) = acknowledgement else {
+                throw TermiodClientError.handshakeRejected("attach was not acknowledged")
+            }
+            attached = true
+            isWriter = attachedPayload.writer
+            DispatchQueue.main.async { [self] in
+                onDaemonSessionID?(attachedPayload.sessionId)
+            }
+            // The initial state has to be announced too, not just later
+            // changes: a client that attaches as an observer, or that opens
+            // a session a phone is already holding, is read-only from its
+            // first frame and has to be able to say so. `applyWriter` only
+            // ever fires on a transition, so nothing else covers this.
+            DispatchQueue.main.async { [self] in onWriter?(attachedPayload.writer) }
+            // `attached` reports the size the session settled at once this
+            // attachment's viewport was counted — the daemon applies the
+            // policy before it answers — so this is the grid the bytes
+            // arriving on this channel are already wrapped for.
+            let sharedGrid = TerminalGrid(
+                rows: attachedPayload.rows, cols: attachedPayload.cols)
+            authoritativeGrid = sharedGrid
+            DispatchQueue.main.async { [self] in onSharedGrid?(sharedGrid) }
+            // The attach control carried this viewport and whether anyone
+            // is in front of it, so the daemon has already counted both;
+            // re-sending them would be a barrier for nothing.
+            sentViewport = (requested, declaredRendering)
+            repaintPending = sharedGrid != surfaceGrid
+            Log.termiod.info("""
+            attached session=\(self.sessionName, privacy: .public) \
+            device=\(device.id, privacy: .public) \
+            route=\(self.route.description, privacy: .public) \
+            writer=\(attachedPayload.writer, privacy: .public) \
+            caps=\(handshake.capabilities.sorted().joined(separator: ","), privacy: .public) \
+            \(attachedPayload.rows, privacy: .public)x\(attachedPayload.cols, privacy: .public)
+            """)
+            // Only a writer may inject the keystrokes buffered during connect;
+            // an observer's input would be rejected frame-by-frame by the
+            // daemon. (This client always attaches `interact` today, so it is
+            // normally the writer — this keeps it correct if observe is used.)
+            if isWriter, !pendingInput.isEmpty {
+                try sendDataLocked(pendingInput)
+            }
+            pendingInput.removeAll(keepingCapacity: false)
+            startReader(channel.readDescriptor)
+            // Back on the fast burst for whatever the *next* outage turns out
+            // to be, and the outage just ended is reported as ended — the
+            // attach reply came with a snapshot, so the screen in the pane is
+            // the session's current one, not the one it froze on.
+            policy.reset()
+            if resuming {
+                connectionLostDelivered = false
+                Log.termiod.info("reattached \(self.sessionName, privacy: .public)")
+                DispatchQueue.main.async { [self] in onReattached?() }
+            }
+        } catch {
+            Log.termiod.error("""
+            attach session=\(self.sessionName, privacy: .public) failed: \
+            \(error.localizedDescription, privacy: .public)
+            """)
+            teardownLocked()
+            // Three outcomes, not two. Widening this arm to "lost
+            // connection" was too coarse: it also catches a daemon that is
+            // perfectly reachable and said no, and reporting that as a
+            // session still running elsewhere is its own lie.
+            switch error {
+            case TermiodClientError.handshakeRejected(let message),
+                 TermiodClientError.requestFailed(let message):
+                deliverStartRefusedLocked(message)
+            default:
+                // Could not reach it, or it stopped talking mid-handshake.
+                // Same class as losing it mid-session; neither carries an
+                // exit status — and neither is final, so it is retried.
+                scheduleReattachLocked()
             }
         }
     }
@@ -2067,6 +2141,16 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// app-quit and surface-teardown path. Synchronous so `applicationWillTerminate`
     /// can rely on the detach frame being out before the process dies.
     func detach() {
+        // Retired first, and off the queue: this is what stops the *next*
+        // reconnect attempt, and it has to land whether or not the queue is
+        // free to run anything right now.
+        retire()
+        guard hasTransport else {
+            // No socket, so no detach frame to flush — and nothing here worth
+            // making app quit wait for an attempt that is still dialling.
+            workQueue.async { [self] in closed = true }
+            return
+        }
         workQueue.sync { [self] in
             guard !closed, let transport else {
                 closed = true
@@ -2081,6 +2165,7 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// The destroy verb: asks the daemon to kill the session, then closes.
     func killAndClose() {
+        retire()
         Termiod.killSession(target: sessionName, route: route)
         workQueue.async { [self] in
             teardownLocked()
@@ -2160,10 +2245,25 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    /// Ends the link for good, from any thread. Only ever moves one way.
+    private func retire() {
+        lifecycleLock.lock()
+        retiredFlag = true
+        lifecycleLock.unlock()
+    }
+
+    private func noteTransport(up: Bool) {
+        lifecycleLock.lock()
+        transportUp = up
+        lifecycleLock.unlock()
+    }
+
     private func teardownLocked() {
         closed = true
+        attached = false
         transport?.close()
         transport = nil
+        noteTransport(up: false)
         // A keyframe still waiting for a surface that is going away would take
         // the last screen with it. Paint it: an imperfectly wrapped final frame
         // beats a blank one.
@@ -2465,11 +2565,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// went, not that the work did.
     private func handleStreamEnd() {
         workQueue.async { [self] in
-            let wasDeliberate = closed
+            // `retired`, not `closed`: `closed` is also true between two attach
+            // attempts, and reading that as "the user asked for this" would
+            // stop the reconnect loop the first time a retry's socket died.
+            let wasDeliberate = retired
             teardownLocked()
             guard !wasDeliberate, !exitDelivered else { return }
             Log.termiod.error("connection to \(self.sessionName, privacy: .public) ended unexpectedly")
-            deliverConnectionLostLocked()
+            scheduleReattachLocked()
         }
     }
 
@@ -2483,16 +2586,46 @@ final class TermiodSessionLink: @unchecked Sendable {
         DispatchQueue.main.async { [self] in onStartRefused?(message) }
     }
 
-    private func deliverConnectionLostLocked() {
-        // All three outcomes are mutually exclusive and each is final. The
-        // refusal arm cannot reach here today — a refusal happens inside
-        // `start()`, before `startReader` exists, so no EOF follows it — but the
-        // guard states the invariant rather than relying on that ordering: if a
-        // reader ever starts earlier, one failure must still be one report, and
-        // the second would arrive as "still running there", the exact sentence a
-        // refusal must never produce.
-        guard !exitDelivered, !connectionLostDelivered, !startRefusedDelivered else { return }
+    /// The transport is down under a session that has not ended, so the link
+    /// brings *itself* back: a fast burst, then a 30s heartbeat, for as long as
+    /// the session exists. A session outliving its viewer is the whole point of
+    /// running it in a daemon, and a pane that dead-ends in "disconnected"
+    /// until somebody restarts the app throws that away (#658).
+    ///
+    /// The exit and refusal arms are still final and still exclusive with this
+    /// one: a session that ended has nothing to reattach to, and a daemon that
+    /// answered and said no will say no again. (The refusal arm cannot reach
+    /// here today — a refusal happens before `startReader` exists, so no EOF
+    /// follows it — but the guard states the invariant rather than relying on
+    /// that ordering.)
+    private func scheduleReattachLocked() {
+        guard !retired, !exitDelivered, !startRefusedDelivered, !reattachPending else { return }
+        reattachPending = true
+        let delay = policy.nextDelay()
+        let attempts = policy.attempts
+        // Said on every attempt, not once: the first one is what puts the
+        // notice on screen, and the ones after it are how the wording earns the
+        // right to change from "reconnecting" to "can't reach it".
         connectionLostDelivered = true
-        DispatchQueue.main.async { [self] in onConnectionLost?() }
+        DispatchQueue.main.async { [self] in onConnectionLost?(attempts) }
+        let generation = reattachGeneration
+        workQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            guard generation == reattachGeneration else { return }
+            attemptAttachLocked()
+        }
+    }
+
+    /// Somebody just came back to the app, which is better evidence that the
+    /// box is reachable again than any timer — so the backoff is dropped and
+    /// the attempt happens now. A link that is attached, retired, or done does
+    /// nothing. This is what a "Reattach" button would have been, minus the
+    /// button.
+    func retryNow() {
+        workQueue.async { [self] in
+            guard !retired, !attached, !exitDelivered, !startRefusedDelivered,
+                  connectionLostDelivered else { return }
+            policy.reset()
+            attemptAttachLocked()
+        }
     }
 }

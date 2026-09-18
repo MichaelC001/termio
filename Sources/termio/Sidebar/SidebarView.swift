@@ -1442,8 +1442,11 @@ private struct SessionRow: View {
                     .truncationMode(.tail)
                 // The agent left but its wrapped shell survives ("Claude Code
                 // exited — shell"): the row says what happened in its own place
-                // instead of changing identity (#528).
-                if let notice = store.agentExitNotice(for: session.id) {
+                // instead of changing identity (#528). A link that is down
+                // outranks it — while that is true the pane is not showing the
+                // session at all.
+                if let notice = store.connectionNotice(for: session.id)
+                    ?? store.agentExitNotice(for: session.id) {
                     Text(notice)
                         .font(settings.interfaceFont)
                         .foregroundStyle(.secondary)
