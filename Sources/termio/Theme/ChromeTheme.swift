@@ -219,6 +219,23 @@ extension AppSettings {
         return ChromeTheme.overlayInk(onDark: dark, alpha: dark ? 0.55 : 0.42)
     }
 
+    /// Base ink for code the syntax highlighter has not colored — the file editor's plain text,
+    /// and every buffer that never gets a highlight pass at all (no grammar for the extension,
+    /// or past the size limit). The theme's own foreground, so the text sits in the palette the
+    /// rest of the chrome is drawn from, falling back to `overlayInk` at full strength when no
+    /// theme is picked.
+    ///
+    /// This has to be stated rather than left to AppKit: an `NSTextView` whose text carries no
+    /// color draws its built-in black whatever the appearance is, and the editor paints an opaque
+    /// terminal background — black on Afterglow `#212121` reads as an empty file (#662).
+    func editorInk(for colorScheme: ColorScheme) -> NSColor {
+        let theme = chromeTheme(for: colorScheme)
+        if let foreground = theme?.foreground { return NSColor(foreground) }
+        return ChromeTheme.overlayInk(
+            onDark: theme?.isDark ?? (colorScheme == .dark), alpha: 1
+        )
+    }
+
     /// The diff's add/delete tints, resolved against the same theme `gutterInk` reads so
     /// the washes and the numbers drawn on them can never disagree about which slot is
     /// showing. `terminalBackgroundColor` is dynamic and would resolve against whatever

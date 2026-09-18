@@ -180,6 +180,11 @@ struct FileEditorView: View {
     /// Foreground/caret fall back to the terminal theme's colors (the rest of the chrome's source of
     /// truth) so plain text and the insertion point sit on the terminal background cleanly.
     private var chrome: ChromeTheme? { settings.chromeTheme(for: colorScheme) }
+    /// Ink for text the highlighter has not colored, resolved like the gutter rather than through
+    /// a system catalog color: `NSColor.textColor` tracks the *system* appearance, which is not
+    /// the same thing as the terminal theme's foreground (a warm cream, a tinted grey) — the
+    /// editor's plain text has to sit in the palette the pane behind it is drawn from.
+    private var textColor: NSColor { settings.editorInk(for: colorScheme) }
     private var caretColor: NSColor { chrome.map { NSColor($0.accent) } ?? .textColor }
     /// Whether the editor sits on a dark background — the theme's own luminance signal, falling
     /// back to the system appearance when no theme is picked.
@@ -338,6 +343,7 @@ struct FileEditorView: View {
                 font: editorFont,
                 lineSpacing: settings.codeLineSpacing(for: editorFont),
                 backgroundColor: settings.terminalBackgroundColor,
+                textColor: textColor,
                 caretColor: caretColor,
                 lineNumberColor: lineNumberColor,
                 currentLineColor: currentLineColor,
