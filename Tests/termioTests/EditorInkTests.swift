@@ -147,6 +147,67 @@ final class EditorInkTests: XCTestCase {
         XCTAssertEqual(carried?.alphaComponent, 1)
     }
 
+    // MARK: - Why the ink is never written document-wide
+
+    /// `NSTextView.textColor` is the one way *not* to state the ink, and the reason is not obvious
+    /// enough to leave to a comment: the setter is whole-document, and the getter does not report
+    /// what was last assigned — it answers with the **first character's** foreground color. So the
+    /// `if textView.textColor != ink` shape that works for `font` cannot work here. On any buffer
+    /// the highlighter has been through, the first character is a token with a color of its own,
+    /// the guard never holds, and the write flattens every syntax color in the document. Nothing
+    /// puts them back either: `CodeAttributedString.processEditing` re-highlights on
+    /// `.editedCharacters` only, and an attribute-only write edits no characters.
+    ///
+    /// `apply(to:)` states the ink through the typing attributes instead, and leaves text already
+    /// in the storage to the `baseAttributes` an appearance switch re-applies.
+    func testDocumentWideInkWriteFlattensTheSyntaxColors() throws {
+        let highlightr = try XCTUnwrap(Highlightr())
+        _ = highlightr.setTheme(to: "xcode-dark")
+        let highlighted = try XCTUnwrap(
+            highlightr.highlight("import Foundation\nlet x = 1\n", as: "swift"))
+
+        let storage = CodeAttributedString(highlightr: highlightr)
+        storage.language = "swift"
+        storage.setAttributedString(highlighted)
+        let container = NSTextContainer(size: NSSize(width: 400, height: 400))
+        let layout = NSLayoutManager()
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        let textView = NSTextView(
+            frame: NSRect(x: 0, y: 0, width: 400, height: 400), textContainer: container)
+
+        func distinctColors() -> Set<String> {
+            var seen = Set<String>()
+            storage.enumerateAttribute(
+                .foregroundColor, in: NSRange(location: 0, length: storage.length)
+            ) { value, _, _ in
+                guard let color = (value as? NSColor)?.usingColorSpace(.sRGB) else { return }
+                seen.insert(String(
+                    format: "%.3f,%.3f,%.3f",
+                    color.redComponent, color.greenComponent, color.blueComponent))
+            }
+            return seen
+        }
+
+        let colored = distinctColors()
+        XCTAssertGreaterThan(colored.count, 1, "the sample did not highlight — nothing to protect")
+
+        let ink = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+        XCTAssertNotEqual(
+            textView.textColor, ink,
+            "the getter reports the first token's color, so a change-gated write would fire here")
+
+        textView.typingAttributes[.foregroundColor] = ink
+        XCTAssertEqual(
+            distinctColors(), colored,
+            "stating the ink through the typing attributes must leave the document alone")
+
+        textView.textColor = ink
+        XCTAssertEqual(
+            distinctColors().count, 1,
+            "a document-wide write is destructive — this is what the editor must not do")
+    }
+
     // MARK: - Helpers
 
     /// Resolve a dynamic color through the appearance it is pinned to, rather than letting it fall
