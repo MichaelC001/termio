@@ -185,21 +185,22 @@ extension Termiod {
     }
 }
 
-/// ⌘V of an image at a session running on another device.
+/// ⌘V / Paste aimed at a terminal surface.
 ///
-/// Locally this needs no code at all: the agent reads the Mac's pasteboard
-/// itself when the terminal delivers Ctrl+V, which is what libghostty's wrapper
-/// already does. That mechanism cannot survive the machine boundary — a
-/// Ctrl+V delivered to a VPS makes the agent read *the VPS's* clipboard — so a
-/// remote session gets the crossing instead: the bytes move to the device, and
-/// the path they landed at is pasted as text. The agent then opens a local
-/// file, which is a thing it can do anywhere.
+/// Two cases cannot ride ghostty's own `paste_from_clipboard`. Finder's copy
+/// puts a file URL *and* the basename as text, and the text is what a normal
+/// paste would insert — which is why file URLs are read first and typed as
+/// shell-quoted absolute paths, the same payload a drop already sends. An
+/// image at a session on another device cannot survive the machine boundary
+/// either: a Ctrl+V delivered to a VPS makes the agent read *the VPS's*
+/// clipboard, so the bytes move to the device and the path they landed at is
+/// pasted as text.
 ///
 /// Intercepted with a local key monitor for the same reason `TerminalContextMenu`
 /// uses one: the wrapper instantiates its own view class, so there is no
 /// subclass to override, and a monitor runs before the surface sees the key.
-/// Everything that is not exactly this case — a local session, a text
-/// clipboard, a non-terminal responder — falls straight through untouched.
+/// Everything else — a text clipboard, an image at a local session, a
+/// non-terminal responder — falls straight through untouched.
 @MainActor
 final class TermiodImagePaste: NSObject {
     private weak var store: TermioStore?
@@ -230,24 +231,45 @@ final class TermiodImagePaste: NSObject {
               event.modifierFlags.contains(.command),
               event.modifierFlags.isDisjoint(with: [.shift, .option, .control])
         else { return false }
-        return pasteImage(into: focusedTerminalSessionID())
+        return pasteIntoFocusedTerminal()
+    }
+
+    /// Edit ▸ Paste. Uses the focused terminal, same as ⌘V.
+    func pasteIntoFocusedTerminal() -> Bool {
+        paste(into: focusedTerminalSessionID())
     }
 
     /// The right-click menu's Paste, which reaches the surface by selector
-    /// rather than by key event. Returns whether the transfer took it over; the
-    /// menu falls back to the surface's own `paste:` when it did not.
-    func pasteImageFromMenu(sessionID: Session.ID?) -> Bool {
-        pasteImage(into: sessionID)
+    /// rather than by key event. The clicked session is the destination even
+    /// when a different pane is selected. Returns whether we took it over; the
+    /// menu falls back to the surface's own `paste:` when we did not.
+    func pasteFromMenu(sessionID: Session.ID?) -> Bool {
+        paste(into: sessionID)
     }
 
     /// Returns whether this paste was taken over. `false` means "not our case"
-    /// and the ordinary paste must still happen.
-    private func pasteImage(into sessionID: Session.ID?) -> Bool {
-        guard let store, let sessionID,
-              let session = store.session(sessionID),
-              // The device boundary is the whole condition: a session on this
-              // Mac keeps the local mechanism, unchanged.
-              let host = session.termiodRemoteHost,
+    /// and the ordinary paste must still happen. A failed send still returns
+    /// `true` so ghostty cannot fall through and insert the basename.
+    private func paste(into sessionID: Session.ID?) -> Bool {
+        guard let store, let sessionID, let session = store.session(sessionID) else {
+            return false
+        }
+
+        // File URLs before the remote-host guard: a local session needs the
+        // absolute path just as much as a remote one, and Finder's icon
+        // representation must not be mistaken for a screenshot to upload.
+        if let text = ClipboardFilePaths.current() {
+            if store.surfaces[sessionID]?.send(text) == true { return true }
+            Log.pty.error("""
+            pasted path could not be sent — \
+            \(session.title, privacy: .public) has no live terminal
+            """)
+            return true
+        }
+
+        // The device boundary is the whole remaining condition: a session on
+        // this Mac keeps the local image-paste mechanism, unchanged.
+        guard let host = session.termiodRemoteHost,
               let image = ClipboardImage.current()
         else { return false }
 
@@ -312,6 +334,52 @@ final class TermiodImagePaste: NSObject {
               let surface = window.firstResponder as? TerminalView
         else { return nil }
         return store?.surfaces.first { $0.value.controller === surface.controller }?.key
+    }
+}
+
+/// File URLs on the pasteboard, reduced to the shell-quoted absolute paths a
+/// prompt can take.
+///
+/// Finder's copy puts the URL *and* the basename as text (and often an icon).
+/// The basename is what a normal paste would insert, which is why this reads
+/// file-only NSURL objects and ignores the string flavor: inferring a file
+/// from text would steal ordinary path-looking pastes, and `lastPathComponent`
+/// is the bug this exists to end.
+struct ClipboardFilePaths {
+    /// The text inserted at a prompt — each path one quoted argument, joined
+    /// by spaces, with a trailing space so typing can continue. `nil` when the
+    /// pasteboard holds no file URLs.
+    @MainActor
+    static func current(_ pasteboard: NSPasteboard = .general) -> String? {
+        let urls = fileURLs(on: pasteboard)
+        guard !urls.isEmpty else { return nil }
+        return urls.map { TermioStore.promptToken(for: $0) }.joined(separator: " ") + " "
+    }
+
+    /// Standardized file URLs in pasteboard order. Existence is not required:
+    /// a copied path is still a path after the file has been moved.
+    static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        // The type must actually be present. `readObjects` of NSURL can
+        // otherwise promote a string that happens to look like a file URL.
+        guard pasteboard.types?.contains(.fileURL) == true else { return [] }
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        guard let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: options)
+        else { return [] }
+        return objects.compactMap { object in
+            let url: URL?
+            if let value = object as? URL {
+                url = value
+            } else if let value = object as? NSURL {
+                url = value as URL
+            } else {
+                url = nil
+            }
+            guard let url, url.isFileURL else { return nil }
+            return url.standardizedFileURL
+        }
     }
 }
 

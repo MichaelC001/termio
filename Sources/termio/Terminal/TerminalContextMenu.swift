@@ -22,8 +22,9 @@ import GhosttyTerminal
 @MainActor
 final class TerminalContextMenu: NSObject {
     private weak var store: TermioStore?
-    /// The ⌘V interceptor, so the menu's Paste answers the image-at-a-remote-
-    /// session case the same way the key does instead of restating the rule.
+    /// The ⌘V interceptor, so the menu's Paste answers file-path and
+    /// image-at-a-remote-session the same way the key does instead of
+    /// restating the rule.
     private weak var imagePaste: TermiodImagePaste?
     // Held for the app's lifetime; never removed.
     private var monitor: Any?
@@ -119,9 +120,9 @@ final class TerminalContextMenu: NSObject {
             menu.addItem(.separator())
         }
         // Copy targets the surface's own responder action, and is a no-op
-        // without a selection. Paste goes through `paste(_:)` below, which ends
-        // up at the same responder action for everything except the one case
-        // that cannot work there.
+        // without a selection. Paste goes through `paste()` below, which ends
+        // up at the same responder action for everything except file URLs and
+        // an image aimed at a remote session.
         menu.addItem(surfaceItem(localized("Copy"), action: "copy:", symbol: "doc.on.doc"))
         menu.addItem(storeItem(localized("Paste"), action: #selector(paste), symbol: "doc.on.clipboard"))
         // The session's deep link (`termio://session/<uuid>`) — the canonical
@@ -196,12 +197,13 @@ final class TerminalContextMenu: NSObject {
         store?.requestCloseSession(id)
     }
 
-    /// An image aimed at a session on another device crosses the boundary and
-    /// pastes the path it landed at; everything else is the surface's own
-    /// paste, which routes through ghostty's `paste_from_clipboard` binding so
-    /// bracketed paste is preserved.
+    /// File URLs become absolute paths at the clicked session; an image aimed
+    /// at a session on another device crosses the boundary and pastes the path
+    /// it landed at; everything else is the surface's own paste, which routes
+    /// through ghostty's `paste_from_clipboard` binding so bracketed paste is
+    /// preserved.
     @objc private func paste() {
-        if imagePaste?.pasteImageFromMenu(sessionID: clickedSessionID) == true { return }
+        if imagePaste?.pasteFromMenu(sessionID: clickedSessionID) == true { return }
         clickedView?.perform(NSSelectorFromString("paste:"), with: nil)
     }
 
