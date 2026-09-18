@@ -328,15 +328,19 @@ struct HighlightedTextView: NSViewRepresentable {
         // when the configured font genuinely changed; the re-highlight rebuilds the variants.
         if textView.font != font { textView.font = font }
         textView.backgroundColor = backgroundColor
-        // Gated like the font: `textColor` is a whole-document setter, so an unconditional
-        // assignment would re-stamp the plain ink over every syntax color on each keystroke.
-        // It still rides an appearance switch, which re-highlights right afterwards.
-        if textView.textColor != textColor { textView.textColor = textColor }
         textView.insertionPointColor = caretColor
         let style = Self.paragraphStyle(font: font, lineSpacing: lineSpacing)
         textView.defaultParagraphStyle = style
         textView.typingAttributes[.paragraphStyle] = style
         textView.typingAttributes[.baselineOffset] = Self.baselineOffset(lineSpacing: lineSpacing)
+        // The ink for characters typed past the end of the highlighted run. Only the typing
+        // attributes, never `textView.textColor`: that one is a whole-document setter, and it
+        // cannot be change-gated because its getter answers with the *first character's* color
+        // rather than the ink last assigned — on any highlighted buffer the guard never holds and
+        // the write flattens every syntax color. Text already in the storage carries its ink from
+        // `baseAttributes`, which an appearance switch re-applies across the document before the
+        // re-highlight.
+        textView.typingAttributes[.foregroundColor] = textColor
         if let saving = textView as? SavingTextView {
             saving.language = language
             saving.currentLineColor = currentLineColor
