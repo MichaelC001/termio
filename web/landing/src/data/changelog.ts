@@ -17,6 +17,23 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.53.4",
+    date: "2026-09-18",
+    title: "A session that loses its connection comes back on its own",
+    changes: {
+      improved: [
+        "Settings: hooks and the agent skill now sit on a machine's Agents page, beside the CLIs they are written for, and Server has its own page apart from Remote Hosts.",
+      ],
+      fixed: [
+        "Losing the connection to a session no longer strands its pane. Termio reconnects on its own — and immediately when you come back to the app — instead of asking you to close the session, which would have ended it.",
+        "Dropping a file onto a split now hands it to the pane you can see, not to whichever pane happened to be mounted last.",
+        "Plain-text files — a LICENSE, anything past the highlighting limit — are drawn in the theme's ink instead of black on a dark background.",
+        "Collapsing the sidebar and reopening it no longer takes the navigator button, workspace name, sort menu and ＋ out of the toolbar for good.",
+        "An ended session says what ended it in plain words, instead of showing the daemon's own vocabulary.",
+      ],
+    },
+  },
+  {
     version: "0.53.3",
     date: "2026-09-15",
     title: "Widening a terminal no longer leaves pieces of the old one behind",
