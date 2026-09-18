@@ -332,8 +332,6 @@
 	<string>Close Window</string>
 	<key>Close session</key>
 	<string>Close session</string>
-	<key>Close the session and open it again to reattach.</key>
-	<string>Close the session and open it again to reattach.</string>
 	<key>Closed</key>
 	<string>Closed</string>
 	<key>Closes every session in it. The folders on disk are left alone.</key>
@@ -756,8 +754,8 @@
 	<string>Login shell</string>
 	<key>Looking for agent CLIs…</key>
 	<string>Looking for agent CLIs…</string>
-	<key>Lost the connection to %@. The session is still running there.</key>
-	<string>Lost the connection to %@. The session is still running there.</string>
+	<key>Lost the connection to %@. The session is still running there — reconnecting…</key>
+	<string>Lost the connection to %@. The session is still running there — reconnecting…</string>
 	<key>Machine</key>
 	<string>Machine</string>
 	<key>Machines</key>
@@ -1128,6 +1126,8 @@
 	<string>Reconnect</string>
 	<key>Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.</key>
 	<string>Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.</string>
+	<key>Reconnecting…</key>
+	<string>Reconnecting…</string>
 	<key>Record Shortcut</key>
 	<string>Record Shortcut</string>
 	<key>Refresh</key>

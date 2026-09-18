@@ -1602,16 +1602,6 @@
         }
       }
     },
-    "Close the session and open it again to reattach.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关闭会话后重新打开即可接回。"
-          }
-        }
-      }
-    },
     "Closed": {
       "localizations": {
         "zh-Hans": {
@@ -3714,12 +3704,12 @@
         }
       }
     },
-    "Lost the connection to %@. The session is still running there.": {
+    "Lost the connection to %@. The session is still running there — reconnecting…": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "与 %@ 的连接已断开。会话仍在那台机器上运行。"
+            "value": "与 %@ 的连接已断开。会话仍在那台机器上运行 —— 正在重连…"
           }
         }
       }
@@ -5563,6 +5553,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新连接以使用其他账户登录，或授予 Termio 访问拥有该仓库的组织的权限。"
+          }
+        }
+      }
+    },
+    "Reconnecting…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在重连…"
           }
         }
       }

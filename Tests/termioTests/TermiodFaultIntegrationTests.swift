@@ -35,6 +35,11 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         let socket = directory.appendingPathComponent("termiod.sock").path
         XCTAssertLessThan(socket.utf8.count, 104, "socket path must fit sun_path")
         setenv("TERMIOD_SOCK", socket, 1)
+        // A link whose transport dies now reconnects on its own, and the local
+        // transport revives a dead daemon while it is at it — so a suite that
+        // kills daemons would leave one running behind every test. These tests
+        // start their own daemon; nothing here needs the client to.
+        setenv("TERMIO_TERMIOD_BIN", "/nonexistent/termiod", 1)
         try startDaemon(socket: socket)
     }
 
@@ -63,6 +68,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
             try? FileManager.default.removeItem(at: socketDirectory)
         }
         unsetenv("TERMIOD_SOCK")
+        unsetenv("TERMIO_TERMIOD_BIN")
         try super.tearDownWithError()
     }
 
@@ -93,7 +99,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         let session = link("fault-\(UUID().uuidString.prefix(8))",
                            argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
         session.onExit = { code, _, _ in exits.append(code) }
-        session.onConnectionLost = { lostConnection = true }
+        session.onConnectionLost = { _ in lostConnection = true }
         session.start()
         defer { session.detach() }
 
@@ -127,7 +133,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         let session = link("exit-\(UUID().uuidString.prefix(8))",
                            argv: ["/bin/sh", "-c", "exit 7"])
         session.onExit = { code, _, _ in exits.append(code) }
-        session.onConnectionLost = { lostConnection = true }
+        session.onConnectionLost = { _ in lostConnection = true }
         session.start()
         defer { session.detach() }
 
@@ -161,7 +167,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         var lostConnection = false
         let session = link("norun-\(UUID().uuidString.prefix(8))", argv: ["/bin/sh"])
         session.onExit = { code, _, _ in exits.append(code) }
-        session.onConnectionLost = { lostConnection = true }
+        session.onConnectionLost = { _ in lostConnection = true }
         session.start()
         defer { session.detach() }
 
@@ -191,7 +197,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
                 cwd: missing, argv: ["/bin/sh"], env: [], rows: 24, cols: 80),
             rows: 24, cols: 80)
         session.onExit = { code, _, _ in exits.append(code) }
-        session.onConnectionLost = { lostConnection = true }
+        session.onConnectionLost = { _ in lostConnection = true }
         session.onStartRefused = { refusal = $0 }
         session.start()
         defer { session.detach() }
@@ -216,6 +222,66 @@ final class TermiodFaultIntegrationTests: XCTestCase {
             "the daemon's reason was discarded, so the pane can only say it failed")
     }
 
+    /// Nobody should have to ask. A transport that dies under a live session is
+    /// the link's problem to solve, and it solves it: a fast burst of attach
+    /// attempts, then a slow heartbeat, until the box answers again.
+    ///
+    /// Before this, the pane dead-ended — it told the user to close the session
+    /// and open it again, which is the *destroy* verb, and which did not work
+    /// anyway because a re-selected session is handed the same cached surface.
+    /// Quitting the whole app was the only way back to a session that had never
+    /// stopped running (#658).
+    func testTheLinkReattachesItselfWhenTheDaemonComesBack() throws {
+        var exits: [Int32] = []
+        var attempts: [Int] = []
+        var reattached = false
+
+        let socket = try XCTUnwrap(socketDirectory).appendingPathComponent("termiod.sock").path
+        let session = link("heal-\(UUID().uuidString.prefix(8))",
+                           argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
+        session.onExit = { code, _, _ in exits.append(code) }
+        session.onConnectionLost = { attempts.append($0) }
+        session.onReattached = { reattached = true }
+        session.start()
+        defer { session.killAndClose() }
+        XCTAssertTrue(waitUntil(5) { session.latestInformation != nil }, "never attached")
+
+        if let pid = daemon?.processIdentifier { kill(pid, SIGKILL) }
+        daemon?.waitUntilExit()
+        daemon = nil
+        XCTAssertTrue(waitUntil(5) { !attempts.isEmpty }, "the dead transport was never reported")
+        XCTAssertEqual(attempts.first, 1, "the first report must be the first failed attempt")
+
+        // Nothing touches the link from here: no new surface, no relaunch, no
+        // user. The daemon simply comes back, and the retry already on the
+        // clock is what finds it.
+        try startDaemon(socket: socket)
+        XCTAssertTrue(waitUntil(20) { reattached }, "the link never reattached itself")
+        XCTAssertTrue(waitUntil(5) { session.latestInformation != nil },
+                      "reattached without a live session behind it")
+        XCTAssertTrue(exits.isEmpty, "a reconnect invented an exit \(exits)")
+    }
+
+    /// A deliberate teardown ends the retrying too. Without this the loop would
+    /// outlive the thing it serves: a session the user closed, or an app that
+    /// has already quit, dialling a box every 30 seconds forever.
+    func testDetachStopsTheReconnectLoop() throws {
+        var attempts: [Int] = []
+        let session = link("quiet-\(UUID().uuidString.prefix(8))",
+                           argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
+        session.onConnectionLost = { attempts.append($0) }
+        session.start()
+        XCTAssertTrue(waitUntil(5) { session.latestInformation != nil }, "never attached")
+
+        session.detach()
+        if let pid = daemon?.processIdentifier { kill(pid, SIGKILL) }
+        daemon?.waitUntilExit()
+        daemon = nil
+
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        XCTAssertTrue(attempts.isEmpty, "a detached link kept reconnecting \(attempts)")
+    }
+
     /// The session outlives the connection, which is the claim the split rests
     /// on: after the daemon comes back, the same name resolves to the same
     /// still-running process rather than spawning a replacement.
@@ -223,7 +289,7 @@ final class TermiodFaultIntegrationTests: XCTestCase {
         let name = "survive-\(UUID().uuidString.prefix(8))"
         let first = link(name, argv: ["/bin/sh", "-c", "while :; do sleep 3600; done"])
         var lostConnection = false
-        first.onConnectionLost = { lostConnection = true }
+        first.onConnectionLost = { _ in lostConnection = true }
         first.start()
         XCTAssertTrue(waitUntil(5) { first.latestInformation != nil }, "never attached")
         let originalPid = first.latestInformation?.pid

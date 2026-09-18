@@ -1442,9 +1442,10 @@ extension TermioStore {
         // sessions present in `lastWorkingAt` — could never correct it).
         setStatus(.idle, for: id)
         setCurrentTool(nil, for: id)
-        // The respawn puts a live process back in the pane, so a "exited —
-        // shell" notice no longer describes it.
+        // The respawn puts a live process back in the pane, so neither a
+        // "exited — shell" notice nor a lost-connection one describes it.
         runtimes[id]?.agentExitNotice = nil
+        runtimes[id]?.connectionNotice = nil
         clearActivityTracking(for: id)
         // `transcriptPaths` deliberately survives: the respawn resumes the same
         // conversation, so the Info pane's trace should keep pointing at it.

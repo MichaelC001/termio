@@ -494,6 +494,56 @@ final class TermiodStatusTests: XCTestCase {
         XCTAssertNil(store.termiodEndReason(for: session))
     }
 
+    /// A link that is down is the app's problem, not the user's — but the row
+    /// still says which kind of down it is, because a blip and a box that is
+    /// gone want different things from whoever is reading it (nothing, and a
+    /// look at the box). Nothing here offers a button: the retrying is already
+    /// running (#658).
+    func testTheRowSaysReconnectingUntilTheFastBurstIsSpent() {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(with: session)
+
+        store.applyTermiodConnectionLost(for: session.id, attempts: 1, surface: nil)
+        XCTAssertEqual(store.connectionNotice(for: session.id), "Reconnecting…")
+
+        // Still inside the burst: the same word, so a two-second outage does not
+        // flash an alarm at somebody who would never have noticed it.
+        store.applyTermiodConnectionLost(
+            for: session.id, attempts: TermioStore.reconnectBurstAttempts, surface: nil)
+        XCTAssertEqual(store.connectionNotice(for: session.id), "Reconnecting…")
+
+        // Past it, the retries are a 30s heartbeat and the row stops implying
+        // this is about to resolve.
+        store.applyTermiodConnectionLost(
+            for: session.id, attempts: TermioStore.reconnectBurstAttempts + 1, surface: nil)
+        XCTAssertEqual(store.connectionNotice(for: session.id), "Can’t reach this Mac")
+    }
+
+    /// The row names the box, because "can't reach it" is only actionable if it
+    /// says which machine to go and look at.
+    func testAnUnreachableRemoteSessionNamesItsBox() {
+        var session = Session(title: "agent", agent: .terminal)
+        session.termiodRemoteHost = "ukvps"
+        let store = makeStore(with: session)
+
+        store.applyTermiodConnectionLost(
+            for: session.id, attempts: TermioStore.reconnectBurstAttempts + 1, surface: nil)
+        XCTAssertEqual(store.connectionNotice(for: session.id), "Can’t reach ukvps")
+    }
+
+    /// And it goes away by itself, because the reconnect that cleared it was
+    /// also by itself.
+    func testGettingBackInClearsTheNotice() {
+        let session = Session(title: "agent", agent: .terminal)
+        let store = makeStore(with: session)
+
+        store.applyTermiodConnectionLost(for: session.id, attempts: 3, surface: nil)
+        XCTAssertNotNil(store.connectionNotice(for: session.id))
+
+        store.applyTermiodReattached(for: session.id)
+        XCTAssertNil(store.connectionNotice(for: session.id))
+    }
+
     /// Another client's sessions share the daemon but not the sidebar. Keeping
     /// their graves would put rows in this map that no row can ever ask about.
     func testTombstonesForOtherClientsSessionsAreNotKept() throws {

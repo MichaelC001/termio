@@ -175,8 +175,12 @@ extension TermioStore {
         link.onSizesByPolicy = { [weak self] byPolicy in
             self?.runtime(for: session.id).sizesByPolicy = byPolicy
         }
-        link.onConnectionLost = { [weak self, weak inMemory] in
-            self?.applyTermiodConnectionLost(for: session.id, surface: inMemory)
+        link.onConnectionLost = { [weak self, weak inMemory] attempts in
+            self?.applyTermiodConnectionLost(
+                for: session.id, attempts: attempts, surface: inMemory)
+        }
+        link.onReattached = { [weak self] in
+            self?.applyTermiodReattached(for: session.id)
         }
         link.onExit = { [weak self, weak inMemory] code, runtimeMilliseconds, information in
             self?.applyTermiodExit(
@@ -472,6 +476,9 @@ extension TermioStore {
     func applyTermiodStartRefused(for id: Session.ID, message: String,
                                   surface: InMemoryTerminalSession?) {
         termiodLinks[id] = nil
+        // The one outcome retrying cannot fix, so the row stops claiming it is
+        // being worked on: the daemon's own words below are what to act on.
+        runtimes[id]?.connectionNotice = nil
         Log.termiod.error("""
         \(id.uuidString, privacy: .public) was refused by the device: \
         \(message, privacy: .public)
@@ -489,26 +496,61 @@ extension TermioStore {
     /// exist, and for a plain terminal `.close` would take the row away while
     /// the shell it names is still alive on the device.
     ///
-    /// The attachment is dropped, since it is dead, but nothing else about the
-    /// session is: no tombstone, no status change, no row removal. Selecting
-    /// the session again builds a fresh surface, and `attach` resolves the same
-    /// name back to the same process.
-    func applyTermiodConnectionLost(for id: Session.ID, surface: InMemoryTerminalSession?) {
-        termiodLinks[id] = nil
+    /// Nothing about the session is touched: no tombstone, no status change, no
+    /// row removal — and, unlike every other failure path here, **the link is
+    /// kept**. It is the thing reconnecting (`scheduleReattachLocked`), and
+    /// dropping it would take the retry loop with it and leave the pane waiting
+    /// for a person. This used to tell the user to close the session and open
+    /// it again, which was both the destroy verb and, because the surface cache
+    /// hands a re-selected session the same dead surface, not even true: the
+    /// only way back was quitting the app (#658).
+    ///
+    /// - Parameter attempts: consecutive failed attach attempts. The first one
+    ///   is what reaches the screen; the ones after it only revise the row's
+    ///   wording once the fast burst has clearly not been enough.
+    func applyTermiodConnectionLost(for id: Session.ID, attempts: Int,
+                                    surface: InMemoryTerminalSession?) {
         guard let session = session(id) else { return }
         let place = session.termiodRemoteHost ?? localized("this Mac")
+        // The row says which of the two it is, because they want different
+        // things from the user: nothing at all, or a look at the box.
+        runtime(for: id).connectionNotice = attempts <= Self.reconnectBurstAttempts
+            ? localized("Reconnecting…")
+            : localized("Can’t reach \(place)")
+        guard attempts == 1 else { return }
         Log.termiod.error("""
         lost the connection to \(session.id.uuidString, privacy: .public) on \
-        \(place, privacy: .public); the session keeps running there
+        \(place, privacy: .public); the session keeps running there — reconnecting
         """)
         // Said on the screen the user is looking at, because a pane that simply
         // stops updating is indistinguishable from an agent that went quiet.
+        // One line, not two: the reattach repaints this screen from the
+        // daemon's snapshot, and the less of the session's own output this
+        // scrolled away in the meantime, the better.
         surface?.receive(Data((
             "\r\n\u{1B}[33m"
-            + localized("Lost the connection to \(place). The session is still running there.")
-            + "\u{1B}[0m\r\n"
-            + localized("Close the session and open it again to reattach.")
-            + "\r\n").utf8))
+            + localized("Lost the connection to \(place). The session is still running there — reconnecting…")
+            + "\u{1B}[0m\r\n").utf8))
+    }
+
+    /// How long the row stays hopeful. Matches `ReconnectPolicy`'s fast burst:
+    /// past it the retries are a 30s heartbeat, and a pane that has been saying
+    /// "Reconnecting…" for half a minute is no longer describing a blip.
+    static let reconnectBurstAttempts = 6
+
+    /// A retry got back in. The pane is live again — the attach snapshot has
+    /// already repainted it — so the only thing left is to stop saying it isn't.
+    func applyTermiodReattached(for id: Session.ID) {
+        guard runtimes[id]?.connectionNotice != nil else { return }
+        runtimes[id]?.connectionNotice = nil
+        Log.termiod.info("reattached \(id.uuidString, privacy: .public)")
+    }
+
+    /// The user is back in front of the app, which beats any timer as evidence
+    /// that a box might be reachable again: every link that is currently down
+    /// drops its backoff and tries immediately. Links that are fine do nothing.
+    func retryLostSessionsNow() {
+        for link in termiodLinks.values { link.retryNow() }
     }
 
     func applyTermiodExit(for id: Session.ID,
@@ -519,6 +561,10 @@ extension TermioStore {
                           isPlainTerminal: Bool,
                           surface: InMemoryTerminalSession?) {
         termiodLinks[id] = nil
+        // Whatever the link was in the middle of saying about the connection,
+        // the session it named has ended — the row must not keep offering to
+        // reconnect to it.
+        runtimes[id]?.connectionNotice = nil
         // The same policy the in-process PTY runs, on the same three inputs. The
         // self-update check is no longer missing here: the app cannot pin a
         // process it does not own, but the daemon that owns it can, and the exit
@@ -942,8 +988,10 @@ extension TermioStore {
     /// Destroys a session's daemon side. The `(daemon name, route)` pair is the
     /// destroy capability; the link is a live attachment — an optimization,
     /// never a prerequisite — so a row restored after relaunch, closed from the
-    /// CLI or the phone without ever rendering, or torn down after the exit /
-    /// connection-lost paths nil'd its link, still kills the process it names.
+    /// CLI or the phone without ever rendering, or torn down after the exit path
+    /// nil'd its link, still kills the process it names. A link that is in the
+    /// middle of reconnecting is retired by the kill below, so closing a session
+    /// on a box that is gone stops the retrying too.
     ///
     /// `rememberClosed` writes the name into the closed-session journal first,
     /// which is what makes the kill durable: an unreachable route or a crash
