@@ -151,13 +151,16 @@ final class EditorInkTests: XCTestCase {
 
     /// Resolve a dynamic color through the appearance it is pinned to, rather than letting it fall
     /// to whatever `NSAppearance.current` happens to be — the trap `App.swift` documents for the
-    /// same property.
+    /// same property. `performAsCurrentDrawingAppearance` returns Void, so the result is carried
+    /// out through a capture, the way the app's own resolvers do it.
     private func resolved(_ color: NSColor, as scheme: ColorScheme) -> NSColor {
         let name: NSAppearance.Name = scheme == .dark ? .darkAqua : .aqua
         guard let appearance = NSAppearance(named: name) else { return color }
-        return appearance.performAsCurrentDrawingAppearance {
-            color.usingColorSpace(.sRGB) ?? color
+        var resolved = color
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(.sRGB) ?? color
         }
+        return resolved
     }
 
     private func relativeLuminance(_ color: NSColor) throws -> Double {
