@@ -2966,11 +2966,11 @@ private struct PaneToggleToolbarView: View {
     }
 }
 
-/// Reports its own leading edge in the window along with the trailing edge of the traffic lights,
-/// so a toolbar item can place itself against the buttons rather than against whatever edge the
-/// toolbar handed it. The buttons' edge is `nil` while they are hidden — but not in fullscreen,
-/// where they stay unhidden at their windowed frame with no titlebar drawing them; that one is the
-/// caller's to know.
+/// Reports the leading edge of the item's own box in the window, along with the trailing edge of the
+/// traffic lights, so a toolbar item can place itself against the buttons rather than against
+/// whatever edge the toolbar handed it. The buttons' edge is `nil` while they are hidden — but not
+/// in fullscreen, where they stay unhidden at their windowed frame with no titlebar drawing them;
+/// that one is the caller's to know.
 ///
 /// AppKit moves the item without anything inside it changing, so there is nothing for SwiftUI's own
 /// geometry to react to. Every ancestor's frame notification is watched instead — one of them is
@@ -2991,6 +2991,35 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
     final class LeadingReaderView: NSView {
         var report: (CGFloat, CGFloat?) -> Void
         private var reported: (CGFloat, CGFloat?)?
+
+        /// The view the toolbar lays this item out in: the hosting view the whole item's SwiftUI
+        /// tree is drawn into. Not this reader's own frame, and not its immediate superview's
+        /// either — both of those sit *inside* the item's content, so they answer "where did
+        /// SwiftUI put this content" rather than "where did the toolbar put the item".
+        ///
+        /// The two disagree for a pass or two after anything changes the content's width, because
+        /// the pass that re-lays the content out is not the pass that resizes the item: the content
+        /// is centred in the item's old, narrower frame, which puts the reader half the overflow to
+        /// the left. The inset is computed from this reading and *is* what widens the item, so a
+        /// short one is a loop, and it ends with the item too wide for the toolbar's sidebar region
+        /// — dropped out of the toolbar entirely, the navigator toggle and the workspace name both
+        /// gone with it, until something else forces a full relayout. The item's own box is the one
+        /// view in the chain that does not move for any of that.
+        ///
+        /// If there is no hosting view above this reader at all — which would mean SwiftUI stopped
+        /// wrapping its own representables — the outermost view found is the next best answer: it
+        /// can only read *short* of the item's edge, and short is the direction the inset's ceiling
+        /// absorbs.
+        private var itemBox: NSView {
+            var box: NSView = self
+            var view: NSView? = superview
+            while let current = view {
+                box = current
+                if String(describing: type(of: current)).hasPrefix("NSHostingView") { return current }
+                view = current.superview
+            }
+            return box
+        }
 
         init(report: @escaping (CGFloat, CGFloat?) -> Void) {
             self.report = report
@@ -3034,7 +3063,8 @@ private struct ToolbarItemLeadingReader: NSViewRepresentable {
 
         private func readLeadingEdge() {
             guard let window else { return }
-            let leading = convert(bounds, to: nil).minX
+            let box = itemBox
+            let leading = box.convert(box.bounds, to: nil).minX
             // The zoom button is the last of the three, so its trailing edge is where the buttons
             // end — when there are buttons on screen at all. Whether there are is not a question
             // this view can answer: in fullscreen all three stay unhidden at the frame they held
@@ -3094,6 +3124,15 @@ private struct NavigatorToggleToolbarView: View {
     /// forward, never pulled back past the leading edge it was given.
     private static let trafficLightsGap: CGFloat = 22
 
+    /// The most the item will pad itself, whatever a reading says. Every layout above asks for 8 or
+    /// so — the windowed item's leading edge sits 14pt past the buttons against a 22pt gap, and
+    /// fullscreen's flush one is 8.5pt short of the column's line — so this is that with room to
+    /// spare, and far short of what would push the item out of the sidebar's toolbar region at its
+    /// 240pt minimum. It exists because the cost of a wrong reading is not symmetric: a few points
+    /// of drift is a glyph a little off its line, while an item widened past its region is dropped
+    /// from the toolbar altogether, taking the navigator toggle and the workspace name with it.
+    private static let maximumLeadingInset: CGFloat = 16
+
     /// The item's own leading edge in window coordinates, and the trailing edge of the traffic
     /// lights — both read from AppKit rather than assumed. `nil` until the first layout pass has
     /// been through; the buttons' edge stays `nil` while they are hidden.
@@ -3109,7 +3148,7 @@ private struct NavigatorToggleToolbarView: View {
         // anyway is what pushed the toggle ~80pt into the column there, off every line below it.
         let buttonsEnd = store.windowIsFullScreen ? nil : trafficLightsEnd
         let target = buttonsEnd.map { $0 + Self.trafficLightsGap } ?? Self.columnLeading
-        return max(0, target - itemLeading)
+        return min(max(0, target - itemLeading), Self.maximumLeadingInset)
     }
 
     var body: some View {
@@ -3120,8 +3159,8 @@ private struct NavigatorToggleToolbarView: View {
             }
         }
         .padding(.leading, leadingInset)
-        // After the padding, so the reader sits on the edge the toolbar gave the item rather than
-        // on the one this view just moved.
+        // The reader measures the item's own box, so where this padding puts the content cannot
+        // move the edge it reads back.
         .background(alignment: .leading) {
             ToolbarItemLeadingReader { itemLeading = $0; trafficLightsEnd = $1 }
         }
