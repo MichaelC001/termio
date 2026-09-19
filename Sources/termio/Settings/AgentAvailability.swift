@@ -52,19 +52,6 @@ enum AgentAvailability {
         }
     }
 
-    /// Which of these commands resolve on this Mac, by agent id.
-    ///
-    /// Takes the map rather than reading it from settings, so a caller that is
-    /// already inside a task — the launch sync is one — never has to reach back
-    /// into an observable object to answer this.
-    static func presentIDs(in commands: [String: String]) async -> [String] {
-        var present: [String] = []
-        for (id, command) in commands where await isCommandAvailable(command) {
-            present.append(id)
-        }
-        return present.sorted()
-    }
-
     /// The binary a command line names: its first shell word, with quoting
     /// honoured.
     ///

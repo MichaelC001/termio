@@ -286,8 +286,21 @@ fn is_present(agent: &AgentDefinition, authored: &HashMap<String, String>) -> bo
     }
 }
 
+/// What one install did, and what this box had while it did it.
+pub struct InstallReport {
+    pub results: Vec<InstallResult>,
+    /// The agents judged present for **this** install, by id.
+    ///
+    /// Reported rather than left for the client to guess, because only this side
+    /// knows it. A client that probes separately is asking a different question
+    /// at a different moment: its probe can time out into "everything is here"
+    /// while the install that follows gets a real answer and skips half of them,
+    /// and the coverage recorded then claims agents that were never wired.
+    pub present: Vec<String>,
+}
+
 /// Apply `request` against this box's filesystem.
-pub fn run(request: &InstallRequest) -> Vec<InstallResult> {
+pub fn run(request: &InstallRequest) -> InstallReport {
     machine::forget_login_shell();
     let catalog = AgentCatalog::load();
     let mut results = Vec::new();
@@ -297,7 +310,16 @@ pub fn run(request: &InstallRequest) -> Vec<InstallResult> {
     if request.skills != HalfAction::Leave {
         results.extend(sync_skills(&catalog, request));
     }
-    results
+    // Taken from the same cached answer both halves just used, so the set
+    // reported is the set they wrote against.
+    let mut present: Vec<String> = catalog
+        .all
+        .iter()
+        .filter(|agent| is_present(agent, &request.commands))
+        .map(|agent| agent.id.clone())
+        .collect();
+    present.sort();
+    InstallReport { results, present }
 }
 
 fn selected<'a>(catalog: &'a AgentCatalog, request: &InstallRequest) -> Vec<&'a AgentDefinition> {

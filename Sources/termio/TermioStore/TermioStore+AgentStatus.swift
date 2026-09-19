@@ -97,8 +97,7 @@ extension TermioStore {
             // asked for, so there is nothing to claim this build did.
             guard outcome.failure == nil, outcome.failed.isEmpty, !outcome.isEmpty else { return }
             DeviceStateCache.stampIntegration(
-                AppInfo.buildStamp,
-                covering: await AgentAvailability.presentIDs(in: commands),
+                AppInfo.buildStamp, covering: outcome.coveredIDs,
                 for: KnownDevice.thisMac.settingsKey)
         }
     }

@@ -967,7 +967,7 @@ extension Termiod {
         reporter: Termiod.AgentHookReporter,
         hookVersion: String,
         commands: [String: String]
-    ) throws -> [Termiod.AgentInstallResult] {
+    ) throws -> Termiod.AgentsInstalledPayload {
         try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
             guard handshake.capabilities.contains(agentCapability) else {
                 throw TermiodClientError.requestFailed(
@@ -983,7 +983,7 @@ extension Termiod {
                 guard frame.kind == .control else { continue }
                 switch try decodeControl(frame.payload) {
                 case .agentsInstalled(let payload):
-                    return payload.results
+                    return payload
                 case .error(let payload):
                     throw TermiodClientError.requestFailed(payload.message)
                 default:

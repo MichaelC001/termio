@@ -385,54 +385,70 @@ fn probe_login_shell() -> HashMap<String, String> {
         }
     };
 
-    // Bound the whole thing, *reading included*. Waiting for the shell to exit
-    // is not enough: an rc that starts a background job (`sleep 7 &!`) hands the
-    // stdout pipe to a process that outlives the shell, and `read_to_string`
-    // then blocks on a writer nobody is waiting for — behind a `OnceLock`, so
-    // every later caller blocks with it. The read happens on its own thread and
-    // this waits on a channel instead.
-    let Some(mut stdout) = child.stdout.take() else {
+    // Bound the whole thing, *reading included*, without a thread to strand.
+    //
+    // Waiting for the shell to exit is not enough: an rc that starts a
+    // background job hands the stdout pipe to a process that outlives the shell,
+    // so a blocking read waits on a writer nobody will close. Reading it on a
+    // detached thread bounded the *wait* but not the thread — and once the cache
+    // became refreshable, every install leaked another one. The pipe is read
+    // non-blocking instead, so the deadline is the only thing that ends this and
+    // nothing is left behind.
+    let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
         return HashMap::new();
     };
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut output = String::new();
-        // Capped, because this thread can outlive the timeout: a disowned
-        // background process holding the write end keeps it readable, and an
-        // uncapped read grows the daemon's memory for as long as that process
-        // talks. The answer itself is four short lines.
-        //
-        // One byte past the cap, so hitting it is detectable. A banner long
-        // enough to push the boundary into the middle of `PATH` would otherwise
-        // hand back half a directory list as if it were the whole one — and it
-        // is cached, so the box keeps that answer.
-        let _ = stdout.take(PROBE_READ_LIMIT + 1).read_to_string(&mut output);
-        let _ = sender.send(output);
-    });
-    let output = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
-        Ok(output) if output.len() as u64 > PROBE_READ_LIMIT => {
-            let _ = child.kill();
-            let _ = child.wait();
-            crate::agent::manifest::log("the login shell answered with more output than the probe reads");
-            return HashMap::new();
-        }
-        Ok(output) => output,
-        Err(_) => {
-            // The reader thread stays parked on a pipe nothing will close. It is
-            // one thread, once per process, and killing the shell is what stops
-            // this from blocking an install.
-            let _ = child.kill();
-            let _ = child.wait();
-            crate::agent::manifest::log("the login shell did not answer in time");
-            return HashMap::new();
-        }
-    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let output = read_until(stdout, deadline);
     let _ = child.kill();
     let _ = child.wait();
+    let Some(output) = output else {
+        crate::agent::manifest::log("the login shell did not answer in time");
+        return HashMap::new();
+    };
     read_probe(&output, &names)
+}
+
+/// Reads a pipe to EOF, or until `deadline`, without blocking on it.
+///
+/// `None` when the deadline passed or the stream overflowed `PROBE_READ_LIMIT`:
+/// a banner long enough to push the cap into the middle of `PATH` would hand
+/// back half a directory list as if it were the whole one, and that gets cached.
+fn read_until(stdout: std::process::ChildStdout, deadline: std::time::Instant) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::io::AsRawFd;
+
+    let fd = stdout.as_raw_fd();
+    // Safety: `stdout` owns this descriptor for the whole call.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return None;
+        }
+    }
+    let mut stdout = stdout;
+    let mut collected: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stdout.read(&mut chunk) {
+            Ok(0) => return String::from_utf8(collected).ok(),
+            Ok(read) => {
+                collected.extend_from_slice(&chunk[..read]);
+                if collected.len() as u64 > PROBE_READ_LIMIT {
+                    return None;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Leads the probe's own output, so whatever an rc printed stays behind it.

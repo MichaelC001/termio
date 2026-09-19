@@ -241,7 +241,7 @@ struct AgentSettingsTab: View {
             commands: settings.authoredCommands())
         if outcome.failure == nil && outcome.failed.isEmpty {
             DeviceStateCache.stampIntegration(
-                AppInfo.buildStamp, covering: await settings.presentAgentIDs(),
+                AppInfo.buildStamp, covering: outcome.coveredIDs,
                 for: KnownDevice.thisMac.settingsKey)
         }
         return .summarizing(

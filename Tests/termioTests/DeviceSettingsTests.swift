@@ -211,6 +211,16 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertFalse(text?.contains("daemonAnswered") ?? true)
     }
 
+    func testAnOlderDaemonsSilenceLeavesCoverageAlone() {
+        // A daemon too old to report what it had sends nothing, and that means
+        // *unknown*. Writing "nothing is covered" would make every agent on the
+        // box read as newly arrived on the next check.
+        var machine = state(agents: ["claudeCode": "available"], covered: ["claudeCode"])
+        machine.recordCoverage(present: nil)
+        XCTAssertEqual(machine.integrationAgents, ["claudeCode"])
+        XCTAssertEqual(machine.agentsOutsideIntegration, [])
+    }
+
     func testCoverageIsEverythingTheMachineHadNotWhatWasWritten() {
         // Presence is the primitive. Three catalog agents ship no hook spec and
         // two share one skills directory, so an install's own rows undercount in

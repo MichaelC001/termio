@@ -81,7 +81,7 @@ enum AgentIntegrationInstaller {
         // named that half decides whether it is touched at all.
         let version = hookVersion
         do {
-            let results = try await Task.detached(priority: .userInitiated) {
+            let reply = try await Task.detached(priority: .userInitiated) {
                 try Termiod.installAgents(
                     route: target.route,
                     agents: nil,
@@ -91,7 +91,7 @@ enum AgentIntegrationInstaller {
                     hookVersion: version,
                     commands: commands)
             }.value
-            return InstallOutcome(results)
+            return InstallOutcome(reply)
         } catch {
             Log.termiod.error("""
                 agent integration install failed: \
@@ -124,8 +124,10 @@ extension InstallOutcome {
     /// name is recorded as failed if either refused, because a row that says
     /// "Claude Code" and means "its skill landed but its hooks did not" is worse
     /// than no row.
-    init(_ results: [Termiod.AgentInstallResult]) {
+    init(_ reply: Termiod.AgentsInstalledPayload) {
         self.init()
+        let results = reply.results
+        coveredIDs = reply.present.isEmpty ? nil : reply.present.sorted()
         var seen: [String: Bool] = [:]
         var order: [String] = []
         for result in results {

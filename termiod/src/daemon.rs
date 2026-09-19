@@ -2410,7 +2410,11 @@ async fn process_control(
                         tokio::task::spawn_blocking(move || crate::agent::install::run(&request))
                             .await;
                     let response = match installed {
-                        Ok(results) => Control::AgentsInstalled { results, re: seq },
+                        Ok(report) => Control::AgentsInstalled {
+                            results: report.results,
+                            present: report.present,
+                            re: seq,
+                        },
                         Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),
                     };
                     let _ = out.send(Outbound::Control(response));

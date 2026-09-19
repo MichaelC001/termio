@@ -616,7 +616,7 @@ private struct MachineAgentsPane: View {
             target: machine.integrationTarget,
             commands: Dictionary(commands.map { ($0.id, $0.command) }) { first, _ in first })
         if outcome.failure == nil && outcome.failed.isEmpty {
-            await model.stampIntegration(commands: commands)
+            model.stampIntegration(outcome)
         }
         return .summarizing(
             outcome, headline: localized("Reinstalled"), unit: localized("agents"))

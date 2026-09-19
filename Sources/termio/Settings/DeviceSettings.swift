@@ -191,11 +191,17 @@ struct DeviceDiscoveredState: Codable, Equatable {
     /// The probe covers the whole catalog rather than the user's list, so an
     /// agent that was here but unlisted is already covered on the day it is
     /// listed — it was wired all along.
-    /// `present` must come from a probe taken for *this* install. Recording the
-    /// cached set instead is how a successful reinstall stamped an agent set
-    /// that predated the agent it had just wired, so the next check reported it
-    /// as newly arrived.
-    mutating func recordCoverage(present: [String]) {
+    /// `present` is the machine's own answer, carried back by the install that
+    /// just ran (`InstallOutcome.coveredIDs`). A set taken from any other probe
+    /// is a different question asked at a different moment: the client's can
+    /// time out into "everything is here" while the install that follows gets a
+    /// real answer and skips half of them, and the coverage recorded then claims
+    /// agents that were never wired.
+    ///
+    /// `nil` — a daemon too old to report it — leaves the record alone rather
+    /// than writing "nothing is covered".
+    mutating func recordCoverage(present: [String]?) {
+        guard let present else { return }
         integrationAgents = present.sorted()
     }
 
@@ -274,7 +280,7 @@ enum DeviceStateCache {
     /// Records an install against a present set its caller just took. This is
     /// the this-Mac path, where a probe is one cached `PATH` lookup away, so
     /// there is no excuse for stamping a set the machine may have outgrown.
-    static func stampIntegration(_ version: String?, covering present: [String], for key: String) {
+    static func stampIntegration(_ version: String?, covering present: [String]?, for key: String) {
         var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.integrationVersion = version
         if version == nil {

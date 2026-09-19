@@ -722,15 +722,6 @@ final class AppSettings: ObservableObject {
         return commands
     }
 
-    /// Which catalog agents are on **this Mac** right now, by id.
-    ///
-    /// The local twin of a device's probe, and for the same reason: coverage may
-    /// only ever be recorded beside a fresh answer. Cheap — `isCommandAvailable`
-    /// shares one cached login-shell `PATH` across the catalog.
-    func presentAgentIDs() async -> [String] {
-        await AgentAvailability.presentIDs(in: authoredCommands())
-    }
-
     /// The arguments the user authored for this agent, or `nil` when they never
     /// set any — the same empty-means-unset rule the command path follows, which
     /// is what keeps a cleared field out of `settings.json`.

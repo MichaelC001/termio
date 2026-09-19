@@ -430,7 +430,7 @@ final class DevicePaneModel: ObservableObject {
             return
         }
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage(present: state.availableAgents)
+        state.recordCoverage(present: outcome.coveredIDs)
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
@@ -496,30 +496,22 @@ final class DevicePaneModel: ObservableObject {
     /// this runs after a *successful* install — the agent the user installed five
     /// minutes ago is exactly the one that just got its hooks, and stamping the
     /// older set would report it as newly arrived on the next check.
-    /// `commands` is the map the install that just succeeded was given. Probing
-    /// with the *current* one instead lets an edit made while the install was in
-    /// flight decide coverage: correct a path in Settings mid-reinstall and the
-    /// agent the daemon skipped gets recorded as covered, so nothing ever asks
-    /// for the setup that would actually wire it.
-    func stampIntegration(commands: [(id: String, command: String)]) async {
-        var state = await DeviceProbe.inspect(device: device, commands: commands)
-        // Only a probe that actually got an answer may record coverage. A machine
-        // that dropped off between the install and this probe reports no agents,
-        // and recording *that* would make every agent on it read as newly
-        // arrived once it came back.
-        guard state.reachable, state.daemonAnswered else {
-            // Nor may the version be stamped. Stamping it while coverage stays
-            // unknown claims the machine is current *and* disables the only
-            // thing that would notice otherwise — `nil` coverage reads as
-            // "covered everything". The install did happen and is idempotent;
-            // the next successful probe records it properly, and until then the
-            // pane says what is actually wrong.
-            state.carryIntegration(from: discovered)
-            apply(state)
-            return
-        }
+    /// Records a successful install, covering what that machine reported having
+    /// while it ran.
+    ///
+    /// No probe of its own any more. One was a second question asked at a second
+    /// moment — it could time out into "everything is here", or read a command
+    /// the user edited while the install was in flight, and either way the
+    /// coverage written claimed agents the daemon had skipped. The machine's own
+    /// answer travels back with the install.
+    func stampIntegration(_ outcome: InstallOutcome) {
+        var state = discovered ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
+        state.checkedAt = Date()
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage(present: state.availableAgents)
+        state.recordCoverage(present: outcome.coveredIDs)
+        // The install round-tripped through that machine's daemon, which is
+        // proof it answers.
+        state.daemonAnswered = true
         apply(state)
     }
 

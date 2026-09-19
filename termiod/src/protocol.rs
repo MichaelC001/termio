@@ -1224,6 +1224,11 @@ pub enum Control {
     /// have.
     AgentsInstalled {
         results: Vec<crate::agent::install::InstallResult>,
+        /// The agents this box had while it installed, by id. Absent from an
+        /// older daemon, which is why the client treats it as "unknown" rather
+        /// than as "none".
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        present: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
