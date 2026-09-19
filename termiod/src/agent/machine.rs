@@ -232,21 +232,26 @@ pub fn login_path() -> Vec<String> {
 /// "not installed" — the don't-cry-wolf rule the app follows locally, and the
 /// one that stops a broken environment from quietly uninstalling everything.
 pub fn is_command_installed(command: &str) -> bool {
-    // The don't-cry-wolf rule, stated where it actually holds. It used to rest
-    // on `login_path()` coming back empty, which it never does when the daemon
-    // inherited *some* `PATH` — so an rc that timed out left the inherited
-    // directories answering for the whole box, and every agent outside them read
-    // as missing rather than as unknown. Cached for the process, too, so one slow
-    // rc silently stripped hooks for as long as the daemon lived.
-    if probe().is_empty() {
-        return true;
-    }
     let Some(binary) = first_word(command).filter(|b| !b.is_empty()) else {
         return true;
     };
     let binary = binary.as_str();
+    // A path answers for itself. Whether the login shell could be asked has no
+    // bearing on whether a named file exists, and letting the probe's failure
+    // speak here reported an absent agent as present — and then installed its
+    // integration, while the app correctly showed it missing.
     if binary.starts_with('/') || binary.starts_with('~') {
         return is_executable(&expand(binary));
+    }
+    // Only a `PATH` search needs the probe, and this is the don't-cry-wolf rule
+    // stated where it holds. It used to rest on `login_path()` coming back
+    // empty, which it never does when the daemon inherited *some* `PATH` — so an
+    // rc that timed out left the inherited directories answering for the whole
+    // box, and every agent outside them read as missing rather than as unknown.
+    // Cached for the process, too, so one slow rc silently stripped hooks for as
+    // long as the daemon lived.
+    if probe().is_empty() {
+        return true;
     }
     let directories = login_path();
     if directories.is_empty() {
@@ -369,7 +374,11 @@ fn probe_login_shell() -> HashMap<String, String> {
     std::thread::spawn(move || {
         use std::io::Read;
         let mut output = String::new();
-        let _ = stdout.read_to_string(&mut output);
+        // Capped, because this thread can outlive the timeout: a disowned
+        // background process holding the write end keeps it readable, and an
+        // uncapped read grows the daemon's memory for as long as that process
+        // talks. The answer itself is four short lines.
+        let _ = stdout.take(64 * 1024).read_to_string(&mut output);
         let _ = sender.send(output);
     });
     let output = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
@@ -493,6 +502,8 @@ mod tests {
         // No marker at all is "we could not look", not "nothing is installed".
         assert!(read_probe("Welcome!\n/nonsense", &names).is_empty());
         assert!(is_command_installed("/bin/sh"));
+        // A path answers for itself even when the shell could not be asked.
+        assert!(!is_command_installed("/nonexistent/agent-cli"));
         // A path typed by hand is exactly where spaces turn up, and splitting on
         // a bare space answers "not installed" for a CLI sitting right there.
         // These cases are pinned identically in the app
