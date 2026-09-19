@@ -203,7 +203,7 @@ extension Termiod {
 /// Everything else — a text clipboard, an image at a local session, a
 /// non-terminal responder — falls straight through untouched.
 @MainActor
-final class TermiodImagePaste: NSObject {
+final class TermiodPasteInterceptor: NSObject {
     private weak var store: TermioStore?
     // Held for the app's lifetime; never removed.
     private var monitor: Any?
