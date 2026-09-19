@@ -25,7 +25,7 @@ final class TerminalContextMenu: NSObject {
     /// The ⌘V interceptor, so the menu's Paste answers file-path and
     /// image-at-a-remote-session the same way the key does instead of
     /// restating the rule.
-    private weak var imagePaste: TermiodImagePaste?
+    private weak var pasteInterceptor: TermiodPasteInterceptor?
     // Held for the app's lifetime; never removed.
     private var monitor: Any?
     /// The surface the open menu acts on, resolved at click time.
@@ -35,9 +35,9 @@ final class TerminalContextMenu: NSObject {
     /// when the menu opens so the actions don't chase a moved mouse.
     private var clickedLinkURL: URL?
 
-    init(store: TermioStore, imagePaste: TermiodImagePaste?) {
+    init(store: TermioStore, pasteInterceptor: TermiodPasteInterceptor?) {
         self.store = store
-        self.imagePaste = imagePaste
+        self.pasteInterceptor = pasteInterceptor
         super.init()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
             // Local event monitors are always called on the main thread; the
@@ -203,7 +203,7 @@ final class TerminalContextMenu: NSObject {
     /// through ghostty's `paste_from_clipboard` binding so bracketed paste is
     /// preserved.
     @objc private func paste() {
-        if imagePaste?.pasteFromMenu(sessionID: clickedSessionID) == true { return }
+        if pasteInterceptor?.pasteFromMenu(sessionID: clickedSessionID) == true { return }
         clickedView?.perform(NSSelectorFromString("paste:"), with: nil)
     }
 

@@ -126,6 +126,43 @@ final class ClipboardTransferTests: XCTestCase {
             "'/Users/example/Desktop/example image.png' ")
     }
 
+    /// The shape Finder actually writes, captured from a real ⌘C: the file URL
+    /// alongside `NSFilenamesPboardType`, an `.icns` icon, a TIFF twin, and the
+    /// basename as text. Every one of those is a way to get this wrong — the
+    /// string flavor is the reported bug, and the icon is an image the transfer
+    /// plane must not mistake for a screenshot to upload.
+    func testTheShapeFinderActuallyWritesYieldsThePath() {
+        let path = "/Users/example/Desktop/example image.png"
+        writeFiles([path], filenameText: true)
+        pasteboard.setData(imageData(.tiff), forType: .tiff)
+        pasteboard.setData(
+            imageData(.tiff), forType: NSPasteboard.PasteboardType("com.apple.icns"))
+        pasteboard.setString(
+            (path as NSString).lastPathComponent,
+            forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/Desktop/example image.png' ")
+        XCTAssertNil(
+            ClipboardImage.current(pasteboard),
+            "the icon is not a screenshot: a basename on the pasteboard rules the image out")
+    }
+
+    /// Finder concatenates basenames with no separator on a multi-select, so the
+    /// old behavior produced `example image.pngit's fine.txt` — one unusable
+    /// token. Each file has to come back as its own quoted argument.
+    func testAMultiSelectYieldsOneQuotedArgumentEach() {
+        writeFiles([
+            "/Users/example/Desktop/example image.png",
+            "/Users/example/Desktop/it's fine.txt",
+        ], filenameText: true)
+
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/Desktop/example image.png' '/Users/example/Desktop/it'\\''s fine.txt' ")
+    }
+
     func testAnEmptyPasteboardIsNotAFilePaste() {
         XCTAssertNil(ClipboardFilePaths.current(pasteboard))
     }
@@ -137,7 +174,10 @@ final class ClipboardTransferTests: XCTestCase {
     }
 
     func testANonFileURLIsNotAFilePaste() {
-        XCTAssertTrue(pasteboard.writeObjects([URL(string: "https://example.com")! as NSURL]))
+        guard let url = URL(string: "https://example.com") else {
+            return XCTFail("could not build the https URL")
+        }
+        XCTAssertTrue(pasteboard.writeObjects([url as NSURL]))
         XCTAssertNil(ClipboardFilePaths.current(pasteboard))
     }
 
