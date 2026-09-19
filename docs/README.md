@@ -52,6 +52,7 @@ from the real front matter).
 | active | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
 | active | rfc | [Agent integration moves into termiod](design/20260825-agent-integration-moves-to-termiod.md) |
 | active | rfc | [One path — local sessions run through termiod too](design/20260817-one-path-local-through-termiod.md) |
+| active | rfc | [One place decides what paste means](design/20260919-one-place-decides-what-paste-means.md) |
 | active | rfc | [PTY size is not the write token](design/20260901-pty-size-is-not-the-write-token.md) |
 | active | rfc | [Push-to-talk voice dictation — hold the space bar (iOS shipped, OpenAI)](design/20260704-push-to-talk-voice-dictation.md) |
 | active | rfc | [Unify the server plane in Rust, reduce the Mac app to a viewer](design/20260819-unify-server-plane.md) |
@@ -135,7 +136,6 @@ from the real front matter).
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
 | draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
-| draft | rfc | [One place decides what paste means](design/20260919-one-place-decides-what-paste-means.md) |
 | draft | rfc | [Retire the companion's second protocol — the phone attaches to a device](design/20260831-companion-second-protocol-retires.md) |
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Superlogical's server memory model: three levels of parking](design/20260902-superlogical-server-memory-parking.md) |
