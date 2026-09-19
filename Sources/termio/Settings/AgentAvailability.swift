@@ -84,13 +84,15 @@ enum AgentAvailability {
         var escaped = false
         for scalar in command.unicodeScalars.drop(while: { $0.properties.isWhitespace }) {
             if escaped {
+                escaped = false
+                // A line continuation: the shell removes both.
+                if scalar == "\n" { continue }
                 // Inside double quotes a backslash is special only before these.
                 // `"/opt/a\tools/cli"` names a path that keeps its backslash.
                 if quote == "\"", !"$`\"\\\n".unicodeScalars.contains(scalar) {
                     word.append("\\")
                 }
                 word.append(scalar)
-                escaped = false
             } else if scalar == "\\", quote != "'" {
                 // Never inside single quotes, where the shell keeps a backslash
                 // literally — `'/opt/agent\tools/cli'` names a path that has one.
@@ -116,7 +118,12 @@ enum AgentAvailability {
         let names = ["XDG_CONFIG_HOME", "XDG_DATA_HOME"]
         // `${VAR-}` rather than `$VAR`, so an unset variable is an empty field and
         // the fields stay positional under `set -u`.
-        let fields = (["$PATH"] + names.map { "${\($0)-}" })
+        // Led by a marker, because the fields are only positional *relative to
+        // it*. `-i` runs the user's `.zshrc`, and rc files print things — a
+        // banner, a version notice. Counting from line zero would read that as
+        // `PATH`, and a plausible-looking wrong `PATH` is the worst answer
+        // available: every agent reads as missing, everywhere.
+        let fields = ([probeMarker, "$PATH"] + names.map { "${\($0)-}" })
             .map { "\"\($0)\"" }
             .joined(separator: " ")
         let process = Process()
@@ -133,14 +140,24 @@ enum AgentAvailability {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         let lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
-        guard let path = lines.first else { return ([], [:]) }
+        // No marker means the shell talked over the question, or never reached
+        // the `printf`. Answering with nothing is right: an empty `PATH` makes
+        // `isCommandAvailable` say "true" rather than reporting every agent on
+        // this Mac as missing.
+        guard let start = lines.lastIndex(of: probeMarker) else { return ([], [:]) }
+        let path = lines.indices.contains(start + 1) ? lines[start + 1] : ""
         var environment: [String: String] = [:]
         for (index, name) in names.enumerated() {
-            let value = index + 1 < lines.count ? lines[index + 1] : ""
+            let line = start + 2 + index
+            let value = lines.indices.contains(line) ? lines[line] : ""
             if !value.isEmpty { environment[name] = value }
         }
         return (path.split(separator: ":").map(String.init), environment)
     }
+
+    /// Leads the probe's own output, so whatever an rc printed stays behind it.
+    /// `termiod` uses the same literal for the same reason.
+    private static let probeMarker = "__termio_probe__"
 
     /// A login-shell environment value, for the variables a Finder launch drops.
     /// Non-blocking: the process environment until the probe lands, which only

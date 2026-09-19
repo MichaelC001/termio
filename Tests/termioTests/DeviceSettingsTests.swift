@@ -235,6 +235,25 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertTrue(machine.carriesCurrentIntegration)
     }
 
+    func testAStampWithoutKnownCoverageWouldDisableDetection() {
+        // `nil` coverage reads as "covered everything", so stamping the version
+        // beside it claims the machine is current *and* switches off the only
+        // thing that would notice otherwise. The two must move together.
+        let claimed = DeviceDiscoveredState(
+            checkedAt: Date(), reachable: true,
+            agents: ["claudeCode": "available", "codex": "available"],
+            integrationVersion: AppInfo.buildStamp, integrationAgents: nil)
+        XCTAssertTrue(claimed.carriesCurrentIntegration)
+        XCTAssertEqual(claimed.agentsOutsideIntegration, [])
+
+        // Which is why `stampIntegration` leaves the version alone when it could
+        // not take a present set: unstamped reads as "set up this host", and the
+        // next good probe records both.
+        var unconfirmed = claimed
+        unconfirmed.carryIntegration(from: nil)
+        XCTAssertFalse(unconfirmed.carriesCurrentIntegration)
+    }
+
     func testTheCoveredListSurvivesTheRoundTripToJSON() {
         let machine = state(agents: ["claudeCode": "available"], covered: ["claudeCode"])
         let data = try? JSONEncoder().encode(machine)

@@ -494,21 +494,23 @@ final class DevicePaneModel: ObservableObject {
     /// older set would report it as newly arrived on the next check.
     func stampIntegration() async {
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
-        state.integrationVersion = AppInfo.buildStamp
-        // Only a probe that actually got an answer may set coverage. A machine
+        // Only a probe that actually got an answer may record coverage. A machine
         // that dropped off between the install and this probe reports no agents,
         // and recording *that* would make every agent on it read as newly
-        // arrived once it came back. The previous record is carried instead —
-        // the install did happen, and the reachability problem is reported on
-        // its own by `resolve`.
-        if state.reachable, state.daemonAnswered {
-            state.recordCoverage(present: state.availableAgents)
-            // The install round-tripped through that machine's daemon, which is
-            // proof it answers.
-            state.daemonAnswered = true
-        } else {
-            state.integrationAgents = discovered?.integrationAgents
+        // arrived once it came back.
+        guard state.reachable, state.daemonAnswered else {
+            // Nor may the version be stamped. Stamping it while coverage stays
+            // unknown claims the machine is current *and* disables the only
+            // thing that would notice otherwise — `nil` coverage reads as
+            // "covered everything". The install did happen and is idempotent;
+            // the next successful probe records it properly, and until then the
+            // pane says what is actually wrong.
+            state.carryIntegration(from: discovered)
+            apply(state)
+            return
         }
+        state.integrationVersion = AppInfo.buildStamp
+        state.recordCoverage(present: state.availableAgents)
         apply(state)
     }
 

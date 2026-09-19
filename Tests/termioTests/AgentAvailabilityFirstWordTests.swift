@@ -37,6 +37,13 @@ final class AgentAvailabilityFirstWordTests: XCTestCase {
         XCTAssertEqual(word("/opt/a\\tools/cli"), "/opt/atools/cli")
     }
 
+    func testALineContinuationDisappears() {
+        // Backslash-newline is removed by the shell, quoted or not; keeping the
+        // newline names a file that cannot exist.
+        XCTAssertEqual(word("/usr/bin/tru\\\ne"), "/usr/bin/true")
+        XCTAssertEqual(word("\"/usr/bin/tru\\\ne\""), "/usr/bin/true")
+    }
+
     func testAnUnterminatedQuoteTakesTheRestOfTheLine() {
         XCTAssertEqual(word("'/opt/a b"), "/opt/a b")
     }

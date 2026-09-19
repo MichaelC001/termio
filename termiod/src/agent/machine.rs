@@ -232,6 +232,15 @@ pub fn login_path() -> Vec<String> {
 /// "not installed" — the don't-cry-wolf rule the app follows locally, and the
 /// one that stops a broken environment from quietly uninstalling everything.
 pub fn is_command_installed(command: &str) -> bool {
+    // The don't-cry-wolf rule, stated where it actually holds. It used to rest
+    // on `login_path()` coming back empty, which it never does when the daemon
+    // inherited *some* `PATH` — so an rc that timed out left the inherited
+    // directories answering for the whole box, and every agent outside them read
+    // as missing rather than as unknown. Cached for the process, too, so one slow
+    // rc silently stripped hooks for as long as the daemon lived.
+    if probe().is_empty() {
+        return true;
+    }
     let Some(binary) = first_word(command).filter(|b| !b.is_empty()) else {
         return true;
     };
@@ -266,6 +275,8 @@ pub fn first_word(command: &str) -> Option<String> {
             // literally — `'/opt/agent\tools/cli'` names a path that really has
             // one, and eating it looks for a file that does not exist.
             '\\' if quote != Some('\'') => match chars.next() {
+                // A line continuation: the shell removes both.
+                Some('\n') => {}
                 // Inside double quotes a backslash is special only before these.
                 // `"/opt/a\tools/cli"` names a path that keeps its backslash.
                 Some(next) if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') => {
@@ -307,8 +318,14 @@ fn probe_login_shell() -> HashMap<String, String> {
     let names = ["PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME"];
     // `${VAR-}` rather than `$VAR`, so an unset variable is an empty line and
     // the lines stay positional under `set -u`.
+    //
+    // Led by a marker, because the lines are only positional *relative to it*.
+    // An interactive shell runs the user's `.zshrc`, and rc files print things —
+    // a banner, a version notice, a fortune. Counting from line zero would read
+    // that as `PATH`, and a plausible-looking wrong `PATH` is the worst possible
+    // answer: every agent reads as missing and every hook is skipped, silently.
     let script = format!(
-        "printf '%s\\n' {}",
+        "printf '%s\\n' {PROBE_MARKER} {}",
         names
             .iter()
             .map(|name| format!("\"${{{name}-}}\""))
@@ -337,34 +354,60 @@ fn probe_login_shell() -> HashMap<String, String> {
         }
     };
 
-    // Bound the probe. `wait_timeout` is not in std, so poll `try_wait` — the
-    // shell either answers in well under a second or it is an rc that hangs,
-    // and either way the install must not stop here.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                crate::agent::manifest::log("the login shell did not answer in time");
-                return HashMap::new();
-            }
-            Err(_) => return HashMap::new(),
-        }
-    }
-
-    let mut output = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
+    // Bound the whole thing, *reading included*. Waiting for the shell to exit
+    // is not enough: an rc that starts a background job (`sleep 7 &!`) hands the
+    // stdout pipe to a process that outlives the shell, and `read_to_string`
+    // then blocks on a writer nobody is waiting for — behind a `OnceLock`, so
+    // every later caller blocks with it. The read happens on its own thread and
+    // this waits on a channel instead.
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return HashMap::new();
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         use std::io::Read;
+        let mut output = String::new();
         let _ = stdout.read_to_string(&mut output);
-    }
+        let _ = sender.send(output);
+    });
+    let output = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(output) => output,
+        Err(_) => {
+            // The reader thread stays parked on a pipe nothing will close. It is
+            // one thread, once per process, and killing the shell is what stops
+            // this from blocking an install.
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::agent::manifest::log("the login shell did not answer in time");
+            return HashMap::new();
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    read_probe(&output, &names)
+}
+
+/// Leads the probe's own output, so whatever an rc printed stays behind it.
+const PROBE_MARKER: &str = "__termio_probe__";
+
+/// The values the probe printed, taken from after the **last** marker.
+///
+/// No marker means the shell never reached the `printf` — an rc that exec'd
+/// away, or output we cannot trust. Answering with nothing is right: an empty
+/// map makes `is_command_installed` say "true", which installs for everything
+/// rather than silently skipping every agent on a box whose shell talked over
+/// the question.
+fn read_probe(output: &str, names: &[&str]) -> HashMap<String, String> {
+    let lines: Vec<&str> = output.lines().collect();
+    let Some(start) = lines.iter().rposition(|line| *line == PROBE_MARKER) else {
+        crate::agent::manifest::log("the login shell answered without the probe marker");
+        return HashMap::new();
+    };
     let mut resolved = HashMap::new();
     for (index, name) in names.iter().enumerate() {
-        if let Some(value) = output.lines().nth(index) {
+        if let Some(value) = lines.get(start + 1 + index) {
             if !value.is_empty() {
                 resolved.insert(name.to_string(), value.to_string());
             }
@@ -440,6 +483,15 @@ mod tests {
 
     #[test]
     fn an_absent_binary_is_not_installed_and_a_present_one_is() {
+        // An rc that prints a banner must not be read as the answer.
+        let names = ["PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME"];
+        let chatty = format!("Welcome!\nnode v20 is available\n{PROBE_MARKER}\n/usr/bin\n\n/data");
+        let read = read_probe(&chatty, &names);
+        assert_eq!(read.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert_eq!(read.get("XDG_CONFIG_HOME"), None);
+        assert_eq!(read.get("XDG_DATA_HOME").map(String::as_str), Some("/data"));
+        // No marker at all is "we could not look", not "nothing is installed".
+        assert!(read_probe("Welcome!\n/nonsense", &names).is_empty());
         assert!(is_command_installed("/bin/sh"));
         // A path typed by hand is exactly where spaces turn up, and splitting on
         // a bare space answers "not installed" for a CLI sitting right there.
@@ -456,6 +508,9 @@ mod tests {
         assert_eq!(first_word("\"/opt/a\\tools/cli\"").as_deref(), Some("/opt/a\\tools/cli"));
         assert_eq!(first_word("\"/opt/a\\\"b/cli\"").as_deref(), Some("/opt/a\"b/cli"));
         assert_eq!(first_word("/opt/a\\tools/cli").as_deref(), Some("/opt/atools/cli"));
+        // A line continuation is removed, quoted or not.
+        assert_eq!(first_word("/usr/bin/tru\\\ne").as_deref(), Some("/usr/bin/true"));
+        assert_eq!(first_word("\"/usr/bin/tru\\\ne\"").as_deref(), Some("/usr/bin/true"));
         // An unterminated quote takes the rest of the line rather than nothing.
         assert_eq!(first_word("'/opt/a b").as_deref(), Some("/opt/a b"));
         // A combining mark right after the closing quote belongs to the word.
