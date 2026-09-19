@@ -211,32 +211,26 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertFalse(text?.contains("daemonAnswered") ?? true)
     }
 
-    func testCoverageComesFromTheMachineNotFromWhatIsListed() {
-        // The client probes only the agents on the user's list; the daemon
-        // installs against its whole catalog. Recording the probe would call
-        // Codex "newly arrived" the day it is listed, though it was wired all
-        // along — the false alarm §D4 exists to stop.
-        var outcome = InstallOutcome()
-        outcome.covered(["claudeCode", "codex"])
-        var machine = state(agents: ["claudeCode": "available"], covered: nil)
-        machine.recordCoverage(of: outcome, available: machine.availableAgents, wanted: true)
-        XCTAssertEqual(machine.integrationAgents, ["claudeCode", "codex"])
-
-        // Codex becomes listed and the probe now sees it: already covered.
-        var listed = state(
-            agents: ["claudeCode": "available", "codex": "available"],
-            covered: machine.integrationAgents)
-        listed.daemonAnswered = true
-        XCTAssertEqual(listed.agentsOutsideIntegration, [])
-        XCTAssertTrue(listed.carriesCurrentIntegration)
+    func testCoverageIsEverythingTheMachineHadNotWhatWasWritten() {
+        // Presence is the primitive. Three catalog agents ship no hook spec and
+        // two share one skills directory, so an install's own rows undercount in
+        // ways that say nothing about an agent being here — and an agent outside
+        // its own coverage asks the user to set the machine up again forever.
+        var machine = state(
+            agents: ["claudeCode": "available", "crush": "available", "codex": "missing"],
+            covered: nil)
+        machine.recordCoverage()
+        XCTAssertEqual(machine.integrationAgents, ["claudeCode", "crush"])
+        XCTAssertEqual(machine.agentsOutsideIntegration, [])
+        XCTAssertTrue(machine.carriesCurrentIntegration)
     }
 
-    func testWithBothSwitchesOffNothingIsEverWaiting() {
-        // Nothing was installed anywhere, so no agent is waiting for hooks it
-        // was never going to get. Recording an empty outcome would ask the user
-        // to set the machine up again forever.
-        var machine = state(agents: ["claudeCode": "available"], covered: nil)
-        machine.recordCoverage(of: InstallOutcome(), available: machine.availableAgents, wanted: false)
+    func testAnAgentThatWasHereButUnlistedIsAlreadyCovered() {
+        // The probe spans the catalog, not the user's list, so listing Codex
+        // later must not report it as newly arrived — it was wired all along.
+        var machine = state(
+            agents: ["claudeCode": "available", "codex": "available"], covered: nil)
+        machine.recordCoverage()
         XCTAssertEqual(machine.agentsOutsideIntegration, [])
         XCTAssertTrue(machine.carriesCurrentIntegration)
     }

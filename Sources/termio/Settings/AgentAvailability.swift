@@ -40,9 +40,7 @@ enum AgentAvailability {
     /// absolute/`~` path is checked directly; an empty command (the plain login shell)
     /// is always "available".
     static func isCommandAvailable(_ command: String) async -> Bool {
-        let trimmed = command.trimmingCharacters(in: .whitespaces)
-        guard let binary = trimmed.split(separator: " ").first.map(String.init), !binary.isEmpty
-        else { return true }
+        guard let binary = firstWord(command), !binary.isEmpty else { return true }
         if binary.hasPrefix("/") || binary.hasPrefix("~") {
             return FileManager.default.isExecutableFile(atPath: (binary as NSString).expandingTildeInPath)
         }
@@ -52,6 +50,38 @@ enum AgentAvailability {
         return directories.contains {
             FileManager.default.isExecutableFile(atPath: $0 + "/" + binary)
         }
+    }
+
+    /// The binary a command line names: its first shell word, with quoting
+    /// honoured.
+    ///
+    /// Splitting on a bare space is wrong for the case that most needs a path
+    /// typed by hand — `"/Users/me/Agent Tools/codex"` — where it yields
+    /// `"/Users/me/Agent` and answers "not installed" for a CLI sitting right
+    /// there. `termiod`'s `machine::first_word` resolves the same string the
+    /// same way; the two must agree, or this side reports an agent available and
+    /// that side refuses to write its config.
+    static func firstWord(_ command: String) -> String? {
+        var word = ""
+        var quote: Character?
+        var escaped = false
+        for character in command.drop(while: \.isWhitespace) {
+            if escaped {
+                word.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == quote {
+                quote = nil
+            } else if quote == nil, character == "'" || character == "\"" {
+                quote = character
+            } else if quote == nil, character.isWhitespace {
+                break
+            } else {
+                word.append(character)
+            }
+        }
+        return word.isEmpty ? nil : word
     }
 
     /// One login-shell spawn answers for everything a GUI-launched app cannot see

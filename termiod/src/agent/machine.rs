@@ -232,10 +232,10 @@ pub fn login_path() -> Vec<String> {
 /// "not installed" — the don't-cry-wolf rule the app follows locally, and the
 /// one that stops a broken environment from quietly uninstalling everything.
 pub fn is_command_installed(command: &str) -> bool {
-    let trimmed = command.trim();
-    let Some(binary) = trimmed.split(' ').next().filter(|b| !b.is_empty()) else {
+    let Some(binary) = first_word(command).filter(|b| !b.is_empty()) else {
         return true;
     };
+    let binary = binary.as_str();
     if binary.starts_with('/') || binary.starts_with('~') {
         return is_executable(&expand(binary));
     }
@@ -246,6 +246,37 @@ pub fn is_command_installed(command: &str) -> bool {
     directories
         .iter()
         .any(|directory| is_executable(&Path::new(directory).join(binary)))
+}
+
+/// The binary a command line names: its first shell word, with quoting honoured.
+///
+/// A bare `split(' ')` is wrong for the one case that most needs a path typed by
+/// hand — `"/Users/me/Agent Tools/codex"` — where it yields `"/Users/me/Agent`
+/// and answers "not installed" for a CLI sitting right there. The app resolves
+/// the same string the same way (`AgentAvailability.firstWord`); the two must
+/// agree, or one side reports an agent available and the other refuses to write
+/// its config.
+pub fn first_word(command: &str) -> Option<String> {
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.trim_start().chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            '\'' | '"' => match quote {
+                Some(open) if open == c => quote = None,
+                Some(_) => word.push(c),
+                None => quote = Some(c),
+            },
+            c if c.is_whitespace() && quote.is_none() => break,
+            c => word.push(c),
+        }
+    }
+    (!word.is_empty()).then_some(word)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -394,6 +425,13 @@ mod tests {
     #[test]
     fn an_absent_binary_is_not_installed_and_a_present_one_is() {
         assert!(is_command_installed("/bin/sh"));
+        // A path typed by hand is exactly where spaces turn up, and splitting on
+        // a bare space answers "not installed" for a CLI sitting right there.
+        assert_eq!(first_word("\"/Agent Tools/codex\" --flag").as_deref(), Some("/Agent Tools/codex"));
+        assert_eq!(first_word("'/Agent Tools/codex'").as_deref(), Some("/Agent Tools/codex"));
+        assert_eq!(first_word("/Agent\\ Tools/codex x").as_deref(), Some("/Agent Tools/codex"));
+        assert_eq!(first_word("  claude --dangerously").as_deref(), Some("claude"));
+        assert_eq!(first_word("   "), None);
         assert!(!is_command_installed("/nonexistent/agent-cli"));
         // The empty command is the plain login shell, which is always available.
         assert!(is_command_installed(""));

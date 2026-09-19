@@ -136,7 +136,13 @@ struct DevicePane: View {
         .task {
             // Asked when the pane opens, not when the roster draws: one machine,
             // because someone is looking at it.
-            guard case .unasked = model.readiness, model.discovered == nil else { return }
+            //
+            // Asked *every* time it opens, cache or no cache. The file seeds the
+            // first frame so the pane is never blank, but it cannot report a
+            // machine whose daemon has stopped answering since it was written —
+            // it would read Ready beside a box that cannot run anything, and the
+            // only button offered would be Check Again. The cache draws; the
+            // probe decides.
             await model.check()
         }
     }
@@ -607,7 +613,7 @@ private struct MachineAgentsPane: View {
             target: machine.integrationTarget,
             commands: model.authoredCommands)
         if outcome.failure == nil && outcome.failed.isEmpty {
-            model.stampIntegration(outcome)
+            model.stampIntegration()
         }
         return .summarizing(
             outcome, headline: localized("Reinstalled"), unit: localized("agents"))

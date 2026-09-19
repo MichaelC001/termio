@@ -241,9 +241,7 @@ struct AgentSettingsTab: View {
             commands: settings.authoredCommands())
         if outcome.failure == nil && outcome.failed.isEmpty {
             DeviceStateCache.stampIntegration(
-                AppInfo.buildStamp, covering: outcome,
-                wanted: settings.agentHooksEnabled || settings.sessionControlEnabled,
-                for: KnownDevice.thisMac.settingsKey)
+                AppInfo.buildStamp, for: KnownDevice.thisMac.settingsKey)
         }
         return .summarizing(
             outcome, headline: localized("Installed"), unit: localized("agents"))

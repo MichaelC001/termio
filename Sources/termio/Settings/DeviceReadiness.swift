@@ -320,8 +320,15 @@ final class DevicePaneModel: ObservableObject {
         settings.orderedAgents(AgentPreset.codingAgents.filter(settings.isAgentListed))
     }
 
+    /// Every agent in the catalog with what it launches with here — not just the
+    /// ones on the user's list.
+    ///
+    /// Coverage is a fact about the machine, and the daemon installs against its
+    /// own whole catalog. Asking only about listed agents made an agent that was
+    /// here all along read as newly arrived the day it was listed. It is still
+    /// one round trip either way.
     private var commandPairs: [(id: String, command: String)] {
-        listedAgents.map { ($0.rawValue, settings.command(for: $0, on: device) ?? "") }
+        AgentPreset.codingAgents.map { ($0.rawValue, settings.command(for: $0, on: device) ?? "") }
     }
 
     func readiness(for agent: AgentPreset) -> AgentReadiness {
@@ -329,10 +336,17 @@ final class DevicePaneModel: ObservableObject {
         return discovered.readiness(for: agent)
     }
 
-    /// Whether anything on the user's list answered *available* the last time we
-    /// looked. A fact the pane reports, never a state it blocks on.
+    /// Whether anything **on the user's list** answered *available* the last time
+    /// we looked. A fact the pane reports, never a state it blocks on.
+    ///
+    /// Listed only, though the probe now covers the catalog: the sentence this
+    /// feeds is about the agents the user actually works with, and a box holding
+    /// only agents they have never listed has nothing for them to run.
     var hasAgentAvailable: Bool {
-        discovered?.agents.values.contains(AgentReadiness.available.rawValue) ?? false
+        guard let discovered else { return false }
+        return listedAgents.contains {
+            discovered.readiness(for: $0) == .available
+        }
     }
 
     /// Agents that arrived on the machine since the last install, named. In the
@@ -412,7 +426,7 @@ final class DevicePaneModel: ObservableObject {
             return
         }
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage(of: outcome, available: state.availableAgents, wanted: reportsStatus)
+        state.recordCoverage()
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
@@ -474,23 +488,16 @@ final class DevicePaneModel: ObservableObject {
     /// does the same thing inline; Reinstall is the other way the same fact
     /// becomes true, and until it said so a repaired machine kept reading as
     /// behind.
-    func stampIntegration(_ outcome: InstallOutcome) {
+    func stampIntegration() {
         var state = discovered ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.checkedAt = Date()
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage(of: outcome, available: state.availableAgents, wanted: reportsStatus)
+        state.recordCoverage()
         // The install round-tripped through that machine's daemon, which is
         // proof it answers — a stale `false` from an earlier probe must not
         // survive the very thing that disproves it.
         state.daemonAnswered = true
         apply(state)
-    }
-
-    /// Whether anything on this machine is meant to report status. With both
-    /// switches off nothing is installed anywhere, so no agent is ever waiting
-    /// for hooks it was never going to get.
-    private var reportsStatus: Bool {
-        settings.agentHooksEnabled || settings.sessionControlEnabled
     }
 
     /// What each agent launches with on this machine, by id.

@@ -178,21 +178,21 @@ struct DeviceDiscoveredState: Codable, Equatable {
         agents.filter { $0.value == AgentReadiness.available.rawValue }.keys.sorted()
     }
 
-    /// Records what an install covered, from the machine's own reply.
+    /// Records what an install covered: **everything the machine had at the
+    /// time**, from the probe that ran beside it.
     ///
-    /// The daemon is the only truthful source: the client probes the agents on
-    /// the **user's list**, while the daemon installs against its whole catalog,
-    /// so a client-side guess reports an agent as newly arrived when it was
-    /// wired all along — just not listed at the time.
+    /// Presence is the primitive, not the install's own rows. Rows undercount in
+    /// ways that have nothing to do with an agent being here: three catalog
+    /// agents ship no hook spec at all, two share one skills directory and the
+    /// second is deduplicated away, and with both switches off there are no rows
+    /// whatsoever. Any of those would leave an installed agent outside its own
+    /// coverage and ask the user to set the machine up again, forever.
     ///
-    /// `wanted` is whether either integration switch is on. With both off,
-    /// nothing was installed anywhere and no agent is waiting for hooks it was
-    /// never going to get, so everything present counts as covered — otherwise
-    /// the machine would ask to be set up again forever.
-    mutating func recordCoverage(
-        of outcome: InstallOutcome, available: [String], wanted: Bool
-    ) {
-        integrationAgents = wanted ? outcome.installedIDs : available
+    /// The probe covers the whole catalog rather than the user's list, so an
+    /// agent that was here but unlisted is already covered on the day it is
+    /// listed — it was wired all along.
+    mutating func recordCoverage() {
+        integrationAgents = availableAgents
     }
 
     /// Carries a previous probe's integration record onto this fresh one.
@@ -267,19 +267,17 @@ enum DeviceStateCache {
     /// saying so rather than nothing. It learned nothing about which agent CLIs
     /// are there, so `agents` stays empty and every row on that machine keeps
     /// reading `unknown` until something actually asks.
-    /// Records an install from the machine's own reply. The Agents-tab path
-    /// installs across the whole roster without asking any machine anything, so
-    /// the outcome it got back is the only thing here that knows which agents
-    /// were actually written for.
-    static func stampIntegration(
-        _ version: String?, covering outcome: InstallOutcome, wanted: Bool, for key: String
-    ) {
+    /// Records an install against what the machine was last known to have. The
+    /// Agents-tab path installs across the whole roster without asking any
+    /// machine anything, so the last probe is the best this knows — and a box
+    /// whose agents have changed since reads as needing setup, which it does.
+    static func stampIntegration(_ version: String?, for key: String) {
         var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.integrationVersion = version
         if version == nil {
             state.integrationAgents = nil
         } else {
-            state.recordCoverage(of: outcome, available: state.availableAgents, wanted: wanted)
+            state.recordCoverage()
         }
         save(state, for: key)
     }

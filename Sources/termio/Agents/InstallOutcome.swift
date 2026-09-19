@@ -17,15 +17,6 @@ struct InstallOutcome {
     /// the daemon refused it, or the connection dropped. `nil` when the
     /// machine answered, even if it refused every agent.
     var failure: String?
-    /// The agent **ids** the machine reported writing for, sorted.
-    ///
-    /// Kept apart from `succeeded`, which holds display names for a sentence.
-    /// This is the machine's own answer to "what did you cover", and it is the
-    /// only truthful source for it: the client probes the agents on the user's
-    /// list, while the daemon installs against its whole catalog, so anything
-    /// the client derives instead is an approximation that reports agents as
-    /// newly arrived when they were wired all along.
-    private(set) var installedIDs: [String] = []
 
     var isEmpty: Bool { succeeded.isEmpty && failed.isEmpty }
 
@@ -33,11 +24,6 @@ struct InstallOutcome {
         if installed { succeeded.append(name) } else { failed.append(name) }
     }
 
-    /// Records the ids the machine said it wrote for. Deduped because one agent
-    /// contributes a row per half.
-    mutating func covered(_ ids: [String]) {
-        installedIDs = Set(ids).sorted()
-    }
 
     /// A human list of target names: spelled out up to three ("Claude Code, Codex
     /// and Cursor"), counted beyond that ("6 agents") so a confirmation line stays

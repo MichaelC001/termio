@@ -139,7 +139,6 @@ extension InstallOutcome {
         for name in order {
             record(name, installed: seen[name] ?? false)
         }
-        covered(results.filter(\.isInstalled).map(\.id))
     }
 
     /// The install never reached the machine at all. Named so a Settings row

@@ -1467,9 +1467,11 @@ pub(super) mod tests {
 
         // With it, the same agent is here and gets its hooks. Arguments ride
         // along on a real command line, so the binary is the first word.
+        // Quoted, because a path typed by hand is exactly where spaces turn up,
+        // and arguments ride along on a real command line.
         request
             .commands
-            .insert("authored".into(), "/bin/sh --dangerously-skip".into());
+            .insert("authored".into(), "\"/bin/sh\" --dangerously-skip".into());
         let results = sync_hooks(&catalog, &request);
 
         assert_eq!(results.len(), 1, "the authored path is what decides");
