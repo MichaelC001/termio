@@ -134,7 +134,7 @@ struct DeviceDiscoveredState: Codable, Equatable {
     init(
         checkedAt: Date, reachable: Bool, termiodVersion: String? = nil,
         agents: [String: String] = [:], integrationVersion: String? = nil,
-        integrationAgents: [String]? = nil, agentProbeAnswered: Bool? = nil
+        integrationAgents: [String]? = nil, daemonAnswered: Bool = true
     ) {
         self.checkedAt = checkedAt
         self.reachable = reachable
@@ -142,7 +142,17 @@ struct DeviceDiscoveredState: Codable, Equatable {
         self.agents = agents
         self.integrationVersion = integrationVersion
         self.integrationAgents = integrationAgents
-        self.agentProbeAnswered = agentProbeAnswered
+        self.daemonAnswered = daemonAnswered
+    }
+
+    /// Everything **but** `daemonAnswered`, which is why this is spelled out
+    /// rather than synthesized. Listing the keys is also what lets the property
+    /// keep its default: Swift's synthesized decoder does not apply property
+    /// defaults to a key it is asked to decode, so a field outside `CodingKeys`
+    /// is the only shape that both stays off disk and survives an older file.
+    private enum CodingKeys: String, CodingKey {
+        case checkedAt, reachable, termiodVersion, agents
+        case integrationVersion, integrationAgents
     }
 
     /// Whether the daemon answered the agent probe. `false` is a machine that ssh
@@ -153,22 +163,36 @@ struct DeviceDiscoveredState: Codable, Equatable {
     /// box is a network or ssh problem, while this one is fixed by deploying the
     /// daemon again.
     ///
-    /// Optional rather than a `Bool` with a default: Swift's synthesized decoder
-    /// does not apply property defaults, so a non-optional field would throw
-    /// `keyNotFound` on every device file written before it existed — and
-    /// `DeviceStateCache` swallows that to `nil`, silently emptying the cache for
-    /// the whole roster. `nil` reads as answered, through `daemonAnswered`.
-    var agentProbeAnswered: Bool?
-
-    /// Whether the daemon answered when asked what agents it has. An older file
-    /// that never recorded it reads as yes — never a fault nobody confirmed.
-    var daemonAnswered: Bool { agentProbeAnswered ?? true }
+    /// **Never persisted** — see `CodingKeys`. It is a fact about the probe that
+    /// just ran, and this file is explicitly not authoritative. Written to disk
+    /// it goes stale in both directions: a machine whose daemon has since
+    /// recovered reads as broken forever (no successful install can clear a flag
+    /// it never sets), and the seed a pane takes from the cache on open would
+    /// report a fault nobody has re-confirmed.
+    var daemonAnswered = true
 
     /// The agents this machine answered *available* for, sorted so a stamp is
     /// stable across probes. What an install covers, and what a later probe
     /// compares against.
     var availableAgents: [String] {
         agents.filter { $0.value == AgentReadiness.available.rawValue }.keys.sorted()
+    }
+
+    /// Records what an install covered, from the machine's own reply.
+    ///
+    /// The daemon is the only truthful source: the client probes the agents on
+    /// the **user's list**, while the daemon installs against its whole catalog,
+    /// so a client-side guess reports an agent as newly arrived when it was
+    /// wired all along — just not listed at the time.
+    ///
+    /// `wanted` is whether either integration switch is on. With both off,
+    /// nothing was installed anywhere and no agent is waiting for hooks it was
+    /// never going to get, so everything present counts as covered — otherwise
+    /// the machine would ask to be set up again forever.
+    mutating func recordCoverage(
+        of outcome: InstallOutcome, available: [String], wanted: Bool
+    ) {
+        integrationAgents = wanted ? outcome.installedIDs : available
     }
 
     /// Carries a previous probe's integration record onto this fresh one.
@@ -243,16 +267,20 @@ enum DeviceStateCache {
     /// saying so rather than nothing. It learned nothing about which agent CLIs
     /// are there, so `agents` stays empty and every row on that machine keeps
     /// reading `unknown` until something actually asks.
-    /// Records an install against what the machine was last known to have. The
-    /// agent list is taken from the cache rather than a fresh probe because this
-    /// is the Agents-tab path, which installs across the whole roster without
-    /// asking any machine anything — stamping what we knew is honest, and a
-    /// machine whose agents have changed since reads as needing setup, which is
-    /// exactly what it needs.
-    static func stampIntegration(_ version: String?, for key: String) {
+    /// Records an install from the machine's own reply. The Agents-tab path
+    /// installs across the whole roster without asking any machine anything, so
+    /// the outcome it got back is the only thing here that knows which agents
+    /// were actually written for.
+    static func stampIntegration(
+        _ version: String?, covering outcome: InstallOutcome, wanted: Bool, for key: String
+    ) {
         var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.integrationVersion = version
-        state.integrationAgents = version == nil ? nil : state.availableAgents
+        if version == nil {
+            state.integrationAgents = nil
+        } else {
+            state.recordCoverage(of: outcome, available: state.availableAgents, wanted: wanted)
+        }
         save(state, for: key)
     }
 }

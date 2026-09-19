@@ -965,7 +965,8 @@ extension Termiod {
         hooks: Termiod.AgentHalfAction,
         skills: Termiod.AgentHalfAction,
         reporter: Termiod.AgentHookReporter,
-        hookVersion: String
+        hookVersion: String,
+        commands: [String: String]
     ) throws -> [Termiod.AgentInstallResult] {
         try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
             guard handshake.capabilities.contains(agentCapability) else {
@@ -976,7 +977,7 @@ extension Termiod {
                 transport.writeDescriptor, kind: .control,
                 payload: installAgentsPayload(
                     agents: agents, hooks: hooks, skills: skills,
-                    reporter: reporter, hookVersion: hookVersion))
+                    reporter: reporter, hookVersion: hookVersion, commands: commands))
             while true {
                 let frame = try readFrame(transport.readDescriptor)
                 guard frame.kind == .control else { continue }
@@ -995,7 +996,7 @@ extension Termiod {
     /// Which of these agents' CLIs are on that machine. One round trip for the
     /// whole roster, where the SSH arm paid one per agent.
     static func probeAgents(
-        route: TermiodRoute, agents: [String]?
+        route: TermiodRoute, agents: [String]?, commands: [String: String]
     ) throws -> [Termiod.AgentPresence] {
         try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
             guard handshake.capabilities.contains(agentCapability) else {
@@ -1004,7 +1005,7 @@ extension Termiod {
             }
             try writeFrame(
                 transport.writeDescriptor, kind: .control,
-                payload: probeAgentsPayload(agents: agents))
+                payload: probeAgentsPayload(agents: agents, commands: commands))
             while true {
                 let frame = try readFrame(transport.readDescriptor)
                 guard frame.kind == .control else { continue }

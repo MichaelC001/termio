@@ -2381,6 +2381,7 @@ async fn process_control(
             skills,
             reporter,
             hook_version,
+            commands,
             seq,
         } => {
             if !connection.capabilities.contains("agents") {
@@ -2398,6 +2399,7 @@ async fn process_control(
                     skills,
                     reporter,
                     hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+                    commands,
                 );
                 // A dozen agents is a few dozen small reads, merges and renames.
                 // That is blocking work, and it must not sit on the runtime that
@@ -2415,7 +2417,7 @@ async fn process_control(
                 });
             }
         }
-        Control::ProbeAgents { agents, seq } => {
+        Control::ProbeAgents { agents, commands, seq } => {
             if !connection.capabilities.contains("agents") {
                 let response = error(
                     seq,
@@ -2431,7 +2433,7 @@ async fn process_control(
                 let out = out.clone();
                 tokio::spawn(async move {
                     let probed =
-                        tokio::task::spawn_blocking(move || crate::agent::install::probe(agents))
+                        tokio::task::spawn_blocking(move || crate::agent::install::probe(agents, commands))
                             .await;
                     let response = match probed {
                         Ok(agents) => Control::AgentsProbed { agents, re: seq },

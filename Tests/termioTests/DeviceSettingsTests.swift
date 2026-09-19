@@ -176,7 +176,7 @@ final class DeviceSettingsTests: XCTestCase {
         // Set Up, not Check Again.
         let mute = DeviceDiscoveredState(
             checkedAt: Date(), reachable: true,
-            integrationVersion: AppInfo.buildStamp, agentProbeAnswered: false)
+            integrationVersion: AppInfo.buildStamp, daemonAnswered: false)
         XCTAssertFalse(mute.daemonAnswered)
         // An older file never recorded it, and must not start reading as broken.
         XCTAssertTrue(state(agents: [:], covered: nil).daemonAnswered)
@@ -184,9 +184,9 @@ final class DeviceSettingsTests: XCTestCase {
 
     func testADeviceFileWithoutTheNewFieldsStillDecodes() {
         // Swift's synthesized decoder does not apply property defaults, so a
-        // non-optional addition here would throw `keyNotFound` on every file
-        // already on disk — and `DeviceStateCache` swallows that to nil, emptying
-        // the cache for the whole roster.
+        // non-optional addition inside `CodingKeys` would throw `keyNotFound` on
+        // every file already on disk — and `DeviceStateCache` swallows that to
+        // nil, emptying the cache for the whole roster.
         let onDisk = """
             {"checkedAt":780000000,"reachable":true,"agents":{"claudeCode":"available"}}
             """.data(using: .utf8)
@@ -196,6 +196,49 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertNotNil(read)
         XCTAssertTrue(read?.daemonAnswered ?? false)
         XCTAssertNil(read?.integrationAgents)
+    }
+
+    func testTheDaemonFailureNeverReachesDisk() {
+        // It is a fact about the probe that just ran. Persisted, it goes stale
+        // both ways: a recovered machine would read as broken forever, and a
+        // pane seeded from the cache would report a fault nobody re-confirmed.
+        var mute = state(agents: [:], covered: nil)
+        mute.daemonAnswered = false
+        let round = (try? JSONEncoder().encode(mute))
+            .flatMap { try? JSONDecoder().decode(DeviceDiscoveredState.self, from: $0) }
+        XCTAssertTrue(round?.daemonAnswered ?? false)
+        let text = (try? JSONEncoder().encode(mute)).flatMap { String(data: $0, encoding: .utf8) }
+        XCTAssertFalse(text?.contains("daemonAnswered") ?? true)
+    }
+
+    func testCoverageComesFromTheMachineNotFromWhatIsListed() {
+        // The client probes only the agents on the user's list; the daemon
+        // installs against its whole catalog. Recording the probe would call
+        // Codex "newly arrived" the day it is listed, though it was wired all
+        // along — the false alarm §D4 exists to stop.
+        var outcome = InstallOutcome()
+        outcome.covered(["claudeCode", "codex"])
+        var machine = state(agents: ["claudeCode": "available"], covered: nil)
+        machine.recordCoverage(of: outcome, available: machine.availableAgents, wanted: true)
+        XCTAssertEqual(machine.integrationAgents, ["claudeCode", "codex"])
+
+        // Codex becomes listed and the probe now sees it: already covered.
+        var listed = state(
+            agents: ["claudeCode": "available", "codex": "available"],
+            covered: machine.integrationAgents)
+        listed.daemonAnswered = true
+        XCTAssertEqual(listed.agentsOutsideIntegration, [])
+        XCTAssertTrue(listed.carriesCurrentIntegration)
+    }
+
+    func testWithBothSwitchesOffNothingIsEverWaiting() {
+        // Nothing was installed anywhere, so no agent is waiting for hooks it
+        // was never going to get. Recording an empty outcome would ask the user
+        // to set the machine up again forever.
+        var machine = state(agents: ["claudeCode": "available"], covered: nil)
+        machine.recordCoverage(of: InstallOutcome(), available: machine.availableAgents, wanted: false)
+        XCTAssertEqual(machine.agentsOutsideIntegration, [])
+        XCTAssertTrue(machine.carriesCurrentIntegration)
     }
 
     func testTheCoveredListSurvivesTheRoundTripToJSON() {

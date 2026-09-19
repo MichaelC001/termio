@@ -604,9 +604,10 @@ private struct MachineAgentsPane: View {
         let outcome = await AgentIntegrationInstaller.sync(
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
-            target: machine.integrationTarget)
+            target: machine.integrationTarget,
+            commands: model.authoredCommands)
         if outcome.failure == nil && outcome.failed.isEmpty {
-            model.stampIntegration()
+            model.stampIntegration(outcome)
         }
         return .summarizing(
             outcome, headline: localized("Reinstalled"), unit: localized("agents"))

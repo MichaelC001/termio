@@ -237,10 +237,13 @@ struct AgentSettingsTab: View {
         let outcome = await AgentIntegrationInstaller.sync(
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
-            target: .thisMac)
+            target: .thisMac,
+            commands: settings.authoredCommands())
         if outcome.failure == nil && outcome.failed.isEmpty {
             DeviceStateCache.stampIntegration(
-                AppInfo.buildStamp, for: KnownDevice.thisMac.settingsKey)
+                AppInfo.buildStamp, covering: outcome,
+                wanted: settings.agentHooksEnabled || settings.sessionControlEnabled,
+                for: KnownDevice.thisMac.settingsKey)
         }
         return .summarizing(
             outcome, headline: localized("Installed"), unit: localized("agents"))

@@ -1684,12 +1684,19 @@ public enum Termiod {
     /// agents are on the user's list, whether each switch is on, what a hook
     /// should invoke — and the daemon works out where every agent keeps its
     /// config, whether its CLI is even there, and what to merge.
+    /// `commands` is what each agent actually launches with on that box, by id.
+    /// The daemon judges presence against the binary a session would really run,
+    /// because Settings lets the user author a path that is not on `PATH` at
+    /// all — and an agent the client has just reported available must not be one
+    /// the daemon then refuses to write a config for. Empty is the manifest's own
+    /// command, which is what every daemon did before this field existed.
     public static func installAgentsPayload(
         agents: [String]?,
         hooks: AgentHalfAction,
         skills: AgentHalfAction,
         reporter: AgentHookReporter,
-        hookVersion: String
+        hookVersion: String,
+        commands: [String: String] = [:]
     ) throws -> Data {
         try encodeControl(InstallAgentsOperation(
             op: "install_agents",
@@ -1698,12 +1705,16 @@ public enum Termiod {
             skills: skills,
             reporter: InstallAgentsOperation.Reporter(reporter),
             hookVersion: hookVersion,
+            commands: commands,
             seq: 1
         ))
     }
 
-    public static func probeAgentsPayload(agents: [String]?) throws -> Data {
-        try encodeControl(ProbeAgentsOperation(op: "probe_agents", agents: agents, seq: 1))
+    public static func probeAgentsPayload(
+        agents: [String]?, commands: [String: String] = [:]
+    ) throws -> Data {
+        try encodeControl(ProbeAgentsOperation(
+            op: "probe_agents", agents: agents, commands: commands, seq: 1))
     }
 
     private struct InstallAgentsOperation: Encodable {
@@ -1713,6 +1724,7 @@ public enum Termiod {
         let skills: AgentHalfAction
         let reporter: Reporter
         let hookVersion: String
+        let commands: [String: String]
         let seq: Int
 
         /// Internally tagged the way the daemon spells it: `{"kind": …}`.
@@ -1728,6 +1740,7 @@ public enum Termiod {
     private struct ProbeAgentsOperation: Encodable {
         let op: String
         let agents: [String]?
+        let commands: [String: String]
         let seq: Int
     }
 

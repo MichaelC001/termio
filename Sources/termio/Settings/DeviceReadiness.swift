@@ -207,8 +207,11 @@ enum DeviceProbe {
         // agent — a dozen round trips to learn something the box knows about
         // itself in microseconds.
         do {
+            // The authored commands travel with the question, so the daemon
+            // judges the same binary a session on that box would launch.
             let presence = try await AgentIntegrationInstaller.probe(
-                host: alias, agents: commands.map(\.id))
+                host: alias, agents: commands.map(\.id),
+                commands: Dictionary(commands.map { ($0.id, $0.command) }) { first, _ in first })
             var agents: [String: String] = [:]
             for entry in presence {
                 agents[entry.id] = entry.present
@@ -230,7 +233,7 @@ enum DeviceProbe {
                 agent probe on \(alias, privacy: .public) failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
-            return DeviceDiscoveredState(checkedAt: now, reachable: true, agentProbeAnswered: false)
+            return DeviceDiscoveredState(checkedAt: now, reachable: true, daemonAnswered: false)
         }
     }
 }
@@ -390,7 +393,8 @@ final class DevicePaneModel: ObservableObject {
         let outcome = await AgentIntegrationInstaller.sync(
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
-            target: device.integrationTarget)
+            target: device.integrationTarget,
+            commands: authoredCommands)
         // A request the machine never acted on is reported in its own words —
         // it is a sentence, not an agent that refused.
         if let failure = outcome.failure {
@@ -408,9 +412,7 @@ final class DevicePaneModel: ObservableObject {
             return
         }
         state.integrationVersion = AppInfo.buildStamp
-        // Taken from the probe this very chain just ran, so the record is what
-        // the daemon actually saw when it decided which agents to write for.
-        state.integrationAgents = state.availableAgents
+        state.recordCoverage(of: outcome, available: state.availableAgents, wanted: reportsStatus)
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
@@ -472,13 +474,27 @@ final class DevicePaneModel: ObservableObject {
     /// does the same thing inline; Reinstall is the other way the same fact
     /// becomes true, and until it said so a repaired machine kept reading as
     /// behind.
-    func stampIntegration() {
+    func stampIntegration(_ outcome: InstallOutcome) {
         var state = discovered ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.checkedAt = Date()
         state.integrationVersion = AppInfo.buildStamp
-        state.integrationAgents = state.availableAgents
+        state.recordCoverage(of: outcome, available: state.availableAgents, wanted: reportsStatus)
+        // The install round-tripped through that machine's daemon, which is
+        // proof it answers — a stale `false` from an earlier probe must not
+        // survive the very thing that disproves it.
+        state.daemonAnswered = true
         apply(state)
     }
+
+    /// Whether anything on this machine is meant to report status. With both
+    /// switches off nothing is installed anywhere, so no agent is ever waiting
+    /// for hooks it was never going to get.
+    private var reportsStatus: Bool {
+        settings.agentHooksEnabled || settings.sessionControlEnabled
+    }
+
+    /// What each agent launches with on this machine, by id.
+    var authoredCommands: [String: String] { settings.authoredCommands(on: device) }
 
     private func apply(_ state: DeviceDiscoveredState) {
         discovered = state
