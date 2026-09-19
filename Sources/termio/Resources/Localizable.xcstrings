@@ -8319,6 +8319,16 @@
         }
       }
     },
+    "`termiod` on %@ isn’t answering.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 `termiod` 没有响应。"
+          }
+        }
+      }
+    },
     "agents": {
       "localizations": {
         "zh-Hans": {

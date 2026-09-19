@@ -319,16 +319,36 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
         .into_iter()
         .filter_map(|agent| {
             let spec = agent.hooks.as_ref()?;
-            // The same rule the skill half has always followed: a hook is a line
-            // merged into the agent's own config file, so writing one for an
-            // agent that is not here creates a config nothing on this box reads.
+            // A hook is a line merged into the agent's own config file, so
+            // *creating* one for an agent that is not here leaves a file nothing
+            // on this box reads — on a fresh machine, one per agent on the list.
+            //
+            // Maintaining a config that already exists is the other case, and it
+            // is why this is not the bare presence check the skill half uses:
+            // presence is judged by the manifest's command, while the user can
+            // author their own path in Settings for an agent that is not on
+            // `PATH` at all. That agent has been running here and has a config;
+            // skipping it would quietly stop its hooks from being updated.
             // Re-checked on every sync, so an agent installed later is picked up.
-            if !is_present(agent) {
+            if !is_present(agent) && !hook_config_exists(agent, spec) {
                 return None;
             }
             Some(install_hooks(agent, spec, request))
         })
         .collect()
+}
+
+/// Whether this agent already has the file or directory its hooks are written
+/// into. An unresolvable path answers `false`: there is nothing to maintain at a
+/// path we cannot name.
+fn hook_config_exists(agent: &AgentDefinition, spec: &HookSpec) -> bool {
+    let path = match spec.hook_type {
+        HookType::Json | HookType::Toml => spec.file.as_deref(),
+        HookType::Scripts | HookType::Plugin => spec.directory.as_deref(),
+    };
+    path.and_then(|path| resolved(agent, path).ok())
+        .map(|path| Path::new(&path).exists())
+        .unwrap_or(false)
 }
 
 /// Where a manifest path lands on this box, honouring the agent's own
@@ -1411,6 +1431,38 @@ pub(super) mod tests {
         assert!(!gone.exists(), "an absent agent must not grow a config");
         assert_eq!(results.len(), 1, "and it is not reported as an agent we touched");
         assert_eq!(results[0].id, "here");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// The other half of the rule. Presence is judged by the manifest's command,
+    /// but Settings lets the user point an agent at a path of their own — one
+    /// that need not be on `PATH` at all. That agent has been running here and
+    /// has a config; a bare presence check would silently stop updating its
+    /// hooks the first time this ran.
+    #[test]
+    fn a_config_that_already_exists_keeps_getting_its_hooks() {
+        let directory = std::env::temp_dir().join(format!(
+            "termiod-hook-existing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        let settled = directory.join("settled.json");
+        std::fs::write(&settled, "{}").expect("an existing config");
+
+        let json = format!(
+            r#"{{"id":"settled","name":"settled","command":"/nonexistent/agent-cli",
+                "hooks":{{"type":"json","file":"{}","dialect":"claude",
+                "tool":"tool_name","events":[{{"on":"Stop","state":"done"}}]}}}}"#,
+            settled.display()
+        );
+        let catalog = AgentCatalog { all: vec![definition_of(&json)], bundled: Vec::new() };
+
+        let results = sync_hooks(&catalog, &local_request("/usr/local/bin/termio"));
+
+        assert_eq!(results.len(), 1, "an existing config is still maintained");
+        let written = std::fs::read_to_string(&settled).expect("still readable");
+        assert!(written.contains("termio"), "and the hook actually landed in it");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

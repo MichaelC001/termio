@@ -230,7 +230,7 @@ enum DeviceProbe {
                 agent probe on \(alias, privacy: .public) failed: \
                 \(error.localizedDescription, privacy: .public)
                 """)
-            return DeviceDiscoveredState(checkedAt: now, reachable: true)
+            return DeviceDiscoveredState(checkedAt: now, reachable: true, agentProbeAnswered: false)
         }
     }
 }
@@ -347,12 +347,11 @@ final class DevicePaneModel: ObservableObject {
         guard !readiness.isBusy else { return }
         readiness = .checking
         step = .foundation
-        let state = await DeviceProbe.inspect(device: device, commands: commandPairs)
-        // Carry the integration stamp forward: a probe asks what is on the
+        var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
+        // Carry the integration record forward: a probe asks what is on the
         // machine, and does not un-install what a previous setup put there.
-        var merged = state
-        merged.integrationVersion = discovered?.integrationVersion
-        apply(merged)
+        state.carryIntegration(from: discovered)
+        apply(state)
         step = nil
     }
 
@@ -376,7 +375,7 @@ final class DevicePaneModel: ObservableObject {
 
         step = .probeAgents
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
-        state.integrationVersion = discovered?.integrationVersion
+        state.carryIntegration(from: discovered)
         apply(state)
         // The one thing that stops the chain here is a machine that stopped
         // answering between the two rungs. Finding no agent does not: the
@@ -501,6 +500,14 @@ final class DevicePaneModel: ObservableObject {
     /// own words.
     private func resolve(_ state: DeviceDiscoveredState) -> DeviceReadinessState {
         guard state.reachable else { return .blocked(localized("Can’t reach \(device.name).")) }
+        // ssh got there and the daemon did not answer — an old `termiod`, or one
+        // that will not start. Named rather than folded into "no agent CLIs",
+        // which sends the user to install an agent on a machine whose daemon is
+        // the thing that is broken; and blocking rather than Ready, because the
+        // button that repairs it is Set Up, which deploys the daemon again.
+        guard state.daemonAnswered else {
+            return .blocked(localized("`termiod` on \(device.name) isn’t answering."))
+        }
         // Not blocked, just not done — the setup button is the whole next step, so
         // it reads as "set up this device" rather than as a fault.
         return state.carriesCurrentIntegration ? .ready : .unasked

@@ -154,6 +154,50 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertTrue(machine.carriesCurrentIntegration)
     }
 
+    func testARefreshDoesNotEraseWhatTheInstallCovered() {
+        // The pane probes on open, and a probe carries no integration record of
+        // its own. Carrying the version but dropping the agent list is worse than
+        // dropping both: `nil` reads as "covered everything", so the refresh
+        // would silently erase the only thing that notices a new agent.
+        let before = state(agents: ["claudeCode": "available"], covered: ["claudeCode"])
+        var fresh = DeviceDiscoveredState(
+            checkedAt: Date(), reachable: true,
+            agents: ["claudeCode": "available", "codex": "available"])
+        fresh.carryIntegration(from: before)
+        XCTAssertEqual(fresh.integrationVersion, AppInfo.buildStamp)
+        XCTAssertEqual(fresh.integrationAgents, ["claudeCode"])
+        XCTAssertEqual(fresh.agentsOutsideIntegration, ["codex"])
+    }
+
+    func testADaemonThatCouldNotBeAskedIsNotAnAgentProblem() {
+        // ssh reached the box and `termiod` could not answer. Reporting that as
+        // an empty agent roster reads as Ready with no agents — a machine whose
+        // daemon will not start is not ready, and the button that repairs it is
+        // Set Up, not Check Again.
+        let mute = DeviceDiscoveredState(
+            checkedAt: Date(), reachable: true,
+            integrationVersion: AppInfo.buildStamp, agentProbeAnswered: false)
+        XCTAssertFalse(mute.daemonAnswered)
+        // An older file never recorded it, and must not start reading as broken.
+        XCTAssertTrue(state(agents: [:], covered: nil).daemonAnswered)
+    }
+
+    func testADeviceFileWithoutTheNewFieldsStillDecodes() {
+        // Swift's synthesized decoder does not apply property defaults, so a
+        // non-optional addition here would throw `keyNotFound` on every file
+        // already on disk — and `DeviceStateCache` swallows that to nil, emptying
+        // the cache for the whole roster.
+        let onDisk = """
+            {"checkedAt":780000000,"reachable":true,"agents":{"claudeCode":"available"}}
+            """.data(using: .utf8)
+        let read = onDisk.flatMap {
+            try? JSONDecoder().decode(DeviceDiscoveredState.self, from: $0)
+        }
+        XCTAssertNotNil(read)
+        XCTAssertTrue(read?.daemonAnswered ?? false)
+        XCTAssertNil(read?.integrationAgents)
+    }
+
     func testTheCoveredListSurvivesTheRoundTripToJSON() {
         let machine = state(agents: ["claudeCode": "available"], covered: ["claudeCode"])
         let data = try? JSONEncoder().encode(machine)

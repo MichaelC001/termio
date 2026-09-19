@@ -134,7 +134,7 @@ struct DeviceDiscoveredState: Codable, Equatable {
     init(
         checkedAt: Date, reachable: Bool, termiodVersion: String? = nil,
         agents: [String: String] = [:], integrationVersion: String? = nil,
-        integrationAgents: [String]? = nil
+        integrationAgents: [String]? = nil, agentProbeAnswered: Bool? = nil
     ) {
         self.checkedAt = checkedAt
         self.reachable = reachable
@@ -142,13 +142,46 @@ struct DeviceDiscoveredState: Codable, Equatable {
         self.agents = agents
         self.integrationVersion = integrationVersion
         self.integrationAgents = integrationAgents
+        self.agentProbeAnswered = agentProbeAnswered
     }
+
+    /// Whether the daemon answered the agent probe. `false` is a machine that ssh
+    /// reached but whose `termiod` could not be asked — an old daemon, or one
+    /// that will not start.
+    ///
+    /// Separate from `reachable` because the repair is different: an unreachable
+    /// box is a network or ssh problem, while this one is fixed by deploying the
+    /// daemon again.
+    ///
+    /// Optional rather than a `Bool` with a default: Swift's synthesized decoder
+    /// does not apply property defaults, so a non-optional field would throw
+    /// `keyNotFound` on every device file written before it existed — and
+    /// `DeviceStateCache` swallows that to `nil`, silently emptying the cache for
+    /// the whole roster. `nil` reads as answered, through `daemonAnswered`.
+    var agentProbeAnswered: Bool?
+
+    /// Whether the daemon answered when asked what agents it has. An older file
+    /// that never recorded it reads as yes — never a fault nobody confirmed.
+    var daemonAnswered: Bool { agentProbeAnswered ?? true }
 
     /// The agents this machine answered *available* for, sorted so a stamp is
     /// stable across probes. What an install covers, and what a later probe
     /// compares against.
     var availableAgents: [String] {
         agents.filter { $0.value == AgentReadiness.available.rawValue }.keys.sorted()
+    }
+
+    /// Carries a previous probe's integration record onto this fresh one.
+    ///
+    /// A probe asks what is on the machine; it does not un-install what a setup
+    /// put there. The record is **two** fields, and carrying one while forgetting
+    /// the other is worse than forgetting both: an `integrationAgents` dropped to
+    /// `nil` reads as "covered everything", so a refresh would quietly erase the
+    /// only thing that can notice an agent installed after setup. One call, so
+    /// there is no second place to forget.
+    mutating func carryIntegration(from previous: DeviceDiscoveredState?) {
+        integrationVersion = previous?.integrationVersion
+        integrationAgents = previous?.integrationAgents
     }
 
     func readiness(for agent: AgentPreset) -> AgentReadiness {

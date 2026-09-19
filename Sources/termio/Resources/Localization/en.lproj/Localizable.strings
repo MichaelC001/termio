@@ -1684,6 +1684,8 @@
 	<string>Zoom Split</string>
 	<key>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</key>
 	<string>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</string>
+	<key>`termiod` on %@ isn’t answering.</key>
+	<string>`termiod` on %@ isn’t answering.</string>
 	<key>agents</key>
 	<string>agents</string>
 	<key>binary</key>

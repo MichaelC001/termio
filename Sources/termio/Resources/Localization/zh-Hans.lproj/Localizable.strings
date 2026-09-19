@@ -1684,6 +1684,8 @@
 	<string>缩放拆分</string>
 	<key>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</key>
 	<string>`%@` 已在 PATH 中。运行 `%@ sessions …` 可驱动其他会话，运行 `%@ .` 可打开文件夹。</string>
+	<key>`termiod` on %@ isn’t answering.</key>
+	<string>%@ 上的 `termiod` 没有响应。</string>
 	<key>agents</key>
 	<string>个 Agent</string>
 	<key>binary</key>
