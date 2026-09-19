@@ -3,13 +3,15 @@ import XCTest
 import TermioShared
 @testable import termio
 
-/// The two decisions on the clipboard side of the viewer↔device boundary.
+/// The clipboard decisions on the viewer↔device boundary.
 ///
-/// Both have a real failure mode. Misreading the clipboard sends a text paste
-/// down the transfer plane (or swallows a normal ⌘V), and a byte of drift in
-/// the `U` chunk layout makes the daemon reject the frame outright — there is
-/// no partial credit on a wire format, and the failure surfaces as a paste that
-/// silently does nothing, which is the bug this whole path exists to end.
+/// Misreading the clipboard sends a basename where an agent needs a path (or
+/// a text paste down the transfer plane, or swallows a normal ⌘V), and a byte
+/// of drift in the `U` chunk layout makes the daemon reject the frame outright
+/// — there is no partial credit on a wire format, and the failure surfaces as
+/// a paste that silently does nothing, which is the bug this whole path exists
+/// to end.
+@MainActor
 final class ClipboardTransferTests: XCTestCase {
     private var pasteboard: NSPasteboard!
 
@@ -22,6 +24,21 @@ final class ClipboardTransferTests: XCTestCase {
     override func tearDown() {
         pasteboard.releaseGlobally()
         super.tearDown()
+    }
+
+    private func writeFiles(
+        _ paths: [String],
+        filenameText: Bool = false,
+        isDirectory: Bool = false
+    ) {
+        pasteboard.clearContents()
+        let urls = paths.map { URL(fileURLWithPath: $0, isDirectory: isDirectory) as NSURL }
+        XCTAssertTrue(pasteboard.writeObjects(urls), "failed to write \(paths)")
+        if filenameText {
+            pasteboard.setString(
+                paths.map { ($0 as NSString).lastPathComponent }.joined(separator: "\n"),
+                forType: .string)
+        }
     }
 
     /// A 1×1 image encoded the way the pasteboard would carry it.
@@ -37,6 +54,96 @@ final class ClipboardTransferTests: XCTestCase {
             return Data()
         }
         return data
+    }
+
+    /// Finder's copy of a file: the URL plus the basename as text. The reader
+    /// has to return the quoted absolute path, not the name that a normal paste
+    /// would insert, and not the percent-encoded `file://` form.
+    func testAFinderFileCopyYieldsTheQuotedAbsolutePath() {
+        let path = "/Users/example/Desktop/example image.png"
+        writeFiles([path], filenameText: true)
+
+        let payload = ClipboardFilePaths.current(pasteboard)
+        XCTAssertEqual(payload, "'/Users/example/Desktop/example image.png' ")
+        XCTAssertFalse(payload?.contains("%20") == true, "the prompt gets a path, not a URL")
+        XCTAssertNotEqual(payload, "'example image.png' ")
+        XCTAssertFalse(payload?.contains("\n") == true || payload?.contains("\r") == true)
+    }
+
+    func testMultipleFilesKeepPasteboardOrder() {
+        writeFiles([
+            "/Users/example/Desktop/first.txt",
+            "/Users/example/Documents/second.txt",
+            "/tmp/third.txt",
+        ])
+
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/Desktop/first.txt' '/Users/example/Documents/second.txt' '/tmp/third.txt' ")
+    }
+
+    func testADirectoryUsesItsAbsolutePath() {
+        writeFiles(["/Users/example/Documents/Project"], isDirectory: true)
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/Documents/Project' ")
+    }
+
+    func testSpecialCharactersStayOneQuotedArgument() {
+        let cases: [(path: String, expected: String)] = [
+            ("/Users/example/My Documents/file.txt", "'/Users/example/My Documents/file.txt'"),
+            ("/tmp/it's.txt", "'/tmp/it'\\''s.txt'"),
+            ("/tmp/cost$file.txt", "'/tmp/cost$file.txt'"),
+            ("/tmp/weird`name.txt", "'/tmp/weird`name.txt'"),
+            ("/tmp/run;me.txt", "'/tmp/run;me.txt'"),
+            ("/Users/example/桌面/图片.png", "'/Users/example/桌面/图片.png'"),
+        ]
+        for item in cases {
+            writeFiles([item.path])
+            let payload = ClipboardFilePaths.current(pasteboard)
+            XCTAssertEqual(payload, item.expected + " ", item.path)
+            XCTAssertEqual(payload?.filter { $0 == "\n" || $0 == "\r" }.count, 0, item.path)
+        }
+    }
+
+    func testDotDotIsNormalizedLexically() {
+        writeFiles(["/Users/example/foo/../bar/file.txt"])
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/bar/file.txt' ")
+    }
+
+    /// A copied image file also carries TIFF/PNG/icon data. The path wins; the
+    /// image representation is not a screenshot to upload.
+    func testAFileURLWinsOverItsIconRepresentation() {
+        let path = "/Users/example/Desktop/example image.png"
+        writeFiles([path], filenameText: true)
+        pasteboard.setData(imageData(.tiff), forType: .tiff)
+        pasteboard.setData(imageData(.png), forType: .png)
+
+        XCTAssertEqual(
+            ClipboardFilePaths.current(pasteboard),
+            "'/Users/example/Desktop/example image.png' ")
+    }
+
+    func testAnEmptyPasteboardIsNotAFilePaste() {
+        XCTAssertNil(ClipboardFilePaths.current(pasteboard))
+    }
+
+    /// Ordinary text, even when it looks like a path, is not a file identity.
+    func testPathLookingTextIsNotAFilePaste() {
+        pasteboard.setString("/Users/example/Desktop/example image.png", forType: .string)
+        XCTAssertNil(ClipboardFilePaths.current(pasteboard))
+    }
+
+    func testANonFileURLIsNotAFilePaste() {
+        XCTAssertTrue(pasteboard.writeObjects([URL(string: "https://example.com")! as NSURL]))
+        XCTAssertNil(ClipboardFilePaths.current(pasteboard))
+    }
+
+    func testMalformedFileURLDataIsNotAFilePaste() {
+        pasteboard.setData(Data("not a url".utf8), forType: .fileURL)
+        XCTAssertNil(ClipboardFilePaths.current(pasteboard))
     }
 
     func testPNGOnTheClipboardIsTakenVerbatim() {
