@@ -154,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // The ghostty-style right-click menu over the terminal surfaces (Copy/Paste + splits);
     // owns the rightMouseDown monitor for the app's lifetime.
     private var terminalContextMenu: TerminalContextMenu?
-    private var termiodImagePaste: TermiodImagePaste?
+    private var pasteInterceptor: TermiodPasteInterceptor?
     // The pane drag-to-rearrange gesture (issue #183); owns its
     // mouse monitors for the app's lifetime.
     private var paneDragRearrange: PaneDragRearrange?
@@ -434,8 +434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Installed before the context menu so the menu can hand its Paste to
         // the same interceptor rather than growing a second copy of the rule.
-        termiodImagePaste = TermiodImagePaste(store: store)
-        terminalContextMenu = TerminalContextMenu(store: store, imagePaste: termiodImagePaste)
+        pasteInterceptor = TermiodPasteInterceptor(store: store)
+        terminalContextMenu = TerminalContextMenu(store: store, pasteInterceptor: pasteInterceptor)
         paneDragRearrange = PaneDragRearrange(store: store)
 
         menuBar = MenuBarController(store: store) { [weak self] id in
@@ -1436,7 +1436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// normal `paste:`. A distinct selector so forwarding `paste:` cannot
     /// re-enter this method.
     @objc func pasteFromEditMenu(_ sender: Any?) {
-        if termiodImagePaste?.pasteIntoFocusedTerminal() == true { return }
+        if pasteInterceptor?.pasteIntoFocusedTerminal() == true { return }
         NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
     }
 
