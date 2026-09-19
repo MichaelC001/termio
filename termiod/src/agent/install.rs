@@ -241,6 +241,10 @@ pub fn probe(
     agents: Option<Vec<String>>,
     commands: HashMap<String, String>,
 ) -> Vec<AgentPresence> {
+    // Ask the shell again. Both entry points are user-initiated and rare, and
+    // the alternative is telling someone who just installed an agent that it is
+    // not there until they restart the daemon.
+    machine::forget_login_shell();
     let catalog = AgentCatalog::load();
     let wanted: Option<HashSet<&str>> = agents
         .as_ref()
@@ -284,6 +288,7 @@ fn is_present(agent: &AgentDefinition, authored: &HashMap<String, String>) -> bo
 
 /// Apply `request` against this box's filesystem.
 pub fn run(request: &InstallRequest) -> Vec<InstallResult> {
+    machine::forget_login_shell();
     let catalog = AgentCatalog::load();
     let mut results = Vec::new();
     if request.hooks != HalfAction::Leave {

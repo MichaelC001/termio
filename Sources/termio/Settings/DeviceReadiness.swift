@@ -327,7 +327,7 @@ final class DevicePaneModel: ObservableObject {
     /// own whole catalog. Asking only about listed agents made an agent that was
     /// here all along read as newly arrived the day it was listed. It is still
     /// one round trip either way.
-    private var commandPairs: [(id: String, command: String)] {
+    var commandPairs: [(id: String, command: String)] {
         AgentPreset.codingAgents.map { ($0.rawValue, settings.command(for: $0, on: device) ?? "") }
     }
 
@@ -391,7 +391,11 @@ final class DevicePaneModel: ObservableObject {
         }
 
         step = .probeAgents
-        var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
+        // Captured once. The probe that decides coverage, the install, and the
+        // stamp all have to be talking about the same commands — Settings stays
+        // editable while this runs.
+        let commands = commandPairs
+        var state = await DeviceProbe.inspect(device: device, commands: commands)
         state.carryIntegration(from: discovered)
         apply(state)
         // The one thing that stops the chain here is a machine that stopped
@@ -408,7 +412,7 @@ final class DevicePaneModel: ObservableObject {
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
             target: device.integrationTarget,
-            commands: authoredCommands)
+            commands: Dictionary(commands.map { ($0.id, $0.command) }) { first, _ in first })
         // A request the machine never acted on is reported in its own words —
         // it is a sentence, not an agent that refused.
         if let failure = outcome.failure {
@@ -492,8 +496,13 @@ final class DevicePaneModel: ObservableObject {
     /// this runs after a *successful* install — the agent the user installed five
     /// minutes ago is exactly the one that just got its hooks, and stamping the
     /// older set would report it as newly arrived on the next check.
-    func stampIntegration() async {
-        var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
+    /// `commands` is the map the install that just succeeded was given. Probing
+    /// with the *current* one instead lets an edit made while the install was in
+    /// flight decide coverage: correct a path in Settings mid-reinstall and the
+    /// agent the daemon skipped gets recorded as covered, so nothing ever asks
+    /// for the setup that would actually wire it.
+    func stampIntegration(commands: [(id: String, command: String)]) async {
+        var state = await DeviceProbe.inspect(device: device, commands: commands)
         // Only a probe that actually got an answer may record coverage. A machine
         // that dropped off between the install and this probe reports no agents,
         // and recording *that* would make every agent on it read as newly
@@ -513,9 +522,6 @@ final class DevicePaneModel: ObservableObject {
         state.recordCoverage(present: state.availableAgents)
         apply(state)
     }
-
-    /// What each agent launches with on this machine, by id.
-    var authoredCommands: [String: String] { settings.authoredCommands(on: device) }
 
     private func apply(_ state: DeviceDiscoveredState) {
         discovered = state

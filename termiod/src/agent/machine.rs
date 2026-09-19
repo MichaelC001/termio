@@ -314,9 +314,35 @@ fn is_executable(path: &Path) -> bool {
 /// One login-shell spawn answers for everything the daemon's own environment
 /// cannot see. Bounded and cached for the process: an rc that blocks must not
 /// wedge an install, and a shell that never returns must not be asked twice.
-fn probe() -> &'static HashMap<String, String> {
-    static PROBED: OnceLock<HashMap<String, String>> = OnceLock::new();
-    PROBED.get_or_init(probe_login_shell)
+fn probe() -> HashMap<String, String> {
+    let cache = probe_cache();
+    if let Some(answer) = cache.lock().ok().and_then(|held| held.clone()) {
+        return answer;
+    }
+    let answer = probe_login_shell();
+    if let Ok(mut held) = cache.lock() {
+        *held = Some(answer.clone());
+    }
+    answer
+}
+
+fn probe_cache() -> &'static std::sync::Mutex<Option<HashMap<String, String>>> {
+    static PROBED: OnceLock<std::sync::Mutex<Option<HashMap<String, String>>>> = OnceLock::new();
+    PROBED.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Forget the cached login-shell answer, so the next question spawns a shell.
+///
+/// The cache exists because an rc can take seconds and a hot path must not pay
+/// for it twice. But it was never invalidated, so a user who installed an agent
+/// and added its directory to `.zshrc` kept reading as not having it until the
+/// daemon restarted — and a same-version setup does not restart the daemon.
+/// Called at the top of the two entry points that are user-initiated and rare:
+/// installing and probing.
+pub fn forget_login_shell() {
+    if let Ok(mut held) = probe_cache().lock() {
+        *held = None;
+    }
 }
 
 fn probe_login_shell() -> HashMap<String, String> {
@@ -378,10 +404,21 @@ fn probe_login_shell() -> HashMap<String, String> {
         // background process holding the write end keeps it readable, and an
         // uncapped read grows the daemon's memory for as long as that process
         // talks. The answer itself is four short lines.
-        let _ = stdout.take(64 * 1024).read_to_string(&mut output);
+        //
+        // One byte past the cap, so hitting it is detectable. A banner long
+        // enough to push the boundary into the middle of `PATH` would otherwise
+        // hand back half a directory list as if it were the whole one — and it
+        // is cached, so the box keeps that answer.
+        let _ = stdout.take(PROBE_READ_LIMIT + 1).read_to_string(&mut output);
         let _ = sender.send(output);
     });
     let output = match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(output) if output.len() as u64 > PROBE_READ_LIMIT => {
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::agent::manifest::log("the login shell answered with more output than the probe reads");
+            return HashMap::new();
+        }
         Ok(output) => output,
         Err(_) => {
             // The reader thread stays parked on a pipe nothing will close. It is
@@ -400,6 +437,9 @@ fn probe_login_shell() -> HashMap<String, String> {
 
 /// Leads the probe's own output, so whatever an rc printed stays behind it.
 const PROBE_MARKER: &str = "__termio_probe__";
+
+/// How much of a chatty rc's output the probe will read before giving up on it.
+const PROBE_READ_LIMIT: u64 = 64 * 1024;
 
 /// The values the probe printed, taken from after the **last** marker.
 ///

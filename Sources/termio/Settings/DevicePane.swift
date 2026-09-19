@@ -607,13 +607,16 @@ private struct MachineAgentsPane: View {
     /// names for one write, and only the one that does what both switches say can
     /// honestly claim the machine is current.
     private func reinstallIntegration() async -> InstallFeedback {
+        // Captured once: Settings stays editable while the install is in flight,
+        // and the stamp has to probe what the install was actually given.
+        let commands = model.commandPairs
         let outcome = await AgentIntegrationInstaller.sync(
             hooks: settings.agentHooksEnabled ? .install : .remove,
             skills: settings.sessionControlEnabled ? .install : .remove,
             target: machine.integrationTarget,
-            commands: model.authoredCommands)
+            commands: Dictionary(commands.map { ($0.id, $0.command) }) { first, _ in first })
         if outcome.failure == nil && outcome.failed.isEmpty {
-            await model.stampIntegration()
+            await model.stampIntegration(commands: commands)
         }
         return .summarizing(
             outcome, headline: localized("Reinstalled"), unit: localized("agents"))
