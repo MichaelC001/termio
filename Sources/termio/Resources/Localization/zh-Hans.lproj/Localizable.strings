@@ -880,10 +880,8 @@
 	<string>没有 PR</string>
 	<key>No Session</key>
 	<string>没有会话</string>
-	<key>No agent CLIs found on %@.</key>
-	<string>在 %@ 上未找到任何 Agent 命令行工具。</string>
-	<key>No agent CLIs found.</key>
-	<string>未找到任何 Agent 命令行工具。</string>
+	<key>No agent CLIs on %@ yet. Install one there and it shows up here.</key>
+	<string>%@ 上还没有 Agent 命令行工具。在那台机器上装一个，这里就会显示。</string>
 	<key>No bundled tool to install from.</key>
 	<string>应用包中没有可安装的工具。</string>
 	<key>No command to run.</key>

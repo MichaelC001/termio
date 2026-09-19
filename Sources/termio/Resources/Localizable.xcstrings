@@ -4334,22 +4334,12 @@
         }
       }
     },
-    "No agent CLIs found on %@.": {
+    "No agent CLIs on %@ yet. Install one there and it shows up here.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 %@ 上未找到任何 Agent 命令行工具。"
-          }
-        }
-      }
-    },
-    "No agent CLIs found.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未找到任何 Agent 命令行工具。"
+            "value": "%@ 上还没有 Agent 命令行工具。在那台机器上装一个，这里就会显示。"
           }
         }
       }

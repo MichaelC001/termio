@@ -880,10 +880,8 @@
 	<string>No Pull Requests</string>
 	<key>No Session</key>
 	<string>No Session</string>
-	<key>No agent CLIs found on %@.</key>
-	<string>No agent CLIs found on %@.</string>
-	<key>No agent CLIs found.</key>
-	<string>No agent CLIs found.</string>
+	<key>No agent CLIs on %@ yet. Install one there and it shows up here.</key>
+	<string>No agent CLIs on %@ yet. Install one there and it shows up here.</string>
 	<key>No bundled tool to install from.</key>
 	<string>No bundled tool to install from.</string>
 	<key>No command to run.</key>

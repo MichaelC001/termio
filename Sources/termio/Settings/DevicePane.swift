@@ -158,6 +158,15 @@ struct DevicePane: View {
     private var outcomeSubtext: String {
         switch model.readiness {
         case .ready:
+            // Ready is about Termio's own setup, which is why a machine with no
+            // agent on it still earns the word — `termiod` is there and its hooks
+            // are current. What it must not do is promise agents that are not
+            // there, so the sentence says what is true and where the next step is.
+            // Connect, at the top of this pane, is that step: installing an agent
+            // is done on the machine, each with its own installer.
+            guard model.hasAgentAvailable else {
+                return localized("No agent CLIs on \(machine.name) yet. Install one there and it shows up here.")
+            }
             // Only promise the reporting when it was actually asked for: with both
             // integration switches off, setup deliberately installs nothing, and
             // "reports their status back here" would be a claim about hooks that

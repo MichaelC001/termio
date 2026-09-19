@@ -309,6 +309,12 @@ final class DevicePaneModel: ObservableObject {
         return discovered.readiness(for: agent)
     }
 
+    /// Whether anything on the user's list answered *available* the last time we
+    /// looked. A fact the pane reports, never a state it blocks on.
+    var hasAgentAvailable: Bool {
+        discovered?.agents.values.contains(AgentReadiness.available.rawValue) ?? false
+    }
+
     /// Asks the machine, without changing anything on it. The pane's own refresh,
     /// and what the roster row calls when it first appears.
     func check() async {
@@ -346,8 +352,10 @@ final class DevicePaneModel: ObservableObject {
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
         state.integrationVersion = discovered?.integrationVersion
         apply(state)
-        // `resolve` already names the first thing in the way — unreachable, or
-        // nothing to run — and those are exactly the two that stop the chain.
+        // The one thing that stops the chain here is a machine that stopped
+        // answering between the two rungs. Finding no agent does not: the
+        // integration rung then has nothing to write, which is an empty result
+        // rather than a failure, and the machine is set up either way.
         if case .blocked = readiness { return }
 
         step = .installIntegration
@@ -378,13 +386,22 @@ final class DevicePaneModel: ObservableObject {
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
+        //
+        // An empty outcome is the other way there is nothing to add: a machine
+        // with no agent on it has no config for either half to write into. That
+        // is not "Nothing to install" in the red sense `summarizing` reserves for
+        // a request that came back with nothing — the Ready line above already
+        // says the box has no agents, and a failure chip under it would
+        // contradict the word it sits beneath.
         let headline: String? = switch (settings.agentHooksEnabled, settings.sessionControlEnabled) {
         case (true, true): localized("Hooks and skill installed")
         case (true, false): localized("Hooks installed")
         case (false, true): localized("Skill installed")
         case (false, false): nil
         }
-        feedback = headline.map { .summarizing(outcome, headline: $0, unit: localized("agents")) }
+        feedback = outcome.isEmpty
+            ? nil
+            : headline.map { .summarizing(outcome, headline: $0, unit: localized("agents")) }
     }
 
     /// The first rung. This Mac needs the `termio` CLI on `PATH` — a hook it
@@ -442,17 +459,18 @@ final class DevicePaneModel: ObservableObject {
     }
 
     /// What a completed probe means, in one line: ready when the machine
-    /// answered, something on it can run, and this build put its hooks there —
-    /// and otherwise the **first** thing standing in the way, in that order.
+    /// answered and this build put its daemon and hooks there — and otherwise
+    /// the **first** thing standing in the way.
     ///
-    /// Order matters more than completeness. A box that does not answer also has
-    /// no agent CLIs and no hooks, and saying all three would invite the user to
-    /// go install an agent on a machine that is switched off.
+    /// Having no agent CLI is **not** one of those things. Setting a machine up
+    /// is putting `termiod` on it; the agents are software the user installs
+    /// themselves, each with its own installer per distro and its own login.
+    /// Gating on them made a fresh box report a fault for the one thing setup
+    /// was never going to do, and then offered the same button again as the fix.
+    /// What the box has is reported instead — `hasAgentAvailable`, in the pane's
+    /// own words.
     private func resolve(_ state: DeviceDiscoveredState) -> DeviceReadinessState {
         guard state.reachable else { return .blocked(localized("Can’t reach \(device.name).")) }
-        guard state.agents.values.contains(AgentReadiness.available.rawValue) else {
-            return .blocked(localized("No agent CLIs found on \(device.name)."))
-        }
         // Not blocked, just not done — the setup button is the whole next step, so
         // it reads as "set up this device" rather than as a fault.
         return state.carriesCurrentIntegration ? .ready : .unasked
