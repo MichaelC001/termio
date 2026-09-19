@@ -84,6 +84,11 @@ enum AgentAvailability {
         var escaped = false
         for scalar in command.unicodeScalars.drop(while: { $0.properties.isWhitespace }) {
             if escaped {
+                // Inside double quotes a backslash is special only before these.
+                // `"/opt/a\tools/cli"` names a path that keeps its backslash.
+                if quote == "\"", !"$`\"\\\n".unicodeScalars.contains(scalar) {
+                    word.append("\\")
+                }
                 word.append(scalar)
                 escaped = false
             } else if scalar == "\\", quote != "'" {

@@ -26,9 +26,15 @@ final class AgentAvailabilityFirstWordTests: XCTestCase {
         XCTAssertNil(word("   "))
     }
 
-    func testABackslashIsLiteralInsideSingleQuotesAndAnEscapeOutside() {
+    func testABackslashFollowsTheShellsThreeRules() {
+        // Literal inside single quotes.
         XCTAssertEqual(word("'/opt/a\\tools/cli'"), "/opt/a\\tools/cli")
-        XCTAssertEqual(word("\"/opt/a\\tools/cli\""), "/opt/atools/cli")
+        // Inside double quotes, special only before $ ` " \\ and newline — so a
+        // path keeps the backslash it really has.
+        XCTAssertEqual(word("\"/opt/a\\tools/cli\""), "/opt/a\\tools/cli")
+        XCTAssertEqual(word("\"/opt/a\\\"b/cli\""), "/opt/a\"b/cli")
+        // An escape for anything, unquoted.
+        XCTAssertEqual(word("/opt/a\\tools/cli"), "/opt/atools/cli")
     }
 
     func testAnUnterminatedQuoteTakesTheRestOfTheLine() {

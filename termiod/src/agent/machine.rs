@@ -265,11 +265,16 @@ pub fn first_word(command: &str) -> Option<String> {
             // Not inside single quotes, where the shell takes a backslash
             // literally — `'/opt/agent\tools/cli'` names a path that really has
             // one, and eating it looks for a file that does not exist.
-            '\\' if quote != Some('\'') => {
-                if let Some(next) = chars.next() {
+            '\\' if quote != Some('\'') => match chars.next() {
+                // Inside double quotes a backslash is special only before these.
+                // `"/opt/a\tools/cli"` names a path that keeps its backslash.
+                Some(next) if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') => {
+                    word.push('\\');
                     word.push(next);
                 }
-            }
+                Some(next) => word.push(next),
+                None => {}
+            },
             '\'' | '"' => match quote {
                 Some(open) if open == c => quote = None,
                 Some(_) => word.push(c),
@@ -311,7 +316,15 @@ fn probe_login_shell() -> HashMap<String, String> {
             .join(" ")
     );
     let mut child = match std::process::Command::new(login_shell())
-        .args(["-lc", &script])
+        // `-i` as well as `-l`, because a session gets both. The shell a session
+        // runs sits on a PTY with `argv[0] = "-zsh"`, so it is a login shell
+        // *and* an interactive one and sources `.zshrc` — where an agent's
+        // directory is very often the only place it is added. Asking a
+        // non-interactive shell answered "not installed" for an agent every
+        // session on this box can run, and the app, which asks `-ilc`, reported
+        // it available: the two sides judging differently is the whole bug class
+        // this file keeps hitting.
+        .args(["-ilc", &script])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -440,7 +453,9 @@ mod tests {
         assert_eq!(first_word("   "), None);
         // A backslash is literal inside single quotes and an escape outside.
         assert_eq!(first_word("'/opt/a\\tools/cli'").as_deref(), Some("/opt/a\\tools/cli"));
-        assert_eq!(first_word("\"/opt/a\\tools/cli\"").as_deref(), Some("/opt/atools/cli"));
+        assert_eq!(first_word("\"/opt/a\\tools/cli\"").as_deref(), Some("/opt/a\\tools/cli"));
+        assert_eq!(first_word("\"/opt/a\\\"b/cli\"").as_deref(), Some("/opt/a\"b/cli"));
+        assert_eq!(first_word("/opt/a\\tools/cli").as_deref(), Some("/opt/atools/cli"));
         // An unterminated quote takes the rest of the line rather than nothing.
         assert_eq!(first_word("'/opt/a b").as_deref(), Some("/opt/a b"));
         // A combining mark right after the closing quote belongs to the word.

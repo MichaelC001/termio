@@ -495,11 +495,20 @@ final class DevicePaneModel: ObservableObject {
     func stampIntegration() async {
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage(present: state.availableAgents)
-        // The install round-tripped through that machine's daemon, which is
-        // proof it answers — whatever this probe saw, the install just disproved
-        // a failure.
-        state.daemonAnswered = true
+        // Only a probe that actually got an answer may set coverage. A machine
+        // that dropped off between the install and this probe reports no agents,
+        // and recording *that* would make every agent on it read as newly
+        // arrived once it came back. The previous record is carried instead —
+        // the install did happen, and the reachability problem is reported on
+        // its own by `resolve`.
+        if state.reachable, state.daemonAnswered {
+            state.recordCoverage(present: state.availableAgents)
+            // The install round-tripped through that machine's daemon, which is
+            // proof it answers.
+            state.daemonAnswered = true
+        } else {
+            state.integrationAgents = discovered?.integrationAgents
+        }
         apply(state)
     }
 
