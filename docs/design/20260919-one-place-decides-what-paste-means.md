@@ -1,6 +1,6 @@
 ---
 title: One place decides what paste means
-status: draft
+status: active
 type: rfc
 created: 2026-09-19
 updated: 2026-09-19
@@ -89,7 +89,30 @@ silence would read as a dropped keystroke.
 
 This RFC covers what is left.
 
-## Proposal 1 — move the file-URL rule to layer 3
+## Proposal 1 — move the file-URL rule to layer 3 — **shipped**
+
+Landed as libghostty-swift PR #9 (release `1.1.1`) and the pin bump that follows
+it. `NSPasteboard.terminalPasteText()` reads the file reference per pasteboard
+item; layer 1's file branch is gone. Two departures from upstream were taken
+deliberately and are documented at the call site: POSIX single quotes rather
+than ghostty's backslash-escaping, so pasting and dropping a path agree, and a
+trailing space after a file reference but never after plain text. Layer 2's
+guard now asks the same question the read asks, closing the first open question
+below.
+
+**A trap worth the next person's time.** The wrapper's release CI rebuilds
+against ghostty *main*, so cutting a release moves the engine whether or not the
+change needs it: `1.1.0` came out carrying ghostty `-2671-gb32f20f` against a
+pin on `-2555-g7aab0a0`, 116 commits of drift. `termiod/vt/Cargo.toml` requires
+the Rust VT and the Swift clients to run **one** ghostty, and says a mismatched
+`GHOSTTY_SOURCE_DIR` "does not fail to build — it corrupts the heap". The fix
+was to re-cut with the workflow's `ghostty_ref` input pinned to the sha already
+in use (`1.1.1 · ghostty v1.3.1-2555-g7aab0a0`). **Any wrapper-only release must
+pass `ghostty_ref`**, or it silently becomes an engine bump that breaks host /
+client VT parity. `1.1.0` is published and should not be adopted.
+
+The original reasoning, kept for the record:
+
 
 Port `getOpinionatedStringContents()` into the wrapper's `pasteboardText()`, then
 drop PR #666's file branch from layer 1.

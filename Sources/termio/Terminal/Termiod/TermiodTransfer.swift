@@ -188,14 +188,12 @@ extension Termiod {
 
 /// ⌘V / Paste aimed at a terminal surface.
 ///
-/// Two cases cannot ride ghostty's own `paste_from_clipboard`. Finder's copy
-/// puts a file URL *and* the basename as text, and the text is what a normal
-/// paste would insert — which is why file URLs are read first and typed as
-/// shell-quoted absolute paths, the same payload a drop already sends. An
-/// image at a session on another device cannot survive the machine boundary
-/// either: a Ctrl+V delivered to a VPS makes the agent read *the VPS's*
-/// clipboard, so the bytes move to the device and the path they landed at is
-/// pasted as text.
+/// One case cannot ride ghostty's own `paste_from_clipboard`: an image at a
+/// session on another device. A Ctrl+V delivered to a VPS makes the agent read
+/// *the VPS's* clipboard, and a path names a file on this Mac that does not
+/// exist over there — so the bytes move to the device and the path they landed
+/// at is pasted as text. A copied file resolves to its path inside libghostty
+/// itself, which is why that is no longer intercepted here.
 ///
 /// Intercepted with a local key monitor for the same reason `TerminalContextMenu`
 /// uses one: the wrapper instantiates its own view class, so there is no
@@ -275,19 +273,9 @@ final class TermiodPasteInterceptor: NSObject {
             }
         }
 
-        // A file the terminal can reach is pasted as the path to it — the same
-        // tokens a drop sends (`TerminalPane.sendPaths`). Finder writes the
-        // basename as text alongside the URL, and that basename is the bug
-        // this branch exists to end.
-        if let text = ClipboardFilePaths.current() {
-            if store.surfaces[sessionID]?.send(text) == true { return true }
-            Log.pty.error("""
-            pasted path could not be sent — \
-            \(session.title, privacy: .public) has no live terminal
-            """)
-            return true
-        }
-
+        // Below the boundary there is nothing to take over: libghostty's own
+        // clipboard read resolves a copied file to its path, so an ordinary
+        // paste already inserts what this used to intercept for.
         return false
     }
 
@@ -389,25 +377,18 @@ final class TermiodPasteInterceptor: NSObject {
     }
 }
 
-/// File URLs on the pasteboard, reduced to the shell-quoted absolute paths a
-/// prompt can take.
+/// The files a clipboard names.
 ///
-/// Finder's copy puts the URL *and* the basename as text (and often an icon).
-/// The basename is what a normal paste would insert, which is why this reads
-/// file-only NSURL objects and ignores the string flavor: inferring a file
-/// from text would steal ordinary path-looking pastes, and `lastPathComponent`
-/// is the bug this exists to end.
+/// Turning those into the text a prompt receives is libghostty's job now
+/// (`NSPasteboard.terminalPasteText`, which resolves a copied file to its path
+/// the way ghostty's own app does). What survives here is the question the
+/// machine boundary still has to ask: *which* files, so an image aimed at
+/// another machine can be recognised and carried there.
+///
+/// Reads file-only NSURL objects and ignores the string flavor. Finder writes
+/// the URL *and* the basename as text, and inferring a file from that text
+/// would steal ordinary path-looking pastes.
 struct ClipboardFilePaths {
-    /// The text inserted at a prompt — each path one quoted argument, joined
-    /// by spaces, with a trailing space so typing can continue. `nil` when the
-    /// pasteboard holds no file URLs.
-    @MainActor
-    static func current(_ pasteboard: NSPasteboard = .general) -> String? {
-        let urls = fileURLs(on: pasteboard)
-        guard !urls.isEmpty else { return nil }
-        return urls.map { TermioStore.promptToken(for: $0) }.joined(separator: " ") + " "
-    }
-
     /// Standardized file URLs in pasteboard order. Existence is not required:
     /// a copied path is still a path after the file has been moved.
     static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
