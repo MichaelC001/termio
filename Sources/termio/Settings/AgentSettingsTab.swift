@@ -241,7 +241,8 @@ struct AgentSettingsTab: View {
             commands: settings.authoredCommands())
         if outcome.failure == nil && outcome.failed.isEmpty {
             DeviceStateCache.stampIntegration(
-                AppInfo.buildStamp, for: KnownDevice.thisMac.settingsKey)
+                AppInfo.buildStamp, covering: await settings.presentAgentIDs(),
+                for: KnownDevice.thisMac.settingsKey)
         }
         return .summarizing(
             outcome, headline: localized("Installed"), unit: localized("agents"))

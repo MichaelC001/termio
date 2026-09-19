@@ -52,6 +52,19 @@ enum AgentAvailability {
         }
     }
 
+    /// Which of these commands resolve on this Mac, by agent id.
+    ///
+    /// Takes the map rather than reading it from settings, so a caller that is
+    /// already inside a task — the launch sync is one — never has to reach back
+    /// into an observable object to answer this.
+    static func presentIDs(in commands: [String: String]) async -> [String] {
+        var present: [String] = []
+        for (id, command) in commands where await isCommandAvailable(command) {
+            present.append(id)
+        }
+        return present.sorted()
+    }
+
     /// The binary a command line names: its first shell word, with quoting
     /// honoured.
     ///
@@ -62,26 +75,32 @@ enum AgentAvailability {
     /// same way; the two must agree, or this side reports an agent available and
     /// that side refuses to write its config.
     static func firstWord(_ command: String) -> String? {
-        var word = ""
-        var quote: Character?
+        // Unicode *scalars*, not Characters: a combining mark right after a
+        // closing quote forms one grapheme with it, and iterating graphemes
+        // would miss the quote. `termiod` walks scalars, and the two answers
+        // have to be the same one.
+        var word = String.UnicodeScalarView()
+        var quote: Unicode.Scalar?
         var escaped = false
-        for character in command.drop(while: \.isWhitespace) {
+        for scalar in command.unicodeScalars.drop(while: { $0.properties.isWhitespace }) {
             if escaped {
-                word.append(character)
+                word.append(scalar)
                 escaped = false
-            } else if character == "\\" {
+            } else if scalar == "\\", quote != "'" {
+                // Never inside single quotes, where the shell keeps a backslash
+                // literally — `'/opt/agent\tools/cli'` names a path that has one.
                 escaped = true
-            } else if character == quote {
+            } else if scalar == quote {
                 quote = nil
-            } else if quote == nil, character == "'" || character == "\"" {
-                quote = character
-            } else if quote == nil, character.isWhitespace {
+            } else if quote == nil, scalar == "'" || scalar == "\"" {
+                quote = scalar
+            } else if quote == nil, scalar.properties.isWhitespace {
                 break
             } else {
-                word.append(character)
+                word.append(scalar)
             }
         }
-        return word.isEmpty ? nil : word
+        return word.isEmpty ? nil : String(word)
     }
 
     /// One login-shell spawn answers for everything a GUI-launched app cannot see

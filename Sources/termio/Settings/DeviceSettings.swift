@@ -179,7 +179,7 @@ struct DeviceDiscoveredState: Codable, Equatable {
     }
 
     /// Records what an install covered: **everything the machine had at the
-    /// time**, from the probe that ran beside it.
+    /// time**, from a probe that ran beside it.
     ///
     /// Presence is the primitive, not the install's own rows. Rows undercount in
     /// ways that have nothing to do with an agent being here: three catalog
@@ -191,8 +191,12 @@ struct DeviceDiscoveredState: Codable, Equatable {
     /// The probe covers the whole catalog rather than the user's list, so an
     /// agent that was here but unlisted is already covered on the day it is
     /// listed — it was wired all along.
-    mutating func recordCoverage() {
-        integrationAgents = availableAgents
+    /// `present` must come from a probe taken for *this* install. Recording the
+    /// cached set instead is how a successful reinstall stamped an agent set
+    /// that predated the agent it had just wired, so the next check reported it
+    /// as newly arrived.
+    mutating func recordCoverage(present: [String]) {
+        integrationAgents = present.sorted()
     }
 
     /// Carries a previous probe's integration record onto this fresh one.
@@ -267,17 +271,16 @@ enum DeviceStateCache {
     /// saying so rather than nothing. It learned nothing about which agent CLIs
     /// are there, so `agents` stays empty and every row on that machine keeps
     /// reading `unknown` until something actually asks.
-    /// Records an install against what the machine was last known to have. The
-    /// Agents-tab path installs across the whole roster without asking any
-    /// machine anything, so the last probe is the best this knows — and a box
-    /// whose agents have changed since reads as needing setup, which it does.
-    static func stampIntegration(_ version: String?, for key: String) {
+    /// Records an install against a present set its caller just took. This is
+    /// the this-Mac path, where a probe is one cached `PATH` lookup away, so
+    /// there is no excuse for stamping a set the machine may have outgrown.
+    static func stampIntegration(_ version: String?, covering present: [String], for key: String) {
         var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.integrationVersion = version
         if version == nil {
             state.integrationAgents = nil
         } else {
-            state.recordCoverage()
+            state.recordCoverage(present: present)
         }
         save(state, for: key)
     }

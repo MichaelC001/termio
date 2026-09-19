@@ -426,7 +426,7 @@ final class DevicePaneModel: ObservableObject {
             return
         }
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage()
+        state.recordCoverage(present: state.availableAgents)
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
@@ -488,14 +488,17 @@ final class DevicePaneModel: ObservableObject {
     /// does the same thing inline; Reinstall is the other way the same fact
     /// becomes true, and until it said so a repaired machine kept reading as
     /// behind.
-    func stampIntegration() {
-        var state = discovered ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
-        state.checkedAt = Date()
+    /// Re-probes first. Coverage may only be recorded beside a fresh answer, and
+    /// this runs after a *successful* install — the agent the user installed five
+    /// minutes ago is exactly the one that just got its hooks, and stamping the
+    /// older set would report it as newly arrived on the next check.
+    func stampIntegration() async {
+        var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
         state.integrationVersion = AppInfo.buildStamp
-        state.recordCoverage()
+        state.recordCoverage(present: state.availableAgents)
         // The install round-tripped through that machine's daemon, which is
-        // proof it answers — a stale `false` from an earlier probe must not
-        // survive the very thing that disproves it.
+        // proof it answers — whatever this probe saw, the install just disproved
+        // a failure.
         state.daemonAnswered = true
         apply(state)
     }

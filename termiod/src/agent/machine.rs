@@ -262,7 +262,10 @@ pub fn first_word(command: &str) -> Option<String> {
     let mut chars = command.trim_start().chars();
     while let Some(c) = chars.next() {
         match c {
-            '\\' => {
+            // Not inside single quotes, where the shell takes a backslash
+            // literally — `'/opt/agent\tools/cli'` names a path that really has
+            // one, and eating it looks for a file that does not exist.
+            '\\' if quote != Some('\'') => {
                 if let Some(next) = chars.next() {
                     word.push(next);
                 }
@@ -427,11 +430,21 @@ mod tests {
         assert!(is_command_installed("/bin/sh"));
         // A path typed by hand is exactly where spaces turn up, and splitting on
         // a bare space answers "not installed" for a CLI sitting right there.
+        // These cases are pinned identically in the app
+        // (`AgentAvailabilityFirstWordTests`). The two must agree, or one side
+        // reports an agent available and this one refuses to write its config.
         assert_eq!(first_word("\"/Agent Tools/codex\" --flag").as_deref(), Some("/Agent Tools/codex"));
         assert_eq!(first_word("'/Agent Tools/codex'").as_deref(), Some("/Agent Tools/codex"));
         assert_eq!(first_word("/Agent\\ Tools/codex x").as_deref(), Some("/Agent Tools/codex"));
         assert_eq!(first_word("  claude --dangerously").as_deref(), Some("claude"));
         assert_eq!(first_word("   "), None);
+        // A backslash is literal inside single quotes and an escape outside.
+        assert_eq!(first_word("'/opt/a\\tools/cli'").as_deref(), Some("/opt/a\\tools/cli"));
+        assert_eq!(first_word("\"/opt/a\\tools/cli\"").as_deref(), Some("/opt/atools/cli"));
+        // An unterminated quote takes the rest of the line rather than nothing.
+        assert_eq!(first_word("'/opt/a b").as_deref(), Some("/opt/a b"));
+        // A combining mark right after the closing quote belongs to the word.
+        assert_eq!(first_word("'/tmp/cafe'\u{301} --flag").as_deref(), Some("/tmp/cafe\u{301}"));
         assert!(!is_command_installed("/nonexistent/agent-cli"));
         // The empty command is the plain login shell, which is always available.
         assert!(is_command_installed(""));

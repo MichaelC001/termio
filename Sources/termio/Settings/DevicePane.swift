@@ -613,7 +613,7 @@ private struct MachineAgentsPane: View {
             target: machine.integrationTarget,
             commands: model.authoredCommands)
         if outcome.failure == nil && outcome.failed.isEmpty {
-            model.stampIntegration()
+            await model.stampIntegration()
         }
         return .summarizing(
             outcome, headline: localized("Reinstalled"), unit: localized("agents"))

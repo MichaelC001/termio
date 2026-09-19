@@ -708,13 +708,27 @@ final class AppSettings: ObservableObject {
     /// path be anywhere — an agent deliberately kept off `PATH` is the whole
     /// reason to type one — and judging it by the manifest's bare command
     /// answers "not here" for a CLI the app has just reported available.
+    /// The **whole catalog**, not the user's list: the probe asks about every
+    /// agent because coverage is a fact about the machine, and the daemon
+    /// installs against its own catalog. Handing the install a smaller map than
+    /// the probe used is how an unlisted agent with an authored path got probed
+    /// as present and then skipped by the install that was told to cover it.
     func authoredCommands(on device: KnownDevice = .thisMac) -> [String: String] {
         var commands: [String: String] = [:]
-        for agent in orderedAgents(AgentPreset.codingAgents.filter(isAgentListed)) {
+        for agent in AgentPreset.codingAgents {
             guard let command = command(for: agent, on: device) else { continue }
             commands[agent.rawValue] = command
         }
         return commands
+    }
+
+    /// Which catalog agents are on **this Mac** right now, by id.
+    ///
+    /// The local twin of a device's probe, and for the same reason: coverage may
+    /// only ever be recorded beside a fresh answer. Cheap — `isCommandAvailable`
+    /// shares one cached login-shell `PATH` across the catalog.
+    func presentAgentIDs() async -> [String] {
+        await AgentAvailability.presentIDs(in: authoredCommands())
     }
 
     /// The arguments the user authored for this agent, or `nil` when they never

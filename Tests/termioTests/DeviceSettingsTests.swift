@@ -219,7 +219,7 @@ final class DeviceSettingsTests: XCTestCase {
         var machine = state(
             agents: ["claudeCode": "available", "crush": "available", "codex": "missing"],
             covered: nil)
-        machine.recordCoverage()
+        machine.recordCoverage(present: machine.availableAgents)
         XCTAssertEqual(machine.integrationAgents, ["claudeCode", "crush"])
         XCTAssertEqual(machine.agentsOutsideIntegration, [])
         XCTAssertTrue(machine.carriesCurrentIntegration)
@@ -230,7 +230,7 @@ final class DeviceSettingsTests: XCTestCase {
         // later must not report it as newly arrived — it was wired all along.
         var machine = state(
             agents: ["claudeCode": "available", "codex": "available"], covered: nil)
-        machine.recordCoverage()
+        machine.recordCoverage(present: machine.availableAgents)
         XCTAssertEqual(machine.agentsOutsideIntegration, [])
         XCTAssertTrue(machine.carriesCurrentIntegration)
     }
