@@ -243,12 +243,23 @@ pub fn probe(agents: Option<Vec<String>>) -> Vec<AgentPresence> {
         .map(|agent| AgentPresence {
             id: agent.id.clone(),
             command: agent.command.clone(),
-            present: match agent.command.as_deref() {
-                Some(command) => machine::is_command_installed(command),
-                None => true,
-            },
+            present: is_present(agent),
         })
         .collect()
+}
+
+/// Whether this agent's CLI is on this box.
+///
+/// `true` for an agent that declares no command, and `true` when the probe could
+/// not look — the don't-cry-wolf rule `machine::is_command_installed` carries.
+/// One function because the answer decides three things: what a probe reports,
+/// and whether each half of the install writes anything. Two spellings of it
+/// were how the halves came to disagree.
+fn is_present(agent: &AgentDefinition) -> bool {
+    match agent.command.as_deref() {
+        Some(command) => machine::is_command_installed(command),
+        None => true,
+    }
 }
 
 /// Apply `request` against this box's filesystem.
@@ -308,6 +319,13 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
         .into_iter()
         .filter_map(|agent| {
             let spec = agent.hooks.as_ref()?;
+            // The same rule the skill half has always followed: a hook is a line
+            // merged into the agent's own config file, so writing one for an
+            // agent that is not here creates a config nothing on this box reads.
+            // Re-checked on every sync, so an agent installed later is picked up.
+            if !is_present(agent) {
+                return None;
+            }
             Some(install_hooks(agent, spec, request))
         })
         .collect()
@@ -1182,12 +1200,7 @@ fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallR
             let directory = agent.skill_dir.as_deref()?;
             // Install only for agents whose CLI is actually here, so a box
             // without Cursor never grows a `~/.cursor/skills` it cannot use.
-            // Re-checked on every sync, so an agent installed later is picked up.
-            let present = match agent.command.as_deref() {
-                Some(command) => machine::is_command_installed(command),
-                None => true,
-            };
-            if !present {
+            if !is_present(agent) {
                 return None;
             }
             let path = match resolved(agent, &format!("{directory}/termio/SKILL.md")) {
@@ -1350,6 +1363,55 @@ pub(super) mod tests {
             .expect("resolves")
             .hooks
             .expect("has hooks")
+    }
+
+    fn definition_of(json: &str) -> AgentDefinition {
+        AgentManifest::parse(json.as_bytes())
+            .expect("parses")
+            .definition()
+            .expect("resolves")
+    }
+
+    /// The rule both halves of the install now share. Writing a hook for an
+    /// agent that is not on the box leaves a config file nothing there reads —
+    /// on a fresh machine with no agent at all, one per agent on the list. The
+    /// skill half has always refused to; this is the hook half proving it does.
+    #[test]
+    fn a_hook_is_written_only_for_an_agent_that_is_actually_here() {
+        let directory = std::env::temp_dir().join(format!(
+            "termiod-hook-presence-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("temp dir");
+        let here = directory.join("here.json");
+        let gone = directory.join("gone.json");
+
+        // Absolute hook paths, so this asserts on the temp directory and never
+        // touches the home of whoever runs the tests.
+        let manifest = |id: &str, command: &str, file: &std::path::Path| {
+            format!(
+                r#"{{"id":"{id}","name":"{id}","command":"{command}",
+                    "hooks":{{"type":"json","file":"{}","dialect":"claude",
+                    "tool":"tool_name","events":[{{"on":"Stop","state":"done"}}]}}}}"#,
+                file.display()
+            )
+        };
+        let catalog = AgentCatalog {
+            all: vec![
+                definition_of(&manifest("here", "/bin/sh", &here)),
+                definition_of(&manifest("gone", "/nonexistent/agent-cli", &gone)),
+            ],
+            bundled: Vec::new(),
+        };
+
+        let results = sync_hooks(&catalog, &local_request("/usr/local/bin/termio"));
+
+        assert!(here.exists(), "the agent that is here should have been wired");
+        assert!(!gone.exists(), "an absent agent must not grow a config");
+        assert_eq!(results.len(), 1, "and it is not reported as an agent we touched");
+        assert_eq!(results[0].id, "here");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     fn spec(json: &str) -> HookSpec {
