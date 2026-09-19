@@ -241,10 +241,13 @@ pub fn probe(
     agents: Option<Vec<String>>,
     commands: HashMap<String, String>,
 ) -> Vec<AgentPresence> {
-    // Ask the shell again. Both entry points are user-initiated and rare, and
-    // the alternative is telling someone who just installed an agent that it is
-    // not there until they restart the daemon.
-    machine::forget_login_shell();
+    machine::with_fresh_login_shell(|| probe_against_shell(agents, commands))
+}
+
+fn probe_against_shell(
+    agents: Option<Vec<String>>,
+    commands: HashMap<String, String>,
+) -> Vec<AgentPresence> {
     let catalog = AgentCatalog::load();
     let wanted: Option<HashSet<&str>> = agents
         .as_ref()
@@ -300,8 +303,15 @@ pub struct InstallReport {
 }
 
 /// Apply `request` against this box's filesystem.
+///
+/// The whole install runs against one login-shell answer: which agents are here
+/// *and* where each one keeps its config come from the same environment, and a
+/// concurrent probe cannot change it underneath.
 pub fn run(request: &InstallRequest) -> InstallReport {
-    machine::forget_login_shell();
+    machine::with_fresh_login_shell(|| run_against_shell(request))
+}
+
+fn run_against_shell(request: &InstallRequest) -> InstallReport {
     let catalog = AgentCatalog::load();
     // Asked **once**, up front, and then handed to both halves and reported
     // back. Asking again afterwards let a concurrent `probe_agents` invalidate

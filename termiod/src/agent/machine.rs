@@ -331,18 +331,32 @@ fn probe_cache() -> &'static std::sync::Mutex<Option<HashMap<String, String>>> {
     PROBED.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// Forget the cached login-shell answer, so the next question spawns a shell.
+/// Runs `operation` against a login-shell answer taken fresh for it, and held
+/// still for its whole duration.
 ///
 /// The cache exists because an rc can take seconds and a hot path must not pay
-/// for it twice. But it was never invalidated, so a user who installed an agent
-/// and added its directory to `.zshrc` kept reading as not having it until the
-/// daemon restarted — and a same-version setup does not restart the daemon.
-/// Called at the top of the two entry points that are user-initiated and rare:
-/// installing and probing.
-pub fn forget_login_shell() {
+/// for it twice. It needs refreshing, though — a user who installs an agent and
+/// adds its directory to `.zshrc` must not read as not having it until the
+/// daemon restarts, and a same-version setup does not restart the daemon.
+///
+/// Refreshing and *using* have to be one operation. Clearing the cache at the
+/// top and then reading it as we went let a second caller clear it mid-flight:
+/// an install decided an agent was present against one answer and resolved
+/// where its config lives against another, so a plugin landed in the default
+/// directory while the one `XDG_CONFIG_HOME` names stayed empty — and the reply
+/// still said installed, so nothing ever asked again. Freezing presence was not
+/// enough; the environment has to be frozen too, and the honest way to say that
+/// is one lock around the whole thing.
+pub fn with_fresh_login_shell<T>(operation: impl FnOnce() -> T) -> T {
+    static IN_FLIGHT: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    let guard = IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(()));
+    // Poisoning only means some earlier caller panicked; the cache is still a
+    // cache, and refusing to install over it would be worse than proceeding.
+    let _held = guard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Ok(mut held) = probe_cache().lock() {
         *held = None;
     }
+    operation()
 }
 
 fn probe_login_shell() -> HashMap<String, String> {
