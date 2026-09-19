@@ -303,23 +303,32 @@ pub struct InstallReport {
 pub fn run(request: &InstallRequest) -> InstallReport {
     machine::forget_login_shell();
     let catalog = AgentCatalog::load();
+    // Asked **once**, up front, and then handed to both halves and reported
+    // back. Asking again afterwards let a concurrent `probe_agents` invalidate
+    // the shell cache in between: the halves skipped an absent agent against one
+    // answer and the report claimed it against another, so the client recorded
+    // coverage for a config that was never written.
+    let present = present_set(&catalog, request);
     let mut results = Vec::new();
     if request.hooks != HalfAction::Leave {
-        results.extend(sync_hooks(&catalog, request));
+        results.extend(sync_hooks(&catalog, request, &present));
     }
     if request.skills != HalfAction::Leave {
-        results.extend(sync_skills(&catalog, request));
+        results.extend(sync_skills(&catalog, request, &present));
     }
-    // Taken from the same cached answer both halves just used, so the set
-    // reported is the set they wrote against.
-    let mut present: Vec<String> = catalog
+    let mut reported: Vec<String> = present.into_iter().collect();
+    reported.sort();
+    InstallReport { results, present: reported }
+}
+
+/// Which catalog agents this box has, by id, for one install.
+fn present_set(catalog: &AgentCatalog, request: &InstallRequest) -> HashSet<String> {
+    catalog
         .all
         .iter()
         .filter(|agent| is_present(agent, &request.commands))
         .map(|agent| agent.id.clone())
-        .collect();
-    present.sort();
-    InstallReport { results, present }
+        .collect()
 }
 
 fn selected<'a>(catalog: &'a AgentCatalog, request: &InstallRequest) -> Vec<&'a AgentDefinition> {
@@ -338,7 +347,9 @@ fn selected<'a>(catalog: &'a AgentCatalog, request: &InstallRequest) -> Vec<&'a 
 
 // MARK: - Hooks
 
-fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallResult> {
+fn sync_hooks(
+    catalog: &AgentCatalog, request: &InstallRequest, present: &HashSet<String>
+) -> Vec<InstallResult> {
     if request.hooks != HalfAction::Install {
         // Sweep everything termio has ever installed, bundled declarations
         // included, so a shipped hook a user override removed or redirected is
@@ -371,7 +382,7 @@ fn sync_hooks(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallRe
             // an agent that is not here leaves a file nothing on this box reads
             // — on a fresh machine, one per agent on the list.
             // Re-checked on every sync, so an agent installed later is picked up.
-            if !is_present(agent, &request.commands) {
+            if !present.contains(&agent.id) {
                 return None;
             }
             Some(install_hooks(agent, spec, request))
@@ -1213,7 +1224,9 @@ fn trim_newlines(text: &str) -> String {
 
 // MARK: - Skills
 
-fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallResult> {
+fn sync_skills(
+    catalog: &AgentCatalog, request: &InstallRequest, present: &HashSet<String>
+) -> Vec<InstallResult> {
     if request.skills != HalfAction::Install {
         // Every skills directory termio has ever installed into — bundled
         // declarations plus the live catalog — so a shipped dir a user override
@@ -1248,7 +1261,7 @@ fn sync_skills(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<InstallR
             let directory = agent.skill_dir.as_deref()?;
             // Install only for agents whose CLI is actually here, so a box
             // without Cursor never grows a `~/.cursor/skills` it cannot use.
-            if !is_present(agent, &request.commands) {
+            if !present.contains(&agent.id) {
                 return None;
             }
             let path = match resolved(agent, &format!("{directory}/termio/SKILL.md")) {
@@ -1454,7 +1467,8 @@ pub(super) mod tests {
             bundled: Vec::new(),
         };
 
-        let results = sync_hooks(&catalog, &local_request("/usr/local/bin/termio"));
+        let request = local_request("/usr/local/bin/termio");
+        let results = sync_hooks(&catalog, &request, &present_set(&catalog, &request));
 
         assert!(here.exists(), "the agent that is here should have been wired");
         assert!(!gone.exists(), "an absent agent must not grow a config");
@@ -1489,7 +1503,7 @@ pub(super) mod tests {
         // Without the authored command this agent is absent, and nothing is
         // written — the case the previous test covers.
         let mut request = local_request("/usr/local/bin/termio");
-        assert!(sync_hooks(&catalog, &request).is_empty());
+        assert!(sync_hooks(&catalog, &request, &present_set(&catalog, &request)).is_empty());
         assert!(!wired.exists());
 
         // With it, the same agent is here and gets its hooks. Arguments ride
@@ -1499,7 +1513,7 @@ pub(super) mod tests {
         request
             .commands
             .insert("authored".into(), "\"/bin/sh\" --dangerously-skip".into());
-        let results = sync_hooks(&catalog, &request);
+        let results = sync_hooks(&catalog, &request, &present_set(&catalog, &request));
 
         assert_eq!(results.len(), 1, "the authored path is what decides");
         let written = std::fs::read_to_string(&wired).expect("written");
