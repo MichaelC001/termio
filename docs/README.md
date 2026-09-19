@@ -75,13 +75,13 @@ from the real front matter).
 | archived | rfc | [Device RFC blocking decisions](design/20260814-remote-to-device.decisions.md) |
 | archived | rfc | [Review — One path, local sessions run through termiod too](design/20260817-one-path-local-through-termiod.review-claude.md) |
 | archived | rfc | [RFC: Per-project agent sandbox (Apple Seatbelt)](design/20260630-sandbox-seatbelt.md) |
-| done | bug | ["Resize stubs: five fixes, and the witness that lied"](bug/resize-keyframe-grid-race-HANDOFF.md) |
 | done | bug | [Agent welcome banner frozen into a narrow column when a session opens in a wide window](bug/terminal-narrow-grid-frozen-banner-on-open.md) |
 | done | bug | [HANDOFF: a pane renders at the wrong grid while a phone is attached](bug/phone-attached-resize-HANDOFF.md) |
 | done | bug | [HANDOFF: terminal content does not reflow on window resize](bug/terminal-resize-no-reflow-HANDOFF.md) |
 | done | bug | [iOS terminal fails "unauthorized" while the session list works (companion over tunnel)](bug/companion-terminal-unauthorized-over-tunnel.md) |
 | done | bug | [New terminal opens unfocused (hollow cursor, beeps until clicked)](bug/terminal-focus-loss-on-new-session-mount.md) |
 | done | bug | [Resize mojibake: one symptom, eleven causes](bug/window-drag-resize-artifacts-HANDOFF.md) |
+| done | bug | [Resize stubs: five fixes, and the witness that lied](bug/resize-keyframe-grid-race-HANDOFF.md) |
 | done | bug | [Terminal loses focus after window deactivation](bug/terminal-focus-loss-on-window-key.md) |
 | done | bug | [Terminal loses focus while the window stays key — sibling-render trigger](bug/terminal-focus-loss-on-sibling-render.md) |
 | done | design | [Agent Abstraction & Configuration](design/20260718-agent-abstraction-and-configuration.md) |
@@ -135,6 +135,7 @@ from the real front matter).
 | draft | rfc | [Installing termio's agent integration on a device](design/20260824-agent-integration-on-a-device.md) |
 | draft | rfc | [iOS as a device client](design/20260824-ios-as-device-client.md) |
 | draft | rfc | [Onboarding —— 首次启动体验设计](design/20260630-onboarding.md) |
+| draft | rfc | [One place decides what paste means](design/20260919-one-place-decides-what-paste-means.md) |
 | draft | rfc | [Retire the companion's second protocol — the phone attaches to a device](design/20260831-companion-second-protocol-retires.md) |
 | draft | rfc | [Settings that know which machine they mean](design/20260824-settings-that-know-which-machine.md) |
 | draft | rfc | [Superlogical's server memory model: three levels of parking](design/20260902-superlogical-server-memory-parking.md) |
