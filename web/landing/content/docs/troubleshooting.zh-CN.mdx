@@ -3,7 +3,7 @@ title: 问题排查
 description: 真正会出问题的那些事——状态点不动、Agent 起不来、重启之后会话不见了、一台机器不应答了、手机连不上——每一条都给一个去看而不是去猜的办法。
 x-i18n:
   source_path: troubleshooting.mdx
-  source_hash: 4685e6f1b29e5ec3d545732dc22a89d792db6b711dffa2450dc29837131445c2
+  source_hash: f67ef4ad404b53eadbb007eea6a07fde2686d8403af00c716d5641193e0a9d7f
   generated_at: 2026-09-19
 ---
 
@@ -30,8 +30,8 @@ termiod logs -n 200            # 没人看着的时候发生了什么
 **按设备**安装的。一台在你打开这个功能之前就设置好的机器上的 Agent 没有 hooks，所以它什么
 也不汇报，Termio 只能退回去读屏幕。
 
-打开**设置 ▸ 远程主机**，选中那台机器，进入它的 **Agents** 页面，按**重新安装 Hooks 和技能**。
-本机的同一个按钮在**设置 ▸ Agents** 上。参见
+打开**设置 ▸ 远程主机**，选中那台机器，进入它的 **Agent** 页面，按**重新安装 Hooks 和技能**。
+本机上对应的修法是**设置 ▸ Agent** 里的**安装到本机**。参见
 [状态 hooks 与会话控制](/zh-CN/docs/session-control)。
 
 ## Agent 停在「要信任这些 hooks 吗？」的提示上
@@ -60,8 +60,9 @@ Agent 的配置文件是公共地盘——别的 Agent 管理工具也往同一�
 `~/.codex/hooks.json` 里写，而有些是整块替换 hooks 而不是合并进去。发生这种事时，Termio
 收不到汇报，状态就退回去读屏幕。
 
-Termio 会在启动时、以及在你把它切回前台时重新写入自己的 hooks，所以这通常会自己好。想强制
-一次，就在那台机器的 **Agents** 页面上按**重新安装 Hooks 和技能**。
+Termio 会在启动时、以及在你把它切回前台时重新写入自己的 hooks，所以在本机上这通常会自己
+好。这一遍只扫本机：另一台机器上是什么样就一直是什么样，直到你去那边修——在那台机器的
+**Agent** 页面上按**重新安装 Hooks 和技能**。
 
 ## `termio sessions` 说 `disabled`
 
@@ -103,8 +104,8 @@ termiod deploy --host mybox    # 重装并校验一遍
 
 `deploy` 是一次对账，所以对一台状态糟糕的机器跑它是安全的。密钥是到处都能用的那种凭据，
 包括给那台机器上已经在跑的会话用；一个带密码短语的密钥需要先加载进 `ssh-agent`，和任何
-非交互式的 `ssh` 一样。那台机器自己的页面上有一个**测试**按钮，会告诉你遇到的是四种失败
-里的哪一种——参见[远程主机](/zh-CN/docs/remote-hosts#testing-the-route)。
+非交互式的 `ssh` 一样。那台机器自己的页面上有一个**测试**按钮，会说出你遇到的是哪一种
+结果——参见[远程主机](/zh-CN/docs/remote-hosts#testing-the-route)。
 
 ## iPhone 应用连不上某台机器
 
@@ -123,7 +124,8 @@ termiod deploy --host mybox    # 重装并校验一遍
 ## 通知不出现
 
 任务通知和其他系统权限一样：macOS 只问一次，如果当时拒绝了，应用就没法再问。去
-**系统设置 ▸ 通知 ▸ Termio** 看一下，再确认**设置 ▸ 通用**里的**任务通知**是开着的。
+**系统设置 ▸ 通知 ▸ Termio** 看一下，再确认**设置 ▸ Agent ▸ 通知**里的**任务完成**是
+开着的。
 
 它们也是有意安静的。一轮在 Termio 处于最前面的时候跑完，是不会通知的——你本来就在看着
 它——只花了一瞬的一轮也不会。
@@ -147,5 +149,4 @@ termiod logs --path            # 文件本身，用来提 bug
 
 去 [github.com/termio-sh/termio](https://github.com/termio-sh/termio/issues) 开一个
 issue，附上 `termiod status` 的输出和 `termiod logs` 的尾部。这两样回答了维护者本来要问的
-大部分问题——再加上 macOS 版本、Termio 版本，以及会话是在本机还是在另一台机器上，通常就
-没什么可问的了。
+大部分问题。再加上 macOS 版本、Termio 版本，以及会话是在本机还是在另一台机器上。

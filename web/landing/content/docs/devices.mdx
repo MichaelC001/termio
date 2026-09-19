@@ -41,7 +41,8 @@ you can already `ssh` to is a machine Termio can reach:
 ## Setting up a machine
 
 Open **Settings ▸ Remote Hosts**, pick the machine, and press **Set Up**. Termio
-copies one binary — `termiod`, the session host — into `~/.local/bin` over SSH.
+copies the session host — `termiod`, plus the `termio` CLI on Linux — into
+`~/.local/bin` over SSH.
 No root, no package manager, nothing to add to your shell profile. It then looks
 for the agent CLIs installed there and writes Termio’s hooks and its agent skill
 for each one, so an agent on a VPS reports **working**, **needs you**, and

@@ -42,10 +42,12 @@ Launch Termio and you should land on the welcome screen with **Open Project** as
 the primary action. That’s the whole install — there is no setup wizard, no
 account step, and nothing to configure before the first session.
 
-On first launch Termio offers to turn on **Live agent status**, which writes small
-status hooks into the agents you already have so the sidebar can report what each
-one is doing. It’s optional and reversible; see [Status hooks & session
-control](/docs/session-control).
+On first launch Termio asks once whether to let your agents coordinate — that’s
+**Session control**, which installs a small skill teaching them the
+`termio sessions` commands. **Live agent status**, the hooks behind the sidebar’s
+status dots, is a separate switch on the same tab; the sidebar offers it when it
+sees an agent running. Both are optional and reversible; see [Status hooks &
+session control](/docs/session-control).
 
 If you already use [Ghostty](https://ghostty.org), there’s nothing to pick: Termio
 reads your `~/.config/ghostty/config` on first launch and starts with the font and
@@ -98,22 +100,25 @@ Nothing is hidden, and nothing lives on a server of ours:
 | --- | --- |
 | `~/.termio/` | Your config: `keybindings.json`, custom agent manifests under `config/agents/`, and the `chats/` scratch directory |
 | `~/Library/Application Support/termio/` | App state and your `Themes/` folder |
-| `~/.local/bin/termiod` | The session host, on this Mac and on every machine you set up |
+| `~/.local/bin/` | The session host on machines you set up over SSH — `termiod`, plus `termio` on Linux. On this Mac it ships inside the app bundle and is never installed here |
 | Each agent’s own config | Termio’s status hooks and its `termio` skill, written per agent |
 
 ## Uninstalling
 
 Quit Termio and drag it to the Trash. To remove what it wrote outside the bundle,
 turn off **Live agent status** and **Session control** under **Settings ▸ Agents**
-first — both toggles remove the hooks and the skill they installed, leaving
-anything you wrote yourself alone. Then delete `~/.termio` and
+first — both toggles remove the hooks and the skill they installed on **this
+Mac**, leaving anything you wrote yourself alone. Then delete `~/.termio` and
 `~/Library/Application Support/termio` if you want the state gone too.
 
-On a machine you set up over SSH, the server is one binary and one service:
+Every other machine keeps what was installed on it until you clean it up there.
+Stop the server first, because removing the service alone leaves a daemon that
+something else started still running:
 
 ```bash
+termiod stop
 termiod service uninstall
-rm ~/.local/bin/termiod
+rm -f ~/.local/bin/termiod ~/.local/bin/termio
 ```
 
 ## Next steps

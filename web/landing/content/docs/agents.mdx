@@ -5,8 +5,8 @@ description: Keep a fleet of agents side by side, read their live status at a gl
 
 Termio is built for running more than one agent at once. The sidebar is your
 control surface: every session is a row, and every row reports what its agent is
-doing right now. The point isn’t that you can open several terminals — any
-terminal does that. It’s that you can stop watching them.
+doing right now. Any terminal will let you open several agents at once; what
+this buys you is not having to watch them.
 
 ## Built-in agents
 
@@ -17,6 +17,7 @@ Termio recognizes the common coding agents out of the box:
 | Claude Code | `claude` |
 | Codex | `codex` |
 | OpenCode | `opencode` |
+| OpenCode 2 | `opencode2` |
 | Pi | `pi` |
 | Amp | `amp` |
 | Droid | `droid` |
@@ -59,26 +60,29 @@ Status isn’t guessed the same way for every agent, and the difference is worth
 knowing when a dot doesn’t move. Each agent declares its own channels in its
 [manifest](/docs/atp): **hooks** are the agent reporting its own turns and are
 authoritative wherever they exist; **title** is an in-band signal read off the
-terminal title; **screen** is pattern-matching on the pane, used only when there
-is nothing better.
+terminal title; **progress** is the `OSC 9;4` progress sequence. An agent that
+declares none of these is read from the pane itself — from whether its output is
+still moving, not from matching words on the screen, which only happens for an
+agent whose manifest spells the patterns out.
 
 | Agent | Status signal | Resumes its conversation |
 | --- | --- | --- |
 | Claude Code | Hooks + title | Yes |
 | Codex | Hooks + title | Yes |
-| Grok | Hooks + title | Yes |
+| Grok | Hooks + title + progress | Yes |
 | Qwen Code | Hooks + title | Yes |
 | Pi | Hooks | Yes |
 | OpenCode | Hooks (plugin) | Yes |
+| OpenCode 2 | Hooks (plugin) | — |
 | Amp | Hooks | — |
 | Cursor | Hooks | — |
 | Copilot | Hooks | — |
 | Kimi | Hooks | — |
 | Cline | Hooks | — |
 | Droid | Hooks | — |
-| Crush | Screen | — |
-| Antigravity | Screen | — |
-| Hermes | Screen | — |
+| Crush | Screen rules + progress | — |
+| Antigravity | Output activity | — |
+| Hermes | Output activity | — |
 
 “Resumes its conversation” means reopening the session puts the agent back in the
 *same* conversation rather than a blank one — see [What
@@ -119,9 +123,15 @@ still know the moment something needs you.
 Many agents ship a flag that stops them asking before each tool call. Where one
 exists, Termio wires it to a toggle rather than making you remember the spelling:
 turn it on for an agent in **Settings ▸ Agents** and Termio appends that agent’s
-own flag when it launches. It’s per agent and per machine, off by default, and it
-changes nothing about what the agent can reach — it’s the vendor’s flag, not a
-Termio sandbox.
+own flag when it launches.
+
+It is a standing decision about that agent, so unlike its command path it is
+**not** per machine — the flag goes on every launch of that agent, on every
+machine. Read the flag before you turn the switch on: these are the vendors’ own
+escape hatches and some of them give up more than the prompt. Codex’s is
+`--dangerously-bypass-approvals-and-sandbox`, which drops its sandbox along with
+the approvals. Termio appends what the vendor documents; it adds no sandbox of
+its own.
 
 <Callout type="note">
   An agent running unattended is exactly the one you want a real status channel

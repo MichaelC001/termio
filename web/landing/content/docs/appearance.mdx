@@ -79,9 +79,8 @@ the sidebar’s font and density.
 
 The other tabs cover the rest of the app:
 
-- **General** — language, task notifications, the GitHub integration behind the
-  inspector’s Issues pane, and a Privacy switch for anonymous daily usage
-  statistics.
+- **General** — language, the GitHub integration behind the inspector’s Issues
+  pane, and a Privacy switch for anonymous daily usage statistics.
 - **Terminal** — scrollback history and text selection.
 - **Server** — this Mac’s own session host, and the switches for the `termio`
   [command-line tool](/docs/cli). See [The Termio server](/docs/server).
@@ -91,10 +90,10 @@ The other tabs cover the rest of the app:
 - **Workspaces** — every workspace with the machine it’s on, and the place to
   rename or remove one. See [Workspaces](/docs/workspaces).
 - **Keyboard** — rebind any shortcut; see [Keyboard shortcuts](/docs/keyboard).
-- **Agents** — add agents, enable them, and turn on [session
-  control](/docs/session-control). Values that differ per machine — where a CLI
-  lives, whether it’s there — are read on that machine’s own page instead; see
-  [Remote hosts](/docs/remote-hosts).
+- **Agents** — add agents, enable them, turn on [session
+  control](/docs/session-control), and set task-completion notifications. Values
+  that differ per machine — where a CLI lives, whether it’s there — appear as one
+  row per machine on the agent’s own page, never behind a picker.
 - **Usage** — token usage for agents you sign in to (Claude Code, Codex). Termio
   reuses each CLI’s own credentials to show you where you stand against your
   limits; it stores nothing of its own.
@@ -102,6 +101,7 @@ The other tabs cover the rest of the app:
   reach. See the [iPhone companion](/docs/iphone).
 - **Community** — where to find the project: GitHub, Discord, and the WeChat group.
 
-A machine is chosen by navigation — **Server** for this Mac, a row under
-**Remote Hosts** for any other — never by a picker on a page about something
-else. What you change on a machine’s page is what that machine gets.
+Machines are rows, never a picker. A setting that differs per machine lists one
+row per machine where it belongs — the agent’s own page for a command path — and
+a machine’s whole story is reached by navigation: **Server** for this Mac, a row
+under **Remote Hosts** for any other.

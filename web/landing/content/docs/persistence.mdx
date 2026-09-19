@@ -30,18 +30,18 @@ purpose — **Close Session** (`⌘W`), and the process exiting by itself.
 | Termio updates itself | Yes | Yes | Yes | Yes |
 | The SSH link to a remote machine drops | Yes | Yes | Yes | Yes |
 | `termiod handoff` (server updates in place) | Yes | Yes | Yes | Yes |
-| The server stops, or the machine reboots | No | Yes | No | Only where the agent supports [resume](/docs/atp#resume) |
+| The server stops, or the machine reboots | No | Yes | No | On this Mac, where the agent supports [resume](/docs/atp#resume). Never on another machine |
 | **Close Session** (`⌘W`) | No | — | — | — |
 
-The top six rows are all the same event wearing different clothes: a viewer went
-away and the process didn’t notice. Reattaching repaints the screen from the
+The top six rows are one event under six names: a viewer went away and the
+process didn’t notice. Reattaching repaints the screen from the
 server’s own scrollback, so you come back to the output you’d have seen if you
 had never left.
 
 <Callout type="note">
   “Layout comes back” means the sidebar tree, the split groups, and the
-  inspector tab you left each workspace on. Termio writes that structure to disk;
-  it never writes the contents of your terminals.
+  inspector tab you left each workspace on. That structure is what Termio writes
+  to disk; your terminals’ contents are not part of it.
 </Callout>
 
 ## Detaching is the default
@@ -72,8 +72,8 @@ Termio does is make coming back cheap:
   rather than in the daemon.
 - **Sessions restart in their own directory.** A shell comes back as a shell,
   rooted where it was.
-- **Agents that can resume, do.** Reopening a session relaunches the agent into
-  the *same conversation* rather than a blank one.
+- **Agents on this Mac that can resume, do.** Reopening a session relaunches the
+  agent into the *same conversation* rather than a blank one.
 
 Resume is **exact-or-nothing**: Termio either continues the precise conversation a
 session was bound to, or it starts fresh. It never guesses at a nearby one. Which
@@ -92,9 +92,15 @@ termiod service install    # launchd on macOS, systemd --user on Linux
 termiod service status
 ```
 
-With a service installed the server comes back after a crash, a logout, and a
-reboot. This is the single most common fix for “my remote sessions vanished” —
-see [Troubleshooting](/docs/troubleshooting).
+With a service installed the server is brought back after a crash, and started
+again at login after a reboot. On Linux, surviving your logout also needs
+lingering enabled for the user (`loginctl enable-linger`); without it the unit
+stops with your session.
+
+Be clear about what this buys: the *server* comes back, not the processes it was
+holding. A reboot still ends every PTY on that machine. A service is what stops
+“nothing is listening on that box” from being a permanent state — see
+[Troubleshooting](/docs/troubleshooting).
 
 ## Sleep
 
@@ -134,9 +140,11 @@ interrupt work in progress says so and names the session first.
 
 Being clear about the edges is part of the promise:
 
-- **Termio doesn’t record your terminals.** Scrollback lives in the server for
-  the session’s lifetime and goes away with it. There is no transcript of your
-  shells written to disk.
+- **Termio keeps no transcript of your terminals.** Scrollback lives in the
+  server for the session’s lifetime and goes away with it; nothing durable is
+  written. The one exception is a handoff, which passes each session’s replay
+  buffer to the incoming server through a temporary file it unlinks as it
+  goes — in flight for the length of an update, never a stored record.
 - **An agent’s conversation belongs to the agent.** Resume works by handing the
   agent back its own session id; the conversation is in the agent’s store, under
   your own account, exactly as it would be from a plain terminal.

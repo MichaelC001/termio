@@ -3,7 +3,7 @@ title: 安装
 description: 下载 macOS 版 Termio，拖进「应用程序」，之后交给 Sparkle 自动更新——无需账号，也没有许可证密钥。
 x-i18n:
   source_path: installation.mdx
-  source_hash: 2fc3d93c520def41915f7fb27478a0b6bb3cc6be93e8873cecd9ff820af57669
+  source_hash: 563c733e396d13e634c70b6cdce65fe168be039fc268e201094e359900a70be3
   generated_at: 2026-09-19
 ---
 
@@ -43,9 +43,10 @@ Termio 用同一个下载包同时运行在 Apple 芯片和 Intel 的 Mac 上。
 启动 Termio，你应该会看到欢迎界面，**打开项目**是那个主按钮。整个安装就到这儿——没有设置
 向导，没有账号步骤，第一个会话之前也没有什么要配置的。
 
-首次启动时，Termio 会问你要不要打开 **Agent 实时状态**：它会往你已有的那些 Agent 里写入
-小小的状态 hooks，让侧栏能汇报每一个在做什么。这是可选的，也可以关掉；参见
-[状态 hooks 与会话控制](/zh-CN/docs/session-control)。
+首次启动时，Termio 会问你一次要不要让 Agent 互相协作——也就是**会话控制**，它会装一个小
+技能，教它们 `termio sessions` 这些命令。**Agent 实时状态**（侧栏状态点背后的那些 hooks）
+是同一个标签页上另一个开关；当侧栏看到有 Agent 在跑时会提示你打开。两个都是可选的，也都
+可以关掉；参见[状态 hooks 与会话控制](/zh-CN/docs/session-control)。
 
 如果你本来就在用 [Ghostty](https://ghostty.org)，那就没什么要挑的：Termio 会在首次启动时
 读你的 `~/.config/ghostty/config`，用你在那里选好的字体和主题开始。
@@ -92,21 +93,23 @@ Termio 附带一个小巧的命令行工具。打开 **设置 ▸ Termio server*
 | --- | --- |
 | `~/.termio/` | 你的配置：`keybindings.json`、`config/agents/` 下的自定义 Agent 清单，以及 `chats/` 草稿目录 |
 | `~/Library/Application Support/termio/` | 应用状态和你的 `Themes/` 文件夹 |
-| `~/.local/bin/termiod` | Termio server，本机上和你设置过的每台机器上都是它 |
+| `~/.local/bin/` | 你通过 SSH 设置过的机器上的 Termio server——`termiod`，Linux 上还有 `termio`。本机上它随应用包一起发布，从不装到这里 |
 | 每个 Agent 自己的配置 | Termio 的状态 hooks 和它的 `termio` 技能，按 Agent 写入 |
 
 ## 卸载
 
-退出 Termio，把它拖进废纸篓。想清掉它写在应用包外面的东西，先在**设置 ▸ Agents** 里关掉
-**Agent 实时状态**和**会话控制**——这两个开关都会移除它们装过的 hooks 和技能，而你自己写的
-那些原封不动。然后如果你也想让状态消失，删掉 `~/.termio` 和
+退出 Termio，把它拖进废纸篓。想清掉它写在应用包外面的东西，先在**设置 ▸ Agent** 里关掉
+**Agent 实时状态**和**会话控制**——这两个开关会移除它们装在**本机**上的 hooks 和技能，而
+你自己写的那些原封不动。然后如果你也想让状态消失，删掉 `~/.termio` 和
 `~/Library/Application Support/termio`。
 
-在一台你通过 SSH 设置过的机器上，server 就是一个二进制加一个服务：
+其他每一台机器上装过的东西都会留在那儿，直到你去那边清理。先把 server 停掉，因为只卸载
+服务会留下一个由别的途径启动的 daemon 还在跑：
 
 ```bash
+termiod stop
 termiod service uninstall
-rm ~/.local/bin/termiod
+rm -f ~/.local/bin/termiod ~/.local/bin/termio
 ```
 
 ## 下一步

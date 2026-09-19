@@ -3,7 +3,7 @@ title: 设备
 description: 把 Agent 跑在你自己的机器上——本机、桌上的 Mac mini、一台 VPS。Termio 通过 SSH 把一个二进制复制过去、把 Agent 配好，会话是否附着都照跑不误。
 x-i18n:
   source_path: devices.mdx
-  source_hash: ed468ec933aaf4ab645da13687596dc3690e69aa706d18ac38d6867cf1219160
+  source_hash: a73b3f8d43d5f88bcbeff9c58b1a6d39d229aa4b9467ba970fd98ca27a364cfc
   generated_at: 2026-09-19
 ---
 
@@ -37,7 +37,8 @@ Termio 读 `~/.ssh/config`，绝不背着你改写它。你本来 `ssh` 得上�
 ## 设置一台设备
 
 打开**设置 ▸ 远程主机**，选中那台机器，按**设置**。Termio 会通过 SSH 把一个二进制
-——Termio server `termiod`——复制到 `~/.local/bin`。不需要 root，不需要包管理器，也不用往
+——Termio server `termiod`，Linux 上还有 `termio` 命令行工具——复制到 `~/.local/bin`。不需要
+ root，不需要包管理器，也不用往
 shell 配置里加东西。接着它会找那台机器上装了哪些 Agent CLI，给每一个写入 Termio 的
 hooks 和 Agent 技能，于是 VPS 上的 Agent 也能像本机的一样汇报**工作中**、**需要你**和
 **完成**。

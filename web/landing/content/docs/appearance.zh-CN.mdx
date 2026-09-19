@@ -3,7 +3,7 @@ title: 外观
 description: 设置终端主题与字体、调整光标和窗口，并找到 Termio 其余的设置项——全都在一个熟悉的 macOS 设置窗口里。
 x-i18n:
   source_path: appearance.mdx
-  source_hash: d10904eed94267d5f2fbca0c4774e86c2c8be239eab823d9017bf772025ca658
+  source_hash: 083d1a203b53c46f9068d7ae38bc1440c186126be2d6d41705110e9ddb0ca2f9
   generated_at: 2026-09-19
 ---
 
@@ -72,8 +72,8 @@ Rose Pine、Solarized 等等——每一款都挑得住一整天的阅读，而�
 
 其他标签页覆盖应用的剩余部分：
 
-- **通用** —— 语言、任务通知、检查器 Issues 面板背后的 GitHub 集成，以及一个用于匿名
-  每日使用统计的隐私开关。
+- **通用** —— 语言、检查器 Issues 面板背后的 GitHub 集成，以及一个用于匿名每日使用统计
+  的隐私开关。
 - **终端** —— 回滚历史与文本选择。
 - **Termio server** —— 本机自己的 Termio server，以及 `termio`
   [命令行工具](/zh-CN/docs/cli)的开关。见 [Termio server](/zh-CN/docs/server)。
@@ -83,13 +83,15 @@ Rose Pine、Solarized 等等——每一款都挑得住一整天的阅读，而�
   [工作区](/zh-CN/docs/workspaces)。
 - **键盘** —— 重新绑定任意快捷键；参见 [键盘快捷键](/zh-CN/docs/keyboard)。
 - **Agent** —— 添加 Agent、启用它们，并打开
-  [会话控制](/zh-CN/docs/session-control)。按设备不同的那些值——CLI 装在哪儿、在不在
-  ——读在那台机器自己的页面上；见[远程主机](/zh-CN/docs/remote-hosts)。
+  [会话控制](/zh-CN/docs/session-control)，以及设置任务完成通知。按设备不同的那些值——
+  CLI 装在哪儿、在不在——会在这个 Agent 自己的页面上每台设备一行地列出来，而不是藏在一个
+  选择器后面。
 - **用量** —— 你已登录的 Agent（Claude Code、Codex）的 token 用量。Termio 复用各个命令行
   工具自己的凭据，告诉你离额度还有多远；它本身不存任何东西。
 - **手机** —— 把 iPhone 和某台机器配对，并发布一个它能连上的地址。见
   [iPhone 伴侣应用](/zh-CN/docs/iphone)。
 - **社区** —— 在哪里找到这个项目：GitHub、Discord 和微信群。
 
-机器是靠导航选中的——本机用 **Termio server**，其他机器用**远程主机**下的一行——而不是
-靠一个开在讲别的事情的页面上的选择器。你在一台机器页面上改的，就是那台机器拿到的。
+设备是一行一行列出来的，从来不是一个选择器。一个按设备不同的设置，会在它该在的地方每台
+设备一行地列出来——命令路径就在那个 Agent 自己的页面上——而一台设备的完整情况是靠导航到达
+的：本机用 **Termio server**，其他设备用**远程主机**下的一行。
