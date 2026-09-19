@@ -1712,7 +1712,6 @@ public enum Termiod {
         hooks: AgentHalfAction,
         skills: AgentHalfAction,
         reporter: AgentHookReporter,
-        hookVersion: String,
         commands: [String: String] = [:]
     ) throws -> Data {
         try encodeControl(InstallAgentsOperation(
@@ -1721,7 +1720,6 @@ public enum Termiod {
             hooks: hooks,
             skills: skills,
             reporter: InstallAgentsOperation.Reporter(reporter),
-            hookVersion: hookVersion,
             commands: commands,
             seq: 1
         ))
@@ -1740,7 +1738,6 @@ public enum Termiod {
         let hooks: AgentHalfAction
         let skills: AgentHalfAction
         let reporter: Reporter
-        let hookVersion: String
         let commands: [String: String]
         let seq: Int
 

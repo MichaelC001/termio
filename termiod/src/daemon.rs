@@ -2380,7 +2380,6 @@ async fn process_control(
             hooks,
             skills,
             reporter,
-            hook_version,
             commands,
             seq,
         } => {
@@ -2398,7 +2397,6 @@ async fn process_control(
                     hooks,
                     skills,
                     reporter,
-                    hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
                     commands,
                 );
                 // A dozen agents is a few dozen small reads, merges and renames.

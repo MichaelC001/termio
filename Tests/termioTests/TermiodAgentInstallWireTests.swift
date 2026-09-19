@@ -11,7 +11,7 @@ import XCTest
 final class TermiodAgentInstallWireTests: XCTestCase {
     private func reporterJSON(_ reporter: Termiod.AgentHookReporter) throws -> [String: Any] {
         let payload = try Termiod.installAgentsPayload(
-            agents: nil, hooks: .install, skills: .install, reporter: reporter, hookVersion: "1")
+            agents: nil, hooks: .install, skills: .install, reporter: reporter)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
         return try XCTUnwrap(object["reporter"] as? [String: Any])
     }
@@ -26,5 +26,17 @@ final class TermiodAgentInstallWireTests: XCTestCase {
         let reporter = try reporterJSON(.device)
         XCTAssertEqual(reporter["kind"] as? String, "device")
         XCTAssertEqual(reporter.count, 1)
+    }
+
+    /// The app used to send its release version for the daemon to stamp into
+    /// every hook command, which rewrote every hook on every upgrade and left
+    /// agents that verify their hook files refusing to run them. The stamp is
+    /// the daemon's own schema constant now, and nothing about it travels.
+    func testNoVersionTravelsWithAnInstall() throws {
+        let payload = try Termiod.installAgentsPayload(
+            agents: nil, hooks: .install, skills: .install, reporter: .device)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        XCTAssertNil(object["hookVersion"])
+        XCTAssertNil(object["hook_version"])
     }
 }

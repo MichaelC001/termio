@@ -376,7 +376,6 @@ pub async fn install_agents(
         hooks: request.hooks,
         skills: request.skills,
         reporter: request.reporter,
-        hook_version: Some(request.hook_version),
         commands: request.commands,
         seq: Some(1),
     };

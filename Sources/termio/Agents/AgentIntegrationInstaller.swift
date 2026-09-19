@@ -46,14 +46,6 @@ enum AgentIntegrationInstaller {
         var isLocal: Bool { reporter == .thisMac }
     }
 
-    /// Marker + version stamped into every installed hook. The command string
-    /// changes between releases, so the stamp is what makes the daemon's
-    /// idempotent write re-install the hook on the first launch after an
-    /// upgrade.
-    static var hookVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"
-    }
-
     /// Act on one or both halves in a single message.
     ///
     /// Each half is stated independently — install it, remove it, or leave it —
@@ -79,7 +71,6 @@ enum AgentIntegrationInstaller {
         if target.isLocal { CommandLineTool.refreshSupportCopy() }
         // Whether a switch is on decides install-or-remove; whether the caller
         // named that half decides whether it is touched at all.
-        let version = hookVersion
         do {
             let reply = try await Task.detached(priority: .userInitiated) {
                 try Termiod.installAgents(
@@ -88,7 +79,6 @@ enum AgentIntegrationInstaller {
                     hooks: hooks,
                     skills: skills,
                     reporter: target.reporter,
-                    hookVersion: version,
                     commands: commands)
             }.value
             return InstallOutcome(reply)
