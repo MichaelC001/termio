@@ -186,6 +186,86 @@ final class ClipboardTransferTests: XCTestCase {
         XCTAssertNil(ClipboardFilePaths.current(pasteboard))
     }
 
+    /// A Finder-copied image file aimed at a session on another machine. The
+    /// path is worthless over there, so the bytes have to travel — this is the
+    /// read that decides that.
+    func testACopiedImageFileIsReadForTheCrossing() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("example image.png")
+        let png = imageData(.png)
+        try png.write(to: url)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([url as NSURL]))
+        pasteboard.setString("example image.png", forType: .string)
+        // Finder ships the icon too; reading that instead would send a
+        // thumbnail where the user meant the picture.
+        pasteboard.setData(imageData(.tiff), forType: .tiff)
+
+        guard case let .image(image) = ClipboardImage.fileOnClipboard(pasteboard) else {
+            return XCTFail("a lone copied image file should be read for the crossing")
+        }
+        XCTAssertEqual(image.data, png, "the file's bytes, not its icon")
+        XCTAssertEqual(image.fileExtension, "png")
+    }
+
+    /// Everything that is not a lone image file keeps pasting as a path, so a
+    /// paste never silently uploads part of what was copied.
+    func testOnlyALoneImageFileCrossesTheBoundary() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let text = directory.appendingPathComponent("notes.txt")
+        try Data("hello".utf8).write(to: text)
+        let image = directory.appendingPathComponent("shot.png")
+        try imageData(.png).write(to: image)
+        let folder = directory.appendingPathComponent("folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        for (label, urls) in [
+            ("an ordinary file", [text]),
+            ("a directory", [folder]),
+            ("an image beside another file", [image, text]),
+        ] {
+            pasteboard.clearContents()
+            XCTAssertTrue(pasteboard.writeObjects(urls.map { $0 as NSURL }))
+            guard case .none = ClipboardImage.fileOnClipboard(pasteboard) else {
+                return XCTFail("\(label) should keep pasting as a path")
+            }
+        }
+    }
+
+    /// Over the cap the paste is refused out loud rather than falling through
+    /// to a local path that resolves to nothing on the far machine.
+    func testAnOversizeImageFileIsRefusedRatherThanPastedAsAPath() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("huge.png")
+        var bytes = imageData(.png)
+        bytes.append(Data(count: ClipboardImage.maximumFileBytes))
+        try bytes.write(to: url)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([url as NSURL]))
+
+        guard case let .tooLarge(reported, size) = ClipboardImage.fileOnClipboard(pasteboard)
+        else {
+            return XCTFail("an oversize image should be refused, not silently ignored")
+        }
+        XCTAssertEqual(reported.lastPathComponent, "huge.png")
+        XCTAssertGreaterThan(size, ClipboardImage.maximumFileBytes)
+    }
+
     func testPNGOnTheClipboardIsTakenVerbatim() {
         let png = imageData(.png)
         pasteboard.setData(png, forType: .png)

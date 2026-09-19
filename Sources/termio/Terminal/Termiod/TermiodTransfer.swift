@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import GhosttyTerminal
 import TermioShared
+import UniformTypeIdentifiers
 
 /// The transfer plane: bytes crossing the viewer↔device boundary.
 ///
@@ -255,9 +256,29 @@ final class TermiodPasteInterceptor: NSObject {
             return false
         }
 
-        // File URLs before the remote-host guard: a local session needs the
-        // absolute path just as much as a remote one, and Finder's icon
-        // representation must not be mistaken for a screenshot to upload.
+        // The machine boundary is decided first, because it is the only
+        // question the terminal itself cannot answer. A path names a file on
+        // *this* Mac; sent to a session on a VPS it resolves to nothing, so an
+        // image aimed across the boundary has to become bytes that travel.
+        // Everything below the boundary keeps the behavior it already had.
+        if let host = session.termiodRemoteHost {
+            switch ClipboardImage.fileOnClipboard() {
+            case .image(let image):
+                return upload(image, to: sessionID, session: session, host: host)
+            case .tooLarge(let url, let bytes):
+                reportTooLarge(url, bytes: bytes, host: host)
+                return true
+            case .none:
+                if let image = ClipboardImage.current() {
+                    return upload(image, to: sessionID, session: session, host: host)
+                }
+            }
+        }
+
+        // A file the terminal can reach is pasted as the path to it — the same
+        // tokens a drop sends (`TerminalPane.sendPaths`). Finder writes the
+        // basename as text alongside the URL, and that basename is the bug
+        // this branch exists to end.
         if let text = ClipboardFilePaths.current() {
             if store.surfaces[sessionID]?.send(text) == true { return true }
             Log.pty.error("""
@@ -267,12 +288,19 @@ final class TermiodPasteInterceptor: NSObject {
             return true
         }
 
-        // The device boundary is the whole remaining condition: a session on
-        // this Mac keeps the local image-paste mechanism, unchanged.
-        guard let host = session.termiodRemoteHost,
-              let image = ClipboardImage.current()
-        else { return false }
+        return false
+    }
 
+    /// Carries an image across the machine boundary and pastes the path it
+    /// landed at. Returns `true` unconditionally: the paste is ours now, and
+    /// letting it fall through would insert a local path on a remote box.
+    private func upload(
+        _ image: ClipboardImage,
+        to sessionID: Session.ID,
+        session: Session,
+        host: String
+    ) -> Bool {
+        guard let store else { return true }
         guard !inFlight.contains(sessionID) else { return true }
         inFlight.insert(sessionID)
 
@@ -293,6 +321,30 @@ final class TermiodPasteInterceptor: NSObject {
             }
         }
         return true
+    }
+
+    /// A copied image too big to carry. Saying so is the whole point: falling
+    /// through would paste a local path that resolves to nothing on the far
+    /// machine, which is the failure this class exists to prevent, and doing
+    /// nothing at all would look like a dropped keystroke.
+    private func reportTooLarge(_ url: URL, bytes: Int, host: String) {
+        Log.termiod.error("""
+        refused to paste \(bytes, privacy: .public) bytes to \
+        \(host, privacy: .public): over the transfer cap
+        """)
+        let formatted = ByteCountFormatter.string(
+            fromByteCount: Int64(bytes), countStyle: .file)
+        let cap = ByteCountFormatter.string(
+            fromByteCount: Int64(ClipboardImage.maximumFileBytes), countStyle: .file)
+        let alert = NSAlert()
+        alert.messageText = "\(url.lastPathComponent) is too large to paste to \(host)"
+        alert.informativeText = """
+        The image is \(formatted). Pasting to another machine sends the file \
+        itself, and that is capped at \(cap). Copy it across with scp and paste \
+        the path instead.
+        """
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func finish(_ result: Result<String, Error>, for sessionID: Session.ID,
@@ -398,6 +450,58 @@ struct ClipboardImage {
     /// scratch directory with the session, so nothing accumulates.
     var scratchFileName: String {
         "paste-\(UInt64(Date().timeIntervalSince1970 * 1000)).\(fileExtension)"
+    }
+
+    /// What a single copied image *file* on the clipboard amounts to. `none`
+    /// covers everything that is not one, so the caller falls through to the
+    /// behavior it already had.
+    enum FileOnClipboard {
+        case none
+        case image(ClipboardImage)
+        case tooLarge(URL, Int)
+    }
+
+    /// The cap on a file this path will carry across the machine boundary. A
+    /// screenshot is single-digit megabytes; past this the user meant to move a
+    /// file rather than show an agent a picture, and the transfer would hold
+    /// the paste for minutes with nothing on screen saying why.
+    static let maximumFileBytes = 32 << 20
+
+    /// An image the clipboard names by *file* — Finder's copy of a `.png` —
+    /// read off disk instead of out of a pasteboard representation.
+    ///
+    /// Kept apart from `current()` because the two answer different questions.
+    /// `current()` asks whether the bytes on the pasteboard are an image, and a
+    /// Finder copy can never reach it: Finder always writes the basename as
+    /// text, and the `.tiff` it ships alongside is the file's *icon*, not the
+    /// file. Reading the icon and uploading it would send a 32×32 thumbnail
+    /// where the user meant the photo.
+    ///
+    /// Only a lone image file counts. A mixed or multi-file selection keeps the
+    /// path semantics it already had, so a paste can never silently upload part
+    /// of what was copied — and a `.txt`, a directory, or a video still pastes
+    /// as a path, because naming a file on the far side is a legitimate thing
+    /// to want and only the user knows which they meant.
+    @MainActor
+    static func fileOnClipboard(_ pasteboard: NSPasteboard = .general) -> FileOnClipboard {
+        let urls = ClipboardFilePaths.fileURLs(on: pasteboard)
+        guard urls.count == 1, let url = urls.first else { return .none }
+        guard let values = try? url.resourceValues(
+            forKeys: [.contentTypeKey, .fileSizeKey, .isRegularFileKey]),
+            values.isRegularFile == true,
+            let type = values.contentType,
+            type.conforms(to: .image),
+            let size = values.fileSize
+        else { return .none }
+        guard size <= maximumFileBytes else { return .tooLarge(url, size) }
+        guard let data = try? Data(contentsOf: url) else { return .none }
+        // The extension the file already has, so the far side sees the format
+        // it actually holds; `preferredFilenameExtension` only stands in when
+        // the name carries none.
+        let ext = url.pathExtension.isEmpty
+            ? (type.preferredFilenameExtension ?? "png")
+            : url.pathExtension
+        return .image(ClipboardImage(data: data, fileExtension: ext))
     }
 
     static func current(_ pasteboard: NSPasteboard = .general) -> ClipboardImage? {
