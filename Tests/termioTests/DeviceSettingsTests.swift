@@ -111,4 +111,53 @@ final class DeviceSettingsTests: XCTestCase {
         XCTAssertEqual(url.deletingLastPathComponent().path, DeviceStateCache.directory.path)
         XCTAssertFalse(url.lastPathComponent.contains("/"))
     }
+
+    // MARK: What an install covered
+
+    private func state(
+        agents: [String: String], covered: [String]?, stamped: Bool = true
+    ) -> DeviceDiscoveredState {
+        DeviceDiscoveredState(
+            checkedAt: Date(), reachable: true, agents: agents,
+            integrationVersion: stamped ? AppInfo.buildStamp : nil,
+            integrationAgents: covered)
+    }
+
+    func testAnAgentInstalledAfterSetupNeedsSetupAgain() {
+        // Both halves write only for agents whose CLI is on the machine, so the
+        // agent that arrived afterwards has no hooks and reports nothing. The
+        // version stamp alone cannot see this — it is still this build's.
+        let machine = state(
+            agents: ["claudeCode": "available", "codex": "available"],
+            covered: ["claudeCode"])
+        XCTAssertEqual(machine.agentsOutsideIntegration, ["codex"])
+        XCTAssertFalse(machine.carriesCurrentIntegration)
+    }
+
+    func testAnAgentThatWentMissingIsNotAReasonToSetUpAgain() {
+        // The reverse of the case above: the install covered more than the
+        // machine now has. Nothing is un-wired by an uninstall, and sending the
+        // user back to setup for it would be the false alarm §D4 exists to stop.
+        let machine = state(
+            agents: ["claudeCode": "available", "codex": "missing"],
+            covered: ["claudeCode", "codex"])
+        XCTAssertEqual(machine.agentsOutsideIntegration, [])
+        XCTAssertTrue(machine.carriesCurrentIntegration)
+    }
+
+    func testABuildThatRecordedNoListIsLeftAlone() {
+        // A device file written before this was recorded. Reading `nil` as
+        // "covered nothing" would put every machine in the roster back on "set
+        // up" the moment this ships; the next app update moves the stamp anyway.
+        let machine = state(agents: ["claudeCode": "available"], covered: nil)
+        XCTAssertEqual(machine.agentsOutsideIntegration, [])
+        XCTAssertTrue(machine.carriesCurrentIntegration)
+    }
+
+    func testTheCoveredListSurvivesTheRoundTripToJSON() {
+        let machine = state(agents: ["claudeCode": "available"], covered: ["claudeCode"])
+        let data = try? JSONEncoder().encode(machine)
+        let read = data.flatMap { try? JSONDecoder().decode(DeviceDiscoveredState.self, from: $0) }
+        XCTAssertEqual(read?.integrationAgents, ["claudeCode"])
+    }
 }

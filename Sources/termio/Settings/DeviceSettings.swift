@@ -118,16 +118,37 @@ struct DeviceDiscoveredState: Codable, Equatable {
     /// (`AppInfo.buildStamp`), or `nil` if none has. See
     /// `carriesCurrentIntegration` for why this is stamped rather than re-derived.
     var integrationVersion: String?
+    /// Which agents that install actually covered, by `AgentPreset.rawValue`.
+    ///
+    /// Both halves write only for agents whose CLI is on the machine, so an
+    /// agent installed *after* a setup has no hooks and reports nothing — a
+    /// silent gap, since the version stamp alone still reads as current. This is
+    /// what lets a later probe notice it.
+    ///
+    /// `nil` means a build that did not record it. Read as "covered everything"
+    /// rather than "covered nothing": crying wolf on every machine in the roster
+    /// the moment this ships is the worse error, and the next app update moves
+    /// the stamp anyway, which is what fills this in.
+    var integrationAgents: [String]?
 
     init(
         checkedAt: Date, reachable: Bool, termiodVersion: String? = nil,
-        agents: [String: String] = [:], integrationVersion: String? = nil
+        agents: [String: String] = [:], integrationVersion: String? = nil,
+        integrationAgents: [String]? = nil
     ) {
         self.checkedAt = checkedAt
         self.reachable = reachable
         self.termiodVersion = termiodVersion
         self.agents = agents
         self.integrationVersion = integrationVersion
+        self.integrationAgents = integrationAgents
+    }
+
+    /// The agents this machine answered *available* for, sorted so a stamp is
+    /// stable across probes. What an install covers, and what a later probe
+    /// compares against.
+    var availableAgents: [String] {
+        agents.filter { $0.value == AgentReadiness.available.rawValue }.keys.sorted()
     }
 
     func readiness(for agent: AgentPreset) -> AgentReadiness {
@@ -189,9 +210,16 @@ enum DeviceStateCache {
     /// saying so rather than nothing. It learned nothing about which agent CLIs
     /// are there, so `agents` stays empty and every row on that machine keeps
     /// reading `unknown` until something actually asks.
+    /// Records an install against what the machine was last known to have. The
+    /// agent list is taken from the cache rather than a fresh probe because this
+    /// is the Agents-tab path, which installs across the whole roster without
+    /// asking any machine anything — stamping what we knew is honest, and a
+    /// machine whose agents have changed since reads as needing setup, which is
+    /// exactly what it needs.
     static func stampIntegration(_ version: String?, for key: String) {
         var state = load(key) ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.integrationVersion = version
+        state.integrationAgents = version == nil ? nil : state.availableAgents
         save(state, for: key)
     }
 }

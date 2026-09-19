@@ -251,8 +251,25 @@ extension DeviceDiscoveredState {
     /// Compared against the build, not merely checked for presence, because a
     /// local hook embeds the CLI's path and a device hook embeds `termiod`'s: an
     /// upgrade that moves either leaves a hook that cannot exec.
+    ///
+    /// The stamp alone is not enough. Both halves of the install write only for
+    /// agents whose CLI is on the machine, so an agent installed *after* a setup
+    /// has no hooks while the stamp still reads as current — the machine looks
+    /// done and the new agent silently reports nothing. An agent the last install
+    /// did not cover therefore makes this false, which is what puts the pane back
+    /// on "set up this host".
     var carriesCurrentIntegration: Bool {
-        integrationVersion != nil && integrationVersion == AppInfo.buildStamp
+        integrationVersion != nil
+            && integrationVersion == AppInfo.buildStamp
+            && agentsOutsideIntegration.isEmpty
+    }
+
+    /// Agents the machine has now that the last install did not write for, by
+    /// `AgentPreset.rawValue`. Empty for a build that recorded no list — see
+    /// `integrationAgents` for why that reads as "covered everything".
+    var agentsOutsideIntegration: [String] {
+        guard let covered = integrationAgents else { return [] }
+        return availableAgents.filter { !covered.contains($0) }
     }
 }
 
@@ -313,6 +330,15 @@ final class DevicePaneModel: ObservableObject {
     /// looked. A fact the pane reports, never a state it blocks on.
     var hasAgentAvailable: Bool {
         discovered?.agents.values.contains(AgentReadiness.available.rawValue) ?? false
+    }
+
+    /// Agents that arrived on the machine since the last install, named. In the
+    /// user's own agent order rather than the probe's, so the line reads the way
+    /// the rest of Settings lists them.
+    var agentsAwaitingIntegration: [String] {
+        let waiting = Set(discovered?.agentsOutsideIntegration ?? [])
+        guard !waiting.isEmpty else { return [] }
+        return listedAgents.filter { waiting.contains($0.rawValue) }.map(\.displayName)
     }
 
     /// Asks the machine, without changing anything on it. The pane's own refresh,
@@ -383,6 +409,9 @@ final class DevicePaneModel: ObservableObject {
             return
         }
         state.integrationVersion = AppInfo.buildStamp
+        // Taken from the probe this very chain just ran, so the record is what
+        // the daemon actually saw when it decided which agents to write for.
+        state.integrationAgents = state.availableAgents
         apply(state)
         // The outcome line already says "Ready"; what this adds is *what was
         // put there*, and with both switches off there is nothing to add.
@@ -448,6 +477,7 @@ final class DevicePaneModel: ObservableObject {
         var state = discovered ?? DeviceDiscoveredState(checkedAt: Date(), reachable: true)
         state.checkedAt = Date()
         state.integrationVersion = AppInfo.buildStamp
+        state.integrationAgents = state.availableAgents
         apply(state)
     }
 

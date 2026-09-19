@@ -181,6 +181,14 @@ struct DevicePane: View {
             // also has no hooks, and naming both invites fixing the consequence.
             return reason
         case .unasked:
+            // An agent that arrived after the last setup is a different sentence
+            // from a machine nobody has set up yet: the work is the same button,
+            // but "deploys termiod" describes none of what is actually left, and
+            // the agent that has no hooks is the whole reason to press it.
+            let waiting = model.agentsAwaitingIntegration
+            if !waiting.isEmpty {
+                return localized("\(InstallOutcome.list(waiting, unit: localized("agents"))) arrived on \(machine.name) since the last setup. Set up again to install Termio’s hooks there.")
+            }
             return machine.isLocal
                 ? localized("Installs the `\(CommandLineTool.toolName)` command-line tool, then Termio’s hooks and skill for each agent.")
                 : localized("Deploys `termiod`, looks for your agent CLIs, then installs Termio’s hooks and skill.")

@@ -18,6 +18,8 @@
 	<string>%@ 有响应，但返回的不是配对邀请。它的 termiod 可能比本应用旧——重新部署一次。</string>
 	<key>%@ answered, but not with the handshake termiod sends.</key>
 	<string>%@ 有回应，但回的不是 termiod 的握手。</string>
+	<key>%@ arrived on %@ since the last setup. Set up again to install Termio’s hooks there.</key>
+	<string>上次设置之后，%@ 才装到 %@ 上。再设置一次，把 Termio 的 hook 装进去。</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ 未能启动——请检查网络后重试</string>
 	<key>%@ exited — shell</key>

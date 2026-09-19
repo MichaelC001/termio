@@ -18,6 +18,8 @@
 	<string>%@ answered, but not with a pairing invite. Its termiod is probably older than this app — deploy it again.</string>
 	<key>%@ answered, but not with the handshake termiod sends.</key>
 	<string>%@ answered, but not with the handshake termiod sends.</string>
+	<key>%@ arrived on %@ since the last setup. Set up again to install Termio’s hooks there.</key>
+	<string>%@ arrived on %@ since the last setup. Set up again to install Termio’s hooks there.</string>
 	<key>%@ didn’t come up — check the network and retry</key>
 	<string>%@ didn’t come up — check the network and retry</string>
 	<key>%@ exited — shell</key>
