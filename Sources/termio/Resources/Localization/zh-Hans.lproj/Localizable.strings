@@ -232,6 +232,8 @@
 	<string>闪烁</string>
 	<key>Block</key>
 	<string>方块</string>
+	<key>Blue</key>
+	<string>蓝色</string>
 	<key>Blur: %lld</key>
 	<string>模糊：%lld</string>
 	<key>Branch</key>
@@ -256,6 +258,8 @@
 	<string>无法在 %lld 台设备上检查</string>
 	<key>Can’t check on %lld machines</key>
 	<string>无法在 %lld 台设备上检查</string>
+	<key>Can’t open</key>
+	<string>无法打开</string>
 	<key>Can’t open as text</key>
 	<string>无法以文本打开</string>
 	<key>Can’t preview</key>
@@ -384,6 +388,8 @@
 	<string>连接失败</string>
 	<key>Connection refused</key>
 	<string>连接被拒绝</string>
+	<key>Contents</key>
+	<string>目录</string>
 	<key>Conversation</key>
 	<string>对话</string>
 	<key>Copied</key>
@@ -616,6 +622,8 @@
 	<string>GitHub Issues</string>
 	<key>Grant Org Access…</key>
 	<string>授予组织访问权限…</string>
+	<key>Green</key>
+	<string>绿色</string>
 	<key>Group with</key>
 	<string>编组到</string>
 	<key>Hide</key>
@@ -630,6 +638,8 @@
 	<string>隐藏或显示检查器</string>
 	<key>Hide or show the navigator</key>
 	<string>隐藏或显示导航器</string>
+	<key>Highlights</key>
+	<string>标注</string>
 	<key>History</key>
 	<string>历史</string>
 	<key>Hooks</key>
@@ -888,10 +898,14 @@
 	<string>应用包中没有可安装的工具。</string>
 	<key>No command to run.</key>
 	<string>没有可运行的命令。</string>
+	<key>No contents</key>
+	<string>没有目录</string>
 	<key>No description provided.</key>
 	<string>未提供描述。</string>
 	<key>No file changes</key>
 	<string>没有文件更改</string>
+	<key>No highlights</key>
+	<string>没有标注</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>暂无主机——添加一个，或在 ~/.ssh/config 中写入 Host 块。</string>
 	<key>No issues found.</key>
@@ -1022,6 +1036,8 @@
 	<string>覆盖</string>
 	<key>Padding: %lld pt</key>
 	<string>边距：%lld 点</string>
+	<key>Pages</key>
+	<string>页面</string>
 	<key>Pair</key>
 	<string>配对</string>
 	<key>Pair a Phone…</key>
@@ -1058,6 +1074,8 @@
 	<string>将 Termio 固定为浅色或深色外观，或跟随系统。下方的浅色与深色终端主题会应用到对应的外观。</string>
 	<key>Pin to Top</key>
 	<string>固定到顶部</string>
+	<key>Pink</key>
+	<string>粉色</string>
 	<key>Pinned</key>
 	<string>已固定</string>
 	<key>Plan limits</key>
@@ -1100,6 +1118,8 @@
 	<string>发布会重启 %@ 上的 termiod</string>
 	<key>Pull Requests</key>
 	<string>PR</string>
+	<key>Purple</key>
+	<string>紫色</string>
 	<key>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
 	<string>请先将当前分支推送到仓库的远程，然后重试。（远程还需是 Termio 能识别的代码托管平台：GitHub、GitLab、Bitbucket 或 Gitea。）</string>
 	<key>Quit Termio</key>
@@ -1154,6 +1174,8 @@
 	<string>远程主机</string>
 	<key>Remove</key>
 	<string>移除</string>
+	<key>Remove Highlight</key>
+	<string>移除标注</string>
 	<key>Remove Project</key>
 	<string>移除项目</string>
 	<key>Remove Workspace</key>
@@ -1228,6 +1250,8 @@
 	<string>SF Symbol 名称</string>
 	<key>Save</key>
 	<string>存储</string>
+	<key>Save Highlights into PDF</key>
+	<string>将标注存入 PDF</string>
 	<key>Save failed: %@</key>
 	<string>存储失败：%@</string>
 	<key>Saving to %@…</key>
@@ -1260,6 +1284,8 @@
 	<string>选择一个会话以浏览其文件。</string>
 	<key>Select a session to see its info.</key>
 	<string>选择一个会话以查看其信息。</string>
+	<key>Select text in the document, then choose Highlight.</key>
+	<string>在文稿中选中文本，然后从右键菜单中选取标注颜色。</string>
 	<key>Selection</key>
 	<string>选择</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
@@ -1482,6 +1508,8 @@
 	<string>本机以及你能连接的设备</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
+	<key>This PDF carries no table of contents.</key>
+	<string>此 PDF 没有目录。</string>
 	<key>This address changes when the tunnel restarts, and every paired iPhone must scan again.</key>
 	<string>隧道重启后这个地址会变，所有已配对的 iPhone 都必须重新扫码。</string>
 	<key>This agent is no longer on your list.</key>
@@ -1670,6 +1698,8 @@
 	<string>Worktree 存在更改</string>
 	<key>Worktree is locked</key>
 	<string>Worktree 已锁定</string>
+	<key>Yellow</key>
+	<string>黄色</string>
 	<key>Yesterday</key>
 	<string>昨天</string>
 	<key>You can restore it from the Trash.</key>

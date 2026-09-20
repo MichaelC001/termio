@@ -232,6 +232,8 @@
 	<string>Blink</string>
 	<key>Block</key>
 	<string>Block</string>
+	<key>Blue</key>
+	<string>Blue</string>
 	<key>Blur: %lld</key>
 	<string>Blur: %lld</string>
 	<key>Branch</key>
@@ -256,6 +258,8 @@
 	<string>Can’t check on %lld devices</string>
 	<key>Can’t check on %lld machines</key>
 	<string>Can’t check on %lld machines</string>
+	<key>Can’t open</key>
+	<string>Can’t open</string>
 	<key>Can’t open as text</key>
 	<string>Can’t open as text</string>
 	<key>Can’t preview</key>
@@ -384,6 +388,8 @@
 	<string>Connection failed</string>
 	<key>Connection refused</key>
 	<string>Connection refused</string>
+	<key>Contents</key>
+	<string>Contents</string>
 	<key>Conversation</key>
 	<string>Conversation</string>
 	<key>Copied</key>
@@ -616,6 +622,8 @@
 	<string>GitHub Issues</string>
 	<key>Grant Org Access…</key>
 	<string>Grant Org Access…</string>
+	<key>Green</key>
+	<string>Green</string>
 	<key>Group with</key>
 	<string>Group with</string>
 	<key>Hide</key>
@@ -630,6 +638,8 @@
 	<string>Hide or show the inspector</string>
 	<key>Hide or show the navigator</key>
 	<string>Hide or show the navigator</string>
+	<key>Highlights</key>
+	<string>Highlights</string>
 	<key>History</key>
 	<string>History</string>
 	<key>Hooks</key>
@@ -888,10 +898,14 @@
 	<string>No bundled tool to install from.</string>
 	<key>No command to run.</key>
 	<string>No command to run.</string>
+	<key>No contents</key>
+	<string>No contents</string>
 	<key>No description provided.</key>
 	<string>No description provided.</string>
 	<key>No file changes</key>
 	<string>No file changes</string>
+	<key>No highlights</key>
+	<string>No highlights</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>No hosts yet — add one, or write a Host block in ~/.ssh/config.</string>
 	<key>No issues found.</key>
@@ -1022,6 +1036,8 @@
 	<string>Overwrite</string>
 	<key>Padding: %lld pt</key>
 	<string>Padding: %lld pt</string>
+	<key>Pages</key>
+	<string>Pages</string>
 	<key>Pair</key>
 	<string>Pair</string>
 	<key>Pair a Phone…</key>
@@ -1058,6 +1074,8 @@
 	<string>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</string>
 	<key>Pin to Top</key>
 	<string>Pin to Top</string>
+	<key>Pink</key>
+	<string>Pink</string>
 	<key>Pinned</key>
 	<string>Pinned</string>
 	<key>Plan limits</key>
@@ -1100,6 +1118,8 @@
 	<string>Publishing restarts termiod on %@</string>
 	<key>Pull Requests</key>
 	<string>Pull Requests</string>
+	<key>Purple</key>
+	<string>Purple</string>
 	<key>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</key>
 	<string>Push the current branch to the repository’s remote first, then try again. (The remote also needs to be a forge Termio recognizes: GitHub, GitLab, Bitbucket, or Gitea.)</string>
 	<key>Quit Termio</key>
@@ -1154,6 +1174,8 @@
 	<string>Remote Hosts</string>
 	<key>Remove</key>
 	<string>Remove</string>
+	<key>Remove Highlight</key>
+	<string>Remove Highlight</string>
 	<key>Remove Project</key>
 	<string>Remove Project</string>
 	<key>Remove Workspace</key>
@@ -1228,6 +1250,8 @@
 	<string>SF Symbol name</string>
 	<key>Save</key>
 	<string>Save</string>
+	<key>Save Highlights into PDF</key>
+	<string>Save Highlights into PDF</string>
 	<key>Save failed: %@</key>
 	<string>Save failed: %@</string>
 	<key>Saving to %@…</key>
@@ -1260,6 +1284,8 @@
 	<string>Select a session to browse its files.</string>
 	<key>Select a session to see its info.</key>
 	<string>Select a session to see its info.</string>
+	<key>Select text in the document, then choose Highlight.</key>
+	<string>Select text in the document, then choose Highlight.</string>
 	<key>Selection</key>
 	<string>Selection</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
@@ -1482,6 +1508,8 @@
 	<string>This Mac and the machines you reach from it</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
+	<key>This PDF carries no table of contents.</key>
+	<string>This PDF carries no table of contents.</string>
 	<key>This address changes when the tunnel restarts, and every paired iPhone must scan again.</key>
 	<string>This address changes when the tunnel restarts, and every paired iPhone must scan again.</string>
 	<key>This agent is no longer on your list.</key>
@@ -1670,6 +1698,8 @@
 	<string>Worktree has changes</string>
 	<key>Worktree is locked</key>
 	<string>Worktree is locked</string>
+	<key>Yellow</key>
+	<string>Yellow</string>
 	<key>Yesterday</key>
 	<string>Yesterday</string>
 	<key>You can restore it from the Trash.</key>

@@ -1102,6 +1102,16 @@
         }
       }
     },
+    "Blue": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "蓝色"
+          }
+        }
+      }
+    },
     "Blur: %lld": {
       "localizations": {
         "zh-Hans": {
@@ -1158,6 +1168,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无法对比"
+          }
+        }
+      }
+    },
+    "Can’t open": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法打开"
           }
         }
       }
@@ -1858,6 +1878,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接被拒绝"
+          }
+        }
+      }
+    },
+    "Contents": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录"
           }
         }
       }
@@ -3014,6 +3044,16 @@
         }
       }
     },
+    "Green": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "绿色"
+          }
+        }
+      }
+    },
     "Group with": {
       "localizations": {
         "zh-Hans": {
@@ -3080,6 +3120,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏或显示导航器"
+          }
+        }
+      }
+    },
+    "Highlights": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标注"
           }
         }
       }
@@ -4244,6 +4294,16 @@
         }
       }
     },
+    "No contents": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有目录"
+          }
+        }
+      }
+    },
     "No Diff": {
       "localizations": {
         "zh-Hans": {
@@ -4280,6 +4340,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "没有 GitHub 仓库"
+          }
+        }
+      }
+    },
+    "No highlights": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有标注"
           }
         }
       }
@@ -5037,6 +5107,16 @@
         }
       }
     },
+    "Pages": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "页面"
+          }
+        }
+      }
+    },
     "Pair": {
       "localizations": {
         "zh-Hans": {
@@ -5213,6 +5293,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "固定到顶部"
+          }
+        }
+      }
+    },
+    "Pink": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粉色"
           }
         }
       }
@@ -5423,6 +5513,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "PR"
+          }
+        }
+      }
+    },
+    "Purple": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "紫色"
           }
         }
       }
@@ -5693,6 +5793,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "移除"
+          }
+        }
+      }
+    },
+    "Remove Highlight": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除标注"
           }
         }
       }
@@ -6044,6 +6154,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "以 `%@` 运行。Agent 在编辑文件或运行命令前将不再询问。"
+          }
+        }
+      }
+    },
+    "Save Highlights into PDF": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将标注存入 PDF"
+          }
+        }
+      }
+    },
+    "Select text in the document, then choose Highlight.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在文稿中选中文本，然后从右键菜单中选取标注颜色。"
           }
         }
       }
@@ -7618,6 +7748,16 @@
         }
       }
     },
+    "This PDF carries no table of contents.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 PDF 没有目录。"
+          }
+        }
+      }
+    },
     "This pull request changes no files.": {
       "localizations": {
         "zh-Hans": {
@@ -8245,6 +8385,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Worktree 存在更改"
+          }
+        }
+      }
+    },
+    "Yellow": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "黄色"
           }
         }
       }
