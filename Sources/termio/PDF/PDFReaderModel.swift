@@ -75,7 +75,14 @@ final class PDFReaderModel: ObservableObject {
     @Published private(set) var currentPage = 0
     @Published private(set) var opened = false
     @Published var sidebar: Sidebar = .contents
-    @Published var showsSidebar = true
+    /// Whether the rail is open. Closed to begin with — a book opens on the book, and the
+    /// three segments in the header are how you ask for the rail — but the choice is
+    /// remembered, so a reader who wants the contents beside them keeps them.
+    @Published var showsSidebar = UserDefaults.standard.bool(forKey: PDFReaderModel.sidebarVisibleKey) {
+        didSet { UserDefaults.standard.set(showsSidebar, forKey: PDFReaderModel.sidebarVisibleKey) }
+    }
+
+    private static let sidebarVisibleKey = "pdfReaderSidebarVisible"
 
     /// Which entries are open. Collapsed by default — a book's outline is a map, and a
     /// map that shows every street name at once is unreadable.
