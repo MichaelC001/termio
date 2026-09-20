@@ -314,7 +314,7 @@ struct InspectorDetailChromeButtons: View {
 /// read as one family with the refresh / filter / ↗ buttons in the same header — a 22×22 Hugeicons
 /// glyph, quiet `.secondary` at rest and brightening to primary over a faint rounded fill on hover.
 /// `size` varies per glyph so each sits at the same optical weight (the diagonal-heavy ✕ shrinks).
-private struct DetailChromeButton: View {
+struct DetailChromeButton: View {
     let icon: HugeIcon
     var size: CGFloat = 14
     let help: String
@@ -377,6 +377,19 @@ struct InspectorDetailContent: View {
                 FilePreviewView(url: url, settings: settings,
                                 displayName: store.openFileDisplayName,
                                 allowsWebFallback: store.openFileAllowsActiveWebContent,
+                                addToChat: { selection in
+                                    if let selection {
+                                        _ = store.addSnippetToSelectedSessionPrompt(selection)
+                                    } else {
+                                        _ = store.addPathToSelectedSessionPrompt(url)
+                                    }
+                                },
+                                // A passage goes to the agent beside the document. With the
+                                // reader filling the window there is no session beside it, so
+                                // the verb is gone rather than aimed at a terminal you can't see.
+                                canAddToChat: {
+                                    store.selectedSessionRunsAgent && !store.inspectorMaximized
+                                },
                                 onClose: close)
                     .id(url)
             } else {

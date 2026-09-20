@@ -1,5 +1,4 @@
 import AppKit
-import PDFKit
 import SwiftUI
 import WebKit
 
@@ -15,36 +14,54 @@ struct FilePreviewView: View {
     /// False for content copied from an SSH host. A failed raster decode must
     /// stay inert instead of handing attacker-controlled bytes to WebKit.
     let allowsWebFallback: Bool
+    /// "Add to Chat" for the PDF reader — the same contract as the editor's: a passage
+    /// goes over as a snippet, `nil` means send the document's path.
+    let addToChat: ((String?) -> Void)?
+    let canAddToChat: (() -> Bool)?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
 
-    private enum Kind { case image, pdf, web }
+    private enum Kind { case image, web }
 
     init(
         url: URL,
         settings: AppSettings,
         displayName: String? = nil,
         allowsWebFallback: Bool = true,
+        addToChat: ((String?) -> Void)? = nil,
+        canAddToChat: (() -> Bool)? = nil,
         onClose: @escaping () -> Void
     ) {
         self.url = url
         self.settings = settings
         self.displayName = displayName
         self.allowsWebFallback = allowsWebFallback
+        self.addToChat = addToChat
+        self.canAddToChat = canAddToChat
         self.onClose = onClose
     }
 
     private var fileName: String { displayName ?? url.lastPathComponent }
 
+    /// PDFs never reach the preview body below — they open in the reader instead.
+    private var isDocument: Bool { url.pathExtension.lowercased() == "pdf" }
+
     private var kind: Kind {
-        switch url.pathExtension.lowercased() {
-        case "pdf": return .pdf
-        case "html", "htm": return .web
-        default: return .image
-        }
+        ["html", "htm"].contains(url.pathExtension.lowercased()) ? .web : .image
     }
 
     var body: some View {
+        // A PDF is read, not glanced at: it gets its own reader (contents, pages,
+        // highlights) rather than this view's single-shot preview chrome.
+        if isDocument {
+            PDFReaderView(url: url, settings: settings, displayName: displayName,
+                          addToChat: addToChat, canAddToChat: canAddToChat, onClose: onClose)
+        } else {
+            preview
+        }
+    }
+
+    private var preview: some View {
         VStack(spacing: 0) {
             header
             Divider()
@@ -58,7 +75,7 @@ struct FilePreviewView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: kind == .pdf ? "doc.richtext" : (kind == .web ? "globe" : "photo"))
+            Image(systemName: kind == .web ? "globe" : "photo")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
@@ -81,8 +98,6 @@ struct FilePreviewView: View {
     @ViewBuilder
     private var content: some View {
         switch kind {
-        case .pdf:
-            PDFPreview(url: url)
         case .web:
             WebPreview(url: url)
         case .image:
@@ -127,25 +142,6 @@ struct FilePreviewView: View {
         allowsWebFallback: Bool
     ) -> Bool {
         !imageDecoded && allowsWebFallback
-    }
-}
-
-/// A `PDFView` over a file URL, scaled to fit on the terminal background.
-private struct PDFPreview: NSViewRepresentable {
-    let url: URL
-
-    func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.document = PDFDocument(url: url)
-        view.autoScales = true
-        view.backgroundColor = .clear
-        return view
-    }
-
-    func updateNSView(_ view: PDFView, context: Context) {
-        if view.document?.documentURL != url {
-            view.document = PDFDocument(url: url)
-        }
     }
 }
 
