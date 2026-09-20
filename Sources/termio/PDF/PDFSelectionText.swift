@@ -100,32 +100,50 @@ enum PDFSelectionText {
     /// Where a passage sits inside a page's text, ignoring how either one is laid out.
     ///
     /// `findString` is no use for this: PDF text carries a newline at every typeset line and
-    /// a hyphen at every broken word, and a search matches neither across. So both sides are
+    /// a hyphen at every broken word, and a search matches across neither. So both sides are
     /// squashed to their surviving characters, the match is made there, and the answer is
     /// mapped back to a range in the original text — which is what `PDFPage` needs to hand
     /// back a selection.
+    ///
+    /// The mapping walks composed characters, and every position it records is a UTF-16
+    /// offset, because that is the only domain `NSRange` and PDFKit understand. An earlier
+    /// version counted the squashed side in Swift Characters and the source side in UTF-16
+    /// units: the two agree for ASCII and diverge the moment a page carries a combining
+    /// accent or an emoji, which shifted the range by a character or lost it entirely.
     static func locate(_ quote: String, in text: String) -> NSRange? {
         let squashedQuote = squashed(quote)
         guard !squashedQuote.isEmpty else { return nil }
         let source = text as NSString
-        var flattened = ""
-        var offsets: [Int] = []
-        flattened.reserveCapacity(source.length)
-        offsets.reserveCapacity(source.length)
-        for index in 0..<source.length {
-            let character = source.substring(with: NSRange(location: index, length: 1))
-            let kept = squashed(character)
-            guard !kept.isEmpty else { continue }
-            flattened += kept
-            offsets.append(index)
+        var flattened: [Character] = []
+        // One entry per flattened character: the UTF-16 range of the source character it
+        // came from. A character can flatten to several (lowercasing "İ" yields two), so
+        // they all point back at the same source range.
+        var origins: [NSRange] = []
+        source.enumerateSubstrings(in: NSRange(location: 0, length: source.length),
+                                   options: [.byComposedCharacterSequences]) { piece, range, _, _ in
+            guard let piece else { return }
+            for character in squashed(piece) {
+                flattened.append(character)
+                origins.append(range)
+            }
         }
-        guard let found = flattened.range(of: squashedQuote) else { return nil }
-        let start = flattened.distance(from: flattened.startIndex, to: found.lowerBound)
-        let end = flattened.distance(from: flattened.startIndex, to: found.upperBound)
-        guard start < offsets.count, end > 0, end <= offsets.count else { return nil }
-        let first = offsets[start]
-        let last = offsets[end - 1]
-        return NSRange(location: first, length: last - first + 1)
+        guard !flattened.isEmpty else { return nil }
+        let quoteCharacters = Array(squashedQuote)
+        guard let start = firstIndex(of: quoteCharacters, in: flattened) else { return nil }
+        let first = origins[start]
+        let last = origins[start + quoteCharacters.count - 1]
+        return NSRange(location: first.location,
+                       length: last.location + last.length - first.location)
+    }
+
+    /// Plain substring search over characters — `range(of:)` would put us back in String
+    /// index space, which is the domain confusion this function exists to avoid.
+    private static func firstIndex(of needle: [Character], in haystack: [Character]) -> Int? {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return nil }
+        for start in 0...(haystack.count - needle.count) {
+            if Array(haystack[start..<(start + needle.count)]) == needle { return start }
+        }
+        return nil
     }
 
     private static func collapseSpaces(_ line: String) -> String {

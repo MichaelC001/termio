@@ -153,7 +153,7 @@ final class PDFReaderTests: XCTestCase {
         let marks = model.highlights
         XCTAssertEqual(marks.count, 1)
 
-        XCTAssertTrue(PDFHighlightStore.reconcile(marks, into: document))
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: marks), to: document).written)
         let written = try XCTUnwrap(PDFDocument(url: document))
         let inFile = try XCTUnwrap(written.page(at: 0)?.annotations)
         let mark = try XCTUnwrap(marks.first)
@@ -161,7 +161,7 @@ final class PDFReaderTests: XCTestCase {
         XCTAssertTrue(sameInk(try XCTUnwrap(inFile.first?.color), PDFHighlightColor.blue.annotationColor),
                       "the marker color has to survive the round trip through the file")
 
-        XCTAssertTrue(PDFHighlightStore.reconcile(marks, into: document))
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: marks), to: document).written)
         let again = try XCTUnwrap(PDFDocument(url: document)?.page(at: 0)?.annotations)
         XCTAssertEqual(again.count, inFile.count, "a second save must not re-ink the page")
 
@@ -277,6 +277,136 @@ final class PDFReaderTests: XCTestCase {
         XCTAssertEqual(reopened.highlights.first?.ink, .pink)
     }
 
+    // MARK: - What the review found
+
+    /// A save used to treat a mark as present when any one of its lines was, so the rest of
+    /// a multi-line passage was never written — and the model then cleared its sidecar.
+    func testSavingWritesEveryLineOfAPartlyPresentMark() throws {
+        let model = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        let page = try XCTUnwrap(model.pdfView.document?.page(at: 0))
+        model.pdfView.currentSelection = try XCTUnwrap(model.pdfView.document?.selection(
+            from: page, atCharacterIndex: 0, to: page, atCharacterIndex: 200))
+        model.highlightSelection(color: .yellow)
+        let mark = try XCTUnwrap(model.highlights.first)
+        XCTAssertGreaterThan(mark.rects.count, 1, "the fixture needs a multi-line passage")
+
+        // Put only the first line in the file, the way a partial save would have.
+        let partial = PDFHighlight(page: mark.page, rects: [try XCTUnwrap(mark.rects.first)],
+                                   text: mark.text, color: .yellow)
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: [partial]), to: document).written)
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: [mark]), to: document).written)
+
+        let written = try XCTUnwrap(PDFDocument(url: document)?.page(at: 0)?.annotations)
+        XCTAssertEqual(written.filter { $0.type == "Highlight" }.count, mark.rects.count,
+                       "every line of the passage has to reach the file")
+    }
+
+    /// A mark whose page is gone cannot be written. Reporting it saved dropped it from the
+    /// sidecar as well, which lost it for good.
+    func testAMarkWhosePageIsGoneIsReportedUnapplied() throws {
+        let model = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        let page = try XCTUnwrap(model.pdfView.document?.page(at: 0))
+        model.pdfView.currentSelection = try XCTUnwrap(model.pdfView.document?.selection(
+            from: page, atCharacterIndex: 0, to: page, atCharacterIndex: 40))
+        model.highlightSelection(color: .blue)
+        var mark = try XCTUnwrap(model.highlights.first)
+        mark.page = 99
+
+        let result = PDFHighlightStore.apply(.init(added: [mark]), to: document)
+        XCTAssertEqual(result.unapplied.map(\.id), [mark.id],
+                       "a mark that could not be written must be reported, not assumed saved")
+    }
+
+    /// Saving one mark must not disturb a highlight another application added, nor a link
+    /// that happens to share a passage's bounds.
+    func testSavingLeavesForeignAnnotationsAlone() throws {
+        let bounds = CGRect(x: 72, y: 600, width: 200, height: 14)
+        let foreign = try XCTUnwrap(PDFDocument(url: document))
+        let page = try XCTUnwrap(foreign.page(at: 0))
+        let theirs = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
+        theirs.color = NSColor(srgbRed: 0.9, green: 0.2, blue: 0.2, alpha: 1)
+        page.addAnnotation(theirs)
+        let link = PDFAnnotation(bounds: bounds, forType: .link, withProperties: nil)
+        page.addAnnotation(link)
+        XCTAssertTrue(foreign.write(to: document))
+
+        let mine = PDFHighlight(page: 0, rects: [.init(CGRect(x: 72, y: 500, width: 100, height: 12))],
+                                text: "mine", color: .green)
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: [mine]), to: document).written)
+
+        let after = try XCTUnwrap(PDFDocument(url: document)?.page(at: 0)?.annotations)
+        XCTAssertEqual(after.filter { $0.type == "Link" }.count, 1, "a link is not a mark")
+        let red = try XCTUnwrap(after.first { $0.type == "Highlight" && $0.bounds == bounds })
+        XCTAssertTrue(sameInk(try XCTUnwrap(red.color),
+                              NSColor(srgbRed: 0.9, green: 0.2, blue: 0.2, alpha: 1)),
+                      "a foreign mark keeps its own colour")
+    }
+
+    /// Removing a mark the book itself carries has to outlive the reader: the annotation is
+    /// gone from the page, and reopening must not bring it back.
+    func testRemovingAnEmbeddedMarkSurvivesReopening() throws {
+        let model = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        let page = try XCTUnwrap(model.pdfView.document?.page(at: 0))
+        model.pdfView.currentSelection = try XCTUnwrap(model.pdfView.document?.selection(
+            from: page, atCharacterIndex: 0, to: page, atCharacterIndex: 40))
+        model.highlightSelection(color: .purple)
+        let mark = try XCTUnwrap(model.highlights.first)
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: [mark]), to: document).written)
+
+        let reopened = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        XCTAssertEqual(reopened.highlights.count, 1)
+        reopened.remove(try XCTUnwrap(reopened.highlights.first?.id))
+        XCTAssertTrue(reopened.hasUnsavedHighlights, "the book still has it, so there is work to do")
+
+        let again = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        XCTAssertTrue(again.highlights.isEmpty, "a removed mark must not come back on reopen")
+        XCTAssertTrue(again.hasUnsavedHighlights, "and the book still needs the removal written")
+    }
+
+    /// Re-inking a mark the book carries also has to outlive the reader.
+    func testRecolouringAnEmbeddedMarkSurvivesReopening() throws {
+        let model = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        let page = try XCTUnwrap(model.pdfView.document?.page(at: 0))
+        model.pdfView.currentSelection = try XCTUnwrap(model.pdfView.document?.selection(
+            from: page, atCharacterIndex: 0, to: page, atCharacterIndex: 40))
+        model.highlightSelection(color: .yellow)
+        let mark = try XCTUnwrap(model.highlights.first)
+        XCTAssertTrue(PDFHighlightStore.apply(.init(added: [mark]), to: document).written)
+
+        let reopened = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        reopened.recolor(try XCTUnwrap(reopened.highlights.first?.id), to: .green)
+
+        let again = PDFReaderModel(url: document, addToChat: nil, canAddToChat: nil)
+        XCTAssertEqual(again.highlights.first?.ink, .green)
+        XCTAssertTrue(again.hasUnsavedHighlights)
+    }
+
+    /// An unwritable destination used to take the marks with it: the original sidecar was
+    /// deleted whether or not its replacement had been written.
+    func testAdoptionKeepsTheOriginalWhenReFilingFails() throws {
+        let outside = directory.appendingPathComponent("loose.pdf")
+        try FileManager.default.copyItem(at: document, to: outside)
+        let model = PDFReaderModel(url: outside, addToChat: nil, canAddToChat: nil)
+        let page = try XCTUnwrap(model.pdfView.document?.page(at: 0))
+        model.pdfView.currentSelection = try XCTUnwrap(model.pdfView.document?.selection(
+            from: page, atCharacterIndex: 0, to: page, atCharacterIndex: 40))
+        model.highlightSelection(color: .pink)
+
+        let before = try XCTUnwrap(try FileManager.default.contentsOfDirectory(
+            at: PDFHighlightStore.directory, includingPropertiesForKeys: nil).first)
+
+        // Rewrite the document so its identity moves, then make the new sidecar unwritable.
+        let rewritten = try XCTUnwrap(PDFDocument(url: outside))
+        XCTAssertTrue(rewritten.write(to: outside))
+        let store = try XCTUnwrap(PDFHighlightStore.store(for: outside))
+        let blocked = PDFHighlightStore.fileURL(for: store)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+
+        XCTAssertEqual(PDFHighlightStore.load(for: outside).count, 1, "the marks still load")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: before.path),
+                      "the only copy of the marks must not be deleted when re-filing fails")
+    }
+
     // MARK: - Context menu
 
     /// The reader's own menu, not PDFKit's: copy and mark the passage, hand it to the
@@ -329,9 +459,10 @@ final class PDFReaderTests: XCTestCase {
         XCTAssertFalse(model.hasUnsavedHighlights, "the book already has it; nothing to save")
 
         // And removing it is a change the file needs, not a no-op.
-        model.remove(try XCTUnwrap(model.highlights.first?.id))
+        let mark = try XCTUnwrap(model.highlights.first)
+        model.remove(mark.id)
         XCTAssertTrue(model.hasUnsavedHighlights)
-        XCTAssertTrue(PDFHighlightStore.reconcile(model.highlights, into: document))
+        XCTAssertTrue(PDFHighlightStore.apply(.init(removed: [mark.placement]), to: document).written)
         let after = try XCTUnwrap(PDFDocument(url: document)?.page(at: 0)?.annotations)
         XCTAssertTrue(after.isEmpty, "a mark removed on screen is removed from the book")
     }

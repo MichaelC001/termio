@@ -88,6 +88,23 @@ final class PDFSelectionTextTests: XCTestCase {
                        PDFSelectionText.squashed("we discuss the abstraction the OS provides"))
     }
 
+    /// Page text is not ASCII. A combining accent or an emoji before the passage used to
+    /// shift the answer by a character or lose it outright, because the squashed side was
+    /// counted in Swift Characters and the source side in UTF-16 units.
+    func testLocateIsExactAroundCombiningMarksAndEmoji() throws {
+        let accented = "e\u{301} target here"
+        let range = try XCTUnwrap(PDFSelectionText.locate("target", in: accented))
+        XCTAssertEqual((accented as NSString).substring(with: range), "target")
+
+        let withEmoji = "hello 😀 target world"
+        let afterEmoji = try XCTUnwrap(PDFSelectionText.locate("target", in: withEmoji))
+        XCTAssertEqual((withEmoji as NSString).substring(with: afterEmoji), "target")
+
+        let emojiItself = "hello 😀 world"
+        let emoji = try XCTUnwrap(PDFSelectionText.locate("😀", in: emojiItself))
+        XCTAssertEqual((emojiItself as NSString).substring(with: emoji), "😀")
+    }
+
     func testLocateMissesWhenThePassageIsNotThere() {
         XCTAssertNil(PDFSelectionText.locate("a passage that never appears", in: "some other page"))
     }

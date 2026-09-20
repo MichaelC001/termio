@@ -14,10 +14,6 @@ struct PDFOutlineNode: Identifiable {
     let point: CGPoint?
     let children: [PDFOutlineNode]
 
-    /// `List(children:)` stops recursing on `nil`; an empty array would draw a
-    /// disclosure triangle on every leaf.
-    var branches: [PDFOutlineNode]? { children.isEmpty ? nil : children }
-
     /// This node and every descendant, in reading order — what "which section am I in?"
     /// scans and what the sidebar's auto-reveal walks.
     var flattened: [PDFOutlineNode] { [self] + children.flatMap(\.flattened) }
@@ -96,9 +92,16 @@ final class PDFReaderModel: ObservableObject {
     /// The marks the file carried when it opened, by placement. Everything else in
     /// `highlights` is the unsaved layer, and that is exactly what the sidecar holds.
     private var savedMarks: Set<PDFHighlight.Placement> = []
-    /// Set when a saved mark is removed or re-inked on screen — the file still has it the
-    /// old way, so there is something to write even though nothing new was added.
-    private var documentEdited = false
+    /// Marks the file carries that the reader has removed. The annotation is off the page
+    /// already; this is what keeps it off across a close and reopen, and what tells a save
+    /// to delete it from the book. Without it, removing an embedded mark lasted until the
+    /// document was next opened.
+    private var removedFromDocument: Set<PDFHighlight.Placement> = []
+    /// Marks the file carries whose colour the reader changed, by placement.
+    private var recolouredInDocument: [PDFHighlight.Placement: PDFHighlightColor] = [:]
+    /// Bumped by every edit. A save records the value it started from, so a change made
+    /// while the write was in flight is not reported as already saved.
+    private var editGeneration = 0
 
     private var thumbnails: [Int: NSImage] = [:]
     private var flattenedOutline: [PDFOutlineNode] = []
@@ -147,14 +150,46 @@ final class PDFReaderModel: ObservableObject {
         markIdentity = PDFHighlightStore.Identity.of(url, pageCount: document.pageCount)
         // What the book itself carries — including marks made in Preview or Books — then
         // the ones termio is holding that aren't in the file yet.
-        let inDocument = PDFHighlightStore.marksInDocument(document)
+        var inDocument = PDFHighlightStore.marksInDocument(document)
         savedMarks = Set(inDocument.map(\.placement))
+        // Edits to the book's own marks that haven't been written back yet.
+        let pending = markIdentity.map { PDFHighlightStore.pendingEdits(from: $0, store: markStore) }
+            ?? (removed: [], recoloured: [:])
+        removedFromDocument = Set(pending.removed)
+        recolouredInDocument = pending.recoloured
+        inDocument.removeAll { mark in
+            guard removedFromDocument.contains(mark.placement) else { return false }
+            if let page = document.page(at: mark.page) {
+                for annotation in PDFHighlightStore.highlights(on: page, covering: mark.placement) {
+                    page.removeAnnotation(annotation)
+                }
+            }
+            return true
+        }
+        for index in inDocument.indices {
+            guard let colour = recolouredInDocument[inDocument[index].placement] else { continue }
+            inDocument[index].color = colour
+            if let page = document.page(at: inDocument[index].page) {
+                for annotation in PDFHighlightStore.highlights(
+                    on: page, covering: inDocument[index].placement) {
+                    annotation.color = colour.annotationColor
+                }
+            }
+        }
         let unsaved = (markIdentity.flatMap { identity in
             markStore.map { PDFHighlightStore.load(from: $0, identity: identity) }
         } ?? []).filter { !savedMarks.contains($0.placement) }
         // The rectangles are the fast anchor, the quote is the durable one: a document
         // re-exported from its source comes back with the same words in different places.
-        let anchored = unsaved.map { reanchored($0, in: document) }
+        // Each miss reads up to 21 pages of text, so the searching is capped — a book whose
+        // every mark has come loose must not hold the first page hostage while it looks.
+        var searches = 0
+        let anchored = unsaved.map { mark -> PDFHighlight in
+            guard searches < Self.reanchorBudget else { return mark }
+            let (result, searched) = reanchored(mark, in: document)
+            if searched { searches += 1 }
+            return result
+        }
         highlights = inDocument + anchored
         for highlight in anchored { annotate(highlight) }
         sortHighlights()
@@ -310,15 +345,13 @@ final class PDFReaderModel: ObservableObject {
     func remove(_ id: UUID) {
         guard let index = highlights.firstIndex(where: { $0.id == id }) else { return }
         let highlight = highlights.remove(at: index)
-        if savedMarks.contains(highlight.placement) { documentEdited = true }
+        editGeneration += 1
+        if savedMarks.contains(highlight.placement) {
+            removedFromDocument.insert(highlight.placement)
+            recolouredInDocument[highlight.placement] = nil
+        }
         if let page = pdfView.document?.page(at: highlight.page) {
-            // A mark made in another app has no id, so its annotations are found by where
-            // they sit — the same identity the reconcile uses when it writes the file.
-            let wanted = highlight.rects.map(\.cgRect)
-            for annotation in page.annotations
-            where annotation.userName == id.uuidString || wanted.contains(where: {
-                $0.integral == annotation.bounds.integral
-            }) {
+            for annotation in annotations(for: highlight, on: page) {
                 page.removeAnnotation(annotation)
             }
         }
@@ -330,13 +363,12 @@ final class PDFReaderModel: ObservableObject {
     func recolor(_ id: UUID, to color: PDFHighlightColor) {
         guard let index = highlights.firstIndex(where: { $0.id == id }) else { return }
         highlights[index].color = color
-        if savedMarks.contains(highlights[index].placement) { documentEdited = true }
+        editGeneration += 1
+        if savedMarks.contains(highlights[index].placement) {
+            recolouredInDocument[highlights[index].placement] = color
+        }
         if let page = pdfView.document?.page(at: highlights[index].page) {
-            let wanted = highlights[index].rects.map(\.cgRect)
-            for annotation in page.annotations
-            where annotation.userName == id.uuidString || wanted.contains(where: {
-                $0.integral == annotation.bounds.integral
-            }) {
+            for annotation in annotations(for: highlights[index], on: page) {
                 annotation.color = color.annotationColor
             }
         }
@@ -357,27 +389,40 @@ final class PDFReaderModel: ObservableObject {
     ///
     /// A quote that can't be found leaves the mark exactly as it was. Losing the passage is
     /// worse than showing it where it used to be, and the sidebar still quotes it.
-    private func reanchored(_ mark: PDFHighlight, in document: PDFDocument) -> PDFHighlight {
+    /// How many marks may go looking for their words when a document opens. A search reads
+    /// up to 21 pages of text; the marks past the budget keep their rectangles and are
+    /// checked again the next time the document is opened.
+    private static let reanchorBudget = 12
+
+    private func reanchored(_ mark: PDFHighlight, in document: PDFDocument)
+        -> (mark: PDFHighlight, searched: Bool) {
         let quote = PDFSelectionText.squashed(mark.text)
-        guard !quote.isEmpty else { return mark }
+        guard !quote.isEmpty else { return (mark, false) }
         if let page = document.page(at: mark.page), covers(quote, on: page, rects: mark.rects) {
-            return mark
+            return (mark, false)
         }
-        guard let found = search(quote: mark.text, from: mark.page, in: document) else { return mark }
+        guard let found = search(quote: mark.text, from: mark.page, in: document) else {
+            return (mark, true)
+        }
         var moved = mark
         moved.page = found.page
         moved.rects = found.rects
-        return moved
+        return (moved, true)
     }
 
     /// Whether the words under a mark's rectangles are still the words it quotes.
+    ///
+    /// Containment either way, because extraction at a rectangle's edge picks up a character
+    /// more or less than the selection did — but with a floor. Any substring counted as a
+    /// match before, so a rectangle left covering the single word "alpha" vouched for the
+    /// whole of "alpha beta gamma" and the search that would have recovered the rest never
+    /// ran. Four fifths keeps the edge cases and rejects a stale fragment.
     private func covers(_ quote: String, on page: PDFPage, rects: [PDFHighlight.Rect]) -> Bool {
         let under = rects.compactMap { page.selection(for: $0.cgRect)?.string }.joined(separator: " ")
         let found = PDFSelectionText.squashed(under)
         guard !found.isEmpty else { return false }
-        // Extraction at a rectangle's edge picks up a character more or less than the
-        // selection did, so containment either way counts as a match.
-        return found.contains(quote) || quote.contains(found)
+        guard found.contains(quote) || quote.contains(found) else { return false }
+        return Double(min(found.count, quote.count)) >= 0.8 * Double(max(found.count, quote.count))
     }
 
     /// The mark's quote, looked for on its own page first and then outwards — a document
@@ -422,6 +467,20 @@ final class PDFReaderModel: ObservableObject {
         return order
     }
 
+    /// A mark's own annotations on a page.
+    ///
+    /// By id when termio wrote them, and only otherwise by where they sit — a mark made in
+    /// another app carries no id. Bounds matching is deliberately the fallback and is
+    /// limited to highlights: a link or a stamp can share a passage's bounds, and removing a
+    /// mark used to take those with it.
+    private func annotations(for highlight: PDFHighlight, on page: PDFPage) -> [PDFAnnotation] {
+        let own = page.annotations.filter {
+            $0.type == "Highlight" && $0.userName == highlight.id.uuidString
+        }
+        guard own.isEmpty else { return own }
+        return PDFHighlightStore.highlights(on: page, covering: highlight.placement)
+    }
+
     private func annotate(_ highlight: PDFHighlight) {
         guard let page = pdfView.document?.page(at: highlight.page) else { return }
         // A mark saved into the document itself is already on the page; drawing the sidecar's
@@ -447,30 +506,33 @@ final class PDFReaderModel: ObservableObject {
 
     /// Only the unsaved layer goes to the sidecar: a mark that is already an annotation in
     /// the book is the book's, and writing it down twice is how two sources of truth start.
+    /// The sidecar holds everything the book doesn't: marks not written into it, marks it
+    /// carries that were removed, and colours it carries that were changed. A mark already
+    /// in the file is the file's, and writing it down twice is how two sources of truth
+    /// start.
     private func persist() {
         guard let markStore, let markIdentity else { return }
         let unsaved = highlights.filter { !savedMarks.contains($0.placement) }
-        PDFHighlightStore.save(unsaved, to: markStore, identity: markIdentity)
-    }
-
-    /// The prose behind the current selection, or `nil` when nothing is selected.
-    var selectionText: String? {
-        guard let text = pdfView.currentSelection?.string, !text.isEmpty else { return nil }
-        return PDFSelectionText.unwrapped(text)
-    }
-
-    func copySelection() {
-        guard let text = selectionText else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        let recoloured = recolouredInDocument.map {
+            PDFHighlightStore.RecolouredMark(placement: $0.key, color: $0.value)
+        }
+        PDFHighlightStore.save(unsaved, to: markStore, identity: markIdentity,
+                               removed: Array(removedFromDocument), recoloured: recoloured)
     }
 
     // MARK: - Writing marks into the book
 
     /// Whether saving would change the file: a mark termio is holding that the book does
     /// not have, or a saved mark removed or re-inked on screen.
-    var hasUnsavedHighlights: Bool {
-        documentEdited || highlights.contains { !savedMarks.contains($0.placement) }
+    var hasUnsavedHighlights: Bool { !edits.isEmpty }
+
+    /// What a save would do to the book: the marks it doesn't have, the ones it has that
+    /// the reader removed, and the ones whose colour changed.
+    private var edits: PDFHighlightStore.Edits {
+        PDFHighlightStore.Edits(
+            added: highlights.filter { !savedMarks.contains($0.placement) },
+            removed: Array(removedFromDocument),
+            recoloured: highlights.filter { recolouredInDocument[$0.placement] != nil })
     }
 
     @Published private(set) var savingHighlights = false
@@ -484,28 +546,45 @@ final class PDFReaderModel: ObservableObject {
     /// a background thread — PDFKit cannot be driven from two threads at once, and the one
     /// on screen belongs to the view.
     func saveHighlightsIntoDocument() {
-        guard !savingHighlights, hasUnsavedHighlights else { return }
+        guard !savingHighlights else { return }
+        let edits = self.edits
+        guard !edits.isEmpty else { return }
         savingHighlights = true
         let url = self.url
-        let marks = highlights
+        let generation = editGeneration
         Task.detached(priority: .userInitiated) {
-            let written = PDFHighlightStore.reconcile(marks, into: url)
+            let result = PDFHighlightStore.apply(edits, to: url)
             await MainActor.run { [weak self] in
-                guard let self else { return }
-                savingHighlights = false
-                guard written else { return }
-                // Everything on screen is now in the book, so the unsaved layer is empty.
-                // The file's bytes changed, which changes its sidecar key — the one moment
-                // the hash has to be taken again.
-                savedMarks = Set(marks.map(\.placement))
-                documentEdited = false
-                // The write changed the file's bytes: its hash, and — for a document
-                // outside a repo — the key its sidecar is filed under, both move with it.
-                markIdentity = PDFHighlightStore.Identity.of(url, pageCount: pageCount)
-                if case .support = markStore { markStore = PDFHighlightStore.store(for: url) }
-                persist()
+                self?.finishSaving(edits, result: result, generation: generation)
             }
         }
+    }
+
+    /// Books the outcome of a save against what the reader has done since it started.
+    ///
+    /// Only the edits that actually reached the file are retired, and only if nothing was
+    /// edited while the write was in flight — otherwise a mark removed mid-save would come
+    /// back as "already saved" and the removal would be lost. Marks the file refused (a page
+    /// that no longer exists) stay in the sidecar rather than being reported as written.
+    private func finishSaving(_ edits: PDFHighlightStore.Edits,
+                              result: PDFHighlightStore.SaveResult,
+                              generation: Int) {
+        savingHighlights = false
+        guard result.written else { return }
+        let refused = Set(result.unapplied.map(\.placement))
+        if generation == editGeneration {
+            savedMarks.formUnion(edits.added.map(\.placement).filter { !refused.contains($0) })
+            savedMarks.subtract(edits.removed)
+            removedFromDocument.subtract(edits.removed)
+            for mark in edits.recoloured where !refused.contains(mark.placement) {
+                recolouredInDocument[mark.placement] = nil
+            }
+        }
+        // The write changed the file's bytes: its identifier, and — for a document outside a
+        // repo — the key its sidecar is filed under, both move with it.
+        markIdentity = PDFHighlightStore.Identity.of(url, pageCount: pageCount)
+        if case .support = markStore { markStore = PDFHighlightStore.store(for: url) }
+        persist()
     }
 
     // MARK: - Context menu
@@ -639,8 +718,6 @@ final class ContextMenuPDFView: PDFView {
         }
         return super.performKeyEquivalent(with: event)
     }
-
-    @objc private func highlightAction() { onHighlight?() }
 
     @objc private func removeHighlightAction(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let id = UUID(uuidString: raw) else { return }
