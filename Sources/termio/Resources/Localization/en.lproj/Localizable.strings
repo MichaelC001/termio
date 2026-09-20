@@ -1328,6 +1328,12 @@
 	<string>Show Project Files</string>
 	<key>Show Replace</key>
 	<string>Show Replace</string>
+	<key>Show another file in this diff</key>
+	<string>Show another file in this diff</string>
+	<key>Show one column (inline diff)</key>
+	<string>Show one column (inline diff)</string>
+	<key>Show two columns (side-by-side diff)</key>
+	<string>Show two columns (side-by-side diff)</string>
 	<key>Shows files and folders ignored by Git in a muted color.</key>
 	<string>Shows files and folders ignored by Git in a muted color.</string>
 	<key>Shows the Issues pane in the inspector for projects whose remote is on GitHub.</key>

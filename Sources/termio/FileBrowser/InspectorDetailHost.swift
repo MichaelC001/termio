@@ -278,10 +278,11 @@ struct InspectorDetailChromeButtons: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Collapse the leading list column so the detail fills the inspector. A two-pane
-            // "layout columns" glyph depicts the list ‖ content split it toggles — bolder and clearer
-            // at this size than the busy sidebar-rail mark. Meaningless once the detail already
-            // fills the whole window, so it's dropped while maximized.
+            // Collapse the leading list column so the detail fills the inspector. A panel glyph
+            // rather than one of the box-split "layout" marks, which the diff's inline /
+            // side-by-side toggle owns now: two of those in one header read as one control.
+            // Meaningless once the detail already fills the whole window, so it's dropped while
+            // maximized.
             if !store.inspectorMaximized {
                 // Reads the *visible* state, not the flag: an inspector too narrow for both columns
                 // covers the list however the flag stands, so keying off the flag alone offered to
@@ -289,7 +290,7 @@ struct InspectorDetailChromeButtons: View {
                 // widens the panel until it fits.
                 let showing = store.inspectorListColumnVisible
                 DetailChromeButton(
-                    icon: .layoutColumns, size: 15,
+                    icon: showing ? .panelLeftCollapse : .panelLeftExpand, size: 15,
                     help: showing ? "Hide the list column" : "Show the list column"
                 ) {
                     store.setInspectorListColumn(visible: !showing,

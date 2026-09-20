@@ -204,6 +204,8 @@ public enum HugeIcon: Hashable, Sendable {
     case checkCircle
     case layoutColumns
     case layoutRows
+    case panelLeftCollapse
+    case panelLeftExpand
     case expand
     case square
     case plusSquare
@@ -370,6 +372,14 @@ public enum HugeIcon: Hashable, Sendable {
         case .layoutRows:
             // Hugeicons "layout-2-row": a box split into two rows — Split Down.
             return "M20.1088 3.89124C21.5 5.28249 21.5 7.52166 21.5 12C21.5 16.4783 21.5 18.7175 20.1088 20.1088C18.7175 21.5 16.4783 21.5 12 21.5C7.52166 21.5 5.28249 21.5 3.89124 20.1088C2.5 18.7175 2.5 16.4783 2.5 12C2.5 7.52166 2.5 5.28249 3.89124 3.89124C5.28249 2.5 7.52166 2.5 12 2.5C16.4783 2.5 18.7175 2.5 20.1088 3.89124Z M21.5 12L2.50078 12"
+        case .panelLeftCollapse:
+            // Hugeicons "panel-left-open": a pane with its left rail set off, the chevron pointing
+            // into that rail. Named for the drawing, not upstream's label — Hugeicons names this
+            // pair the reverse of lucide, whose naming has spread further.
+            return "M21 11C21 7.22876 21 5.34315 19.8284 4.17157C18.6569 3 16.7712 3 13 3H11C7.22876 3 5.34315 3 4.17157 4.17157C3 5.34315 3 7.22876 3 11V13C3 16.7712 3 18.6569 4.17157 19.8284C5.34315 21 7.22876 21 11 21H13C16.7712 21 18.6569 21 19.8284 19.8284C21 18.6569 21 16.7712 21 13V11Z M9 3V21 M16 9L14.8918 9.87868C13.6306 10.8787 13 11.3787 13 12C13 12.6213 13.6306 13.1213 14.8918 14.1213L16 15"
+        case .panelLeftExpand:
+            // Hugeicons "panel-left-close": the same rail, chevron pointing away from it.
+            return "M21 11C21 7.22876 21 5.34315 19.8284 4.17157C18.6569 3 16.7712 3 13 3H11C7.22876 3 5.34315 3 4.17157 4.17157C3 5.34315 3 7.22876 3 11V13C3 16.7712 3 18.6569 4.17157 19.8284C5.34315 21 7.22876 21 11 21H13C16.7712 21 18.6569 21 19.8284 19.8284C21 18.6569 21 16.7712 21 13V11Z M9 3V21 M14 9L15.1082 9.87868C16.3694 10.8787 17 11.3787 17 12C17 12.6213 16.3694 13.1213 15.1082 14.1213L14 15"
         case .expand:
             // Hugeicons "arrow-expand-01": diagonal out-arrows — Zoom Split.
             return "M16.4999 3.26621C17.3443 3.25421 20.1408 2.67328 20.7337 3.26621C21.3266 3.85913 20.7457 6.65559 20.7337 7.5M20.5059 3.49097L13.5021 10.4961 M3.26636 16.5001C3.25436 17.3445 2.67343 20.141 3.26636 20.7339C3.85928 21.3268 6.65574 20.7459 7.50015 20.7339M10.502 13.4976L3.49824 20.5027"

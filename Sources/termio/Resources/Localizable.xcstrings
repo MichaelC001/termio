@@ -6528,12 +6528,32 @@
         }
       }
     },
+    "Show another file in this diff": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此差异中显示另一个文件"
+          }
+        }
+      }
+    },
     "Show All": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "全部显示"
+          }
+        }
+      }
+    },
+    "Show one column (inline diff)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示单栏（行内差异）"
           }
         }
       }
@@ -6564,6 +6584,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示替换"
+          }
+        }
+      }
+    },
+    "Show two columns (side-by-side diff)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示双栏（并排差异）"
           }
         }
       }
