@@ -1302,6 +1302,8 @@
 	<string>显示项目文件</string>
 	<key>Show Replace</key>
 	<string>显示替换</string>
+	<key>Show another file in this diff</key>
+	<string>在此差异中显示另一个文件</string>
 	<key>Show one column (inline diff)</key>
 	<string>显示单栏（行内差异）</string>
 	<key>Show two columns (side-by-side diff)</key>

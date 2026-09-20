@@ -184,6 +184,18 @@ struct GitDiffView: View {
 
     // MARK: Header
 
+    /// The file's identity in the header: its name, then the directory it sits in as one run. The
+    /// flexible element of the bar, and the only one that gives up width.
+    private var fileIdentity: some View {
+        let directory = request.change.directory
+        let name = Text(request.name).font(.system(size: 12.5, weight: .medium))
+        return directory.isEmpty
+            ? name
+            : name + Text("  \(directory)")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             Text(request.change.status.letter)
@@ -193,15 +205,20 @@ struct GitDiffView: View {
             // Name and directory as one text run with a single truncation point: as two
             // flexible texts a narrow pane split the width between them and truncated
             // both into noise. Tail truncation keeps the name (the head) readable longest.
-            let directory = (request.change.path as NSString).deletingLastPathComponent
-            let name = Text(request.name).font(.system(size: 12.5, weight: .medium))
-            (directory.isEmpty
-                ? name
-                : name + Text("  \(directory)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            //
+            // With more than one file to read here, the run becomes the jump bar over them
+            // (`DiffFileMenuLabel`): the same words, with a list hanging under the name.
+            if request.walkableSiblings.count > 1 {
+                DiffFileMenuLabel(request: request) { change in
+                    onNavigate?(request.aimed(at: change))
+                } content: {
+                    fileIdentity
+                }
+            } else {
+                fileIdentity
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Spacer(minLength: 8)
             // "n of m" (Mail's message-walk wording) whenever there is a set to walk.
             if request.siblings.count > 1, let index = walkIndex {
@@ -427,7 +444,25 @@ struct GitDiffView: View {
     }
 }
 
-extension GitDiffRequest {    /// The nearest sibling in `delta`'s direction that has a textual diff —
+extension GitDiffRequest {
+    /// The same diff re-aimed at another of its own files — the one place the request is built,
+    /// shared by the overlay's own ← / → and its header's file menu.
+    func aimed(at change: GitChange) -> GitDiffRequest {
+        GitDiffRequest(repoRoot: repoRoot, device: device, change: change,
+                       commit: commit, range: range, siblings: siblings)
+    }
+
+    /// The siblings this overlay can actually show, in the order the list carries them —
+    /// `neighbor`'s rule read as a set, so the header's file menu offers exactly the files ← / →
+    /// can reach. Image and PDF siblings belong to the preview overlay and are not among them.
+    var walkableSiblings: [GitChange] {
+        siblings.filter { candidate in
+            !FileActivation.previewsRatherThanDiff(
+                URL(fileURLWithPath: repoRoot).appendingPathComponent(candidate.path))
+        }
+    }
+
+    /// The nearest sibling in `delta`'s direction that has a textual diff —
     /// image/PDF siblings belong to the preview overlay and are skipped. The one
     /// walking rule, shared by the overlay's own ← / → and the Changes list's.
     func neighbor(_ delta: Int) -> GitDiffRequest? {
@@ -437,8 +472,7 @@ extension GitDiffRequest {    /// The nearest sibling in `delta`'s direction tha
             let candidate = siblings[next]
             let url = URL(fileURLWithPath: repoRoot).appendingPathComponent(candidate.path)
             if !FileActivation.previewsRatherThanDiff(url) {
-                return GitDiffRequest(repoRoot: repoRoot, device: device, change: candidate,
-                                      commit: commit, range: range, siblings: siblings)
+                return aimed(at: candidate)
             }
             next += delta
         }
