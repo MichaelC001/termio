@@ -6408,6 +6408,16 @@
         }
       }
     },
+    "Show one column (inline diff)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示单栏（行内差异）"
+          }
+        }
+      }
+    },
     "Show Original": {
       "localizations": {
         "zh-Hans": {
@@ -6434,6 +6444,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示替换"
+          }
+        }
+      }
+    },
+    "Show two columns (side-by-side diff)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示双栏（并排差异）"
           }
         }
       }
