@@ -457,7 +457,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/termio-sh/libghostty-rs?rev=62e5f317b9829f47e1229d73b62242212456f2d6#62e5f317b9829f47e1229d73b62242212456f2d6"
+source = "git+https://github.com/termio-sh/libghostty-rs?rev=f8df62ff97c2f36800267bcdc7dbcf1b6f073cac#f8df62ff97c2f36800267bcdc7dbcf1b6f073cac"
 dependencies = [
  "bitflags",
  "int-enum",
@@ -467,7 +467,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/termio-sh/libghostty-rs?rev=62e5f317b9829f47e1229d73b62242212456f2d6#62e5f317b9829f47e1229d73b62242212456f2d6"
+source = "git+https://github.com/termio-sh/libghostty-rs?rev=f8df62ff97c2f36800267bcdc7dbcf1b6f073cac#f8df62ff97c2f36800267bcdc7dbcf1b6f073cac"
 
 [[package]]
 name = "log"
