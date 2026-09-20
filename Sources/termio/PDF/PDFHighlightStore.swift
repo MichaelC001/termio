@@ -33,15 +33,12 @@ struct PDFHighlight: Codable, Identifiable, Hashable {
     /// PDF written by anything but us (Preview's highlights have no id at all), so a mark
     /// is identified by where it sits on the page, rounded to half a point.
     var placement: Placement {
-        Placement(page: page, rects: rects.map {
-            [($0.x * 2).rounded(), ($0.y * 2).rounded(),
-             ($0.width * 2).rounded(), ($0.height * 2).rounded()]
-        })
+        Placement(page: page, rects: rects.map(\.rounded))
     }
 
-    struct Placement: Hashable {
+    struct Placement: Hashable, Codable {
         let page: Int
-        let rects: [[Double]]
+        let rects: [Rect.Rounded]
     }
 
     init(id: UUID = UUID(), page: Int, rects: [Rect], text: String, color: PDFHighlightColor = .yellow) {
@@ -70,6 +67,21 @@ struct PDFHighlight: Codable, Identifiable, Hashable {
         }
 
         var cgRect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+
+        /// A rectangle to half a point — the grain at which two extractions of one line
+        /// count as the same line, and the single definition of "same rectangle" shared by
+        /// the sidecar, the page and the save.
+        var rounded: Rounded {
+            Rounded(x: (x * 2).rounded(), y: (y * 2).rounded(),
+                    width: (width * 2).rounded(), height: (height * 2).rounded())
+        }
+
+        struct Rounded: Hashable, Codable {
+            let x: Double
+            let y: Double
+            let width: Double
+            let height: Double
+        }
     }
 }
 
@@ -143,23 +155,32 @@ enum PDFHighlightStore {
         var document: String
         var highlights: [PDFHighlight]
         var fingerprint: String?
-        /// A whole-file hash, written by earlier versions. Only ever read, so a sidecar
-        /// made before identifiers were used still matches its document.
+        /// Marks the book carries that the reader removed, and ones whose colour it
+        /// changed — pending edits to the document itself, kept here until a save writes
+        /// them into the file.
+        var removed: [PDFHighlight.Placement]?
+        var recoloured: [RecolouredMark]?
+        /// A whole-file hash, written before documents were identified by their own `/ID`.
+        /// Decoded so an older sidecar still parses; nothing consults it — such a sidecar is
+        /// found by its path instead, and re-filed with a fingerprint on the next save.
         var contentHash: String?
         /// The document's page count when the marks were made — the guard against adopting
         /// a genuinely different document that happens to sit at the same path.
         var pageCount: Int?
 
         private enum CodingKeys: String, CodingKey {
-            case document, highlights, fingerprint, contentHash, pageCount
+            case document, highlights, fingerprint, removed, recoloured, contentHash, pageCount
             /// Sidecars written before the field was renamed.
             case path
         }
 
-        init(document: String, highlights: [PDFHighlight], fingerprint: String?, pageCount: Int?) {
+        init(document: String, highlights: [PDFHighlight], fingerprint: String?,
+             removed: [PDFHighlight.Placement], recoloured: [RecolouredMark], pageCount: Int?) {
             self.document = document
             self.highlights = highlights
             self.fingerprint = fingerprint
+            self.removed = removed.isEmpty ? nil : removed
+            self.recoloured = recoloured.isEmpty ? nil : recoloured
             self.pageCount = pageCount
         }
 
@@ -168,6 +189,8 @@ enum PDFHighlightStore {
             try values.encode(document, forKey: .document)
             try values.encode(highlights, forKey: .highlights)
             try values.encodeIfPresent(fingerprint, forKey: .fingerprint)
+            try values.encodeIfPresent(removed, forKey: .removed)
+            try values.encodeIfPresent(recoloured, forKey: .recoloured)
             try values.encodeIfPresent(pageCount, forKey: .pageCount)
         }
 
@@ -177,9 +200,17 @@ enum PDFHighlightStore {
                 ?? values.decodeIfPresent(String.self, forKey: .path) ?? ""
             highlights = try values.decode([PDFHighlight].self, forKey: .highlights)
             fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint)
+            removed = try values.decodeIfPresent([PDFHighlight.Placement].self, forKey: .removed)
+            recoloured = try values.decodeIfPresent([RecolouredMark].self, forKey: .recoloured)
             contentHash = try values.decodeIfPresent(String.self, forKey: .contentHash)
             pageCount = try values.decodeIfPresent(Int.self, forKey: .pageCount)
         }
+    }
+
+    /// One of the book's own marks, re-inked but not yet written back.
+    struct RecolouredMark: Codable, Hashable {
+        var placement: PDFHighlight.Placement
+        var color: PDFHighlightColor
     }
 
     /// The two homes a document's marks can have.
@@ -248,34 +279,58 @@ enum PDFHighlightStore {
     static func load(from store: Store, identity: Identity) -> [PDFHighlight] {
         if let own = sidecar(at: fileURL(for: store)) { return own.highlights }
         guard let (origin, adopted) = orphan(matching: identity, near: store) else { return [] }
-        write(adopted.highlights, to: store, identity: identity)
+        // The old sidecar goes only once the new one is written. It was being removed
+        // regardless, so an unwritable destination destroyed the only copy of the marks.
+        guard write(adopted.highlights, to: store, identity: identity,
+                    removed: adopted.removed ?? [], recoloured: adopted.recoloured ?? []) else {
+            Log.files.error("pdf highlights: could not re-file marks; keeping the original sidecar")
+            return adopted.highlights
+        }
         try? FileManager.default.removeItem(at: origin)
         Log.files.info("pdf highlights: adopted \(adopted.highlights.count, privacy: .public) marks from \(origin.lastPathComponent, privacy: .public)")
         return adopted.highlights
     }
 
-    /// Best-effort, atomic. A failed save loses marks, which is recoverable; trapping is
-    /// not, and neither is refusing to show the document because its sidecar won't write.
-    static func save(_ highlights: [PDFHighlight], to store: Store, identity: Identity) {
-        write(highlights, to: store, identity: identity)
+    /// The reader's pending edits to the marks the book itself carries.
+    static func pendingEdits(from identity: Identity, store: Store?)
+        -> (removed: [PDFHighlight.Placement], recoloured: [PDFHighlight.Placement: PDFHighlightColor]) {
+        guard let store, let sidecar = sidecar(at: fileURL(for: store)) else { return ([], [:]) }
+        var recoloured: [PDFHighlight.Placement: PDFHighlightColor] = [:]
+        for entry in sidecar.recoloured ?? [] { recoloured[entry.placement] = entry.color }
+        return (sidecar.removed ?? [], recoloured)
     }
 
-    private static func write(_ highlights: [PDFHighlight], to store: Store, identity: Identity) {
+    /// Best-effort, atomic. A failed save loses marks, which is recoverable; trapping is
+    /// not, and neither is refusing to show the document because its sidecar won't write.
+    @discardableResult
+    static func save(_ highlights: [PDFHighlight], to store: Store, identity: Identity,
+                     removed: [PDFHighlight.Placement] = [],
+                     recoloured: [RecolouredMark] = []) -> Bool {
+        write(highlights, to: store, identity: identity, removed: removed, recoloured: recoloured)
+    }
+
+    @discardableResult
+    private static func write(_ highlights: [PDFHighlight], to store: Store, identity: Identity,
+                              removed: [PDFHighlight.Placement] = [],
+                              recoloured: [RecolouredMark] = []) -> Bool {
         let target = fileURL(for: store)
         do {
-            if highlights.isEmpty {
+            if highlights.isEmpty, removed.isEmpty, recoloured.isEmpty {
                 try? FileManager.default.removeItem(at: target)
-                return
+                return true
             }
             try FileManager.default.createDirectory(
                 at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let sidecar = Sidecar(document: identity.document, highlights: highlights,
-                                  fingerprint: identity.fingerprint, pageCount: identity.pageCount)
+                                  fingerprint: identity.fingerprint, removed: removed,
+                                  recoloured: recoloured, pageCount: identity.pageCount)
             try encoder.encode(sidecar).write(to: target, options: .atomic)
+            return true
         } catch {
             Log.files.error("pdf highlights: save failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -381,7 +436,8 @@ enum PDFHighlightStore {
     /// stands on its own.
     static func marksInDocument(_ document: PDFDocument) -> [PDFHighlight] {
         var marks: [PDFHighlight] = []
-        var grouped: [String: (page: Int, rects: [PDFHighlight.Rect], text: String)] = [:]
+        var grouped: [String: (page: Int, rects: [PDFHighlight.Rect], text: String,
+                               color: PDFHighlightColor)] = [:]
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
             for annotation in page.annotations where annotation.type == "Highlight" {
@@ -392,7 +448,10 @@ enum PDFHighlightStore {
                                               color: nearestColor(annotation.color)))
                     continue
                 }
-                var entry = grouped[name] ?? (index, [], "")
+                // The colour is on the annotation in hand. Looking it up afterwards meant
+                // re-walking the document once per mark, which turned opening a marked-up
+                // 800-page book into seconds of work before the first page appeared.
+                var entry = grouped[name] ?? (index, [], "", nearestColor(annotation.color))
                 entry.rects.append(rect)
                 entry.text = entry.text.isEmpty ? quoted : entry.text
                 grouped[name] = entry
@@ -400,8 +459,7 @@ enum PDFHighlightStore {
         }
         for (name, entry) in grouped {
             marks.append(PDFHighlight(id: UUID(uuidString: name) ?? UUID(), page: entry.page,
-                                      rects: entry.rects, text: entry.text,
-                                      color: colorOfGroup(named: name, in: document) ?? .yellow))
+                                      rects: entry.rects, text: entry.text, color: entry.color))
         }
         return marks
     }
@@ -413,16 +471,6 @@ enum PDFHighlightStore {
         }
         guard let text = page.selection(for: annotation.bounds)?.string else { return "" }
         return PDFSelectionText.unwrapped(text)
-    }
-
-    private static func colorOfGroup(named name: String, in document: PDFDocument) -> PDFHighlightColor? {
-        for index in 0..<document.pageCount {
-            guard let page = document.page(at: index) else { continue }
-            if let match = page.annotations.first(where: { $0.userName == name }) {
-                return nearestColor(match.color)
-            }
-        }
-        return nil
     }
 
     /// The palette entry a foreign highlight's color is closest to, so the rail can show a
@@ -442,76 +490,112 @@ enum PDFHighlightStore {
         return red * red + green * green + blue * blue
     }
 
-    /// Writes the marks into the PDF itself, as annotations another reader can see.
+    /// The edits a save has to make to the document: marks to put in, marks to take out,
+    /// and marks whose colour changed. Stated by the reader rather than inferred from a
+    /// snapshot.
     ///
-    /// A reconcile, not an append: the file is made to match the mark list, so a mark
-    /// removed or re-inked on screen is removed or re-inked in the book too. Marks already
-    /// in place are left alone, which is what makes a second save a no-op rather than a
-    /// second coat of ink.
+    /// Inferring was the earlier design — hand the file the whole mark list and make it
+    /// match. That quietly deleted anything the list didn't know about, including
+    /// highlights another application had added since termio opened the book, and
+    /// re-coloured foreign marks to whichever palette entry they were nearest. A save now
+    /// touches what the reader actually changed, and nothing else.
+    struct Edits {
+        var added: [PDFHighlight] = []
+        var removed: [PDFHighlight.Placement] = []
+        var recoloured: [PDFHighlight] = []
+
+        var isEmpty: Bool { added.isEmpty && removed.isEmpty && recoloured.isEmpty }
+    }
+
+    /// What a save managed to do. `unapplied` carries marks it could not write — one whose
+    /// page no longer exists in the document, say — so the caller keeps them in the sidecar
+    /// rather than reporting them saved and dropping them on the floor.
+    struct SaveResult {
+        var written: Bool
+        var unapplied: [PDFHighlight]
+    }
+
+    /// Writes the edits into the PDF itself, as annotations another reader can see.
     ///
     /// The document is opened fresh here rather than handed in: this runs off the main
     /// thread, and PDFKit objects belong to whoever opened them. The result is written
-    /// beside the original and swapped in atomically, so an interrupted save leaves the
-    /// book as it was.
-    ///
-    /// Returns false, having changed nothing, if the document can't be opened or written.
-    static func reconcile(_ marks: [PDFHighlight], into url: URL) -> Bool {
-        guard let document = PDFDocument(url: url) else { return false }
-        let wanted = Dictionary(marks.map { ($0.placement, $0) }, uniquingKeysWith: { first, _ in first })
-        var present: Set<PDFHighlight.Placement> = []
+    /// beside the original and swapped in atomically, so an interrupted save leaves the book
+    /// as it was.
+    static func apply(_ edits: Edits, to url: URL) -> SaveResult {
+        guard !edits.isEmpty else { return SaveResult(written: true, unapplied: []) }
+        guard let document = PDFDocument(url: url) else {
+            return SaveResult(written: false, unapplied: edits.added)
+        }
+        var unapplied: [PDFHighlight] = []
         var changed = false
 
-        for index in 0..<document.pageCount {
-            guard let page = document.page(at: index) else { continue }
-            for annotation in page.annotations where annotation.type == "Highlight" {
-                // Our own marks are one annotation per line, so a line belongs to whichever
-                // wanted mark covers it; a foreign mark stands alone.
-                let single = PDFHighlight(page: index, rects: [PDFHighlight.Rect(annotation.bounds)],
-                                          text: "").placement
-                let owner = wanted.keys.first { key in
-                    key.page == index && key.rects.contains(single.rects[0])
-                }
-                guard let owner else {
-                    page.removeAnnotation(annotation)
-                    changed = true
-                    continue
-                }
-                present.insert(owner)
-                if let mark = wanted[owner], annotation.color != mark.ink.annotationColor {
-                    annotation.color = mark.ink.annotationColor
-                    changed = true
-                }
+        for placement in edits.removed {
+            guard let page = document.page(at: placement.page) else { continue }
+            for annotation in highlights(on: page, covering: placement) {
+                page.removeAnnotation(annotation)
+                changed = true
             }
         }
 
-        for mark in marks where !present.contains(mark.placement) {
-            guard let page = document.page(at: mark.page) else { continue }
-            for rect in mark.rects {
+        for mark in edits.recoloured {
+            guard let page = document.page(at: mark.page) else {
+                unapplied.append(mark)
+                continue
+            }
+            for annotation in highlights(on: page, covering: mark.placement)
+            where annotation.color != mark.ink.annotationColor {
+                annotation.color = mark.ink.annotationColor
+                changed = true
+            }
+        }
+
+        for mark in edits.added {
+            guard let page = document.page(at: mark.page) else {
+                // The document no longer has the page this mark sat on. Writing it is
+                // impossible; calling it written would drop it from the sidecar too.
+                unapplied.append(mark)
+                continue
+            }
+            // Per rectangle, not per mark: a passage whose first line is already marked
+            // still needs its remaining lines written.
+            let present = page.annotations.filter { $0.type == "Highlight" }
+                .map { PDFHighlight.Rect($0.bounds).rounded }
+            for rect in mark.rects where !present.contains(rect.rounded) {
                 let annotation = PDFAnnotation(bounds: rect.cgRect, forType: .highlight,
                                                withProperties: nil)
                 annotation.color = mark.ink.annotationColor
                 annotation.userName = mark.id.uuidString
                 annotation.contents = mark.text
                 page.addAnnotation(annotation)
+                changed = true
             }
-            changed = true
         }
 
-        guard changed else { return true }
+        guard changed else { return SaveResult(written: true, unapplied: unapplied) }
         let staged = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).termio-marks")
         guard document.write(to: staged) else {
             try? FileManager.default.removeItem(at: staged)
             Log.files.error("pdf highlights: could not write the marked copy")
-            return false
+            return SaveResult(written: false, unapplied: edits.added)
         }
         do {
             _ = try FileManager.default.replaceItemAt(url, withItemAt: staged)
-            return true
+            return SaveResult(written: true, unapplied: unapplied)
         } catch {
             try? FileManager.default.removeItem(at: staged)
             Log.files.error("pdf highlights: could not replace the document: \(error.localizedDescription, privacy: .public)")
-            return false
+            return SaveResult(written: false, unapplied: edits.added)
+        }
+    }
+
+    /// The highlight annotations on a page that belong to one mark. Highlights only: a link
+    /// or a stamp can share a passage's bounds, and editing a mark must not touch them.
+    static func highlights(on page: PDFPage,
+                           covering placement: PDFHighlight.Placement) -> [PDFAnnotation] {
+        page.annotations.filter { annotation in
+            guard annotation.type == "Highlight" else { return false }
+            return placement.rects.contains(PDFHighlight.Rect(annotation.bounds).rounded)
         }
     }
 
