@@ -21,9 +21,17 @@ publish = false
 # GHOSTTY_COMMIT and regenerating in the same commit, never one without the
 # other.
 #
+# The fork also carries a patch series against that ghostty, under its
+# `Patches/ghostty/`, applied to the pinned checkout at build time. `0001` stops
+# the Vt formatter emitting blank cells under the preceding run's style, which
+# made every snapshot replay paint a background the host's screen never held —
+# the black rectangle beside Claude Code's banner. Delete the patch when ghostty
+# lands the fix; a patch that no longer applies fails the build rather than
+# being skipped.
+#
 # Track libghostty-swift when it releases: its title carries the ghostty it
 # built (`1.0.25 · ghostty v1.3.1-2555-g7aab0a0`), and that sha is the one to
 # match here. Since ghostty#13759 dropped iOS from the full build, that release
 # also carries a patch putting iOS back, so the two forks move together.
 [dependencies]
-libghostty-vt = { git = "https://github.com/termio-sh/libghostty-rs", rev = "251beb95a7801c4d032c78846b3aa149bfecb386" }
+libghostty-vt = { git = "https://github.com/termio-sh/libghostty-rs", rev = "0ef253c477d297eefa147fd4c4cdc265194e136f" }
