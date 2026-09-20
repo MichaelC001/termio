@@ -119,6 +119,7 @@ final class DiffPaneLayoutTests: XCTestCase {
 
 /// The pair's shared viewport: whichever column the reader moves, the other follows — and the push
 /// that comes back around is not mistaken for a move of its own.
+@MainActor
 final class DiffPaneScrollSyncTests: XCTestCase {
     private func pane() -> NSScrollView {
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 4000))
@@ -164,21 +165,54 @@ final class DiffPaneScrollSyncTests: XCTestCase {
     }
 }
 
-/// Merging the two columns' find hits. The case that matters is the context line: both columns
-/// carry it, it is one line of the file, and it must be reported once — while an addition or a
-/// deletion, which only one column carries, must survive the merge.
 final class DiffFindMergeTests: XCTestCase {
-    func testARowBothColumnsMatchedIsCountedOnce() {
-        XCTAssertEqual(DiffFindMerge.rows(left: [4, 9], right: [4, 9]), [4, 9])
+    private func match(_ row: Int, offset: Int = 0) -> DiffFindMatch {
+        DiffFindMatch(rowID: row, range: NSRange(location: offset, length: 3))
     }
 
-    func testRowsOnlyOneColumnCarriesSurviveInColumnOrder() {
-        // The left column's hits come first, then whatever the right column found on its own rows.
-        XCTAssertEqual(DiffFindMerge.rows(left: [2, 7], right: [3, 7, 11]), [2, 7, 3, 11])
+    func testContextOccurrencesAreDeduplicatedWithoutLosingRepeatedWords() {
+        let repeated = [match(4), match(4, offset: 5), match(9)]
+        XCTAssertEqual(DiffFindMatch.merge(left: repeated, right: repeated), repeated)
+    }
+
+    func testChangesOnEitherSideSurviveInColumnOrder() {
+        XCTAssertEqual(DiffFindMatch.merge(left: [match(2), match(7)],
+                                          right: [match(3), match(7), match(11)]),
+                       [match(2), match(7), match(3), match(11)])
     }
 
     func testAPaneWithNoMatchesContributesNothing() {
-        XCTAssertEqual(DiffFindMerge.rows(left: [], right: [5, 6]), [5, 6])
-        XCTAssertEqual(DiffFindMerge.rows(left: [5], right: []), [5])
+        XCTAssertEqual(DiffFindMatch.merge(left: [], right: [match(5), match(6)]),
+                       [match(5), match(6)])
+        XCTAssertEqual(DiffFindMatch.merge(left: [match(5)], right: []), [match(5)])
+    }
+}
+
+final class DiffRevealButtonLayoutTests: XCTestCase {
+    func testTwoDirectionsHaveSeparateTargetsCenteredInAWrappedBand() {
+        let band = NSRect(x: 0, y: 40, width: 46, height: 70)
+        let buttons = DiffGutterRulerView.revealButtonFrames(controls: [.down, .up], in: band)
+        XCTAssertEqual(buttons.count, 2)
+        guard buttons.count == 2 else { return }
+        XCTAssertEqual(buttons[0].direction, .down)
+        XCTAssertEqual(buttons[1].direction, .up)
+        XCTAssertFalse(buttons[0].rect.intersects(buttons[1].rect))
+        for button in buttons {
+            XCTAssertTrue(band.contains(button.rect))
+            XCTAssertEqual(button.rect.midY, band.midY)
+            XCTAssertGreaterThanOrEqual(button.rect.width, 20)
+            XCTAssertGreaterThanOrEqual(button.rect.height, 20)
+        }
+    }
+
+    func testSingleDirectionIsCenteredAndInertBandHasNoTargets() {
+        let band = NSRect(x: 0, y: 10, width: 70, height: 28)
+        for control in [DiffBandControls.up, .down, .all] {
+            let buttons = DiffGutterRulerView.revealButtonFrames(controls: control, in: band)
+            XCTAssertEqual(buttons.count, 1)
+            XCTAssertEqual(buttons.first?.rect.midX, band.midX)
+            XCTAssertEqual(buttons.first?.rect.midY, band.midY)
+        }
+        XCTAssertTrue(DiffGutterRulerView.revealButtonFrames(controls: [], in: band).isEmpty)
     }
 }

@@ -70,7 +70,7 @@ final class DiffDocument {
     }
 
     /// Extra breathing room drawn around a band row (the fill is expanded to match).
-    static let bandPadding: CGFloat = 3
+    static let bandPadding: CGFloat = 5
 
     // MARK: Building
 
@@ -163,6 +163,13 @@ final class DiffDocument {
         return lines[index]
     }
 
+    func findMatch(at range: NSRange) -> DiffFindMatch? {
+        guard let line = line(at: range.location) else { return nil }
+        return DiffFindMatch(rowID: line.rowId,
+                             range: NSRange(location: range.location - line.range.location,
+                                            length: range.length))
+    }
+
     // MARK: Attributes
 
     /// Bands restyle to the UI font — left-aligned at the code column, so the row reads as
@@ -241,8 +248,6 @@ final class DiffDocument {
             .map(displayItem)
     }
 
-    /// One folded element as a paragraph. Split rendering maps the same elements through
-    /// here per side, so a band reads identically in both columns.
     private static func displayItem(_ item: DiffItem) -> DisplayItem {
         switch item {
         case .line(let row):
@@ -258,26 +263,16 @@ final class DiffDocument {
 
     // MARK: Split (two-column) documents
 
-    /// Which column a split document renders.
     enum Side: Sendable { case left, right }
 
-    /// The pair of documents behind a split diff, plus the line-number width both gutters
-    /// must share. Each side carries only its own line numbers — the old side the old
-    /// numbers, the new side the new — so a column is numbered by the file it shows rather
-    /// than by the pair.
+    /// Each column keeps its own line numbers but shares the gutter width.
     struct SplitPair {
         let left: DiffDocument
         let right: DiffDocument
-        /// The larger of the two sides' line numbers. Both gutters are sized from it so the
-        /// two code columns start at the same x, even where one side has no numbers at all
-        /// (a new file's old side).
         let lineNumberDigits: Int
     }
 
-    /// Builds both columns of a split diff from one fold, so the two sides can never
-    /// disagree about where a band sits or how many rows the file has: a pair with an empty
-    /// side gets a blank paragraph (a filler row), which is what keeps the rows below it in
-    /// step across the two panes.
+    /// Fold once and pad unmatched changes with blank rows so both columns stay aligned.
     static func buildSplitPair(rows: [DiffRow], expansion: DiffExpansion, palette: DiffPalette,
                                codeFont: NSFont, lineSpacing: CGFloat,
                                gapText: DiffGapText = .unavailable) -> SplitPair {
@@ -298,8 +293,6 @@ final class DiffDocument {
             if case .line(let row) = pair.right { rightRows.append(sideRow(row, side: .right)) }
         }
 
-        // The two columns' code must start at the same x, so both gutters take the wider
-        // of the two sides' line numbers rather than each side's own.
         let ceiling = rows.reduce(0) { max($0, $1.oldLine ?? 0, $1.newLine ?? 0) }
         return SplitPair(
             left: build(items: leftItems, allRows: leftRows, palette: palette,
@@ -312,8 +305,6 @@ final class DiffDocument {
         )
     }
 
-    /// A pair's element as this side's paragraph — a blank filler row when the other side
-    /// is the only one with content.
     private static func sideItem(_ item: DiffItem?, side: Side, filler: Int) -> DisplayItem {
         guard let item else { return .line(fillerRow(filler)) }
         switch item {
@@ -322,10 +313,7 @@ final class DiffDocument {
         }
     }
 
-    /// A code line as one column sees it: the side keeps its own line number and drops the
-    /// other side's, so a column is numbered by the file it is showing. The text, kind, id,
-    /// and emphasis are untouched — the id still keys the syntax pass, and the emphasis
-    /// still marks the span this row was word-diffed against.
+    /// Preserve row IDs and emphasis for the syntax and intraline passes.
     private static func sideRow(_ row: DiffRow, side: Side) -> DiffRow {
         DiffRow(id: row.id, kind: row.kind, text: row.text,
                 oldLine: side == .left ? row.oldLine : nil,
@@ -333,12 +321,22 @@ final class DiffDocument {
                 emphasis: row.emphasis)
     }
 
-    /// A row that exists only to hold a column's place opposite a line the other column has.
-    /// Empty text in the code font gives it the same height as a code row, and `context`
-    /// gives it no wash, no number, and no sign — the padding reads as nothing at all.
+    /// Empty context rows match code height without adding a number, sign, or wash.
     private static func fillerRow(_ index: Int) -> DiffRow {
         // A namespace no parsed or spliced row can reach: gap lines are negative line
         // numbers, so this sits far outside anything a real file produces.
         DiffRow(id: -(2_000_000 + index), kind: .context, text: "", oldLine: nil, newLine: nil)
+    }
+}
+
+/// Row-relative UTF-16 ranges identify the same context match across both columns,
+/// while preserving separate occurrences on one line.
+struct DiffFindMatch: Hashable {
+    let rowID: Int
+    let range: NSRange
+
+    static func merge(left: [Self], right: [Self]) -> [Self] {
+        var seen = Set(left)
+        return left + right.filter { seen.insert($0).inserted }
     }
 }
