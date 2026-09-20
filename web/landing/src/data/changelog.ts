@@ -17,6 +17,24 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.54.0",
+    date: "2026-09-20",
+    title: "PDFs open in a reader, not a preview",
+    changes: {
+      new: [
+        "A PDF opens with its own table of contents, a page rail, and a go-to page field. A book that carries no contents of its own still gets a page rail.",
+        "Select text in a PDF and right-click to mark it in one of five colours, copy it, or add it to the agent's prompt. ⇧⌘H marks the selection without the menu.",
+        "Highlights are kept beside the document as readable JSON, so the PDF itself is never rewritten and a paper in a repo stays clean. Inside a checkout they are filed with the repo, so they can be committed and reviewed. “Save Highlights into PDF” writes them into the document when you want them to travel with it.",
+        "Marks made in Preview or Books are listed too, and a highlight survives the document being renamed or re-exported.",
+        "A diff can be read side by side, and the diff header picks the file.",
+      ],
+      fixed: [
+        "A remote session's screen no longer paints a background colour the screen never held.",
+        "The inspector's list column has its own glyph instead of borrowing the pane switch's.",
+      ],
+    },
+  },
+  {
     version: "0.53.5",
     date: "2026-09-19",
     title: "The input method's candidate window stays off what you're typing",
