@@ -1,11 +1,7 @@
 import TermioShared
 import AppKit
 
-/// The gutter geometry two split panes have to agree on. Inline, the ruler derives all of it
-/// from the document; side by side it cannot — a pure-addition file gives the left pane no old
-/// numbers at all, and a side-left to itself would collapse its column and start its code a
-/// column-width to the left of its neighbour's, so the two code columns would not line up.
-/// Handing both panes the same digits and the same single column keeps them identical.
+/// Both split columns reserve the same number width, including a side with no lines.
 struct DiffGutterMetrics: Equatable {
     /// Digits reserved for a line number, shared so both gutters are the same width.
     let digits: Int
@@ -18,16 +14,7 @@ struct DiffGutterMetrics: Equatable {
     }
 }
 
-/// The diff's gutter, following `LineNumberRulerView`'s ruler precedent (including its
-/// hard-won full-redraw-on-scroll invalidation, wired up by the pane's coordinator): old
-/// and new line-number columns, the `+`/`−` sign, and — on a collapsed band — the reveal
-/// buttons. Living in the ruler — outside the text view — is what keeps the numbers out of
-/// selection and the clipboard.
-///
-/// The washes continue across it so each row reads edge to edge, but a changed row's
-/// gutter is mixed one step stronger than its body, which is how github.com anchors the
-/// number cell. On a band, the whole gutter becomes one filled cell holding the buttons:
-/// a control needs a block to sit in, or it reads as a glyph stranded in empty space.
+/// Keeps line numbers and reveal controls outside text selection and copying.
 final class DiffGutterRulerView: NSRulerView {
     /// Reveals part of a collapsed run — the buttons are the ruler's only controls.
     var onExpand: ((Int, DiffBandDirection) -> Void)?
@@ -46,12 +33,15 @@ final class DiffGutterRulerView: NSRulerView {
 
     /// Where each visible reveal button landed, refreshed every draw and read by
     /// `mouseDown`. Only visible rows are drawn, so this stays a handful of entries.
-    private struct ButtonHit {
+    private struct ButtonHit: Equatable {
         let rect: NSRect
         let anchor: Int
         let direction: DiffBandDirection
     }
     private var buttonHits: [ButtonHit] = []
+    private var hoverTracking: NSTrackingArea?
+    private var hoveredHit: ButtonHit?
+    private var pressedHit: ButtonHit?
     /// The scroll offset the hit rects were built at. Scrolling only *schedules* a redraw,
     /// so a click landing in between would test the click's position against rects that
     /// describe where the buttons used to be — and expand whichever band happened to sit
@@ -106,7 +96,7 @@ final class DiffGutterRulerView: NSRulerView {
         var thickness = Self.leadingPad + Self.signWidth + Self.trailingPad
         if oldColumnWidth > 0 { thickness += oldColumnWidth + Self.columnGap }
         if newColumnWidth > 0 { thickness += newColumnWidth + Self.columnGap }
-        ruleThickness = thickness
+        ruleThickness = max(46, thickness)
         needsDisplay = true
     }
 
@@ -180,7 +170,11 @@ final class DiffGutterRulerView: NSRulerView {
 
             switch line.role {
             case .band:
-                drawRevealButtons(for: line, y: y, height: fragment.height)
+                var band = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+                band.origin.y += inset + yOffset
+                band.origin.x = 0
+                band.size.width = ruleThickness
+                drawRevealButtons(for: line, in: band.insetBy(dx: 0, dy: -DiffDocument.bandPadding))
             case .code:
                 drawNumbers(for: line, y: y)
             }
@@ -221,33 +215,38 @@ final class DiffGutterRulerView: NSRulerView {
         }
     }
 
-    /// A band's reveal buttons: an arrow over a dotted line, github.com's shape. The dots
-    /// stand for the hidden lines and the arrow for the way the reveal walks — up pulls up
-    /// the lines nearest the code *below* the band, down pulls down those nearest the code
-    /// above. A band that can only be read from one side draws only that button.
-    private func drawRevealButtons(for line: DiffDocument.Line, y: CGFloat, height: CGFloat) {
-        let controls = line.bandControls
-        guard !controls.isEmpty else { return }
+    static func revealButtonFrames(controls: DiffBandControls, in band: NSRect)
+        -> [(direction: DiffBandDirection, rect: NSRect)] {
+        let directions: [DiffBandDirection] = controls.contains(.all)
+            ? [.all] : [DiffBandDirection.down, .up].filter {
+                controls.contains($0 == .down ? .down : .up)
+            }
+        guard !directions.isEmpty else { return [] }
+        let gap: CGFloat = 2
+        let count = CGFloat(directions.count)
+        let size = max(0, min(22, band.height - 4, (band.width - 4 - gap * (count - 1)) / count))
+        let width = count * size + (count - 1) * gap
+        return directions.enumerated().map { index, direction in
+            (direction, NSRect(x: band.midX - width / 2 + CGFloat(index) * (size + gap),
+                               y: band.midY - size / 2, width: size, height: size))
+        }
+    }
 
-        var directions: [DiffBandDirection] = []
-        if controls.contains(.all) { directions.append(.all) }
-        if controls.contains(.down) { directions.append(.down) }
-        if controls.contains(.up) { directions.append(.up) }
-
-        // Stacked, GitHub Desktop's shape: one gutter cell split in half, the downward
-        // reveal on top and the upward one below, each reading toward the code it pulls
-        // from. A lone control (a first hunk, or a gap short enough to open at once) takes
-        // the whole cell.
-        let padding = DiffDocument.bandPadding
-        let width = ruleThickness - Self.leadingPad - Self.trailingPad
-        let full = NSRect(x: Self.leadingPad, y: y - padding,
-                          width: width, height: height + padding * 2)
-        let slice = full.height / CGFloat(directions.count)
-        for (index, direction) in directions.enumerated() {
-            let hit = NSRect(x: full.minX, y: full.minY + slice * CGFloat(index),
-                             width: full.width, height: slice)
-            drawRevealIcon(direction, in: hit, ink: numberColor)
-            buttonHits.append(ButtonHit(rect: hit, anchor: line.rowId, direction: direction))
+    private func drawRevealButtons(for line: DiffDocument.Line, in band: NSRect) {
+        let pointer = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+        for (direction, rect) in Self.revealButtonFrames(controls: line.bandControls, in: band) {
+            let hit = ButtonHit(rect: rect, anchor: line.rowId, direction: direction)
+            let hovered = pointer.map { rect.contains($0) } ?? false
+            if hovered, let palette = document?.palette {
+                palette.bandControlFill.setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+                if pressedHit?.anchor == hit.anchor, pressedHit?.direction == hit.direction {
+                    NSColor.labelColor.withAlphaComponent(0.08).setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+                }
+            }
+            drawRevealIcon(direction, in: rect, ink: hovered ? .labelColor : numberColor)
+            buttonHits.append(hit)
         }
     }
 
@@ -325,16 +324,55 @@ final class DiffGutterRulerView: NSRulerView {
         string.draw(at: NSPoint(x: rightEdge - width, y: y), withAttributes: attrs)
     }
 
-        override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        // Only act on rects built at the current scroll position; a click that beat the
-        // pending redraw does nothing rather than expanding the wrong band.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(rect: .zero,
+                                 options: [.mouseEnteredAndExited, .mouseMoved,
+                                           .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+
+    private func button(at point: NSPoint) -> ButtonHit? {
+        // A click before the pending scroll redraw must not expand the previous band.
         guard let textView = clientView as? NSTextView,
-              convert(NSPoint.zero, from: textView).y == hitsOffset,
-              let hit = buttonHits.first(where: { $0.rect.contains(point) }) else {
+              convert(NSPoint.zero, from: textView).y == hitsOffset else { return nil }
+        return buttonHits.first { $0.rect.contains(point) }
+    }
+
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseMoved(with event: NSEvent) {
+        let hit = button(at: convert(event.locationInWindow, from: nil))
+        guard hoveredHit != hit else { return }
+        hoveredHit = hit
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoveredHit = nil
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pressedHit = button(at: convert(event.locationInWindow, from: nil))
+        guard pressedHit != nil else {
             super.mouseDown(with: event)
             return
         }
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseUp(with event: NSEvent) {
+        let pressed = pressedHit
+        pressedHit = nil
+        needsDisplay = true
+        guard let pressed,
+              let hit = button(at: convert(event.locationInWindow, from: nil)),
+              hit.anchor == pressed.anchor, hit.direction == pressed.direction else { return }
         onExpand?(hit.anchor, hit.direction)
     }
 

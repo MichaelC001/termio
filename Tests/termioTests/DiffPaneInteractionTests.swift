@@ -149,3 +149,179 @@ final class DiffPaneInteractionTests: XCTestCase {
         XCTAssertFalse(copied.contains(label), "the band's own line range is not code")
     }
 }
+
+@MainActor
+final class DiffPaneUpdateTests: XCTestCase {
+    private let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private let palette = DiffPalette(background: .black, isDark: true)
+
+    private func document(_ text: String) -> DiffDocument {
+        DiffDocument.build(rows: DiffParser.lines(from: text), expansion: DiffExpansion(),
+                           palette: palette, codeFont: font, lineSpacing: 0)
+    }
+
+    private func pane(_ document: DiffDocument,
+                      styled: [Int: NSAttributedString] = [:]) -> DiffTextPane {
+        DiffTextPane(document: document, styled: styled, font: font, thickenGlyphs: false,
+                     backgroundColor: .black, numberColor: .gray,
+                     onExpand: { _, _ in }, onWalk: { _ in false }, onClose: {},
+                     autoFocuses: false)
+    }
+
+    func testUpdatingAnExistingPaneReplacesTheDocumentAndCallbacks() throws {
+        let first = document("@@ -1 +1 @@\n-old\n+first\n")
+        let second = document("@@ -1 +1 @@\n-old\n+second\n")
+        let initial = pane(first)
+        let coordinator = initial.makeCoordinator()
+        let scrollView = initial.makeScrollView(coordinator: coordinator)
+        let textView = try XCTUnwrap(scrollView.documentView as? DiffTextView)
+        var walked = false
+        let updated = DiffTextPane(document: second, styled: [:], font: font, thickenGlyphs: false,
+                               backgroundColor: .black, numberColor: .gray,
+                               onExpand: { _, _ in }, onWalk: { _ in walked = true; return true },
+                               onClose: {}, autoFocuses: false)
+        updated.updateScrollView(scrollView, coordinator: coordinator)
+        XCTAssertEqual(textView.string, second.attributed.string)
+        XCTAssertTrue(textView.document === second)
+        XCTAssertTrue(coordinator.ruler === scrollView.verticalRulerView)
+        XCTAssertEqual(textView.onWalk?(1), true)
+        XCTAssertTrue(walked)
+    }
+
+    func testSyntaxColorsArrivingAfterCreationAreApplied() throws {
+        let document = document("@@ -1 +1 @@\n-old\n+new\n")
+        let initial = pane(document)
+        let coordinator = initial.makeCoordinator()
+        let scrollView = initial.makeScrollView(coordinator: coordinator)
+        let textView = try XCTUnwrap(scrollView.documentView as? DiffTextView)
+        let line = try XCTUnwrap(document.lines.last)
+        let styled = NSAttributedString(string: "new", attributes: [.foregroundColor: NSColor.systemPurple])
+        pane(document, styled: [line.rowId: styled]).updateScrollView(scrollView, coordinator: coordinator)
+        XCTAssertEqual(textView.textStorage?.attribute(.foregroundColor, at: line.range.location,
+                                                       effectiveRange: nil) as? NSColor,
+                       NSColor.systemPurple)
+    }
+
+    func testFindCanFocusTheSecondOccurrenceOnOneLine() async throws {
+        let document = document("@@ -1 +1 @@\n-old\n+foo foo\n")
+        var pane = pane(document)
+        pane.findQuery = "foo"
+        let reported = expectation(description: "both occurrences")
+        var matches: [DiffFindMatch] = []
+        pane.onMatchesChanged = { result in
+            matches = result
+            reported.fulfill()
+        }
+        let coordinator = pane.makeCoordinator()
+        let scrollView = pane.makeScrollView(coordinator: coordinator)
+        await fulfillment(of: [reported], timeout: 2)
+        XCTAssertEqual(matches.count, 2)
+        let first = try XCTUnwrap(matches.first)
+        let second = try XCTUnwrap(matches.last)
+        XCTAssertEqual(first.rowID, second.rowID)
+        XCTAssertNotEqual(first.range, second.range)
+        pane.findFocusedMatch = first
+        pane.updateScrollView(scrollView, coordinator: coordinator)
+        pane.findFocusedMatch = second
+        pane.updateScrollView(scrollView, coordinator: coordinator)
+        let textView = try XCTUnwrap(scrollView.documentView as? DiffTextView)
+        let line = try XCTUnwrap(document.lines.last)
+        let manager = try XCTUnwrap(textView.layoutManager)
+        let firstColor = manager.temporaryAttribute(.backgroundColor,
+            atCharacterIndex: line.range.location + first.range.location, effectiveRange: nil) as? NSColor
+        let secondColor = manager.temporaryAttribute(.backgroundColor,
+            atCharacterIndex: line.range.location + second.range.location, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(try XCTUnwrap(firstColor).alphaComponent, 0.35, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(secondColor).alphaComponent, 0.7, accuracy: 0.01)
+    }
+
+    func testWalkingToAFileWithNoMatchesClearsTheCount() async {
+        var initial = pane(document("@@ -1 +1 @@\n-old\n+foo\n"))
+        initial.findQuery = "foo"
+        let found = expectation(description: "initial match")
+        initial.onMatchesChanged = { matches in
+            XCTAssertEqual(matches.count, 1)
+            found.fulfill()
+        }
+        let coordinator = initial.makeCoordinator()
+        let scrollView = initial.makeScrollView(coordinator: coordinator)
+        await fulfillment(of: [found], timeout: 2)
+
+        var next = pane(document("@@ -1 +1 @@\n-old\n+bar\n"))
+        next.findQuery = "foo"
+        let cleared = expectation(description: "no matches in next file")
+        next.onMatchesChanged = { matches in
+            XCTAssertTrue(matches.isEmpty)
+            cleared.fulfill()
+        }
+        next.updateScrollView(scrollView, coordinator: coordinator)
+        await fulfillment(of: [cleared], timeout: 2)
+    }
+
+    func testClearingFindWhileReplacingTheDocumentDropsOldRanges() async throws {
+        var initial = pane(document("@@ -1 +1 @@\n-old\n+prefix prefix foo\n"))
+        initial.findQuery = "foo"
+        let found = expectation(description: "initial match")
+        initial.onMatchesChanged = { _ in found.fulfill() }
+        let coordinator = initial.makeCoordinator()
+        let scrollView = initial.makeScrollView(coordinator: coordinator)
+        await fulfillment(of: [found], timeout: 2)
+
+        var replacement = pane(document("@@ -0,0 +1 @@\n+x\n"))
+        replacement.findFocusedMatch = DiffFindMatch(rowID: 2, range: NSRange(location: 14, length: 3))
+        let cleared = expectation(description: "empty query")
+        replacement.onMatchesChanged = { matches in
+            XCTAssertTrue(matches.isEmpty)
+            cleared.fulfill()
+        }
+        replacement.updateScrollView(scrollView, coordinator: coordinator)
+        await fulfillment(of: [cleared], timeout: 2)
+        let textView = try XCTUnwrap(scrollView.documentView as? DiffTextView)
+        XCTAssertNil(textView.layoutManager?.temporaryAttribute(.backgroundColor,
+                          atCharacterIndex: 0, effectiveRange: nil))
+    }
+
+    func testContextMatchesKeepTheirIdentityAcrossDifferentColumnOffsets() {
+        let pair = DiffDocument.buildSplitPair(
+            rows: DiffParser.lines(from: "@@ -1,2 +1,2 @@\n-long old text\n+new\n 猫 foo foo\n"),
+            expansion: DiffExpansion(), palette: palette, codeFont: font, lineSpacing: 0)
+        let leftRanges = TextFindEngine.matches(of: "foo", options: FindOptions(),
+                                                in: pair.left.attributed.string as NSString)
+        let rightRanges = TextFindEngine.matches(of: "foo", options: FindOptions(),
+                                                 in: pair.right.attributed.string as NSString)
+        XCTAssertNotEqual(leftRanges, rightRanges)
+        let left = leftRanges.compactMap { pair.left.findMatch(at: $0) }
+        let right = rightRanges.compactMap { pair.right.findMatch(at: $0) }
+        XCTAssertEqual(left, right)
+        XCTAssertEqual(DiffFindMatch.merge(left: left, right: right).count, 2)
+    }
+
+    func testOnlyTheActivePaneReclaimsFocusAndTheOtherConsumesTheToken() throws {
+        let document = document("@@ -1 +1 @@\n-old\n+new\n")
+        var left = pane(document), right = pane(document)
+        right.reclaimsFocus = false
+        let leftCoordinator = left.makeCoordinator(), rightCoordinator = right.makeCoordinator()
+        let leftScroll = left.makeScrollView(coordinator: leftCoordinator)
+        let rightScroll = right.makeScrollView(coordinator: rightCoordinator)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView?.addSubview(leftScroll)
+        window.contentView?.addSubview(rightScroll)
+        let leftText = try XCTUnwrap(leftScroll.documentView as? DiffTextView)
+        let rightText = try XCTUnwrap(rightScroll.documentView as? DiffTextView)
+        window.makeFirstResponder(rightText)
+        left.reclaimFocus = 1
+        right.reclaimFocus = 1
+        left.updateScrollView(leftScroll, coordinator: leftCoordinator)
+        right.updateScrollView(rightScroll, coordinator: rightCoordinator)
+        XCTAssertTrue(window.firstResponder === leftText)
+        right.reclaimsFocus = true
+        right.updateScrollView(rightScroll, coordinator: rightCoordinator)
+        XCTAssertTrue(window.firstResponder === leftText, "a consumed token must not replay")
+        right.reclaimFocus = 2
+        right.updateScrollView(rightScroll, coordinator: rightCoordinator)
+        XCTAssertTrue(window.firstResponder === rightText)
+    }
+}

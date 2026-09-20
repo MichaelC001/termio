@@ -39,15 +39,12 @@ struct GitDiffView: View {
     @State private var expansion = DiffExpansion()
     /// The two columns of a split diff — both built from one fold, so their rows stay in step.
     @State private var splitPair: DiffDocument.SplitPair?
-    /// Which column the reader is working in. A split searches this one, so a query does not
-    /// count a context line twice — once per column.
+    /// Closing find returns focus to this column.
     @State private var activeSide: DiffPaneScrollSync.Side = .left
     /// Keeps the two columns on one viewport (see `DiffPaneScrollSync`).
     @State private var scrollSync = DiffPaneScrollSync()
 
-    /// Whether to render side by side. The preference is the reader's, but only a maximized
-    /// detail can honor it: docked, the diff is a column of the inspector and has no width for
-    /// two more.
+    /// The docked inspector is too narrow for two columns.
     private var isSplitView: Bool { settings.diffSplitView && store.inspectorMaximized }
 
     // Find bar — the same `FileFindBar` the code editor uses, over the diff's read-only text.
@@ -55,11 +52,10 @@ struct GitDiffView: View {
     @State private var findQuery = ""
     @State private var findOptions = FindOptions()
     @State private var findFocusedIndex = 0
-    /// Matching rows, per column. A split diff searches each column and merges the hits by row
-    /// (`findMatches`), so a context line — which both columns carry — counts once.
-    @State private var inlineMatches: [Int] = []
-    @State private var leftMatches: [Int] = []
-    @State private var rightMatches: [Int] = []
+    /// Context matches appear in both columns but count once.
+    @State private var inlineMatches: [DiffFindMatch] = []
+    @State private var leftMatches: [DiffFindMatch] = []
+    @State private var rightMatches: [DiffFindMatch] = []
     /// The query at the last Return press; a second Return on the same query advances.
     @State private var findLastSubmittedQuery = ""
     /// Bumped on every ⌘F so the field re-focuses even when the bar is already open.
@@ -146,24 +142,19 @@ struct GitDiffView: View {
         findFocusedIndex = ((findFocusedIndex + offset) % count + count) % count
     }
 
-    /// The rows the query matched. Split, the left column's hits come first, then whatever the
-    /// right column matched on rows of its own — a deletion is only ever on the left, an addition
-    /// only on the right, and a context line is one row matched twice.
-    private var findMatches: [Int] {
-        isSplitView ? DiffFindMerge.rows(left: leftMatches, right: rightMatches) : inlineMatches
+    private var findMatches: [DiffFindMatch] {
+        isSplitView ? DiffFindMatch.merge(left: leftMatches, right: rightMatches) : inlineMatches
     }
 
-    /// The row to highlight now, or nil when the query matched nothing.
-    private var findFocusedRow: Int? {
+    private var findFocusedMatch: DiffFindMatch? {
         findMatches.indices.contains(findFocusedIndex) ? findMatches[findFocusedIndex] : nil
     }
 
-    /// One column's report of what it matched.
-    private func noteMatches(_ rows: [Int], side: DiffPaneScrollSync.Side?) {
+    private func noteMatches(_ matches: [DiffFindMatch], side: DiffPaneScrollSync.Side?) {
         switch side {
-        case .some(.left): leftMatches = rows
-        case .some(.right): rightMatches = rows
-        case .none: inlineMatches = rows
+        case .some(.left): leftMatches = matches
+        case .some(.right): rightMatches = matches
+        case .none: inlineMatches = matches
         }
         if findFocusedIndex >= findMatches.count { findFocusedIndex = 0 }
     }
@@ -184,8 +175,6 @@ struct GitDiffView: View {
 
     // MARK: Header
 
-    /// The file's identity in the header: its name, then the directory it sits in as one run. The
-    /// flexible element of the bar, and the only one that gives up width.
     private var fileIdentity: some View {
         let directory = request.change.directory
         let name = Text(request.name).font(.system(size: 12.5, weight: .medium))
@@ -206,8 +195,6 @@ struct GitDiffView: View {
             // flexible texts a narrow pane split the width between them and truncated
             // both into noise. Tail truncation keeps the name (the head) readable longest.
             //
-            // With more than one file to read here, the run becomes the jump bar over them
-            // (`DiffFileMenuLabel`): the same words, with a list hanging under the name.
             if request.walkableSiblings.count > 1 {
                 DiffFileMenuLabel(request: request) { change in
                     onNavigate?(request.aimed(at: change))
@@ -274,7 +261,6 @@ struct GitDiffView: View {
 
     // MARK: Content
 
-    /// Whether there is a diff to show at all — what gates the find bar and the panes.
     private var hasContent: Bool { !rows.isEmpty }
 
     @ViewBuilder
@@ -307,10 +293,7 @@ struct GitDiffView: View {
         }
     }
 
-    /// The two columns of a split diff, one pane each, divided by the same hairline the header
-    /// uses. Neither pane wraps, so a long line runs off its own column instead of folding into
-    /// fragments the column beside it cannot match — and because the pair shares one
-    /// `scrollSync`, panning sideways moves both columns' code at once.
+    /// One fold and one viewport keep the unwrapped columns aligned.
     private func split(_ pair: DiffDocument.SplitPair) -> some View {
         HStack(spacing: 0) {
             pane(pair.left, side: .left,
@@ -321,16 +304,9 @@ struct GitDiffView: View {
         }
     }
 
-    /// One diff pane. Inline hands it the whole document; a split hands it one column and the
-    /// gutter geometry that keeps both columns' code starting at the same x.
     private func pane(_ document: DiffDocument, side: DiffPaneScrollSync.Side?,
                       metrics: DiffGutterMetrics?, autoFocuses: Bool) -> some View {
-        // Both columns run the query, so a match an addition or deletion carries is found
-        // wherever it lives — a reader on the old side still finds text they can see on the new
-        // one. Each reports the rows it hit and they are merged by row, so a context line counts
-        // once (`findMatches`).
-        let sideMatches: ([Int]) -> Void = { rows in noteMatches(rows, side: side) }
-        return DiffTextPane(
+        DiffTextPane(
             document: document,
             styled: styledLines,
             font: settings.resolvedTerminalFont(),
@@ -351,8 +327,8 @@ struct GitDiffView: View {
             autoFocuses: autoFocuses,
             findQuery: findBarVisible ? findQuery : "",
             findOptions: findOptions,
-            findFocusedRow: findFocusedRow,
-            onMatchesChanged: sideMatches,
+            findFocusedMatch: findFocusedMatch,
+            onMatchesChanged: { noteMatches($0, side: side) },
             reclaimFocus: findReclaim,
             // Closing the find bar hands the keyboard back to the column the reader was in, not
             // to whichever one happens to answer last.
@@ -372,7 +348,8 @@ struct GitDiffView: View {
         )
     }
 
-    private var findBar: some View {        FileFindBar(
+    private var findBar: some View {
+        FileFindBar(
             query: $findQuery,
             options: $findOptions,
             currentMatch: findMatches.isEmpty ? 0 : findFocusedIndex + 1,
@@ -392,6 +369,13 @@ struct GitDiffView: View {
         let parsed = await DiffSource.rows(
             for: request.change, in: request.repoRoot, device: request.device,
             commit: request.commit, range: request.range)
+        guard !Task.isCancelled else { return }
+        styledLines = [:]
+        expansion = DiffExpansion()
+        inlineMatches = []
+        leftMatches = []
+        rightMatches = []
+        findFocusedIndex = 0
         rows = parsed
         rebuildDocument()
         isLoading = false
@@ -445,16 +429,12 @@ struct GitDiffView: View {
 }
 
 extension GitDiffRequest {
-    /// The same diff re-aimed at another of its own files — the one place the request is built,
-    /// shared by the overlay's own ← / → and its header's file menu.
     func aimed(at change: GitChange) -> GitDiffRequest {
         GitDiffRequest(repoRoot: repoRoot, device: device, change: change,
                        commit: commit, range: range, siblings: siblings)
     }
 
-    /// The siblings this overlay can actually show, in the order the list carries them —
-    /// `neighbor`'s rule read as a set, so the header's file menu offers exactly the files ← / →
-    /// can reach. Image and PDF siblings belong to the preview overlay and are not among them.
+    /// Preview-only images and PDFs are excluded from both the menu and keyboard navigation.
     var walkableSiblings: [GitChange] {
         siblings.filter { candidate in
             !FileActivation.previewsRatherThanDiff(
@@ -477,16 +457,5 @@ extension GitDiffRequest {
             next += delta
         }
         return nil
-    }
-}
-
-/// Merging the two columns' find hits into one list of rows. A split diff searches each column on
-/// its own, but a context line lives in both and is still one line of the file — so the right
-/// column contributes only the rows the left one did not already report. Rows only ever collide
-/// when they are the same row: a deletion exists in the left column alone, an addition in the
-/// right.
-enum DiffFindMerge {
-    static func rows(left: [Int], right: [Int]) -> [Int] {
-        left + right.filter { !left.contains($0) }
     }
 }

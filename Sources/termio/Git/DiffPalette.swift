@@ -63,14 +63,12 @@ struct DiffPalette {
         }
     }
 
-    /// The fill behind a row's gutter — a step stronger than its body, the way github.com
-    /// anchors the number cell. A band's gutter only becomes the button cell when there is
-    /// a button in it: an empty raised box on an inert band reads as a control that broke.
+    /// Changed gutters anchor the row; bands reserve the stronger fill for button hover.
     func gutterFill(for role: DiffDocument.Line.Role) -> NSColor? {
         switch role {
         case .code(.addition): return additionGutter
         case .code(.deletion): return deletionGutter
-        case .band(let controls): return controls.isEmpty ? bandFill : bandControlFill
+        case .band: return bandFill
         case .code: return nil
         }
     }
