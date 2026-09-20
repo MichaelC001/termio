@@ -368,9 +368,6 @@ enum AgentCmd {
         /// to this daemon now.
         #[arg(long)]
         this_mac: bool,
-        /// Version stamped into each hook command. Defaults to this daemon's.
-        #[arg(long, value_name = "VERSION")]
-        hook_version: Option<String>,
         /// Emit the per-agent results as JSON.
         #[arg(long)]
         json: bool,
@@ -392,7 +389,6 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
             no_hooks,
             no_skills,
             this_mac,
-            hook_version,
             json,
         } => (
             InstallRequest::new(
@@ -400,7 +396,6 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
                 if no_hooks { HalfAction::Leave } else { HalfAction::Install },
                 if no_skills { HalfAction::Leave } else { HalfAction::Install },
                 if this_mac { Reporter::ThisMac } else { Reporter::Device },
-                hook_version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
                 Default::default(),
             ),
             json,
@@ -411,7 +406,6 @@ async fn run_agent(cmd: AgentCmd) -> Result<()> {
                 HalfAction::Remove,
                 HalfAction::Remove,
                 Reporter::Device,
-                env!("CARGO_PKG_VERSION").to_string(),
                 Default::default(),
             ),
             json,

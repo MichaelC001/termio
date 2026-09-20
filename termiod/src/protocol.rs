@@ -975,10 +975,6 @@ pub enum Control {
         /// What an installed hook runs to report status. Only the client knows
         /// whether an app is listening, and where its CLI copy is.
         reporter: crate::agent::install::Reporter,
-        /// Version stamped into each hook command, so the first sync after an
-        /// upgrade rewrites the hooks. Absent means this daemon's own version.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hook_version: Option<String>,
         /// What each agent actually launches with on this box, by id. The user
         /// can author a path in Settings for an agent that is not on `PATH` at
         /// all, and presence has to be judged against the binary a session would

