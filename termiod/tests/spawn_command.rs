@@ -128,3 +128,64 @@ fn a_command_spec_spawns_through_the_login_shell() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The user's shape, end to end: `export VAR=… && <agent>`. The line used to be
+/// led by `exec` (and by the `PATH=…` prepend as an assignment *prefix*), both of
+/// which bind to the first simple command — so the `export` ran, the shell exited
+/// 0, and the agent after `&&` never started. The marker's *content* is the proof
+/// that the second half ran, with the first half's environment applied.
+#[test]
+fn a_compound_command_spec_runs_past_the_first_command() {
+    let daemon = start_daemon("compound");
+    let mut stream = UnixStream::connect(format!("{}/termiod.sock", daemon.dir)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("read timeout");
+
+    let hello = br#"{"op":"hello","proto":1,"min_proto":1,"role":"attach","caps":["snapshot","spawn_command"],"client":"spawn-command-test"}"#;
+    write_frame(&mut stream, b'C', hello);
+    let (kind, _) = read_frame(&mut stream).expect("hello reply");
+    assert_eq!(kind, b'C');
+
+    let marker = format!("{}/marker", daemon.dir);
+    let attach = format!(
+        r#"{{"op":"attach","target":"cmdcompound","rows":24,"cols":80,"mode":"interact","create_if_missing":{{"argv":[],"command":"export TERMIO_PROXY_PROBE=through && printf %s $TERMIO_PROXY_PROBE > {marker}","rows":24,"cols":80}}}}"#
+    );
+    write_frame(&mut stream, b'C', attach.as_bytes());
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_clean_exit = false;
+    while Instant::now() < deadline && !saw_clean_exit {
+        let Some((kind, payload)) = read_frame(&mut stream) else {
+            break;
+        };
+        if kind != b'C' {
+            continue;
+        }
+        let control = String::from_utf8_lossy(&payload);
+        if control.contains("\"op\":\"exited\"") {
+            assert!(
+                control.contains("\"status\":0"),
+                "command exited non-zero: {control}"
+            );
+            saw_clean_exit = true;
+        }
+    }
+    assert!(saw_clean_exit, "the spawned command never exited cleanly");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(content) = std::fs::read_to_string(&marker) {
+            // "through" and not "" is the whole point: an empty marker would mean
+            // the redirect ran without the `export` ahead of it, and a missing
+            // marker would mean the line stopped at the `export`.
+            assert_eq!(content, "through");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the command after `&&` never ran — the line was truncated"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
