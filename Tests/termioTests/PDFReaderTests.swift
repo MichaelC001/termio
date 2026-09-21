@@ -157,7 +157,12 @@ final class PDFReaderTests: XCTestCase {
         let written = try XCTUnwrap(PDFDocument(url: document))
         let inFile = try XCTUnwrap(written.page(at: 0)?.annotations)
         let mark = try XCTUnwrap(marks.first)
-        XCTAssertEqual(inFile.filter { $0.userName == mark.id.uuidString }.count, mark.rects.count)
+        // One passage is one annotation carrying a quad per line, the shape Preview writes,
+        // so what has to match is the lines it covers rather than a count of annotations.
+        let own = inFile.filter { $0.userName == mark.id.uuidString }
+        XCTAssertFalse(own.isEmpty)
+        XCTAssertEqual(Set(own.flatMap { PDFHighlightStore.markedRectangles(of: $0).map(\.rounded) }),
+                       Set(mark.rects.map(\.rounded)))
         XCTAssertTrue(sameInk(try XCTUnwrap(inFile.first?.color), PDFHighlightColor.blue.annotationColor),
                       "the marker color has to survive the round trip through the file")
 
@@ -297,7 +302,9 @@ final class PDFReaderTests: XCTestCase {
         XCTAssertTrue(PDFHighlightStore.apply(.init(added: [mark]), to: document).written)
 
         let written = try XCTUnwrap(PDFDocument(url: document)?.page(at: 0)?.annotations)
-        XCTAssertEqual(written.filter { $0.type == "Highlight" }.count, mark.rects.count,
+        let covered = Set(written.filter { $0.type == "Highlight" }
+            .flatMap { PDFHighlightStore.markedRectangles(of: $0).map(\.rounded) })
+        XCTAssertEqual(covered, Set(mark.rects.map(\.rounded)),
                        "every line of the passage has to reach the file")
     }
 
