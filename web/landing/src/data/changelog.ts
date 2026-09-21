@@ -17,6 +17,23 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.55.0",
+    date: "2026-09-21",
+    title: "Highlights go into a PDF without rewriting it",
+    changes: {
+      improved: [
+        "“Save Highlights into PDF” is near-instant and leaves the document's existing bytes untouched. Marks are appended the way Preview writes them, rather than rewriting the whole book — a 270-page PDF took over a second and grew by megabytes, and now takes milliseconds and adds under a kilobyte.",
+        "A passage spanning several lines is written as one highlight instead of one per line, so it reads back as a single mark in Preview, Books, and anything else that opens the file.",
+      ],
+      fixed: [
+        "An agent launch command containing `&&`, `;`, or `|` is no longer cut off at the first command, which used to open a plain shell instead of the agent. An agent that fails the moment it launches now leaves its error on screen instead of silently handing the pane back to a shell.",
+        "A PDF opens on the page rather than on its table of contents. The sidebar is one click away in the header, and stays open once you open it.",
+        "A diff keeps updating as the working tree changes, search navigation works again, focus returns to the active column, and the folded-line controls have clearer spacing and hover feedback.",
+        "Agent status hooks are no longer rewritten on every update, so Codex and other agents that verify their hook files stop asking you to trust them after each release.",
+      ],
+    },
+  },
+  {
     version: "0.54.0",
     date: "2026-09-20",
     title: "PDFs open in a reader, not a preview",
