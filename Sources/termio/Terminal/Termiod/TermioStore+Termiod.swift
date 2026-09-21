@@ -571,6 +571,7 @@ extension TermioStore {
         // event carries its answer.
         let outcome = TermioStore.sessionExit(
             code: code,
+            runtimeMilliseconds: runtimeMilliseconds,
             isAgentSession: isAgentSession,
             isPlainTerminal: isPlainTerminal,
             executableReplaced: information?.childExecutableReplaced == true)
