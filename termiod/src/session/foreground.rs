@@ -55,8 +55,12 @@ pub(crate) struct ForegroundResolution {
     argv: Option<Vec<String>>,
     cwd: Option<String>,
     repo_root: Option<String>,
-    /// Only set when the session had not pinned its binary yet.
+    /// Only set when the session had not pinned its binary yet, or when this
+    /// answer is the first job that can replace a pin taken off a wrapper shell.
     executable: Option<ExecutableIdentity>,
+    /// Whether `executable` was read off a foreground job rather than the direct
+    /// child — what lets [`Foreground::apply`] re-pin over a wrapper shell once.
+    executable_is_job: bool,
 }
 
 /// The session's foreground knowledge and the machinery that keeps it current.
@@ -73,11 +77,18 @@ pub(crate) struct Foreground {
     /// is slower than the work, and piling up would only queue answers about
     /// groups that have already lost the terminal.
     pending: bool,
-    /// The binary the child is running, pinned on the first sample that finds
-    /// it. One-shot on purpose: this is the *launch* baseline that
-    /// `was_replaced()` compares against, and resampling would paper over the
-    /// in-place upgrade it exists to notice.
+    /// The binary the session is running, pinned on the first sample that finds
+    /// it. This is the *launch* baseline `was_replaced()` compares against, so
+    /// resampling would paper over the in-place upgrade it exists to notice —
+    /// it is taken at most twice, and only ever to correct the target.
     executable: Option<ExecutableIdentity>,
+    /// Whether `executable` names a foreground **job** rather than the direct
+    /// child. A launch line the shell could not `exec` into leaves that shell as
+    /// the child, and the agent — the binary a self-update replaces — runs as a
+    /// job under it, so the first job to hold the terminal re-pins over the
+    /// shell. Set once and never cleared, which is what keeps the baseline fixed
+    /// from then on.
+    pinned_job: bool,
 }
 
 impl Foreground {
@@ -93,6 +104,13 @@ impl Foreground {
     #[cfg(test)]
     pub(super) fn set_job_for_tests(&mut self, job: bool) {
         self.sample.job = job;
+    }
+
+    /// The foreground process group, for the one caller outside this file that
+    /// needs the group itself rather than what is running in it: the kill path,
+    /// which has to reach a job the shell put in a group of its own.
+    pub(super) fn group(&self) -> Option<i32> {
+        self.sample.pgid
     }
 
     pub(super) fn current(&self) -> &ForegroundSample {
@@ -167,7 +185,13 @@ impl Foreground {
             return;
         }
         self.pending = true;
-        let pin_executable = self.executable.is_none();
+        // A group that is not the child's own is a job, and the job is what is
+        // worth pinning: the child may be a wrapper shell that has not reached
+        // the agent yet, or may never have been the agent at all. Recomputed
+        // only until the first job is pinned, so a plain terminal that never
+        // runs one does not read the process table for this on every poll.
+        let job = pgid.is_some_and(|group| group != child);
+        let pin_executable = self.executable.is_none() || (job && !self.pinned_job);
         let resolved = resolved.clone();
         tokio::task::spawn_blocking(move || {
             // A group id is not a pid. The shell names each job's group after
@@ -184,8 +208,14 @@ impl Foreground {
                 cwd,
                 repo_root,
                 executable: pin_executable
-                    .then(|| crate::proc::executable_identity(child))
+                    .then(|| {
+                        crate::proc::executable_identity(match pid {
+                            Some(pid) if job => pid,
+                            _ => child,
+                        })
+                    })
                     .flatten(),
+                executable_is_job: job && pid.is_some(),
             });
         });
     }
@@ -197,8 +227,15 @@ impl Foreground {
         if resolution.pgid != self.sample.pgid {
             return false;
         }
-        if self.executable.is_none() {
+        // The first job to hold the terminal replaces a pin taken off the child,
+        // because that pin named a wrapper shell rather than the agent. Every
+        // later sample leaves it alone: re-pinning after a self-update replaced
+        // the binary is exactly what would hide the replacement.
+        if resolution.executable.is_some()
+            && (self.executable.is_none() || (resolution.executable_is_job && !self.pinned_job))
+        {
             self.executable = resolution.executable;
+            self.pinned_job = resolution.executable_is_job;
         }
         let mut changed = false;
         if self.sample.pid != resolution.pid {
@@ -239,7 +276,8 @@ fn repo_root(cwd: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::repo_root;
+    use super::{Foreground, ForegroundResolution, repo_root};
+    use crate::proc::ExecutableIdentity;
 
     #[test]
     fn repo_root_walks_up_to_the_checkout() {
@@ -284,5 +322,55 @@ mod tests {
         assert_eq!(repo_root(scratch.to_str().expect("utf-8 path")), None);
 
         std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
+    }
+
+    /// The pin has to name the **agent**, not the shell that started it. A
+    /// launch line the shell could not `exec` into leaves that shell as the
+    /// direct child, and pinning it meant a replaced agent binary reported
+    /// `child_executable_replaced: false` — so the pane reverted to a shell
+    /// instead of relaunching the upgraded agent.
+    #[test]
+    fn the_first_job_repins_over_a_wrapper_shell() {
+        let mut foreground = Foreground::default();
+        let shell = ExecutableIdentity { path: "/bin/zsh".to_string(), inode: Some(1) };
+        let agent = ExecutableIdentity { path: "/opt/bin/agy".to_string(), inode: Some(2) };
+
+        // First sample: the wrapper shell still holds the terminal.
+        foreground.sample.pgid = Some(100);
+        assert!(foreground.apply(ForegroundResolution {
+            pgid: Some(100), pid: Some(100), argv: None, cwd: None, repo_root: None,
+            executable: Some(shell.clone()), executable_is_job: false,
+        }));
+        assert_eq!(foreground.executable_path().as_deref(), Some("/bin/zsh"));
+
+        // The agent takes the terminal as a job of its own.
+        foreground.sample.pgid = Some(200);
+        foreground.apply(ForegroundResolution {
+            pgid: Some(200), pid: Some(200), argv: None, cwd: None, repo_root: None,
+            executable: Some(agent), executable_is_job: true,
+        });
+        assert_eq!(foreground.executable_path().as_deref(), Some("/opt/bin/agy"));
+        assert!(foreground.pinned_job);
+    }
+
+    /// Once a job is pinned the baseline is fixed. Re-pinning after an upgrade
+    /// swapped the binary is exactly what would hide the replacement that
+    /// `executable_replaced()` exists to notice.
+    #[test]
+    fn a_pinned_job_is_never_repinned() {
+        let mut foreground = Foreground::default();
+        let first = ExecutableIdentity { path: "/opt/bin/agy".to_string(), inode: Some(2) };
+        let upgraded = ExecutableIdentity { path: "/opt/bin/agy".to_string(), inode: Some(9) };
+
+        foreground.sample.pgid = Some(200);
+        foreground.apply(ForegroundResolution {
+            pgid: Some(200), pid: Some(200), argv: None, cwd: None, repo_root: None,
+            executable: Some(first), executable_is_job: true,
+        });
+        foreground.apply(ForegroundResolution {
+            pgid: Some(200), pid: Some(200), argv: None, cwd: None, repo_root: None,
+            executable: Some(upgraded), executable_is_job: true,
+        });
+        assert_eq!(foreground.executable.as_ref().and_then(|e| e.inode), Some(2));
     }
 }
