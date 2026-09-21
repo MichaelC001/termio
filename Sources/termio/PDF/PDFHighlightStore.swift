@@ -431,9 +431,9 @@ enum PDFHighlightStore {
     /// this the rail could only ever show what termio had written, which made a marked-up
     /// book look untouched.
     ///
-    /// Our own marks are one annotation per typeset line sharing a `userName`, so they are
-    /// regrouped by it. A foreign highlight is one annotation carrying several quads, and
-    /// stands on its own.
+    /// A highlight covers one rectangle per typeset line, carried as `/QuadPoints`. Marks
+    /// termio wrote before it had its own writer are instead one annotation per line
+    /// sharing a `userName`, so those still regroup by it and both shapes read the same.
     static func marksInDocument(_ document: PDFDocument) -> [PDFHighlight] {
         var marks: [PDFHighlight] = []
         var grouped: [String: (page: Int, rects: [PDFHighlight.Rect], text: String,
@@ -441,10 +441,10 @@ enum PDFHighlightStore {
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
             for annotation in page.annotations where annotation.type == "Highlight" {
-                let rect = PDFHighlight.Rect(annotation.bounds)
+                let rects = markedRectangles(of: annotation)
                 let quoted = quotedText(of: annotation, on: page)
                 guard let name = annotation.userName, UUID(uuidString: name) != nil else {
-                    marks.append(PDFHighlight(page: index, rects: [rect], text: quoted,
+                    marks.append(PDFHighlight(page: index, rects: rects, text: quoted,
                                               color: nearestColor(annotation.color)))
                     continue
                 }
@@ -452,7 +452,7 @@ enum PDFHighlightStore {
                 // re-walking the document once per mark, which turned opening a marked-up
                 // 800-page book into seconds of work before the first page appeared.
                 var entry = grouped[name] ?? (index, [], "", nearestColor(annotation.color))
-                entry.rects.append(rect)
+                entry.rects += rects
                 entry.text = entry.text.isEmpty ? quoted : entry.text
                 grouped[name] = entry
             }
@@ -517,12 +517,25 @@ enum PDFHighlightStore {
 
     /// Writes the edits into the PDF itself, as annotations another reader can see.
     ///
-    /// The document is opened fresh here rather than handed in: this runs off the main
-    /// thread, and PDFKit objects belong to whoever opened them. The result is written
-    /// beside the original and swapped in atomically, so an interrupted save leaves the book
-    /// as it was.
+    /// Appended as an incremental update, the way Preview does it: every existing byte
+    /// stays put and the new marks go on the end. `PDFIncrementalWriter` carries the why.
+    /// A document it will not touch — encrypted, or shaped in a way it will not guess at —
+    /// falls back to the whole-file rewrite below, which is slow and reflows the file but
+    /// is always correct.
     static func apply(_ edits: Edits, to url: URL) -> SaveResult {
         guard !edits.isEmpty else { return SaveResult(written: true, unapplied: []) }
+        do {
+            return try PDFIncrementalWriter.append(edits, to: url)
+        } catch {
+            Log.files.info("pdf highlights: appending failed, rewriting instead: \(String(describing: error), privacy: .public)")
+        }
+        return rewrite(edits, to: url)
+    }
+
+    /// PDFKit's whole-file write. The fallback, not the path: it re-serializes the document,
+    /// which costs seconds on a long book and can nearly double the file because the
+    /// original's object streams do not survive the round trip.
+    private static func rewrite(_ edits: Edits, to url: URL) -> SaveResult {
         guard let document = PDFDocument(url: url) else {
             return SaveResult(written: false, unapplied: edits.added)
         }
@@ -593,10 +606,45 @@ enum PDFHighlightStore {
     /// or a stamp can share a passage's bounds, and editing a mark must not touch them.
     static func highlights(on page: PDFPage,
                            covering placement: PDFHighlight.Placement) -> [PDFAnnotation] {
-        page.annotations.filter { annotation in
+        let wanted = Set(placement.rects)
+        return page.annotations.filter { annotation in
             guard annotation.type == "Highlight" else { return false }
-            return placement.rects.contains(PDFHighlight.Rect(annotation.bounds).rounded)
+            let covered = markedRectangles(of: annotation).map(\.rounded)
+            return covered.contains { wanted.contains($0) }
         }
+    }
+
+    /// What a highlight annotation actually marks: one rectangle per quad, or its bounds
+    /// when it carries none. The single definition of "which lines is this mark on",
+    /// shared by the reader, the sidecar, and the writer.
+    ///
+    /// Bounds alone was the old answer, and it was wrong for any highlight spanning more
+    /// than one line — the union of several lines is a block that covers the words between
+    /// them, so a mark made in Preview listed as one fat rectangle and matched nothing.
+    static func markedRectangles(of annotation: PDFAnnotation) -> [PDFHighlight.Rect] {
+        guard let quads = annotation.quadrilateralPoints, quads.count >= 4 else {
+            return [PDFHighlight.Rect(annotation.bounds)]
+        }
+        var rects: [CGRect] = []
+        for start in stride(from: 0, to: quads.count - 3, by: 4) {
+            let points = (0..<4).map { quads[start + $0].pointValue }
+            guard let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+                  let minY = points.map(\.y).min(), let maxY = points.map(\.y).max(),
+                  maxX > minX, maxY > minY else { continue }
+            rects.append(CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY))
+        }
+        guard let span = rects.dropFirst().reduce(rects.first, { $0?.union($1) }) else {
+            return [PDFHighlight.Rect(annotation.bounds)]
+        }
+        // The spec puts quads in page space and that is what PDFKit reports, but some
+        // producers write them relative to the annotation instead. Which it is, is decided
+        // once for the whole annotation by where the quads land: quads that already sit
+        // inside the bounds are page space, and quads that only fit once shifted are not.
+        // Deciding per rectangle would let one stray line move while the rest stayed put.
+        let slack: CGFloat = 1
+        let bounds = annotation.bounds.insetBy(dx: -slack, dy: -slack)
+        let offset = bounds.contains(span) ? .zero : annotation.bounds.origin
+        return rects.map { PDFHighlight.Rect($0.offsetBy(dx: offset.x, dy: offset.y)) }
     }
 
 }
