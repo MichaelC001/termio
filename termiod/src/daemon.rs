@@ -514,10 +514,9 @@ impl Manager {
 /// The argv a spec spawns. Explicit argv wins; a `command` line is wrapped in
 /// the account's login shell the same way the Mac app wraps a local agent
 /// launch (`-ilc` sources both profile and rc, where `PATH` entries like
-/// `~/.local/bin` and nvm's shims land, and `exec` keeps the wrapper shell
-/// from lingering). The daemon's own inherited `PATH` is deliberately not
-/// consulted: it is ssh's or systemd's, and the programs worth launching are
-/// exactly the ones outside it (see `agent::machine`).
+/// `~/.local/bin` and nvm's shims land). The daemon's own inherited `PATH` is
+/// deliberately not consulted: it is ssh's or systemd's, and the programs worth
+/// launching are exactly the ones outside it (see `agent::machine`).
 fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
     if !spec.argv.is_empty() {
         return spec.argv.clone();
@@ -559,6 +558,14 @@ fn resolve_spawn_argv(spec: &crate::protocol::CreateSpec) -> Vec<String> {
 /// undo it. Only for shells whose assignment syntax is POSIX; a fish or csh
 /// login shell reads no `/etc/profile`, so the environment prepend survives
 /// there on its own.
+///
+/// The user's line then follows **verbatim**, as its own statement. Both an
+/// `exec` prefix and a `PATH=… command` assignment *prefix* bind to one simple
+/// command, so either one silently truncates an ordinary compound line:
+/// `export https_proxy=… && agent` ran the `export` under the prepend and
+/// stopped there, never reaching the agent. A leading statement has no such
+/// reach, and matches how ghostty (`/bin/sh -c`) and tmux (`default-command`)
+/// hand a configured command line to a shell.
 fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &str) -> String {
     match client_directory.filter(|_| shell_is_posix(shell)) {
         // `${PATH:+…}` keeps the separator off an empty `PATH`. A trailing empty
@@ -566,11 +573,15 @@ fn login_shell_command(command: &str, client_directory: Option<&str>, shell: &st
         // put whatever the session happens to be sitting in on its own search
         // path — with this directory leading it. `path_led_by` guards the same
         // case on the environment side.
+        //
+        // `export` is not redundant: the assignment inherits the exported flag
+        // only because `PATH` arrived in the environment, and the `:+` guard
+        // exists precisely for the case where it did not.
         Some(directory) => format!(
-            "PATH={}${{PATH:+\":$PATH\"}} exec {command}",
+            "PATH={}${{PATH:+\":$PATH\"}}; export PATH; {command}",
             crate::lifecycle::shell_quote(directory)
         ),
-        None => format!("exec {command}"),
+        None => command.to_string(),
     }
 }
 
@@ -3244,7 +3255,8 @@ mod spawn_argv_tests {
         let argv = resolve_spawn_argv(&spec);
         assert_eq!(argv.len(), 3);
         assert_eq!(argv[1], "-ilc");
-        assert!(argv[2].ends_with("exec claude --continue"), "{}", argv[2]);
+        assert!(argv[2].ends_with("claude --continue"), "{}", argv[2]);
+        assert!(!argv[2].contains("exec "), "{}", argv[2]);
     }
 
     /// The `-c` line re-asserts the client-directory prepend after the login
@@ -3258,17 +3270,35 @@ mod spawn_argv_tests {
         // trailing empty field, which POSIX resolves as the working directory.
         assert_eq!(
             login_shell_command("claude", Some("/home/u/.local/bin"), "/bin/bash"),
-            "PATH=/home/u/.local/bin${PATH:+\":$PATH\"} exec claude"
+            "PATH=/home/u/.local/bin${PATH:+\":$PATH\"}; export PATH; claude"
         );
         assert_eq!(
             login_shell_command("claude", Some("/home/u/my bin"), "/usr/bin/zsh"),
-            "PATH='/home/u/my bin'${PATH:+\":$PATH\"} exec claude"
+            "PATH='/home/u/my bin'${PATH:+\":$PATH\"}; export PATH; claude"
         );
         assert_eq!(
             login_shell_command("claude", Some("/home/u/.local/bin"), "/usr/bin/fish"),
-            "exec claude"
+            "claude"
         );
-        assert_eq!(login_shell_command("claude", None, "/bin/bash"), "exec claude");
+        assert_eq!(login_shell_command("claude", None, "/bin/bash"), "claude");
+    }
+
+    /// A compound line reaches the shell whole. Prefixing it — with `exec`, or
+    /// with the `PATH=…` prepend as an assignment *prefix* — bound only to the
+    /// `export`, so the agent after `&&` never ran and the session exited 0.
+    #[test]
+    fn a_compound_command_line_is_not_truncated_by_the_path_prepend() {
+        use super::login_shell_command;
+        let line = login_shell_command(
+            "export https_proxy=http://127.0.0.1:7890 && agy",
+            Some("/home/u/.local/bin"),
+            "/bin/zsh",
+        );
+        let expected = concat!(
+            "PATH=/home/u/.local/bin${PATH:+\":$PATH\"}; export PATH; ",
+            "export https_proxy=http://127.0.0.1:7890 && agy"
+        );
+        assert_eq!(line, expected);
     }
 
     #[test]

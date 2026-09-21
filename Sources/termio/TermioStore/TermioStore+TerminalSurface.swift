@@ -131,28 +131,44 @@ extension TermioStore {
         case park
     }
 
+    /// The shortest a *clean* agent exit can be and still describe a session the
+    /// user actually had. An agent that quits in under a second never drew a
+    /// frame: what ended was the launch line itself — a command that resolved to
+    /// nothing, a shell that ran an assignment and stopped. Reverting to a shell
+    /// there replaces the only evidence with a prompt that looks like success,
+    /// which is how a launch line silently truncated by an `exec` prefix reached
+    /// users as "termio opens a plain terminal and never starts my agent".
+    static let agentLaunchFloorMilliseconds: UInt64 = 1_000
+
     /// The exit policy, as a decision with no side effects, so the in-process PTY
     /// and the daemon link run the *same* one rather than two that drift.
     ///
-    /// Both backends know the same three things at exit: the code, what the row
-    /// is, and whether the launch binary was replaced underneath the running
-    /// process. Only the last differs in how it is *learned* — the local PTY pins
-    /// the executable itself, the daemon owns the process and reports it — which
-    /// is a producer difference, not a policy one.
+    /// Both backends know the same four things at exit: the code, how long the
+    /// process ran, what the row is, and whether the launch binary was replaced
+    /// underneath the running process. Only the last differs in how it is
+    /// *learned* — the local PTY pins the executable itself, the daemon owns the
+    /// process and reports it — which is a producer difference, not a policy one.
     ///
     /// - Parameters:
+    ///   - runtimeMilliseconds: how long the process lived, which is what separates
+    ///     a session the user quit from a launch line that never started one.
     ///   - isAgentSession: a declared agent, not a plain terminal and not `ssh`.
     ///   - isPlainTerminal: the row's declared agent is `.terminal` (an SSH
     ///     terminal is one of these, which is why the two flags are separate
     ///     rather than one being the negation of the other).
     ///   - executableReplaced: `false` when nothing knows — an absent answer must
     ///     never respawn a process the user quit.
-    static func sessionExit(code: Int32, isAgentSession: Bool, isPlainTerminal: Bool,
-                            executableReplaced: Bool) -> SessionExit {
+    static func sessionExit(code: Int32, runtimeMilliseconds: UInt64, isAgentSession: Bool,
+                            isPlainTerminal: Bool, executableReplaced: Bool) -> SessionExit {
         // A non-zero exit always parks: its error output is the only record of
         // what went wrong, and closing or respawning over it loses that.
         guard code == 0 else { return .park }
-        if isAgentSession { return executableReplaced ? .relaunch : .revertToShell }
+        if isAgentSession {
+            if executableReplaced { return .relaunch }
+            // Clean, but over before the agent could have drawn anything, so
+            // there was no session to hand back from.
+            return runtimeMilliseconds < agentLaunchFloorMilliseconds ? .park : .revertToShell
+        }
         return isPlainTerminal ? .close : .park
     }
 
@@ -384,10 +400,9 @@ extension TermioStore {
     }
 
     /// The argv to spawn in the session's PTY. An agent command string runs through
-    /// the shell so its quoting/args parse exactly as under libghostty's `.exec`;
-    /// `exec` keeps the shell from lingering as an extra process. A `nil` command is
-    /// the plain interactive login shell.
-    private static func launchArgv(command: String?) -> [String] {
+    /// the shell so its quoting/args parse exactly as under libghostty's `.exec`.
+    /// A `nil` command is the plain interactive login shell.
+    static func launchArgv(command: String?) -> [String] {
         let shell = loginShell
         if let command, !command.isEmpty {
             // Run through an interactive *login* shell (`-i -l`) so the user's real PATH is
@@ -396,9 +411,20 @@ extension TermioStore {
             // A Finder/Dock-launched app inherits only the minimal
             // `/usr/bin:/bin:/usr/sbin:/sbin` LaunchServices PATH, so a bare `sh -c` can't
             // find agent CLIs under /opt/homebrew/bin, ~/.local/bin, … — they die at 0 ms
-            // with "Ghostty failed to launch the requested command". `exec` keeps the login
-            // shell from lingering (so quoting/args still parse as under `.exec`).
-            return [shell, "-ilc", "exec \(command)"]
+            // with "Ghostty failed to launch the requested command".
+            //
+            // The line is handed over **verbatim** — the shape ghostty's own `/bin/sh -c`
+            // and tmux's `default-command` both take. An `exec` prefix used to lead it, to
+            // keep the login shell from lingering, but `exec` binds to the first simple
+            // command only: an ordinary `export https_proxy=… && agent` ran the `export`,
+            // exited 0, and never reached the agent — and a clean exit then handed the
+            // pane back to a shell, so the launch failed silently. Nothing here needs the
+            // prefix. The daemon reads the tty's *foreground* process rather than this
+            // argv's direct child (`session.rs`'s `Foreground`), so a wrapper shell is
+            // invisible to the self-update check and to status; signals reach the agent
+            // through `killpg`; and zsh and bash both exec into the final command by
+            // themselves when nothing trails it.
+            return [shell, "-ilc", command]
         }
         return [shell, "-il"]
     }

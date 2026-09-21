@@ -321,6 +321,30 @@ final class TermiodStatusTests: XCTestCase {
         XCTAssertNil(store.closeConfirmationReason(for: agent))
     }
 
+    // MARK: - The launch line
+
+    /// The configured launch line reaches the login shell **whole**. It used to
+    /// be prefixed with `exec`, which binds to the first simple command only, so
+    /// `export https_proxy=… && agy` ran the `export`, exited 0, and never
+    /// reached the agent — the shape ghostty (`/bin/sh -c`) and tmux
+    /// (`default-command`) both pass through untouched.
+    func testACompoundLaunchLineReachesTheShellWhole() {
+        let line = "export https_proxy=http://127.0.0.1:7890 && agy"
+        let argv = TermioStore.launchArgv(command: line)
+        XCTAssertEqual(argv.count, 3)
+        XCTAssertEqual(argv[1], "-ilc")
+        XCTAssertEqual(argv[2], line)
+    }
+
+    /// A login shell with no command is the plain interactive terminal, and a
+    /// simple agent command is still handed over verbatim.
+    func testALaunchLineIsNeverRewritten() {
+        XCTAssertEqual(TermioStore.launchArgv(command: "claude --continue").last,
+                       "claude --continue")
+        XCTAssertEqual(TermioStore.launchArgv(command: nil).last, "-il")
+        XCTAssertEqual(TermioStore.launchArgv(command: "").last, "-il")
+    }
+
     // MARK: - The exit policy both backends run
 
     /// A clean agent quit hands the pane back to a shell, and the same quit
@@ -328,12 +352,43 @@ final class TermiodStatusTests: XCTestCase {
     /// One policy, whichever machine the PTY was on.
     func testACleanAgentQuitRevertsUnlessItsBinaryWasReplaced() {
         XCTAssertEqual(
-            TermioStore.sessionExit(code: 0, isAgentSession: true, isPlainTerminal: false,
-                                    executableReplaced: false),
+            TermioStore.sessionExit(code: 0, runtimeMilliseconds: 30_000, isAgentSession: true,
+                                    isPlainTerminal: false, executableReplaced: false),
             .revertToShell)
         XCTAssertEqual(
-            TermioStore.sessionExit(code: 0, isAgentSession: true, isPlainTerminal: false,
-                                    executableReplaced: true),
+            TermioStore.sessionExit(code: 0, runtimeMilliseconds: 30_000, isAgentSession: true,
+                                    isPlainTerminal: false, executableReplaced: true),
+            .relaunch)
+    }
+
+    /// An agent that exits 0 before it could have drawn a frame never started:
+    /// the launch line is what ended. Parking keeps that on screen, where
+    /// reverting to a shell would render it as an ordinary prompt — the silence
+    /// that made a truncated launch line read as "termio just opens a terminal".
+    func testAnAgentThatDiesAtLaunchParksInsteadOfRevertingToAShell() {
+        XCTAssertEqual(
+            TermioStore.sessionExit(code: 0, runtimeMilliseconds: 0, isAgentSession: true,
+                                    isPlainTerminal: false, executableReplaced: false),
+            .park)
+        XCTAssertEqual(
+            TermioStore.sessionExit(code: 0,
+                                    runtimeMilliseconds: TermioStore
+                                        .agentLaunchFloorMilliseconds - 1,
+                                    isAgentSession: true, isPlainTerminal: false,
+                                    executableReplaced: false),
+            .park)
+        XCTAssertEqual(
+            TermioStore.sessionExit(code: 0,
+                                    runtimeMilliseconds: TermioStore
+                                        .agentLaunchFloorMilliseconds,
+                                    isAgentSession: true, isPlainTerminal: false,
+                                    executableReplaced: false),
+            .revertToShell)
+        // A binary replaced underneath a running agent is still a relaunch: the
+        // self-update ends the process fast and asks for exactly that.
+        XCTAssertEqual(
+            TermioStore.sessionExit(code: 0, runtimeMilliseconds: 0, isAgentSession: true,
+                                    isPlainTerminal: false, executableReplaced: true),
             .relaunch)
     }
 
@@ -342,8 +397,8 @@ final class TermiodStatusTests: XCTestCase {
     /// separate rather than one being the negation of the other.
     func testACleanTerminalExitClosesThePane() {
         XCTAssertEqual(
-            TermioStore.sessionExit(code: 0, isAgentSession: false, isPlainTerminal: true,
-                                    executableReplaced: false),
+            TermioStore.sessionExit(code: 0, runtimeMilliseconds: 0, isAgentSession: false,
+                                    isPlainTerminal: true, executableReplaced: false),
             .close)
     }
 
@@ -353,7 +408,8 @@ final class TermiodStatusTests: XCTestCase {
         for agent in [true, false] {
             for terminal in [true, false] {
                 XCTAssertEqual(
-                    TermioStore.sessionExit(code: 1, isAgentSession: agent,
+                    TermioStore.sessionExit(code: 1, runtimeMilliseconds: 30_000,
+                                            isAgentSession: agent,
                                             isPlainTerminal: terminal,
                                             executableReplaced: true),
                     .park)
