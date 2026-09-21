@@ -131,44 +131,37 @@ extension TermioStore {
         case park
     }
 
-    /// The shortest a *clean* agent exit can be and still describe a session the
-    /// user actually had. An agent that quits in under a second never drew a
-    /// frame: what ended was the launch line itself — a command that resolved to
-    /// nothing, a shell that ran an assignment and stopped. Reverting to a shell
-    /// there replaces the only evidence with a prompt that looks like success,
-    /// which is how a launch line silently truncated by an `exec` prefix reached
-    /// users as "termio opens a plain terminal and never starts my agent".
-    static let agentLaunchFloorMilliseconds: UInt64 = 1_000
-
     /// The exit policy, as a decision with no side effects, so the in-process PTY
     /// and the daemon link run the *same* one rather than two that drift.
     ///
-    /// Both backends know the same four things at exit: the code, how long the
-    /// process ran, what the row is, and whether the launch binary was replaced
-    /// underneath the running process. Only the last differs in how it is
-    /// *learned* — the local PTY pins the executable itself, the daemon owns the
-    /// process and reports it — which is a producer difference, not a policy one.
+    /// Both backends know the same three things at exit: the code, what the row
+    /// is, and whether the launch binary was replaced underneath the running
+    /// process. Only the last differs in how it is *learned* — the local PTY pins
+    /// the executable itself, the daemon owns the process and reports it — which
+    /// is a producer difference, not a policy one.
+    ///
+    /// A launch that dies the instant it starts is deliberately *not* separated
+    /// from a session the user quit. Doing that needs to know how long the
+    /// process lived, and nothing at this exit answers that: the link's clock
+    /// starts at its own construction — before `Transport.open`, so it counts an
+    /// SSH connect the process was not alive for — and the daemon's `created_unix`
+    /// is the far box's clock, which no offset here corrects. Judging on either
+    /// reverts real failures and parks real sessions, and a park is not a free
+    /// notice: the next keypress runs `onClose`, which closes the pane.
     ///
     /// - Parameters:
-    ///   - runtimeMilliseconds: how long the process lived, which is what separates
-    ///     a session the user quit from a launch line that never started one.
     ///   - isAgentSession: a declared agent, not a plain terminal and not `ssh`.
     ///   - isPlainTerminal: the row's declared agent is `.terminal` (an SSH
     ///     terminal is one of these, which is why the two flags are separate
     ///     rather than one being the negation of the other).
     ///   - executableReplaced: `false` when nothing knows — an absent answer must
     ///     never respawn a process the user quit.
-    static func sessionExit(code: Int32, runtimeMilliseconds: UInt64, isAgentSession: Bool,
-                            isPlainTerminal: Bool, executableReplaced: Bool) -> SessionExit {
+    static func sessionExit(code: Int32, isAgentSession: Bool, isPlainTerminal: Bool,
+                            executableReplaced: Bool) -> SessionExit {
         // A non-zero exit always parks: its error output is the only record of
         // what went wrong, and closing or respawning over it loses that.
         guard code == 0 else { return .park }
-        if isAgentSession {
-            if executableReplaced { return .relaunch }
-            // Clean, but over before the agent could have drawn anything, so
-            // there was no session to hand back from.
-            return runtimeMilliseconds < agentLaunchFloorMilliseconds ? .park : .revertToShell
-        }
+        if isAgentSession { return executableReplaced ? .relaunch : .revertToShell }
         return isPlainTerminal ? .close : .park
     }
 
@@ -417,13 +410,16 @@ extension TermioStore {
             // and tmux's `default-command` both take. An `exec` prefix used to lead it, to
             // keep the login shell from lingering, but `exec` binds to the first simple
             // command only: an ordinary `export https_proxy=… && agent` ran the `export`,
-            // exited 0, and never reached the agent — and a clean exit then handed the
-            // pane back to a shell, so the launch failed silently. Nothing here needs the
-            // prefix. The daemon reads the tty's *foreground* process rather than this
-            // argv's direct child (`session.rs`'s `Foreground`), so a wrapper shell is
-            // invisible to the self-update check and to status; signals reach the agent
-            // through `killpg`; and zsh and bash both exec into the final command by
-            // themselves when nothing trails it.
+            // exited 0, and never reached the agent.
+            //
+            // Dropping the prefix means the shell may stay, and a *retained* shell is a
+            // different process from the agent — `-i` turns job control on, so it puts the
+            // agent in a process group of its own. The daemon no longer assumes otherwise:
+            // it kills the foreground group as well as the child's, and pins the
+            // self-update identity off the foreground job rather than off the direct child.
+            // That assumption was never safe to make here anyway — every plain terminal
+            // session runs the user's programs as jobs under a shell, which is the same
+            // shape.
             return [shell, "-ilc", command]
         }
         return [shell, "-il"]

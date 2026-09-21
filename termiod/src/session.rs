@@ -2928,9 +2928,24 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         // dropped reply as a session that could not be carried, and names it.
         SessionMsg::Carry { .. } => {}
         SessionMsg::Kill { reason } => {
-            // The child is a session leader, so pgid == pid.
+            // The child is a session leader, so its own group is `pid` — but it
+            // is not always the group the program is in. A launch line the shell
+            // could not `exec` into leaves that shell in place, and `-i` turns
+            // job control on, so the shell puts the agent in a group of its own;
+            // a plain terminal does the same for everything the user runs. The
+            // pty hangup covers most of it, and an agent that ignores SIGHUP
+            // would outlive the session that started it, so the foreground group
+            // is killed too. Ordered so the program dies before the shell that
+            // would otherwise be told its child went away.
+            let child_group = session.pid;
+            let foreground_group = session.foreground.group();
             unsafe {
-                libc::kill(-session.pid, libc::SIGKILL);
+                if let Some(group) = foreground_group {
+                    if group != child_group {
+                        libc::kill(-group, libc::SIGKILL);
+                    }
+                }
+                libc::kill(-child_group, libc::SIGKILL);
             }
             return Some(reason);
         }
