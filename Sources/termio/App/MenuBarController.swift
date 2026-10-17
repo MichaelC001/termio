@@ -4,7 +4,7 @@ import SwiftUI
 import TermioShared
 
 /// The menu-bar (tray) presence, modelled on Tailscale's status item: termio's
-/// own 3×3 grid brand mark stays constant as a flat monochrome glyph that sits
+/// own haitang brand mark stays constant as a flat monochrome glyph that sits
 /// cleanly in the menu bar and adapts to light/dark and the click-highlight.
 /// Rather than swapping to unrelated symbols, state is conveyed *over* the mark —
 /// it breathes while an agent works, and wears a small coloured status badge when
@@ -72,14 +72,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         button.layer?.removeAnimation(forKey: workingPulseKey)
         switch status {
         case .idle:
-            button.image = Self.gridIcon(badge: nil)
+            button.image = Self.markIcon(badge: nil)
         case .working:
-            button.image = Self.gridIcon(badge: nil)
+            button.image = Self.markIcon(badge: nil)
             addWorkingPulse(to: button)
         case .done:
-            button.image = Self.gridIcon(badge: .done)
+            button.image = Self.markIcon(badge: .done)
         case .needsAttention:
-            button.image = Self.gridIcon(badge: .attention)
+            button.image = Self.markIcon(badge: .attention)
         }
     }
 
@@ -94,43 +94,45 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Draws termio's 3×3 rounded-square brand mark — the same motif as the app
-    /// icon — as a flat menu-bar glyph. With no badge it is a template image, so
+    /// Draws termio's brand mark — the app icon's haitang with its `>_` prompt cut
+    /// through — as a flat menu-bar glyph. With no badge it is a template image, so
     /// the system tints it for the current appearance and inverts it on highlight,
     /// the way Tailscale's mark behaves. A status badge forces a coloured
-    /// composite (templates are single-colour), so the grid is then painted in the
+    /// composite (templates are single-colour), so the mark is then painted in the
     /// adaptive label colour and the dot is tucked into the top-right with a thin
     /// transparent moat so it reads as separate from the mark.
-    private static func gridIcon(badge: Badge?) -> NSImage {
+    private static func markIcon(badge: Badge?) -> NSImage {
         let side: CGFloat = 18
         let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
-            let inset: CGFloat = 2
-            let usable = side - inset * 2
-            let gapRatio: CGFloat = 0.34
-            let cell = usable / (3 + 2 * gapRatio)
-            let gap = cell * gapRatio
-            let radius = cell * 0.3
+            let center = NSPoint(x: side / 2, y: side / 2)
+            let context = NSGraphicsContext.current
 
             let ink = badge == nil ? NSColor.black : NSColor.labelColor
             ink.setFill()
-            for row in 0..<3 {
-                for column in 0..<3 {
-                    let origin = NSPoint(
-                        x: inset + CGFloat(column) * (cell + gap),
-                        y: inset + CGFloat(row) * (cell + gap)
-                    )
-                    let rect = NSRect(origin: origin, size: NSSize(width: cell, height: cell))
-                    NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-                }
-            }
+            haitang(center: center, extent: side / 2 - 1).fill()
 
+            // The prompt is drawn larger relative to the haitang than in the app
+            // icon: at the icon's proportions its strokes would be under a point.
+            context?.compositingOperation = .clear
+            let prompt = NSBezierPath()
+            prompt.move(to: NSPoint(x: center.x - 3.4, y: center.y + 2.1))
+            prompt.line(to: NSPoint(x: center.x - 0.6, y: center.y))
+            prompt.line(to: NSPoint(x: center.x - 3.4, y: center.y - 2.1))
+            prompt.move(to: NSPoint(x: center.x + 0.5, y: center.y - 2.1))
+            prompt.line(to: NSPoint(x: center.x + 3.6, y: center.y - 2.1))
+            prompt.lineWidth = 1.4
+            prompt.lineJoinStyle = .miter
+            prompt.stroke()
+            context?.compositingOperation = .sourceOver
+
+            // The dot sits in the empty corner beyond the top-right cusp, so its
+            // moat bites the two upper lobes only slightly and never the prompt.
             if let badge {
-                let diameter: CGFloat = 7
+                let diameter: CGFloat = 6
                 let dot = NSRect(
-                    x: side - diameter - inset, y: side - diameter - inset,
+                    x: side - diameter, y: side - diameter,
                     width: diameter, height: diameter
                 )
-                let context = NSGraphicsContext.current
                 context?.compositingOperation = .clear
                 NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).fill()
                 context?.compositingOperation = .sourceOver
@@ -143,9 +145,34 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return image
     }
 
+    /// The haitang from `packaging/icon-static.svg`: the union of four circles, traced
+    /// as one outline through the cusps where neighbouring lobes meet. `extent` is
+    /// the distance from the center to a lobe's outer edge; the lobe offset and
+    /// radius keep the icon's 83.9 : 81.2 ratio so the cusps have the same depth.
+    private static func haitang(center: NSPoint, extent: CGFloat) -> NSBezierPath {
+        let offset = extent * 83.9 / 165
+        let radius = extent * 81.2 / 165
+        let cuspAlongAxis = (offset + (2 * radius * radius - offset * offset).squareRoot()) / 2
+        let cuspDistance = cuspAlongAxis * 2.squareRoot()
+        let path = NSBezierPath()
+        for lobe in 0..<4 {
+            let axis = CGFloat(lobe) * .pi / 2
+            let lobeCenter = NSPoint(x: center.x + offset * cos(axis), y: center.y + offset * sin(axis))
+            let cusp = { (angle: CGFloat) -> CGFloat in
+                let point = NSPoint(x: center.x + cuspDistance * cos(angle), y: center.y + cuspDistance * sin(angle))
+                return atan2(point.y - lobeCenter.y, point.x - lobeCenter.x) * 180 / .pi
+            }
+            path.appendArc(withCenter: lobeCenter, radius: radius,
+                           startAngle: cusp(axis - .pi / 4), endAngle: cusp(axis + .pi / 4),
+                           clockwise: false)
+        }
+        path.close()
+        return path
+    }
+
     private let workingPulseKey = "working"
 
-    /// Breathes the mark's opacity while an agent works. The custom grid image is
+    /// Breathes the mark's opacity while an agent works. The custom mark image is
     /// not an SF Symbol, so symbol effects don't apply — a layer animation is the
     /// reliable way to animate a status button's image (a known AppKit gotcha).
     private func addWorkingPulse(to button: NSStatusBarButton) {
