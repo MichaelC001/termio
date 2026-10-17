@@ -113,7 +113,7 @@ jobs:
           DMG_PATH="$RUNNER_TEMP/${APP_NAME}.dmg"
 
           VOLICON_ARGS=()
-          ICNS="$APP/Contents/Resources/AppIcon.icns"
+          ICNS="$APP/Contents/Resources/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist").icns"
           [ -f "$ICNS" ] && VOLICON_ARGS=(--volicon "$ICNS")
 
           create-dmg \
