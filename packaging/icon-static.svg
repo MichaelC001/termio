@@ -72,7 +72,10 @@
   <!-- >_ in font units, y up. The ">" is Monaspace Radon ExtraBold (SIL Open Font
        License, github.com/githubnext/monaspace). Its own "_" is only 0.6x as thick
        as the ">" arms, so the underscore is redrawn as a bar exactly as thick as
-       the arms, standing on the same floor. -->
+       the arms, standing on the same floor. ExtraBold alone vanished at Dock
+       sizes, so a same-colour outline of 150 font units thickens both glyphs
+       without changing their shape. -->
   <path d="M330 9 1080 555V790L330 1336L170 1117L773 678V667L170 228Z M1146.3,9.0 L2206.3,9.0 L2206.3,280.2 L1146.3,280.2Z"
-        fill="#151518" transform="matrix(0.055,0,0,-0.055,190.65,292.99)" filter="url(#inset)"/>
+        fill="#151518" stroke="#151518" stroke-width="150" stroke-linejoin="miter" stroke-miterlimit="4"
+        transform="matrix(0.07135,0,0,-0.07135,171.22,303.99)" filter="url(#inset)"/>
 </svg>

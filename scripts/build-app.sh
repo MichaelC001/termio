@@ -4,7 +4,7 @@
 #
 # termio is a plain SwiftPM executable; `swift run` produces a bare binary with
 # no bundle, so macOS shows a generic Dock icon. This script builds the release
-# binary and wraps it in a `.app` bundle whose Info.plist + AppIcon.icns give it
+# binary and wraps it in a `.app` bundle whose Info.plist + AppIcon-<hash>.icns give it
 # a proper name and Dock icon, then embeds Sparkle (which SwiftPM links but does
 # NOT bundle on its own) under Contents/Frameworks. It also builds the `termiod`
 # session daemon (Rust + a Zig-built VT engine) into Contents/Resources, so a
@@ -392,7 +392,7 @@ cp -R "$sparkle_src" "$frameworks_dir/"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$macos_dir/$product_name" 2>/dev/null || true
 
 if [[ -f "$source_icon" ]]; then
-    echo "==> Generating AppIcon.icns from ${source_icon#$repo_root/}"
+    echo "==> Generating the app icon from ${source_icon#$repo_root/}"
     iconset_dir="$(mktemp -d)/AppIcon.iconset"
     mkdir -p "$iconset_dir"
     # macOS expects these exact names/sizes inside the .iconset directory.
@@ -403,7 +403,14 @@ if [[ -f "$source_icon" ]]; then
         label="${spec##*:}"
         sips -z "$px" "$px" "$source_icon" --out "$iconset_dir/icon_${label}.png" >/dev/null
     done
-    iconutil -c icns "$iconset_dir" -o "$resources_dir/AppIcon.icns"
+    # The icon file is named after its content. The Dock caches an app's icon
+    # under the bundle and the icon's file name, and keeps serving the old
+    # picture after an in-place Sparkle update that reuses the name, until the
+    # user clears its cache by hand. A new name per icon makes that cache miss.
+    icon_hash="$(shasum -a 256 "$source_icon" | cut -c1-8)"
+    icon_name="AppIcon-$icon_hash"
+    iconutil -c icns "$iconset_dir" -o "$resources_dir/$icon_name.icns"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile $icon_name" "$contents_dir/Info.plist"
     rm -rf "$(dirname "$iconset_dir")"
 else
     echo "==> No icon found at ${source_icon#$repo_root/} — building without a Dock icon."

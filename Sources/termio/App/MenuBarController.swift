@@ -115,12 +115,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             // icon: at the icon's proportions its strokes would be under a point.
             context?.compositingOperation = .clear
             let prompt = NSBezierPath()
-            prompt.move(to: NSPoint(x: center.x - 3.4, y: center.y + 2.1))
-            prompt.line(to: NSPoint(x: center.x - 0.6, y: center.y))
-            prompt.line(to: NSPoint(x: center.x - 3.4, y: center.y - 2.1))
-            prompt.move(to: NSPoint(x: center.x + 0.5, y: center.y - 2.1))
-            prompt.line(to: NSPoint(x: center.x + 3.6, y: center.y - 2.1))
-            prompt.lineWidth = 1.4
+            prompt.move(to: NSPoint(x: center.x - 3.6, y: center.y + 2.3))
+            prompt.line(to: NSPoint(x: center.x - 0.5, y: center.y))
+            prompt.line(to: NSPoint(x: center.x - 3.6, y: center.y - 2.3))
+            prompt.move(to: NSPoint(x: center.x + 0.6, y: center.y - 2.3))
+            prompt.line(to: NSPoint(x: center.x + 3.9, y: center.y - 2.3))
+            prompt.lineWidth = 1.9
             prompt.lineJoinStyle = .miter
             prompt.stroke()
             context?.compositingOperation = .sourceOver

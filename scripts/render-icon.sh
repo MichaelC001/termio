@@ -15,7 +15,7 @@
 # being present on a dev Mac; falls back to `rsvg-convert` if installed.
 #
 # Run this whenever icon-static.svg changes, then ./scripts/build-app.sh to
-# fold the PNG into AppIcon.icns (the iOS asset is picked up by the next
+# fold the PNG into the app icon (the iOS asset is picked up by the next
 # ios/dev-run.sh build).
 set -euo pipefail
 
