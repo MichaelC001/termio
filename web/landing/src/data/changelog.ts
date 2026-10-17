@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.57.3",
+    date: "2026-10-17",
+    title: "A resize no longer repaints the prompt twice",
+    changes: {
+      fixed: [
+        "After a window or pane resize, an agent's typed text could land a row above its prompt, with characters punched through the input box's rule. Each view now gets the agent's redraw once.",
+      ],
+    },
+  },
+  {
     version: "0.57.2",
     date: "2026-10-17",
     title: "The sidebar holds still at the ends",
