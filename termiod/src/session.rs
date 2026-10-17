@@ -2635,17 +2635,20 @@ async fn run(
     }
 
     session.fallback_all_pending("session ended before the VT snapshot completed");
+    session.vt.shut_down();
+
+    let code = match waiter.take() {
+        Some(waiter) => reap_answering(&mut session, &mut rx, waiter).await,
+        None => -1,
+    };
+    // Read after the reap rather than before: a `Kill` that arrived while the
+    // reap was pending recorded its reason on the handle, and that reason is
+    // still the truth about how this session ended.
     if end_reason == EndReason::Exited {
         if let Some(requested) = *termination_reason.lock().unwrap() {
             end_reason = requested;
         }
     }
-    session.vt.shut_down();
-
-    let code = match waiter.take() {
-        Some(w) => w.await.unwrap_or(-1),
-        None => -1,
-    };
     // One final record, built after the reap and used for everything that
     // outlives the session: the exit event clients hear, and the tombstone the
     // manager buries. Sampling it twice would let the two disagree — the
@@ -2672,6 +2675,61 @@ async fn run(
         status: code,
         reason: end_reason,
     });
+}
+
+/// Waits for the child to be reaped while still answering the daemon.
+///
+/// The PTY closing does not mean the child can be reaped yet. A process the
+/// kernel holds in exit (`ps` state `E`) was seen to stay there for hours, with
+/// `kill -9` doing nothing. Until the reap returns, this session's handle is
+/// still in the daemon's table, and `list` asks every handle for its info with
+/// no deadline. An actor that stopped reading its messages here hung `list`,
+/// and every attach and create behind it, for the whole host.
+async fn reap_answering(
+    session: &mut Session,
+    rx: &mut mpsc::UnboundedReceiver<SessionMsg>,
+    mut waiter: tokio::task::JoinHandle<i32>,
+) -> i32 {
+    let mut messages_open = true;
+    loop {
+        tokio::select! {
+            code = &mut waiter => return code.unwrap_or(-1),
+            msg = rx.recv(), if messages_open => match msg {
+                Some(SessionMsg::Info { reply }) => {
+                    let mut info = session.info();
+                    info.alive = false;
+                    let _ = reply.send(info);
+                }
+                Some(SessionMsg::Kill { .. }) => kill_process_groups(session),
+                // Everything else asks a live PTY for something. Dropping the
+                // message drops its reply channel, which every caller already
+                // reads as a session that could not answer.
+                Some(_) => {}
+                None => messages_open = false,
+            },
+        }
+    }
+}
+
+/// The child is a session leader, so its own group is `pid` — but it is not
+/// always the group the program is in. A launch line the shell could not
+/// `exec` into leaves that shell in place, and `-i` turns job control on, so the
+/// shell puts the agent in a group of its own; a plain terminal does the same
+/// for everything the user runs. The pty hangup covers most of it, and an agent
+/// that ignores SIGHUP would outlive the session that started it, so the
+/// foreground group is killed too. Ordered so the program dies before the shell
+/// that would otherwise be told its child went away.
+fn kill_process_groups(session: &Session) {
+    let child_group = session.pid;
+    let foreground_group = session.foreground.group();
+    unsafe {
+        if let Some(group) = foreground_group {
+            if group != child_group {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        libc::kill(-child_group, libc::SIGKILL);
+    }
 }
 
 fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
@@ -2950,25 +3008,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         // dropped reply as a session that could not be carried, and names it.
         SessionMsg::Carry { .. } => {}
         SessionMsg::Kill { reason } => {
-            // The child is a session leader, so its own group is `pid` — but it
-            // is not always the group the program is in. A launch line the shell
-            // could not `exec` into leaves that shell in place, and `-i` turns
-            // job control on, so the shell puts the agent in a group of its own;
-            // a plain terminal does the same for everything the user runs. The
-            // pty hangup covers most of it, and an agent that ignores SIGHUP
-            // would outlive the session that started it, so the foreground group
-            // is killed too. Ordered so the program dies before the shell that
-            // would otherwise be told its child went away.
-            let child_group = session.pid;
-            let foreground_group = session.foreground.group();
-            unsafe {
-                if let Some(group) = foreground_group {
-                    if group != child_group {
-                        libc::kill(-group, libc::SIGKILL);
-                    }
-                }
-                libc::kill(-child_group, libc::SIGKILL);
-            }
+            kill_process_groups(session);
             return Some(reason);
         }
     }
@@ -5160,6 +5200,65 @@ mod tests {
         handle.send(SessionMsg::Kill {
             reason: EndReason::Killed,
         });
+    }
+
+    /// A child that closes its PTY but is not reapable yet must not take the
+    /// actor's mailbox with it: the daemon's `list` waits on every session's
+    /// `Info` with no deadline, so one silent actor hangs the whole host.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_session_waiting_on_its_reap_still_answers_info() {
+        let (on_exit, mut on_exit_rx) = mpsc::unbounded_channel();
+        let (events, _events_rx) = broadcast::channel(64);
+        // A session leader's controlling terminal keeps the tty open on its
+        // own, so closing stdio is not enough. `revoke(2)` (syscall 56 on
+        // macOS) cuts every reference to the terminal, the master reads EOF,
+        // and the child sleeps on: a PTY that is gone, a child that is not.
+        let script = r#"use POSIX; $SIG{HUP}="IGNORE"; syscall(56, POSIX::ttyname(0)); close STDIN; close STDOUT; close STDERR; sleep 60"#.to_string();
+        let handle = super::spawn(
+            SessionId::new("reap-pending-session"),
+            "test".to_string(),
+            "/".to_string(),
+            script.clone(),
+            vec!["/usr/bin/perl".to_string(), "-e".to_string(), script],
+            Vec::new(),
+            24,
+            80,
+            None,
+            on_exit,
+            events,
+        )
+        .expect("spawning a real session");
+
+        // The child closes the PTY at once and then sleeps until the `Kill`
+        // below, so the actor is waiting on the reap for as long as the test
+        // needs. Every ask in that window must come back promptly.
+        let started = std::time::Instant::now();
+        loop {
+            let (tx, rx) = oneshot::channel();
+            assert!(handle.send(SessionMsg::Info { reply: tx }));
+            let info = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+                .await
+                .expect("the actor answered Info")
+                .expect("session info");
+            if !info.alive {
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "the PTY never closed while the child was still running"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        handle.send(SessionMsg::Kill {
+            reason: EndReason::Killed,
+        });
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(2), on_exit_rx.recv())
+            .await
+            .expect("a kill during the reap ended the session")
+            .expect("session ended");
+        assert_eq!(ended.reason, EndReason::Killed);
     }
 
     /// A session nobody named a project for — a shell started by hand on this
