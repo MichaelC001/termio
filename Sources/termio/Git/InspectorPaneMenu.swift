@@ -26,18 +26,23 @@ struct InspectorPaneMenu: View {
     @State private var isHovering = false
     @State private var anchor = MenuAnchor()
 
-    private static let panes: [(tab: InspectorTab, icon: HugeIcon, title: String.LocalizationValue)] = [
-        (.files, .listBullet, "Project Files"),
-        (.search, .search, "Search Files"),
-        (.changes, .gitBranch, "Changes"),
-        (.issues, .github, "Issues"),
-        (.info, .infoCircle, "Info"),
+    /// `title` names the pane in the menu; `label` names it on the button, short enough to sit
+    /// beside the path in a narrow card.
+    private typealias Pane = (tab: InspectorTab, icon: HugeIcon, title: String.LocalizationValue,
+                              label: String.LocalizationValue)
+
+    private static let panes: [Pane] = [
+        (.files, .listBullet, "Project Files", "Files"),
+        (.search, .search, "Search Files", "Search"),
+        (.changes, .gitBranch, "Changes", "Changes"),
+        (.issues, .github, "Issues", "Issues"),
+        (.info, .infoCircle, "Info", "Info"),
     ]
 
     /// Two panes exist only where they have something to show, rather than leading
     /// to a dead pane: Issues for a project that actually lives on GitHub (and with the
     /// integration left on in General), Changes for a root git tracks at all.
-    private var visiblePanes: [(tab: InspectorTab, icon: HugeIcon, title: String.LocalizationValue)] {
+    private var visiblePanes: [Pane] {
         Self.panes.filter { pane in
             switch pane.tab {
             case .issues: settings.githubIntegrationEnabled && hasGitHubRemote
@@ -48,7 +53,7 @@ struct InspectorPaneMenu: View {
     }
 
     /// The pane on screen, or nil while the panel is closed.
-    private var openPane: (tab: InspectorTab, icon: HugeIcon, title: String.LocalizationValue)? {
+    private var openPane: Pane? {
         guard store.inspectorVisible else { return nil }
         return Self.panes.first { $0.tab == store.inspectorTab }
     }
@@ -56,10 +61,12 @@ struct InspectorPaneMenu: View {
     var body: some View {
         Button(action: popMenu) {
             HStack(spacing: 4) {
-                HugeIconView(icon: openPane?.icon ?? .sidebarRight, size: 12,
-                             color: openPane == nil ? .secondary : .primary)
+                HugeIconView(icon: openPane?.icon ?? .sidebarRight,
+                             size: ChromeGlyph.size(for: openPane?.icon ?? .sidebarRight),
+                             color: openPane == nil ? .secondary : .primary,
+                             lineWidthOverride: ChromeGlyph.lineWidth())
                 if let openPane {
-                    Text(localized(openPane.title))
+                    Text(localized(openPane.label))
                         .font(.system(size: 12))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -69,13 +76,14 @@ struct InspectorPaneMenu: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 6)
-            .frame(height: 20)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.primary.opacity(openPane != nil ? 0.12 : isHovering ? 0.1 : 0)))
+            .frame(height: ChromeGlyph.frame.height)
+            .background(ChromeHoverChip(isHovering: isHovering, isOn: openPane != nil))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Its own size, always: the path beside it truncates first.
+        .fixedSize()
+        .layoutPriority(2)
         .help(localized("Open a panel"))
         .onHover { isHovering = $0 }
         .background(MenuAnchorView(anchor: anchor))

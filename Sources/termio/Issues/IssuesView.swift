@@ -683,6 +683,7 @@ struct IssueDetailView: View {
     /// button (and Esc), matching the editor/diff overlays — no in-header back.
     private var header: some View {
         HStack(spacing: 6) {
+            DetailListColumnToggle()
             OcticonView(
                 icon: current.state.octicon(for: current.kind),
                 size: 14,

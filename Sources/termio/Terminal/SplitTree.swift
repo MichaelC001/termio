@@ -402,11 +402,12 @@ indirect enum SplitNode: Codable, Hashable {
     /// while hidden, so switching sessions never resizes a surface it is merely
     /// hiding or revealing (issue #245). A session in no group is absent — the
     /// pane lays those out at its full bounds, the size they have when selected.
-    static func paneFrames(of groups: [SplitNode], in rect: CGRect) -> [Session.ID: CGRect] {
+    static func paneFrames(of groups: [SplitNode], in rect: CGRect,
+                           dividerThickness: CGFloat = 1) -> [Session.ID: CGRect] {
         var frames: [Session.ID: CGRect] = [:]
         for group in groups {
             // A session belongs to at most one group, so no key can collide.
-            frames.merge(group.layout(in: rect).frames) { current, _ in current }
+            frames.merge(group.layout(in: rect, dividerThickness: dividerThickness).frames) { current, _ in current }
         }
         return frames
     }

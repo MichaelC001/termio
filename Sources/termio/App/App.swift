@@ -70,22 +70,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // before the window exists, replayed once it does. macOS may deliver the open
     // event during a cold launch, ahead of `applicationDidFinishLaunching`.
     private var pendingOpenURLs: [URL] = []
-    // The split controller (sidebar + terminal + inspector). The navigator toggle reaches its
-    // `toggleSidebar(_:)` through the responder chain, so this is just a weak handle on the
-    // window's content view controller.
+    // The split controller (sidebar + terminal + inspector) — a weak handle on the window's
+    // content view controller.
     private weak var splitViewController: NSSplitViewController?
-    // The trailing file-browser inspector item, retained so the toolbar button and the
-    // View menu can collapse/expand it. Starts collapsed (see `makeContentSplitViewController`).
-    private var filesInspectorItem: NSSplitViewItem?
-    // The leading sidebar item, retained so the sidebar's own toolbar actions (sort + new-terminal)
-    // can ride with it — inserted when the navigator opens, stripped when it collapses.
+    // The inspector, owned here and mounted in the focused card's panel (see `InspectorPanelHost`).
+    private var inspectorController: FileBrowserHostingController?
+    // The leading sidebar item, retained so a maximized detail can put it away and bring it back.
     private weak var sidebarSplitItem: NSSplitViewItem?
-    // KVO on the sidebar's collapse state, so every collapse path (toolbar toggle, View menu,
-    // divider drag) empties/refills the sidebar's toolbar region (see `setNavigatorItemsVisible`).
+    // KVO on the sidebar's collapse state, mirrored onto `store.sidebarVisible` so the sidebar's
+    // controls can move into the top-left card while it is collapsed. Catches every collapse path
+    // (the toggle, the View menu, a divider drag).
     private var sidebarCollapseObserver: NSKeyValueObservation?
-    // KVO on the inspector's collapse state, mirrored onto `store.inspectorVisible` so
-    // hosted panes (the git pane's auto-refresh) can stand down while hidden.
-    private var inspectorCollapseObserver: NSKeyValueObservation?
+    // The sidebar's slide container (see `SidebarSlideController`), and whether the toggle's own
+    // animation is running — while it is, the toggle owns `store.sidebarVisible`'s timing.
+    private var sidebarSlide: SidebarSlideController?
+    private var navigatorAnimating = false
+    private static let navigatorDuration: TimeInterval = 0.25
     // KVO on the window's effective appearance, so a *system-driven* light↔dark flip (macOS auto
     // day/night, Control Center) re-resolves the window background. In `.system` appearance mode
     // nothing else re-runs `applyWindowTransparency` on an OS flip — the settings never change —
@@ -94,9 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // repaints the terminal to the new side. That mismatch is the light-sidebar-over-dark-terminal
     // glitch. Re-applying here keeps the window background tracking the OS.
     private var appearanceObserver: NSKeyValueObservation?
-    // The window's real toolbar delegate (must be retained); it carries the native
-    // sidebar toggle (see `installToolbar`).
-    private var toolbarDelegate: MainToolbarDelegate?
+    private var trafficLights: TrafficLights?
+    private var backdrop: WindowBackdrop?
     // Keeps the native window title (path) and subtitle (git branch) in step with the
     // selected session — NetNewsWire's approach, no custom title-bar views.
     private var titleObserver: AnyCancellable?
@@ -109,12 +108,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var maximizeObserver: AnyCancellable?
     // Un-collapses the inspector when the user opens a detail (see `store.detailDidOpen`).
     private var detailOpenObserver: AnyCancellable?
-    // Widens the inspector when the detail's list toggle needs room for both columns
-    // (see `store.inspectorWidenRequest`).
-    private var inspectorWidenObserver: AnyCancellable?
-    // Previous maximize state, so the observer re-binds the tracking separator on the restore
-    // transition (handing the host back relayouts the inspector) and not every tick.
-    private var detailWasMaximized = false
     // Whether `DetailHost.shared` is currently parented here, covering the content area, rather
     // than docked in the inspector's slot.
     private var detailMaximized = false
@@ -123,14 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Whether maximizing is what collapsed the navigator, so restoring re-opens only a sidebar
     // this mode closed — never one the user had already put away.
     private var sidebarCollapsedForMaximize = false
-    // Coalesces the per-frame `windowDidResize` stream into a single settle so the inspector's
-    // max thickness (and the tracking-separator re-bind it forces) is recomputed once the drag
-    // stops, not on every intermediate frame.
-    private var inspectorResizeSettle: DispatchWorkItem?
-    // Catch-all for the tracking-separator re-bind: any content-split relayout (divider drag,
-    // sidebar toggle, fullscreen transition) can detach `.inspectorTrackingSeparator` from
-    // divider 1, leaving its hairline stranded beside the real divider. The explicit re-binds
-    // cover the known mutation sites; this observer covers the rest.
+    // Tells the viewport scheduler when a divider drag is resizing the panes (see
+    // `noteSplitViewResize`).
     private var splitResizeObserver: NSObjectProtocol?
     private var detailFrameObserver: NSObjectProtocol?
     private weak var terminalContainerView: NSView?
@@ -138,10 +125,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `noteSplitViewResize`.
     private var splitDividerDragActive = false
     private var splitDividerDragSettle: DispatchWorkItem?
-    private var separatorReassertSettle: DispatchWorkItem?
-    // Divider 1's position at the last re-bind, so a settle that moved nothing (including the
-    // relayout a re-bind itself may cause) doesn't re-bind again.
-    private var lastReassertedInspectorMinX: CGFloat?
     // The floating panel shared by ⌘⇧O Open Quickly and ⌘⇧P Command Palette.
     // Presented as a child window (Xcode Open-Quickly style) because the
     // terminal surfaces are NSViews that draw above any SwiftUI overlay in the
@@ -222,23 +205,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Floor the window size so it can't be dragged down to an unusable sliver: the
         // sidebar alone wants ~220pt, leaving room for a workable terminal beside it.
         window.contentMinSize = NSSize(width: 640, height: 420)
-        // Stock window chrome, NetNewsWire-style: a normal system toolbar with the native
-        // title + subtitle (showing the session's path and git branch), the native sidebar
-        // toggle, and `.fullSizeContentView` letting the sidebar's vibrant material run up
-        // behind the traffic lights. No custom title-bar painting. `.automatic` toolbar style
-        // splits the bar at the sidebar divider rather than painting one flat unified band.
-        // Hide the native title. CodeEdit's recipe renders the folder name + git branch as a
-        // custom borderless toolbar item (the branch picker, see `MainToolbarDelegate`) rather
-        // than the system title/subtitle, so the toolbar band takes the terminal background
-        // cleanly with no mismatched grey title strip. `window.title` is still kept current (for
-        // the Window menu and Mission Control) but is not drawn while a toolbar is shown.
+        // No toolbar. The traffic lights float over `.fullSizeContentView` content: the sidebar
+        // carries its own controls in a row beside them, and each pane card names its own folder
+        // and branch. A toolbar band would sit over the cards' headers and take their clicks, and
+        // in fullscreen macOS 26 paints it as an opaque light band. `window.title` is still kept
+        // current (for the Window menu and Mission Control) but is never drawn.
         window.titleVisibility = .hidden
-        // Let the per-split-item separator styles decide where a hairline shows (CodeEdit's
-        // approach: sidebar defers to the system default, terminal `.line`). The window-level
-        // `.automatic` defers to those, so the sidebar stays seamless while the terminal gets a
-        // clean bounding line — and the tracking separator no longer glares as a black bar in
-        // fullscreen. The toolbar style itself is set in `installToolbar` (version-branched).
-        window.titlebarSeparatorStyle = .automatic
+        window.titlebarSeparatorStyle = .none
+        // With no titlebar band left to grab, the window moves from the chrome that stands in for
+        // one — a card header's empty run, the sidebar's control row (see `WindowDragArea`).
+        // Deliberately not `isMovableByWindowBackground`: that also claimed presses on the
+        // SwiftUI dividers and moved the window instead of resizing.
         // Drive the split with a real AppKit `NSSplitViewController` whose first item
         // has `.sidebar` behavior — NetNewsWire's architecture. This is the *only* way to
         // get the native full-height sidebar (vibrant material running up behind the
@@ -248,17 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // representable with no connection to the title bar, so the sidebar can never
         // reach behind the traffic lights. SwiftUI still renders each pane's contents.
         window.contentViewController = makeContentSplitViewController()
-        // Before the window is shown, and before anything measures a pane.
-        // A toolbar takes 20pt off `contentLayoutRect`, so installing it after
-        // the show meant every launch laid the panes out twice: the first pass
-        // measured a content rect 20pt too tall, declared a viewport one row
-        // taller than the window would ever have, and the daemon answered it —
-        // resizing the PTY, opening a snapshot barrier and pushing a keyframe
-        // for a grid that existed for 40ms. The toolbar then landed, the panes
-        // re-measured one row shorter, and the whole round happened again.
-        // Measured: `layout=1150x890` before `installToolbar`, `1150x870`
-        // after, with `declare 46x47` sent in between.
-        installToolbar()
         LaunchTrace.mark("content installed")
         // The height every pane is about to measure itself against. If a future
         // change moves chrome back after this point, the panes declare a
@@ -272,59 +238,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         window.makeKeyAndOrderFront(nil)
+        trafficLights = TrafficLights(window: window)
         LaunchTrace.mark("window front")
         applyWindowTransparency()
         applyChromeAppearance()
-        updateInspectorMaxThickness()
         // The autosaved frame can restore straight into fullscreen, so seed the mirror rather
         // than waiting for a transition that already happened.
         store.windowIsFullScreen = window.styleMask.contains(.fullScreen)
-        // Empty the sidebar's toolbar region (sort + new-terminal) whenever the navigator collapses
-        // and restore it when it reopens — the sidebar's own buttons ride with the sidebar, the way
-        // Finder/Xcode drop theirs. KVO catches every collapse path (toolbar toggle, View menu,
-        // divider drag). No `.initial`: the launch-time sync below runs after the autosave restore.
+        // No `.initial`: the launch-time sync below runs after the autosave restore.
         sidebarCollapseObserver = sidebarSplitItem?.observe(\.isCollapsed, options: [.new]) { [weak self] item, _ in
             let collapsed = item.isCollapsed
             MainActor.assumeIsolated {
-                self?.setNavigatorItemsVisible(!collapsed)
-                // A maximized detail reaches the window's leading edge only while the sidebar is
-                // collapsed; that's when its header has to clear the traffic lights — and when the
-                // toolbar has nothing left to carry.
-                self?.store.sidebarVisible = !collapsed
-                self?.syncMaximizedChrome()
-                // The toolbar mutation above can detach the tracking separator, and the
-                // inspector holds its width through a sidebar toggle — divider 1 never moves,
-                // so the settle observer's moved-divider guard would skip this path. Re-bind
-                // explicitly once the mutation settles.
-                DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
+                // The toggle's animation sets this on its own clock (`toggleNavigator`); every
+                // other path — a divider dragged shut, a maximized detail — lands here.
+                guard let self, !self.navigatorAnimating else { return }
+                self.store.sidebarVisible = !collapsed
             }
         }
-        // Mirror the inspector's live collapse state onto the store, so panes it hosts
-        // can idle while hidden (a collapsed item keeps its view hierarchy alive — the
-        // git pane's watcher would otherwise keep spawning `git status` unseen). KVO
-        // catches every collapse path; `.initial` seeds the restored autosave state.
-        inspectorCollapseObserver = filesInspectorItem?.observe(
-            \.isCollapsed, options: [.initial, .new]
-        ) { [weak self] item, _ in
-            let visible = !item.isCollapsed
-            MainActor.assumeIsolated {
-                guard let store = self?.store, store.inspectorVisible != visible else { return }
-                store.inspectorVisible = visible
-            }
-        }
-        // Re-bind the inspector's tracking separator after *any* split relayout settles — the
-        // explicit re-binds (detail open, max-thickness change, maximize restore, sidebar
-        // toggle) each cure one known mutation site; this catches divider drags and
-        // cap-preserving window resizes. Toolbar mutations that move no divider stay on the
-        // explicit list: the moved-divider guard in `scheduleSeparatorReassert` skips them.
         splitResizeObserver = NotificationCenter.default.addObserver(
             forName: NSSplitView.didResizeSubviewsNotification,
             object: splitViewController?.splitView, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.scheduleSeparatorReassert()
-                self?.noteSplitViewResize()
-            }
+            MainActor.assumeIsolated { self?.noteSplitViewResize() }
         }
         // Re-resolve the window background whenever the OS flips light↔dark under `.system` mode
         // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
@@ -333,12 +268,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appearanceObserver = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.applyWindowTransparency() }
         }
-        // After the split view has restored its autosaved collapse state, match the toolbar pane
-        // switch to whether the inspector actually came up open or closed, and the sidebar region to
-        // whether the navigator came up open or collapsed.
+        // After the split view has restored its autosaved collapse state.
         DispatchQueue.main.async { [weak self] in
-            self?.syncInspectorSwitch()
-            self?.syncNavigatorItems()
+            guard let self, let item = self.sidebarSplitItem else { return }
+            self.store.sidebarVisible = !item.isCollapsed
         }
         updateWindowTitle()
         // Keep the native title/subtitle in step with the selected session and its live branch.
@@ -360,20 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         detailOpenObserver = store.detailDidOpen
             .receive(on: RunLoop.main)
             .sink { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.revealInspectorForDetail()
-                    // Revealing relayouts around divider 1, which can leave the tracking separator
-                    // inert (the centered-tabs / missing-divider glitch). Re-bind once it settles.
-                    DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
-                }
-            }
-
-        // The detail's list toggle, used in a panel too narrow to carry both columns: the split, not
-        // the SwiftUI tree, owns the inspector's width, so the request comes out here.
-        inspectorWidenObserver = store.inspectorWidenRequest
-            .receive(on: RunLoop.main)
-            .sink { [weak self] thickness in
-                MainActor.assumeIsolated { self?.widenInspector(to: thickness) }
+                MainActor.assumeIsolated { self?.revealInspectorForDetail() }
             }
 
         // The maximize button itself: applied synchronously, in the same turn the flag flips, so
@@ -390,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // A detail (file editor, diff, PR/issue) opens in the right inspector, beside the
         // terminal. Its own window controls (hide list / maximize / close) live *in* the detail's
-        // header now (see `InspectorDetailChromeButtons`), not the toolbar — so this observer only
+        // header now (see `InspectorDetailChromeButtons`) — so this observer only
         // moves the shared host and drops it once nothing is open. It catches the presentation half
         // of the state (a detail closing out from under a maximized host); the flag's own half is
         // the synchronous observer above.
@@ -633,38 +553,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RemotePreviewStorage.cleanup()
     }
 
-    /// Builds the window's content: an `NSSplitViewController` with a native sidebar item
-    /// and a detail item, each hosting its SwiftUI view. `sidebarWithViewController` is what
-    /// gives the leading column the full-height vibrant `.sidebar` material behind the traffic
-    /// lights and the title-bar tracking separator. The panes no longer bridge their toolbars —
-    /// the window owns a real `NSToolbar` (see `installToolbar`) so it can carry the native
-    /// `.toggleSidebar` item. The standard `toggleSidebar(_:)` responder action collapses the item.
+    /// Builds the window's content: an `NSSplitViewController` with the sidebar, the terminal pane
+    /// and the inspector, each hosting its SwiftUI view. `toggleNavigator(_:)` collapses the
+    /// sidebar item.
     private func makeContentSplitViewController() -> NSSplitViewController {
-        let sidebar = NSHostingController(rootView: SidebarView()
+        // The control row takes the titlebar strip beside the traffic lights; the list starts
+        // under it.
+        let sidebarContent = NSHostingController(rootView: VStack(spacing: 0) {
+                SidebarControlRow()
+                SidebarColumn()
+            }
+            .ignoresSafeArea(.container, edges: .top)
             .environmentObject(store)
             .environmentObject(settings))
         // Same reason as the detail pane below: the default `.preferredContentSize`
         // publishes the tree's ideal size on every view update, so a 30Hz working
         // indicator re-negotiated the split layout 30 times a second. The split
         // item's min/max thickness governs the column; the content never should.
-        sidebar.sizingOptions = []
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        // The sidebar's toolbar region must hold the traffic lights, the navigator toggle, and
-        // (while open) the sort pull-down + new-terminal button; below ~240 the trailing `+`
-        // falls out of the section and floats over the content.
+        sidebarContent.sizingOptions = []
+        // A plain item, not `sidebarWithViewController`. Without a toolbar, macOS 26 floats the
+        // stock sidebar as a glass panel that starts below the titlebar strip, so its controls
+        // could never share a row with the traffic lights. A plain item runs the full height of
+        // the window, flush to its edges, and paints nothing: it sits on the window's one backdrop
+        // (see `WindowBackdrop`), the same one the cards float on.
+        let sidebarSlide = SidebarSlideController(content: sidebarContent)
+        self.sidebarSlide = sidebarSlide
+        let sidebarItem = NSSplitViewItem(viewController: sidebarSlide)
+        // The stock sidebar's own holding priority, so a window resize is absorbed by the
+        // terminal rather than split between the columns.
+        sidebarItem.holdingPriority = .init(260)
+        // The sidebar's control row must hold the traffic lights, the navigator toggle, the
+        // workspace name, the sort pull-down and the `+`.
         sidebarItem.minimumThickness = 240
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
-        sidebarItem.allowsFullHeightLayout = true
         self.sidebarSplitItem = sidebarItem
-        // CodeEdit's recipe: the divider hairline under the toolbar is owned per split item,
-        // not by the window. Pre-macOS 26, the sidebar needs `.none` to stop the sidebar
-        // tracking separator from rendering its line as a black bar in fullscreen; on macOS 26
-        // the system default already draws seamlessly, so (like CodeEdit's `makeNavigator`) we
-        // leave it untouched there.
-        if #unavailable(macOS 26) {
-            sidebarItem.titlebarSeparatorStyle = .none
-        }
+        sidebarItem.titlebarSeparatorStyle = .none
 
         let detail = NSHostingController(rootView: TerminalPane()
             .environmentObject(store)
@@ -696,57 +620,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated { self?.logTerminalContainerBounds() }
         }
         let detailItem = NSSplitViewItem(viewController: detail)
-        // The toolbar is sectioned by tracking separators, so each pane must stay at least as
-        // wide as its toolbar items — the content section carries the branch-picker title.
-        // Without a floor here the terminal pane absorbs every squeeze and the title slides
-        // across the separators, floating over the neighbouring panes' content (the titlebar is
-        // transparent full-size-content, so overflow is painted straight onto content pixels).
-        // With a floor, shrinking the window past the sum of minimums collapses the collapsible
+        // Without a floor here the terminal pane absorbs every squeeze. With a floor, shrinking the window past the sum of minimums collapses the collapsible
         // side panes instead, the native Xcode behaviour.
         detailItem.minimumThickness = 280
-        // `.line` only over the terminal: a clean hairline that starts at the sidebar divider
-        // and bounds the title strip like Xcode, without bleeding across the sidebar.
-        detailItem.titlebarSeparatorStyle = .line
+        detailItem.titlebarSeparatorStyle = .none
 
-        // The trailing file-tree column is a PLAIN content item (like the terminal), not a
-        // `.sidebar`/`.inspector` panel item. macOS 26 gives panel items a Liquid Glass inset in
-        // fullscreen (a border/margin on the top, right and bottom); a plain item sits fully flush
-        // to the window edges, with only the split divider on its leading edge as a border. The
-        // panel items' vibrant material is reproduced by hand inside `FileBrowserHostingController`
-        // (a `.sidebar` effect view behind a transparent list), so it still matches the leading
-        // sidebar. It starts collapsed — the tree is summoned via the toolbar toggle.
-        let inspector = FileBrowserHostingController(store: store, settings: settings)
-        let inspectorItem = NSSplitViewItem(viewController: inspector)
-        // Hold firmer than the terminal (250, the plain-item default): a sidebar toggle or
-        // window resize is absorbed by the terminal alone, Xcode-style, instead of being split
-        // proportionally between both flexible panes — which nudged the inspector's width (and
-        // relaid out its content) on every frame of the sidebar's slide. 261 is AppKit's own
-        // inspector-item default and clears the sidebar item's actual 260 (its header claims
-        // 250), so once the terminal is squeezed to its minimum the sidebar yields next, not a
-        // solver tie-break between the two.
-        inspectorItem.holdingPriority = .init(261)
-        inspectorItem.minimumThickness = 260
-        // Max width tracks the window: the inspector can grow to the golden ratio of the
-        // content width (`updateInspectorMaxThickness`), never below the 420pt floor. A fixed
-        // cap felt cramped on wide windows when reading a diff or a wide file in the inspector.
-        inspectorItem.maximumThickness = 420
-        inspectorItem.canCollapse = true
-        inspectorItem.isCollapsed = true
-        self.filesInspectorItem = inspectorItem
-
-        let splitViewController = NSSplitViewController()
+        let splitViewController = CardsSplitViewController()
+        splitViewController.splitView = SeamlessSplitView()
+        splitViewController.splitView.isVertical = true
+        splitViewController.splitView.dividerStyle = .thin
         splitViewController.addSplitViewItem(sidebarItem)
         splitViewController.addSplitViewItem(detailItem)
-        splitViewController.addSplitViewItem(inspectorItem)
-        splitViewController.splitView.autosaveName = "TermioContentSplit"
+        // No inspector column: each card opens the inspector in its own panel. One controller
+        // serves them all, mounted in whichever card has focus.
+        let inspector = FileBrowserHostingController(store: store, settings: settings)
+        inspectorController = inspector
+        InspectorPanelHost.shared.controller = inspector
+        // A new name: the old one saved three columns' dividers, and replaying them onto two
+        // would size the sidebar from the inspector's divider.
+        splitViewController.splitView.autosaveName = "TermioContentSplit.cards"
+        // After the items, never before: reading `view` loads the controller, and a split
+        // controller loaded with no items set up an empty split view and threw from AppKit's
+        // constraint pass — a crash at launch.
+        backdrop = WindowBackdrop.install(under: splitViewController.view)
         self.splitViewController = splitViewController
         return splitViewController
     }
 
     /// Keeps the native window title in step with the selected session's working directory.
-    /// The title is hidden in the toolbar (`titleVisibility = .hidden`) — the folder name and
-    /// git branch are drawn by the custom branch-picker toolbar item instead (CodeEdit's
-    /// pattern) — so this only feeds the Window menu and Mission Control. The path is the
+    /// The title is hidden (`titleVisibility = .hidden`), and each pane's card
+    /// header names its own folder and branch, so this only feeds the Window menu and Mission
+    /// Control. The path is the
     /// session's real working directory, so a worktree session shows where it actually runs.
     private func updateWindowTitle() {
         guard let window else { return }
@@ -820,6 +724,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the white title band over the terminal. A statically-resolved color can't flip, so the
         // fullscreen title band matches the terminal. Re-run on every appearance change below.
         window.backgroundColor = translucent ? .clear : resolvedTerminalBackground()
+        // The ground the cards sit on, as translucent as the terminal when that is.
+        let panel = resolved(settings.panelBackgroundColor)
+        backdrop?.paint(translucent ? panel.withAlphaComponent(CGFloat(settings.backgroundOpacity)) : panel)
         // Make the titlebar transparent so the window background (the terminal color, set
         // just above) shows straight through the title-bar band instead of AppKit's stock
         // grey chrome material — the seam that otherwise leaves the title/subtitle sitting
@@ -829,7 +736,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // EXCEPT in fullscreen: on macOS 26 the fullscreen title-bar host doesn't honor a
         // transparent titlebar — it composites a light Liquid Glass material, which read as a
         // white band over a dark terminal. Turning transparency off in fullscreen lets the
-        // toolbar fall back to the window's own (dark) titlebar material, which tracks the
+        // titlebar the pointer summons fall back to the window's own (dark) titlebar material, which tracks the
         // appearance and matches the terminal far better. Windowed keeps the seamless look.
         window.titlebarAppearsTransparent = !window.styleMask.contains(.fullScreen)
     }
@@ -839,7 +746,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// light/dark per drawing context; the window (and especially its fullscreen title-bar
     /// overlay) needs a fixed color so it can't resolve to the wrong side.
     private func resolvedTerminalBackground() -> NSColor {
-        let dynamic = settings.terminalBackgroundColor
+        resolved(settings.terminalBackgroundColor)
+    }
+
+    /// `dynamic` flattened to a static color for the appearance the window is pinned to.
+    private func resolved(_ dynamic: NSColor) -> NSColor {
         // Resolve against the appearance the window is pinned to (not its current
         // `effectiveAppearance`, which can lag `applyChromeAppearance` depending on call order).
         let appearance: NSAppearance
@@ -886,8 +797,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowDidExitFullScreen(_ notification: Notification) {
         applyChromeAppearance()
         applyWindowTransparency()
-        updateInspectorMaxThickness()
         store.windowIsFullScreen = false
+        trafficLights?.place()
     }
 
     /// View ▸ Toggle Full Screen (⌃⌘F).
@@ -905,15 +816,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        // `windowDidResize` fires every frame of a live drag. Re-setting `maximumThickness` (and the
-        // separator re-bind it triggers) on each frame both wastes layout and repeatedly disturbs the
-        // tracking separator mid-drag. Coalesce to a single update once the drag settles.
-        inspectorResizeSettle?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.updateInspectorMaxThickness() }
-        }
-        inspectorResizeSettle = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        trafficLights?.place()
     }
 
     /// The AppKit half of the container trace installed in
@@ -1005,23 +908,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.repaintSelectedSurface()
     }
 
-    /// Lets the right inspector grow with the window: its max width is the golden ratio (0.618)
-    /// of the current content width, floored at 420pt so it never shrinks below the old fixed cap
-    /// on narrow windows. A static `maximumThickness` capped the inspector at 420pt regardless of
-    /// window size, which felt small when the inspector held a diff or a wide file on a large display.
-    private func updateInspectorMaxThickness() {
-        guard let item = filesInspectorItem, let window else { return }
-        let contentWidth = window.contentLayoutRect.width
-        let newMax = max(420, (contentWidth * 0.618).rounded(.down))
-        guard item.maximumThickness != newMax else { return }
-        item.maximumThickness = newMax
-        // Changing the max can pull divider 1 in (when the inspector was pinned at the old cap),
-        // which leaves `.inspectorTrackingSeparator` inert — so the tab switch drifts to center. Only
-        // an issue while the inspector is open; the reassert no-ops otherwise. Deferred so it runs
-        // against the settled geometry.
-        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
-    }
-
     /// Applies the user's appearance mode. `.system` leaves every surface tracking
     /// the OS (termio keeps a separate terminal theme per appearance, and libghostty
     /// switches between them in step); `.light`/`.dark` pin a fixed `NSAppearance`
@@ -1037,35 +923,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.appearance = appearance
         window?.appearance = appearance
         settingsWindow?.appearance = appearance
-    }
-
-    /// Installs a real `NSToolbar` carrying CodeEdit's chrome: a leading navigator toggle, the
-    /// system sidebar tracking separator, the custom branch-picker title, an inner tracking
-    /// separator aligned to the inspector divider, and a trailing inspector toggle. The delegate
-    /// holds the split controller (to bind the inner separator to divider 1) and the store +
-    /// settings (to host the branch picker). Toolbar style is version-branched the way CodeEdit
-    /// does it: `.automatic` on macOS 26, `.unifiedCompact` before. The baseline separator is
-    /// dropped so only the per-split-item separators decide where a hairline shows.
-    private func installToolbar() {
-        guard let window else { return }
-        let delegate = MainToolbarDelegate(store: store, settings: settings, splitViewController: splitViewController)
-        toolbarDelegate = delegate
-        let toolbar = NSToolbar(identifier: "TermioMainToolbar")
-        toolbar.delegate = delegate
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        toolbar.showsBaselineSeparator = false
-        // The chrome is fixed, so the right-click menu had nothing to offer but a
-        // labelled variant of icons the window is laid out around.
-        if #available(macOS 15, *) {
-            toolbar.allowsDisplayModeCustomization = false
-        }
-        if #available(macOS 26, *) {
-            window.toolbarStyle = .automatic
-        } else {
-            window.toolbarStyle = .unifiedCompact
-        }
-        window.toolbar = toolbar
     }
 
     /// Opens (or refocuses) the preferences window. Reached via the responder
@@ -1174,7 +1031,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addScratchTerminal()
     }
 
-    /// A row of the New Chat agents submenu (File menu and the toolbar `+` share it —
+    /// A row of the New Chat agents submenu (File menu and the sidebar `+` share it —
     /// see `menuNeedsUpdate`) — starts one scratch chat with the picked agent, carried
     /// in `representedObject` by id. The row for the resolved default also holds the
     /// ⌘N binding, so the shortcut keeps opening your last-used agent.
@@ -1185,7 +1042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.addScratchSession(agent: agent)
     }
 
-    /// A host row of the New SSH Connection submenu (File menu and the toolbar `+`
+    /// A host row of the New SSH Connection submenu (File menu and the sidebar `+`
     /// share it — see `menuNeedsUpdate`) — opens a terminal running `ssh` to the
     /// picked alias, carried in `representedObject`, grouped under the same
     /// Terminals section as loose shells.
@@ -1203,7 +1060,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// "New Workspace…" wherever it stands as a plain verb — the Workspace
-    /// submenu's row, the toolbar `+`'s last row — and the This Mac row of the
+    /// submenu's row, the sidebar `+`'s last row — and the This Mac row of the
     /// device submenu those grow on a second machine.
     @objc func newWorkspace(_ sender: Any?) {
         store.presentNewWorkspacePanel(on: .thisMac)
@@ -1254,181 +1111,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         presenter.presentAsSheet(hostVC)
     }
 
-    /// View ▸ Show Project Files (and the toolbar's trailing inspector button) —
-    /// collapses or expands the file-tree inspector. Reached via the responder chain
-    /// (the menu item and toolbar item both target `nil`), like the other app actions.
-    @objc func toggleFilesInspector(_ sender: Any?) {
-        guard let item = filesInspectorItem else { return }
-        let willOpen = item.isCollapsed
-        item.animator().isCollapsed = !willOpen
-        setInspectorSwitchVisible(willOpen)
-        // On expand the switch + separator are inserted while the divider is still mid-slide, so the
-        // separator binds against unsettled geometry and can land inert (tabs drift to center). Re-bind
-        // once the collapse animation finishes. Nothing to align on collapse (the switch is gone).
-        if willOpen {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.reassertInspectorSeparator()
-            }
-        }
-    }
-
-    /// Matches the toolbar's pane switch to the inspector's *actual* collapse state — called once at
-    /// launch, after the split view has restored from its autosave, so a restored-open inspector
-    /// shows the switch and a restored-closed one does not (no stale mirror state to desync).
-    func syncInspectorSwitch() {
-        guard let item = filesInspectorItem else { return }
-        setInspectorSwitchVisible(!item.isCollapsed)
-    }
-
-    /// Drives the pane switch's visibility from its two masters at once: the inspector must be open
-    /// *and* not maximized. A maximized detail covers the list column the switch re-aims, so the tabs
-    /// would act on something off-screen — pull them while maximized, restore them on the way back
-    /// down. Idempotent (`setInspectorSwitchVisible` no-ops when already in the target state), so the
-    /// overlay observer can call it on every store change.
-    func syncInspectorTabsVisibility(maximized: Bool) {
-        guard let item = filesInspectorItem else { return }
-        setInspectorSwitchVisible(!item.isCollapsed && !maximized)
-    }
-
-    /// Inserts or removes the inspector pane switch as the panel opens/closes, so it is shown only
-    /// while there is something to switch between. The tracking separator (which pins the switch to
-    /// the inspector's left edge) is inserted and removed *with* the switch — otherwise it draws a
-    /// stray vertical divider line in the toolbar while the inspector is collapsed. When open the
-    /// order is `… branchPicker, flex, [separator, switch, flex], toggle`.
-    private func setInspectorSwitchVisible(_ visible: Bool) {
-        guard let toolbar = window?.toolbar else { return }
-        func index(of id: NSToolbarItem.Identifier) -> Int? {
-            toolbar.items.firstIndex { $0.itemIdentifier == id }
-        }
-        // Mutate the toolbar with animation OFF. `insertItem`/`removeItem` otherwise run NSToolbar's
-        // own fade/scale "pop" on a clock that is independent of the split view's `animator()` slide
-        // — so the Files/Changes pills popped in on a different curve and speed than the inspector
-        // pane (and its File/Diff list) slid. Suppressing the toolbar animation makes the switch
-        // simply *present* for the whole slide (Xcode's inspector-control behaviour), leaving the
-        // pane slide as the single, coherent motion.
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        defer { NSAnimationContext.endGrouping() }
-        if visible {
-            guard index(of: .inspectorTabs) == nil, let toggle = index(of: .toggleInspector) else { return }
-            // Insert in reverse at the toggle's index so the final order is separator, switch, flex.
-            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: toggle)
-            toolbar.insertItem(withItemIdentifier: .inspectorTabs, at: toggle)
-            toolbar.insertItem(withItemIdentifier: .inspectorTrackingSeparator, at: toggle)
-        } else {
-            // Only clean up when the switch is actually present — otherwise (e.g. at launch with the
-            // inspector already collapsed) there is nothing paired to remove, and stripping the
-            // default trailing flexible space would yank the collapse button off the right edge.
-            guard let tabsIdx = index(of: .inspectorTabs) else { return }
-            toolbar.removeItem(at: tabsIdx)
-            if let i = index(of: .inspectorTrackingSeparator) { toolbar.removeItem(at: i) }
-            // Drop the flexible space that was paired with the switch (the one just before the toggle).
-            if let toggle = index(of: .toggleInspector), toggle > 0,
-               toolbar.items[toggle - 1].itemIdentifier == .flexibleSpace {
-                toolbar.removeItem(at: toggle - 1)
-            }
-        }
-    }
-
-    /// Coalesces the per-frame `didResizeSubviews` stream (a divider drag fires it continuously)
-    /// into one re-bind after the geometry settles, and only when divider 1 actually moved since
-    /// the last re-bind — which also keeps the relayout a re-bind itself may cause from cycling.
-    private func scheduleSeparatorReassert() {
-        separatorReassertSettle?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, let splitView = self.splitViewController?.splitView,
-                      splitView.arrangedSubviews.count > 2 else { return }
-                let inspectorMinX = splitView.arrangedSubviews[2].frame.minX
-                guard inspectorMinX != self.lastReassertedInspectorMinX else { return }
-                self.lastReassertedInspectorMinX = inspectorMinX
-                self.reassertInspectorSeparator()
-            }
-        }
-        separatorReassertSettle = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-    }
-
-    /// Removes and re-inserts the inspector's tracking separator so it re-binds to divider 1 against
-    /// the *current, settled* geometry. `NSTrackingSeparatorToolbarItem` is flaky under termio's
-    /// translucent, `titlebarAppearsTransparent` titlebar — mutating the toolbar or moving the divider
-    /// (as opening a detail does) can leave it inert, so it stops splitting the toolbar into
-    /// terminal/inspector regions and the tab switcher drifts to center with no divider line. A fresh
-    /// item built when geometry is stable re-binds cleanly — the same cure as a manual inspector
-    /// toggle, which is why toggling fixed the glitch. Deferred by the caller to a settled runloop.
-    private func reassertInspectorSeparator() {
-        guard let toolbar = window?.toolbar else { return }
-        func index(of id: NSToolbarItem.Identifier) -> Int? {
-            toolbar.items.firstIndex { $0.itemIdentifier == id }
-        }
-        // Only meaningful while the switch is present (inspector open); nothing to align otherwise.
-        guard index(of: .inspectorTabs) != nil else { return }
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        defer { NSAnimationContext.endGrouping() }
-        if let sep = index(of: .inspectorTrackingSeparator) { toolbar.removeItem(at: sep) }
-        // Re-find the tabs (index shifted after the removal) and slot the separator just before them.
-        if let tabs = index(of: .inspectorTabs) {
-            toolbar.insertItem(withItemIdentifier: .inspectorTrackingSeparator, at: tabs)
-        }
-    }
-
-    /// Matches the sidebar's toolbar region to the navigator's *actual* collapse state — called once
-    /// at launch after the split view has restored from autosave, the navigator twin of
-    /// `syncInspectorSwitch` (so a restored-collapsed sidebar shows no sort/new buttons, a
-    /// restored-open one shows them, with no stale mirror state to desync).
-    func syncNavigatorItems() {
-        guard let item = sidebarSplitItem else { return }
-        setNavigatorItemsVisible(!item.isCollapsed)
-        store.sidebarVisible = !item.isCollapsed
-    }
-
-    /// Inserts or removes the sidebar's own toolbar actions (the sort pull-down and the `+`
-    /// new-terminal button) as the navigator opens/closes, so the sidebar's toolbar region empties
-    /// when the sidebar is collapsed — matching Finder/Xcode, which drop their sidebar buttons with
-    /// the sidebar, and freeing the horizontal room that otherwise forces NSToolbar's `»` overflow.
-    /// The paired flexible space (which right-aligns the two against the sidebar divider) is inserted
-    /// and removed *with* them. When open the region reads `toggleNavigator, flex, sortProjects,
-    /// newTerminal | sidebarTrackingSeparator`. Mirrors `setInspectorSwitchVisible`.
+    /// Hides or shows the sidebar. Its own action rather than `NSSplitViewController.toggleSidebar(_:)`,
+    /// which only acts on an item with the `.sidebar` behaviour.
     ///
-    /// The workspace name leaves with the sidebar it labels, but it is not managed here — it rides
-    /// inside the `toggleNavigator` item and hides itself on `store.sidebarVisible` (see
-    /// `NavigatorToggleToolbarView`). It used to move across the tracking separator instead, on the
-    /// argument that a bare terminal looks the same in every scope and the switcher is the only thing
-    /// naming the current one. In practice it reads as a stray word beside the window title — the
-    /// sidebar's region empties with the sidebar, the way Finder's and Xcode's do, and the workspace
-    /// is still one click away through the sidebar or the Workspace menu.
-    private func setNavigatorItemsVisible(_ visible: Bool) {
-        guard let toolbar = window?.toolbar else { return }
-        func index(of id: NSToolbarItem.Identifier) -> Int? {
-            toolbar.items.firstIndex { $0.itemIdentifier == id }
-        }
-        // Mutate with animation off, matching the inspector switch: the buttons simply present for
-        // the sidebar's slide rather than running NSToolbar's own pop on an independent clock.
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-        defer { NSAnimationContext.endGrouping() }
-        if visible {
-            guard index(of: .sortProjects) == nil else { return }
-            guard let sep = index(of: .sidebarTrackingSeparator) else { return }
-            // Insert in reverse at that one index so the final order is flex, sortProjects,
-            // newTerminal. Re-reading the separator's index between inserts would walk it past the
-            // items just added and land the space against the `+` instead.
-            toolbar.insertItem(withItemIdentifier: .newTerminal, at: sep)
-            toolbar.insertItem(withItemIdentifier: .sortProjects, at: sep)
-            toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: sep)
-        } else {
-            // Only clean up when the buttons are actually present (nothing to remove at launch with
-            // the sidebar already collapsed). Re-find each id after every removal — indices shift.
-            guard let sortIdx = index(of: .sortProjects) else { return }
-            toolbar.removeItem(at: sortIdx)
-            if let i = index(of: .newTerminal) { toolbar.removeItem(at: i) }
-            // Drop the flexible space that right-aligned them (the one just before the sidebar separator).
-            if let sep = index(of: .sidebarTrackingSeparator), sep > 0,
-               toolbar.items[sep - 1].itemIdentifier == .flexibleSpace {
-                toolbar.removeItem(at: sep - 1)
+    /// One motion on one clock. The column slides (its content held at full width, so it moves
+    /// rather than squeezes), and what depends on the sidebar being there changes with it rather
+    /// than ahead of it: collapsing, the top-left card takes the toggle only once the column is
+    /// gone, so there is never a second one on screen; expanding, it hands the toggle back as the
+    /// column starts in, the card's title and margin easing over on the same curve.
+    @objc func toggleNavigator(_ sender: Any?) {
+        guard let item = sidebarSplitItem, !navigatorAnimating else { return }
+        let collapsing = !item.isCollapsed
+        let duration = Self.navigatorDuration
+        navigatorAnimating = true
+        sidebarSlide?.holdsWidth = true
+        // Both ways on the slide's own clock, not after it: the content's leading inset clears
+        // the traffic lights while the sidebar leaves, so nothing slides in under them.
+        withAnimation(.easeInOut(duration: duration)) { store.sidebarVisible = !collapsing }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            item.animator().isCollapsed = collapsing
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.navigatorAnimating = false
+                self.sidebarSlide?.holdsWidth = false
+                self.store.sidebarVisible = self.sidebarSplitItem?.isCollapsed == false
             }
-        }
+        })
+    }
+
+    /// View ▸ Show Project Files (and the card's panel menu) — opens or closes the focused
+    /// card's panel. Reached via the responder chain (the menu item and the panel menu both
+    /// target `nil`), like the other app actions.
+    @objc func toggleFilesInspector(_ sender: Any?) {
+        store.inspectorVisible.toggle()
     }
 
     /// Edit ▸ Paste. File URLs copied in Finder become absolute paths at the
@@ -1460,45 +1178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.post(name: .termioUseSelectionForFind, object: nil)
     }
 
-    /// Reveals the inspector for a freshly opened detail: un-collapses it if hidden, and otherwise
-    /// leaves its width alone. It comes back at whatever the split last had (the user's own width,
-    /// restored from the autosave), and the responsive `InspectorRoot` — two-column when there's
-    /// room, detail-only when narrow, draggable seam either way — takes it from there.
-    ///
-    /// It used to *grow* the inspector to ~half the window on every open. That shrank the terminal
-    /// unbidden and, because the growth was a mid-layout `minimumThickness` bump, left the terminal a
-    /// blank strip where the surface hadn't reflowed. Respect the user's width; let layout be
-    /// responsive instead of forcing it.
+    /// Opens the focused card's panel for a freshly opened detail, at the width it last had.
     private func revealInspectorForDetail() {
-        guard let item = filesInspectorItem else { return }
-        // Un-collapse *synchronously* (not via `animator()`) so the split geometry — and the divider
-        // the tracking separator binds to — is settled before the toolbar switch is (re)inserted.
-        if item.isCollapsed {
-            item.isCollapsed = false
-            setInspectorSwitchVisible(true)
-        }
-    }
-
-    /// Grows the inspector to `thickness` so a detail's list column has room beside it. Clamped to
-    /// the item's golden-ratio maximum — on a window too narrow for both columns the panel opens as
-    /// far as it goes rather than refusing the click outright. Only ever widens: pulling the divider
-    /// back in stays the user's move.
-    private func widenInspector(to thickness: CGFloat) {
-        guard let item = filesInspectorItem, !item.isCollapsed,
-              let splitView = splitViewController?.splitView,
-              let index = splitView.arrangedSubviews.firstIndex(of: item.viewController.view),
-              index > 0
-        else { return }
-        let target = min(thickness, item.maximumThickness)
-        guard target > item.viewController.view.frame.width else { return }
-        // Set synchronously rather than through `animator()`, for the same reason the un-collapse in
-        // `revealInspectorForDetail` is: the separator re-bind below has to read settled geometry,
-        // and mid-animation it reads the width the drag started from.
-        splitView.setPosition(splitView.frame.width - splitView.dividerThickness - target,
-                              ofDividerAt: index - 1)
-        // Moving divider 1 is exactly the relayout that leaves `.inspectorTrackingSeparator` inert;
-        // re-bind once the move settles.
-        DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
+        if !store.inspectorVisible { store.inspectorVisible = true }
     }
 
     /// Brings the window into or out of the maximized-detail mode. Idempotent, and reached from two
@@ -1506,28 +1188,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// one frame) and from the deferred store observer (which catches the detail closing out from
     /// under a host that is already up).
     private func applyDetailMaximized(_ maximized: Bool) {
-        let restored = detailWasMaximized && !maximized
-        detailWasMaximized = maximized
         setDetailMaximized(maximized)
-        // The pane switch (Files/Search/Changes/Issues/Info) re-aims the inspector's list column,
-        // which the full-window detail now covers — so while maximized the tabs would act on
-        // something off-screen. Pull them from the toolbar for the duration and restore them on the
-        // way back down (the inspector is still open behind the host).
-        syncInspectorTabsVisibility(maximized: maximized)
-        // Tearing down the maximize host relayouts around divider 1, which can leave the tracking
-        // separator inert (the centered-tabs / missing-divider glitch). Re-bind once layout settles.
-        if restored {
-            DispatchQueue.main.async { [weak self] in self?.reassertInspectorSeparator() }
-        }
     }
 
     /// Moves the shared detail host between the inspector's slot and the whole content area — an
     /// in-window maximize, *not* native macOS fullscreen: the window stays put in its Space and the
     /// menu bar stays visible. The navigator collapses with it, so "fill the window" means the
     /// window rather than the window minus a column of chrome; re-open it (View menu) and the host
-    /// slides with it, since its leading edge tracks the split. The toolbar goes with the sidebar
-    /// (see `syncMaximizedChrome`); restore and close ride the detail's own header, and Esc still
-    /// closes.
+    /// slides with it, since its leading edge tracks the split. Restore and close ride the detail's
+    /// own header, and Esc still closes.
     ///
     /// The host is *moved*, never rebuilt (see `DetailHost`): each direction is one `addSubview`
     /// that re-parents it inside the same window, so the open document crosses the transition
@@ -1558,15 +1227,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ]
             NSLayoutConstraint.activate(maximizedDetailConstraints)
-            // "Fill the window" means the whole window: the navigator steps aside with the toolbar
-            // and comes back on restore. Leaving it up would keep a column of chrome beside a
-            // detail the user just asked to blow up — and its own controls (workspace, sort, `+`)
-            // live in the toolbar band that maximizing takes away.
+            // "Fill the window" means the whole window: the navigator steps aside and comes back on
+            // restore. Leaving it up would keep a column of chrome beside a detail the user just
+            // asked to blow up.
             if sidebarSplitItem?.isCollapsed == false {
                 sidebarCollapsedForMaximize = true
                 sidebarSplitItem?.isCollapsed = true
             }
-            syncMaximizedChrome()
         } else {
             // Retire them here rather than trusting the re-parent to reap them: `removeFromSuperview`
             // only drops constraints the old ancestor held, and the host does not always leave
@@ -1591,40 +1258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 sidebarCollapsedForMaximize = false
                 sidebarSplitItem?.isCollapsed = false
             }
-            syncMaximizedChrome()
             // Uncovering the content area re-exposes the terminal, but a tickless surface won't
             // repaint itself — nudge it so a switch out of a maximized detail can't leave a blank.
             store.repaintSelectedSurface()
         }
-    }
-
-    /// Drops the toolbar only when a maximized detail owns the *whole* window — which is to say
-    /// while the navigator is collapsed. Then the band carries nothing but the branch title and the
-    /// inspector toggle, both meaningless over a full-window detail, and the detail's own header
-    /// (name, Edit/Preview, restore, close) reads as a second bar under an empty one; hiding it
-    /// leaves the bare titlebar strip the traffic lights live in, and the detail's header becomes
-    /// the window's top bar. With the sidebar up the band is not spare chrome: the sidebar's own
-    /// workspace / sort / `+` controls live in its region, and taking the toolbar would strip the
-    /// sidebar of them for a mode that has nothing to do with it.
-    ///
-    /// Called on both the maximize transition and every sidebar collapse, so toggling the navigator
-    /// under a maximized detail lands in the right state. Idempotent — it returns when the toolbar
-    /// already matches, because re-asserting visibility churns the tracking separators.
-    private func syncMaximizedChrome() {
-        guard let window, let toolbar = window.toolbar else { return }
-        let hidesToolbar = detailMaximized && sidebarSplitItem?.isCollapsed == true
-        guard toolbar.isVisible == hidesToolbar else { return }
-        toolbar.isVisible = !hidesToolbar
-        // A hidden toolbar stops laying out, so its custom views come back measured against stale
-        // bounds — the branch picker's two-line project/branch title drew clipped at the top.
-        if !hidesToolbar {
-            DispatchQueue.main.async { [weak self] in self?.toolbarDelegate?.relayoutBranchPicker() }
-        }
-        // Without the toolbar the detail's header occupies the strip the window was dragged by, and
-        // a SwiftUI view swallows the mouse-down a titlebar drag needs. Dragging the background
-        // restores it: only views that *don't* handle the event start the drag, so the header's
-        // empty run moves the window while the document's own text keeps its selection drags.
-        window.isMovableByWindowBackground = hidesToolbar
     }
 
     /// Termio ▸ Check for Updates… — hands off to Sparkle's standard update flow.
@@ -1910,7 +1547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-/// The "New Chat ▸" parent item shared by the File menu and the toolbar `+`
+/// The "New Chat ▸" parent item shared by the File menu and the sidebar `+`
 /// pull-down. Its submenu starts empty: the AppDelegate (as its delegate) fills it
 /// with the user's enabled agents on every open and on every key-equivalent search,
 /// so roster edits and the migrating ⌘N default never need change-notification
@@ -1925,7 +1562,7 @@ private func makeNewChatItem() -> NSMenuItem {
 }
 
 /// Items whose shape depends on how many devices exist are found by tag when
-/// their menu opens: the File menu and the toolbar `+` each own one, and
+/// their menu opens: the File menu and the sidebar `+` each own one, and
 /// everything around it has to survive the refresh, so the item is reconfigured
 /// in place rather than the menu rebuilt.
 enum DeviceMenuTag {
@@ -1936,11 +1573,11 @@ enum DeviceMenuTag {
 }
 
 /// The "Workspace ▸" item — the scopes, with the current one checked, and where the
-/// switch gets a keyboard chord. The toolbar switcher is the same menu in the chrome;
+/// switch gets a keyboard chord. The sidebar's switcher is the same menu in the chrome;
 /// this one exists because a key equivalent only fires from the main menu, and because
 /// a chord nobody can find is a chord nobody presses.
 ///
-/// Always shown, including with a single workspace: the toolbar switcher collapses
+/// Always shown, including with a single workspace: the sidebar's switcher collapses
 /// then — with one scope there is nothing to switch — so this is where creating,
 /// renaming and removing a workspace has to stay reachable.
 @MainActor
@@ -1981,7 +1618,7 @@ private func makeNewSSHItem() -> NSMenuItem {
 extension AppDelegate: NSMenuDelegate {
     /// Serves every menu this delegate is attached to, told apart by title. Most
     /// are filled from scratch on each open — the Session menu, New Chat, New SSH
-    /// Connection, Connect to…. The File menu and the toolbar `+` instead hold a
+    /// Connection, Connect to…. The File menu and the sidebar `+` instead hold a
     /// few device-aware items among items this delegate does not own, so they are
     /// refreshed in place.
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -2094,7 +1731,7 @@ extension AppDelegate: NSMenuDelegate {
         // parent that only reveals a submenu never carries one.
         item.title = localized("New Workspace")
         // Attached once and filled by the delegate on open — the File menu's copy is
-        // rebuilt per open, but the toolbar `+` keeps its item across refreshes.
+        // rebuilt per open, and so is the sidebar `+`'s.
         //
         // Everything below runs on the *first* reshape only. Once a submenu is
         // attached AppKit owns both the action and the target — it installs its own
@@ -2296,7 +1933,7 @@ extension AppDelegate: NSMenuDelegate {
             menu.addItem(row)
         }
         menu.addItem(.separator())
-        // The same row the toolbar `+` carries: a plain verb on one machine, a
+        // The same row the sidebar `+` carries: a plain verb on one machine, a
         // device submenu on two (`refreshNewWorkspaceItem`). This menu is rebuilt on
         // every open rather than refreshed in place, so the row is shaped here
         // instead of by tag.
@@ -2374,872 +2011,56 @@ private final class KeyBorderlessPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// Delegate for the window's real toolbar, mirroring CodeEdit's chrome. It declares a leading
-/// navigator toggle, the AppKit-provided sidebar tracking separator (bound to the sidebar
-/// divider), the custom branch-picker title item, and a trailing inspector toggle. The store and
-/// settings drive the branch picker.
+/// Builds the sidebar's `+` pull-down: the ways something
+/// new enters the sidebar without opening a folder — a loose terminal (Terminals
+/// section), a loose agent chat (Chats section), an SSH terminal, or a folder opened
+/// as a project. "New Chat" opens the user's agent roster and "New SSH Connection"
+/// the config's hosts as submenus (the same ones the File menu carries — see
+/// `makeNewChatItem` / `makeNewSSHItem`).
+///
+/// Every entry here is context-free: nothing reads the selection, so the terminal
+/// entry is the `$HOME` one. The `+` lives in the sidebar's control row, where "here"
+/// has no referent — the directory-following New Terminal is ⌘T, pressed with the
+/// terminal in front of you.
 @MainActor
-private final class MainToolbarDelegate: NSObject, NSToolbarDelegate, NSMenuDelegate {
-    private let store: TermioStore
-    private let settings: AppSettings
-    /// Used to build the inspector tracking separator, which pins the pane switch to the
-    /// inspector's left edge (divider 1, between the terminal and the file column).
-    private weak var splitViewController: NSSplitViewController?
-    private weak var branchPickerHostingView: NSView?
-    private var branchPickerWidthConstraint: NSLayoutConstraint?
-
-    /// Holds the pane-frame observation token. Its removal lives in this bag's
-    /// own deinit: the delegate's deinit is nonisolated in Swift 6 and cannot
-    /// read main-actor state, but dropping the delegate drops the bag, which
-    /// still unhooks the observer.
-    private final class FrameObserverBag: @unchecked Sendable {
-        var token: NSObjectProtocol?
-        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
-    }
-
-    private let frameObserver = FrameObserverBag()
-
-    init(store: TermioStore, settings: AppSettings, splitViewController: NSSplitViewController?) {
-        self.store = store
-        self.settings = settings
-        self.splitViewController = splitViewController
-    }
-
-    /// Lets the title use the room its toolbar section actually has, up to a generous ceiling.
-    /// Keep a trailing reserve for the flexible space and transient overlay-close button. At the
-    /// terminal pane's 280pt minimum this yields a safe 200pt title; wider panes can show much more.
-    private var terminalPaneView: NSView? {
-        guard let items = splitViewController?.splitViewItems, items.count > 1 else { return nil }
-        return items[1].viewController.view
-    }
-
-    /// Re-measures the branch picker's custom view. A hidden toolbar stops laying out, so the
-    /// hosting view's intrinsic size is stale when the band comes back (restoring from a maximized
-    /// detail) and the two-line project/branch title draws against the wrong height — clipped at the
-    /// top. Same three calls the pane-width observer makes; only the trigger differs.
-    func relayoutBranchPicker() {
-        branchPickerWidthConstraint?.constant = branchPickerWidthLimit()
-        branchPickerHostingView?.invalidateIntrinsicContentSize()
-        branchPickerHostingView?.superview?.needsLayout = true
-    }
-
-    private func branchPickerWidthLimit() -> CGFloat {
-        guard let terminalView = terminalPaneView else {
-            return BranchPickerToolbarView.titleWidthCeiling
-        }
-        return min(
-            BranchPickerToolbarView.titleWidthCeiling,
-            max(BranchPickerToolbarView.titleWidthFloor, terminalView.bounds.width - 80)
-        )
-    }
-
-    private func observeTerminalPaneWidth() {
-        guard let terminalView = terminalPaneView else { return }
-        terminalView.postsFrameChangedNotifications = true
-        if let token = frameObserver.token {
-            NotificationCenter.default.removeObserver(token)
-        }
-        frameObserver.token = NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification,
-            object: terminalView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.branchPickerWidthConstraint?.constant = self.branchPickerWidthLimit()
-                self.branchPickerHostingView?.invalidateIntrinsicContentSize()
-                self.branchPickerHostingView?.superview?.needsLayout = true
-            }
-        }
-    }
-
-    /// Builds the project-sort pull-down for the `.sortProjects` toolbar item: one
-    /// entry per `ProjectSortOrder`, each setting `AppSettings.projectSortOrder`. The
-    /// checkmark on the active order is refreshed on open via `menuNeedsUpdate`.
-    func makeProjectSortMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.delegate = self
-        for order in ProjectSortOrder.allCases {
-            let item = NSMenuItem(title: order.displayName, action: #selector(setProjectSortOrder(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = order.rawValue
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    @objc private func setProjectSortOrder(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let order = ProjectSortOrder(rawValue: raw) else { return }
-        settings.projectSortOrder = order
-    }
-
-    /// Builds the `+` pull-down for the `.newTerminal` toolbar item: the ways something
-    /// new enters the sidebar without opening a folder — a loose terminal (Terminals
-    /// section), a loose agent chat (Chats section), an SSH terminal, or a folder opened
-    /// as a project. "New Chat" opens the user's agent roster and "New SSH Connection"
-    /// the config's hosts as submenus (the same ones the File menu carries — see
-    /// `makeNewChatItem` / `makeNewSSHItem`).
-    ///
-    /// Every entry here is context-free: nothing reads the selection, so the terminal
-    /// entry is the `$HOME` one. The `+` lives in the sidebar's toolbar, where "here"
-    /// has no referent — the directory-following New Terminal is ⌘T, pressed with the
-    /// terminal in front of you.
-    func makeNewSessionMenu() -> NSMenu {
-        // Titled and delegated so the AppDelegate can reshape the terminal item on
-        // open: one machine keeps it a plain verb, a second grows it into a device
-        // submenu (see `refreshNewTerminalItem`). Its rows target the AppDelegate,
-        // which is where both the local and the per-device actions live.
-        let menu = NSMenu(title: localized("New Session"))
-        menu.delegate = NSApp.delegate as? AppDelegate
-        let terminal = NSMenuItem(title: localized("New Terminal at Home"),
-                                  action: #selector(AppDelegate.newScratchTerminal(_:)),
-                                  keyEquivalent: "")
-        terminal.target = NSApp.delegate as? AppDelegate
-        terminal.tag = DeviceMenuTag.newTerminalAtHome
-        menu.addItem(terminal)
-        menu.addItem(makeNewChatItem())
-        menu.addItem(makeNewSSHItem())
-        // A plain verb on every install, like the terminal row above: a project
-        // takes its machine from the workspace it is filed in, so the scope on
-        // screen has already made that choice (see `presentOpenProjectPanel`).
-        let folder = NSMenuItem(title: localized("Open Project…"),
-                                action: #selector(AppDelegate.openProject(_:)),
-                                keyEquivalent: "")
-        folder.target = NSApp.delegate as? AppDelegate
-        menu.addItem(folder)
-        // The one container verb that belongs in a context-free menu: a new
-        // workspace reads no selection and no focus. It sits last, after a
-        // separator, because starting a scope is rarer than starting a session —
-        // and it is reshaped into a device submenu on open like the rows above
-        // (`refreshNewWorkspaceItem`), since a workspace is on one machine.
-        menu.addItem(.separator())
-        let workspace = NSMenuItem(title: localized("New Workspace…"),
-                                   action: #selector(AppDelegate.newWorkspace(_:)),
-                                   keyEquivalent: "")
-        workspace.target = NSApp.delegate as? AppDelegate
-        workspace.tag = DeviceMenuTag.newWorkspace
-        menu.addItem(workspace)
-        return menu
-    }
-
-    /// The `.inspectorTabs` item's menu form, shown in the toolbar's `»` overflow menu when the
-    /// inspector section is too narrow to hold the glass cluster — the panes stay switchable
-    /// while the cluster itself is hidden.
-    func makeInspectorTabsMenuItem() -> NSMenuItem {
-        let menuItem = NSMenuItem(title: localized("Inspector Pane"), action: nil, keyEquivalent: "")
-        let menu = NSMenu(title: localized("Inspector Pane"))
-        menu.delegate = self
-        let panes: [(tab: InspectorTab, title: String)] = [
-            (.files, localized("Project Files")), (.search, localized("Search Files")),
-            (.changes, localized("Changes")), (.info, localized("Info")),
-        ]
-        for pane in panes {
-            let item = NSMenuItem(title: pane.title, action: #selector(setInspectorTab(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = pane.tab
-            menu.addItem(item)
-        }
-        menuItem.submenu = menu
-        return menuItem
-    }
-
-    @objc private func setInspectorTab(_ sender: NSMenuItem) {
-        guard let tab = sender.representedObject as? InspectorTab else { return }
-        store.inspectorTab = tab
-    }
-
-    // NSMenuDelegate — check the active entry each time a pull-down opens. Serves both menus:
-    // sort items carry a `ProjectSortOrder` raw string, pane items an `InspectorTab`.
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        for item in menu.items {
-            if let raw = item.representedObject as? String {
-                item.state = raw == settings.projectSortOrder.rawValue ? .on : .off
-            } else if let tab = item.representedObject as? InspectorTab {
-                item.state = tab == store.inspectorTab ? .on : .off
-            }
-        }
-    }
-
-    // `.sidebarTrackingSeparator` is AppKit-provided simply by naming the system identifier;
-    // AppKit builds it and binds it to the sidebar divider. The navigator/inspector toggles use
-    // CodeEdit's symmetric `sidebar.leading`/`sidebar.trailing` glyphs, and the branch picker
-    // sits in the content region right after the sidebar separator, so the title reads over the
-    // terminal background. (CodeEdit also adds a second hand-built tracking separator over the
-    // inspector divider; termio's inspector is a simple summoned file tree, and that item renders
-    // as a filled block in this window setup, so it's left out — the toggle alone is enough.)
-    // The baseline is everything-collapsed: navigator toggle, branch title, inspector toggle. Each
-    // panel's own items are inserted by the app delegate only while that panel is open, because
-    // carrying them in the default set has a visible cost either way — the inspector's pane switch
-    // and tracking separator (`setInspectorSwitchVisible`) would draw a stray divider line over a
-    // collapsed panel, and the sidebar's actions plus their flexible space
-    // (`setNavigatorItemsVisible`) over-packed the row into NSToolbar's `»` overflow.
-    private let defaultIdentifiers: [NSToolbarItem.Identifier] = [
-        .toggleNavigator, .sidebarTrackingSeparator, .branchPicker, .flexibleSpace, .toggleInspector,
-    ]
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        defaultIdentifiers + [
-            .sortProjects, .newTerminal, .inspectorTrackingSeparator, .inspectorTabs,
-        ]
-    }
-
-    func toolbar(
-        _ toolbar: NSToolbar,
-        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
-        willBeInsertedIntoToolbar flag: Bool
-    ) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case .toggleNavigator:
-            // Hand-drawn for the same reason as the inspector toggle it now mirrors (see
-            // `NavigatorToggleToolbarView`): a native `isBordered` item wears its capsule in both
-            // states, so the pill said nothing on this end of the toolbar while the trailing one
-            // used it to mean "the pane is open".
-            let item = NSToolbarItem(itemIdentifier: .toggleNavigator)
-            item.label = localized("Navigator")
-            item.toolTip = localized("Hide or show the navigator")
-            let host = NSHostingView(rootView: NavigatorToggleToolbarView()
-                .environmentObject(store)
-                .environmentObject(settings))
-            host.sizingOptions = [.intrinsicContentSize]
-            item.view = host
-            item.isBordered = false
-            // The view takes the click; the action is what AppKit reads to synthesize this
-            // item's row in the `»` overflow menu and to validate it. A view-based item with
-            // neither an action nor a `menuFormRepresentation` overflows into a dead row.
-            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
-            return item
-        case .sortProjects:
-            // A pull-down that sets how the sidebar orders projects (Recent Activity /
-            // Name). Sits just left of the `+`, at the trailing edge of the sidebar's
-            // toolbar region. Native `NSMenuToolbarItem` so it carries the standard
-            // menu chevron and free Liquid Glass bordered look. It keeps that border
-            // unconditionally where the pane toggles don't: this opens a menu, and a
-            // menu is always available — their capsule says whether a pane is open.
-            let item = NSMenuToolbarItem(itemIdentifier: .sortProjects)
-            item.label = localized("Sort")
-            item.toolTip = localized("Choose how projects are ordered")
-            item.image = NSImage(systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: "Sort projects")
-            item.isBordered = true
-            item.showsIndicator = true
-            item.menu = makeProjectSortMenu()
-            return item
-        case .newTerminal:
-            // Pinned to the trailing edge of the sidebar's toolbar region (just before the
-            // tracking separator), so it reads as the navigator's own "new" action — like the
-            // `+` at the foot of Finder's sidebar: a plain `+` that pops a menu on click. It
-            // still carries a pull-down (the two ways something new enters the sidebar — a loose
-            // terminal or a project), but with `showsIndicator = false` it keeps the exact width
-            // of the single-action `+` it replaced, so the sidebar's `minimumThickness` (240)
-            // stays valid and the button never grows the chevron that would push it toward the
-            // NSToolbar `»` overflow. Finder's sidebar `+` shows no chevron either — a `+` reads
-            // as "add" on its own, unlike the sort item, whose glyph does keep its indicator.
-            let item = NSMenuToolbarItem(itemIdentifier: .newTerminal)
-            item.label = localized("New")
-            item.toolTip = localized("New terminal or project")
-            item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New")
-            item.isBordered = true
-            item.showsIndicator = false
-            item.menu = makeNewSessionMenu()
-            return item
-        case .inspectorTabs:
-            // The inspector pane switch (Files / Search / Changes / Info), pinned to the inspector's
-            // left edge by the tracking separator that precedes it in the item order. It's a
-            // hand-drawn SwiftUI Liquid Glass segmented control (see `InspectorTabsToolbar`) rather
-            // than a native `NSToolbarItemGroup`: over termio's transparent-over-terminal toolbar the
-            // native control loses its track and reads as detached, selection-less glyphs, so we draw
-            // our own track + sliding pill.
-            let item = NSToolbarItem(itemIdentifier: .inspectorTabs)
-            item.label = localized("Inspector")
-            item.toolTip = localized("Switch between project files, search, changes, and info")
-            // The switch's host also carries the terminal ‖ inspector seam, which the opaque
-            // fullscreen title bar would otherwise cover (see `InspectorTabsItemView`). It rides
-            // this item because this item is the one the tracking separator pins to the divider,
-            // and because a seam item of its own would push the switch off that divider.
-            item.view = InspectorTabsItemView(
-                content: AnyView(InspectorTabsToolbar()
-                    .environmentObject(store)
-                    .environmentObject(store.settings)),
-                splitView: splitViewController?.splitView)
-            item.isBordered = false
-            // First to overflow: the switch is incompressible, so when its section (the inspector
-            // pane) gets too narrow it must yield to the `»` menu rather than slide over the divider
-            // onto the pane's content. The menu form keeps the panes switchable while it's hidden.
-            item.visibilityPriority = .low
-            item.menuFormRepresentation = makeInspectorTabsMenuItem()
-            return item
-        case .inspectorTrackingSeparator:
-            // Align a tracking separator to divider 1 (terminal | inspector) so the items after it
-            // ride the inspector's left edge. AppKit needs the live split view to bind it.
-            guard let splitView = splitViewController?.splitView else { return nil }
-            return NSTrackingSeparatorToolbarItem(
-                identifier: .inspectorTrackingSeparator,
-                splitView: splitView,
-                dividerIndex: 1
-            )
-        case .toggleInspector:
-            // Hand-drawn (see `InspectorToggleToolbarView`) because this one button has to look
-            // the same with and without its capsule; the trailing-sidebar glyph mirrors the
-            // navigator toggle's leading one.
-            let item = NSToolbarItem(itemIdentifier: .toggleInspector)
-            item.label = localized("Inspector")
-            item.toolTip = localized("Hide or show the inspector")
-            let host = NSHostingView(rootView: InspectorToggleToolbarView().environmentObject(store))
-            host.sizingOptions = [.intrinsicContentSize]
-            item.view = host
-            item.isBordered = false
-            // Kept for the overflow menu and validation, as on the navigator toggle above.
-            item.action = #selector(AppDelegate.toggleFilesInspector(_:))
-            return item
-        case .branchPicker:
-            let item = NSToolbarItem(itemIdentifier: .branchPicker)
-            let hosting = NSHostingView(rootView: BranchPickerToolbarView()
-                .environmentObject(store)
-                .environmentObject(settings))
-            // Give AppKit an explicit bound for its custom toolbar view. The constant follows the
-            // terminal pane, so wide windows can use the generous ceiling while a narrow pane retains
-            // enough trailing room for the rest of its toolbar section.
-            hosting.translatesAutoresizingMaskIntoConstraints = false
-            let widthConstraint = hosting.widthAnchor.constraint(lessThanOrEqualToConstant: branchPickerWidthLimit())
-            widthConstraint.isActive = true
-            branchPickerHostingView = hosting
-            branchPickerWidthConstraint = widthConstraint
-            observeTerminalPaneWidth()
-            // A toolbar item does not clip its custom view for us. Keep the title inside this item's
-            // measured bounds even if a future SwiftUI layout regression proposes an oversized glyph
-            // run; the Text views still receive the bounded width and perform the visible ellipsis.
-            hosting.clipsToBounds = true
-            item.view = hosting
-            item.isBordered = false
-            return item
-        default:
-            // `.sidebarTrackingSeparator` and the spaces are provided and styled by AppKit.
-            return nil
-        }
-    }
+func makeNewSessionMenu() -> NSMenu {
+    // Titled and delegated so the AppDelegate can reshape the terminal item on
+    // open: one machine keeps it a plain verb, a second grows it into a device
+    // submenu (see `refreshNewTerminalItem`). Its rows target the AppDelegate,
+    // which is where both the local and the per-device actions live.
+    let menu = NSMenu(title: localized("New Session"))
+    menu.delegate = NSApp.delegate as? AppDelegate
+    let terminal = NSMenuItem(title: localized("New Terminal at Home"),
+                              action: #selector(AppDelegate.newScratchTerminal(_:)),
+                              keyEquivalent: "")
+    terminal.target = NSApp.delegate as? AppDelegate
+    terminal.tag = DeviceMenuTag.newTerminalAtHome
+    menu.addItem(terminal)
+    menu.addItem(makeNewChatItem())
+    menu.addItem(makeNewSSHItem())
+    // A plain verb on every install, like the terminal row above: a project
+    // takes its machine from the workspace it is filed in, so the scope on
+    // screen has already made that choice (see `presentOpenProjectPanel`).
+    let folder = NSMenuItem(title: localized("Open Project…"),
+                            action: #selector(AppDelegate.openProject(_:)),
+                            keyEquivalent: "")
+    folder.target = NSApp.delegate as? AppDelegate
+    menu.addItem(folder)
+    // The one container verb that belongs in a context-free menu: a new
+    // workspace reads no selection and no focus. It sits last, after a
+    // separator, because starting a scope is rarer than starting a session —
+    // and it is reshaped into a device submenu on open like the rows above
+    // (`refreshNewWorkspaceItem`), since a workspace is on one machine.
+    menu.addItem(.separator())
+    let workspace = NSMenuItem(title: localized("New Workspace…"),
+                               action: #selector(AppDelegate.newWorkspace(_:)),
+                               keyEquivalent: "")
+    workspace.target = NSApp.delegate as? AppDelegate
+    workspace.tag = DeviceMenuTag.newWorkspace
+    menu.addItem(workspace)
+    return menu
 }
 
-private extension NSToolbarItem.Identifier {
-    static let toggleNavigator = NSToolbarItem.Identifier("TermioToggleNavigator")
-    static let sortProjects = NSToolbarItem.Identifier("TermioSortProjects")
-    static let newTerminal = NSToolbarItem.Identifier("TermioNewTerminal")
-    static let inspectorTabs = NSToolbarItem.Identifier("TermioInspectorTabs")
-    static let toggleInspector = NSToolbarItem.Identifier("TermioToggleInspector")
-    static let inspectorTrackingSeparator = NSToolbarItem.Identifier("TermioInspectorTrackingSeparator")
-    static let branchPicker = NSToolbarItem.Identifier("TermioBranchPicker")
-}
-
-/// The inspector pane switch, plus the terminal ‖ inspector seam that an opaque title bar covers.
-///
-/// Windowed, nothing draws that seam: `.fullSizeContentView` runs the split view — dividers
-/// included — up behind the chrome, and `titlebarAppearsTransparent` lets divider 1 read straight
-/// through the toolbar band, so the line the user sees there *is* the content's own divider.
-/// Fullscreen drops that transparency (macOS 26's fullscreen title-bar host composites a light
-/// Liquid Glass band over a dark terminal otherwise — see `applyWindowTransparency`), and the
-/// opaque band it falls back to paints over the divider: the seam stops at the toolbar's floor
-/// while the content below still shows it.
-///
-/// A toolbar item is the only thing drawing *above* that band, so the hairline is hosted here
-/// rather than added as an item of its own — a separate item would push the switch off the
-/// divider by its own width plus the toolbar's inter-item spacing. It is a plain sublayer,
-/// positioned from the split view's live geometry, so it can sit outside this view's bounds and
-/// land on divider 1 at the band's full height. Auto Layout never sees it.
-private final class InspectorTabsItemView: NSView {
-    private let hosting: NSHostingView<AnyView>
-    private let seam = CALayer()
-    private weak var splitView: NSSplitView?
-
-    init(content: AnyView, splitView: NSSplitView?) {
-        self.hosting = NSHostingView(rootView: content)
-        self.splitView = splitView
-        super.init(frame: .zero)
-        wantsLayer = true
-        hosting.sizingOptions = [.intrinsicContentSize]
-        hosting.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hosting)
-        // Pin on all four edges so the switch's own intrinsic width still drives the item's size —
-        // the Issues segment comes and goes, and the toolbar has to re-measure when it does.
-        NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        layer?.addSublayer(seam)
-        seam.isHidden = true
-        // The window resizes on both fullscreen transitions, which relayouts this view — but the
-        // title bar's opacity is what the seam keys off, and that is flipped separately (before the
-        // enter animation, after the exit one). Re-place the line once each transition settles.
-        // Target/selector rather than a block: the center keeps a zeroing weak reference to an
-        // observer registered this way, so there is no token to tear down from a nonisolated deinit.
-        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(titleBarChromeDidChange), name: name, object: nil)
-        }
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    @objc private func titleBarChromeDidChange() {
-        needsLayout = true
-    }
-
-    /// A divider drag, a window resize and a fullscreen transition all reach this view as a frame
-    /// change, and `layout()` alone only follows the size half of that.
-    override func setFrameOrigin(_ newOrigin: NSPoint) {
-        super.setFrameOrigin(newOrigin)
-        needsLayout = true
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsLayout = true
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        needsLayout = true
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsLayout = true
-    }
-
-    override func layout() {
-        super.layout()
-        positionSeam()
-    }
-
-    /// Places the hairline on divider 1, spanning the title-bar band, in this view's coordinates —
-    /// which puts it outside its own bounds, on the leading side, over the tracking separator's
-    /// empty slot.
-    private func positionSeam() {
-        // No implicit fade as the line moves with the divider or blinks out on collapse.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
-        guard let seamRect = seamRectInContentView(), let contentView = window?.contentView else {
-            seam.isHidden = true
-            return
-        }
-        seam.frame = convert(seamRect, from: contentView)
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            seam.backgroundColor = NSColor.separatorColor.cgColor
-        }
-        seam.isHidden = false
-    }
-
-    /// The seam's rectangle in the content view's coordinates, or nil when there is nothing to
-    /// draw: no inspector beside the terminal, or a title bar the divider already reads through.
-    private func seamRectInContentView() -> NSRect? {
-        guard let splitView, let window, let contentView = window.contentView,
-              splitView.arrangedSubviews.count > 2 else { return nil }
-        // Exactly when the band is opaque. Keying off transparency rather than off fullscreen keeps
-        // this in step with `applyWindowTransparency`, and stops the line doubling the divider that
-        // already shows through a transparent bar.
-        guard !window.titlebarAppearsTransparent else { return nil }
-        let inspector = splitView.arrangedSubviews[2]
-        guard !inspector.isHidden, inspector.frame.width > 0 else { return nil }
-        // The band is whatever `.fullSizeContentView` leaves above the layout rect. Zero means the
-        // chrome is hidden (a fullscreen toolbar the pointer hasn't summoned), and the divider is
-        // already visible for its whole height.
-        let bandBottom = window.contentLayoutRect.maxY
-        let bandHeight = contentView.bounds.maxY - bandBottom
-        guard bandHeight > 0 else { return nil }
-        let thickness = max(1, splitView.dividerThickness)
-        let dividerX = splitView.convert(
-            NSPoint(x: inspector.frame.minX - thickness, y: 0), to: contentView
-        ).x
-        return NSRect(x: dividerX, y: bandBottom, width: thickness, height: bandHeight)
-    }
-}
-
-/// The custom title item: the selected session's folder name over its live git branch, drawn as
-/// a borderless toolbar view in place of the native title (CodeEdit's `ToolbarBranchPicker`). It
-/// observes the store directly, so it tracks the selection and branch without a separate
-/// observer. A non-git folder shows just the folder name with a settings-folder glyph.
-private struct BranchPickerToolbarView: View {
-    @EnvironmentObject var store: TermioStore
-    @Environment(\.controlActiveState) private var controlActive
-
-    /// The title grows naturally with its contents, up to 460pt in a wide terminal pane. AppKit
-    /// lowers the live limit when the pane narrows (see the `.branchPicker` toolbar item), at which
-    /// point both lines use their middle ellipsis and retain the full strings in their tooltips.
-    static let titleWidthFloor: CGFloat = 80
-    static let titleWidthCeiling: CGFloat = 460
-
-    /// The selected session's working directory: its worktree, its project folder, or — for a
-    /// loose terminal, which owns its path — its live cwd. `nil` when nothing is selected.
-    private var folder: String? {
-        store.selectedSessionID.flatMap(store.titleFolder)
-    }
-
-    private var title: String {
-        // An SSH terminal is titled by its host, not the local cwd it happens to have
-        // launched from ($HOME) — matching how the sidebar labels the same row.
-        if let host = store.selectedSessionID.flatMap(store.session)?.sshHost { return host }
-        // Only a session with nowhere to name — a loose chat in its scratch directory —
-        // falls back to the app's own name.
-        guard let folder else { return "Termio" }
-        return TermioStore.terminalLabel(forPath: folder)
-    }
-
-    private var branch: String? {
-        // A checkout on another machine gets its label from that machine's own
-        // daemon (the `head:` resource) — the local model cannot see it, and a
-        // local path that merely spells the same would be the wrong repo. A box
-        // with no daemon simply never answers, and the chip stays hidden.
-        if let checkout = store.inspectorCheckout, checkout.isOnAnotherDevice {
-            return store.deviceBranch(forCheckout: checkout)
-        }
-        guard let folder, let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
-        return branch
-    }
-
-    private var primaryColor: Color {
-        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
-    }
-
-    private var secondaryColor: Color {
-        controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .secondary
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 7) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(primaryColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(title)
-                if let branch {
-                    Text(branch)
-                        .font(.subheadline)
-                        .foregroundStyle(secondaryColor)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(branch)
-                }
-            }
-        }
-        // Keep short names at the established 80pt toolbar width and propose the same hard ceiling
-        // that AppKit applies to the hosting view. Do not use negative padding here: it shrinks the
-        // measured view without shrinking or moving the Text glyphs, allowing them to paint past the
-        // toolbar item's trailing edge. Leading, not centered: a name shorter than the 80pt floor
-        // would otherwise be centered inside it and a longer one drawn flush left, so the title's
-        // left edge moved with every session switch. Pinned, it starts where the terminal text
-        // below it does and only ever grows to the right.
-        .frame(minWidth: Self.titleWidthFloor, maxWidth: Self.titleWidthCeiling, alignment: .leading)
-    }
-}
-
-/// Both pane toggles — the navigator at the leading end of the toolbar, the inspector at the
-/// trailing end — drawn by one view so the two ends can never disagree.
-///
-/// Hand-drawn rather than a native `isBordered` toolbar item because AppKit renders the two
-/// states through different paths — bordered goes through `NSButton` (symbol scaled to the
-/// capsule, `.labelColor`), unbordered through the plain toolbar-image path (the toolbar's own
-/// image size and tint) — so flipping the border also changed the glyph's size and shade, and the
-/// two buttons stopped matching. Owning the glyph pins it and leaves the capsule as the only
-/// thing that changes.
-///
-/// Whether a capsule is drawn at all is the caller's to say, because the two sit on different
-/// backdrops: the trailing button is over plain window chrome, where the capsule is what marks
-/// the inspector as open; the leading one is over the sidebar's own vibrant material, where a
-/// glass pill reads as a lump on the column rather than as state. It takes
-/// `InspectorTabsToolbar`'s height and its `.regular` glass, which is already the pane switch's
-/// answer to matching the native buttons.
-private struct PaneToggleToolbarView: View {
-    let symbol: String
-    let showsCapsule: Bool
-    /// Outer width. Defaults to the shared control height, which makes a capsuled button a circle.
-    /// A button that never draws a capsule has nothing to fill that square with, and the slack
-    /// only pushes whatever follows it further away — so the navigator toggle asks for less.
-    var width: CGFloat = InspectorTabsToolbar.controlHeight
-    let help: String
-    let label: String
-    let toggle: () -> Void
-
-    @Environment(\.controlActiveState) private var controlActive
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Button(action: toggle) {
-            Image(systemName: symbol)
-                // Sized by measurement, not by guess: at 15pt this drew a 17.5×13.5pt glyph
-                // against the native bordered item it replaced (19.5×15.5), and the pair read
-                // uneven across the toolbar. 17 matches it.
-                .font(.system(size: 17))
-                .foregroundStyle(controlActive == .inactive
-                                 ? Color(nsColor: .disabledControlTextColor) : .primary)
-                .frame(width: width, height: InspectorTabsToolbar.controlHeight)
-                .background { if showsCapsule { capsuleBackground } }
-                .contentShape(.capsule)
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(label)
-    }
-
-    @ViewBuilder
-    private var capsuleBackground: some View {
-        if #available(macOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: .capsule)
-        } else {
-            Capsule(style: .continuous)
-                .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
-        }
-    }
-}
-
-/// Reports the leading edge of the item's own box in the window, along with the trailing edge of the
-/// traffic lights, so a toolbar item can place itself against the buttons rather than against
-/// whatever edge the toolbar handed it. The buttons' edge is `nil` while they are hidden — but not
-/// in fullscreen, where they stay unhidden at their windowed frame with no titlebar drawing them;
-/// that one is the caller's to know.
-///
-/// AppKit moves the item without anything inside it changing, so there is nothing for SwiftUI's own
-/// geometry to react to. Every ancestor's frame notification is watched instead — one of them is
-/// the item the toolbar repositions.
-private struct ToolbarItemLeadingReader: NSViewRepresentable {
-    let report: (CGFloat, CGFloat?) -> Void
-
-    func makeNSView(context: Context) -> LeadingReaderView { LeadingReaderView(report: report) }
-
-    func updateNSView(_ view: LeadingReaderView, context: Context) {
-        view.report = report
-        // Entering fullscreen changes what the reading means without necessarily moving this view
-        // again afterwards. The state that drives this update is the same state that flipped, so
-        // taking a fresh reading here is what catches the transition's last word.
-        view.refresh()
-    }
-
-    final class LeadingReaderView: NSView {
-        var report: (CGFloat, CGFloat?) -> Void
-        private var reported: (CGFloat, CGFloat?)?
-
-        /// The view the toolbar lays this item out in: the hosting view the whole item's SwiftUI
-        /// tree is drawn into. Not this reader's own frame, and not its immediate superview's
-        /// either — both of those sit *inside* the item's content, so they answer "where did
-        /// SwiftUI put this content" rather than "where did the toolbar put the item".
-        ///
-        /// The two disagree for a pass or two after anything changes the content's width, because
-        /// the pass that re-lays the content out is not the pass that resizes the item: the content
-        /// is centred in the item's old, narrower frame, which puts the reader half the overflow to
-        /// the left. The inset is computed from this reading and *is* what widens the item, so a
-        /// short one is a loop, and it ends with the item too wide for the toolbar's sidebar region
-        /// — dropped out of the toolbar entirely, the navigator toggle and the workspace name both
-        /// gone with it, until something else forces a full relayout. The item's own box is the one
-        /// view in the chain that does not move for any of that.
-        ///
-        /// If there is no hosting view above this reader at all — which would mean SwiftUI stopped
-        /// wrapping its own representables — the outermost view found is the next best answer: it
-        /// can only read *short* of the item's edge, and short is the direction the inset's ceiling
-        /// absorbs.
-        private var itemBox: NSView {
-            var box: NSView = self
-            var view: NSView? = superview
-            while let current = view {
-                box = current
-                if String(describing: type(of: current)).hasPrefix("NSHostingView") { return current }
-                view = current.superview
-            }
-            return box
-        }
-
-        init(report: @escaping (CGFloat, CGFloat?) -> Void) {
-            self.report = report
-            super.init(frame: .zero)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            watchAncestors()
-            readLeadingEdge()
-        }
-
-        override func layout() {
-            super.layout()
-            readLeadingEdge()
-        }
-
-        func refresh() { readLeadingEdge() }
-
-        private func watchAncestors() {
-            let center = NotificationCenter.default
-            center.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
-            var view: NSView? = self
-            while let current = view {
-                center.addObserver(
-                    self,
-                    selector: #selector(ancestorFrameChanged),
-                    name: NSView.frameDidChangeNotification,
-                    object: current
-                )
-                view = current.superview
-            }
-        }
-
-        @objc private func ancestorFrameChanged(_ notification: Notification) {
-            readLeadingEdge()
-        }
-
-        private func readLeadingEdge() {
-            guard let window else { return }
-            let box = itemBox
-            let leading = box.convert(box.bounds, to: nil).minX
-            // The zoom button is the last of the three, so its trailing edge is where the buttons
-            // end — when there are buttons on screen at all. Whether there are is not a question
-            // this view can answer: in fullscreen all three stay unhidden at the frame they held
-            // while windowed, and the window they are read from does not report itself as
-            // fullscreen either. The caller knows it from the window delegate's own transitions;
-            // this only measures.
-            let zoom = window.standardWindowButton(.zoomButton)
-            let buttonsEnd: CGFloat? = zoom.flatMap { button in
-                guard !button.isHiddenOrHasHiddenAncestor else { return nil }
-                return button.convert(button.bounds, to: nil).maxX
-            }
-            guard reported?.0 != leading || reported?.1 != buttonsEnd else { return }
-            reported = (leading, buttonsEnd)
-            // The caller's state drives the layout this is being read from, so hand it back after
-            // the pass rather than inside it.
-            DispatchQueue.main.async { [report] in report(leading, buttonsEnd) }
-        }
-    }
-}
-
-/// The navigator toggle and, while the navigator is open, the name of the workspace the column
-/// below is scoped to.
-///
-/// One toolbar item carrying both, rather than the two adjacent items this used to be: NSToolbar
-/// spaces neighbouring items on its own terms, and between a button and the word naming the column
-/// under it that spacing read as a gap neither control asked for — the name looked detached from
-/// the button it sits beside. Hosted together, the distance is this view's to set.
-///
-/// The name draws only while the sidebar is open (it labels a column that has to be on screen) and
-/// only while there is more than one workspace to be in — `WorkspaceSwitcherToolbarView` owns that
-/// second rule, along with the menu the name pops.
-private struct NavigatorToggleToolbarView: View {
-    @EnvironmentObject var store: TermioStore
-
-    /// Close enough to read as one control band with the button, still clear of the glyph. The
-    /// toggle's own frame contributes a little more (it is wider than the symbol it draws), so the
-    /// gap on screen is a few points past this.
-    private static let nameSpacing: CGFloat = 6
-
-    /// Where the sidebar's contents start, in window coordinates: the close button's own leading
-    /// edge, which AppKit puts at 19pt. With no traffic lights to clear — fullscreen — the item
-    /// pads itself onto that line, the same one `sidebarLeadingTrim` pulls the section labels and
-    /// rows back to, so the sidebar has one left margin rather than two.
-    private static let columnLeading: CGFloat = 19
-
-    /// What the item pads itself by before the first reading has been through, when there is no
-    /// measured edge to work from. Windowed, the toolbar holds its own edge open past the buttons
-    /// already; fullscreen lands it flush, a few points short of the column's line.
-    private static let assumedFlushInset: CGFloat = 5
-
-    /// How far past the last traffic light the item's own leading edge sits whenever the buttons
-    /// are on screen. NSToolbar's answer to that is not stable: the item rides the sidebar's
-    /// toolbar region while the column is open and the main region once it collapses, and the two
-    /// start 5pt apart — so the glyph slid sideways on every collapse, changing its distance from
-    /// the buttons beside it. Measuring from the buttons instead holds one distance through the
-    /// toggle. It is the larger of the two edges AppKit hands out, so the item is only ever padded
-    /// forward, never pulled back past the leading edge it was given.
-    private static let trafficLightsGap: CGFloat = 22
-
-    /// The most the item will pad itself, whatever a reading says. Every layout above asks for 8 or
-    /// so — the windowed item's leading edge sits 14pt past the buttons against a 22pt gap, and
-    /// fullscreen's flush one is 8.5pt short of the column's line — so this is that with room to
-    /// spare, and far short of what would push the item out of the sidebar's toolbar region at its
-    /// 240pt minimum. It exists because the cost of a wrong reading is not symmetric: a few points
-    /// of drift is a glyph a little off its line, while an item widened past its region is dropped
-    /// from the toolbar altogether, taking the navigator toggle and the workspace name with it.
-    private static let maximumLeadingInset: CGFloat = 16
-
-    /// The item's own leading edge in window coordinates, and the trailing edge of the traffic
-    /// lights — both read from AppKit rather than assumed. `nil` until the first layout pass has
-    /// been through; the buttons' edge stays `nil` while they are hidden.
-    @State private var itemLeading: CGFloat?
-    @State private var trafficLightsEnd: CGFloat?
-
-    private var leadingInset: CGFloat {
-        // Before the first reading, fall back to what the window can say for itself: windowed, the
-        // buttons are always up.
-        guard let itemLeading else { return store.windowIsFullScreen ? Self.assumedFlushInset : 0 }
-        // Fullscreen draws no buttons, whatever the ones still on the window report, so there is
-        // nothing to clear and the item sits on the column's own left margin instead. Reading them
-        // anyway is what pushed the toggle ~80pt into the column there, off every line below it.
-        let buttonsEnd = store.windowIsFullScreen ? nil : trafficLightsEnd
-        let target = buttonsEnd.map { $0 + Self.trafficLightsGap } ?? Self.columnLeading
-        return min(max(0, target - itemLeading), Self.maximumLeadingInset)
-    }
-
-    var body: some View {
-        HStack(spacing: Self.nameSpacing) {
-            toggle
-            if store.sidebarVisible {
-                WorkspaceSwitcherToolbarView()
-            }
-        }
-        .padding(.leading, leadingInset)
-        // The reader measures the item's own box, so where this padding puts the content cannot
-        // move the edge it reads back.
-        .background(alignment: .leading) {
-            ToolbarItemLeadingReader { itemLeading = $0; trafficLightsEnd = $1 }
-        }
-    }
-
-    private var toggle: some View {
-        PaneToggleToolbarView(
-            // Never capsuled, open or collapsed. This button lives in the sidebar's own toolbar
-            // region, over the vibrant `.sidebar` material and beside the traffic lights — a
-            // glass pill there sits on the column instead of on the chrome. Hand-drawn all the
-            // same, rather than an unbordered native item, because that path takes the toolbar's
-            // own image size and tint and would stop matching the trailing button's glyph.
-            symbol: "sidebar.leading",
-            showsCapsule: false,
-            // Tight to the glyph (19.5pt at this weight) rather than the capsuled button's square.
-            // With the navigator collapsed the title lands right after this item, and the square's
-            // trailing half was reading as a hole between the button and the name it belongs to.
-            width: 26,
-            help: localized("Hide or show the navigator"),
-            label: localized("Navigator")
-        ) {
-            // `NSSplitViewController.toggleSidebar(_:)` collapses the first (sidebar) item with
-            // the system animation. A `nil` target routes up the responder chain to the split
-            // controller (the window's content view controller), so there is no action to write.
-            NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
-        }
-    }
-}
-
-/// The trailing inspector toggle: the same glyph in both states, wearing the glass capsule only
-/// while the inspector is open. Closed, the button stands alone over the terminal, where a capsule
-/// reads as a chip of chrome floating on the content; open, it is the right end of the row the
-/// pane switch draws, and the shared capsule is what makes them one group.
-private struct InspectorToggleToolbarView: View {
-    @EnvironmentObject var store: TermioStore
-
-    var body: some View {
-        PaneToggleToolbarView(
-            symbol: "sidebar.trailing",
-            showsCapsule: store.inspectorVisible,
-            help: localized("Hide or show the inspector"),
-            label: localized("Inspector")
-        ) {
-            NSApp.sendAction(#selector(AppDelegate.toggleFilesInspector(_:)), to: nil, from: nil)
-        }
-    }
-}
 
 @MainActor
 private func buildMainMenu() -> NSMenu {
@@ -3295,8 +2116,8 @@ private func buildMainMenu() -> NSMenu {
     // what collapses New Terminal to a plain verb on a one-machine install and
     // grows it into a device submenu once there is a second.
     fileMenu.delegate = NSApp.delegate as? AppDelegate
-    // Keeps the `+` new-terminal action reachable when the navigator is collapsed and its toolbar
-    // button is hidden (see `setNavigatorItemsVisible`). ⌘T is safe: TUI programs drive off Ctrl,
+    // Keeps a new-terminal action reachable when the navigator, and the `+` in its control row,
+    // are collapsed. ⌘T is safe: TUI programs drive off Ctrl,
     // never Cmd, so it can't shadow a key a terminal app wants.
     fileMenu.addItem(
         withTitle: localized("New Terminal"),

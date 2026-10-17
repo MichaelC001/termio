@@ -197,9 +197,8 @@ struct GitChangesView: View {
     // MARK: Chrome
 
     /// The pane's mode switch, pinned at the top over a hairline — GitHub Desktop's tab
-    /// placement, drawn as a miniature of `InspectorTabsToolbar`'s segmented track (our
-    /// own capsule track + a sliding Liquid Glass selection pill) so both switches in
-    /// the inspector share one design language.
+    /// placement, drawn as our own capsule track with a sliding Liquid Glass selection
+    /// pill.
     private var topBar: some View {
         HStack(spacing: 0) {
             modeSwitch
@@ -220,7 +219,7 @@ struct GitChangesView: View {
         .padding(2.5)
         .background { trackBackground }
         // Scope the slide to this control so switching modes doesn't animate the pane
-        // content swap below (same reasoning as `InspectorTabsToolbar`).
+        // content swap below.
         .animation(.snappy(duration: 0.28), value: mode)
     }
 

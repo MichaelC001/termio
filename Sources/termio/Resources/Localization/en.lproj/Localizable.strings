@@ -332,6 +332,8 @@
 	<string>Close All Chats</string>
 	<key>Close All Terminals</key>
 	<string>Close All Terminals</string>
+	<key>Close Panel</key>
+	<string>Close Panel</string>
 	<key>Close Session</key>
 	<string>Close Session</string>
 	<key>Close Window</key>
@@ -626,6 +628,8 @@
 	<string>Green</string>
 	<key>Group with</key>
 	<string>Group with</string>
+	<key>Groups</key>
+	<string>Groups</string>
 	<key>Hide</key>
 	<string>Hide</string>
 	<key>Hide Others</key>
@@ -650,6 +654,8 @@
 	<string>Hooks installed</string>
 	<key>Hooks reinstalled</key>
 	<string>Hooks reinstalled</string>
+	<key>Horizontal</key>
+	<string>Horizontal</string>
 	<key>Host</key>
 	<string>Host</string>
 	<key>Host Unavailable</key>
@@ -1010,6 +1016,8 @@
 	<string>Open a Project on %@</string>
 	<key>Open a machine to put them there.</key>
 	<string>Open a machine to put them there.</string>
+	<key>Open a panel</key>
+	<string>Open a panel</string>
 	<key>Open in %@</key>
 	<string>Open in %@</string>
 	<key>Open in Browser</key>
@@ -1402,6 +1410,8 @@
 	<string>System (%@)</string>
 	<key>System monospace</key>
 	<string>System monospace</string>
+	<key>Tabs</key>
+	<string>Tabs</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>Takes %@ out of the new-session menu. Its settings are kept.</string>
 	<key>Takes effect after Termio relaunches.</key>
@@ -1650,6 +1660,10 @@
 	<string>Uses %@</string>
 	<key>Version %@ on %@. Sessions keep running there after you disconnect.</key>
 	<string>Version %@ on %@. Sessions keep running there after you disconnect.</string>
+	<key>Vertical</key>
+	<string>Vertical</string>
+	<key>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</key>
+	<string>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</string>
 	<key>View</key>
 	<string>View</string>
 	<key>View on %@</key>

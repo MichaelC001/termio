@@ -187,6 +187,7 @@ struct GitDiffView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            DetailListColumnToggle()
             Text(request.change.status.letter)
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(request.change.status.tint)
@@ -239,7 +240,7 @@ struct GitDiffView: View {
             // choice: docked, the pane is a column of the inspector and has no room for two.
             if store.inspectorMaximized {
                 DetailChromeButton(
-                    icon: isSplitView ? .layoutRows : .layoutColumns, size: 14,
+                    icon: isSplitView ? .layoutRows : .layoutColumns,
                     help: isSplitView ? localized("Show one column (inline diff)")
                                       : localized("Show two columns (side-by-side diff)")
                 ) { settings.diffSplitView.toggle() }

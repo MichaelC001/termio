@@ -75,6 +75,7 @@ struct FilePreviewView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            DetailListColumnToggle()
             Image(systemName: kind == .web ? "globe" : "photo")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)

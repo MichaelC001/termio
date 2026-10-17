@@ -40,6 +40,24 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Where a group's sessions are listed. `.vertical`: under their group in the sidebar.
+/// `.horizontal`: the sidebar lists only the groups — Terminals, Chats, each project — and
+/// the selected group's sessions sit as tabs above the cards, as Safari's tab groups do. Each
+/// list is on screen once either way. Raw values persist.
+enum TabLayout: String, CaseIterable, Identifiable {
+    case vertical
+    case horizontal
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .vertical: return localized("Vertical")
+        case .horizontal: return localized("Horizontal")
+        }
+    }
+}
+
 /// How the sidebar orders its projects. Raw values persist. Pinned projects always
 /// sort ahead of the rest (see `TermioStore.orderedProjects`); this decides the order
 /// within each group.
@@ -96,7 +114,7 @@ final class AppSettings: ObservableObject {
         Key.sessionControlEnabled, Key.githubIntegrationEnabled,
         Key.notifyTaskCompletion, Key.notificationSound,
         Key.analyticsEnabled,
-        Key.projectSortOrder, Key.defaultChatAgent, Key.dimIgnoredFiles,
+        Key.projectSortOrder, Key.tabLayout, Key.defaultChatAgent, Key.dimIgnoredFiles,
         Key.diffSplitView,
     ]
 
@@ -152,6 +170,7 @@ final class AppSettings: ObservableObject {
         static let dimIgnoredFiles = "files.dimIgnoredFiles"
         static let diffSplitView = "diff.splitView"
         static let projectSortOrder = "sidebar.projectSortOrder"
+        static let tabLayout = "sidebar.tabLayout"
         static let recentProjects = "welcome.recentProjects"
         static let lastChatAgent = "chats.lastAgent"
         static let defaultChatAgent = "chats.defaultAgent"
@@ -213,6 +232,11 @@ final class AppSettings: ObservableObject {
 
     /// How the sidebar orders projects (pinned always first; see `ProjectSortOrder`).
     /// Driven by the sort menu in the sidebar's toolbar.
+    /// Where a group's sessions are listed (see `TabLayout`).
+    @Published var tabLayout: TabLayout {
+        didSet { store.set(tabLayout.rawValue, forKey: Key.tabLayout) }
+    }
+
     @Published var projectSortOrder: ProjectSortOrder {
         didSet { store.set(projectSortOrder.rawValue, forKey: Key.projectSortOrder) }
     }
@@ -604,6 +628,7 @@ final class AppSettings: ObservableObject {
             // with a GitHub remote, so there is nothing to opt into until then.
             Key.githubIntegrationEnabled: true,
             Key.projectSortOrder: "name",
+            Key.tabLayout: "vertical",
             // Notifications ship on (macOS's own permission prompt is the real
             // gate); the sound stays opt-in so a finishing agent is never noisy
             // by default.
@@ -663,6 +688,7 @@ final class AppSettings: ObservableObject {
         notificationSoundEnabled = store.bool(Key.notificationSound)
         analyticsEnabled = store.bool(Key.analyticsEnabled)
         projectSortOrder = store.string(Key.projectSortOrder).flatMap(ProjectSortOrder.init) ?? .name
+        tabLayout = store.string(Key.tabLayout).flatMap(TabLayout.init) ?? .vertical
         recentProjects = defaults.data(forKey: Key.recentProjects)
             .flatMap { try? JSONDecoder().decode([RecentProject].self, from: $0) } ?? []
         lastChatAgentID = defaults.string(forKey: Key.lastChatAgent)

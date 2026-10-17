@@ -18,9 +18,7 @@ extension AppSettings {
 /// flat list never uses. Left alone it lands the first glyph's ink at 24.5pt — five and a half
 /// points right of the close button's leading edge, which AppKit puts at 19pt. Every row and
 /// section label pulls back by this much so the column starts on the traffic lights' line: the
-/// window's own left margin, and the one the navigator toggle above the column shares in
-/// fullscreen (`NavigatorToggleToolbarView.columnLeading` is the same line read from the
-/// other side). The hover chip stays outside that line rather than on it — a highlight whose edge
+/// window's own left margin (`WindowChrome.trafficLightsLeading`). The hover chip stays outside that line rather than on it — a highlight whose edge
 /// touches the glyph it lifts reads as a crop, so it keeps the 6pt gutter Finder's own selection
 /// pill carries around its items.
 private let sidebarLeadingTrim: CGFloat = 7.5
@@ -339,10 +337,10 @@ struct SidebarView: View {
             // no second list to learn. The "Also Running" section that used to
             // sit here is gone with #528.
         }
-        // The native macOS `.sidebar` source list — its own Liquid Glass material, full-height
-        // behind the traffic lights. (We previously painted the column ourselves to dodge a macOS 26
-        // full-screen round-trip bug, but per the design call we're back to the stock sidebar.)
+        // The `.sidebar` source list's rows and insets, over the material the column paints
+        // (`SidebarMaterialController`), so the list draws no background of its own.
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .contentMargins(.bottom, 12, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
@@ -1235,57 +1233,51 @@ private struct AgentQuickAddButton: View {
 
     var body: some View {
         Button(action: action) {
-            AgentIconView(agent: preset, size: 15)
-                .frame(width: 22, height: 20)
-                .background(hoverBackground(chrome, isHovering: isHovering))
+            // The same glass tile as the session rows below, so a kind you can start looks like
+            // the sessions it makes. Hover lights the tile's face, painted the frame the pointer
+            // arrives.
+            AgentIconView(agent: preset, size: 12)
+                .frame(width: 20, height: 20)
+                .background {
+                    GlassTile()
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.14 : 0)))
+                }
+                .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(PressShrinkStyle())
         .onHover { isHovering = $0 }
-        .animation(.easeInOut(duration: 0.1), value: isHovering)
         .help(localized("New \(preset.displayName) session"))
     }
 }
 
-/// The rounded hover lift shared by the header's inline action controls: a faint
-/// fill of the theme foreground (or the system primary) under the cursor only.
-private func hoverBackground(_ chrome: ChromeTheme?, isHovering: Bool) -> some View {
-    RoundedRectangle(cornerRadius: 5, style: .continuous)
-        .fill((chrome?.foreground ?? .primary).opacity(isHovering ? 0.12 : 0))
-}
-
-/// The inline close action on a session row. Like `AgentQuickAddButton`, it owns
-/// its hover state so the control lifts a rounded background under the cursor — the
-/// per-action highlight VSCode gives the kill button on a terminal tab.
-private struct SessionRowActionButton: View {
-    let systemImage: String
+/// The inline close action on a session row: a plain ✕ in the row's ink. Hovering changes
+/// nothing — the button only appears while the row is hovered, which is cue enough — and a press
+/// shrinks it a step so the click registers.
+private struct SessionRowCloseButton: View {
     let help: String
-    /// The colour the glyph turns under the cursor. Destructive actions announce
-    /// themselves in red; benign ones (isolate) lift to the accent.
-    var hoverTint: Color = .red
-    var pointSize: CGFloat = 17
     let chrome: ChromeTheme?
-    var isEnabled: Bool = true
     let action: () -> Void
-    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
-            // At rest the glyph borrows the row's foreground; on hover it lifts to its
-            // tint so the action announces itself before the click (red for the
-            // destructive close, accent for the benign isolate).
-            Image(systemName: systemImage)
-                .font(.system(size: pointSize, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isHovering ? AnyShapeStyle(hoverTint) : (chrome.map { AnyShapeStyle($0.foreground) } ?? AnyShapeStyle(.secondary)))
+            HugeIconView(icon: .close, size: ChromeGlyph.size(for: .close),
+                         color: chrome?.foreground ?? .secondary,
+                         lineWidthOverride: ChromeGlyph.lineWidth())
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
-        .onHover { isHovering = $0 }
-        .animation(.easeInOut(duration: 0.1), value: isHovering)
+        .buttonStyle(PressShrinkStyle())
         .help(help)
-        .disabled(!isEnabled)
+    }
+}
+
+private struct PressShrinkStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -1411,7 +1403,7 @@ private struct SessionRow: View {
                     // Size 15 like the folder and agent marks sharing this
                     // 16-wide column — HugeIconShape normalizes ink width, so
                     // equal size is what makes the glyphs read as one family.
-                    HugeIconView(icon: .serverStack, size: 15, color: .secondary)
+                    HugeIconView(icon: .serverStack, size: 12, color: .secondary)
                 } else if status == .working {
                     // The spinner carries no status color — its motion already
                     // says "working", so color stays reserved for the states
@@ -1422,17 +1414,20 @@ private struct SessionRow: View {
                     // opacity ramp provides all the fade, so the head reads at
                     // full icon strength instead of a double-discounted grey.
                     WorkingIndicator(tint: .sidebarWorkingInk)
+                        .frame(width: 12, height: 12)
                 } else {
-                    AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
+                    AgentIconView(agent: store.effectiveAgent(for: session), size: 12)
                 }
             }
-            .frame(width: 16)
-            // The resting "your turn" status now rides the leading mark itself — a green ring when
+            .frame(width: 20, height: 20)
+            // The same glass tile the horizontal tab strip draws behind each session's mark.
+            .background(GlassTile())
+            // The resting "your turn" status now rides the leading mark itself — a green dot when
             // the agent just finished, orange when it's blocked on you — so all of a row's status
-            // (spinner = working, ring = your turn, nothing = idle) reads from one place on the left
-            // instead of being split with a trailing dot. An overlay, so the ring never shifts the
-            // row's layout, and it sits *around* the brand glyph so the vendor color stays intact.
-            .overlay { StatusRing(status: status) }
+            // (spinner = working, corner dot = your turn, nothing = idle) reads from one place on the
+            // left instead of at the row's end. An overlay, so the dot never shifts the row's layout,
+            // and it sits on the tile's corner so the vendor color stays intact.
+            .overlay { StatusDot(status: status) }
             .help(store.statusDescription(for: session.id))
             VStack(alignment: .leading, spacing: 0) {
                 Text(store.displayTitle(for: session))
@@ -1490,11 +1485,7 @@ private struct SessionRow: View {
         // action (the project header's "New worktree" button), so the cluster carries only the close.
         .overlay(alignment: .trailing) {
             ZStack(alignment: .trailing) {
-                SessionRowActionButton(
-                    systemImage: "xmark.circle.fill",
-                    help: localized("Close session"),
-                    chrome: chrome
-                ) {
+                SessionRowCloseButton(help: localized("Close session"), chrome: chrome) {
                     store.requestCloseSession(session.id)
                 }
                 .opacity(isHovering ? 1 : 0)
@@ -1655,18 +1646,16 @@ struct SidebarRowHighlight: View {
         }
     }
 
-    /// The default frosted-grey lift. The material reads only faintly over the
-    /// already-blurred sidebar, so a grey tint carries most of the lift; selection
-    /// sits a clear step above hover. Fill only — no border, so the row reads as a
-    /// soft highlight rather than an outlined chip.
+    /// The default grey lift: selection a clear step above hover. A plain ink fill,
+    /// never a material — inside a table row a material follows the row's emphasis,
+    /// so it drew accent-tinted while the list had keyboard focus and grey once a
+    /// click on the terminal took it, changing colour under a selection that had
+    /// not moved. Fill only — no border, so the row reads as a soft highlight
+    /// rather than an outlined chip.
     private var system: some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(.ultraThinMaterial)
-            .opacity(isSelected ? 1 : 0)
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(fillOpacity))
-            }
+        Capsule(style: .continuous)
+            .fill(Color.primary.opacity(fillOpacity))
+            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }
@@ -1675,14 +1664,15 @@ struct SidebarRowHighlight: View {
     /// session reads as accent-tinted (VSCode's active list item), with hover a
     /// fainter step below selection. Fill only — no border.
     private func themed(_ chrome: ChromeTheme) -> some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
+        Capsule(style: .continuous)
             .fill(chrome.accent.opacity(accentOpacity))
+            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }
 
     private var fillOpacity: Double {
-        if isSelected { return 0.09 }
+        if isSelected { return 0.12 }
         if isHovering { return 0.045 }
         return 0
     }
@@ -1694,19 +1684,23 @@ struct SidebarRowHighlight: View {
     }
 }
 
-/// The resting "your turn" status, drawn as a ring *around* the leading brand mark: green when the
-/// agent just finished, orange when it's blocked on you. Working is the leading spinner and idle is
-/// nothing, so only those two states light the ring. Sized well past the 16pt icon column so it
-/// reads as a clear halo at a glance — the sidebar's most-scanned signal — while staying an overlay
-/// that never shifts the row.
-private struct StatusRing: View {
+/// The resting "your turn" status, drawn as a badge dot on the leading mark's top-trailing corner:
+/// green when the agent just finished, orange when it's blocked on you. Working is the leading
+/// spinner and idle is nothing, so only those two states show the dot. An overlay sized to the
+/// mark's frame, so it never shifts the row; the dark rim cuts it out of the tile underneath.
+struct StatusDot: View {
     let status: SessionStatus
 
     var body: some View {
         Circle()
-            .stroke(color, lineWidth: 2)
-            .frame(width: 21, height: 21)
+            .fill(color)
+            .frame(width: 7, height: 7)
+            .padding(1.5)
+            .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
+            .offset(x: 3, y: -3)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .opacity(status == .done || status == .needsAttention ? 1 : 0)
+            .allowsHitTesting(false)
     }
 
     private var color: Color {

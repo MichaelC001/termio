@@ -18,6 +18,9 @@ struct InspectorRoot: View {
     /// (Mail's message-list / VS Code's explorer proportions), not so wide it starves the detail.
     /// Persisted, so the drag-to-resize width survives relaunch, and shared across inspector panes.
     @AppStorage("inspectorListColumnWidth") private var listColumnWidth: Double = 240
+    @State private var columnDividerHovered = false
+    /// The list column's width when the divider drag began; nil when no drag is in flight.
+    @State private var columnDragAnchor: Double?
 
     /// The default browse width a double-click on the divider snaps back to.
     private static let defaultListWidth: CGFloat = 240
@@ -29,9 +32,6 @@ struct InspectorRoot: View {
     /// Read by the detail's list toggle too — it widens the panel to this rather than flipping a flag
     /// that a narrow inspector would swallow.
     static let twoColumnMinWidth: CGFloat = 600
-    /// The named space the resize drag reads its pointer x in — the list column's leading edge is its
-    /// origin, so the pointer's x *is* the target column width.
-    private static let dragSpace = "inspectorList"
 
     var body: some View {
         GeometryReader { geo in
@@ -86,7 +86,6 @@ struct InspectorRoot: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .coordinateSpace(.named(Self.dragSpace))
             // The detail's header lives in its own hosting view and can't see this geometry, so the
             // store carries the one bit it needs. Only the threshold crossing is published, not the
             // width, so a divider drag doesn't wake every store observer on each frame.
@@ -106,19 +105,21 @@ struct InspectorRoot: View {
     private func columnDivider(maxAllowed: CGFloat) -> some View {
         Divider()
             .overlay {
-                Color.clear
-                    .frame(width: 10)
-                    .contentShape(Rectangle())
-                    .onHover { inside in
-                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                SashGrip(axis: .vertical, isActive: columnDividerHovered || columnDragAnchor != nil)
+                    .overlay {
+                        SashHandle(
+                            axis: .vertical,
+                            onHover: { columnDividerHovered = $0 },
+                            onBegin: { columnDragAnchor = listColumnWidth },
+                            onChange: { delta in
+                                guard let start = columnDragAnchor else { return }
+                                listColumnWidth = Double(max(Self.minListWidth,
+                                                             min(CGFloat(start) + delta, maxAllowed)))
+                            },
+                            onEnd: { columnDragAnchor = nil },
+                            onDoubleClick: { listColumnWidth = Double(Self.defaultListWidth) })
                     }
-                    .gesture(
-                        DragGesture(coordinateSpace: .named(Self.dragSpace))
-                            .onChanged { value in
-                                listColumnWidth = Double(max(Self.minListWidth, min(value.location.x, maxAllowed)))
-                            }
-                    )
-                    .onTapGesture(count: 2) { listColumnWidth = Double(Self.defaultListWidth) }
+                    .frame(width: 10)
             }
     }
 }
@@ -187,9 +188,8 @@ final class DetailHost {
 }
 
 /// The shared host's root view: the same content the inspector docks, plus the two things that
-/// differ once it fills the window. With the toolbar hidden for the duration (see
-/// `setDetailMaximized`) there is no band above it, so the detail's own header *is* the window's top
-/// bar rather than a second one beneath an empty strip; and when the sidebar is collapsed the host
+/// differ once it fills the window. There is no band above it, so the detail's own header *is* the
+/// window's top bar; and when the sidebar is collapsed the host
 /// reaches the window's leading edge, so the header takes an inset that clears the traffic lights.
 /// Both read the store, so one long-lived view covers docked and maximized alike.
 struct DetailHostRoot: View {
@@ -201,10 +201,10 @@ struct DetailHostRoot: View {
     var body: some View {
         InspectorDetailContent()
             .environment(\.detailHeaderLeadingInset, needsTrafficLightsRoom ? trafficLightsInset : 0)
-            // Up into the titlebar only when the toolbar has stepped aside for this detail, which
-            // is exactly when it is maximized with the sidebar collapsed (see `syncMaximizedChrome`).
-            // With the sidebar up the toolbar keeps the sidebar's controls, so the header stays
-            // below it rather than sliding under a band that is still drawing.
+            // Up into the titlebar strip only when it is maximized with the sidebar collapsed — then
+            // its header is the window's top row and sits beside the traffic lights, so it takes
+            // the top margin every other row does and centres on the same line (`WindowChrome`).
+            .padding(.top, ridesTitlebar ? WindowChrome.inset : 0)
             .ignoresSafeArea(.container, edges: ridesTitlebar ? .top : [])
     }
 
@@ -265,10 +265,38 @@ struct DetailHeaderTitlebarInset: ViewModifier {
 
     func body(content: Content) -> some View {
         content.padding(.leading, inset)
+            // A maximized detail's header is the window's top row, so it moves the window too.
+            .background(WindowDragArea())
     }
 }
 
-/// The detail's own window controls, drawn at the trailing edge of each detail's header. All three
+/// Collapses or restores the inspector's list column. Leads each detail's header, on the side of the
+/// column it acts on, the way a sidebar toggle sits at the sidebar's edge. A panel glyph rather than
+/// one of the box-split "layout" marks, which the diff's inline / side-by-side toggle owns now: two
+/// of those in one header read as one control. Shown only where it can act: while the panel has
+/// room for both columns, and never while the detail is maximized and fills the window.
+struct DetailListColumnToggle: View {
+    @EnvironmentObject var store: TermioStore
+    /// How much wider the header's leading padding is than its trailing one. The toggle steps out
+    /// by that much, so it sits as far from the leading edge as the close button from the
+    /// trailing one.
+    var outset: CGFloat = 0
+
+    var body: some View {
+        if store.inspectorFitsTwoColumns, !store.inspectorMaximized {
+            let showing = store.inspectorListColumnVisible
+            DetailChromeButton(
+                icon: showing ? .panelLeftCollapse : .panelLeftExpand,
+                help: showing ? "Hide the list column" : "Show the list column"
+            ) {
+                store.setInspectorListColumn(visible: !showing)
+            }
+            .padding(.leading, -outset)
+        }
+    }
+}
+
+/// The detail's own window controls, drawn at the trailing edge of each detail's header. Both
 /// act on the content area, so they live
 /// *in* it rather than in the window toolbar — which also sidesteps the flaky
 /// `NSTrackingSeparatorToolbarItem` layout the toolbar-hosted versions destabilized. Hugeicons
@@ -278,33 +306,14 @@ struct InspectorDetailChromeButtons: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Collapse the leading list column so the detail fills the inspector. A panel glyph
-            // rather than one of the box-split "layout" marks, which the diff's inline /
-            // side-by-side toggle owns now: two of those in one header read as one control.
-            // Meaningless once the detail already fills the whole window, so it's dropped while
-            // maximized.
-            if !store.inspectorMaximized {
-                // Reads the *visible* state, not the flag: an inspector too narrow for both columns
-                // covers the list however the flag stands, so keying off the flag alone offered to
-                // hide a column that wasn't there and then did nothing. Showing one from there
-                // widens the panel until it fits.
-                let showing = store.inspectorListColumnVisible
-                DetailChromeButton(
-                    icon: showing ? .panelLeftCollapse : .panelLeftExpand, size: 15,
-                    help: showing ? "Hide the list column" : "Show the list column"
-                ) {
-                    store.setInspectorListColumn(visible: !showing,
-                                                 widenTo: InspectorRoot.twoColumnMinWidth)
-                }
-            }
             DetailChromeButton(
-                icon: store.inspectorMaximized ? .collapse : .expand, size: 14,
+                icon: store.inspectorMaximized ? .collapse : .expand,
                 help: store.inspectorMaximized ? "Restore detail to the inspector"
                                                : "Maximize detail to fill the window"
             ) { store.inspectorMaximized.toggle() }
             // The X is optically heavy (two full-width diagonals), so it's drawn a touch smaller to
             // sit even with the others.
-            DetailChromeButton(icon: .close, size: 12, help: "Close (Esc)") {
+            DetailChromeButton(icon: .close, help: "Close (Esc)") {
                 NotificationCenter.default.post(name: .termioCloseContentOverlay, object: nil)
             }
         }
@@ -312,21 +321,19 @@ struct InspectorDetailChromeButtons: View {
 }
 
 /// One content-area control, wearing the shared `TreeHeaderChip` so the detail's window controls
-/// read as one family with the refresh / filter / ↗ buttons in the same header — a 22×22 Hugeicons
-/// glyph, quiet `.secondary` at rest and brightening to primary over a faint rounded fill on hover.
-/// `size` varies per glyph so each sits at the same optical weight (the diagonal-heavy ✕ shrinks).
+/// read as one family with the window's other glyph buttons: one size (`ChromeGlyph`), quiet
+/// `.secondary` at rest and brightening to primary over a faint rounded fill on hover.
 struct DetailChromeButton: View {
     let icon: HugeIcon
-    var size: CGFloat = 14
     let help: String
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            HugeIconView(icon: icon, size: size,
+            HugeIconView(icon: icon, size: ChromeGlyph.size(for: icon),
                          color: hovering ? .primary : .secondary,
-                         lineWidthOverride: 1.0)
+                         lineWidthOverride: ChromeGlyph.lineWidth())
                 .modifier(TreeHeaderChip(hovering: $hovering))
         }
         .buttonStyle(.plain)

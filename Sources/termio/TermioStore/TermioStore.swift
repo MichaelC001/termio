@@ -76,7 +76,12 @@ final class TermioStore: ObservableObject {
             // and applies the selected one by hand, so capturing here would overwrite a
             // just-seeded layout with the still-default live inspector.
             if !isRestoringInspector {
-                if let old = oldValue { inspectorStates[old] = captureInspectorState() }
+                if let old = oldValue {
+                    inspectorStates[old] = captureInspectorState()
+                    // The panel still shows the session being left: picture it before the
+                    // arriving session's layout replaces it.
+                    if openPanels.contains(old) { panelSnapshots[old] = InspectorPanelHost.shared.snapshot() }
+                }
                 applyInspectorState(selectedSessionID.flatMap { inspectorStates[$0] } ?? InspectorState())
             }
             if let id = selectedSessionID {
@@ -92,6 +97,7 @@ final class TermioStore: ObservableObject {
                 // workspace rather than the current one, so a deep link that
                 // jumps scopes records the arrival where it landed.
                 if let owner = workspace(for: id)?.id { workspaceSelections[owner] = id }
+                if let group = group(of: id) { lastGroupSelection[group] = id }
                 // Looking at a session is being on its machine. Every path that
                 // moves the selection — a deep link, the palette, a notification,
                 // a split, a freshly opened remote terminal — lands here, so this
@@ -408,11 +414,6 @@ final class TermioStore: ObservableObject {
     /// detail covers the list whatever the flag says.
     @Published private(set) var inspectorFitsTwoColumns = false
 
-    /// Asks the window to widen the inspector to at least this thickness. Sent when the list toggle
-    /// is used in a panel too narrow to hold both columns — flipping the flag there changed nothing
-    /// on screen, so the button sat inert while its tooltip promised a column.
-    let inspectorWidenRequest = PassthroughSubject<CGFloat, Never>()
-
     /// Whether the list column is actually on screen beside the detail — the flag *and* the room for
     /// it. What the toggle's label and its next action read.
     var inspectorListColumnVisible: Bool { inspectorFitsTwoColumns && !inspectorListCollapsed }
@@ -422,11 +423,9 @@ final class TermioStore: ObservableObject {
         inspectorFitsTwoColumns = fits
     }
 
-    /// Shows or hides the detail's leading list column. Showing it in a panel that has no room for
-    /// both also asks the window to widen the inspector, so the click lands either way.
-    func setInspectorListColumn(visible: Bool, widenTo thickness: CGFloat) {
+    /// Shows or hides the detail's leading list column.
+    func setInspectorListColumn(visible: Bool) {
         inspectorListCollapsed = !visible
-        if visible && !inspectorFitsTwoColumns { inspectorWidenRequest.send(thickness) }
     }
 
     /// Recomputes `isDetailPresented` from the three detail properties and drops the maximize
@@ -668,12 +667,39 @@ final class TermioStore: ObservableObject {
         return project.remoteCheckout(device: device.deviceID, alias: alias)
     }
 
-    /// Whether the trailing inspector panel is expanded. Mirrored from the AppKit
-    /// split item — the owner of collapse state — via KVO in `App.swift`, so hosted
-    /// panes can stand down while hidden: a collapsed item keeps its view hierarchy
-    /// (and any `@StateObject` in it) alive, which left the git pane's auto-refresh
-    /// spawning `git status` for a pane nobody could see.
-    @Published var inspectorVisible = false
+    /// The sessions whose card has its panel open. Each card owns its panel, so the
+    /// flag belongs to the session rather than to the window: a card keeps its panel —
+    /// and its terminal keeps its width — whichever card has focus. Moving focus never
+    /// resizes a surface (issue #245).
+    @Published var openPanels: Set<Session.ID> = []
+
+    /// What an open panel showed when its card last had focus. Only the focused card's
+    /// panel is live (one inspector, one file watcher, one `git status`); the others keep
+    /// a picture of where they were, and focusing the card brings its panel back to life.
+    @Published var panelSnapshots: [Session.ID: NSImage] = [:]
+
+
+    /// How wide an open panel is, shared by every card and kept across launches.
+    @Published var panelWidth: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: TermioStore.panelWidthKey)
+        return saved > 0 ? CGFloat(saved) : 320
+    }() {
+        didSet { UserDefaults.standard.set(Double(panelWidth), forKey: Self.panelWidthKey) }
+    }
+    nonisolated static let panelWidthKey = "cardPanelWidth"
+
+    /// Whether the focused card's panel is open — the live inspector. Hosted panes read it
+    /// to stand down while hidden: the inspector's view hierarchy stays alive while
+    /// closed, which would otherwise leave the git pane's auto-refresh spawning
+    /// `git status` for a pane nobody can see.
+    var inspectorVisible: Bool {
+        get { selectedSessionID.map { openPanels.contains($0) } ?? false }
+        set {
+            guard let id = selectedSessionID else { return }
+            if newValue { openPanels.insert(id) } else { openPanels.remove(id) }
+            persistSoon()
+        }
+    }
 
     /// Whether the leading project sidebar is expanded. Mirrored from its AppKit split item the
     /// same way `inspectorVisible` is. A maximized detail reads it to know whether the traffic
@@ -692,8 +718,8 @@ final class TermioStore: ObservableObject {
     /// file, another on a PR, another on the changes list.
     ///
     /// Chrome that covers something the arriving session did not ask to hide is deliberately
-    /// absent. The inspector's *width* and *open/closed* state belong to the AppKit split
-    /// item, and the full-window maximize is not carried either: re-mounting that host on a
+    /// absent. Whether the card's panel is open lives in `openPanels`, and the full-window
+    /// maximize is not carried either: re-mounting that host on a
     /// session switch buries the terminal without the user asking (the same defect as #272,
     /// which is why the reveal is an event now). A returning session shows its detail docked;
     /// the user re-maximizes if they want it back.
@@ -726,6 +752,11 @@ final class TermioStore: ObservableObject {
     /// Persisted, so the scope you return to after a relaunch is the scope you left.
     /// Entries for closed sessions are pruned alongside their runtimes in `syncRuntimes`.
     var workspaceSelections: [Workspace.ID: Session.ID] = [:]
+
+    /// The session each group was last left on, so opening a group in the horizontal layout
+    /// lands where the person was (see `open(_:)`). In memory only: a relaunch opens a group on
+    /// its first session.
+    var lastGroupSelection: [TabGroup: Session.ID] = [:]
 
     /// True only while `restored()` seeds the saved layouts and hand-applies the selected
     /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a
@@ -854,6 +885,9 @@ final class TermioStore: ObservableObject {
         // A closed session's saved inspector layout goes with it, and so does its
         // claim on being the row a workspace comes back to.
         for id in inspectorStates.keys where !live.contains(id) { inspectorStates.removeValue(forKey: id) }
+        let closedPanels = openPanels.subtracting(live)
+        if !closedPanels.isEmpty { openPanels.subtract(closedPanels) }
+        for id in panelSnapshots.keys where !live.contains(id) { panelSnapshots.removeValue(forKey: id) }
         for (workspace, id) in workspaceSelections where !live.contains(id) {
             workspaceSelections.removeValue(forKey: workspace)
         }
@@ -1579,6 +1613,7 @@ final class TermioStore: ObservableObject {
                     state.openFileReadOnly = layout.fileReadOnly ?? false
                 }
                 store.inspectorStates[id] = state
+                if layout.panelOpen == true { store.openPanels.insert(id) }
             }
         }
         // Seed where each workspace was left. Validated against the live tree, since a
@@ -1630,14 +1665,17 @@ final class TermioStore: ObservableObject {
         var states = inspectorStates
         if let id = selectedSessionID { states[id] = captureInspectorState() }
         var layouts: [String: StateFile.InspectorLayout] = [:]
-        for (id, state) in states {
-            // Skip the plain default (Files tab, nothing open) to keep the file lean.
-            guard state.tab != .files || state.openFileURL != nil else { continue }
+        for id in Set(states.keys).union(openPanels) {
+            let state = states[id] ?? InspectorState()
+            let panelOpen = openPanels.contains(id)
+            // Skip the plain default (Files tab, nothing open, panel closed) to keep the file lean.
+            guard state.tab != .files || state.openFileURL != nil || panelOpen else { continue }
             layouts[id.uuidString] = StateFile.InspectorLayout(
                 tab: state.tab,
                 filePath: state.openFileURL?.path,
                 fileLine: state.openFileLine,
-                fileReadOnly: state.openFileReadOnly
+                fileReadOnly: state.openFileReadOnly,
+                panelOpen: panelOpen ? true : nil
             )
         }
         var selections: [String: Session.ID] = [:]

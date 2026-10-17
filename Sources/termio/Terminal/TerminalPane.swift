@@ -46,22 +46,39 @@ struct TerminalPane: View {
     @EnvironmentObject var settings: AppSettings
     @State private var focusDriver = TerminalFocusDriver()
     @State private var activated: [Session.ID] = []
+    @State private var lastLivePanelFrame: CGRect = .zero
 
     var body: some View {
         GeometryReader { geo in
             // The terminal group fills the whole pane. File editors, diffs and PR/issue details
             // now open in the right inspector (see `InspectorDetailHost`) rather than covering
             // the terminal, so this pane is only ever terminal surfaces + split dividers.
-            let bounds = CGRect(origin: .zero, size: geo.size)
-            let layout = store.splitRoot?.layout(in: bounds)
+            // No leading margin while the sidebar is open: the window's split divider is the gap
+            // on that side, as wide as every other (`SeamlessSplitView`). Collapsed, the divider
+            // goes with it and the cards keep their own margin.
+            let leading = store.sidebarVisible ? 0 : PaneCard.spacing
+            // The horizontal layout's tab strip takes the top row; the cards start under it.
+            let top = PaneCard.spacing + (showsTabStrip ? WindowChrome.rowHeight + PaneCard.spacing : 0)
+            let bounds = CGRect(x: leading, y: top,
+                                width: max(0, geo.size.width - leading - PaneCard.spacing),
+                                height: max(0, geo.size.height - top - PaneCard.spacing))
+            let layout = store.splitRoot?.layout(in: bounds, dividerThickness: PaneCard.spacing)
             let zoomed = store.isPaneZoomed && layout != nil
-            terminalGroup(bounds: bounds, layout: layout, zoomed: zoomed)
-                .frame(width: geo.size.width, height: geo.size.height)
+            ZStack(alignment: .topLeading) {
+                terminalGroup(bounds: bounds, layout: layout, zoomed: zoomed)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                if showsTabStrip {
+                    SessionTabStrip()
+                        .padding(.leading, leading)
+                        .padding(.trailing, PaneCard.spacing)
+                        .padding(.top, PaneCard.spacing)
+                }
+            }
                 .coordinateSpace(name: Self.splitCoordinateSpace)
         }
-        // Paint the terminal's own background behind the pane, extending up under the toolbar so
-        // the system toolbar material picks up a terminal tint instead of a flat grey band.
-        .background(paneBackground.ignoresSafeArea(.container, edges: .top))
+        // Up into the titlebar strip: the window has no toolbar, so the top row of cards puts
+        // its headers on the traffic lights' line (see `WindowChrome`).
+        .ignoresSafeArea(.container, edges: .top)
         // The ⌘⇧O/⌘⇧P palette lives in its own floating NSPanel (owned by
         // the app delegate — a SwiftUI overlay would render *under* the NSView
         // terminal surfaces); this only hands focus back to the terminal when
@@ -136,7 +153,8 @@ struct TerminalPane: View {
         // decided separately, below: hiding a group must not move or resize its
         // panes, because a frame change is a SIGWINCH the shell answers by
         // repainting — the flash on the way back in (issue #245).
-        let paneFrames = SplitNode.paneFrames(of: store.splitGroups, in: bounds)
+        let paneFrames = SplitNode.paneFrames(of: store.splitGroups, in: bounds,
+                                              dividerThickness: PaneCard.spacing)
         let visibleIDs = Set(store.visiblePaneIDs)
         ZStack {
             if mounted.isEmpty {
@@ -149,8 +167,19 @@ struct TerminalPane: View {
                 // Zoom is a real geometry change, so the zoomed pane does take the
                 // full bounds; its hidden siblings keep their laid-out frames. An
                 // ungrouped session has no split geometry and fills the pane.
-                let rect = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
+                let card = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
+                let panel = PaneCard.panelLayout(in: card, isOpen: store.openPanels.contains(id),
+                                                 width: store.panelWidth)
+                let rect = panel.terminal
                 let context = store.surface(for: item.session)
+                PaneCardChrome(session: item.session, isSelected: isSelected,
+                               background: paneBackground,
+                               isTopLeading: PaneCard.isTopLeading(card, in: bounds),
+                               cardMinX: card.minX)
+                    .frame(width: card.width, height: card.height)
+                    .position(x: card.midX, y: card.midY)
+                    .opacity(isVisible ? 1 : 0)
+                    .allowsHitTesting(isVisible)
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
                     sessionName: id.uuidString,
@@ -172,9 +201,54 @@ struct TerminalPane: View {
                     )
                 }
                 .frame(width: rect.width, height: rect.height)
+                // The card's corners are round and the surface is not: clip the corners it
+                // reaches, or its background shows past the card's border onto the window's.
+                .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil))
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(isVisible ? 1 : 0)
                 .allowsHitTesting(isVisible)
+                // An open panel on a card without focus: the picture it left, which a
+                // click turns back into the live panel by focusing the card.
+                if let frame = panel.frame, !isSelected, isVisible {
+                    PanelSnapshot(image: store.panelSnapshots[id], background: paneBackground)
+                        .frame(width: frame.width, height: frame.height)
+                        .clipShape(PaneCard.panelClip(covers: panel.covers))
+                        .position(x: frame.midX, y: frame.midY)
+                        .onTapGesture { store.selectedSessionID = id }
+                    PanelEdge(covers: panel.covers)
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                }
+                if let frame = panel.frame, isVisible, !panel.covers {
+                    PanelDividerHandle(panelFrame: frame, card: card)
+                }
+                // Over the surface, not behind it: the surface is square-cornered, so
+                // a border drawn underneath would lose its rounded bottom corners.
+                PaneCardBorder(isFocused: isSelected && store.splitRoot != nil)
+                    .frame(width: card.width, height: card.height)
+                    .position(x: card.midX, y: card.midY)
+                    .opacity(isVisible ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            // The live inspector, in the focused card's panel. One view, moved to whichever
+            // card has focus; kept mounted (at its last frame) while no panel shows it, so the
+            // file tree keeps its expanded folders and scroll.
+            let livePanel = livePanelLayout(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed)
+            let live = livePanel?.frame
+            let liveFrame = live ?? lastLivePanelFrame
+            InspectorPanelView()
+                .frame(width: max(1, liveFrame.width), height: max(1, liveFrame.height))
+                .clipShape(PaneCard.panelClip(covers: livePanel?.covers ?? false))
+                .position(x: liveFrame.midX, y: liveFrame.midY)
+                .opacity(live == nil ? 0 : 1)
+                .allowsHitTesting(live != nil)
+                .onChange(of: live) { _, frame in
+                    if let frame { lastLivePanelFrame = frame }
+                }
+            if let livePanel {
+                PanelEdge(covers: livePanel.covers)
+                    .frame(width: livePanel.frame.width, height: livePanel.frame.height)
+                    .position(x: livePanel.frame.midX, y: livePanel.frame.midY)
             }
             if let layout, !zoomed {
                 ForEach(layout.dividers) { divider in
@@ -229,6 +303,16 @@ struct TerminalPane: View {
         // brightens rather than blinking. The drag overlay animates its own
         // pieces — the highlight slides, the preview must not.
         .animation(.easeInOut(duration: 0.15), value: store.paneHandleHover)
+    }
+
+    /// The focused card's panel, when its panel is open and the card is on screen.
+    private func livePanelLayout(bounds: CGRect, paneFrames: [Session.ID: CGRect],
+                                 zoomed: Bool) -> (frame: CGRect, covers: Bool)? {
+        guard let id = store.selectedSessionID, store.openPanels.contains(id),
+              store.visiblePaneIDs.contains(id) || zoomed else { return nil }
+        let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
+        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth)
+        return layout.frame.map { ($0, layout.covers) }
     }
 
     /// What the in-flight drop would land on. A `.center` target highlights the
@@ -363,6 +447,11 @@ struct TerminalPane: View {
             guard let session = store.session(id) else { return nil }
             return MountedSession(session: session)
         }
+    }
+
+    /// The horizontal layout's tabs, while there is a session to show them for.
+    private var showsTabStrip: Bool {
+        settings.tabLayout == .horizontal && store.selectedSessionID != nil
     }
 
     /// The terminal background fill, or clear when translucent — then the surface and
@@ -1213,8 +1302,9 @@ private struct PaneDragOverlay: View {
     }
 }
 
-/// The draggable divider between two split panes: a hairline with a wider
-/// invisible hit area (muxy's 1pt-line / ~10pt-grab pattern). Dragging writes
+/// The draggable divider between two split panes: the gap between their cards,
+/// with a slightly wider invisible hit area. Nothing is drawn — the two borders
+/// already mark the seam. Dragging writes
 /// the branch ratio through `onRatioChange`; the anchor is captured on the
 /// first tick so the delta is always relative to where the drag began, not to
 /// the live (already-moved) ratio.
@@ -1223,62 +1313,414 @@ private struct SplitDividerHandle: View {
     let onRatioChange: (Double) -> Void
     let onDragEnded: () -> Void
     @State private var anchorRatio: Double?
+    @State private var isHovering = false
 
     /// Whether the divider line runs vertically (panes side by side).
     private var verticalLine: Bool { spec.direction == .horizontal }
     private static let hitThickness: CGFloat = 9
 
     var body: some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor))
-            .frame(width: verticalLine ? spec.frame.width : nil,
-                   height: verticalLine ? nil : spec.frame.height)
-            .frame(width: verticalLine ? Self.hitThickness : spec.frame.width,
-                   height: verticalLine ? spec.frame.height : Self.hitThickness)
-            .contentShape(Rectangle())
-            .onHover { inside in
-                if inside {
-                    (verticalLine ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 0,
-                            coordinateSpace: .named(TerminalPane.splitCoordinateSpace))
-                    .onChanged { value in
-                        let start = anchorRatio ?? spec.ratio
-                        // The first change *is* the gesture's beginning — the
-                        // anchor is nil exactly once per drag. AppKit never
-                        // sees this drag (it is a SwiftUI gesture over a
-                        // ZStack, not an NSSplitView divider), so without this
-                        // the panes it resizes declare on the 400ms animation
-                        // debounce and the session only reflows after release.
-                        if anchorRatio == nil {
-                            anchorRatio = start
-                            GeometryDragTracker.shared.beginDrag()
-                        }
-                        guard spec.span > 0 else { return }
-                        let delta = verticalLine ? value.translation.width : value.translation.height
+        SashGrip(axis: verticalLine ? .vertical : .horizontal,
+                 isActive: isHovering || anchorRatio != nil)
+            .overlay {
+                SashHandle(
+                    axis: verticalLine ? .vertical : .horizontal,
+                    onHover: { isHovering = $0 },
+                    onBegin: {
+                        anchorRatio = spec.ratio
+                        // AppKit never sees this as a split-view drag, so without this the
+                        // panes it resizes declare on the 400ms animation debounce and the
+                        // session only reflows after release.
+                        GeometryDragTracker.shared.beginDrag()
+                    },
+                    onChange: { delta in
+                        guard let start = anchorRatio, spec.span > 0 else { return }
                         onRatioChange(start + Double(delta / spec.span))
-                    }
-                    .onEnded { _ in
+                    },
+                    onEnd: {
                         guard anchorRatio != nil else { return }
                         anchorRatio = nil
                         GeometryDragTracker.shared.endDrag()
-                        // Paired with `onDisappear` below: a gesture whose view
-                        // is torn down mid-drag never delivers this.
-                        // The release's own layout pass is still ahead of us;
-                        // flush after it so the settling size goes out at once
-                        // instead of waiting out the stream's window.
+                        // The release's own layout pass is still ahead of us; flush after it
+                        // so the settling size goes out at once instead of waiting out the
+                        // stream's window.
                         DispatchQueue.main.async { onDragEnded() }
-                    }
-            )
+                    })
+            }
+            .frame(width: verticalLine ? Self.hitThickness : spec.frame.width,
+                   height: verticalLine ? spec.frame.height : Self.hitThickness)
             .position(x: spec.frame.midX, y: spec.frame.midY)
             .onDisappear {
+                // A handle torn down mid-drag never delivers its release.
                 guard anchorRatio != nil else { return }
                 anchorRatio = nil
                 GeometryDragTracker.shared.endDrag()
             }
+    }
+}
+
+// MARK: - Pane cards
+
+/// Every pane is a card: a bordered, rounded rect with a one-line header naming
+/// where its session runs, and the terminal below. The header's height is fixed
+/// and always present — hover only reveals its buttons, never the header itself —
+/// because a header that came and went would resize the surface under it, and a
+/// resize is a SIGWINCH the shell answers by repainting.
+enum PaneCard {
+    /// The margin around the pane area, and the gap between two cards. The gap is
+    /// the split divider's own strip, so dragging it still resizes the split.
+    static let spacing: CGFloat = WindowChrome.inset
+    /// With `spacing`, centres the top row's headers on the control rows' line.
+    static let headerHeight: CGFloat = WindowChrome.rowHeight
+    static let cornerRadius: CGFloat = 10
+    static let borderWidth: CGFloat = 1
+
+    /// Whether a card holds the pane area's top-left corner. That card carries the navigator
+    /// toggle while the sidebar is collapsed, beside the traffic lights.
+    static func isTopLeading(_ card: CGRect, in bounds: CGRect) -> Bool {
+        card.minY <= bounds.minY + 0.5 && card.minX <= bounds.minX + 0.5
+    }
+
+    /// The narrowest a terminal may get beside an open panel. A card that cannot spare the
+    /// panel's width beside this lays the panel over its terminal instead, and the terminal
+    /// keeps its size.
+    static let minimumTerminalWidth: CGFloat = 360
+
+    /// Where a card's terminal and panel sit. The panel takes the card's trailing side: the
+    /// terminal's text is anchored to its leading edge, so opening the panel narrows the
+    /// terminal without moving a character of it.
+    /// `covers`: the person laid the panel over the terminal (the header's hide-terminal button).
+    static func panelLayout(in card: CGRect, isOpen: Bool, width: CGFloat)
+        -> (terminal: CGRect, frame: CGRect?, covers: Bool) {
+        let body = terminalRect(in: card)
+        guard isOpen else { return (body, nil, false) }
+        guard panelFits(in: card) else { return (body, body, true) }
+        // The shared width, narrowed to what this card can spare: a width set in a wide card
+        // narrows the panel here rather than hiding this card's terminal.
+        let fitted = min(width, widestPanel(in: card))
+        let terminal = CGRect(x: body.minX, y: body.minY,
+                              width: body.width - fitted - panelDivider, height: body.height)
+        let panel = CGRect(x: body.maxX - fitted, y: body.minY, width: fitted, height: body.height)
+        return (terminal, panel, false)
+    }
+
+    /// The strip between a card's terminal and its panel: a 1pt line in the middle, and the
+    /// whole strip a handle for dragging the panel's width.
+    static let panelDivider: CGFloat = 7
+    static let minimumPanelWidth: CGFloat = 240
+
+    /// The panel's shape inside its card: its own rounded top-leading corner where it meets the
+    /// terminal, the card's corner at the bottom-trailing one, and — laid over the whole body —
+    /// the card's bottom-leading corner too.
+    static func panelClip(covers: Bool) -> UnevenRoundedRectangle {
+        let inner = cornerRadius - borderWidth
+        return UnevenRoundedRectangle(topLeadingRadius: covers ? 0 : cornerRadius,
+                                      bottomLeadingRadius: covers ? inner : 0,
+                                      bottomTrailingRadius: inner,
+                                      style: .continuous)
+    }
+
+    /// Clips the body's bottom corners — the ones it shares with the card — to the card's
+    /// radius, inside its border.
+    static func bodyClip(leading: Bool, trailing: Bool) -> UnevenRoundedRectangle {
+        let radius = cornerRadius - borderWidth
+        return UnevenRoundedRectangle(bottomLeadingRadius: leading ? radius : 0,
+                                      bottomTrailingRadius: trailing ? radius : 0,
+                                      style: .continuous)
+    }
+
+    /// The widest panel `card` can hold beside a terminal of `minimumTerminalWidth`.
+    static func widestPanel(in card: CGRect) -> CGFloat {
+        terminalRect(in: card).width - panelDivider - minimumTerminalWidth
+    }
+
+    /// Whether even the narrowest panel fits beside the terminal in `card`. Without that the
+    /// panel covers the terminal.
+    static func panelFits(in card: CGRect) -> Bool {
+        widestPanel(in: card) >= minimumPanelWidth
+    }
+
+    /// Where the terminal sits inside a card: under the header, inside the border.
+    static func terminalRect(in card: CGRect) -> CGRect {
+        CGRect(x: card.minX + borderWidth,
+               y: card.minY + headerHeight,
+               width: max(0, card.width - 2 * borderWidth),
+               height: max(0, card.height - headerHeight - borderWidth))
+    }
+}
+
+/// The card's background and header. Drawn behind the surface; the border is a
+/// separate view above it (`PaneCardBorder`).
+private struct PaneCardChrome: View {
+    @EnvironmentObject var store: TermioStore
+    @EnvironmentObject var settings: AppSettings
+    let session: Session
+    let isSelected: Bool
+    let background: Color
+    let isTopLeading: Bool
+    /// The card's leading edge in the pane area, which starts at the window's leading edge while
+    /// the sidebar is collapsed.
+    let cardMinX: CGFloat
+
+    /// In the horizontal layout the tab strip holds the top row, and the toggle with it.
+    private var carriesNavigatorToggle: Bool {
+        isTopLeading && !store.sidebarVisible && settings.tabLayout == .vertical
+    }
+
+    /// Clear of the traffic lights when this header is the one sitting beside them.
+    private var leadingPadding: CGFloat {
+        guard carriesNavigatorToggle else { return 10 }
+        return WindowChrome.leadingInset(isFullScreen: store.windowIsFullScreen, columnMinX: cardMinX)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Spacer(minLength: 0)
+        }
+        .background(background, in: RoundedRectangle(cornerRadius: PaneCard.cornerRadius, style: .continuous))
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            if carriesNavigatorToggle {
+                NavigatorToggleButton()
+                    .transition(.opacity)
+            }
+            Group {
+                if session.isSSH {
+                    HugeIconView(icon: .serverStack, size: 13, color: .secondary)
+                } else {
+                    AgentIconView(agent: store.effectiveAgent(for: session), size: 13)
+                }
+            }
+            .frame(width: 14)
+            Text(location)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(location)
+                .layoutPriority(1)
+            if let branch {
+                HStack(spacing: 3) {
+                    HugeIconView(icon: .gitBranch, size: 11, color: .secondary)
+                    Text(branch)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .help(branch)
+            }
+            Spacer(minLength: 8)
+            // Always laid out, only hidden: showing them must not reflow the title.
+            // Only the focused card's: the buttons act on the card you are in, and a row of
+            // them on every card — or on whichever one the pointer crosses — is noise.
+            buttons.opacity(isSelected ? 1 : 0)
+                .allowsHitTesting(isSelected)
+            // The inspector reads the focused session, so only the focused card opens it.
+            if isSelected {
+                InspectorPaneMenu()
+            }
+        }
+        .padding(.leading, leadingPadding)
+        .padding(.trailing, 4)
+        .frame(height: PaneCard.headerHeight)
+        // The header's empty run moves the window, as a titlebar would. A press here also
+        // focuses the card (`PaneDragRearrange`), so the header needs no tap of its own.
+        .background(WindowDragArea())
+    }
+
+    private var buttons: some View {
+        HStack(spacing: 2) {
+            ChromeIconButton(icon: .layoutColumns, help: localized("Split Right")) {
+                splitting(.horizontal)
+            }
+            ChromeIconButton(icon: .layoutRows, help: localized("Split Down")) {
+                splitting(.vertical)
+            }
+        }
+    }
+
+    /// The store splits the focused pane, so the pane whose button was pressed
+    /// takes focus first.
+    private func splitting(_ direction: SplitDirection) {
+        store.selectedSessionID = session.id
+        store.splitSelectedPane(direction)
+    }
+
+    /// Where the session runs: the box for a plain SSH terminal, `box:path` for a
+    /// session on another machine, and the home-abbreviated folder here.
+    private var location: String {
+        let folder = store.titleFolder(for: session.id)
+        if let remote = session.termiodRemoteHost ?? session.sshHost {
+            guard session.termiodRemoteHost != nil, let folder else { return remote }
+            return "\(remote):\(folder)"
+        }
+        guard let folder else { return store.displayTitle(for: session) }
+        return Self.abbreviatingHome(folder)
+    }
+
+    /// The live branch, or nil to hide it. A checkout on another machine only has
+    /// one while it is selected: the device watches a single checkout, and a local
+    /// path that merely spells the same as the remote one would name the wrong repo.
+    private var branch: String? {
+        if session.termiodRemoteHost != nil || session.sshHost != nil {
+            guard isSelected, let checkout = store.inspectorCheckout, checkout.isOnAnotherDevice
+            else { return nil }
+            return store.deviceBranch(forCheckout: checkout)
+        }
+        guard let folder = store.titleFolder(for: session.id),
+              let branch = store.branch(forFolder: folder), !branch.isEmpty else { return nil }
+        return branch
+    }
+
+    private static func abbreviatingHome(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+}
+
+/// The card's outline, drawn over the surface as a lit rim in the manner of Liquid Glass's
+/// specular edge: light from the top leading corner catches the top edge and fades down the
+/// sides, brightest at the leading end and fainter at the trailing one, and a weaker reflection
+/// lights the bottom trailing corner, over a hairline that keeps the other edges defined. Only the focused card is lit — the one cue for where typing
+/// goes; the others keep the hairline.
+private struct PaneCardBorder: View {
+    let isFocused: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: PaneCard.cornerRadius, style: .continuous)
+        let peak = 0.6
+        ZStack {
+            shape.strokeBorder(Color.primary.opacity(isFocused ? 0.12 : 0.08), lineWidth: PaneCard.borderWidth)
+            if isFocused {
+                shape.strokeBorder(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .primary.opacity(peak), location: 0),
+                            .init(color: .primary.opacity(peak * 0.35), location: 0.18),
+                            .init(color: .primary.opacity(0), location: 0.5),
+                        ],
+                        startPoint: .top, endPoint: .bottom),
+                    lineWidth: PaneCard.borderWidth)
+                    .mask(LinearGradient(colors: [.white, .white.opacity(0.4)],
+                                         startPoint: .leading, endPoint: .trailing))
+                // The weaker reflection: light that crossed the glass catching its far edge.
+                shape.strokeBorder(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .primary.opacity(0), location: 0.6),
+                            .init(color: .primary.opacity(peak * 0.35), location: 1),
+                        ],
+                        startPoint: .top, endPoint: .bottom),
+                    lineWidth: PaneCard.borderWidth)
+                    .mask(LinearGradient(colors: [.clear, .white],
+                                         startPoint: .leading, endPoint: .trailing))
+            }
+        }
+    }
+}
+
+/// An open panel on a card without focus: the picture the live panel left when the card lost it.
+private struct PanelSnapshot: View {
+    let image: NSImage?
+    let background: Color
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            background
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .clipped()
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// The strip between a card's terminal and its panel: a hairline, and a handle that drags the
+/// panel's width. One width serves every card (`TermioStore.panelWidth`), so the drag is
+/// clamped by the card it happens in: the terminal keeps `minimumTerminalWidth`.
+private struct PanelDividerHandle: View {
+    @EnvironmentObject var store: TermioStore
+    let panelFrame: CGRect
+    let card: CGRect
+    @State private var anchorWidth: CGFloat?
+    @State private var isHovering = false
+
+    var body: some View {
+        ZStack {
+            // At rest the panel's own edge is the seam (`PanelEdge`); the grip lights over it.
+            SashGrip(axis: .vertical, isActive: isHovering || anchorWidth != nil)
+            SashHandle(
+                axis: .vertical,
+                onHover: { isHovering = $0 },
+                onBegin: {
+                    // The width on screen, which a narrow card may have fitted down from the
+                    // shared one: starting from that keeps the panel under the pointer.
+                    anchorWidth = panelFrame.width
+                    // Stream the resize at drag cadence, as the split dividers do.
+                    GeometryDragTracker.shared.beginDrag()
+                },
+                onChange: { delta in
+                    guard let start = anchorWidth else { return }
+                    store.panelWidth = min(max(start - delta, PaneCard.minimumPanelWidth),
+                                           max(PaneCard.minimumPanelWidth, PaneCard.widestPanel(in: card)))
+                },
+                onEnd: {
+                    guard anchorWidth != nil else { return }
+                    anchorWidth = nil
+                    GeometryDragTracker.shared.endDrag()
+                    DispatchQueue.main.async { store.flushViewports() }
+                })
+        }
+        .frame(width: PaneCard.panelDivider, height: panelFrame.height)
+        .position(x: panelFrame.minX - PaneCard.panelDivider / 2, y: panelFrame.midY)
+        .onDisappear {
+            guard anchorWidth != nil else { return }
+            anchorWidth = nil
+            GeometryDragTracker.shared.endDrag()
+        }
+    }
+}
+
+/// The panel's own frame inside its card: a top edge and, beside a terminal, a leading edge,
+/// joined by a rounded corner — so the panel reads as one sheet laid in the card rather than a
+/// column split off it. Its other two edges are the card's border, and are not drawn twice.
+private struct PanelEdge: View {
+    let covers: Bool
+
+    var body: some View {
+        PanelEdgeShape(radius: covers ? 0 : PaneCard.cornerRadius, leading: !covers)
+            .stroke(Color.primary.opacity(0.1), lineWidth: PaneCard.borderWidth)
+            .allowsHitTesting(false)
+    }
+}
+
+private struct PanelEdgeShape: Shape {
+    let radius: CGFloat
+    let leading: Bool
+
+    func path(in rect: CGRect) -> Path {
+        // Half a line in, so the stroke lands inside the panel's rect.
+        let edge = rect.insetBy(dx: PaneCard.borderWidth / 2, dy: PaneCard.borderWidth / 2)
+        var path = Path()
+        if leading {
+            path.move(to: CGPoint(x: edge.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: edge.minX, y: edge.minY + radius))
+            path.addArc(center: CGPoint(x: edge.minX + radius, y: edge.minY + radius), radius: radius,
+                        startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+        } else {
+            path.move(to: CGPoint(x: rect.minX, y: edge.minY))
+        }
+        path.addLine(to: CGPoint(x: rect.maxX, y: edge.minY))
+        return path
     }
 }

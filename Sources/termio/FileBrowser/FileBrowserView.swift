@@ -82,16 +82,6 @@ struct FileBrowserView: View {
         // the whole column behind the transparent list, ignoring the safe area so it runs
         // full-height. Tracks the terminal theme live via `settings`.
         .background(Color(nsColor: settings.terminalBackgroundColor).ignoresSafeArea())
-        // A single full-height hairline on the leading edge as the border with the terminal. A
-        // slightly-bright line (rather than the dim system separator) reads as a clean luminous
-        // edge on its own, echoing the leading sidebar's glowing border — no soft bloom gradient.
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color.white.opacity(0.15))
-                .frame(width: 1)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-        }
         // A drop on empty space targets the project root: a file already in the tree
         // is *moved* there, a file dragged in from the Finder is *copied* in. Folder
         // rows install their own, more specific drop targets (see `FileTreeList`), so
