@@ -95,6 +95,10 @@ const LAUNCHER_ENV_KEYS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_EFFORT",
     "TERMIO_SESSION",
+    // The channel of the app that spawned the launching shell. A daemon auto-started from a
+    // dev session would otherwise hand the dev stamp to every release session it spawns; the
+    // app sets the right one on each session it creates.
+    "TERMIO_SESSION_CHANNEL",
     "TERM_SESSION_ID",
     "TERMINAL_EMULATOR",
     "TMUX",
@@ -612,6 +616,7 @@ mod tests {
         assert!(is_launcher_env("TERM_PROGRAM"));
         assert!(is_launcher_env("TERM_PROGRAM_VERSION"));
         assert!(is_launcher_env("TERMIO_SESSION"));
+        assert!(is_launcher_env("TERMIO_SESSION_CHANNEL"));
         assert!(is_launcher_env("TMUX"));
 
         // Everything that says where the process runs, rather than who started

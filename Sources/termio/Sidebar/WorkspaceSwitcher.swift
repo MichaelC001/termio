@@ -92,9 +92,9 @@ struct WorkspaceSwitcherToolbarView: View {
     /// text metrics, a font bridge and a re-measure on every rename — machinery in
     /// exchange for slack the flexible space beside it already absorbs.
     ///
-    /// Ten points of it are the hover chip's inset now (`chipInset` below), so the
-    /// item as a whole is exactly as wide as it was and the `»` budget is untouched.
-    private static let nameWidth: CGFloat = 94
+    /// Sixteen points of it went to the glass capsule's inset (`chipInset` below), so the
+    /// item as a whole is exactly as wide as it was.
+    private static let nameWidth: CGFloat = 88
 
     /// What the hover chip puts around the name. Real padding, not a background
     /// drawn outside the label's bounds: the toolbar item is only as large as this
@@ -105,7 +105,7 @@ struct WorkspaceSwitcherToolbarView: View {
     /// The leading half is given back as negative padding on the whole box (see
     /// `body`), so the name still starts at the x the toggle beside it was spaced
     /// for. Only the trailing half is new width, and it comes out of `nameWidth`.
-    private static let chipInset: CGFloat = 5
+    private static let chipInset: CGFloat = 8
 
     var body: some View {
         // The single-workspace collapse. Not "hidden but present": with one scope
@@ -134,11 +134,15 @@ struct WorkspaceSwitcherToolbarView: View {
                 // switch — the same shift by a different route.
                 .frame(width: Self.nameWidth, alignment: .leading)
                 .padding(.horizontal, Self.chipInset)
-                .padding(.vertical, 3)
-                .background(highlight)
-                // The inset given back, so the name keeps the x it had before there
-                // was a chip: the toggle's 6pt of spacing now holds 5pt of chip and
-                // 1pt of gap, and the two controls still read as one band.
+                .padding(.vertical, 4)
+                // The glass capsule under the name while the pointer is on it — the one thing
+                // that says this word is a control; without it people ran a whole session
+                // without finding out the workspace could be changed here. The same glass the
+                // sidebar's other core controls wear on hover, inside padding that is always
+                // there, so the pointer arriving never resizes or re-truncates the name.
+                .modifier(ChromeGlass(isVisible: isHighlighted))
+                // The leading inset given back, so the capsule fills the gap beside the toggle
+                // rather than pushing the name away from it: the two read as one band.
                 .padding(.leading, -Self.chipInset)
                 // The overlay owns the press, the hover, the tooltip, and the
                 // accessibility of this control — it is the view under the pointer, so a
@@ -157,25 +161,6 @@ struct WorkspaceSwitcherToolbarView: View {
         controlActive == .inactive ? Color(nsColor: .disabledControlTextColor) : .primary
     }
 
-    /// The chip under the name while the pointer is on it — the one thing that says
-    /// this word is a control. Without it the switcher was a label, and it was read
-    /// as one: people ran a whole session without finding out the workspace could be
-    /// changed from here.
-    ///
-    /// Present at every size, not conditional: it is the fill that changes, so the
-    /// box never resizes on hover and no name can be re-truncated by the pointer
-    /// arriving.
-    ///
-    /// A neutral fill of the foreground, the same rounded lift the sidebar's own hover
-    /// controls use, not an accent wash — this is a pointer cue, not a selection.
-    private var highlight: some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(Color.primary.opacity(isHighlighted ? 0.10 : 0))
-            // Hover cues snap: they paint on the next frame and clear on the next
-            // frame. A fade here would still be arriving after the pointer had moved
-            // on, which is what reads as lag.
-            .animation(nil, value: isHighlighted)
-    }
 }
 
 /// Opens the switcher's menu on click, over the label above it.

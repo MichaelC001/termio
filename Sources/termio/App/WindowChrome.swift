@@ -281,7 +281,7 @@ struct SidebarControlRow: View {
         HStack(spacing: 2) {
             NavigatorToggleButton()
             WorkspaceSwitcherToolbarView()
-                .padding(.leading, 4)
+                .padding(.leading, 6)
             Spacer(minLength: 4)
             ChromeMenuButton(icon: .filter, help: localized("Choose how projects are ordered"),
                              makeMenu: { ProjectSortMenu.make(settings: settings) })
