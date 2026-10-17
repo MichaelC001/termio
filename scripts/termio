@@ -20,6 +20,21 @@ SUPPORT_DIR_NAME="termio"
 BUNDLE_ID="sh.termio.app"
 VERSION="dev"
 
+# Inside a session the plain release copy defers to the app that owns it: the app
+# stamps every session with its channel, so an agent in the dev app running `termio`
+# reaches the dev app instead of the release one, which does not know its session.
+# A rewritten (channel-named) copy keeps its own binding.
+if [ "$SUPPORT_DIR_NAME" = "termio" ] && [ -n "${TERMIO_SESSION_CHANNEL:-}" ] \
+    && [ "$TERMIO_SESSION_CHANNEL" != "release" ]; then
+    case "$TERMIO_SESSION_CHANNEL" in
+        *[!a-z0-9-]*) ;;
+        *)
+            SUPPORT_DIR_NAME="termio-$TERMIO_SESSION_CHANNEL"
+            BUNDLE_ID="sh.termio.app.$TERMIO_SESSION_CHANNEL"
+            ;;
+    esac
+fi
+
 usage() {
     cat <<'EOF'
 usage:

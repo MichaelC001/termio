@@ -262,6 +262,9 @@ extension TermioStore {
         // Stamp the session id so any agent hook running inside can echo it back,
         // letting `termio agent report` name this exact session.
         env["TERMIO_SESSION"] = session.id.uuidString
+        // Which app the session belongs to, so a plain `termio` run inside it — an agent's
+        // sibling-session call — reaches this app rather than the release one its name implies.
+        env["TERMIO_SESSION_CHANNEL"] = Termiod.channelName
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
         env["TERM_PROGRAM"] = "termio"
