@@ -17,6 +17,18 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.57.2",
+    date: "2026-10-17",
+    title: "The sidebar holds still at the ends",
+    changes: {
+      fixed: [
+        "Scrolling the sidebar to the top or bottom no longer makes it shake or draw its rows twice.",
+        "A session whose program got stuck while exiting no longer stops Termio from opening new sessions or reattaching the rest.",
+        "Sidebar hover highlights follow the pointer without a fade, as the file tree does.",
+      ],
+    },
+  },
+  {
     version: "0.57.1",
     date: "2026-10-17",
     title: "A closed panel lets go of the keyboard",
