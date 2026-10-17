@@ -17,6 +17,19 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.58.2",
+    date: "2026-10-17",
+    title: "A bolder prompt in the icon",
+    changes: {
+      improved: [
+        "The >_ in the app icon and the menu bar is larger and bolder, so it stays readable at Dock size.",
+      ],
+      fixed: [
+        "After an update, the Dock shows the new icon instead of keeping the previous one.",
+      ],
+    },
+  },
+  {
     version: "0.58.1",
     date: "2026-10-17",
     title: "A new icon",
