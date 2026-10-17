@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.58.1",
+    date: "2026-10-17",
+    title: "A new icon",
+    changes: {
+      improved: [
+        "Termio has a new icon: a >_ prompt in frosted glass, shaped like the four-lobed window of a Chinese garden wall. The menu bar shows the same mark.",
+      ],
+    },
+  },
+  {
     version: "0.58.0",
     date: "2026-10-17",
     title: "Drag tabs into order",
