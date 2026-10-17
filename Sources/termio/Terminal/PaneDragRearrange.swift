@@ -61,27 +61,21 @@ final class PaneDragRearrange {
     private var cursorPushed = false
     private var hoverCursorPushed = false
 
-    /// Ghostty's handle dimensions (`SurfaceGrabHandle`), centered on the pane's
-    /// top edge. Small on purpose — it is the only place a plain click is taken
-    /// from the terminal.
+    /// Ghostty's handle dimensions (`SurfaceGrabHandle`), centered in the card's
+    /// header, so a press on it never reaches the terminal.
     static let handleSize = CGSize(width: 80, height: 12)
 
-    /// The band that reveals the handle. Ghostty uses the pane's top *fifth*,
-    /// which on a tall pane is deep enough to park a pointer in — and since
-    /// mouse-moved events only arrive while the mouse moves, a parked pointer
-    /// leaves the handle up until the next move. A header-sized strip is still a
-    /// wide target for a 12pt handle.
-    private static let hoverBandHeight: CGFloat = 28
-
-    /// The handle's rect in a pane of `size`, top-left origin — the space both
+    /// The handle's rect in a card of `size`, top-left origin — the space both
     /// this hit test and `TerminalPane`'s overlay work in.
     static func handleRect(in size: CGSize) -> CGRect {
-        CGRect(x: (size.width - handleSize.width) / 2, y: 0,
+        CGRect(x: (size.width - handleSize.width) / 2,
+               y: (PaneCard.headerHeight - handleSize.height) / 2,
                width: handleSize.width, height: handleSize.height)
     }
 
+    /// The header reveals the handle.
     private static func isInHoverRegion(_ point: CGPoint, in size: CGSize) -> Bool {
-        point.y >= 0 && point.y <= min(size.height, hoverBandHeight)
+        point.y >= 0 && point.y <= min(size.height, PaneCard.headerHeight)
     }
 
     init(store: TermioStore) {
@@ -168,11 +162,18 @@ final class PaneDragRearrange {
 
     // MARK: - Drag
 
-    /// Starts a drag from a press on a pane's grab handle.
+    /// Starts a drag from a press on a pane's grab handle. Any press in a card also focuses it.
     private func began(_ event: NSEvent) -> Bool {
         guard let store, !dragging,
-              let hit = rearrangeablePane(under: event),
-              Self.handleRect(in: hit.size).contains(hit.point),
+              let hit = rearrangeablePane(under: event)
+        else { return false }
+        // A press anywhere in a card makes it the focused one — the bright border, the
+        // header's buttons, the panel. The surface becoming first responder was the only
+        // path, and a click could move the keyboard to a terminal without that report
+        // arriving, leaving the border on the card the user had just left. Not consumed:
+        // the press still reaches the terminal.
+        if store.selectedSessionID != hit.id { store.selectedSessionID = hit.id }
+        guard Self.handleRect(in: hit.size).contains(hit.point),
               let contentView = event.window?.contentView
         else { return false }
         dragging = true
@@ -270,8 +271,9 @@ final class PaneDragRearrange {
         return paneGeometry(at: event.locationInWindow, in: contentView, window: window)
     }
 
-    /// A visible pane, the pointer in its top-left-origin space, and its size —
-    /// what the handle hit test and the drop-zone lookup are both expressed in.
+    /// A visible pane, the pointer in its card's top-left-origin space, and the
+    /// card's size — what the handle hit test and the drop-zone lookup are both
+    /// expressed in, and the frames `TerminalPane` lays the cards out at.
     private typealias PaneHit = (id: Session.ID, point: CGPoint, size: CGSize)
 
     /// Resolved by geometry rather than `hitTest` for the same reason as
@@ -281,16 +283,22 @@ final class PaneDragRearrange {
     private func paneGeometry(at point: NSPoint, in contentView: NSView,
                               window: NSWindow) -> PaneHit? {
         guard let store else { return nil }
+        // A press on a panel laid over a card's terminal is the panel's, not the pane's.
+        if InspectorPanelHost.shared.contains(point, in: window, store: store) { return nil }
         for view in terminalViews(in: contentView) {
+            // The surface sits inside its card: under the header, inside the border.
+            // Window space is bottom-left-origin, so the header is above `maxY`.
+            let surface = view.convert(view.bounds, to: nil)
+            let border = PaneCard.borderWidth
+            let card = CGRect(x: surface.minX - border, y: surface.minY - border,
+                              width: surface.width + 2 * border,
+                              height: surface.height + PaneCard.headerHeight + border)
             guard view.window === window,
-                  view.convert(view.bounds, to: nil).contains(point),
+                  card.contains(point),
                   let id = sessionID(for: view),
                   store.visiblePaneIDs.contains(id) else { continue }
-            let local = view.convert(point, from: nil)
-            // Zone space is top-left-origin; flip out of AppKit's default.
-            let normalized = CGPoint(x: local.x,
-                                     y: view.isFlipped ? local.y : view.bounds.height - local.y)
-            return (id, normalized, view.bounds.size)
+            let local = CGPoint(x: point.x - card.minX, y: card.maxY - point.y)
+            return (id, local, card.size)
         }
         return nil
     }

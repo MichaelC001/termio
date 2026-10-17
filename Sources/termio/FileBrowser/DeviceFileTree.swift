@@ -911,6 +911,7 @@ struct RemoteFileOpeningView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                DetailListColumnToggle(outset: 8)
                 FileIconView(url: iconURL, size: 15, symbolSize: 13)
                     .frame(width: 16)
                 Text(opening.name)

@@ -69,6 +69,8 @@ final class TerminalContextMenu: NSObject {
         // Visible panes tile without overlapping, so "contains the point and is
         // visible" is unambiguous.
         let point = event.locationInWindow
+        // A panel over the terminal owns its own right-clicks (the file tree's, the editor's).
+        if InspectorPanelHost.shared.contains(point, in: window, store: store) { return false }
         let target = terminalViews(in: contentView).first { view in
             guard view.window === window,
                   view.convert(view.bounds, to: nil).contains(point),

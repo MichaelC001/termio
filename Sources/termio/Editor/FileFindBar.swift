@@ -44,7 +44,7 @@ struct FileFindBar: View {
         .padding(.leading, replace == nil ? 12 : 6)
         .padding(.trailing, 8)
         .padding(.vertical, 6)
-        // One Liquid Glass shell — the same recipe as `FileSearchView`/`InspectorTabsToolbar`,
+        // One Liquid Glass shell — the same recipe as `FileSearchView`,
         // with a flat-material fallback below macOS 26. A single sheet, never glass-on-glass.
         .findBarGlass(expanded: showsReplace)
         .fixedSize()

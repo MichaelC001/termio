@@ -22,6 +22,15 @@ struct AppearanceSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
+                TabLayoutPicker(selection: $settings.tabLayout)
+            } header: {
+                SectionHeaderLabel(title: localized("Tabs"))
+            } footer: {
+                Text(localized("Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 ThemePickerField(title: localized("Light"), prefersDark: false, selection: $settings.lightThemeName, userThemeNames: userThemeNames, onDuplicate: duplicate)
                 ThemePickerField(title: localized("Dark"), prefersDark: true, selection: $settings.darkThemeName, userThemeNames: userThemeNames, onDuplicate: duplicate)
                 HStack {

@@ -2,7 +2,7 @@ import AppKit
 import Quartz
 import SwiftUI
 
-/// Hosts `FileBrowserView` in the trailing inspector and drives the shared Quick
+/// Hosts `FileBrowserView` in the focused card's panel and drives the shared Quick
 /// Look panel for it. `QLPreviewPanel` finds its controller by walking the
 /// responder chain from the key window's first responder; because this view
 /// controller sits in that chain (above the SwiftUI tree it hosts), it is the
@@ -79,4 +79,48 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @preconc
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
         state.selectedLocalURL as? NSURL
     }
+}
+
+/// The one live inspector. It is mounted in the focused card's panel (see `TerminalPane`); a card
+/// that loses focus keeps a picture of it (`TermioStore.panelSnapshots`).
+@MainActor
+final class InspectorPanelHost {
+    static let shared = InspectorPanelHost()
+
+    var controller: FileBrowserHostingController?
+
+    /// Whether a point (window coordinates) is on the live panel while it is open. The terminal's
+    /// own pointer handlers resolve their pane by geometry, and a panel laid over a narrow card's
+    /// terminal sits inside that geometry; they ask this first, so the panel gets its own right-
+    /// click menu, presses and drops instead of the terminal underneath.
+    func contains(_ point: NSPoint, in window: NSWindow, store: TermioStore) -> Bool {
+        guard store.inspectorVisible, let view = controller?.view, view.window === window else { return false }
+        return view.convert(view.bounds, to: nil).contains(point)
+    }
+
+    /// A still of the panel as it is on screen now, or nil when it is not on screen. Web and
+    /// Metal-backed content (a Markdown preview, a PDF) may come out blank — the picture is
+    /// a reminder of where the card was, and focusing the card brings the real one back.
+    func snapshot() -> NSImage? {
+        guard let view = controller?.view, view.window != nil,
+              view.bounds.width > 1, view.bounds.height > 1,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
+/// Mounts the live inspector inside a card. Only ever one on screen: the inspector is a single
+/// view controller, moved to whichever card has focus.
+struct InspectorPanelView: NSViewControllerRepresentable {
+    func makeNSViewController(context: Context) -> NSViewController {
+        if let controller = InspectorPanelHost.shared.controller { return controller }
+        let empty = NSViewController()
+        empty.view = NSView()
+        return empty
+    }
+
+    func updateNSViewController(_ controller: NSViewController, context: Context) {}
 }

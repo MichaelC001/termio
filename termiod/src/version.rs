@@ -51,7 +51,9 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
                 )
             })
             .unwrap_or_default(),
-        Provenance::ProgramName => format!("TERMIO_CHANNEL={}", channel.name),
+        Provenance::ProgramName | Provenance::SessionChannel => {
+            format!("TERMIO_CHANNEL={}", channel.name)
+        }
     };
 
     match channel::daemon_binary(channel) {
@@ -99,6 +101,7 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         let why = match provenance {
             Provenance::ExplicitSocket => "via TERMIOD_SOCK",
             Provenance::ProgramName => "via program name",
+            Provenance::SessionChannel => "via the session's channel",
         };
         println!();
         println!("socket {} ({why})", socket.display());

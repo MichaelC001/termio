@@ -332,6 +332,8 @@
 	<string>关闭所有聊天</string>
 	<key>Close All Terminals</key>
 	<string>关闭所有终端</string>
+	<key>Close Panel</key>
+	<string>关闭面板</string>
 	<key>Close Session</key>
 	<string>关闭会话</string>
 	<key>Close Window</key>
@@ -626,6 +628,8 @@
 	<string>绿色</string>
 	<key>Group with</key>
 	<string>编组到</string>
+	<key>Groups</key>
+	<string>分组</string>
 	<key>Hide</key>
 	<string>隐藏</string>
 	<key>Hide Others</key>
@@ -650,6 +654,8 @@
 	<string>Hooks 已安装</string>
 	<key>Hooks reinstalled</key>
 	<string>Hooks 已重新安装</string>
+	<key>Horizontal</key>
+	<string>横向</string>
 	<key>Host</key>
 	<string>主机</string>
 	<key>Host Unavailable</key>
@@ -1010,6 +1016,8 @@
 	<string>在 %@ 上打开项目</string>
 	<key>Open a machine to put them there.</key>
 	<string>打开一台设备，把它们装到那里。</string>
+	<key>Open a panel</key>
+	<string>打开面板</string>
 	<key>Open in %@</key>
 	<string>在 %@ 中打开</string>
 	<key>Open in Browser</key>
@@ -1402,6 +1410,8 @@
 	<string>跟随系统（%@）</string>
 	<key>System monospace</key>
 	<string>系统等宽字体</string>
+	<key>Tabs</key>
+	<string>标签页</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>将 %@ 从新建会话菜单中移除，其设置会保留。</string>
 	<key>Takes effect after Termio relaunches.</key>
@@ -1650,6 +1660,10 @@
 	<string>使用 %@</string>
 	<key>Version %@ on %@. Sessions keep running there after you disconnect.</key>
 	<string>%@ 上的版本 %@。断开连接后，会话仍在那里继续运行。</string>
+	<key>Vertical</key>
+	<string>纵向</string>
+	<key>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</key>
+	<string>纵向：在侧边栏里列出每个分组的会话。横向：侧边栏只列分组，所选分组的会话作为标签页显示在终端上方。</string>
 	<key>View</key>
 	<string>显示</string>
 	<key>View on %@</key>

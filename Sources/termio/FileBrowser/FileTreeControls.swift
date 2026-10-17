@@ -11,11 +11,10 @@ struct TreeHeaderChip: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .frame(width: 22, height: 22)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.primary.opacity(hovering ? 0.08 : 0))
-            )
+            // The window's one glyph button size (`ChromeGlyph`), so the panel's headers match
+            // the cards' and the sidebar's.
+            .frame(width: ChromeGlyph.frame.width, height: ChromeGlyph.frame.height)
+            .background(ChromeHoverChip(isHovering: hovering))
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
     }
@@ -65,16 +64,13 @@ struct TreeHeaderButton: View {
         case .symbol(let name):
             Image(systemName: name)
                 .symbolRenderingMode(.hierarchical)
-                .font(.system(size: 14))
+                .font(.system(size: ChromeGlyph.size))
                 .foregroundStyle(isHovering ? Color.primary : Color.secondary)
         case .codicon(let codicon):
-            CodiconView(icon: codicon, size: 15, color: isHovering ? .primary : .secondary)
+            CodiconView(icon: codicon, size: ChromeGlyph.size, color: isHovering ? .primary : .secondary)
         case .huge(let icon):
-            // 1.0pt: the one weight every inspector header Hugeicon shares (↗, the detail's
-            // window controls, the filter funnel), tuned to sit at the optical weight of the
-            // codicon refresh beside it rather than reading heavier than it.
-            HugeIconView(icon: icon, size: 15, color: isHovering ? .primary : .secondary,
-                         lineWidthOverride: 1.0)
+            HugeIconView(icon: icon, size: ChromeGlyph.size(for: icon), color: isHovering ? .primary : .secondary,
+                         lineWidthOverride: ChromeGlyph.lineWidth())
         }
     }
 }

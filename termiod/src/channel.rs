@@ -6,6 +6,12 @@
 //! `termio-dev`, which selects the `.dev` bundle id, the `termio-dev`
 //! support directory, and the dev daemon socket. One binary, no sed.
 //!
+//! Inside a session the plain `termio` name is ambiguous: an agent running in
+//! the dev app reaches for `termio` like any other, and the name alone sent it
+//! to the release app, which does not know the session it was called from. So
+//! the app stamps every session with its own channel (`TERMIO_SESSION_CHANNEL`),
+//! and the plain name defers to it. An explicit `termio-<channel>` still wins.
+//!
 //! An inherited `TERMIO_CHANNEL` is deliberately not consulted: the shell
 //! client pinned `TERMIO_CHANNEL="$CHANNEL"` on every daemon exec so a stale
 //! value could not cross channels, and this keeps that rule. The one runtime
@@ -34,6 +40,8 @@ pub enum Provenance {
     ExplicitSocket,
     /// Derived from the binary's own name (`termio` / `termio-<channel>`).
     ProgramName,
+    /// The plain `termio` name, inside a session the app stamped with its channel.
+    SessionChannel,
 }
 
 impl Channel {
@@ -76,6 +84,21 @@ impl Channel {
         }
     }
 
+    /// The channel an invocation drives: the program name's, except that the
+    /// plain `termio` name inside a session defers to the channel the app
+    /// stamped on it (`session_channel`), so a call from a dev session reaches
+    /// the dev app. Returns whether the session decided it.
+    pub fn for_invocation(program: &str, session_channel: Option<&str>) -> (Channel, bool) {
+        let named = Channel::from_program_name(program);
+        if program != "termio" {
+            return (named, false);
+        }
+        match session_channel.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => (Channel::named(value), true),
+            None => (named, false),
+        }
+    }
+
     /// The deep-link scheme this channel's app claims (`termio` /
     /// `termio-dev`), mirroring `AppChannel.urlScheme`.
     pub fn url_scheme(&self) -> String {
@@ -106,10 +129,13 @@ fn explicit_socket() -> bool {
 /// exec'd daemon derive the same socket, overwriting any inherited value —
 /// the same pin the shell client applied on every daemon exec.
 pub fn resolve() -> (Channel, Provenance) {
-    let channel = Channel::from_program_name(&program_name());
+    let session_channel = std::env::var("TERMIO_SESSION_CHANNEL").ok();
+    let (channel, from_session) = Channel::for_invocation(&program_name(), session_channel.as_deref());
     std::env::set_var("TERMIO_CHANNEL", &channel.name);
     let provenance = if explicit_socket() {
         Provenance::ExplicitSocket
+    } else if from_session {
+        Provenance::SessionChannel
     } else {
         Provenance::ProgramName
     };
@@ -219,6 +245,31 @@ mod tests {
     fn an_invalid_suffix_falls_back_to_release_like_paths_does() {
         assert_eq!(Channel::from_program_name("termio-../evil"), Channel::release());
         assert_eq!(Channel::from_program_name("termio-a_b"), Channel::release());
+    }
+
+    #[test]
+    fn the_plain_name_inside_a_dev_session_drives_the_dev_app() {
+        let (channel, from_session) = Channel::for_invocation("termio", Some("dev"));
+        assert_eq!(channel.name, "dev");
+        assert!(from_session);
+    }
+
+    #[test]
+    fn an_explicit_channel_name_outranks_the_session() {
+        let (channel, from_session) = Channel::for_invocation("termio-dev", Some("release"));
+        assert_eq!(channel.name, "dev");
+        assert!(!from_session);
+    }
+
+    #[test]
+    fn outside_a_session_the_plain_name_is_release() {
+        assert_eq!(Channel::for_invocation("termio", None).0, Channel::release());
+        assert_eq!(Channel::for_invocation("termio", Some("  ")).0, Channel::release());
+    }
+
+    #[test]
+    fn an_invalid_session_channel_falls_back_to_release() {
+        assert_eq!(Channel::for_invocation("termio", Some("../evil")).0, Channel::release());
     }
 
     #[test]

@@ -251,6 +251,23 @@ extension AppSettings {
         return DiffPalette(background: background, isDark: dark)
     }
 
+    /// The window's ground — the sidebar, the gaps between the cards, the window's edges — as a
+    /// dynamic color: the theme's `panelBackground`, a step off its terminal background, so the
+    /// cards read as surfaces on it. Without a theme, the same step off the default background.
+    var panelBackgroundColor: NSColor {
+        let lightPanel = chromeTheme(for: .light)?.panelBackground
+        let darkPanel = chromeTheme(for: .dark)?.panelBackground
+        return NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            if isDark {
+                return darkPanel.map(NSColor.init)
+                    ?? NSColor(srgbRed: 0x2c / 255.0, green: 0x2c / 255.0, blue: 0x2c / 255.0, alpha: 1)
+            }
+            return lightPanel.map(NSColor.init)
+                ?? NSColor(srgbRed: 0xf5 / 255.0, green: 0xf5 / 255.0, blue: 0xf5 / 255.0, alpha: 1)
+        }
+    }
+
     var terminalBackgroundColor: NSColor {
         let lightBackground = chromeTheme(for: .light)?.background
         let darkBackground = chromeTheme(for: .dark)?.background

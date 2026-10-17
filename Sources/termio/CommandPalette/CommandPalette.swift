@@ -376,7 +376,7 @@ struct CommandPaletteView: View {
         }
         actions.append(.init(id: "toggle-sidebar", title: localized("Toggle Sidebar"),
                              icon: .sidebarLeft, shortcut: nil) { _ in
-            NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+            NSApp.sendAction(#selector(AppDelegate.toggleNavigator(_:)), to: nil, from: nil)
         })
         actions.append(.init(id: "toggle-files", title: localized("Toggle Project Files"),
                              icon: .sidebarRight, shortcut: keys.display(for: .toggleProjectFiles)) { _ in

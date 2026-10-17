@@ -132,6 +132,7 @@ struct PDFReaderView: View {
                 .padding(.horizontal, Self.titleClearance)
                 .frame(maxWidth: .infinity)
             HStack(spacing: 8) {
+                DetailListColumnToggle()
                 PDFSidebarSwitch(model: model)
                 Spacer(minLength: 8)
                 if model.pageCount > 0 {

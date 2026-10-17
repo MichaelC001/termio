@@ -151,6 +151,8 @@ struct StateFile {
         var filePath: String?
         var fileLine: Int?
         var fileReadOnly: Bool?
+        /// Whether the session's card had its panel open. Absent means closed.
+        var panelOpen: Bool?
     }
 
     let url = AppChannel.supportDirectory

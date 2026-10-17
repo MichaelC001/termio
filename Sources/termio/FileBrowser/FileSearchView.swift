@@ -240,7 +240,7 @@ struct FileSearchView: View {
 
     /// The field's own chrome, replacing the `NSSearchField` bezel (stripped in
     /// `makeNSView`): a Liquid Glass capsule on macOS 26 — same material recipe as
-    /// the toolbar's `InspectorTabsToolbar` track — and a flat capsule fill below.
+    /// `GitChangesView`'s mode-switch track — and a flat capsule fill below.
     @ViewBuilder
     private var fieldChrome: some View {
         if #available(macOS 26.0, *) {

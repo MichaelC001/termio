@@ -393,6 +393,9 @@ struct FileEditorView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
+            if showsInspectorChrome {
+                DetailListColumnToggle(outset: 8)
+            }
             // The file's real language/tool logo (a Devicon mark) when bundled, else a
             // tinted SF Symbol — sized to match the diff header's leading status badge
             // (12–13pt in a 16-wide slot) so the editor and diff headers are the same height.
@@ -440,7 +443,7 @@ struct FileEditorView: View {
             if isMarkdown {
                 modeToggle
             }
-            // The content-area window controls (hide list / maximize / close) ride the header's
+            // The content-area window controls (maximize / close) ride the header's
             // trailing edge, after the file's own controls.
             if showsInspectorChrome {
                 InspectorDetailChromeButtons()
@@ -463,7 +466,7 @@ struct FileEditorView: View {
     private static let headerHeight: CGFloat = 32
 
     /// The Edit/Preview switch in the app's glass-pill language — the same construction
-    /// as `InspectorTabsToolbar` (own capsule track, Liquid Glass selection pill sliding
+    /// as `GitChangesView`'s mode switch (own capsule track, Liquid Glass selection pill sliding
     /// between segments via `matchedGeometryEffect`, flat fills pre-Tahoe), scaled to the
     /// slim header. Hand-drawn for the same reason: a native segmented control has no
     /// track to sit on over termio's transparent chrome.
@@ -477,14 +480,14 @@ struct FileEditorView: View {
         .background { modeTrack }
         // The pill's slide is animated locally here; the mode is set WITHOUT
         // `withAnimation` so the editor/preview content swaps instantly instead of
-        // cross-fading for the pill's whole duration (the InspectorTabsToolbar lesson).
+        // cross-fading for the pill's whole duration.
         .animation(.snappy(duration: 0.25), value: mode)
     }
 
     private func modeSegment(_ segment: Mode, icon: HugeIcon, help: String) -> some View {
         let selected = mode == segment
-        return HugeIconView(icon: icon, size: 13, color: selected ? .primary : .secondary,
-                            lineWidthOverride: 1.4)
+        return HugeIconView(icon: icon, size: ChromeGlyph.size(for: icon), color: selected ? .primary : .secondary,
+                                   lineWidthOverride: ChromeGlyph.lineWidth())
             .frame(width: 30, height: 22)
             .matchedGeometryEffect(id: segment, in: modePillNamespace)
             // A filled hit shape so the whole segment — not just the icon's thin
