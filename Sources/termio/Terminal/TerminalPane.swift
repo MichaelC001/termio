@@ -86,6 +86,12 @@ struct TerminalPane: View {
         .onChange(of: store.paletteMode) { _, mode in
             if mode == nil { requestSelectedTerminalFocus(reason: .paletteClosed) }
         }
+        // Closing the panel takes its editor off screen, so the typing goes back to the terminal.
+        // A maximized detail stays on screen with its panel closed, so it keeps the keyboard.
+        .onChange(of: store.inspectorVisible) { _, visible in
+            guard !visible, !(store.inspectorMaximized && store.isDetailPresented) else { return }
+            requestSelectedTerminalFocus(reason: .overlayClosed)
+        }
         // Every visible pane must be mounted — with splits that is all the
         // tree's leaves, not just the selection.
         .onChange(of: store.visiblePaneIDs, initial: true) { _, ids in
@@ -172,11 +178,15 @@ struct TerminalPane: View {
                                                  width: store.panelWidth)
                 let rect = panel.terminal
                 let context = store.surface(for: item.session)
+                let notch = cardNotch(card, in: bounds)
                 PaneCardChrome(session: item.session, isSelected: isSelected,
                                background: paneBackground,
                                isTopLeading: PaneCard.isTopLeading(card, in: bounds),
                                cardMinX: card.minX)
                     .frame(width: card.width, height: card.height)
+                    // Before `position`, so the probe is the card's size rather than the pane's.
+                    .background(PaneCardProbeView(sessionID: id,
+                                                  panelCovers: panel.frame != nil && panel.covers))
                     .position(x: card.midX, y: card.midY)
                     .opacity(isVisible ? 1 : 0)
                     .allowsHitTesting(isVisible)
@@ -203,7 +213,8 @@ struct TerminalPane: View {
                 .frame(width: rect.width, height: rect.height)
                 // The card's corners are round and the surface is not: clip the corners it
                 // reaches, or its background shows past the card's border onto the window's.
-                .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil))
+                .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
+                                             topLeading: notch != nil))
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(isVisible ? 1 : 0)
                 .allowsHitTesting(isVisible)
@@ -212,10 +223,10 @@ struct TerminalPane: View {
                 if let frame = panel.frame, !isSelected, isVisible {
                     PanelSnapshot(image: store.panelSnapshots[id], background: paneBackground)
                         .frame(width: frame.width, height: frame.height)
-                        .clipShape(PaneCard.panelClip(covers: panel.covers))
+                        .clipShape(PaneCard.panelClip(covers: panel.covers, notched: notch != nil))
                         .position(x: frame.midX, y: frame.midY)
                         .onTapGesture { store.selectedSessionID = id }
-                    PanelEdge(covers: panel.covers)
+                    PanelEdge(covers: panel.covers, notched: notch != nil)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
                 }
@@ -224,7 +235,8 @@ struct TerminalPane: View {
                 }
                 // Over the surface, not behind it: the surface is square-cornered, so
                 // a border drawn underneath would lose its rounded bottom corners.
-                PaneCardBorder(isFocused: isSelected && store.splitRoot != nil)
+                PaneCardBorder(isFocused: isSelected && store.splitRoot != nil,
+                               notch: notch)
                     .frame(width: card.width, height: card.height)
                     .position(x: card.midX, y: card.midY)
                     .opacity(isVisible ? 1 : 0)
@@ -236,9 +248,10 @@ struct TerminalPane: View {
             let livePanel = livePanelLayout(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed)
             let live = livePanel?.frame
             let liveFrame = live ?? lastLivePanelFrame
-            InspectorPanelView()
+            InspectorPanelView(isShown: live != nil)
                 .frame(width: max(1, liveFrame.width), height: max(1, liveFrame.height))
-                .clipShape(PaneCard.panelClip(covers: livePanel?.covers ?? false))
+                .clipShape(PaneCard.panelClip(covers: livePanel?.covers ?? false,
+                                              notched: livePanel?.notched ?? false))
                 .position(x: liveFrame.midX, y: liveFrame.midY)
                 .opacity(live == nil ? 0 : 1)
                 .allowsHitTesting(live != nil)
@@ -246,7 +259,7 @@ struct TerminalPane: View {
                     if let frame { lastLivePanelFrame = frame }
                 }
             if let livePanel {
-                PanelEdge(covers: livePanel.covers)
+                PanelEdge(covers: livePanel.covers, notched: livePanel.notched)
                     .frame(width: livePanel.frame.width, height: livePanel.frame.height)
                     .position(x: livePanel.frame.midX, y: livePanel.frame.midY)
             }
@@ -258,6 +271,20 @@ struct TerminalPane: View {
                             store.updateSplitRatio(branchID: divider.id, ratio: ratio)
                         },
                         onDragEnded: { store.flushViewports() })
+                }
+            }
+            // The open hand over each visible card's handle, as a cursor rect on a real view.
+            // A cursor pushed from the event monitor lost to the header's own views, which set
+            // theirs on the next pointer move, so the hand came and went. The press itself is
+            // still taken by the monitor.
+            if let layout, !zoomed, store.paneDrag == nil {
+                ForEach(Array(layout.frames.keys).filter { store.visiblePaneIDs.contains($0) }, id: \.self) { id in
+                    if let frame = layout.frames[id] {
+                        let handle = PaneDragRearrange.handleRect(in: frame.size)
+                        CursorArea(cursor: .openHand)
+                            .frame(width: handle.width, height: handle.height)
+                            .position(x: frame.minX + handle.midX, y: frame.minY + handle.midY)
+                    }
                 }
             }
             // The handle that starts a rearrange, on the pane the pointer is
@@ -307,12 +334,21 @@ struct TerminalPane: View {
 
     /// The focused card's panel, when its panel is open and the card is on screen.
     private func livePanelLayout(bounds: CGRect, paneFrames: [Session.ID: CGRect],
-                                 zoomed: Bool) -> (frame: CGRect, covers: Bool)? {
+                                 zoomed: Bool) -> (frame: CGRect, covers: Bool, notched: Bool)? {
         guard let id = store.selectedSessionID, store.openPanels.contains(id),
               store.visiblePaneIDs.contains(id) || zoomed else { return nil }
         let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
         let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth)
-        return layout.frame.map { ($0, layout.covers) }
+        let notched = cardNotch(card, in: bounds) != nil
+        return layout.frame.map { ($0, layout.covers, notched) }
+    }
+
+    /// The corner `card` leaves out for the window's controls (`PaneCard.notch`), if it is the
+    /// card that carries them.
+    private func cardNotch(_ card: CGRect, in bounds: CGRect) -> CGSize? {
+        PaneCard.notch(carriesToggle: PaneCard.isTopLeading(card, in: bounds)
+                           && !store.sidebarVisible && settings.tabLayout == .vertical,
+                       isFullScreen: store.windowIsFullScreen, cardMinX: card.minX)
     }
 
     /// What the in-flight drop would land on. A `.center` target highlights the
@@ -370,11 +406,13 @@ struct TerminalPane: View {
             reason: reason,
             canFocus: { [weak store] in
                 guard let store else { return false }
+                // An open detail keeps the keyboard while it is on screen: in its panel, or
+                // maximized over the window, which shows it whether the panel is open or not.
+                let hasDetail = store.openFileURL != nil || store.openingRemoteFile != nil || store.openDiff != nil
+                let detailShown = hasDetail && (store.inspectorVisible || store.inspectorMaximized)
                 return store.selectedSessionID == id
                     && store.visiblePaneIDs.contains(id)
-                    && store.openFileURL == nil
-                    && store.openingRemoteFile == nil
-                    && store.openDiff == nil
+                    && !detailShown
                     && store.paletteMode == nil
             }
         )
@@ -1373,6 +1411,19 @@ enum PaneCard {
     /// With `spacing`, centres the top row's headers on the control rows' line.
     static let headerHeight: CGFloat = WindowChrome.rowHeight
     static let cornerRadius: CGFloat = 10
+
+    /// The room between the navigator toggle and the notch's edge.
+    static let notchGap: CGFloat = 4
+
+    /// The corner the top-leading card leaves out while the sidebar is collapsed, holding the
+    /// traffic lights and the navigator toggle: window controls, not the card's, so they sit on
+    /// the window's ground and the card's edge curves around them. `nil` for every other card.
+    @MainActor static func notch(carriesToggle: Bool, isFullScreen: Bool, cardMinX: CGFloat) -> CGSize? {
+        guard carriesToggle else { return nil }
+        let width = WindowChrome.leadingInset(isFullScreen: isFullScreen, columnMinX: cardMinX)
+            + ChromeGlyph.prominentFrame.width + notchGap
+        return CGSize(width: width, height: headerHeight)
+    }
     static let borderWidth: CGFloat = 1
 
     /// Whether a card holds the pane area's top-left corner. That card carries the navigator
@@ -1412,9 +1463,12 @@ enum PaneCard {
     /// The panel's shape inside its card: its own rounded top-leading corner where it meets the
     /// terminal, the card's corner at the bottom-trailing one, and — laid over the whole body —
     /// the card's bottom-leading corner too.
-    static func panelClip(covers: Bool) -> UnevenRoundedRectangle {
+    ///
+    /// `notched`: a panel covering the card that leaves its top-leading corner out meets the
+    /// card's rounded shoulder there, so it rounds that corner too.
+    static func panelClip(covers: Bool, notched: Bool = false) -> UnevenRoundedRectangle {
         let inner = cornerRadius - borderWidth
-        return UnevenRoundedRectangle(topLeadingRadius: covers ? 0 : cornerRadius,
+        return UnevenRoundedRectangle(topLeadingRadius: covers ? (notched ? inner : 0) : cornerRadius,
                                       bottomLeadingRadius: covers ? inner : 0,
                                       bottomTrailingRadius: inner,
                                       style: .continuous)
@@ -1422,9 +1476,12 @@ enum PaneCard {
 
     /// Clips the body's bottom corners — the ones it shares with the card — to the card's
     /// radius, inside its border.
-    static func bodyClip(leading: Bool, trailing: Bool) -> UnevenRoundedRectangle {
+    /// `topLeading` for the card that leaves its top-leading corner out (`notch`): the terminal
+    /// starts right under the notch, where the card's edge rounds the shoulder.
+    static func bodyClip(leading: Bool, trailing: Bool, topLeading: Bool = false) -> UnevenRoundedRectangle {
         let radius = cornerRadius - borderWidth
-        return UnevenRoundedRectangle(bottomLeadingRadius: leading ? radius : 0,
+        return UnevenRoundedRectangle(topLeadingRadius: topLeading ? radius : 0,
+                                      bottomLeadingRadius: leading ? radius : 0,
                                       bottomTrailingRadius: trailing ? radius : 0,
                                       style: .continuous)
     }
@@ -1478,13 +1535,21 @@ private struct PaneCardChrome: View {
             header
             Spacer(minLength: 0)
         }
-        .background(background, in: RoundedRectangle(cornerRadius: PaneCard.cornerRadius, style: .continuous))
+        .background(background, in: PaneCardShape(notch: notch))
+    }
+
+    private var notch: CGSize? {
+        PaneCard.notch(carriesToggle: carriesNavigatorToggle,
+                       isFullScreen: store.windowIsFullScreen, cardMinX: cardMinX)
     }
 
     private var header: some View {
         HStack(spacing: 6) {
             if carriesNavigatorToggle {
                 NavigatorToggleButton()
+                    // Out to the notch's edge and a header inset past it, so the card's own
+                    // header starts where the card does.
+                    .padding(.trailing, PaneCard.notchGap + 10 - 6)
                     .transition(.opacity)
             }
             Group {
@@ -1584,6 +1649,134 @@ private struct PaneCardChrome: View {
     }
 }
 
+/// A region that shows `cursor` while the pointer is over it, by cursor rect. Takes no clicks of
+/// its own: a press goes to whatever the window's event monitors decide.
+private struct CursorArea: NSViewRepresentable {
+    let cursor: NSCursor
+
+    func makeNSView(context: Context) -> AreaView {
+        let view = AreaView()
+        view.cursor = cursor
+        return view
+    }
+
+    func updateNSView(_ view: AreaView, context: Context) {
+        guard view.cursor != cursor else { return }
+        view.cursor = cursor
+        view.window?.invalidateCursorRects(for: view)
+    }
+
+    final class AreaView: NSView {
+        var cursor: NSCursor = .arrow
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: cursor) }
+    }
+}
+
+/// What the window's event monitors (`PaneDragRearrange`, `TerminalContextMenu`) need about each
+/// card that its terminal view cannot tell them: they find a card by its terminal, and a panel
+/// beside the terminal (or a letterboxed grid) makes the card a different size, and a panel over
+/// it takes its clicks. Each card carries a `PaneCardProbe` sized to it, so the answer is read
+/// off the card's own view when asked, never a stored copy; a closed card's probe leaves with it.
+@MainActor
+final class PaneCardGeometry {
+    static let shared = PaneCardGeometry()
+
+    private var probes: [Session.ID: PaneCardProbe] = [:]
+
+    fileprivate func register(_ probe: PaneCardProbe, for id: Session.ID) { probes[id] = probe }
+
+    fileprivate func unregister(_ probe: PaneCardProbe) {
+        guard let id = probe.sessionID, probes[id] === probe else { return }
+        probes.removeValue(forKey: id)
+    }
+
+    /// The card's frame in `window`'s coordinates, or nil when it is not in that window.
+    func cardFrame(for id: Session.ID, in window: NSWindow) -> CGRect? {
+        guard let probe = probes[id], probe.window === window else { return nil }
+        return probe.convert(probe.bounds, to: nil)
+    }
+
+    /// Whether the card's panel — live, or the picture an unfocused card's panel left — lies
+    /// over its terminal.
+    func panelCovers(_ id: Session.ID) -> Bool {
+        probes[id]?.panelCovers ?? false
+    }
+}
+
+final class PaneCardProbe: NSView {
+    var sessionID: Session.ID?
+    var panelCovers = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct PaneCardProbeView: NSViewRepresentable {
+    let sessionID: Session.ID
+    let panelCovers: Bool
+
+    func makeNSView(context: Context) -> PaneCardProbe {
+        let probe = PaneCardProbe()
+        probe.sessionID = sessionID
+        PaneCardGeometry.shared.register(probe, for: sessionID)
+        return probe
+    }
+
+    func updateNSView(_ probe: PaneCardProbe, context: Context) {
+        probe.panelCovers = panelCovers
+        if probe.sessionID != sessionID {
+            PaneCardGeometry.shared.unregister(probe)
+            probe.sessionID = sessionID
+            PaneCardGeometry.shared.register(probe, for: sessionID)
+        }
+    }
+
+    static func dismantleNSView(_ probe: PaneCardProbe, coordinator: ()) {
+        MainActor.assumeIsolated { PaneCardGeometry.shared.unregister(probe) }
+    }
+}
+
+/// A card's outline: a rounded rectangle, or with `notch` one whose top-leading corner is left
+/// out. Every corner rounds at the card's radius, the notch's inner one the other way, so the
+/// edge curves around what sits in it rather than turning a square corner.
+struct PaneCardShape: InsettableShape {
+    var notch: CGSize?
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let box = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        guard box.width > 0, box.height > 0 else { return Path() }
+        let radius = max(0, PaneCard.cornerRadius - insetAmount)
+        var corners: [CGPoint] = [
+            CGPoint(x: box.maxX, y: box.minY),
+            CGPoint(x: box.maxX, y: box.maxY),
+            CGPoint(x: box.minX, y: box.maxY),
+        ]
+        if let notch, notch.width + 2 * radius < box.width, notch.height + 2 * radius < box.height {
+            let inner = CGPoint(x: rect.minX + notch.width + insetAmount, y: rect.minY + notch.height + insetAmount)
+            corners += [CGPoint(x: box.minX, y: inner.y), inner, CGPoint(x: inner.x, y: box.minY)]
+        } else {
+            corners.append(CGPoint(x: box.minX, y: box.minY))
+        }
+        // Start midway along the closing edge, so every corner, the first included, is rounded.
+        guard let last = corners.last, let first = corners.first else { return Path() }
+        var path = Path()
+        path.move(to: CGPoint(x: (last.x + first.x) / 2, y: (last.y + first.y) / 2))
+        for index in corners.indices {
+            let next = corners[(index + 1) % corners.count]
+            path.addArc(tangent1End: corners[index], tangent2End: next, radius: radius)
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    func inset(by amount: CGFloat) -> PaneCardShape {
+        var shape = self
+        shape.insetAmount += amount
+        return shape
+    }
+}
+
 /// The card's outline, drawn over the surface as a lit rim in the manner of Liquid Glass's
 /// specular edge: light from the top leading corner catches the top edge and fades down the
 /// sides, brightest at the leading end and fainter at the trailing one, and a weaker reflection
@@ -1591,9 +1784,10 @@ private struct PaneCardChrome: View {
 /// goes; the others keep the hairline.
 private struct PaneCardBorder: View {
     let isFocused: Bool
+    let notch: CGSize?
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: PaneCard.cornerRadius, style: .continuous)
+        let shape = PaneCardShape(notch: notch)
         let peak = 0.6
         ZStack {
             shape.strokeBorder(Color.primary.opacity(isFocused ? 0.12 : 0.08), lineWidth: PaneCard.borderWidth)
@@ -1696,9 +1890,13 @@ private struct PanelDividerHandle: View {
 /// column split off it. Its other two edges are the card's border, and are not drawn twice.
 private struct PanelEdge: View {
     let covers: Bool
+    /// The card leaves its top-leading corner out, whose rounded shoulder the card's own border
+    /// draws: a covering panel's top line starts past it rather than running straight through.
+    var notched = false
 
     var body: some View {
-        PanelEdgeShape(radius: covers ? 0 : PaneCard.cornerRadius, leading: !covers)
+        PanelEdgeShape(radius: covers ? 0 : PaneCard.cornerRadius, leading: !covers,
+                       startInset: covers && notched ? PaneCard.cornerRadius : 0)
             .stroke(Color.primary.opacity(0.1), lineWidth: PaneCard.borderWidth)
             .allowsHitTesting(false)
     }
@@ -1707,6 +1905,7 @@ private struct PanelEdge: View {
 private struct PanelEdgeShape: Shape {
     let radius: CGFloat
     let leading: Bool
+    var startInset: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
         // Half a line in, so the stroke lands inside the panel's rect.
@@ -1718,7 +1917,7 @@ private struct PanelEdgeShape: Shape {
             path.addArc(center: CGPoint(x: edge.minX + radius, y: edge.minY + radius), radius: radius,
                         startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
         } else {
-            path.move(to: CGPoint(x: rect.minX, y: edge.minY))
+            path.move(to: CGPoint(x: rect.minX + startInset, y: edge.minY))
         }
         path.addLine(to: CGPoint(x: rect.maxX, y: edge.minY))
         return path

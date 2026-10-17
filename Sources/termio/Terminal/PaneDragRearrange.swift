@@ -59,7 +59,6 @@ final class PaneDragRearrange {
     private var dragging = false
     private var cancelled = false
     private var cursorPushed = false
-    private var hoverCursorPushed = false
 
     /// Ghostty's handle dimensions (`SurfaceGrabHandle`), centered in the card's
     /// header, so a press on it never reaches the terminal.
@@ -147,17 +146,6 @@ final class PaneDragRearrange {
     private func setHover(_ hover: PaneHandleHover?) {
         guard let store, store.paneHandleHover != hover else { return }
         store.paneHandleHover = hover
-        setHoverCursor(hover?.overHandle == true)
-    }
-
-    /// The open hand over the handle, mirroring ghostty's cursor rects. A drawn
-    /// handle has no view to hang a rect on, and a plain `set()` loses the race:
-    /// this monitor runs before the event reaches the surface, which then puts
-    /// the I-beam back on its own cursor update. A pushed cursor outranks that.
-    private func setHoverCursor(_ overHandle: Bool) {
-        guard overHandle != hoverCursorPushed else { return }
-        if overHandle { NSCursor.openHand.push() } else { NSCursor.pop() }
-        hoverCursorPushed = overHandle
     }
 
     // MARK: - Drag
@@ -187,9 +175,7 @@ final class PaneDragRearrange {
         // The overlay washes translucently over live surfaces, which have to
         // keep producing frames for the length of the gesture.
         store.beginPaneDragRepaint()
-        // The hand closes on the press; drop the hover cursor so the two can't
-        // stack up.
-        setHoverCursor(false)
+        // The hand closes on the press, over the open hand of the handle's cursor rect.
         NSCursor.closedHand.push()
         cursorPushed = true
         return true
@@ -285,18 +271,23 @@ final class PaneDragRearrange {
         guard let store else { return nil }
         // A press on a panel laid over a card's terminal is the panel's, not the pane's.
         if InspectorPanelHost.shared.contains(point, in: window, store: store) { return nil }
+        let geometry = PaneCardGeometry.shared
         for view in terminalViews(in: contentView) {
-            // The surface sits inside its card: under the header, inside the border.
-            // Window space is bottom-left-origin, so the header is above `maxY`.
-            let surface = view.convert(view.bounds, to: nil)
-            let border = PaneCard.borderWidth
-            let card = CGRect(x: surface.minX - border, y: surface.minY - border,
-                              width: surface.width + 2 * border,
-                              height: surface.height + PaneCard.headerHeight + border)
             guard view.window === window,
-                  card.contains(point),
                   let id = sessionID(for: view),
                   store.visiblePaneIDs.contains(id) else { continue }
+            // The surface sits inside its card: under the header, inside the border, and before
+            // any panel beside it. Window space is bottom-left-origin, so the header is above `maxY`.
+            let surface = view.convert(view.bounds, to: nil)
+            let border = PaneCard.borderWidth
+            let card = geometry.cardFrame(for: id, in: window)
+                ?? CGRect(x: surface.minX - border, y: surface.minY - border,
+                          width: surface.width + 2 * border,
+                          height: surface.height + PaneCard.headerHeight + border)
+            guard card.contains(point) else { continue }
+            // A panel over the terminal — the picture an unfocused card's panel left included —
+            // takes the presses on it; the header above it is still the card's.
+            if geometry.panelCovers(id), point.y < card.maxY - PaneCard.headerHeight { return nil }
             let local = CGPoint(x: point.x - card.minX, y: card.maxY - point.y)
             return (id, local, card.size)
         }

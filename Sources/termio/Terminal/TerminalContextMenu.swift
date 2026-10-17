@@ -75,9 +75,14 @@ final class TerminalContextMenu: NSObject {
             guard view.window === window,
                   view.convert(view.bounds, to: nil).contains(point),
                   let id = sessionID(for: view) else { return false }
-            return store.visiblePaneIDs.contains(id)
+            // On screen, not merely visible: a zoomed pane's siblings keep their frames.
+            return store.isPaneOnScreen(id)
         }
         guard let target else { return false }
+        // The picture an unfocused card's covering panel left lies over this terminal: the click
+        // is on the panel, which has no menu of its own until its card is focused. Swallowed, so
+        // it neither opens the terminal's menu nor reaches the shell underneath.
+        if let id = sessionID(for: target), PaneCardGeometry.shared.panelCovers(id) { return true }
 
         // Defer to the program when it asked for the mouse, exactly as Ghostty
         // does: it offers the press to the core first and only falls through to

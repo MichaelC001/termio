@@ -97,7 +97,9 @@ final class TermioStore: ObservableObject {
                 // workspace rather than the current one, so a deep link that
                 // jumps scopes records the arrival where it landed.
                 if let owner = workspace(for: id)?.id { workspaceSelections[owner] = id }
-                if let group = group(of: id) { lastGroupSelection[group] = id }
+                if let group = group(of: id), let owner = workspace(for: id)?.id {
+                    lastGroupSelection[owner, default: [:]][group] = id
+                }
                 // Looking at a session is being on its machine. Every path that
                 // moves the selection — a deep link, the palette, a notification,
                 // a split, a freshly opened remote terminal — lands here, so this
@@ -753,10 +755,10 @@ final class TermioStore: ObservableObject {
     /// Entries for closed sessions are pruned alongside their runtimes in `syncRuntimes`.
     var workspaceSelections: [Workspace.ID: Session.ID] = [:]
 
-    /// The session each group was last left on, so opening a group in the horizontal layout
-    /// lands where the person was (see `open(_:)`). In memory only: a relaunch opens a group on
-    /// its first session.
-    var lastGroupSelection: [TabGroup: Session.ID] = [:]
+    /// The session each group was last left on, per workspace — Terminals and Chats are a group
+    /// in every workspace — so opening a group in the horizontal layout lands where the person
+    /// was (see `open(_:)`). In memory only: a relaunch opens a group on its first session.
+    var lastGroupSelection: [Workspace.ID: [TabGroup: Session.ID]] = [:]
 
     /// True only while `restored()` seeds the saved layouts and hand-applies the selected
     /// one — it suppresses the capture/restore in `selectedSessionID`'s didSet so a

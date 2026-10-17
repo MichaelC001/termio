@@ -80,7 +80,7 @@ extension TermioStore {
     /// it, else its first. A project with no sessions gets a terminal.
     func open(_ group: TabGroup) {
         let members = sessions(in: group)
-        if let last = lastGroupSelection[group], members.contains(where: { $0.id == last }) {
+        if let last = lastGroupSelection[currentWorkspaceID]?[group], members.contains(where: { $0.id == last }) {
             selectedSessionID = last
         } else if let first = members.first {
             selectedSessionID = first.id

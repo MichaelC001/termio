@@ -114,7 +114,14 @@ final class InspectorPanelHost {
 
 /// Mounts the live inspector inside a card. Only ever one on screen: the inspector is a single
 /// view controller, moved to whichever card has focus.
+///
+/// While no card shows it, it stays mounted — so the file tree keeps its expanded folders and
+/// scroll — but *hidden*, not merely transparent: a transparent view still takes Finder drops
+/// over the terminal it sits on, and an editor inside it keeps the keyboard and keeps saving
+/// what is typed. A hidden view takes neither, and hiding it hands its first responder on.
 struct InspectorPanelView: NSViewControllerRepresentable {
+    let isShown: Bool
+
     func makeNSViewController(context: Context) -> NSViewController {
         if let controller = InspectorPanelHost.shared.controller { return controller }
         let empty = NSViewController()
@@ -122,5 +129,13 @@ struct InspectorPanelView: NSViewControllerRepresentable {
         return empty
     }
 
-    func updateNSViewController(_ controller: NSViewController, context: Context) {}
+    func updateNSViewController(_ controller: NSViewController, context: Context) {
+        let view = controller.view
+        guard view.isHidden == isShown else { return }
+        if !isShown, let window = view.window,
+           let responder = window.firstResponder as? NSView, responder.isDescendant(of: view) {
+            window.makeFirstResponder(nil)
+        }
+        view.isHidden = !isShown
+    }
 }
