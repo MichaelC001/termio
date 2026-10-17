@@ -176,6 +176,21 @@ struct GlassRim<S: InsettableShape>: View {
     }
 }
 
+/// A close button's hover cue, as Safari gives the ✕ on a tab: a faint disc behind the glyph while
+/// the pointer is on it, in the row's own ink rather than an accent, painted the frame the pointer
+/// arrives. Shared by the sidebar's rows and the horizontal tabs so the two read as one control.
+struct CloseHoverDisc: View {
+    let isHovering: Bool
+    var ink: Color = .primary
+    var diameter: CGFloat = 20
+
+    var body: some View {
+        Circle()
+            .fill(ink.opacity(isHovering ? 0.12 : 0))
+            .frame(width: diameter, height: diameter)
+    }
+}
+
 /// A borderless glyph button with a neutral chip under the pointer. The chip paints the frame the
 /// pointer arrives, with no fade.
 struct ChromeIconButton: View {
