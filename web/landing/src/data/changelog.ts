@@ -17,6 +17,26 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.57.0",
+    date: "2026-10-17",
+    title: "Every session is a card",
+    changes: {
+      new: [
+        "Cards: each session sits in its own rounded card, with its agent, path, and branch on one line above it.",
+        "Panels in the card: Files, Search, and Changes open inside the card they belong to, so two cards can show two folders side by side.",
+        "Horizontal tabs: Settings ▸ Appearance ▸ Tabs moves a group's sessions into tabs across the top, Safari style, and lists only the groups in the sidebar.",
+      ],
+      improved: [
+        "The window drops its toolbar. The traffic lights sit on the sidebar's row, and the whole window shares one background.",
+        "Glass styling for the main buttons, session icons, and the selected row and tab; the focused card's edge catches the light.",
+        "A session that is done or waiting on you shows a dot on its icon's corner.",
+      ],
+      fixed: [
+        "Running termio inside a session drives the app that started it, so a dev build's agents no longer reach the release app.",
+      ],
+    },
+  },
+  {
     version: "0.56.1",
     date: "2026-10-09",
     title: "Fewer hooks for Claude Code and Pi",
