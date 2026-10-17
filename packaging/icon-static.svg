@@ -2,7 +2,7 @@
   <title>termio</title>
 
   <defs>
-    <!-- dark backdrop the glass refracts against -->
+    <!-- dark backdrop the glass sits against -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#141417"/>
       <stop offset="0.55" stop-color="#08080a"/>
@@ -13,80 +13,66 @@
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
 
-    <!-- frosted body: milky white, brighter at the top-left where light enters.
-         Frosted glass scatters light, so over black it reads as a light, milky
-         grey rather than a dark pane. -->
-    <linearGradient id="glassFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.82"/>
-      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.74"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.66"/>
-    </linearGradient>
-    <!-- edge light: bright rim along the top, fading down the sides -->
-    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.85"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.10"/>
+    <!-- frosted white glass, falling to grey at the bottom so it keeps its depth
+         instead of reading as flat white plastic -->
+    <linearGradient id="glassFill" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#f2f2f4" stop-opacity="0.97"/>
+      <stop offset="1" stop-color="#a9a9b0" stop-opacity="0.97"/>
     </linearGradient>
     <!-- specular sheen hugging the top edge -->
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
-      <stop offset="0.32" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.75"/>
+      <stop offset="0.38" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
     <!-- glass thickness: shadow pooling at the inner bottom edge -->
     <linearGradient id="innerShade" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0.6" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="1" stop-color="#000000" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.24"/>
+    </linearGradient>
+    <!-- a thin edge, brightest where the light enters at the top, catching a
+         little again at the bottom; a wide band read as an outline -->
+    <linearGradient id="rim" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.5"/>
     </linearGradient>
 
-    <filter id="cast" x="-60%" y="-60%" width="220%" height="220%">
-      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#000000" flood-opacity="0.55"/>
+    <filter id="cast" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000000" flood-opacity="0.55"/>
     </filter>
-    <filter id="soften" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="1.1"/>
+    <filter id="soften" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <!-- the prompt sits in the glass rather than on it: a light catch under its
+         lower edge -->
+    <filter id="inset" x="-20%" y="-20%" width="140%" height="140%">
+      <feOffset in="SourceAlpha" dy="1.6" result="offset"/>
+      <feFlood flood-color="#ffffff" flood-opacity="0.55"/>
+      <feComposite in2="offset" operator="in" result="catch"/>
+      <feMerge><feMergeNode in="catch"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
 
-    <!-- one frosted-glass tile, drawn at 80x80 then scaled to 72 so the dots
-         read a touch smaller with more air in the gutters; reused for every cell -->
-    <g id="tile" transform="scale(0.9)">
-      <rect width="80" height="80" rx="19" fill="url(#glassFill)" filter="url(#cast)"/>
-      <rect width="80" height="80" rx="19" fill="url(#innerShade)"/>
-      <rect x="3" y="3" width="74" height="74" rx="16" fill="url(#sheen)" filter="url(#soften)"/>
-      <rect x="0.8" y="0.8" width="78.4" height="78.4" rx="18.4"
-            fill="none" stroke="url(#rim)" stroke-width="1.4"/>
-    </g>
-
-    <!-- denser, near-white glass for the five tiles that spell the T; the
-         milky #glassFill tops out as light grey, too soft to carry a glyph -->
-    <linearGradient id="glassFillBright" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.98"/>
-      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.94"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.88"/>
-    </linearGradient>
-    <g id="tileBright" transform="scale(0.9)">
-      <rect width="80" height="80" rx="19" fill="url(#glassFillBright)" filter="url(#cast)"/>
-      <rect width="80" height="80" rx="19" fill="url(#innerShade)"/>
-      <rect x="3" y="3" width="74" height="74" rx="16" fill="url(#sheen)" filter="url(#soften)"/>
-      <rect x="0.8" y="0.8" width="78.4" height="78.4" rx="18.4"
-            fill="none" stroke="url(#rim)" stroke-width="1.4"/>
-    </g>
+    <!-- 海棠: the four-lobed opening of a Chinese lattice window, the union of four
+         circles traced through the outer cusps. Lobe offset 83.9 and radius 81.2
+         scale together, so a resize keeps the cusps' depth. -->
+    <path id="haitang" d="M337.12,174.88 A81.16,81.16 0 1 1 337.12,337.12 A81.16,81.16 0 1 1 174.88,337.12 A81.16,81.16 0 1 1 174.88,174.88 A81.16,81.16 0 1 1 337.12,174.88Z"/>
+    <clipPath id="haitangClip"><use href="#haitang"/></clipPath>
   </defs>
 
   <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#bg)"/>
   <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#bgGlow)"/>
 
-  <!-- 九宫格 spelling a T for termio: the top row, center, and bottom-center
-       glow near-white while the four leftover tiles sit dark. A faint
-       top-left-to-stem falloff keeps the light feeling like it flows. -->
-  <g transform="translate(256 256) scale(0.9) translate(-256 -256)">
-    <use href="#tileBright" x="220" y="220" opacity="1.00"/>
-
-    <use href="#tileBright" x="116" y="116" opacity="1.00"/>
-    <use href="#tileBright" x="220" y="116" opacity="1.00"/>
-    <use href="#tileBright" x="324" y="116" opacity="0.97"/>
-    <use href="#tile" x="324" y="220" opacity="0.26"/>
-    <use href="#tile" x="324" y="324" opacity="0.24"/>
-    <use href="#tileBright" x="220" y="324" opacity="0.95"/>
-    <use href="#tile" x="116" y="324" opacity="0.24"/>
-    <use href="#tile" x="116" y="220" opacity="0.26"/>
+  <use href="#haitang" fill="url(#glassFill)" filter="url(#cast)"/>
+  <g clip-path="url(#haitangClip)">
+    <rect width="512" height="512" fill="url(#innerShade)"/>
+    <rect width="512" height="512" fill="url(#sheen)" opacity="0.6" filter="url(#soften)"/>
+    <use href="#haitang" fill="none" stroke="url(#rim)" stroke-width="2.6"/>
   </g>
+
+  <!-- >_ in font units, y up. The ">" is Monaspace Radon ExtraBold (SIL Open Font
+       License, github.com/githubnext/monaspace). Its own "_" is only 0.6x as thick
+       as the ">" arms, so the underscore is redrawn as a bar exactly as thick as
+       the arms, standing on the same floor. -->
+  <path d="M330 9 1080 555V790L330 1336L170 1117L773 678V667L170 228Z M1146.3,9.0 L2206.3,9.0 L2206.3,280.2 L1146.3,280.2Z"
+        fill="#151518" transform="matrix(0.055,0,0,-0.055,190.65,292.99)" filter="url(#inset)"/>
 </svg>
