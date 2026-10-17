@@ -17,6 +17,20 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.58.0",
+    date: "2026-10-17",
+    title: "Drag tabs into order",
+    changes: {
+      new: [
+        "In the horizontal layout, drag a tab to move it. The other tabs slide aside as it passes, and a split group moves as one tab.",
+      ],
+      improved: [
+        "The tab row sits on a translucent track.",
+        "Close buttons in the tabs and the sidebar show a round highlight under the pointer.",
+      ],
+    },
+  },
+  {
     version: "0.57.3",
     date: "2026-10-17",
     title: "A resize no longer repaints the prompt twice",
