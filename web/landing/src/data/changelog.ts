@@ -17,6 +17,23 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.57.1",
+    date: "2026-10-17",
+    title: "A closed panel lets go of the keyboard",
+    changes: {
+      improved: [
+        "With the sidebar collapsed, the first card leaves its corner to the window's buttons, its edge curving around them.",
+        "The workspace switcher lights up as glass under the pointer, like the buttons beside it.",
+      ],
+      fixed: [
+        "Typing after closing a card's panel could edit the hidden file instead of reaching the terminal.",
+        "Dropping a file on a terminal after closing its panel could copy it into the project.",
+        "The pane drag handle sometimes showed an arrow, or missed its spot when a panel was open.",
+        "In the horizontal layout, a group reopens on the session you left in that workspace.",
+      ],
+    },
+  },
+  {
     version: "0.57.0",
     date: "2026-10-17",
     title: "Every session is a card",
