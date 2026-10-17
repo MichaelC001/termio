@@ -3,8 +3,8 @@ title: 检查器
 description: 浏览文件、带语法高亮地编辑、读 git 差异、搜索项目——在本机上，或在会话所在的那台机器上，都不用离开终端。
 x-i18n:
   source_path: inspector.mdx
-  source_hash: dcc8740e73f1a4ed2e31655fcbeddc027455acd96e81ea43040b2cbf69fea595
-  generated_at: 2026-08-30
+  source_hash: 0df30c37a7b418a00881b7ecbb743ca18254562ef8c72e94e607ad9b1680a741
+  generated_at: 2026-10-17
 ---
 
 检查器是 Termio 用来处理终端*周边*一切的侧面板：文件、更改和搜索。它就在会话旁边，
@@ -29,17 +29,10 @@ HTML 则用「快速查看」预览。
 - 光标所在单词的其他出现处会被淡淡地刷上一层底色，不用搜索也能看出一个名字用在哪儿。
 
 <DocsImage
-  src="/screenshots/docs/06-files-editor.png"
-  alt="Termio 文件检查器选中一个 Swift 文件，并在终端旁的语法高亮编辑器中打开"
-  width={2424}
-  height={1664}
-/>
-
-<DocsImage
-  src="/screenshots/docs/23-quick-look.png"
-  alt="Termio 文件检查器选中一个文件，并在只读的「快速查看」中打开其图片预览"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/06-files-editor.png?v=20261017"
+  alt="SplitTree.swift 在编辑器中打开，旁边是 Claude Code 对分屏布局的讲解"
+  width={2584}
+  height={1714}
 />
 
 ## 更改
@@ -52,17 +45,17 @@ git 面板有三个只读标签：
 - **历史** —— 最近的提交，带作者头像、可展开的文件列表和逐个提交的差异。
 
 <DocsImage
-  src="/screenshots/docs/07-changes-diff.png"
-  alt="Termio「更改」标签选中 build-app.sh，并在终端旁显示红绿统一差异"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/07-changes-diff.png?v=20261017"
+  alt="更改面板在 Claude Code 旁显示 VOICE.md 的红绿统一差异"
+  width={2584}
+  height={1714}
 />
 
 <DocsImage
-  src="/screenshots/docs/08-commit-history.png"
-  alt="Termio「历史」标签同时显示一个提交、其中一个文件，以及该文件在这次提交中的差异"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/08-commit-history.png?v=20261017"
+  alt="历史面板在 Claude Code 会话旁列出近期提交"
+  width={2584}
+  height={1714}
 />
 
 它是有意做成只读的：写入 git（提交、推送、开 PR）留在终端里，因为 Agent 和你自己的命令
@@ -77,10 +70,10 @@ git 面板有三个只读标签：
 跟着会话走：另一台机器上的检出就在那台机器上搜，那个会话里的 `cd` 会把搜索范围一起带过去。
 
 <DocsImage
-  src="/screenshots/docs/09-project-search.png"
-  alt="Termio 搜索检查器显示 DiffGapText 查询、按文件分组的结果和高亮的匹配文字"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/09-project-search.png?v=20261017"
+  alt="Claude Code 旁显示按文件分组的 SplitBranch 搜索结果"
+  width={2584}
+  height={1714}
 />
 
 想按*名字*找文件？那是 [快速打开](/zh-CN/docs/navigation)（`⇧⌘O`），它同时也在会话和最近
@@ -92,8 +85,8 @@ git 面板有三个只读标签：
 Cmd 点击网址会用浏览器打开，`file://` 链接则打开一个只读预览浮层。
 
 <DocsImage
-  src="/screenshots/docs/22-open-terminal-path.png"
-  alt="Termio 终端中的相对 Swift 文件路径在旁边的内置只读编辑器中打开"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/22-open-terminal-path.png?v=20261017"
+  alt="SplitTree.swift 在引用它的 Claude Code 会话旁打开"
+  width={2584}
+  height={1714}
 />

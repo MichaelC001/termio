@@ -116,9 +116,12 @@ function DocsImage({
 }) {
   return (
     <figure className="not-prose my-8">
-      <div
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
         className={cn(
-          "mx-auto overflow-visible",
+          "mx-auto block cursor-zoom-in overflow-visible rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
           variant === "phone" ? "max-w-[380px]" : "w-full",
         )}
       >
@@ -134,7 +137,7 @@ function DocsImage({
           }
           className="h-auto w-full select-none"
         />
-      </div>
+      </a>
     </figure>
   );
 }

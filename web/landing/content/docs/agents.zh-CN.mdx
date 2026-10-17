@@ -3,8 +3,8 @@ title: 同时运行多个 Agent
 description: 让一支 Agent 队伍并排工作，一眼读出它们的实时状态，并知道每个 Agent 是通过哪条信号汇报的——program status 协议、hooks、终端标题，还是最后才用的屏幕。
 x-i18n:
   source_path: agents.mdx
-  source_hash: 8113a3512a0f478f4e4c88871affbf6c8c336c0988e93cbd55efa8a510831098
-  generated_at: 2026-10-09
+  source_hash: 14efbf15aaf85923ed1714388aaefbc8c5f77b4149fef7d76425228fb39687a3
+  generated_at: 2026-10-17
 ---
 
 Termio 就是为同时运行多个 Agent 造的。侧栏是你的控制台：每个会话是一行，每一行都汇报
@@ -43,10 +43,10 @@ VPS 提供的是装在它上面的那些。**设置 ▸ Agent** 会直接在那�
 `devbox` 上*——而不是把它藏在一个设备选择器后面。
 
 <DocsImage
-  src="/screenshots/docs/17-agents-settings.png"
-  alt="Termio 的 Agent 设置显示完整内置目录，并选中 Claude Code"
-  width={1664}
-  height={1288}
+  src="/screenshots/docs/17-agents-settings.png?v=20261017"
+  alt="Agent 设置显示已启用的 Agent、启动命令及各设备上的可用情况"
+  width={1964}
+  height={1614}
 />
 
 Termio 通过你真正的登录 shell 启动每个 Agent，所以你的 shell 配置准备的一切——版本管理器、
@@ -106,10 +106,10 @@ program status 需要 Claude Code 2.1.295 或 Pi 1.1.0 及更新版本。Claude 
 把响亮的那个状态留给唯一那种走开就要赔上时间的情况。
 
 <DocsImage
-  src="/screenshots/docs/05-session-statuses.png"
-  alt="Termio 侧栏和 termio sessions list 输出显示空闲、工作中、完成和需要你状态"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/05-session-statuses.png?v=20261017"
+  alt="Codex 和 Claude Code 旁列出八个项目会话、Agent 类型及空闲、工作中或完成状态"
+  width={2584}
+  height={1714}
 />
 
 状态会向上汇总。项目那一行概括它里面的会话，菜单栏托盘概括全部——所以你可以整个人在别的

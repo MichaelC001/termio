@@ -12,7 +12,7 @@
 
 [**Download for macOS**](https://downloads.termio.sh/termio.dmg) &nbsp;&bull;&nbsp; [Website](https://termio.sh) &nbsp;&bull;&nbsp; [Docs](https://termio.sh/docs) &nbsp;&bull;&nbsp; [Changelog](https://termio.sh/changelog) &nbsp;&bull;&nbsp; [Discord](https://discord.gg/H9DKVwsE5f)
 
-<img alt="Termio in dark mode: a live Claude Code session next to the project sidebar" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="Codex and Claude Code with a development server in Atom One Dark" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
@@ -47,56 +47,56 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
 
 <table>
 <tr>
-<td width="62%"><img alt="The Termio sidebar showing Terminals, Chats, projects, worktrees, and their nested sessions" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="Project sessions and worktrees in the Termio sidebar" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Projects hold sessions</h3>
 <p>One project per checkout, its terminals and agents underneath. Chats sit above that — scratch agent sessions that don't belong to any project.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="A worktree in the Termio sidebar, with its nested sessions and a context menu to add another" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="A selected worktree beside grouped agent sessions" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Git worktrees</h3>
 <p>One branch per parallel task, created from the sidebar. Worktrees nest under the project they came from.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio with a Codex session grouped beside two shell panes" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
+<td width="62%"><img alt="Codex and Claude Code above a development server" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Split panes</h3>
 <p>⌘D splits right, ⇧⌘D splits down. An agent, a dev server, and a shell in one window.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="The Termio sidebar reporting working, done, and needs-you, with termio sessions list in the terminal" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
+<td width="62%"><img alt="Project session types and live states beside Codex and Claude Code" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Status at a glance</h3>
 <p>Working, idle, done, or <em>needs you</em> — a mark on every row. The same list is <code>termio sessions list</code>.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="The Termio Files inspector with a Swift file open in the syntax-highlighted editor beside a terminal" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
+<td width="62%"><img alt="SplitTree.swift in the editor beside Claude Code" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>File editor</h3>
 <p>Click a file in the tree. Syntax highlighting, autosave. The terminal stays the place where you commit.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="The Termio Changes tab with a file selected and its red and green unified diff beside the terminal" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
+<td width="62%"><img alt="A unified diff beside Claude Code" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Changes</h3>
 <p>A read-only git pane with the current unified diff. Commit, push, and PR stay in the terminal.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="The Termio Search tab listing matches for DiffGapText across four files" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
+<td width="62%"><img alt="SplitBranch search results grouped by file" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Search</h3>
 <p>Project-wide content search, jumping to the matching line in the editor.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="The Termio command palette open on split, with Split Right selected" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
+<td width="62%"><img alt="Session and split commands in the Command Palette" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Command palette</h3>
 <p>⌘⇧P. Split, focus, anything you'd hunt a menu for.</p>

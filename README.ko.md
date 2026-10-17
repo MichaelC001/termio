@@ -14,7 +14,7 @@
 
 [**macOS용 다운로드**](https://downloads.termio.sh/termio.dmg) &nbsp;&bull;&nbsp; [웹사이트](https://termio.sh) &nbsp;&bull;&nbsp; [문서](https://termio.sh/docs) &nbsp;&bull;&nbsp; [변경 내역](https://termio.sh/changelog) &nbsp;&bull;&nbsp; [Discord](https://discord.gg/H9DKVwsE5f)
 
-<img alt="다크 모드의 Termio: 프로젝트 사이드바 옆에서 실행 중인 Claude Code 세션" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="Atom One Dark 테마의 Codex, Claude Code와 개발 서버" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
@@ -84,56 +84,56 @@ brew install --cask termio-sh/tap/termio
 
 <table>
 <tr>
-<td width="62%"><img alt="터미널, 채팅, 프로젝트, worktree와 그 아래 세션들을 보여주는 Termio 사이드바" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="Termio 사이드바의 프로젝트 세션과 worktree" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>프로젝트가 세션을 담아요</h3>
 <p>체크아웃 하나에 프로젝트 하나, 그 아래에 터미널과 에이전트가 놓여요. 채팅은 그 위에 있어요 — 어느 프로젝트에도 속하지 않는 일회성 에이전트 세션이에요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 사이드바의 worktree, 그 아래 세션들과 worktree를 추가하는 컨텍스트 메뉴" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="그룹화한 에이전트 옆에서 선택한 worktree" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Git worktree</h3>
 <p>병렬 작업 하나에 브랜치 하나, 사이드바에서 만들어요. worktree는 원래 프로젝트 아래에 붙어요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Codex 세션과 셸 페인 두 개를 함께 묶은 Termio" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
+<td width="62%"><img alt="Codex와 Claude Code 아래에서 실행 중인 개발 서버" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>페인 분할</h3>
 <p>⌘D는 오른쪽으로, ⇧⌘D는 아래로 나눠요. 에이전트, 개발 서버, 셸을 한 창에 두세요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="작업 중, 완료, 당신이 필요함을 알리는 Termio 사이드바와 터미널의 termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
+<td width="62%"><img alt="Codex와 Claude Code 옆에 표시된 세션 유형과 상태" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>한눈에 보이는 상태</h3>
 <p>작업 중, 유휴, 완료, <em>당신이 필요함</em> — 줄마다 표시가 붙어요. 같은 목록이 <code>termio sessions list</code>예요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="터미널 옆에서 Swift 파일을 문법 강조와 함께 연 Termio 파일 인스펙터" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
+<td width="62%"><img alt="Claude Code 옆 편집기에 열린 SplitTree.swift" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>파일 편집기</h3>
 <p>트리에서 파일을 누르면 열려요. 문법 강조와 자동 저장이 되고, 커밋은 그대로 터미널에서 해요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="파일 하나를 고르고 빨강·초록 통합 diff를 터미널 옆에 띄운 Termio 변경 사항 탭" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
+<td width="62%"><img alt="Claude Code 옆에 표시된 통합 diff" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>변경 사항</h3>
 <p>지금의 통합 diff를 보여주는 읽기 전용 git 페인이에요. 커밋, 푸시, PR은 터미널에 남아요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="네 개 파일에 걸친 DiffGapText 검색 결과를 보여주는 Termio 검색 탭" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
+<td width="62%"><img alt="파일별로 묶인 SplitBranch 검색 결과" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>검색</h3>
 <p>프로젝트 전체 내용 검색이에요. 편집기에서 해당 줄로 바로 이동해요.</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="split을 입력해 오른쪽으로 분할을 선택한 Termio 명령 팔레트" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
+<td width="62%"><img alt="명령 팔레트의 세션 및 분할 명령" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>명령 팔레트</h3>
 <p>⌘⇧P. 분할, 포커스 등 메뉴를 뒤져야 했던 건 전부 여기 있어요.</p>

@@ -14,7 +14,7 @@
 
 [**下载 macOS 版**](https://downloads.termio.sh/termio.dmg) &nbsp;&bull;&nbsp; [官网](https://termio.sh) &nbsp;&bull;&nbsp; [文档](https://termio.sh/docs) &nbsp;&bull;&nbsp; [更新日志](https://termio.sh/changelog) &nbsp;&bull;&nbsp; [Discord](https://discord.gg/H9DKVwsE5f)
 
-<img alt="深色模式下的 Termio：一个正在运行的 Claude Code 会话，旁边是项目侧栏" src="web/landing/public/screenshots/hero1.png" width="100%" />
+<img alt="Atom One Dark 主题下的 Codex、Claude Code 和开发服务器" src="web/landing/public/screenshots/hero1.png" width="100%" />
 
 </div>
 
@@ -70,56 +70,56 @@ brew install --cask termio-sh/tap/termio
 
 <table>
 <tr>
-<td width="62%"><img alt="Termio 侧栏，显示终端、聊天、项目、worktree 及其嵌套的会话" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="Termio 侧栏中的项目会话和 worktree" src="web/landing/public/screenshots/docs/04-project-session-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>项目装着会话</h3>
 <p>一个 checkout 一个项目，它的终端和 Agent 都在下面。聊天排在项目上方——不属于任何项目的一次性 Agent 会话。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 侧栏里的一个 worktree，带着嵌套的会话和一个新增 worktree 的右键菜单" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
+<td width="62%"><img alt="成组的 Agent 会话旁选中一个 worktree" src="web/landing/public/screenshots/docs/12-worktree-hierarchy.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Git worktree</h3>
 <p>一条分支对应一项并行任务，从侧栏创建。Worktree 嵌在它来自的项目下面。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 里一个 Codex 会话和两个 shell 面板并排成组" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
+<td width="62%"><img alt="Codex 和 Claude Code 下方运行开发服务器" src="web/landing/public/screenshots/docs/03-grouped-panes.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>分屏面板</h3>
 <p>⌘D 向右分屏，⇧⌘D 向下分屏。一个 Agent、一个开发服务器、一个 shell，同一个窗口。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 侧栏报告工作中、完成和需要你，终端里同时跑着 termio sessions list" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
+<td width="62%"><img alt="Codex 和 Claude Code 旁显示项目会话类型及实时状态" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>状态一眼看清</h3>
 <p>工作中、空闲、完成，还是<em>需要你</em>——每一行都有标记。同一份列表就是 <code>termio sessions list</code>。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 的文件检查器里打开了一个 Swift 文件，语法高亮的编辑器旁边是终端" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
+<td width="62%"><img alt="Claude Code 旁的编辑器打开 SplitTree.swift" src="web/landing/public/screenshots/docs/06-files-editor.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>文件编辑器</h3>
 <p>在文件树里点一个文件。语法高亮，自动保存。提交仍然在终端里做。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 的更改标签页选中了一个文件，红绿统一 diff 显示在终端旁边" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
+<td width="62%"><img alt="Claude Code 旁显示统一差异" src="web/landing/public/screenshots/docs/07-changes-diff.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>更改</h3>
 <p>只读的 git 面板，显示当前的统一 diff。提交、推送和开 PR 仍然在终端里。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 的搜索标签页列出 DiffGapText 在四个文件里的匹配" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
+<td width="62%"><img alt="按文件分组的 SplitBranch 搜索结果" src="web/landing/public/screenshots/docs/09-project-search.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>搜索</h3>
 <p>项目级内容搜索，点一下就跳到编辑器里匹配的那一行。</p>
 </td>
 </tr>
 <tr>
-<td width="62%"><img alt="Termio 的命令面板输入 split，选中了向右分屏" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
+<td width="62%"><img alt="命令面板中的会话和分屏命令" src="web/landing/public/screenshots/docs/10-command-palette.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>命令面板</h3>
 <p>⌘⇧P。分屏、聚焦，一切你本来要翻菜单找的东西。</p>
