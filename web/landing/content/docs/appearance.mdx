@@ -12,14 +12,14 @@ Termio uses Ghostty-format themes, so anything from the wider Ghostty theme
 ecosystem works. Pick a light and a dark theme from **Settings ▸ Appearance** and
 Termio follows the system between them.
 
-The two slots list the themes you have — Termio’s own canvas plus whatever is in
-your Themes folder — not a catalog of hundreds you never chose.
+Each slot includes the built-in themes and any Ghostty-format themes in your
+Themes folder. Choose **Dark** under Appearance to keep the dark theme active.
 
 <DocsImage
-  src="/screenshots/docs/15-appearance-settings.png"
-  alt="Termio Appearance settings with System, Light, and Dark modes and separate light and dark terminal theme slots"
-  width={1664}
-  height={1288}
+  src="/screenshots/docs/15-appearance-settings.png?v=20261017"
+  alt="Appearance settings with Dark mode, vertical tabs, and Atom One Dark selected"
+  width={1964}
+  height={1614}
 />
 
 If you already use Ghostty, there’s nothing to pick on a fresh install: Termio
@@ -28,18 +28,9 @@ theme you chose there.
 
 ## Getting more themes
 
-**Browse Themes…** opens a store of 69 well-known schemes — Dracula, Catppuccin,
-Gruvbox, Rose Pine, Solarized, and the rest — each one picked to stay readable
-through a working day, and no two unrelated ones close enough to arrive twice
-under different names. Flavors of one family are the exception: all four
-Catppuccins are there, because the flavor name is exactly what its users pick
-between. **Install** writes that theme into your Themes folder and selects it in
-the light or dark slot it belongs to. Nothing is downloaded: the schemes ship
-inside Termio.
-
-If a file of the same name is already in your Themes folder, Install stops and
-asks before replacing it — a theme you dropped in yourself is yours. **Remove**
-deletes the file, and asks first if you have edited it.
+Open either theme slot to search the built-in schemes and see their color
+palettes. Select **Atom One Dark** in the dark slot to use the theme shown in
+these screenshots.
 
 To switch between the themes you have with your terminals as the preview, open
 the Command Palette (`⇧⌘P`) and pick **Change Theme…** — arrowing through the
@@ -47,13 +38,13 @@ list restyles your open terminals live, Return keeps the theme, Escape puts it
 back.
 
 <DocsImage
-  src="/screenshots/docs/14-change-theme.png"
-  alt="The Change Theme palette over a Termio terminal with Catppuccin Latte selected and applied"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/14-change-theme.png?v=20261017"
+  alt="The dark theme chooser with Atom One Dark selected and built-in color palettes visible"
+  width={1964}
+  height={1614}
 />
 
-To add a theme the store doesn’t carry, drop a Ghostty-format theme file into:
+To add another theme, drop a Ghostty-format theme file into:
 
 ```
 ~/Library/Application Support/termio/Themes/

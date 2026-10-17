@@ -3,8 +3,8 @@ title: 外观
 description: 设置终端主题与字体、调整光标和窗口，并找到 Termio 其余的设置项——全都在一个熟悉的 macOS 设置窗口里。
 x-i18n:
   source_path: appearance.mdx
-  source_hash: 961f2be1158bbfa1b56806d5663c4057890b28086a5f53d6827cdb3a625b37d0
-  generated_at: 2026-09-19
+  source_hash: 503d1ff2633751e40799be3b58f0db5251309726c21e2e26b2260f8de8154f99
+  generated_at: 2026-10-17
 ---
 
 用 `⌘,` 打开 **设置**。这是一个标准的 macOS 设置窗口，左侧一列标签页；**外观** 就是
@@ -15,14 +15,14 @@ x-i18n:
 Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西都能用。在
 **设置 ▸ 外观** 里各选一个浅色和深色主题，Termio 会跟随系统在两者之间切换。
 
-两个槽位列出的是你手上有的主题——Termio 自带的画布，加上你主题文件夹里的东西——
-而不是几百个你从没挑过的配色。
+每个槽位都包含内置主题和主题文件夹中的 Ghostty 格式主题。在外观中选择 **深色**，
+即可始终使用深色主题。
 
 <DocsImage
-  src="/screenshots/docs/15-appearance-settings.png"
-  alt="Termio 外观设置显示「系统」「浅色」「深色」模式，以及独立的浅色和深色终端主题槽位"
-  width={1664}
-  height={1288}
+  src="/screenshots/docs/15-appearance-settings.png?v=20261017"
+  alt="外观设置选中深色模式、垂直标签和 Atom One Dark"
+  width={1964}
+  height={1614}
 />
 
 如果你本来就在用 Ghostty，全新安装时其实不用挑：Termio 首次启动会读取你的
@@ -30,26 +30,20 @@ Termio 使用 Ghostty 格式的主题，所以 Ghostty 主题生态里的东西�
 
 ## 获取更多主题 [#getting-more-themes]
 
-**浏览主题…** 会打开一个收录 69 款知名配色的商店——Dracula、Catppuccin、Gruvbox、
-Rose Pine、Solarized 等等——每一款都挑得住一整天的阅读，而且没有两款不相干的配色近到
-会以两个名字重复出现。同一系列的风味是例外：四款 Catppuccin 全在，因为风味名恰恰就是
-它的用户要在其中挑的东西。**安装** 会把那款主题写进你的主题文件夹，并放进它该在的浅色
-或深色槽位。全程不联网：这些配色本来就在 Termio 里面。
-
-如果主题文件夹里已经有同名文件，安装会先停下来问你要不要替换——你自己放进去的主题是
-你的东西。**移除** 会删掉那个文件；如果你改过它，也会先问一句。
+打开任意一个主题槽位，即可搜索内置主题并查看配色。要使用截图中的主题，在深色槽位
+选择 **Atom One Dark**。
 
 想以你自己的终端为预览，在已有的主题之间切换，打开命令面板（`⇧⌘P`）并选择
 **更改主题…**——在列表里上下移动会实时给你打开的终端重新上色，回车保留，Esc 还原。
 
 <DocsImage
-  src="/screenshots/docs/14-change-theme.png"
-  alt="「更改主题」面板覆盖在 Termio 终端上，Catppuccin Latte 已选中并应用"
-  width={2424}
-  height={1664}
+  src="/screenshots/docs/14-change-theme.png?v=20261017"
+  alt="深色主题选择器选中 Atom One Dark，并显示内置配色"
+  width={1964}
+  height={1614}
 />
 
-要加入商店里没有的主题，把 Ghostty 格式的主题文件放进：
+要加入其他主题，把 Ghostty 格式的主题文件放进：
 
 ```
 ~/Library/Application Support/termio/Themes/

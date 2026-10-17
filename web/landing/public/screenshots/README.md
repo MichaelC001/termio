@@ -1,39 +1,25 @@
-# Landing screenshots
+# Screenshots
 
-Drop polished, real app captures here, then wire them up. These replace the
-hand-built CSS mockups so the page shows the actual product.
+Desktop captures refreshed on 2026-10-17 with Computer Use from the running
+Termio app. Appearance is Dark with Atom One Dark. Agent output, source files,
+Git history, session states, and development-server requests are real.
 
-## Hero (the one that matters most)
+The five hero images are 2584 × 1714 pixels:
 
-- **File:** `public/screenshots/hero.png` (or `.webp` — webp is smaller, prefer it)
-- **What to show:** the Termio window, **dark**, showing the sidebar (project →
-  agent sessions) next to a **working** terminal pane — ideally a real Claude Code
-  or Codex session mid-task. A dark screenshot is correct: it floats as a dark
-  product shot on the light page (Apple "dark device on white" treatment).
-- **Size:** capture at 2× (Retina). The app window is ~998×605 pt, so the PNG is
-  ~**1996×1210 px**. Any 16:10-ish ratio is fine — just note the real pixel size.
-- **Trim:** no window shadow, no desktop background — just the window
-  (`screencapture -o`, or crop tightly).
+| Image | Contents |
+| --- | --- |
+| `hero1.png` | Codex and Claude Code above a Next.js server and request logs |
+| `hero2.png` | Swift editor beside Claude Code |
+| `hero3.png` | Project search results beside Claude Code |
+| `hero4.png` | Unified diff beside Claude Code |
+| `hero5.png` | Commit history beside Claude Code |
 
-Then set this in `src/lib/site.ts`:
+The numbered captures in `docs/` are shared by the English and Chinese docs;
+the README translations use the same assets. Keep each `DocsImage` width,
+height, and alt text aligned with the capture. Settings windows are 1964 × 1614;
+palette windows are 1120 × 800. Docs images link to their full-resolution files.
 
-```ts
-export const heroScreenshot = {
-  src: "/screenshots/hero.png",   // match the filename you dropped
-  width: 1996,                    // real pixel width
-  height: 1210,                   // real pixel height
-};
-```
-
-That's it — the hero swaps from the CSS mock to your image automatically. (Tell me
-the real dimensions if you'd rather I wire it.)
-
-## Optional: bento card visuals
-
-The four feature cards currently use stylized CSS diagrams (agent list, live
-sessions, branch tree, privacy toggles). Those are fine as diagrams, but if you
-want real crops, drop e.g. `multi-agent.png`, `sessions.png`, `worktrees.png` and
-I'll swap them in the same way.
-
-
-![alt text](image.png)
+Installer, mobile pairing, iPhone captures, and the pane-rearrangement recording
+retain their existing assets. The old welcome and Quick Look illustrations are
+no longer embedded in the docs. Screenshot URLs use `?v=20261017` to invalidate
+previous image-optimizer caches; the allowed revision is in `next.config.ts`.

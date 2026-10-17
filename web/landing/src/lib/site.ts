@@ -55,27 +55,27 @@ export const downloadUrl = "https://downloads.termio.sh/termio.dmg";
 export const testflightUrl = "https://testflight.apple.com/join/1Arf1UKR";
 
 // Real app captures for the hero carousel (public/screenshots/hero*.png, all
-// 3024×1898 @2x). The hero cross-fades through these; the first one is the LCP
+// 2584×1714 @2x, Atom One Dark). The first one is the LCP
 // image, so lead with the strongest shot.
 export const heroSlides = [
   {
-    src: "/screenshots/hero1.png",
-    alt: "Termio in dark mode: a live Claude Code session next to the project sidebar.",
+    src: "/screenshots/hero1.png?v=20261017",
+    alt: "Codex and Claude Code above a running development server in Atom One Dark.",
   },
   {
-    src: "/screenshots/hero2.png",
-    alt: "Termio in light mode: a Codex session running beside the session sidebar.",
+    src: "/screenshots/hero2.png?v=20261017",
+    alt: "SplitTree.swift open in the editor beside a Claude Code walkthrough.",
   },
   {
-    src: "/screenshots/hero3.png",
-    alt: "Termio's built-in file editor showing a Markdown file next to the project file tree.",
+    src: "/screenshots/hero3.png?v=20261017",
+    alt: "Project search showing SplitBranch matches grouped by file beside Claude Code.",
   },
   {
-    src: "/screenshots/hero4.png",
-    alt: "The inspector panel with working-directory and agent actions beside a Claude Code session.",
+    src: "/screenshots/hero4.png?v=20261017",
+    alt: "A unified diff with red and green changes beside Claude Code.",
   },
   {
-    src: "/screenshots/hero5.png",
-    alt: "Split panes in Termio: a Claude Code session alongside a dev server and a shell terminal.",
+    src: "/screenshots/hero5.png?v=20261017",
+    alt: "Recent commits in the History panel beside a Claude Code session.",
   },
-].map((slide) => ({ ...slide, width: 3024, height: 1898 }));
+].map((slide) => ({ ...slide, width: 2584, height: 1714 }));

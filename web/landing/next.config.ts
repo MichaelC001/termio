@@ -2,6 +2,13 @@ import type { NextConfig } from "next";
 import { createMDX } from "fumadocs-mdx/next";
 
 const nextConfig: NextConfig = {
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      // A new revision bypasses cached renditions of replaced screenshots.
+      { pathname: "/screenshots/**", search: "?v=20261017" },
+    ],
+  },
   // Emit a self-contained server bundle so the Docker runtime image only needs
   // the standalone output plus static assets, not the full node_modules tree.
   // Skipped on Vercel: its builder traces files itself, and standalone plus

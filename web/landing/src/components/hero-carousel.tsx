@@ -113,7 +113,7 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
               height={slide.height}
               alt={slide.alt}
               priority={i === 0}
-              // The captures are 3024px wide but render in a max-w-5xl (64rem)
+              // The captures are 2584px wide but render in a max-w-5xl (64rem)
               // column; without `sizes` the browser downloads the 3840px rendition.
               sizes="(max-width: 68rem) 100vw, 64rem"
               draggable={false}
@@ -127,30 +127,30 @@ export function HeroCarousel({ slides }: { slides: readonly HeroSlide[] }) {
             />
           ) : null,
         )}
-
-        {slides.length > 1 && (
-          <div
-            aria-label="Choose screenshot"
-            className="absolute bottom-3 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-black/40 px-2 py-1.5 backdrop-blur-md"
-          >
-            {slides.map((slide, i) => (
-              <button
-                key={slide.src}
-                type="button"
-                aria-label={`Show screenshot ${i + 1}`}
-                aria-current={i === active}
-                onClick={() => goTo(i)}
-                className={cn(
-                  "h-1.5 rounded-full transition-all duration-200",
-                  i === active
-                    ? "w-4 bg-white"
-                    : "w-1.5 bg-white/50 hover:bg-white/80",
-                )}
-              />
-            ))}
-          </div>
-        )}
       </div>
+
+      {slides.length > 1 && (
+        <div
+          aria-label="Choose screenshot"
+          className="relative mx-auto mt-3 flex w-fit items-center gap-1.5 rounded-full bg-black/40 px-2 py-1.5 backdrop-blur-md"
+        >
+          {slides.map((slide, i) => (
+            <button
+              key={slide.src}
+              type="button"
+              aria-label={`Show screenshot ${i + 1}`}
+              aria-current={i === active}
+              onClick={() => goTo(i)}
+              className={cn(
+                "h-1.5 rounded-full transition-all duration-200",
+                i === active
+                  ? "w-4 bg-white"
+                  : "w-1.5 bg-white/50 hover:bg-white/80",
+              )}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Arrows flank the image instead of overlapping it; they only show on
           screens wide enough to have room beside it (mobile swipes instead). */}
