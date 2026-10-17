@@ -336,12 +336,24 @@ struct SidebarView: View {
             // of its own automatically (`reconcileExternalSessions`) — there is
             // no second list to learn. The "Also Running" section that used to
             // sit here is gone with #528.
+
+            // The breathing room under the last row, as a row rather than the list's
+            // `contentMargins`. SwiftUI re-applies scroll-content margins to the
+            // NSScrollView on every list update, and each `setContentInsets` re-tiles
+            // the scroll view, which clamps the clip view back into range: at either
+            // end the rubber band was yanked back thirty times a second, and the
+            // column shook with the rows drawn at two offsets.
+            Color.clear
+                .frame(height: 12)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+                .accessibilityHidden(true)
         }
         // The `.sidebar` source list's rows and insets, over the material the column paints
         // (`SidebarMaterialController`), so the list draws no background of its own.
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .contentMargins(.bottom, 12, for: .scrollContent)
         .environment(\.defaultMinListRowHeight, 1)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
@@ -1014,7 +1026,7 @@ private struct ProjectHeader: View {
         // only scrim that matches the background. Mask sits on the HStack only; the
         // icon overlay below is added afterwards, so the icons stay fully opaque. The
         // clear/gradient widths collapse to zero off-hover, so the row is untouched at
-        // rest and the reveal animates with the same 0.12s hover easing.
+        // rest.
         .mask(
             HStack(spacing: 0) {
                 Rectangle().fill(.black)
@@ -1057,7 +1069,9 @@ private struct ProjectHeader: View {
             SidebarRowHighlight(isSelected: false, isHovering: isMenuOpen, chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isMenuOpen)
         )
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        // Hover snaps (see the session row): the quick-add cluster and the label
+        // mask appear and go on the frame the pointer arrives and leaves.
+        .animation(nil, value: isHovering)
         .animation(.easeInOut(duration: 0.18), value: isCollapsed)
     }
 }
@@ -1542,13 +1556,17 @@ private struct SessionRow: View {
                                 isHovering: isHovering || isDropTarget,
                                 chrome: chrome)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
-                .animation(.easeInOut(duration: 0.12), value: isHovering)
+                .animation(nil, value: isHovering)
                 // No animation on the drop cue: it must snap off the instant the drag
                 // leaves or commits (VS Code's `Over` feedback is instant), otherwise
                 // the lift lingers on the row while it's already moving.
                 .animation(nil, value: isDropTarget)
         )
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        // No animation on hover, here or on the highlight above: a fade is latency
+        // on a cue whose job is to track the pointer, the same call as the file
+        // tree (#466). Scrolling moves rows under a still pointer, so a 120ms fade
+        // left a trail of half-lit rows behind the scroll.
+        .animation(nil, value: isHovering)
     }
 }
 
@@ -1620,7 +1638,7 @@ private struct EndedSessionRow: View {
         .listRowBackground(
             SidebarRowHighlight(isSelected: isSelected,
                                 isHovering: isHovering || isDropTarget, chrome: chrome)
-                .animation(.easeInOut(duration: 0.12), value: isHovering)
+                .animation(nil, value: isHovering)
                 // No animation on the drop cue: it must snap off the instant the
                 // drag leaves or commits, as on the live row.
                 .animation(nil, value: isDropTarget))
