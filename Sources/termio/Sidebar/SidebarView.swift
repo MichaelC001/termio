@@ -1266,13 +1266,13 @@ private struct AgentQuickAddButton: View {
     }
 }
 
-/// The inline close action on a session row: a plain ✕ in the row's ink. Hovering changes
-/// nothing — the button only appears while the row is hovered, which is cue enough — and a press
-/// shrinks it a step so the click registers.
+/// The inline close action on a session row: a plain ✕ in the row's ink that lifts a faint disc
+/// under the pointer (`CloseHoverDisc`), and shrinks a step on a press so the click registers.
 private struct SessionRowCloseButton: View {
     let help: String
     let chrome: ChromeTheme?
     let action: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
@@ -1280,9 +1280,11 @@ private struct SessionRowCloseButton: View {
                          color: chrome?.foreground ?? .secondary,
                          lineWidthOverride: ChromeGlyph.lineWidth())
                 .frame(width: 22, height: 22)
+                .background(CloseHoverDisc(isHovering: isHovering, ink: chrome?.foreground ?? .primary))
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressShrinkStyle())
+        .onHover { isHovering = $0 }
         .help(help)
     }
 }

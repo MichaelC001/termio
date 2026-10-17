@@ -66,6 +66,30 @@ extension TermioStore {
         return tabs
     }
 
+    /// Moves the tab at `from` to `to` in `group`, as a drag in the tab strip drops it. The tabs
+    /// are the group's roster seen through its split groups, so the roster is what moves: the
+    /// sidebar shows the same order in the vertical layout, and there is no second order to keep.
+    func moveTab(at from: Int, to: Int, in group: TabGroup) {
+        guard from != to else { return }
+        let splits = splitGroups.map(\.leafIDs)
+        func moved(_ sessions: [Session]) -> [Session] {
+            let order = movingTab(in: sessions.map(\.id), splits: splits, from: from, to: to)
+            let byID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return order.compactMap { byID[$0] }
+        }
+        switch group {
+        case .project(let id):
+            guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+            projects[index].sessions = moved(projects[index].sessions)
+        case .terminals:
+            guard let index = workspaces.firstIndex(where: { $0.id == currentWorkspace.id }) else { return }
+            workspaces[index].terminals = moved(workspaces[index].terminals)
+        case .chats:
+            guard let index = workspaces.firstIndex(where: { $0.id == currentWorkspace.id }) else { return }
+            workspaces[index].chats = moved(workspaces[index].chats)
+        }
+    }
+
     /// The status a group or a tab shows for its sessions together: whatever most needs the
     /// person — blocked on them, then working, then finished.
     func combinedStatus(of ids: [Session.ID]) -> SessionStatus {
@@ -88,4 +112,21 @@ extension TermioStore {
             addSession(to: id)
         }
     }
+}
+
+/// `rows` with the tab at `from` moved to `to`. A tab is a split group's members, taken in their
+/// roster order (they sit together, see `gatherSplitRuns`), or a lone row; the members move as one
+/// and stay together, so the sidebar's bracket survives the move.
+func movingTab(in rows: [Session.ID], splits: [[Session.ID]], from: Int, to: Int) -> [Session.ID] {
+    var tabs: [[Session.ID]] = []
+    var placed = Set<Session.ID>()
+    for row in rows where !placed.contains(row) {
+        let members = splits.first { $0.contains(row) }.map { split in rows.filter(split.contains) } ?? [row]
+        placed.formUnion(members)
+        tabs.append(members)
+    }
+    guard tabs.indices.contains(from) else { return rows }
+    let tab = tabs.remove(at: from)
+    tabs.insert(tab, at: min(max(to, 0), tabs.count))
+    return tabs.flatMap { $0 }
 }
