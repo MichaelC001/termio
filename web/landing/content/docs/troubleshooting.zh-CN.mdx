@@ -3,8 +3,8 @@ title: 问题排查
 description: 真正会出问题的那些事——状态点不动、Agent 起不来、重启之后会话不见了、一台机器不应答了、手机连不上——每一条都给一个去看而不是去猜的办法。
 x-i18n:
   source_path: troubleshooting.mdx
-  source_hash: 92ac63b38f78a9b5ccab86cf253c65bb96883135330b26c29eb3089fabf49b2f
-  generated_at: 2026-09-19
+  source_hash: cf19eb0361cc6db3c2091346474ab41538a89b2a4a145327779c02b472967bfc
+  generated_at: 2026-10-18
 ---
 
 几乎所有看起来像 Termio bug 的东西，都是下面这些情况之一，而每一条都有一个去查而不是去猜的
@@ -56,8 +56,8 @@ Termio 通过你真正的登录 shell 启动 Agent，所以你的配置准备的
 
 ## 状态 hooks 本来好好的，突然不工作了
 
-Agent 的配置文件是公共地盘——别的 Agent 管理工具也往同一个 `~/.claude/settings.json` 和
-`~/.codex/hooks.json` 里写，而有些是整块替换 hooks 而不是合并进去。发生这种事时，Termio
+Agent 的配置文件是公共地盘——别的 Agent 管理工具也往同样的文件里写，比如
+`~/.claude/settings.json`，而有些是整块替换 hooks 而不是合并进去。发生这种事时，Termio
 收不到汇报，状态就退回去读屏幕。
 
 Termio 会在启动时、以及在你把它切回前台时重新写入自己的 hooks，所以在本机上这通常会自己

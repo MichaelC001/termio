@@ -245,45 +245,14 @@
       "displayName": "Codex",
       "emitsProgressStatus": false,
       "hooks": {
-        "capturesTranscript": true,
-        "conversation": "session_id",
+        "capturesTranscript": false,
+        "conversation": null,
         "dialect": "claudeNested",
         "directory": null,
-        "events": [
-          {
-            "matcher": null,
-            "name": "SessionStart",
-            "state": "idle"
-          },
-          {
-            "matcher": null,
-            "name": "UserPromptSubmit",
-            "state": "working"
-          },
-          {
-            "matcher": null,
-            "name": "PreToolUse",
-            "state": "working"
-          },
-          {
-            "matcher": null,
-            "name": "PostToolUse",
-            "state": "working"
-          },
-          {
-            "matcher": null,
-            "name": "PermissionRequest",
-            "state": "attention"
-          },
-          {
-            "matcher": null,
-            "name": "Stop",
-            "state": "done"
-          }
-        ],
+        "events": [],
         "file": "~/.codex/hooks.json",
-        "promptTitle": "prompt",
-        "tool": "tool_name",
+        "promptTitle": null,
+        "tool": null,
         "type": "json"
       },
       "icon": "vector:codex",
