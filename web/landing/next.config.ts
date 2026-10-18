@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { createMDX } from "fumadocs-mdx/next";
+import { i18n } from "./src/lib/i18n";
 
 const nextConfig: NextConfig = {
   images: {
@@ -19,6 +20,21 @@ const nextConfig: NextConfig = {
   // here). The handler lives at /docs-md because a route.ts can't sit beside
   // the docs page.tsx. A translated page keeps its locale prefix:
   // /zh-CN/docs/<slug>.md.
+  // Only the docs are translated, so a locale prefix holds nothing but
+  // /<lang>/docs. A link that drops the /docs segment — /zh-CN/keyboard —
+  // lands on the page it meant instead of a 404.
+  async redirects() {
+    return i18n.languages
+      .filter((lang) => lang !== i18n.defaultLanguage)
+      .flatMap((lang) => [
+        { source: `/${lang}`, destination: `/${lang}/docs`, permanent: true },
+        {
+          source: `/${lang}/:path((?!docs(?:/|$)).+)`,
+          destination: `/${lang}/docs/:path`,
+          permanent: true,
+        },
+      ]);
+  },
   async rewrites() {
     return [
       { source: "/docs/:slug.md", destination: "/docs-md/:slug" },
