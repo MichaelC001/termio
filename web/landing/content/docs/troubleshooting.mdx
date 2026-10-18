@@ -61,8 +61,8 @@ same field is per machine, so do it on the machine that’s failing.
 ## Status hooks were working and stopped
 
 Agent config files are shared ground — other agent managers write to the same
-`~/.claude/settings.json` and `~/.codex/hooks.json`, and some replace the whole
-hooks block rather than merging into it. When that happens Termio’s reports stop
+files, such as `~/.claude/settings.json`, and some replace the whole hooks block
+rather than merging into it. When that happens Termio’s reports stop
 arriving and status falls back to screen-reading.
 
 Termio re-asserts its own hooks when it launches and when you bring it back to

@@ -3,8 +3,8 @@ title: 同时运行多个 Agent
 description: 让一支 Agent 队伍并排工作，一眼读出它们的实时状态，并知道每个 Agent 是通过哪条信号汇报的——program status 协议、hooks、终端标题，还是最后才用的屏幕。
 x-i18n:
   source_path: agents.mdx
-  source_hash: 14efbf15aaf85923ed1714388aaefbc8c5f77b4149fef7d76425228fb39687a3
-  generated_at: 2026-10-17
+  source_hash: 6d4d5cea5705282cf61068be6e539cce173b5460b9b944385ef5924965fceaa3
+  generated_at: 2026-10-18
 ---
 
 Termio 就是为同时运行多个 Agent 造的。侧栏是你的控制台：每个会话是一行，每一行都汇报
@@ -67,7 +67,7 @@ Termio 却说找不到，那几乎总是 `PATH` 的问题；Agent 页会把这�
 | Agent | 状态信号 | 能恢复对话 |
 | --- | --- | --- |
 | Claude Code | program status + hooks + 标题 | 是 |
-| Codex | hooks + 标题 | 是 |
+| Codex | program status + 标题 | 是 |
 | Grok | hooks + 标题 + 进度 | 是 |
 | Qwen Code | hooks + 标题 | 是 |
 | Pi | program status | 是 |
@@ -83,9 +83,9 @@ Termio 却说找不到，那几乎总是 `PATH` 的问题；Agent 页会把这�
 | Antigravity | 输出活动 | —— |
 | Hermes | 输出活动 | —— |
 
-program status 需要 Claude Code 2.1.295 或 Pi 1.1.0 及更新版本。Claude Code 的 hook 现在只补充
-它正在运行的工具；Pi 完全不需要 hook。更早的版本汇报得更少：Claude Code 的状态点跟着它的终端
-标题走，Pi 的跟着它的输出走。
+program status 需要 Claude Code 2.1.295、Codex 0.163.0 或 Pi 1.1.0 及更新版本。Claude Code
+的 hook 现在只补充它正在运行的工具；Codex 和 Pi 完全不需要 hook。更早的版本汇报得更少：
+Claude Code 和 Codex 的状态点跟着各自的终端标题走，Pi 的跟着它的输出走。
 
 「能恢复对话」的意思是，重新打开会话会把 Agent 放回*同一段*对话，而不是一段空白——参见
 [什么会留下来](/zh-CN/docs/persistence)。没有这一项的 Agent 会在同一个目录里重新跑一遍。

@@ -93,10 +93,10 @@ final class LiveTerminalTitleTests: XCTestCase {
         XCTAssertEqual(session.givenTitle, "Deploy watch")
     }
 
-    func testCodexHookForwardsToolAndPromptFields() {
-        let hooks = AgentDefinition.codex.hookSpec
-        XCTAssertEqual(hooks?.tool, "tool_name")
-        XCTAssertEqual(hooks?.promptTitle, "prompt")
+    /// Codex reports over OSC 7501, and its hooks ran in a shared app-server
+    /// that kept the first session's id, so termio installs none.
+    func testCodexInstallsNoHookEvents() {
+        XCTAssertEqual(AgentDefinition.codex.hookSpec?.events.isEmpty, true)
     }
 
     func testPromptTitlePersistsWithSession() throws {
