@@ -116,6 +116,13 @@ fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> 
 /// the tab, so the plugin learns which ids are top-level from
 /// `session.created`/`session.updated` — child sessions carry `parentID` — and
 /// forwards only those.
+///
+/// The hook is the `server` of a default-exported `{ id, server, setup }`, not
+/// a bare named export, because OpenCode 1 and 2 both scan `plugin/` *and*
+/// `plugins/`, so each loads the other dialect's file too. OpenCode 1 (1.3.4
+/// on) calls `server` and ignores `setup`; OpenCode 2 validates `{ id, setup }`
+/// and rejects a module without it on every launch (#722), so `setup` is a
+/// no-op. The id differs from v2's so neither loader collapses the two files.
 fn open_code_source(
     events: &[HookEvent],
     conversation: Option<&str>,
@@ -177,7 +184,7 @@ fn open_code_source(
     format!(
         "// termio agent status — reports OpenCode session lifecycle to termio.\n\
          // Socket marker: {SOCKET_MARKER}\n\
-         export const TermioStatus = async ({{ $ }}) => {{\n  \
+         const server = async ({{ $ }}) => {{\n  \
          {}{}{identity}\n  \
          const report = {report_parameters} => {{\n\
          {report_body}\n  \
@@ -187,7 +194,8 @@ fn open_code_source(
          {identity_branches}{branches}\n    \
          }},\n  \
          }};\n\
-         }};",
+         }};\n\
+         export default {{ id: \"termio-status-v1\", server, setup() {{}} }};",
         cli_declaration(request),
         session_declaration()
     )
@@ -215,6 +223,10 @@ fn open_code_source(
 /// Top-level session tracking works as in v1 on the flat v2 payload:
 /// `session.created` carries `sessionID` and, for subagent children,
 /// `parentID`, so only top-level ids are forwarded as the conversation.
+///
+/// `server` returns no hooks. OpenCode 1 also scans `plugins/` and, finding a
+/// default object without `server`, throws on load; with it the file is inert
+/// there and the v1 dialect's file does the reporting.
 fn open_code_2_source(
     events: &[HookEvent],
     conversation: Option<&str>,
@@ -279,6 +291,7 @@ fn open_code_2_source(
          import {{ $ }} from \"bun\";\n\
          export default {{\n  \
          id: \"termio-status\",\n  \
+         server: async () => ({{}}),\n  \
          async setup(ctx) {{\n    \
          {}\n    \
          const session = process.env.TERMIOD_SESSION_ID;\n    \
@@ -489,7 +502,7 @@ mod tests {
             ),
             r#"// termio agent status — reports OpenCode session lifecycle to termio.
 // Socket marker: agent-status.sock
-export const TermioStatus = async ({ $ }) => {
+const server = async ({ $ }) => {
   const cli = "\/opt\/termiod";
   const session = process.env.TERMIOD_SESSION_ID;
   const roots = new Set();
@@ -513,7 +526,8 @@ export const TermioStatus = async ({ $ }) => {
       if (event.type === "permission.updated") return report("attention", event?.properties?.sessionID);
     },
   };
-};"#
+};
+export default { id: "termio-status-v1", server, setup() {} };"#
         );
     }
 
@@ -530,6 +544,7 @@ export const TermioStatus = async ({ $ }) => {
 import { $ } from "bun";
 export default {
   id: "termio-status",
+  server: async () => ({}),
   async setup(ctx) {
     const cli = "\/opt\/termiod";
     const session = process.env.TERMIOD_SESSION_ID;
