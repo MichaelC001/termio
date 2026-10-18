@@ -1113,6 +1113,14 @@ impl StatusEngine {
                 self.end_stall_watch();
                 self.set_state(State::Done, StatusSource::Program)
             }
+            // `working` straight to `idle` is a finished turn. Codex never
+            // reports `done` and ends every turn this way; reading it as rest
+            // would lose the dot that says a turn is waiting to be seen.
+            Some(ProgramState::Idle) if previous == Some(ProgramState::Working) => {
+                self.session.clear_working();
+                self.end_stall_watch();
+                self.set_state(State::Done, StatusSource::Program)
+            }
             // A record set leaving nothing, or nothing but `idle`: the program
             // is at rest. Nothing to end if no record was ever live.
             Some(ProgramState::Idle | ProgramState::Clear) | None => {
@@ -1985,6 +1993,23 @@ mod tests {
 
         engine.note_program_status(None, at(5));
         assert_eq!(engine.wire_status(), "idle");
+    }
+
+    /// A program that never says `done` ends its turn by going from `working`
+    /// to `idle`. That is a finished turn; `idle` from anywhere else is rest.
+    #[test]
+    fn working_straight_to_idle_is_a_finished_turn() {
+        let mut engine = StatusEngine::new(origin(), SessionFacts::default());
+        engine.note_program_status(Some(ProgramState::Idle), at(1));
+        assert_eq!(engine.state(), State::Idle);
+
+        engine.note_program_status(Some(ProgramState::Working), at(2));
+        engine.note_program_status(Some(ProgramState::Idle), at(3));
+        assert_eq!(engine.state(), State::Done);
+
+        engine.note_program_status(Some(ProgramState::Blocked), at(4));
+        engine.note_program_status(Some(ProgramState::Idle), at(5));
+        assert_eq!(engine.state(), State::Idle);
     }
 
     /// A plain shell has no agent, but a build that speaks `OSC 7501` still
