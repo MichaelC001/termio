@@ -221,8 +221,8 @@ struct AgentDefinition: Identifiable {
             var cwd: String
 
             enum Format: String, Hashable, Sendable {
-                /// A `.jsonl` log whose first line is a JSON header — the log itself is
-                /// the conversation transcript.
+                /// A `.jsonl` log whose leading lines hold a JSON header — the log itself
+                /// is the conversation transcript.
                 case jsonl
                 /// A standalone `.json` metadata record (not a transcript).
                 case json

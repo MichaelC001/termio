@@ -45,7 +45,7 @@ enum AgentSessionStore {
         for case let url as URL in enumerator {
             guard url.pathExtension == spec.format.fileExtension,
                   (try? url.resourceValues(forKeys: Set(keys)))?.isRegularFile == true,
-                  let object = record(at: url, format: spec.format),
+                  let object = record(at: url, spec: spec),
                   value(at: spec.id, in: object) == id
             else { continue }
             return url.path
@@ -77,7 +77,7 @@ enum AgentSessionStore {
         let target = canonical(directory)
         return bestMatch(in: root, ext: spec.format.fileExtension, after: launchedAt,
                          newest: newest) { url in
-            guard let object = record(at: url, format: spec.format),
+            guard let object = record(at: url, spec: spec),
                   let id = value(at: spec.id, in: object),
                   let cwd = value(at: spec.cwd, in: object),
                   canonical(cwd) == target
@@ -90,13 +90,16 @@ enum AgentSessionStore {
     /// so its creation time should be ≥ `launchedAt`, but allow for clock granularity.
     private static let tolerance: TimeInterval = 2
 
-    /// One session record as a JSON object: for `jsonl`, the log's first line (the
-    /// header event); for `json`, the whole file.
+    /// One session record as a JSON object: for `jsonl`, the header event — the first
+    /// of the log's leading lines that carries the id field, since omp writes a title
+    /// record ahead of its header; for `json`, the whole file.
     private static func record(at url: URL,
-                               format: AgentDefinition.ResumeSpec.Discover.Format) -> [String: Any]? {
-        switch format {
+                               spec: AgentDefinition.ResumeSpec.Discover) -> [String: Any]? {
+        switch spec.format {
         case .jsonl:
-            return firstLine(of: url).flatMap(json)
+            return leadingLines(of: url).lazy
+                .compactMap(json)
+                .first { value(at: spec.id, in: $0) != nil }
         case .json:
             guard let data = try? Data(contentsOf: url) else { return nil }
             return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -152,14 +155,17 @@ enum AgentSessionStore {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    /// The first line of a (possibly large) JSONL file, read from a bounded prefix so a
-    /// long transcript isn't slurped whole just to reach its `session_meta` header.
-    private static func firstLine(of url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    /// The first few lines of a (possibly large) JSONL file, read from a bounded prefix
+    /// so a long transcript isn't slurped whole just to reach its header. Split on the
+    /// newline byte before decoding: the prefix can end inside a multi-byte character,
+    /// which would fail a whole-chunk UTF-8 decode and lose the header with it.
+    private static func leadingLines(of url: URL) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
         defer { try? handle.close() }
-        guard let chunk = try? handle.read(upToCount: 64 * 1024),
-              let text = String(data: chunk, encoding: .utf8) else { return nil }
-        return text.split(separator: "\n", maxSplits: 1).first.map(String.init)
+        guard let chunk = try? handle.read(upToCount: 64 * 1024) else { return [] }
+        return chunk.split(separator: UInt8(ascii: "\n"), maxSplits: 4)
+            .prefix(4)
+            .compactMap { String(data: Data($0), encoding: .utf8) }
     }
 }
 
