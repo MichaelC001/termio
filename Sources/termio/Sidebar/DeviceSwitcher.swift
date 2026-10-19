@@ -210,7 +210,7 @@ struct DeviceMarkView: View {
 func newTerminalMenuItem(
     store: TermioStore,
     project: Project? = nil,
-    local: @escaping () -> Void
+    local: @escaping @MainActor () -> Void
 ) -> SidebarMenuItem {
     let known = DeviceRoster.known(in: store)
     guard known.count > 1 else { return .action(localized("New Terminal"), local) }

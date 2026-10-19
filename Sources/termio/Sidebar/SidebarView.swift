@@ -269,13 +269,7 @@ struct SidebarView: View {
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { terminalsCollapsed.toggle() }
                     },
-                    menuItems: [
-                        newTerminalMenuItem(store: store) { store.addScratchSession(agent: .terminal) },
-                        .separator,
-                        .action(localized("Close All Terminals")) {
-                            store.closeLooseSessions(inWorkspace: workspace.id, chats: false)
-                        },
-                    ]
+                    menuItems: terminalsMenuItems(store: store, workspace: workspace.id)
                 )
                 if !terminalsCollapsed {
                     let marks = splitLinkMarks(for: workspace.terminals)
@@ -300,13 +294,7 @@ struct SidebarView: View {
                     toggleCollapsed: {
                         withAnimation(.easeInOut(duration: 0.18)) { chatsCollapsed.toggle() }
                     },
-                    menuItems: [
-                        .action(localized("New Chat")) { store.addDefaultChat() },
-                        .separator,
-                        .action(localized("Close All Chats")) {
-                            store.closeLooseSessions(inWorkspace: workspace.id, chats: true)
-                        },
-                    ]
+                    menuItems: chatsMenuItems(store: store, workspace: workspace.id)
                 )
                 if !chatsCollapsed {
                     let marks = splitLinkMarks(for: workspace.chats)
@@ -856,104 +844,8 @@ private struct ProjectHeader: View {
         return CGFloat(count) * 22 + CGFloat(count - 1) * 3
     }
 
-    /// The right-click menu: New Terminal, a "New Agent Session ▸" submenu with one
-    /// row per enabled agent (the same row shape as File ▸ New Chat), then the
-    /// project's own actions. Mirrors the hover controls so both routes stay in sync.
-    /// The Terminals section is not a folder project — agents don't belong in `$HOME`
-    /// (they get a real project or the scoped scratch workspace), and worktree /
-    /// Finder actions are about a project's directory — so its menu is
-    /// just the terminal action and Close All Terminals.
     private var menuItems: [SidebarMenuItem] {
-        // A project on another machine has one place its sessions can run, so the
-        // verb names it outright instead of offering a device submenu whose rows
-        // would all be wrong but one.
-        if store.isOnAnotherDevice(project) { return remoteMenuItems }
-        var items: [SidebarMenuItem] = canStartSession
-            ? [
-                newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
-                .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
-                    .filter { $0 != .terminal }
-                    .map { preset in .agent(preset) { addSession(preset) } }),
-            ]
-            : []
-        if let worktree {
-            // A separator only ever divides, so nothing adds one while the list is
-            // still empty: a row with no session verbs would otherwise open its
-            // menu on a rule with nothing above it.
-            func divide() {
-                if !items.isEmpty { items.append(.separator) }
-            }
-            if let cloneTo = cloneToDeviceMenuItem(
-                store: store, folder: worktree.path, project: project.id) {
-                divide()
-                items.append(cloneTo)
-            }
-            divide()
-            items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
-                store.toggleWorktreePinned(worktree.id)
-            })
-            items.append(.action(localized("Reveal in Finder")) {
-                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree.path)
-            })
-            items.append(.separator)
-            items.append(.action(localized("Remove Worktree")) {
-                store.removeWorktree(worktree.id, from: project.id)
-            })
-            return items
-        }
-        // Create a fresh detached checkout nested under this project; the new
-        // container's own quick-add controls fill it with sessions on demand.
-        // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
-        if project.branch != "—" {
-            items.append(.action(localized("New Worktree")) { store.addWorktree(from: project.id) })
-            if let cloneTo = cloneToDeviceMenuItem(
-                store: store, folder: project.path, project: project.id) {
-                items.append(cloneTo)
-            }
-        }
-        items.append(.separator)
-        items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
-            store.togglePinned(project.id)
-        })
-        // Filing is what a workspace is for, so a project can be moved into
-        // another one. Absent with a single workspace — there is nowhere to move to.
-        if let move = moveToWorkspaceMenuItem(store: store, project: project) {
-            items.append(move)
-        }
-        items.append(.action(localized("Reveal in Finder")) {
-            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
-        })
-        items.append(.separator)
-        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
-        return items
-    }
-
-    /// The menu for a project whose checkout is on another machine. Every verb
-    /// that reads this Mac's disk is absent rather than disabled — New Worktree,
-    /// Clone to (the folder to clone from isn't here), Reveal in Finder — because
-    /// there is nothing on this Mac for them to act on. Filing and removal are
-    /// bookkeeping about the row, so they stay.
-    private var remoteMenuItems: [SidebarMenuItem] {
-        var items: [SidebarMenuItem] = [
-            .action(localized("New Terminal")) { addSession(.terminal) },
-            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
-                .filter { $0 != .terminal }
-                .map { preset in .agent(preset) { addSession(preset) } }),
-            .separator,
-            .action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
-                store.togglePinned(project.id)
-            },
-        ]
-        if let move = moveToWorkspaceMenuItem(store: store, project: project) {
-            items.append(move)
-        }
-        items.append(.action(localized("Copy Path")) {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(project.path, forType: .string)
-        })
-        items.append(.separator)
-        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
-        return items
+        projectMenuItems(store: store, settings: settings, project: project, worktree: worktree)
     }
 
     var body: some View {
@@ -1089,12 +981,205 @@ func headerSessionPresets(_ settings: AppSettings) -> [AgentPreset] {
     [.terminal] + enabledAgentPresets(settings).filter { $0 != .terminal }
 }
 
+/// The Terminals section's right-click menu, wherever the section is listed.
+@MainActor
+func terminalsMenuItems(store: TermioStore, workspace: Workspace.ID) -> [SidebarMenuItem] {
+    [
+        newTerminalMenuItem(store: store) { store.addScratchSession(agent: .terminal) },
+        .separator,
+        .action(localized("Close All Terminals")) {
+            store.closeLooseSessions(inWorkspace: workspace, chats: false)
+        },
+    ]
+}
+
+/// The Chats section's right-click menu, wherever the section is listed.
+@MainActor
+func chatsMenuItems(store: TermioStore, workspace: Workspace.ID) -> [SidebarMenuItem] {
+    [
+        .action(localized("New Chat")) { store.addDefaultChat() },
+        .separator,
+        .action(localized("Close All Chats")) {
+            store.closeLooseSessions(inWorkspace: workspace, chats: true)
+        },
+    ]
+}
+
+/// The right-click menu of a project, or of one of its worktrees: New Terminal, a
+/// "New Agent Session ▸" submenu with one row per enabled agent (the same row shape
+/// as File ▸ New Chat), then the project's own actions. Mirrors the header's hover
+/// controls so both routes stay in sync. The Terminals section is not a folder
+/// project — agents don't belong in `$HOME` (they get a real project or the scoped
+/// scratch workspace), and worktree / Finder actions are about a project's
+/// directory — so its menu is `terminalsMenuItems`.
+@MainActor
+func projectMenuItems(store: TermioStore, settings: AppSettings, project: Project,
+                      worktree: Worktree? = nil) -> [SidebarMenuItem] {
+    // `TermioStore.addSession` routes a project on another machine to the remote
+    // path itself, so the verbs read the same wherever the checkout lives.
+    let addSession: (AgentPreset) -> Void = { preset in
+        store.addSession(to: project.id, agent: preset, worktreePath: worktree?.path)
+    }
+    // A project on another machine has one place its sessions can run, so the
+    // verb names it outright instead of offering a device submenu whose rows
+    // would all be wrong but one. Every verb that reads this Mac's disk is absent
+    // rather than disabled — New Worktree, Clone to (the folder to clone from
+    // isn't here), Reveal in Finder — because there is nothing on this Mac for
+    // them to act on. Filing and removal are bookkeeping about the row, so they stay.
+    if store.isOnAnotherDevice(project) {
+        var items: [SidebarMenuItem] = [
+            .action(localized("New Terminal")) { addSession(.terminal) },
+            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
+                .filter { $0 != .terminal }
+                .map { preset in .agent(preset) { addSession(preset) } }),
+            .separator,
+            .action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
+                store.togglePinned(project.id)
+            },
+        ]
+        if let move = moveToWorkspaceMenuItem(store: store, project: project) {
+            items.append(move)
+        }
+        items.append(.action(localized("Copy Path")) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(project.path, forType: .string)
+        })
+        items.append(.separator)
+        items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
+        return items
+    }
+    // A worktree git still registers but whose checkout is gone has nowhere to
+    // start a session: the path would reach the daemon as a working directory
+    // that does not exist. Removing it is what the user still needs to reach.
+    var items: [SidebarMenuItem] = worktree?.missing != true
+        ? [
+            newTerminalMenuItem(store: store, project: project) { addSession(.terminal) },
+            .submenu(localized("New Agent Session"), enabledAgentPresets(settings)
+                .filter { $0 != .terminal }
+                .map { preset in .agent(preset) { addSession(preset) } }),
+        ]
+        : []
+    if let worktree {
+        // A separator only ever divides, so nothing adds one while the list is
+        // still empty: a row with no session verbs would otherwise open its
+        // menu on a rule with nothing above it.
+        func divide() {
+            if !items.isEmpty { items.append(.separator) }
+        }
+        if let cloneTo = cloneToDeviceMenuItem(
+            store: store, folder: worktree.path, project: project.id) {
+            divide()
+            items.append(cloneTo)
+        }
+        divide()
+        items.append(.action(worktree.pinned ? localized("Unpin") : localized("Pin")) {
+            store.toggleWorktreePinned(worktree.id)
+        })
+        items.append(.action(localized("Reveal in Finder")) {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: worktree.path)
+        })
+        items.append(.separator)
+        items.append(.action(localized("Remove Worktree")) {
+            store.removeWorktree(worktree.id, from: project.id)
+        })
+        return items
+    }
+    // Create a fresh detached checkout nested under this project; the new
+    // container's own quick-add controls fill it with sessions on demand.
+    // Only for git repositories (a worktree needs one; "—" marks a non-repo folder).
+    if project.branch != "—" {
+        items.append(.action(localized("New Worktree")) { store.addWorktree(from: project.id) })
+        if let cloneTo = cloneToDeviceMenuItem(
+            store: store, folder: project.path, project: project.id) {
+            items.append(cloneTo)
+        }
+    }
+    items.append(.separator)
+    items.append(.action(project.pinned ? localized("Unpin") : localized("Pin to Top")) {
+        store.togglePinned(project.id)
+    })
+    // Filing is what a workspace is for, so a project can be moved into
+    // another one. Absent with a single workspace — there is nowhere to move to.
+    if let move = moveToWorkspaceMenuItem(store: store, project: project) {
+        items.append(move)
+    }
+    items.append(.action(localized("Reveal in Finder")) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: project.path)
+    })
+    items.append(.separator)
+    items.append(.action(localized("Remove Project")) { store.removeProject(project.id) })
+    return items
+}
+
+/// A session's right-click menu, on its sidebar row or on its tab.
+@MainActor
+func sessionMenuItems(store: TermioStore, session: Session) -> [SidebarMenuItem] {
+    var items: [SidebarMenuItem] = [
+        .action(localized("Rename…")) { store.renameSession(session.id) },
+        .action(localized("Copy Session Link")) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
+        },
+    ]
+    let targets = store.groupableTargets(for: session.id)
+    if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
+    if store.isInSplitGroup(session.id) {
+        items.append(.action(localized("Ungroup")) { store.detachFromSplit(session.id) })
+    }
+    if !targets.isEmpty {
+        items.append(.submenu(localized("Group with"), targets.map { target in
+            .action(store.displayTitle(for: target)) {
+                store.groupSession(session.id, with: target.id)
+            }
+        }))
+    }
+    items.append(contentsOf: [
+        .separator,
+        .action(session.pinned ? localized("Unpin") : localized("Pin")) { store.toggleSessionPinned(session.id) },
+        .separator,
+        .action(localized("Close Session")) { store.requestCloseSession(session.id) },
+    ])
+    return items
+}
+
+/// Builds an `NSMenu` from a sidebar menu spec, recursing for submenus. Each item
+/// carries its own closure, so the menu needs no target kept alive beside it.
+@MainActor
+func sidebarMenu(_ items: [SidebarMenuItem]) -> NSMenu {
+    let menu = NSMenu()
+    for item in items {
+        switch item {
+        case .separator:
+            menu.addItem(.separator())
+        case let .disabled(title):
+            // A nil action leaves the item greyed out and un-clickable.
+            let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            menuItem.isEnabled = false
+            menu.addItem(menuItem)
+        case let .action(title, handler):
+            menu.addItem(ClosureMenuItem(title: title, handler: handler))
+        case let .agent(preset, handler):
+            let menuItem = ClosureMenuItem(title: preset.displayName, handler: handler)
+            menuItem.image = agentMenuImage(for: preset)
+            menu.addItem(menuItem)
+        case let .submenu(title, children):
+            let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            // An empty submenu (e.g. nothing to group with) reads as a
+            // disabled, un-openable parent rather than a dead-end click.
+            menuItem.isEnabled = !children.isEmpty
+            menuItem.submenu = children.isEmpty ? nil : sidebarMenu(children)
+            menu.addItem(menuItem)
+        }
+    }
+    return menu
+}
+
 /// One entry in a sidebar row's right-click menu — a titled action, an agent row
 /// (display name plus brand icon, the File ▸ New Chat row shape), a titled
 /// submenu of further entries, or a separator.
 enum SidebarMenuItem {
-    case action(String, () -> Void)
-    case agent(AgentPreset, () -> Void)
+    case action(String, @MainActor () -> Void)
+    case agent(AgentPreset, @MainActor () -> Void)
     indirect case submenu(String, [SidebarMenuItem])
     /// A greyed-out, non-actionable row — used to explain an empty submenu inline
     /// (e.g. "No SSH hosts in ~/.ssh/config") rather than leaving a dead click.
@@ -1107,7 +1192,7 @@ enum SidebarMenuItem {
 /// un-styleable accent highlight (the blue border). A secondary-click recognizer on
 /// the row's own view pops the menu, so nothing emphasizes the row. Mirrors the file
 /// browser's `RowContextMenu`.
-private struct SidebarRowContextMenu: NSViewRepresentable {
+struct SidebarRowContextMenu: NSViewRepresentable {
     /// The menu's contents, built when it pops rather than when the row renders.
     /// A session row's menu asks the store real questions — which sessions this
     /// one could be grouped with, and what each of those is called — and a
@@ -1170,59 +1255,14 @@ private struct SidebarRowContextMenu: NSViewRepresentable {
 
         @objc private func showMenu(_ recognizer: NSClickGestureRecognizer) {
             guard let hostView else { return }
-            let menu = build(items())
+            let menu = sidebarMenu(items())
             menu.delegate = self
             menu.popUp(positioning: nil, at: recognizer.location(in: hostView), in: hostView)
-        }
-
-        /// Builds an `NSMenu` from the spec, recursing for submenus.
-        private func build(_ items: [SidebarMenuItem]) -> NSMenu {
-            let menu = NSMenu()
-            for item in items {
-                switch item {
-                case .separator:
-                    menu.addItem(.separator())
-                case let .disabled(title):
-                    // A nil action leaves the item greyed out and un-clickable.
-                    let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                    menuItem.isEnabled = false
-                    menu.addItem(menuItem)
-                case let .action(title, handler):
-                    let menuItem = NSMenuItem(title: title, action: #selector(invoke(_:)), keyEquivalent: "")
-                    menuItem.target = self
-                    menuItem.representedObject = Handler(handler)
-                    menu.addItem(menuItem)
-                case let .agent(preset, handler):
-                    let menuItem = NSMenuItem(title: preset.displayName, action: #selector(invoke(_:)), keyEquivalent: "")
-                    menuItem.target = self
-                    menuItem.representedObject = Handler(handler)
-                    menuItem.image = agentMenuImage(for: preset)
-                    menu.addItem(menuItem)
-                case let .submenu(title, children):
-                    let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                    // An empty submenu (e.g. nothing to group with) reads as a
-                    // disabled, un-openable parent rather than a dead-end click.
-                    menuItem.isEnabled = !children.isEmpty
-                    menuItem.submenu = children.isEmpty ? nil : build(children)
-                    menu.addItem(menuItem)
-                }
-            }
-            return menu
-        }
-
-        @objc private func invoke(_ sender: NSMenuItem) {
-            (sender.representedObject as? Handler)?.run()
         }
 
         // NSMenuDelegate — surface the open/close so the row lifts while its menu is up.
         func menuWillOpen(_ menu: NSMenu) { onMenuState(true) }
         func menuDidClose(_ menu: NSMenu) { onMenuState(false) }
-
-        /// Boxes a menu-item closure so it can ride along on `NSMenuItem.representedObject`.
-        private final class Handler {
-            let run: () -> Void
-            init(_ run: @escaping () -> Void) { self.run = run }
-        }
 
         private static func rowView(above view: NSView) -> NSView? {
             var ancestor = view.superview
@@ -1357,32 +1397,7 @@ private struct SessionRow: View {
     /// session is already in a group (联合 → 独立), and "Group with ▸" only when
     /// there is a sibling to combine it with (独立 → 联合).
     private var menuItems: [SidebarMenuItem] {
-        var items: [SidebarMenuItem] = [
-            .action(localized("Rename…")) { store.renameSession(session.id) },
-            .action(localized("Copy Session Link")) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(store.sessionLink(for: session), forType: .string)
-            },
-        ]
-        let targets = store.groupableTargets(for: session.id)
-        if store.isInSplitGroup(session.id) || !targets.isEmpty { items.append(.separator) }
-        if store.isInSplitGroup(session.id) {
-            items.append(.action(localized("Ungroup")) { store.detachFromSplit(session.id) })
-        }
-        if !targets.isEmpty {
-            items.append(.submenu(localized("Group with"), targets.map { target in
-                .action(store.displayTitle(for: target)) {
-                    store.groupSession(session.id, with: target.id)
-                }
-            }))
-        }
-        items.append(contentsOf: [
-            .separator,
-            .action(session.pinned ? localized("Unpin") : localized("Pin")) { store.toggleSessionPinned(session.id) },
-            .separator,
-            .action(localized("Close Session")) { store.requestCloseSession(session.id) },
-        ])
-        return items
+        sessionMenuItems(store: store, session: session)
     }
 
     var body: some View {
@@ -1658,6 +1673,11 @@ struct SidebarRowHighlight: View {
     let isHovering: Bool
     let chrome: ChromeTheme?
 
+    /// A rounded rectangle, not the tabs' capsule: on a row many times wider than it is tall, a
+    /// capsule's ends read as a text field rather than a selected row. macOS lists use small
+    /// corners for the same reason.
+    private static let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+
     var body: some View {
         if let chrome {
             themed(chrome)
@@ -1673,9 +1693,9 @@ struct SidebarRowHighlight: View {
     /// not moved. Fill only — no border, so the row reads as a soft highlight
     /// rather than an outlined chip.
     private var system: some View {
-        Capsule(style: .continuous)
+        Self.shape
             .fill(Color.primary.opacity(fillOpacity))
-            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
+            .overlay { if isSelected { GlassRim(shape: Self.shape) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }
@@ -1684,9 +1704,9 @@ struct SidebarRowHighlight: View {
     /// session reads as accent-tinted (VSCode's active list item), with hover a
     /// fainter step below selection. Fill only — no border.
     private func themed(_ chrome: ChromeTheme) -> some View {
-        Capsule(style: .continuous)
+        Self.shape
             .fill(chrome.accent.opacity(accentOpacity))
-            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
+            .overlay { if isSelected { GlassRim(shape: Self.shape) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }

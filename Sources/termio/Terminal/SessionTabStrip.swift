@@ -87,6 +87,9 @@ struct SessionTabStrip: View {
                                 titles: tabs.map { $0.first.flatMap(store.session).map(store.displayTitle(for:)) ?? "" },
                                 slot: slot, leading: 3,
                                 onHover: { hoveredIndex = $0 },
+                                menu: { index in
+                                    tabs.indices.contains(index) ? sidebarMenu(tabMenuItems(for: tabs[index])) : nil
+                                },
                                 onPress: { index in
                                     guard tabs.indices.contains(index) else { return }
                                     settle = nil
@@ -219,6 +222,12 @@ struct SessionTabStrip: View {
         }
         if let settle, settle.ids == ids { return settle.offset }
         return 0
+    }
+
+    /// A tab's right-click menu: its session's sidebar menu. A split group's tab acts on its first
+    /// session, the one whose title and icon the tab shows.
+    private func tabMenuItems(for tab: [Session.ID]) -> [SidebarMenuItem] {
+        tab.first.flatMap(store.session).map { sessionMenuItems(store: store, session: $0) } ?? []
     }
 
     /// Every group, the current one checked — the collapsed sidebar's list, as a menu.
@@ -453,6 +462,8 @@ private struct TabStripTracker: NSViewRepresentable {
     let slot: CGFloat
     let leading: CGFloat
     let onHover: (Int?) -> Void
+    /// The right-click menu of the tab at an index.
+    let menu: (Int) -> NSMenu?
     let onPress: (Int) -> Void
     let onDrag: (CGFloat) -> Void
     /// Whether the press became a drag.
@@ -465,6 +476,7 @@ private struct TabStripTracker: NSViewRepresentable {
         view.slot = slot
         view.leading = leading
         view.onHover = onHover
+        view.tabMenu = menu
         view.onPress = onPress
         view.onDrag = onDrag
         view.onRelease = onRelease
@@ -475,6 +487,7 @@ private struct TabStripTracker: NSViewRepresentable {
         var slot: CGFloat = 0 { didSet { if slot != oldValue { needsLayout = true } } }
         var leading: CGFloat = 0
         var onHover: (Int?) -> Void = { _ in }
+        var tabMenu: (Int) -> NSMenu? = { _ in nil }
         var onPress: (Int) -> Void = { _ in }
         var onDrag: (CGFloat) -> Void = { _ in }
         var onRelease: (Bool) -> Void = { _ in }
@@ -535,6 +548,10 @@ private struct TabStripTracker: NSViewRepresentable {
             hoverArea = area
         }
 
+        override func menu(for event: NSEvent) -> NSMenu? {
+            visibleIndex(at: event.locationInWindow).flatMap(tabMenu)
+        }
+
         override func mouseEntered(with event: NSEvent) { hovered(event) }
         override func mouseMoved(with event: NSEvent) { hovered(event) }
 
@@ -568,6 +585,13 @@ private struct TabStripTracker: NSViewRepresentable {
             monitor(.leftMouseDown) { event in
                 guard let tracker = Self.tracker(under: event),
                       let index = tracker.index(at: event.locationInWindow) else { return false }
+                // A control-click is a right-click: the menu, not a press.
+                if event.modifierFlags.contains(.control) {
+                    if let menu = tracker.tabMenu(index) {
+                        NSMenu.popUpContextMenu(menu, with: event, for: tracker)
+                    }
+                    return true
+                }
                 Self.active = tracker
                 tracker.pressed(index, event)
                 return true

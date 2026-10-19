@@ -32,7 +32,9 @@ extension TermioStore {
         var session = Session(title: title, agent: agent)
         session.worktreePath = worktreePath
         session.spawnDirectory = spawnDirectory
-        projects[index].sessions.append(session)
+        // Newest first: the session just asked for lands under the header that made it, not
+        // below every older one.
+        projects[index].sessions.insert(session, at: 0)
         if takeFocus {
             selectedSessionID = session.id
         } else {
