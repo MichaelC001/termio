@@ -1332,7 +1332,8 @@ extension TermioStore {
             // follow the agent's own title the way its local twin does.
             let count = projects[index].sessions.filter { $0.agent == .terminal }.count
             session.title = agent == .terminal ? "Terminal \(count + 1)" : agent.displayName
-            projects[index].sessions.append(session)
+            // Newest first, the same as a local project's sessions (`addSession`).
+            projects[index].sessions.insert(session, at: 0)
             selectedSessionID = session.id
             return
         }
