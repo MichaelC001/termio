@@ -25,6 +25,10 @@
     "events": [
       { "on": "session.status", "state": "working", "matcher": "busy" },
       { "on": "session.status", "state": "done", "matcher": "idle" },
+      { "on": "session.execution.started", "state": "working" },
+      { "on": "session.execution.succeeded", "state": "done" },
+      { "on": "session.execution.failed", "state": "done" },
+      { "on": "session.execution.interrupted", "state": "done" },
       { "on": "permission.asked", "state": "attention" }
     ]
   }

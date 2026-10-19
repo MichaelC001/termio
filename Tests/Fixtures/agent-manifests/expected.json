@@ -746,6 +746,26 @@
           },
           {
             "matcher": null,
+            "name": "session.execution.started",
+            "state": "working"
+          },
+          {
+            "matcher": null,
+            "name": "session.execution.succeeded",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "session.execution.failed",
+            "state": "done"
+          },
+          {
+            "matcher": null,
+            "name": "session.execution.interrupted",
+            "state": "done"
+          },
+          {
+            "matcher": null,
             "name": "permission.asked",
             "state": "attention"
           }

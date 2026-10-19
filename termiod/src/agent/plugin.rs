@@ -361,6 +361,10 @@ mod tests {
                 "conversation":"sessionID","events":[
                   {"on":"session.status","state":"working","matcher":"busy"},
                   {"on":"session.status","state":"done","matcher":"idle"},
+                  {"on":"session.execution.started","state":"working"},
+                  {"on":"session.execution.succeeded","state":"done"},
+                  {"on":"session.execution.failed","state":"done"},
+                  {"on":"session.execution.interrupted","state":"done"},
                   {"on":"permission.asked","state":"attention"}]}}"#,
         )
     }
@@ -465,6 +469,10 @@ export default {
         if (event.type === "session.deleted") return roots.delete(event.properties?.info?.id);
         if (event.type === "session.status" && event.properties?.status?.type === "busy") return report("working", event.properties?.sessionID);
         if (event.type === "session.status" && event.properties?.status?.type === "idle") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.started") return report("working", event.properties?.sessionID);
+        if (event.type === "session.execution.succeeded") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.failed") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.interrupted") return report("done", event.properties?.sessionID);
         if (event.type === "permission.asked") return report("attention", event.properties?.sessionID);
       },
     };
@@ -479,6 +487,10 @@ export default {
         if (event.type === "session.deleted") { roots.delete(event.data?.sessionID); continue; }
         if (event.type === "session.status" && event.data?.status?.type === "busy") { report("working", event.data?.sessionID); continue; }
         if (event.type === "session.status" && event.data?.status?.type === "idle") { report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.started") { report("working", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.succeeded") { report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.failed") { report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.interrupted") { report("done", event.data?.sessionID); continue; }
         if (event.type === "permission.asked") { report("attention", event.data?.sessionID); continue; }
       }
     })().catch(() => {});

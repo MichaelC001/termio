@@ -1055,22 +1055,15 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents,
-            legacy_paths: PluginFile::legacy_paths(directory, filename, legacy, spec.dialect),
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, spec.dialect),
         })
     }
 
-    /// A user override can still point the plugin at the directory it moved
-    /// out of, which makes a predecessor the very file just written. Sweeping
-    /// that would delete the hook on every sync, so it is left out.
-    fn legacy_paths(directory: &str, filename: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
-        let destination = Path::new(directory).join(filename);
+    fn legacy_paths(directory: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
         let mut paths = vec![format!("{directory}/{legacy}")];
         if let Some(parent) = Path::new(directory).parent() {
             for moved in super::plugin::moved_from(dialect) {
-                let path = parent.join(moved);
-                if path != destination {
-                    paths.push(path.display().to_string());
-                }
+                paths.push(parent.join(moved).display().to_string());
             }
         }
         paths
@@ -1083,7 +1076,7 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents: String::new(),
-            legacy_paths: PluginFile::legacy_paths(directory, filename, legacy, dialect),
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, dialect),
         })
     }
 
@@ -1099,8 +1092,17 @@ impl PluginFile {
         if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
-        // Publish the replacement before removing its predecessor.
+        // Publish the replacement before removing its predecessor. A
+        // predecessor that is the same file is the hook just written: an
+        // override still naming the old directory, or that directory linked to
+        // the new one. Sweeping it would delete the hook on every sync.
+        let destination = std::fs::canonicalize(machine::expand(&self.path)).ok();
         for legacy in &self.legacy_paths {
+            if destination.is_some()
+                && std::fs::canonicalize(machine::expand(legacy)).ok() == destination
+            {
+                continue;
+            }
             self.remove_if_ours(legacy);
         }
         Ok(())
@@ -1973,6 +1975,25 @@ pub(super) mod tests {
                 .expect("installs");
         }
         assert!(old.join("termio.js").exists(), "the installed plugin must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The old directory linked to the new one names the same file by another
+    /// spelling. It is still the hook just written, so it stays.
+    #[test]
+    fn an_old_directory_linked_to_the_new_one_keeps_the_plugin() {
+        let root = scratch("opencode-linked");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        PluginFile::new(&new.display().to_string(), &spec, &request)
+            .expect("a plugin dialect")
+            .install()
+            .expect("installs");
+        assert!(new.join("termio.js").exists(), "the installed plugin must survive");
         let _ = std::fs::remove_dir_all(&root);
     }
 
