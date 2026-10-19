@@ -91,6 +91,13 @@ brew install --cask termio-sh/tap/termio
 </td>
 </tr>
 <tr>
+<td width="62%"><img alt="Claude Code、Codex 和两个终端排在横向标签页里" src="web/landing/public/screenshots/docs/29-horizontal-tabs.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>横向标签页</h3>
+<p>会话排成一行，放在终端上方。点击标签页切换，拖动排序。在 设置 ▸ 外观 ▸ 标签页 里打开。<a href="https://github.com/termio-sh/launch-video/tree/main/20261019-horizontal-tabs">看视频</a>。</p>
+</td>
+</tr>
+<tr>
 <td width="62%"><img alt="Codex 和 Claude Code 旁显示项目会话类型及实时状态" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>状态一眼看清</h3>

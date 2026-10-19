@@ -91,6 +91,13 @@ brew install --cask termio-sh/tap/termio
 </td>
 </tr>
 <tr>
+<td width="62%"><img alt="Claude Code、Codex 和兩個終端機排在橫向分頁裡" src="web/landing/public/screenshots/docs/29-horizontal-tabs.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>橫向分頁</h3>
+<p>工作階段排成一列，放在終端機上方。點擊分頁切換，拖曳排序。在 設定 ▸ 外觀 ▸ 分頁 裡開啟。<a href="https://github.com/termio-sh/launch-video/tree/main/20261019-horizontal-tabs">看影片</a>。</p>
+</td>
+</tr>
+<tr>
 <td width="62%"><img alt="Codex 和 Claude Code 旁顯示工作階段類型及即時狀態" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>狀態一眼看清</h3>
