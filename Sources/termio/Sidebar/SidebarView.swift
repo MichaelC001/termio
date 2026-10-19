@@ -1673,6 +1673,11 @@ struct SidebarRowHighlight: View {
     let isHovering: Bool
     let chrome: ChromeTheme?
 
+    /// A rounded rectangle, not the tabs' capsule: on a row many times wider than it is tall, a
+    /// capsule's ends read as a text field rather than a selected row. macOS lists use small
+    /// corners for the same reason.
+    private static let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+
     var body: some View {
         if let chrome {
             themed(chrome)
@@ -1688,9 +1693,9 @@ struct SidebarRowHighlight: View {
     /// not moved. Fill only — no border, so the row reads as a soft highlight
     /// rather than an outlined chip.
     private var system: some View {
-        Capsule(style: .continuous)
+        Self.shape
             .fill(Color.primary.opacity(fillOpacity))
-            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
+            .overlay { if isSelected { GlassRim(shape: Self.shape) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }
@@ -1699,9 +1704,9 @@ struct SidebarRowHighlight: View {
     /// session reads as accent-tinted (VSCode's active list item), with hover a
     /// fainter step below selection. Fill only — no border.
     private func themed(_ chrome: ChromeTheme) -> some View {
-        Capsule(style: .continuous)
+        Self.shape
             .fill(chrome.accent.opacity(accentOpacity))
-            .overlay { if isSelected { GlassRim(shape: Capsule(style: .continuous)) } }
+            .overlay { if isSelected { GlassRim(shape: Self.shape) } }
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
     }
