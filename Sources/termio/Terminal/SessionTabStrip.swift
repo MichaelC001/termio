@@ -268,22 +268,14 @@ private struct TabTrackGlass: View {
 }
 
 /// The selected tab's pill, the brightest glass in the strip: the other tabs sit on the track.
-/// Glass the way Safari's selected tab reads — a face a step lighter than the ground, a hairline,
-/// and a rim lit from the top leading corner — and no drop shadow: the system `glassEffect` floats its capsule on one, which read as a raised button
-/// rather than a pane of glass.
+/// `SelectionGlass` rather than the system `glassEffect`, which floats its capsule on a drop
+/// shadow that read as a raised button rather than a pane of glass.
 private struct SelectedTabGlass: ViewModifier {
     let isActive: Bool
-    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         if isActive {
-            let dark = colorScheme == .dark
-            let shape = Capsule(style: .continuous)
-            content.background {
-                shape.fill(Color.white.opacity(dark ? 0.09 : 0.55))
-                    .overlay(shape.strokeBorder(Color.primary.opacity(dark ? 0.10 : 0.07), lineWidth: 0.5))
-                    .overlay(GlassRim(shape: shape))
-            }
+            content.background(SelectionGlass(shape: Capsule(style: .continuous)))
         } else {
             content
         }

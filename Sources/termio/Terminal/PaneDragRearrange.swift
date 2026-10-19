@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import GhosttyTerminal
 
 /// Which pane is showing its grab handle, and whether the pointer is on the
@@ -134,11 +135,11 @@ final class PaneDragRearrange {
     private func clearStrandedDropCue() {
         guard let store, NSEvent.pressedMouseButtons & 1 == 0,
               store.sessionDropTarget != nil || store.sessionRowDrop != nil
-                  || store.draggingSessionID != nil
+                  || store.sessionRowGroupTarget != nil || store.draggingSessionID != nil
         else { return }
         store.sessionDropTarget = nil
-        store.sessionRowDrop = nil
-        store.draggingSessionID = nil
+        // The rows drawn out of order for a drop that never came slide back.
+        withAnimation(TermioStore.rowReflow) { store.endSessionRowDrag() }
     }
 
     /// Republishing on every mouse-moved event would redraw the pane tree at

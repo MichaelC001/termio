@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 extension TermioStore {
     /// Adds a session to a project, optionally running in one of its linked
@@ -85,6 +86,157 @@ extension TermioStore {
         // rows only join or leave a group through "Group with" / "Ungroup", so the
         // run closes back up around the dropped row (see `gatherSplitRuns`).
         gatherSplitRuns()
+    }
+
+    /// `sessions` as the sidebar draws them: in the order a drop would leave them,
+    /// while a dragged row is over one of them.
+    func sidebarOrder(_ sessions: [Session]) -> [Session] {
+        guard let moved = draggingSessionID, let drop = sessionRowDrop else { return sessions }
+        return droppedOrder(sessions, moved: moved, drop: drop)
+    }
+
+    private func droppedOrder(_ sessions: [Session], moved: Session.ID, drop: SessionRowDrop) -> [Session] {
+        var groups = splitGroups.map(\.leafIDs)
+        // An armed group already counts the dragged row as the target's, as "Group with"
+        // will: gathered as its old group's member, it would preview at that group's end.
+        if let target = sessionRowGroupTarget {
+            groups = groups.map { $0.filter { $0 != moved } }
+            if let index = groups.firstIndex(where: { $0.contains(target) }) {
+                groups[index].append(moved)
+            } else {
+                groups.append([target, moved])
+            }
+        }
+        return committedRowDrop(sessions, moved: moved, beside: drop.row, insert: drop.insert,
+                                groups: groups)
+    }
+
+    /// Moves the gap the dragged row would land in, animated so the rows between
+    /// slide over rather than jump. Published only on a change: the drop delegate
+    /// calls this at pointer rate.
+    func previewSessionRowDrop(_ drop: SessionRowDrop) {
+        cancelSessionGroupDwell()
+        guard sessionRowDrop != drop else { return }
+        withAnimation(Self.rowReflow) { sessionRowDrop = drop }
+    }
+
+    /// Starts the hold that groups the dragged session with `row`. Resting anywhere
+    /// else cancels it, so a pointer passing through never groups. When it runs, the
+    /// gap sits next to `row` on the side the drag came from and the bracket joins the
+    /// two (`SidebarView.splitLinkMarks`): the drop's result is on screen before the drop.
+    func beginSessionGroupDwell(on row: Session.ID, place: UUID) {
+        // The same session shown twice: the hold follows the appearance under the pointer.
+        if sessionRowGroupTarget == row {
+            sessionGroupTargetPlace = place
+            return
+        }
+        guard sessionGroupDwell?.row != row else { return }
+        cancelSessionGroupDwell()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.sessionGroupDwell?.row == row else { return }
+            self.sessionGroupDwell = nil
+            self.sessionGroupArming = nil
+            self.sessionGroupTargetPlace = place
+            // It joins on the side it came from: the gap is already there, so the target
+            // holds still and nothing jumps past it.
+            let side = self.sideOfDraggedRow(relativeTo: row)
+            withAnimation(Self.rowReflow) {
+                self.sessionRowGroupTarget = row
+                self.sessionRowDrop = SessionRowDrop(row: row, insert: side)
+            }
+        }
+        sessionGroupDwell = (row, place, work)
+        sessionGroupArming = row
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.groupDwell, execute: work)
+    }
+
+    /// Ends a hold. `keepingTarget` leaves one that already armed: once the gap has
+    /// moved under the target, the pointer rests on the gap, and that is still the
+    /// hold the user meant.
+    func cancelSessionGroupDwell(keepingTarget: Bool = false) {
+        sessionGroupDwell?.work.cancel()
+        sessionGroupDwell = nil
+        if sessionGroupArming != nil { sessionGroupArming = nil }
+        if !keepingTarget, sessionRowGroupTarget != nil { sessionRowGroupTarget = nil }
+    }
+
+    /// Commits a release over the sidebar's rows: the group it was held for, else
+    /// the gap it was drawn in. A release on its own slot with neither is still a
+    /// drop that succeeded, so the drag image does not slide back to where the row
+    /// already is.
+    func commitSessionRowDrop() -> Bool {
+        let moved = resolveDraggedSession()
+        let group = sessionRowGroupTarget
+        let gap = sessionRowDrop
+        endSessionRowDrag()
+        guard let moved else { return false }
+        if let group {
+            groupSession(moved, with: group, slot: gap?.insert == .above ? .first : .second)
+        } else if let gap {
+            reorderSession(moved, relativeTo: gap.row, insert: gap.insert)
+        }
+        // The sidebar's floating copy eases into the slot; the row shows when it lands.
+        sessionRowSettling = moved
+        return true
+    }
+
+    /// Clears every trace of a row drag. One transaction with the commit before
+    /// it, so the rows the preview drew and the roster the drop wrote are the same
+    /// frame, and nothing moves on release.
+    func endSessionRowDrag() {
+        strandedSessionDragCheck?.cancel()
+        strandedSessionDragCheck = nil
+        sessionGroupDwell?.work.cancel()
+        sessionGroupDwell = nil
+        sessionGroupArming = nil
+        sessionRowGroupTarget = nil
+        sessionRowDrop = nil
+        draggingSessionID = nil
+    }
+
+    /// Called each frame the sidebar draws a dragged row. A drag released where nothing
+    /// takes it, outside the window say, calls no drop delegate and sends this window no
+    /// mouse-moved event to clean up after it, so the row would stay hidden. Once the
+    /// button has been up a beat with the drag still open, nothing is coming: end it.
+    func noticeSessionDragFrame() {
+        guard draggingSessionID != nil, strandedSessionDragCheck == nil,
+              NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        let check = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.strandedSessionDragCheck = nil
+            guard self.draggingSessionID != nil, NSEvent.pressedMouseButtons & 1 == 0 else { return }
+            withAnimation(Self.rowReflow) { self.endSessionRowDrag() }
+        }
+        strandedSessionDragCheck = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: check)
+    }
+
+    /// How fast rows make room for a dragged one: short, with no overshoot, the
+    /// tab strip's `reflow`.
+    static let rowReflow = Animation.smooth(duration: 0.2)
+    /// How long a dragged row has to rest on another before a release groups them.
+    static let groupDwell: TimeInterval = 0.3
+
+    /// Which side of `target` the dragged row's gap is on in the order drawn now.
+    private func sideOfDraggedRow(relativeTo target: Session.ID) -> RowInsertion {
+        guard let moved = draggingSessionID, let slot = locate(moved) else { return .below }
+        let rows = roster(at: slot)
+        let drawn = sessionRowDrop.map { droppedOrder(rows, moved: moved, drop: $0) } ?? rows
+        guard let from = drawn.firstIndex(where: { $0.id == moved }),
+              let to = drawn.firstIndex(where: { $0.id == target }) else { return .below }
+        return from < to ? .above : .below
+    }
+
+    /// Whether `candidate` would draw the rows in a different order from the gap on
+    /// screen now. A drop zone that would not move anything is a row the pointer is
+    /// resting on, not one it is passing, so it groups instead: the target holds still
+    /// until the pointer crosses into its far third, as a tab swaps only past the middle.
+    func sessionRowDropMovesRows(_ candidate: SessionRowDrop) -> Bool {
+        guard let moved = draggingSessionID, let slot = locate(moved) else { return false }
+        let rows = roster(at: slot).filter { $0.id == moved || canReorder(moved, relativeTo: $0.id) }
+        let now = sessionRowDrop.map { droppedOrder(rows, moved: moved, drop: $0) } ?? rows
+        let next = droppedOrder(rows, moved: moved, drop: candidate)
+        return next.map(\.id) != now.map(\.id)
     }
 
     /// The sidebar bucket a session sits in: `nil` for the primary checkout (a `nil`

@@ -1183,7 +1183,8 @@ private struct GroupDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let moved = store.resolveDraggedSession()
         store.sessionDropTarget = nil
-        store.draggingSessionID = nil
+        // Everything the sidebar drew for the drag goes with it: the gap, a group it armed.
+        store.endSessionRowDrag()
         guard let target = pane(at: info.location) else { return false }
         guard let moved else { return insert(info, into: target.id) }
         guard store.canGroup(moved, with: target.id) else { return false }

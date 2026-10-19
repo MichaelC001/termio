@@ -218,18 +218,53 @@ final class TermioStore: ObservableObject {
     /// has to redraw as the pointer crosses zones.
     @Published var sessionDropTarget: SessionDropTarget?
 
-    /// What a release over a sidebar row would do: land in the gap above or below
-    /// it, or group the dragged session with it. Held here rather than in each
-    /// row's `@State` so one writer owns it — a per-row flag can only be cleared by
-    /// the row that set it, and a drag that ends without SwiftUI calling that row
-    /// back leaves the cue on screen (see `PaneDragRearrange.clearStrandedDropCue`).
+    /// The gap a dragged sidebar row would land in. The sidebar draws its rows in
+    /// that order while the drag is over it (`sidebarOrder`), so the rows make room
+    /// and the gap is the drop position; the roster itself changes only on drop.
+    /// Held here rather than in each row's `@State` so one writer owns it — a
+    /// per-row flag can only be cleared by the row that set it, and a drag that
+    /// ends without SwiftUI calling that row back leaves the cue on screen (see
+    /// `PaneDragRearrange.clearStrandedDropCue`), which here would leave the rows
+    /// drawn out of order.
     @Published var sessionRowDrop: SessionRowDrop?
 
-    /// A pending drop on a sidebar row: which row, and which gap it would land in —
-    /// `nil` meaning the middle of the row, which groups the two sessions instead.
+    /// The row a dragged session was held over long enough to group with
+    /// (`sessionGroupDwell`). A release then groups the two instead of reordering.
+    @Published var sessionRowGroupTarget: Session.ID?
+
+    /// The row a held drag is arming to group with: its glass fills in over the hold,
+    /// so the wait reads as progress rather than as nothing happening.
+    @Published var sessionGroupArming: Session.ID?
+
+    /// A dropped row easing from where it was let go into its slot. The row stays
+    /// hidden and the sidebar's floating copy draws it until it lands.
+    @Published var sessionRowSettling: Session.ID?
+
+    /// Each session row's frame, written as rows lay out and read by the sidebar's
+    /// floating copy of a dragged row. Keyed by the row on screen, not the session:
+    /// a pinned worktree shows its sessions twice. Not published: it changes on every
+    /// scroll, and only that copy, which redraws every frame of a drag anyway, reads it.
+    var sessionRowFrames: [UUID: CGRect] = [:]
+    /// The row on screen a drag picked up, and the one an armed group targets.
+    var sessionDragSource: UUID?
+    var sessionGroupTargetPlace: UUID?
+    /// A pending check that the drag ended without a drop anywhere (`noticeSessionDragFrame`).
+    var strandedSessionDragCheck: DispatchWorkItem?
+
+    /// The dragged row's content inset from its leading edge, so the floating copy puts
+    /// its icon where the row's own is at any depth of the tree.
+    var sessionDragLeading: CGFloat = 0
+
+    /// The pending hold over the middle of a row, which becomes `sessionRowGroupTarget`
+    /// when it runs. A hold rather than a zone, because the rows move under a
+    /// pointer that is passing through: only a pointer that stops means "into this".
+    var sessionGroupDwell: (row: Session.ID, place: UUID, work: DispatchWorkItem)?
+
+    /// A pending drop between two sidebar rows: the row it lands beside, and on
+    /// which side.
     struct SessionRowDrop: Equatable {
         var row: Session.ID
-        var insert: RowInsertion?
+        var insert: RowInsertion
     }
 
     /// When each project was last active — the moment one of its agents last reported
