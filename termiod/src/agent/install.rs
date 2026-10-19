@@ -1093,17 +1093,18 @@ impl PluginFile {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         // Publish the replacement before removing its predecessor. A
-        // predecessor that names the destination's own directory entry is the
-        // hook just written: an override still naming the old directory, or
-        // that directory linked to the new one. Sweeping it would delete the
-        // hook on every sync. Any other entry, even a link to the destination,
-        // is removed: that unlinks only it, and left alone it loads the hook
-        // twice.
-        let destination = directory_entry(&machine::expand(&self.path));
+        // predecessor the destination passes through is the hook just written,
+        // or what it links to: an override still naming the old directory,
+        // that directory linked to the new one, or the new file linked back to
+        // the old. Sweeping it would break the hook on every sync. Any other
+        // entry, even a link to the destination, is removed: that unlinks only
+        // it, and left alone it loads the hook twice.
+        let destination = resolution_chain(&machine::expand(&self.path));
         for legacy in &self.legacy_paths {
-            let legacy_entry = directory_entry(&machine::expand(legacy));
-            if legacy_entry.is_some() && legacy_entry == destination {
-                continue;
+            if let Some(entry) = directory_entry(&machine::expand(legacy)) {
+                if destination.contains(&entry) {
+                    continue;
+                }
             }
             self.remove_if_ours(legacy);
         }
@@ -1130,6 +1131,25 @@ impl PluginFile {
 /// when these match, whatever the entry itself links to.
 fn directory_entry(path: &Path) -> Option<PathBuf> {
     Some(std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?))
+}
+
+/// Every directory entry a path passes through on its way to a file: its own,
+/// then each link's target in turn. Bounded like the kernel's own link limit,
+/// so a cycle ends instead of spinning.
+fn resolution_chain(path: &Path) -> Vec<PathBuf> {
+    let mut chain = Vec::new();
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        let Some(entry) = directory_entry(&current) else { break };
+        let target = std::fs::read_link(&entry);
+        chain.push(entry.clone());
+        let Ok(target) = target else { break };
+        current = match entry.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+    }
+    chain
 }
 
 // MARK: - The TOML block
@@ -2043,6 +2063,26 @@ pub(super) mod tests {
         std::os::unix::fs::symlink(&dotfile, new.join("termio.js")).expect("fixture");
         plugin.install().expect("installs");
         assert!(std::fs::symlink_metadata(new.join("termio.js")).is_ok(), "the destination link must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The new file linked back to the old one: deleting the old would leave
+    /// the installed plugin dangling, so it stays.
+    #[test]
+    fn a_destination_linked_to_its_predecessor_keeps_working() {
+        let root = scratch("opencode-back-link");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("../plugin/termio.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(new.join("termio.js").exists(), "the installed plugin must still resolve");
         let _ = std::fs::remove_dir_all(&root);
     }
 
