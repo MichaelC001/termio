@@ -691,6 +691,39 @@
   },
   {
     "definition": {
+      "command": "omp",
+      "configHome": null,
+      "displayName": "omp",
+      "emitsProgressStatus": false,
+      "hooks": null,
+      "icon": "image",
+      "id": "omp",
+      "installURL": "https://omp.sh",
+      "order": 45,
+      "permissionBypassFlag": "--auto-approve",
+      "resume": {
+        "create": null,
+        "discover": {
+          "cwd": "cwd",
+          "format": "jsonl",
+          "id": "id",
+          "root": "~/.omp/agent/sessions"
+        },
+        "resume": "--resume {id}",
+        "seed": null,
+        "store": null
+      },
+      "skillDir": "~/.omp/agent/skills",
+      "statusRules": null,
+      "tintHex": null,
+      "titleRules": null,
+      "wireName": "omp"
+    },
+    "file": "Sources/termio/Resources/agents/omp.json",
+    "result": "ok"
+  },
+  {
+    "definition": {
       "command": "opencode",
       "configHome": null,
       "displayName": "OpenCode",

@@ -72,6 +72,7 @@ final class SessionSkillTests: XCTestCase {
             "opencode": "~/.config/opencode/skills",
             "opencode2": "~/.config/opencode/skills",
             "pi": "~/.pi/agent/skills",
+            "omp": "~/.omp/agent/skills",
             "amp": "~/.config/agents/skills",
             "antigravity": "~/.gemini/antigravity/skills",
             "hermes": "~/.hermes/skills",
