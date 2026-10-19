@@ -3,8 +3,8 @@ title: 同时运行多个 Agent
 description: 让一支 Agent 队伍并排工作，一眼读出它们的实时状态，并知道每个 Agent 是通过哪条信号汇报的——program status 协议、hooks、终端标题，还是最后才用的屏幕。
 x-i18n:
   source_path: agents.mdx
-  source_hash: 6d4d5cea5705282cf61068be6e539cce173b5460b9b944385ef5924965fceaa3
-  generated_at: 2026-10-18
+  source_hash: f5ca8d941480af2468199a7d02b51c65eb38660291541d1682c4d9468e4c0e61
+  generated_at: 2026-10-19
 ---
 
 Termio 就是为同时运行多个 Agent 造的。侧栏是你的控制台：每个会话是一行，每一行都汇报
@@ -22,6 +22,7 @@ Termio 开箱即认常见的编程 Agent：
 | OpenCode | `opencode` |
 | OpenCode 2 | `opencode2` |
 | Pi | `pi` |
+| omp | `omp` |
 | Amp | `amp` |
 | Droid | `droid` |
 | Cursor | `cursor-agent` |
@@ -71,6 +72,7 @@ Termio 却说找不到，那几乎总是 `PATH` 的问题；Agent 页会把这�
 | Grok | hooks + 标题 + 进度 | 是 |
 | Qwen Code | hooks + 标题 | 是 |
 | Pi | program status | 是 |
+| omp | program status | 是 |
 | OpenCode | hooks（插件） | 是 |
 | OpenCode 2 | hooks（插件） | —— |
 | Amp | hooks | —— |
@@ -83,9 +85,9 @@ Termio 却说找不到，那几乎总是 `PATH` 的问题；Agent 页会把这�
 | Antigravity | 输出活动 | —— |
 | Hermes | 输出活动 | —— |
 
-program status 需要 Claude Code 2.1.295、Codex 0.163.0 或 Pi 1.1.0 及更新版本。Claude Code
-的 hook 现在只补充它正在运行的工具；Codex 和 Pi 完全不需要 hook。更早的版本汇报得更少：
-Claude Code 和 Codex 的状态点跟着各自的终端标题走，Pi 的跟着它的输出走。
+program status 需要 Claude Code 2.1.295、Codex 0.163.0、Pi 1.1.0 或 omp 18.8.7 及更新版本。
+Claude Code 的 hook 现在只补充它正在运行的工具；Codex、Pi 和 omp 完全不需要 hook。更早的版本汇报得更少：
+Claude Code 和 Codex 的状态点跟着各自的终端标题走，Pi 和 omp 的跟着各自的输出走。
 
 「能恢复对话」的意思是，重新打开会话会把 Agent 放回*同一段*对话，而不是一段空白——参见
 [什么会留下来](/zh-CN/docs/persistence)。没有这一项的 Agent 会在同一个目录里重新跑一遍。

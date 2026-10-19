@@ -1,0 +1,20 @@
+{
+  "id": "omp",
+  "order": 45,
+  "name": "omp",
+  "wire": "omp",
+  "command": "omp",
+  "permissionBypassFlag": "--auto-approve",
+  "resume": {
+    "resume": "--resume {id}",
+    "discover": {
+      "root": "~/.omp/agent/sessions",
+      "format": "jsonl",
+      "id": "id",
+      "cwd": "cwd"
+    }
+  },
+  "icon": { "asset": "omp-favicon" },
+  "install": "https://omp.sh",
+  "skills": { "dir": "~/.omp/agent/skills" }
+}
