@@ -130,27 +130,3 @@ func movingTab(in rows: [Session.ID], splits: [[Session.ID]], from: Int, to: Int
     tabs.insert(tab, at: min(max(to, 0), tabs.count))
     return tabs.flatMap { $0 }
 }
-
-/// `rows` with `moved` taken out and put back on the `insert` side of `beside`: the order a
-/// drop there would leave. Unchanged when either row is not in `rows`, as when the dragged row
-/// is over another roster.
-func previewingRowDrop(_ rows: [Session], moved: Session.ID, beside target: Session.ID,
-                       insert: TermioStore.RowInsertion) -> [Session] {
-    guard moved != target, let from = rows.firstIndex(where: { $0.id == moved }) else { return rows }
-    var result = rows
-    let row = result.remove(at: from)
-    guard let index = result.firstIndex(where: { $0.id == target }) else { return rows }
-    result.insert(row, at: insert == .above ? index : index + 1)
-    return result
-}
-
-/// The order a drop between rows commits: the gap (`previewingRowDrop`), then the split groups
-/// gathered back into runs the way `reorderSession` gathers them, so a gap drawn inside a group
-/// shows where the row really lands.
-func committedRowDrop(_ rows: [Session], moved: Session.ID, beside target: Session.ID,
-                      insert: TermioStore.RowInsertion, groups: [[Session.ID]]) -> [Session] {
-    let previewed = previewingRowDrop(rows, moved: moved, beside: target, insert: insert)
-    let gathered = gatheringSplitRuns(previewed.map(\.id), groups: groups)
-    let byID = Dictionary(previewed.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    return gathered.compactMap { byID[$0] }
-}

@@ -565,6 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .ignoresSafeArea(.container, edges: .top)
             .environmentObject(store)
+            .environmentObject(store.sidebarDrag)
             .environmentObject(settings))
         // Same reason as the detail pane below: the default `.preferredContentSize`
         // publishes the tree's ideal size on every view update, so a 30Hz working

@@ -132,6 +132,9 @@ private struct SidebarSectionHeader: View {
 struct SidebarView: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    /// A row drag's state, on its own object so that a drag redraws the sidebar and only
+    /// the sidebar (`TermioStore.sidebarDrag`).
+    @EnvironmentObject private var sidebarDrag: SidebarDragState
     // The terminal theme is split light/dark and libghostty tracks the system
     // appearance; the chrome borrows whichever side is currently showing.
     @Environment(\.colorScheme) private var colorScheme
@@ -346,6 +349,10 @@ struct SidebarView: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 1)
         .overlay { SidebarDragOverlay() }
+        // Under the rows' own drop targets: a session dragged over blank space, a header or
+        // the gap between projects still lands in the gap the rows opened, instead of being
+        // refused and sliding back.
+        .onDrop(of: [.text], delegate: SidebarListDropDelegate(store: store))
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
     }
 
@@ -491,7 +498,7 @@ struct SidebarView: View {
     /// corner with nothing to connect to would just be noise.
     private func splitLinkMarks(for sessions: [Session]) -> [Session.ID: SplitLinkMark] {
         let joining = store.draggingSessionID.flatMap { moved in
-            store.sessionRowGroupTarget.map { (moved: moved, target: $0) }
+            sidebarDrag.groupTarget.map { (moved: moved, target: $0) }
         }
         guard !store.splitGroups.isEmpty || joining != nil else { return [:] }
         var groupOf: [Session.ID: Int] = [:]
@@ -539,329 +546,6 @@ enum SplitLinkMark {
 /// tick pointing at this row's icon. Drawn (not the ┌ text glyph VS Code uses)
 /// so consecutive rows meet the row boundary exactly and the spine reads as one
 /// continuous bracket.
-/// A session dragged over a sidebar row. The rows make room as it goes: the far
-/// third of a row moves the gap past it, so the gap follows the pointer and is
-/// always where a release lands (`sidebarOrder` draws it). The rest of the row,
-/// the part nearer the gap, is the row being rested on: the dragged row stacks onto
-/// it, and holding there for `groupDwell` groups the two. The target holds still
-/// until the pointer passes its middle, so landing on it takes no aim.
-///
-/// Thirds rather than quarters because a session row is short: at the row heights
-/// the interface padding produces, a quarter band is a few points tall.
-///
-/// A `DropDelegate` rather than a `dropDestination`, for the reason the panes' one
-/// is: only `dropUpdated` carries the pointer, and `isTargeted:` is a Bool.
-private struct SessionRowDropDelegate: DropDelegate {
-    let session: Session.ID
-    /// Which appearance of the session this is, for the floating copy to stack onto.
-    let place: UUID
-    let height: CGFloat
-    let store: TermioStore
-
-    /// The dragged row's own slot is the gap, so it takes the drop too. Any other
-    /// row takes it only when one of the outcomes is legal there; a row from
-    /// another project or worktree shows the no-drop cursor rather than a dead target.
-    func validateDrop(info: DropInfo) -> Bool {
-        guard let moved = store.resolveDraggedSession() else { return false }
-        return moved == session || store.canReorder(moved, relativeTo: session)
-    }
-
-    func dropEntered(info: DropInfo) {
-        store.resolveDraggedSession()
-        track(info)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        track(info)
-        return DropProposal(operation: .move)
-    }
-
-    /// Leaving a row keeps the gap where it is: the pointer is crossing into the
-    /// next row, and snapping the rows back between the two would make them jitter.
-    /// A hold that has not armed ends; one that has stays, because arming moves the
-    /// gap under the pointer and so moves the pointer off this row by itself.
-    func dropExited(info: DropInfo) {
-        if store.sessionGroupDwell?.row == session {
-            store.cancelSessionGroupDwell(keepingTarget: true)
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        store.commitSessionRowDrop()
-    }
-
-    private func track(_ info: DropInfo) {
-        guard let moved = store.draggingSessionID, height > 0 else { return }
-        // Over the gap itself: nothing to move, and a group that armed stays armed.
-        guard moved != session else {
-            store.cancelSessionGroupDwell(keepingTarget: true)
-            return
-        }
-        guard store.canReorder(moved, relativeTo: session) else { return }
-        let third = height / 3
-        let edge: TermioStore.RowInsertion? = info.location.y < third ? .above
-            : info.location.y > height - third ? .below : nil
-        if let edge {
-            let drop = TermioStore.SessionRowDrop(row: session, insert: edge)
-            if store.sessionRowDropMovesRows(drop) {
-                store.previewSessionRowDrop(drop)
-                return
-            }
-        }
-        if store.canGroup(moved, with: session), !store.sharesSplitGroup(moved, session) {
-            store.beginSessionGroupDwell(on: session, place: place)
-        } else {
-            // Resting on a row it cannot group with: any group armed elsewhere is off.
-            store.cancelSessionGroupDwell()
-        }
-    }
-}
-
-/// The drag and drop a session row carries: lift the whole row to reorder or
-/// group it, and accept another row landing on it.
-///
-/// A modifier rather than a stretch of `SessionRow`'s chain because a row has two
-/// bodies — the live one and `EndedSessionRow` — and only the live one used to
-/// carry this. A session the device buried still holds its slot in the roster and
-/// still opens when clicked, so it stayed reorderable in the context menu while
-/// silently refusing every drag: the gesture went missing with the view swap, which
-/// nobody decided. One modifier is what keeps the two bodies from drifting again.
-private struct SessionRowDragAndDrop: ViewModifier {
-    @EnvironmentObject var store: TermioStore
-    let session: Session
-    /// The row content's leading inset, handed to the floating copy of the row.
-    let leading: CGFloat
-    /// Measured, not assumed: the drop zones are fractions of the row, and row
-    /// height follows the interface row padding.
-    @State private var rowHeight: CGFloat = 0
-    /// This appearance of the session, which a pinned worktree can show twice.
-    @State private var place = UUID()
-
-    func body(content: Content) -> some View {
-        content
-            .contentShape(Rectangle())
-            // Drag the whole row to reorder it within its bucket (no handle). Uses
-            // `.onDrag` (AppKit's drag session) rather than `.draggable` (SwiftUI's): a
-            // SwiftUI drag settles its preview over ~0.3s on release, while an AppKit drag
-            // image just vanishes on a successful drop — so the row moves crisply. The
-            // drag only carries the session id; nothing reorders until the drop commits
-            // it (see the drop below). It starts at all only because selection rides a
-            // *simultaneous* tap (in the row) — an exclusive `.onTapGesture` kills the drag.
-            .onDrag {
-                store.sessionDragLeading = leading
-                store.sessionDragSource = place
-                store.draggingSessionID = session.id
-                // The payload is the session's canonical deep link, not a private
-                // token: a drag carries plain text, so any text target — a terminal,
-                // an editor, a text field — will accept it. Shipping the link means a
-                // stray drop pastes something that works (`termio://session/<uuid>`,
-                // what `termio sessions` takes) instead of leaking an internal id.
-                // A pane recognises one of these rows by parsing that link back off the
-                // drag pasteboard (see `TermioStore.resolveDraggedSession`), so plain
-                // text is the whole payload: SwiftUI rebuilds the item provider on the
-                // receiving side, and a private type registered here would not survive
-                // the trip.
-                return NSItemProvider(object: store.sessionLink(for: session) as NSString)
-            } preview: {
-                // Nothing: the system draws a drag image at its own scale, translucent and
-                // blurred, so the row in your hand is drawn by the sidebar instead
-                // (`SidebarDragOverlay`), at the row's own size and in its glass. Over the
-                // cards the pane's drop wash is what says where it lands.
-                Color.clear.frame(width: 1, height: 1)
-            }
-            // A row answers a dragged session two ways: its far third moves the gap past
-            // it, and resting on the rest of it groups the two (`SessionRowDropDelegate`).
-            // One gesture does both without a modifier.
-            //
-            // The height comes off the row itself because the zones are fractions of it;
-            // rows grow with the interface row padding, so a fixed band would drift.
-            //
-            // `onGeometryChange`, not a `GeometryReader` background: the reader wrote
-            // the row height from `onAppear`/`onChange` *inside* the layout pass, and a
-            // column of rows mounting at once turned that into reentrant NSTableView
-            // layout — AppKit warns, and a cold switch into a large workspace spent
-            // seconds re-laying the List (docs/bug/main-thread-beachball-sidebar-layout.md).
-            // `onGeometryChange` delivers the same height with the write deferred out
-            // of the update.
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .global)
-            } action: { frame in
-                rowHeight = frame.height
-                store.sessionRowFrames[place] = frame
-            }
-            .onDisappear { store.sessionRowFrames[place] = nil }
-            .onDrop(of: [.text], delegate: SessionRowDropDelegate(
-                session: session.id, place: place, height: rowHeight, store: store))
-    }
-}
-
-/// The row in your hand, drawn over the sidebar: the row's own size, icon and title on the
-/// selection's glass, following the pointer up and down the column 1:1. On a drop it eases
-/// into the slot the rows made for it, and the real row shows once it lands.
-///
-/// Drawn here rather than as the system drag image, which macOS scales down, fades and blurs.
-/// It reads the pointer each frame of the drag (`TimelineView`) rather than through the store,
-/// because a store write at pointer rate redraws every view observing it.
-private struct SidebarDragOverlay: View {
-    @EnvironmentObject var store: TermioStore
-    @EnvironmentObject var settings: AppSettings
-    @State private var pointer = PointerAnchor.Box()
-    @State private var frame: CGRect = .zero
-    /// Where a settling row eases to, in the overlay's space; set once the slot is laid out.
-    @State private var settleTop: CGFloat?
-
-    /// A stacked tile's place on the target's icon: the tab strip's fan (`TabIconStack`).
-    private static let fanOffset: CGFloat = 5
-    private static let fanAngle: Double = 10
-
-    var body: some View {
-        let lifted = store.draggingSessionID ?? store.sessionRowSettling
-        ZStack(alignment: .topLeading) {
-            PointerAnchor(box: pointer)
-            if let lifted, let session = store.session(lifted) {
-                TimelineView(.animation(paused: store.draggingSessionID == nil)) { _ in
-                    let _ = store.noticeSessionDragFrame()
-                    floatingRow(session)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .global)
-        } action: { newFrame in
-            frame = newFrame
-        }
-        // A drag of the same row later takes its own grab, not this one's.
-        .onChange(of: lifted == nil) { _, ended in
-            if ended { pointer.release() }
-        }
-        .onChange(of: store.sessionRowSettling) { _, settling in
-            guard let settling else {
-                settleTop = nil
-                return
-            }
-            // The next turn: the roster changed with the drop, and the slot's frame is
-            // written when the rows have laid out.
-            DispatchQueue.main.async {
-                guard let source = store.sessionDragSource, let slot = store.sessionRowFrames[source] else {
-                    store.sessionRowSettling = nil
-                    return
-                }
-                withAnimation(TermioStore.rowReflow) {
-                    settleTop = slot.minY - frame.minY
-                } completion: {
-                    if store.sessionRowSettling == settling { store.sessionRowSettling = nil }
-                }
-            }
-        }
-    }
-
-    /// Out over the cards a group armed in the sidebar is off: a card is advertising its own
-    /// drop, and the bracket and stacked icon would contradict it. No drop delegate says the
-    /// pointer left the column, so the frame that draws the row does. Deferred: this runs
-    /// while the view draws.
-    private func leaveGroupOutsideColumn(_ location: CGPoint) {
-        guard !(0...frame.width).contains(location.x),
-              store.sessionRowGroupTarget != nil || store.sessionGroupArming != nil
-        else { return }
-        DispatchQueue.main.async { store.cancelSessionGroupDwell() }
-    }
-
-    @ViewBuilder
-    private func floatingRow(_ session: Session) -> some View {
-        if let source = store.sessionDragSource, let slot = store.sessionRowFrames[source],
-           let location = pointer.location() {
-            let row = slot.offsetBy(dx: -frame.minX, dy: -frame.minY)
-            let grab = pointer.grab(for: session.id, default: location.y - row.minY)
-            let _ = leaveGroupOutsideColumn(location)
-            // Resting on a row it could group with, the dragged row stacks onto it: the
-            // title goes, and its icon fans onto the target's the way a split group's
-            // tiles fan in its tab (`TabIconStack`), so the target stays readable and
-            // the stack is the group a release will make.
-            let joining = store.draggingSessionID == nil ? nil
-                : store.sessionGroupArming != nil ? store.sessionGroupDwell?.place
-                : store.sessionRowGroupTarget != nil ? store.sessionGroupTargetPlace : nil
-            let target = joining.flatMap { store.sessionRowFrames[$0] }?
-                .offsetBy(dx: -frame.minX, dy: -frame.minY)
-            let stacked = target != nil
-            let top = settleTop ?? target?.minY
-                ?? min(max(location.y - grab, 0), max(frame.height - row.height, 0))
-            // Out over the cards nothing is in the column to draw; the pane's wash takes over.
-            let inColumn = store.sessionRowSettling != nil || stacked
-                || (0...frame.width).contains(location.x)
-            ZStack(alignment: .leading) {
-                SelectionGlass(shape: Capsule(style: .continuous))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .frame(width: frame.width, height: row.height)
-                    .opacity(stacked ? 0 : 1)
-                HStack(spacing: 6) {
-                    AgentIconView(agent: store.effectiveAgent(for: session), size: 15)
-                        .frame(width: 16)
-                        .rotationEffect(.degrees(stacked ? Self.fanAngle : 0), anchor: .bottom)
-                        .offset(x: stacked ? (target?.minX ?? row.minX) - row.minX + Self.fanOffset : 0)
-                    Text(store.displayTitle(for: session))
-                        .font(settings.interfaceFont)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .opacity(stacked ? 0 : 1)
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, store.sessionDragLeading)
-                .frame(width: row.width, height: row.height)
-                .offset(x: row.minX)
-            }
-            .offset(y: top)
-            .opacity(inColumn ? 1 : 0)
-            .animation(TermioStore.rowReflow, value: stacked)
-        }
-    }
-}
-
-/// The pointer, in the sidebar overlay's own space, read from AppKit: a drag holds the mouse
-/// in AppKit's drag loop, where no SwiftUI gesture sees it move.
-private struct PointerAnchor: NSViewRepresentable {
-    @MainActor
-    final class Box {
-        fileprivate weak var view: NSView?
-        /// Where in the row the pointer took it, fixed for the drag so the row does not
-        /// jump to centre itself under the pointer.
-        private var held: (id: Session.ID, grab: CGFloat)?
-        func location() -> CGPoint? {
-            guard let view, let window = view.window else { return nil }
-            let point = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-            return CGPoint(x: point.x, y: view.isFlipped ? point.y : view.bounds.height - point.y)
-        }
-
-        func grab(for id: Session.ID, default fresh: CGFloat) -> CGFloat {
-            if let held, held.id == id { return held.grab }
-            held = (id, fresh)
-            return fresh
-        }
-
-        func release() { held = nil }
-    }
-
-    let box: Box
-
-    func makeNSView(context: Context) -> NSView {
-        let view = PassThroughView()
-        box.view = view
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        box.view = nsView
-    }
-
-    /// Never the hit view: a drop over the column belongs to the rows under it.
-    private final class PassThroughView: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    }
-}
-
 private struct SplitLinkGlyph: View {
     let mark: SplitLinkMark
     let chrome: ChromeTheme?
@@ -1493,6 +1177,7 @@ private struct PressShrinkStyle: ButtonStyle {
 private struct SessionRow: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject private var sidebarDrag: SidebarDragState
     let session: Session
     let chrome: ChromeTheme?
     /// Leading inset for the row's content. Sessions sit at 16 under a project, or a
@@ -1520,13 +1205,13 @@ private struct SessionRow: View {
 
     /// Held over long enough that a release groups with it: drawn in the selected
     /// row's glass, the same material as the row in your hand.
-    private var isDropTarget: Bool { store.sessionRowGroupTarget == session.id }
+    private var isDropTarget: Bool { sidebarDrag.groupTarget == session.id }
     /// In your hand, or easing into its slot: the slot stays as the gap the rows make
     /// room around, and the sidebar's floating copy draws the row.
     private var isLiftedOut: Bool {
-        store.draggingSessionID == session.id || store.sessionRowSettling == session.id
+        store.draggingSessionID == session.id || sidebarDrag.settling == session.id
     }
-    private var isArming: Bool { store.sessionGroupArming == session.id }
+    private var isArming: Bool { sidebarDrag.arming == session.id }
     /// The full row's height and the content's, measured: the bracket spans the difference too.
     @State private var rowHeight: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
@@ -1701,7 +1386,7 @@ private struct SessionRow: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height
         } action: { height in
-            contentHeight = height
+            if contentHeight != height { contentHeight = height }
         }
         // Keep the bracket in the final 16-point gutter immediately before the child
         // icon. At worktree depth this avoids laying its spine over the branch node's
@@ -1753,7 +1438,7 @@ private struct SessionRow: View {
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.size.height
                 } action: { height in
-                    rowHeight = height
+                    if rowHeight != height { rowHeight = height }
                 }
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
                 .animation(nil, value: isHovering)
@@ -1779,6 +1464,7 @@ private struct SessionRow: View {
 private struct EndedSessionRow: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject private var sidebarDrag: SidebarDragState
     let session: Session
     let tombstone: Termiod.SessionTombstone
     let chrome: ChromeTheme?
@@ -1788,11 +1474,11 @@ private struct EndedSessionRow: View {
     private var isSelected: Bool { store.selectedSessionID == session.id }
 
     /// The same group target and gap the live row draws.
-    private var isDropTarget: Bool { store.sessionRowGroupTarget == session.id }
+    private var isDropTarget: Bool { sidebarDrag.groupTarget == session.id }
     private var isLiftedOut: Bool {
-        store.draggingSessionID == session.id || store.sessionRowSettling == session.id
+        store.draggingSessionID == session.id || sidebarDrag.settling == session.id
     }
-    private var isArming: Bool { store.sessionGroupArming == session.id }
+    private var isArming: Bool { sidebarDrag.arming == session.id }
 
     private var reason: String {
         switch tombstone.reason {

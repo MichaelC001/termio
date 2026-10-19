@@ -218,6 +218,12 @@ final class TermioStore: ObservableObject {
     /// has to redraw as the pointer crosses zones.
     @Published var sessionDropTarget: SessionDropTarget?
 
+    /// What a sidebar row drag draws, published on its own object rather than on the
+    /// store: only the sidebar draws it, and a store change redraws the whole window.
+    /// Every gap move re-laid the terminal cards and the file browser too, which is
+    /// what made the drag stutter. The properties below read and write through it.
+    let sidebarDrag = SidebarDragState()
+
     /// The gap a dragged sidebar row would land in. The sidebar draws its rows in
     /// that order while the drag is over it (`sidebarOrder`), so the rows make room
     /// and the gap is the drop position; the roster itself changes only on drop.
@@ -226,19 +232,31 @@ final class TermioStore: ObservableObject {
     /// ends without SwiftUI calling that row back leaves the cue on screen (see
     /// `PaneDragRearrange.clearStrandedDropCue`), which here would leave the rows
     /// drawn out of order.
-    @Published var sessionRowDrop: SessionRowDrop?
+    var sessionRowDrop: SessionRowDrop? {
+        get { sidebarDrag.rowDrop }
+        set { sidebarDrag.rowDrop = newValue }
+    }
 
     /// The row a dragged session was held over long enough to group with
     /// (`sessionGroupDwell`). A release then groups the two instead of reordering.
-    @Published var sessionRowGroupTarget: Session.ID?
+    var sessionRowGroupTarget: Session.ID? {
+        get { sidebarDrag.groupTarget }
+        set { sidebarDrag.groupTarget = newValue }
+    }
 
     /// The row a held drag is arming to group with: its glass fills in over the hold,
     /// so the wait reads as progress rather than as nothing happening.
-    @Published var sessionGroupArming: Session.ID?
+    var sessionGroupArming: Session.ID? {
+        get { sidebarDrag.arming }
+        set { sidebarDrag.arming = newValue }
+    }
 
     /// A dropped row easing from where it was let go into its slot. The row stays
     /// hidden and the sidebar's floating copy draws it until it lands.
-    @Published var sessionRowSettling: Session.ID?
+    var sessionRowSettling: Session.ID? {
+        get { sidebarDrag.settling }
+        set { sidebarDrag.settling = newValue }
+    }
 
     /// Each session row's frame, written as rows lay out and read by the sidebar's
     /// floating copy of a dragged row. Keyed by the row on screen, not the session:
@@ -248,6 +266,8 @@ final class TermioStore: ObservableObject {
     /// The row on screen a drag picked up, and the one an armed group targets.
     var sessionDragSource: UUID?
     var sessionGroupTargetPlace: UUID?
+    /// A pending rest on the dragged row's own slot, which snaps the floating copy into it.
+    var slotRest: DispatchWorkItem?
     /// A pending check that the drag ended without a drop anywhere (`noticeSessionDragFrame`).
     var strandedSessionDragCheck: DispatchWorkItem?
 
