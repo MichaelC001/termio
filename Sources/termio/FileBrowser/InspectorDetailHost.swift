@@ -378,8 +378,9 @@ struct InspectorDetailContent: View {
         } else if let url = store.openFileURL {
             // Content staged from an SSH host is previewed as source, never as live
             // web content: HTML and SVG from a remote box would otherwise run in
-            // WebKit with the file's own origin.
-            if FileActivation.isPreviewable(url),
+            // WebKit with the file's own origin. An HTML page goes to the editor,
+            // which renders it only when `allowsWebPreview` says it may.
+            if FileActivation.isPreviewable(url), !FileActivation.isWebPage(url),
                store.openFileAllowsActiveWebContent
                 || !FileActivation.isActiveWebContent(url) {
                 FilePreviewView(url: url, settings: settings,
@@ -407,6 +408,7 @@ struct InspectorDetailContent: View {
                                displayName: store.openFileDisplayName,
                                remote: store.openFileRemote,
                                onRemoteSave: { store.openFileRemote = $0 },
+                               allowsWebPreview: store.openFileAllowsActiveWebContent,
                                onDirtyChange: { store.openFileDirty = $0 },
                                addToChat: { selection in
                                    if let selection {

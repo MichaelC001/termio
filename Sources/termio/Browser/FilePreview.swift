@@ -2,10 +2,10 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// Read-only preview that covers the terminal pane for previewable files (image, PDF, HTML) — the
+/// Read-only preview that covers the terminal pane for previewable files (image, PDF) — the
 /// visual counterpart of `FileEditorView`. Double-clicking such a file opens it in place over the
 /// terminal (the surface keeps running underneath) instead of a detached Quick Look window, so a
-/// previewed image/PDF/page reads as part of the same workspace as the editor. Escape or the close
+/// previewed image/PDF reads as part of the same workspace as the editor. Escape or the close
 /// button dismisses it back to the terminal.
 struct FilePreviewView: View {
     let url: URL
@@ -20,8 +20,6 @@ struct FilePreviewView: View {
     let canAddToChat: (() -> Bool)?
     /// Dismisses the overlay (clears `store.openFileURL`) and hands focus back to the terminal.
     let onClose: () -> Void
-
-    private enum Kind { case image, web }
 
     init(
         url: URL,
@@ -45,10 +43,6 @@ struct FilePreviewView: View {
 
     /// PDFs never reach the preview body below — they open in the reader instead.
     private var isDocument: Bool { url.pathExtension.lowercased() == "pdf" }
-
-    private var kind: Kind {
-        ["html", "htm"].contains(url.pathExtension.lowercased()) ? .web : .image
-    }
 
     var body: some View {
         // A PDF is read, not glanced at: it gets its own reader (contents, pages,
@@ -76,7 +70,7 @@ struct FilePreviewView: View {
     private var header: some View {
         HStack(spacing: 8) {
             DetailListColumnToggle()
-            Image(systemName: kind == .web ? "globe" : "photo")
+            Image(systemName: "photo")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
@@ -87,7 +81,7 @@ struct FilePreviewView: View {
             Spacer(minLength: 8)
             // The content-area window controls (hide list / maximize / close) ride the header's
             // trailing edge, matching the editor and every other inspector detail — so a previewed
-            // image/PDF/page has the same visible exit as a diff, not just Escape.
+            // image/PDF has the same visible exit as a diff, not just Escape.
             InspectorDetailChromeButtons()
         }
         .padding(.horizontal, 12)
@@ -98,42 +92,37 @@ struct FilePreviewView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch kind {
-        case .web:
-            WebPreview(url: url)
-        case .image:
-            // NSImage decodes the raster formats; anything it can't (e.g. some SVGs) falls back to
-            // the web view, which renders vector art reliably. The image fits the pane by default —
-            // large images scale down to fit rather than overflow, small ones center.
-            if let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(24)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .contextMenu {
-                        Button(localized("Copy Image")) {
-                            // The NSImage goes on the pasteboard as bitmap data, so it pastes
-                            // into chat and design apps as the picture, not a file path.
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.writeObjects([image])
-                        }
-                        Button(localized("Reveal in Finder")) {
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                        }
+        // NSImage decodes the raster formats; anything it can't (e.g. some SVGs) falls back to
+        // the web view, which renders vector art reliably. The image fits the pane by default —
+        // large images scale down to fit rather than overflow, small ones center.
+        if let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button(localized("Copy Image")) {
+                        // The NSImage goes on the pasteboard as bitmap data, so it pastes
+                        // into chat and design apps as the picture, not a file path.
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.writeObjects([image])
                     }
-            } else if Self.usesWebFallback(
-                imageDecoded: false, allowsWebFallback: allowsWebFallback
-            ) {
-                WebPreview(url: url)
-            } else {
-                PaneEmptyState(
-                    localized("Can’t preview"),
-                    icon: .fileQuestion,
-                    message: localized("“\(fileName)” isn’t a supported image.")
-                )
-            }
+                    Button(localized("Reveal in Finder")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+        } else if Self.usesWebFallback(
+            imageDecoded: false, allowsWebFallback: allowsWebFallback
+        ) {
+            WebPreview(url: url)
+        } else {
+            PaneEmptyState(
+                localized("Can’t preview"),
+                icon: .fileQuestion,
+                message: localized("“\(fileName)” isn’t a supported image.")
+            )
         }
     }
 
@@ -146,8 +135,9 @@ struct FilePreviewView: View {
     }
 }
 
-/// A `WKWebView` rendering a local file (HTML pages, and SVGs that `NSImage` can't decode).
-private struct WebPreview: NSViewRepresentable {
+/// A `WKWebView` rendering a local file (HTML pages in the editor's Preview, and SVGs that
+/// `NSImage` can't decode).
+struct WebPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> WKWebView {

@@ -33,6 +33,10 @@ struct FileEditorView: View {
     /// Records the version a save produced, so the next one claims it rather
     /// than the version the file was opened at.
     let onRemoteSave: ((RemoteDocument) -> Void)?
+    /// An HTML page that Preview may render. False for a copy staged from an SSH host
+    /// (`allowsWebPreview` in `init`): its page would run in WebKit with this Mac's file
+    /// access, so it stays source-only.
+    private let isWebPage: Bool
     /// Reports whether the buffer has edits that are not on disk yet.
     ///
     /// Read by the remote open path: a device file shown from the cache is
@@ -61,9 +65,10 @@ struct FileEditorView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     /// Edit shows the Highlightr source editor; Preview renders the Markdown as a themed
-    /// reading view. Only offered for Markdown files — everything else is edit-only.
+    /// reading view, or the HTML page as a browser would. Only offered for those two — everything
+    /// else is edit-only.
     private enum Mode: Hashable { case edit, preview }
-    /// Markdown opens in Preview (a doc you mostly read); source stays one click away.
+    /// Markdown and HTML open in Preview (a doc you mostly read); source stays one click away.
     @State private var mode: Mode
     /// Slides the mode toggle's glass pill between Edit and Preview.
     @Namespace private var modePillNamespace
@@ -132,6 +137,7 @@ struct FileEditorView: View {
          displayName: String? = nil,
          remote: RemoteDocument? = nil,
          onRemoteSave: ((RemoteDocument) -> Void)? = nil,
+         allowsWebPreview: Bool = false,
          onDirtyChange: ((Bool) -> Void)? = nil,
          addToChat: ((String?) -> Void)? = nil, canAddToChat: (() -> Bool)? = nil,
          showsInspectorChrome: Bool = true, onClose: @escaping () -> Void) {
@@ -157,7 +163,10 @@ struct FileEditorView: View {
         // The actual load (and the git-root walk) happens once, in `.task`.
         // A jump-to-line open (content-search hit, cmd-click) targets the *source*, so it
         // must land in Edit — Preview has no lines to jump to and would swallow the scroll.
-        _mode = State(initialValue: Self.isMarkdown(displayURL) && jumpLine == nil ? .preview : .edit)
+        let isWebPage = allowsWebPreview && FileActivation.isWebPage(displayURL)
+        self.isWebPage = isWebPage
+        let hasPreview = Self.isMarkdown(displayURL) || isWebPage
+        _mode = State(initialValue: hasPreview && jumpLine == nil ? .preview : .edit)
         self.language = Self.highlightLanguage(for: displayURL)
     }
     private var fileName: String { displayName ?? url.lastPathComponent }
@@ -168,6 +177,8 @@ struct FileEditorView: View {
         ["md", "markdown", "mdx"].contains(url.pathExtension.lowercased())
     }
     private var isMarkdown: Bool { Self.isMarkdown(displayURL) }
+    /// Files with a Preview face, and so the Edit/Preview toggle.
+    private var hasPreview: Bool { isMarkdown || isWebPage }
 
     private var isDirty: Bool { text != savedText }
 
@@ -217,7 +228,13 @@ struct FileEditorView: View {
         // fill with the terminal. (No manual titlebar inset: the overlay's content top is already at
         // the safe-area top; padding it again just opened a dead band above the header.)
         Group {
-            if loadFailed {
+            if loadFailed, isWebPage {
+                // A page in another encoding still renders; only its source is out of reach.
+                VStack(spacing: 0) {
+                    header
+                    WebPreview(url: url)
+                }
+            } else if loadFailed {
                 PaneEmptyState(
                     localized("Can’t open as text"),
                     icon: .fileQuestion,
@@ -268,7 +285,7 @@ struct FileEditorView: View {
         // surely as a keystroke sets it, and the mount is what resets whatever
         // the previously open file left behind.
         .onChange(of: isDirty, initial: true) { onDirtyChange?(isDirty) }
-        // A fresh jump target while a Markdown file sits in Preview (clicking another
+        // A fresh jump target while a Markdown or HTML file sits in Preview (clicking another
         // content-search hit): the jump needs the source editor's lines, so flip to Edit
         // first — Preview has no text view to scroll and would swallow it.
         .onChange(of: jumpLine) {
@@ -290,16 +307,20 @@ struct FileEditorView: View {
         }
     }
 
-    /// The scrolling body — the Markdown reader in Preview, else the Highlightr source editor. It
-    /// scrolls below the fixed header; the source editor also carries the right-click "Close".
+    /// The scrolling body — the Markdown reader or the rendered page in Preview, else the
+    /// Highlightr source editor. It scrolls below the fixed header; the source editor also
+    /// carries the right-click "Close".
     ///
     /// Both faces stay mounted once visited; the flip only changes which one shows. An `if`/`else`
     /// here is a structural branch, so SwiftUI rebuilt one side on every flip — a fresh `WKWebView`
     /// and page load one way, a whole-document re-highlight and TextKit re-layout the other.
     @ViewBuilder private var editorContent: some View {
-        let showsReader = isMarkdown && mode == .preview
+        let showsReader = hasPreview && mode == .preview
         ZStack {
-            if mountedReader {
+            if mountedReader, isWebPage {
+                WebPreview(url: url)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if mountedReader {
                 // `previewSource`, not `text`: a reader that outlives its own visibility would
                 // re-render the whole document into a hidden web view on every keystroke.
                 MarkdownReaderView(
@@ -325,11 +346,26 @@ struct FileEditorView: View {
     /// it, so typing in Edit never renders a document nobody is looking at.
     private func activateMode() {
         guard loaded else { return }
-        if isMarkdown && mode == .preview {
-            previewSource = text
+        if mode == .preview {
+            // A page loads from disk, not the buffer, so its stylesheets and images resolve as in
+            // a browser. Flush first so it shows the edits.
+            if isWebPage {
+                saveNow()
+                // A failed save would show the old page over the edits. Stay in Edit, where the
+                // error shows.
+                guard text == savedText else {
+                    mode = .edit
+                    return
+                }
+            } else {
+                previewSource = text
+            }
             mountedReader = true
         } else {
             mountedEditor = true
+            // Unlike the Markdown reader, the page is not kept: the next flip builds a fresh web
+            // view that loads what was just saved.
+            if isWebPage { mountedReader = false }
         }
     }
 
@@ -439,8 +475,9 @@ struct FileEditorView: View {
                     .lineLimit(1)
             }
             Spacer()
-            // Markdown reads as a document by default; the toggle keeps the source one click away.
-            if isMarkdown {
+            // Markdown and HTML read as documents by default; the toggle keeps the source one
+            // click away.
+            if hasPreview, !loadFailed {
                 modeToggle
             }
             // The content-area window controls (maximize / close) ride the header's
@@ -554,7 +591,7 @@ struct FileEditorView: View {
         }
     }
 
-    /// ⌘F: show the find bar. Skipped in Markdown Preview mode — there's no NSTextView to
+    /// ⌘F: show the find bar. Skipped in Preview mode — there's no NSTextView to
     /// search underneath.
     private func openFindBar() {
         guard mode == .edit else { return }
