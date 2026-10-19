@@ -768,6 +768,11 @@
             "matcher": null,
             "name": "permission.asked",
             "state": "attention"
+          },
+          {
+            "matcher": null,
+            "name": "permission.replied",
+            "state": "working"
           }
         ],
         "file": null,

@@ -136,10 +136,11 @@ fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> 
 /// an in-process new-session rotation. Subagent child sessions share the event
 /// bus, so each entry point learns from `session.created` which ids are
 /// top-level and which are children (they carry `parentID`). Only a top-level
-/// id is forwarded, since adopting a child's would mis-pin the tab, and a
-/// child's own lifecycle is not reported at all: a subagent finishing while its
-/// parent works on would otherwise mark the terminal done. An id the plugin
-/// never saw created, such as a resumed session, still reports.
+/// id is forwarded, since adopting a child's would mis-pin the tab. A child
+/// finishing is not reported, because its parent works on and the terminal is
+/// not done; a child asking permission is, because the parent waits on it. An
+/// id the plugin never saw created, such as a resumed session, reports as a
+/// top-level one.
 ///
 /// Outside a termiod session `setup` returns without subscribing, so an
 /// OpenCode started elsewhere holds no idle event stream open. Its cleanup
@@ -206,7 +207,7 @@ fn open_code_source(
                  children.delete(id);\n  \
                  }};\n  \
                  const report = (state, conversation) => {{\n    \
-                 if (children.has(conversation)) return;\n\
+                 if (state === \"done\" && children.has(conversation)) return;\n\
                  {report_body}\n  \
                  }};\n  \
                  return {{ note, forget, report }};\n\
@@ -377,7 +378,8 @@ mod tests {
                   {"on":"session.execution.succeeded","state":"done"},
                   {"on":"session.execution.failed","state":"done"},
                   {"on":"session.execution.interrupted","state":"done"},
-                  {"on":"permission.asked","state":"attention"}]}}"#,
+                  {"on":"permission.asked","state":"attention"},
+                  {"on":"permission.replied","state":"working"}]}}"#,
         )
     }
 
@@ -467,7 +469,7 @@ const reporter = () => {
     children.delete(id);
   };
   const report = (state, conversation) => {
-    if (children.has(conversation)) return;
+    if (state === "done" && children.has(conversation)) return;
     if (!session) return;
     if (conversation && roots.has(conversation)) {
       return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
@@ -492,6 +494,7 @@ export default {
         if (event.type === "session.execution.failed") return report("done", event.properties?.sessionID);
         if (event.type === "session.execution.interrupted") return report("done", event.properties?.sessionID);
         if (event.type === "permission.asked") return report("attention", event.properties?.sessionID);
+        if (event.type === "permission.replied") return report("working", event.properties?.sessionID);
       },
     };
   },
@@ -510,6 +513,7 @@ export default {
         if (event.type === "session.execution.failed") { await report("done", event.data?.sessionID); continue; }
         if (event.type === "session.execution.interrupted") { await report("done", event.data?.sessionID); continue; }
         if (event.type === "permission.asked") { await report("attention", event.data?.sessionID); continue; }
+        if (event.type === "permission.replied") { await report("working", event.data?.sessionID); continue; }
       }
     })().catch(() => {});
     return () => abort.abort();
