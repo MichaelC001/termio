@@ -1093,26 +1093,16 @@ impl PluginFile {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         // Publish the replacement before removing its predecessor. A
-        // predecessor that is the destination is the hook just written: an
-        // override still naming the old directory spells it the same, and that
-        // directory linked to the new one reaches it through a real path.
-        // Sweeping it would delete the hook on every sync. A different path
-        // that is itself a link is removed: that unlinks only the link, and
-        // left alone it loads the hook twice.
-        let destination_path = machine::expand(&self.path);
-        let destination = std::fs::canonicalize(&destination_path).ok();
+        // predecessor that names the destination's own directory entry is the
+        // hook just written: an override still naming the old directory, or
+        // that directory linked to the new one. Sweeping it would delete the
+        // hook on every sync. Any other entry, even a link to the destination,
+        // is removed: that unlinks only it, and left alone it loads the hook
+        // twice.
+        let destination = directory_entry(&machine::expand(&self.path));
         for legacy in &self.legacy_paths {
-            let legacy_path = machine::expand(legacy);
-            if legacy_path == destination_path {
-                continue;
-            }
-            let is_link = std::fs::symlink_metadata(&legacy_path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false);
-            if !is_link
-                && destination.is_some()
-                && std::fs::canonicalize(&legacy_path).ok() == destination
-            {
+            let legacy_entry = directory_entry(&machine::expand(legacy));
+            if legacy_entry.is_some() && legacy_entry == destination {
                 continue;
             }
             self.remove_if_ours(legacy);
@@ -1133,6 +1123,13 @@ impl PluginFile {
             _ => {}
         }
     }
+}
+
+/// The directory entry a path names: its parent resolved through any links,
+/// plus its own name unresolved. Two spellings name the same entry exactly
+/// when these match, whatever the entry itself links to.
+fn directory_entry(path: &Path) -> Option<PathBuf> {
+    Some(std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?))
 }
 
 // MARK: - The TOML block
@@ -2025,6 +2022,27 @@ pub(super) mod tests {
         std::os::unix::fs::symlink(&dotfile, old.join("termio.js")).expect("fixture");
         plugin.install().expect("installs");
         assert!(std::fs::symlink_metadata(old.join("termio.js")).is_ok(), "the destination link must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Both links at once: `plugin/` linked to `plugins/`, and the installed
+    /// `plugins/termio.js` a link to a dotfile. `plugin/termio.js` is then the
+    /// destination's own entry, so it stays.
+    #[test]
+    fn a_linked_directory_over_a_linked_destination_keeps_the_plugin() {
+        let root = scratch("opencode-both-links");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        let dotfile = root.join("dotfile.js");
+        std::fs::write(&dotfile, &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink(&dotfile, new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(std::fs::symlink_metadata(new.join("termio.js")).is_ok(), "the destination link must survive");
         let _ = std::fs::remove_dir_all(&root);
     }
 
