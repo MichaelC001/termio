@@ -134,9 +134,12 @@ fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> 
 ///
 /// `conversation`, when set, rides along with each report so termio can follow
 /// an in-process new-session rotation. Subagent child sessions share the event
-/// bus and adopting a child's id would mis-pin the tab, so each entry point
-/// learns which ids are top-level from `session.created` (children carry
-/// `parentID`) and forwards only those.
+/// bus, so each entry point learns from `session.created` which ids are
+/// top-level and which are children (they carry `parentID`). Only a top-level
+/// id is forwarded, since adopting a child's would mis-pin the tab, and a
+/// child's own lifecycle is not reported at all: a subagent finishing while its
+/// parent works on would otherwise mark the terminal done. An id the plugin
+/// never saw created, such as a resumed session, still reports.
 ///
 /// Outside a termiod session `setup` returns without subscribing, so an
 /// OpenCode started elsewhere holds no idle event stream open. Its cleanup
@@ -181,7 +184,10 @@ fn open_code_source(
             .join("\n")
     };
     let server_branches = branches("properties", "        ", &|call| format!("return {call};"));
-    let setup_branches = branches("data", "        ", &|call| format!("{{ {call}; continue; }}"));
+    // Bun's `$` runs only once awaited. OpenCode 1 awaits what the `event` hook
+    // returns; nothing awaits a call made inside the `setup` loop, so it must.
+    let setup_branches =
+        branches("data", "        ", &|call| format!("{{ await {call}; continue; }}"));
 
     let tracks_conversation = conversation.is_some();
     let report_body = daemon_report_body("$", tracks_conversation, "    ");
@@ -190,23 +196,29 @@ fn open_code_source(
             format!(
                 "const reporter = () => {{\n  \
                  const roots = new Set();\n  \
+                 const children = new Set();\n  \
                  const note = (id, parentID) => {{\n    \
                  if (!id) return;\n    \
-                 if (parentID) roots.delete(id); else roots.add(id);\n  \
+                 if (parentID) children.add(id); else roots.add(id);\n  \
                  }};\n  \
-                 const report = (state, conversation) => {{\n\
+                 const forget = (id) => {{\n    \
+                 roots.delete(id);\n    \
+                 children.delete(id);\n  \
+                 }};\n  \
+                 const report = (state, conversation) => {{\n    \
+                 if (children.has(conversation)) return;\n\
                  {report_body}\n  \
                  }};\n  \
-                 return {{ roots, note, report }};\n\
+                 return {{ note, forget, report }};\n\
                  }};"
             ),
-            "{ roots, note, report }",
+            "{ note, forget, report }",
             "        if (event.type === \"session.created\" || event.type === \"session.updated\") \
              return note(event.properties?.info?.id, event.properties?.info?.parentID);\n        \
-             if (event.type === \"session.deleted\") return roots.delete(event.properties?.info?.id);\n",
+             if (event.type === \"session.deleted\") return forget(event.properties?.info?.id);\n",
             "        if (event.type === \"session.created\") \
              { note(event.data?.sessionID, event.data?.parentID); continue; }\n        \
-             if (event.type === \"session.deleted\") { roots.delete(event.data?.sessionID); continue; }\n",
+             if (event.type === \"session.deleted\") { forget(event.data?.sessionID); continue; }\n",
         )
     } else {
         (
@@ -445,28 +457,34 @@ const cli = "\/opt\/termiod";
 const session = process.env.TERMIOD_SESSION_ID;
 const reporter = () => {
   const roots = new Set();
+  const children = new Set();
   const note = (id, parentID) => {
     if (!id) return;
-    if (parentID) roots.delete(id); else roots.add(id);
+    if (parentID) children.add(id); else roots.add(id);
+  };
+  const forget = (id) => {
+    roots.delete(id);
+    children.delete(id);
   };
   const report = (state, conversation) => {
+    if (children.has(conversation)) return;
     if (!session) return;
     if (conversation && roots.has(conversation)) {
       return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
     }
     return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
   };
-  return { roots, note, report };
+  return { note, forget, report };
 };
 export default {
   id: "termio-status",
   async server() {
     if (!session) return {};
-    const { roots, note, report } = reporter();
+    const { note, forget, report } = reporter();
     return {
       event: async ({ event }) => {
         if (event.type === "session.created" || event.type === "session.updated") return note(event.properties?.info?.id, event.properties?.info?.parentID);
-        if (event.type === "session.deleted") return roots.delete(event.properties?.info?.id);
+        if (event.type === "session.deleted") return forget(event.properties?.info?.id);
         if (event.type === "session.status" && event.properties?.status?.type === "busy") return report("working", event.properties?.sessionID);
         if (event.type === "session.status" && event.properties?.status?.type === "idle") return report("done", event.properties?.sessionID);
         if (event.type === "session.execution.started") return report("working", event.properties?.sessionID);
@@ -479,19 +497,19 @@ export default {
   },
   async setup(ctx) {
     if (!session) return;
-    const { roots, note, report } = reporter();
+    const { note, forget, report } = reporter();
     const abort = new AbortController();
     (async () => {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
         if (event.type === "session.created") { note(event.data?.sessionID, event.data?.parentID); continue; }
-        if (event.type === "session.deleted") { roots.delete(event.data?.sessionID); continue; }
-        if (event.type === "session.status" && event.data?.status?.type === "busy") { report("working", event.data?.sessionID); continue; }
-        if (event.type === "session.status" && event.data?.status?.type === "idle") { report("done", event.data?.sessionID); continue; }
-        if (event.type === "session.execution.started") { report("working", event.data?.sessionID); continue; }
-        if (event.type === "session.execution.succeeded") { report("done", event.data?.sessionID); continue; }
-        if (event.type === "session.execution.failed") { report("done", event.data?.sessionID); continue; }
-        if (event.type === "session.execution.interrupted") { report("done", event.data?.sessionID); continue; }
-        if (event.type === "permission.asked") { report("attention", event.data?.sessionID); continue; }
+        if (event.type === "session.deleted") { forget(event.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "busy") { await report("working", event.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "idle") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.started") { await report("working", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.succeeded") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.failed") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.interrupted") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "permission.asked") { await report("attention", event.data?.sessionID); continue; }
       }
     })().catch(() => {});
     return () => abort.abort();

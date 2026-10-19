@@ -1093,13 +1093,20 @@ impl PluginFile {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         // Publish the replacement before removing its predecessor. A
-        // predecessor that is the same file is the hook just written: an
-        // override still naming the old directory, or that directory linked to
-        // the new one. Sweeping it would delete the hook on every sync.
+        // predecessor that reaches the same file through a real path is the
+        // hook just written: an override still naming the old directory, or
+        // that directory linked to the new one. Sweeping it would delete the
+        // hook on every sync. A predecessor that is itself a link is removed:
+        // that unlinks only the link, and left alone it loads the hook twice.
         let destination = std::fs::canonicalize(machine::expand(&self.path)).ok();
         for legacy in &self.legacy_paths {
-            if destination.is_some()
-                && std::fs::canonicalize(machine::expand(legacy)).ok() == destination
+            let legacy_path = machine::expand(legacy);
+            let is_link = std::fs::symlink_metadata(&legacy_path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false);
+            if !is_link
+                && destination.is_some()
+                && std::fs::canonicalize(&legacy_path).ok() == destination
             {
                 continue;
             }
@@ -1993,6 +2000,30 @@ pub(super) mod tests {
             .expect("a plugin dialect")
             .install()
             .expect("installs");
+        assert!(new.join("termio.js").exists(), "the installed plugin must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A predecessor that is a link to the new file would make OpenCode load
+    /// the hook twice. Removing it unlinks the link and keeps the file.
+    #[test]
+    fn a_predecessor_linked_to_the_new_file_is_removed() {
+        let root = scratch("opencode-file-link");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let install = || {
+            PluginFile::new(&new.display().to_string(), &spec, &request)
+                .expect("a plugin dialect")
+                .install()
+                .expect("installs")
+        };
+        install();
+        std::os::unix::fs::symlink(new.join("termio.js"), new.join("termio-status.js")).expect("fixture");
+        install();
+        assert!(std::fs::symlink_metadata(new.join("termio-status.js")).is_err(), "the link must go");
         assert!(new.join("termio.js").exists(), "the installed plugin must survive");
         let _ = std::fs::remove_dir_all(&root);
     }
