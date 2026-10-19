@@ -1093,18 +1093,27 @@ impl PluginFile {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         // Publish the replacement before removing its predecessor. A
-        // predecessor the destination passes through is the hook just written,
-        // or what it links to: an override still naming the old directory,
-        // that directory linked to the new one, or the new file linked back to
-        // the old. Sweeping it would break the hook on every sync. Any other
-        // entry, even a link to the destination, is removed: that unlinks only
-        // it, and left alone it loads the hook twice.
-        let destination = resolution_chain(&machine::expand(&self.path));
-        for legacy in &self.legacy_paths {
-            if let Some(entry) = directory_entry(&machine::expand(legacy)) {
-                if destination.contains(&entry) {
-                    continue;
-                }
+        // predecessor that is the destination's own directory entry is the
+        // hook just written: an override still naming the old directory, or
+        // that directory linked to the new one. Sweeping it would delete the
+        // hook on every sync. Any other entry is removed, even a link to the
+        // destination, since left alone it loads the hook twice. A destination
+        // that links into a predecessor would dangle once that goes, so it
+        // becomes a real file first.
+        let destination_path = machine::expand(&self.path);
+        let legacy_entries: Vec<Option<PathBuf>> = self
+            .legacy_paths
+            .iter()
+            .map(|legacy| directory_entry(&machine::expand(legacy)))
+            .collect();
+        let chain = resolution_chain(&destination_path);
+        if chain.iter().skip(1).any(|entry| legacy_entries.contains(&Some(entry.clone()))) {
+            write_atomically(&self.path, self.contents.as_bytes(), false)?;
+        }
+        let destination = directory_entry(&destination_path);
+        for (legacy, entry) in self.legacy_paths.iter().zip(&legacy_entries) {
+            if entry.is_some() && *entry == destination {
+                continue;
             }
             self.remove_if_ours(legacy);
         }
@@ -2066,10 +2075,11 @@ pub(super) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The new file linked back to the old one: deleting the old would leave
-    /// the installed plugin dangling, so it stays.
+    /// The new file linked back to the old one. Kept, the old file loads the
+    /// hook a second time; deleted alone, the link dangles. The new file
+    /// becomes a real file and the old one goes.
     #[test]
-    fn a_destination_linked_to_its_predecessor_keeps_working() {
+    fn a_destination_linked_to_its_predecessor_becomes_a_real_file() {
         let root = scratch("opencode-back-link");
         let old = root.join("plugin");
         let new = root.join("plugins");
@@ -2082,7 +2092,9 @@ pub(super) mod tests {
         std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
         std::os::unix::fs::symlink("../plugin/termio.js", new.join("termio.js")).expect("fixture");
         plugin.install().expect("installs");
-        assert!(new.join("termio.js").exists(), "the installed plugin must still resolve");
+        let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
+        assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
+        assert!(!old.join("termio.js").exists(), "the old file must go");
         let _ = std::fs::remove_dir_all(&root);
     }
 
