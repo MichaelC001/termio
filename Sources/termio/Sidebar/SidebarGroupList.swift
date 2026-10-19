@@ -43,6 +43,8 @@ private struct SidebarGroupRow: View {
     let isSelected: Bool
     let chrome: ChromeTheme?
     @State private var isHovering = false
+    /// True while this row's right-click menu is open, so the row lifts as the menu's target.
+    @State private var isMenuOpen = false
 
     var body: some View {
         let members = store.sessions(in: group)
@@ -74,8 +76,22 @@ private struct SidebarGroupRow: View {
         .contentShape(Rectangle())
         .onTapGesture { store.open(group) }
         .onHover { isHovering = $0 }
-        .listRowBackground(SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome))
+        // The same menu the vertical layout's section or project header carries.
+        .background(SidebarRowContextMenu(items: { menuItems }) { isMenuOpen = $0 })
+        .background(OutlineViewFixups())
+        .listRowBackground(SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering || isMenuOpen,
+                                               chrome: chrome))
         .help(store.title(of: group))
+    }
+
+    private var menuItems: [SidebarMenuItem] {
+        switch group {
+        case .project(let id):
+            guard let project = store.projects.first(where: { $0.id == id }) else { return [] }
+            return projectMenuItems(store: store, settings: settings, project: project)
+        case .terminals: return terminalsMenuItems(store: store, workspace: store.currentWorkspace.id)
+        case .chats: return chatsMenuItems(store: store, workspace: store.currentWorkspace.id)
+        }
     }
 
     private var icon: HugeIcon {
