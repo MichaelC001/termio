@@ -80,7 +80,7 @@ private struct SidebarGroupRow: View {
         .background(SidebarRowContextMenu(items: { menuItems }) { isMenuOpen = $0 })
         .background(OutlineViewFixups())
         .listRowBackground(SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering || isMenuOpen,
-                                               chrome: chrome))
+                                               chrome: chrome, isGlass: true))
         .help(store.title(of: group))
     }
 

@@ -153,6 +153,21 @@ enum ChromeGlyph {
     static let chipRadius: CGFloat = 5
 }
 
+/// The glass of whatever is "this one": the selected tab, a selected session row, the row in your
+/// hand and the row a drag is held over. A face a step lighter than the ground, a hairline, and
+/// `GlassRim`; no drop shadow, which reads as a raised button rather than a pane of glass.
+struct SelectionGlass<S: InsettableShape>: View {
+    let shape: S
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let dark = colorScheme == .dark
+        shape.fill(Color.white.opacity(dark ? 0.09 : 0.55))
+            .overlay(shape.strokeBorder(Color.primary.opacity(dark ? 0.10 : 0.07), lineWidth: 0.5))
+            .overlay(GlassRim(shape: shape))
+    }
+}
+
 /// Liquid Glass's specular edge, drawn by hand for a fill that is not system glass: a sheen down
 /// the face and a rim lit from the top leading corner, with a weaker reflection at the bottom
 /// trailing one.

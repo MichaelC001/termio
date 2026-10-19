@@ -449,7 +449,7 @@ private struct IssueRow: View {
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(
-            SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome)
+            SidebarRowHighlight(isSelected: isSelected, isHovering: isHovering, chrome: chrome, cornerRadius: 7)
                 .animation(.easeInOut(duration: 0.12), value: isSelected)
                 .animation(.easeInOut(duration: 0.12), value: isHovering)
         )

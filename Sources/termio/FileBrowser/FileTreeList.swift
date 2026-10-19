@@ -289,7 +289,8 @@ private struct FileRow: View {
             SidebarRowHighlight(
                 isSelected: isSelected || isTargeted,
                 isHovering: isHovering,
-                chrome: chrome
+                chrome: chrome,
+                cornerRadius: 7
             )
             // Cancel the highlight's own 6pt leading inset so its frosted lift reaches
             // the row's leading edge, clearing the disclosure chevron. The `.plain`

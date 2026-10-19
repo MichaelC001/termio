@@ -30,6 +30,12 @@ extension TermioStore {
         splitGroups.firstIndex { $0.contains(id) }
     }
 
+    /// Whether `a` and `b` are already in one split group, where "Group with" has nothing to do.
+    func sharesSplitGroup(_ a: Session.ID, _ b: Session.ID) -> Bool {
+        guard let group = groupIndex(containing: a) else { return false }
+        return group == groupIndex(containing: b)
+    }
+
     /// Splits the focused pane, putting a fresh plain terminal (in the focused
     /// session's project) in the new half. A plain shell — not a second copy of
     /// the agent — because the dominant reason to split is a companion terminal
@@ -243,14 +249,17 @@ extension TermioStore {
     /// tiling-WM rule `addSplitSession` uses. Finally the sidebar rows are
     /// reordered so the group reads as an adjacent run, which is what lets
     /// `splitLinkMarks` draw its bracket over them.
-    func groupSession(_ moved: Session.ID, with anchor: Session.ID) {
+    ///
+    /// `slot` is the side of the anchor it joins on: `.first` above it in the sidebar
+    /// (and before it in the layout), `.second` below. A sidebar drag joins on the side
+    /// it came from; the menu has no side to read, so it joins below.
+    func groupSession(_ moved: Session.ID, with anchor: Session.ID, slot: SplitSlot = .second) {
         guard canGroup(moved, with: anchor) else { return }
         // Already sharing the anchor's group — nothing to switch.
         if let anchorGroup = groupIndex(containing: anchor),
            groupIndex(containing: moved) == anchorGroup { return }
-        // No zone: the menu has no pointer to read a side off, so the axis
-        // alternates across the anchor's current one.
-        splice(moved, beside: anchor, direction: nil, slot: .second)
+        // No zone: the axis alternates across the anchor's current one.
+        splice(moved, beside: anchor, direction: nil, slot: slot)
     }
 
     /// Whether `moved` may be grouped in beside `anchor`: same roster, and the
