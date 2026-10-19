@@ -17,6 +17,29 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.59.0",
+    date: "2026-10-19",
+    title: "Drag sessions into groups",
+    changes: {
+      new: [
+        "Drag to group: dragging a session in the sidebar opens a gap where it will land. Hold it over another session, or drop it between two rows of a group, to group them.",
+        "omp is a built-in agent, with live status and conversation resume.",
+        "HTML files have an Edit/Preview toggle, so you can read and edit a page's source.",
+        "Right-click a project, Terminals, Chats or a tab in the horizontal layout to get its menu, including Remove Project.",
+      ],
+      improved: [
+        "New sessions appear at the top of their project.",
+        "Selected sessions in the sidebar and the tab bar share one glass look. Group brackets have rounded corners and meet across rows.",
+        "OpenCode 1 and 2 are one OpenCode agent, and OpenCode shows needs-you when it asks for a permission.",
+        "Codex sessions show done when a turn finishes, and Termio no longer installs Codex hooks.",
+        "Rows in the file tree and the issue list select with rounded corners.",
+      ],
+      fixed: [
+        "OpenCode 2 no longer reports \"1 plugin failed\" for Termio's plugin on every launch.",
+      ],
+    },
+  },
+  {
     version: "0.58.2",
     date: "2026-10-17",
     title: "A bolder prompt in the icon",
