@@ -1092,30 +1092,39 @@ impl PluginFile {
         if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
-        // Publish the replacement before removing its predecessor. A
-        // predecessor that is the destination's own directory entry is the
-        // hook just written: an override still naming the old directory, or
-        // that directory linked to the new one. Sweeping it would delete the
-        // hook on every sync. Any other entry is removed, even a link to the
-        // destination, since left alone it loads the hook twice. A destination
-        // that links into a predecessor would dangle once that goes, so it
-        // becomes a real file first.
+        // Publish the replacement before removing its predecessor. Any
+        // predecessor is removed, even a link to the destination, since left
+        // alone it loads the hook twice. A destination that links into one
+        // would dangle once that goes, so it becomes a real file first.
         let destination_path = machine::expand(&self.path);
-        let legacy_entries: Vec<Option<EntryIdentity>> = self
-            .legacy_paths
-            .iter()
-            .map(|legacy| entry_identity(&machine::expand(legacy)))
-            .collect();
+        let legacy_identity = |legacy: &String| entry_identity(&machine::expand(legacy));
         let chain = resolution_chain(&destination_path);
-        if chain.iter().skip(1).any(|entry| legacy_entries.contains(&Some(*entry))) {
+        if chain
+            .iter()
+            .skip(1)
+            .any(|hop| self.legacy_paths.iter().any(|legacy| legacy_identity(legacy) == Some(*hop)))
+        {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
+        // A predecessor that is the destination's own entry by another spelling
+        // (an override still naming the old directory, or that directory linked
+        // to the new one) is the hook just written, and sweeping it would
+        // delete the hook on every sync. Sharing the inode proves that only
+        // when the file has one name; a second hard link shares it too and
+        // must go. So an ambiguous one is removed, and whatever the sweep took
+        // from the destination is put back.
         let destination = entry_identity(&destination_path);
-        for (legacy, entry) in self.legacy_paths.iter().zip(&legacy_entries) {
-            if entry.is_some() && *entry == destination {
+        for legacy in &self.legacy_paths {
+            if destination.is_some()
+                && legacy_identity(legacy) == destination
+                && link_count(&destination_path) == Some(1)
+            {
                 continue;
             }
             self.remove_if_ours(legacy);
+        }
+        if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
+            write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         Ok(())
     }
@@ -1144,6 +1153,12 @@ fn entry_identity(path: &Path) -> Option<EntryIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path).ok()?;
     Some((metadata.dev(), metadata.ino()))
+}
+
+/// How many names the entry itself has, links not followed.
+fn link_count(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|metadata| metadata.nlink())
 }
 
 /// Every directory entry a path passes through on its way to a file: its own,
@@ -2127,6 +2142,48 @@ pub(super) mod tests {
         let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
         assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
         assert!(!old.join("termio.js").exists(), "the old file must go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A second hard link to the plugin is a separate name OpenCode loads
+    /// again, so it goes; the plugin itself stays.
+    #[test]
+    fn a_predecessor_hard_linked_to_the_new_file_is_removed() {
+        let root = scratch("opencode-hard-link");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        plugin.install().expect("installs");
+        std::fs::hard_link(new.join("termio.js"), old.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(!old.join("termio.js").exists(), "the second name must go");
+        assert_eq!(std::fs::read_to_string(new.join("termio.js")).expect("read"), plugin.contents);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `plugin/` linked to `plugins/`, whose `termio.js` links to its own
+    /// predecessor `termio-status.js`. Rewriting the destination must not
+    /// leave the sweep holding a stale identity that deletes it.
+    #[test]
+    fn a_rewritten_destination_survives_its_own_alias() {
+        let root = scratch("opencode-alias-rewrite");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(new.join("termio-status.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("termio-status.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert_eq!(std::fs::read_to_string(new.join("termio.js")).expect("read"), plugin.contents);
+        assert!(!new.join("termio-status.js").exists(), "the predecessor must go");
         let _ = std::fs::remove_dir_all(&root);
     }
 
