@@ -88,6 +88,13 @@ brew install --cask termio-sh/tap/termio
 </td>
 </tr>
 <tr>
+<td width="62%"><img alt="Claude Code、Codex、2 つのターミナルを並べた横向きタブ" src="web/landing/public/screenshots/docs/29-horizontal-tabs.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>横向きタブ</h3>
+<p>セッションをターミナルの上に 1 列で並べます。クリックで切り替え、ドラッグで並べ替え。設定 ▸ 外観 ▸ タブ でオンにします。<a href="https://github.com/termio-sh/launch-video/tree/main/20261019-horizontal-tabs">動画を見る</a>。</p>
+</td>
+</tr>
+<tr>
 <td width="62%"><img alt="Codex と Claude Code の横に表示されたセッション種別と状態" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>ひと目でわかるステータス</h3>

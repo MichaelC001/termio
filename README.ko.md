@@ -105,6 +105,13 @@ brew install --cask termio-sh/tap/termio
 </td>
 </tr>
 <tr>
+<td width="62%"><img alt="Claude Code, Codex, 터미널 두 개를 담은 가로 탭" src="web/landing/public/screenshots/docs/29-horizontal-tabs.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>가로 탭</h3>
+<p>세션을 터미널 위 한 줄에 놓아요. 탭을 클릭해 전환하고, 끌어서 순서를 바꾸세요. 설정 ▸ 모양 ▸ 탭에서 켜요. <a href="https://github.com/termio-sh/launch-video/tree/main/20261019-horizontal-tabs">영상 보기</a>.</p>
+</td>
+</tr>
+<tr>
 <td width="62%"><img alt="Codex와 Claude Code 옆에 표시된 세션 유형과 상태" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>한눈에 보이는 상태</h3>

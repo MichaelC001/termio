@@ -68,6 +68,13 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
 </td>
 </tr>
 <tr>
+<td width="62%"><img alt="Horizontal tabs above Claude Code, Codex, and two terminals" src="web/landing/public/screenshots/docs/29-horizontal-tabs.png" width="100%" /></td>
+<td width="38%" valign="top">
+<h3>Horizontal tabs</h3>
+<p>Sessions in one row above the terminal. Click a tab to switch, drag it to reorder. Turn it on in Settings ▸ Appearance ▸ Tabs. <a href="https://github.com/termio-sh/launch-video/tree/main/20261019-horizontal-tabs">Watch the video</a>.</p>
+</td>
+</tr>
+<tr>
 <td width="62%"><img alt="Project session types and live states beside Codex and Claude Code" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Status at a glance</h3>
