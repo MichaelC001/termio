@@ -147,6 +147,12 @@ fn open_code_source(
     request: &InstallRequest,
 ) -> String {
     let payload_path = |root: &str, path: &str| {
+        // Locators written when each API had its own file named the payload
+        // root too (`properties.sessionID`, `data.sessionID`).
+        let path = path
+            .strip_prefix("properties.")
+            .or_else(|| path.strip_prefix("data."))
+            .unwrap_or(path);
         let mut expression = format!("event.{root}");
         for component in path.split('.') {
             expression.push_str(&format!("?.{component}"));
@@ -521,6 +527,19 @@ export default (amp) => {
   amp.on("agent.end", () => report("done"));
 };"#
         );
+    }
+
+    /// A manifest written when each OpenCode API had its own file named the
+    /// payload root in its locator. It renders the same file as today's.
+    #[test]
+    fn an_old_opencode_locator_renders_the_same_plugin() {
+        let request = device_request("/opt/termiod");
+        let current = rendered(HookDialect::OpenCodePlugin, &opencode_spec(), &request);
+        for old in ["properties.sessionID", "data.sessionID"] {
+            let mut spec = opencode_spec();
+            spec.conversation = Some(old.to_string());
+            assert_eq!(rendered(HookDialect::OpenCodePlugin, &spec, &request), current, "{old}");
+        }
     }
 
     /// A plugin loaded outside a termiod session has no id, and reporting an

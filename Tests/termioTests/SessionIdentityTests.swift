@@ -538,3 +538,13 @@ final class DeclaredAgentDemotionTests: XCTestCase {
         XCTAssertNil(store.agentExitNotice(for: session.id))
     }
 }
+
+final class SavedAgentIDTests: XCTestCase {
+    /// OpenCode 2 was folded into OpenCode. A session saved under the old id
+    /// relaunches as OpenCode, not as the plain-shell fallback.
+    func testAFoldedAgentIDDecodesAsTheAgentThatAbsorbedIt() throws {
+        let agent = try JSONDecoder().decode(AgentDefinition.self, from: Data(#""opencode2""#.utf8))
+        XCTAssertEqual(agent.id, "opencode")
+        XCTAssertEqual(agent.command, "opencode")
+    }
+}

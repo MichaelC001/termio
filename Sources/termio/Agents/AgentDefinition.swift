@@ -617,8 +617,14 @@ final class AgentCatalog {
     /// The definition for an id, or a surviving fallback when nothing matches (an
     /// orphaned session whose user agent was removed).
     func definition(for id: String) -> AgentDefinition {
-        find(id: id) ?? AgentDefinition.fallback(id: id)
+        find(id: id)
+            ?? Self.foldedIDs[id].flatMap { find(id: $0) }
+            ?? AgentDefinition.fallback(id: id)
     }
+
+    /// Bundled ids a later build folded into another agent. A session saved
+    /// under one relaunches as the agent that absorbed it, not as a shell.
+    private static let foldedIDs = ["opencode2": "opencode"]
 
     private static var legacyAgentsDirectory: URL {
         AppChannel.homeConfigDirectory.appendingPathComponent("agents", isDirectory: true)
@@ -1167,7 +1173,8 @@ struct AgentManifest: Decodable {
             dialect = .copilotFlat
         case (.toml, nil), (.toml, "kimi"):
             dialect = .kimiTOML
-        case (.plugin, "opencode"):
+        // `opencode2` named OpenCode 2's half before one file served both.
+        case (.plugin, "opencode"), (.plugin, "opencode2"):
             dialect = .openCodePlugin
         case (.plugin, "pi"):
             dialect = .piPlugin

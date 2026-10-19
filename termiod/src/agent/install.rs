@@ -1055,15 +1055,22 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents,
-            legacy_paths: PluginFile::legacy_paths(directory, legacy, spec.dialect),
+            legacy_paths: PluginFile::legacy_paths(directory, filename, legacy, spec.dialect),
         })
     }
 
-    fn legacy_paths(directory: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
+    /// A user override can still point the plugin at the directory it moved
+    /// out of, which makes a predecessor the very file just written. Sweeping
+    /// that would delete the hook on every sync, so it is left out.
+    fn legacy_paths(directory: &str, filename: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
+        let destination = Path::new(directory).join(filename);
         let mut paths = vec![format!("{directory}/{legacy}")];
         if let Some(parent) = Path::new(directory).parent() {
             for moved in super::plugin::moved_from(dialect) {
-                paths.push(parent.join(moved).display().to_string());
+                let path = parent.join(moved);
+                if path != destination {
+                    paths.push(path.display().to_string());
+                }
             }
         }
         paths
@@ -1076,7 +1083,7 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents: String::new(),
-            legacy_paths: PluginFile::legacy_paths(directory, legacy, dialect),
+            legacy_paths: PluginFile::legacy_paths(directory, filename, legacy, dialect),
         })
     }
 
@@ -1946,6 +1953,26 @@ pub(super) mod tests {
         assert!(old.join("termio-status.js").exists(), "the user's file stays");
         let source = std::fs::read_to_string(new.join("termio.js")).expect("read");
         assert!(source.contains("async server()") && source.contains("async setup(ctx)"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An override written before the move still names `plugin/`. The file it
+    /// installs there is the destination, not a predecessor, so it stays.
+    #[test]
+    fn an_override_still_using_the_old_directory_keeps_its_plugin() {
+        let root = scratch("opencode-override");
+        let old = root.join("plugin");
+        std::fs::create_dir_all(&old).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(old.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        for _ in 0..2 {
+            PluginFile::new(&old.display().to_string(), &spec, &request)
+                .expect("a plugin dialect")
+                .install()
+                .expect("installs");
+        }
+        assert!(old.join("termio.js").exists(), "the installed plugin must survive");
         let _ = std::fs::remove_dir_all(&root);
     }
 
