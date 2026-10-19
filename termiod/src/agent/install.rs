@@ -1026,7 +1026,7 @@ impl<'a> ScriptHookDirectory<'a> {
 // MARK: - The plugin dialects
 
 /// Agents whose integration is a single dropped-in file with no host config to
-/// merge: OpenCode loads a plugin from `~/.config/opencode/plugin`, Pi an
+/// merge: OpenCode loads a plugin from `~/.config/opencode/plugins`, Pi an
 /// extension from `~/.pi/agent/extensions`, Amp one from `~/.config/amp/plugins`.
 /// The source itself is [`super::plugin`]'s; this is the ownership and the write.
 ///
@@ -1035,9 +1035,9 @@ impl<'a> ScriptHookDirectory<'a> {
 struct PluginFile {
     path: String,
     contents: String,
-    /// The filename an earlier build used. Publishing the replacement and then
-    /// sweeping its predecessor is what keeps a rename from leaving the agent
-    /// loading two copies of the same plugin.
+    /// The paths an earlier build used. Publishing the replacement and then
+    /// sweeping its predecessors is what keeps a rename or a move from leaving
+    /// the agent loading two copies of the same plugin.
     legacy_paths: Vec<String>,
 }
 
@@ -1055,8 +1055,18 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents,
-            legacy_paths: vec![format!("{directory}/{legacy}")],
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, spec.dialect),
         })
+    }
+
+    fn legacy_paths(directory: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
+        let mut paths = vec![format!("{directory}/{legacy}")];
+        if let Some(parent) = Path::new(directory).parent() {
+            for moved in super::plugin::moved_from(dialect) {
+                paths.push(parent.join(moved).display().to_string());
+            }
+        }
+        paths
     }
 
     /// The uninstall form: it needs the paths and the ownership rule, not the
@@ -1066,7 +1076,7 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents: String::new(),
-            legacy_paths: vec![format!("{directory}/{legacy}")],
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, dialect),
         })
     }
 
@@ -1836,9 +1846,9 @@ pub(super) mod tests {
     fn opencode_spec() -> HookSpec {
         spec_of(
             r#"{"id":"opencode","name":"OpenCode","hooks":{"type":"plugin",
-                "dir":"~/.config/opencode/plugin","dialect":"opencode",
-                "conversation":"properties.sessionID",
-                "events":[{"on":"session.idle","state":"done"}]}}"#,
+                "dir":"~/.config/opencode/plugins","dialect":"opencode",
+                "conversation":"sessionID",
+                "events":[{"on":"session.status","state":"done","matcher":"idle"}]}}"#,
         )
     }
 
@@ -1906,6 +1916,37 @@ pub(super) mod tests {
             .uninstall();
         assert!(!directory.join("termio.js").exists());
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// OpenCode's plugin moved from `plugin/` to `plugins/`, where an OpenCode 2
+    /// file of ours also lived. Both versions load both directories, so the file
+    /// left in `plugin/` would report every turn twice: it goes, a user's does not.
+    #[test]
+    fn the_opencode_plugin_sweeps_its_old_directory() {
+        let root = scratch("opencode-moved");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let ours = format!("// Socket marker: {SOCKET_MARKER}\n// an older build\n");
+        std::fs::write(old.join("termio.js"), &ours).expect("fixture");
+        std::fs::write(new.join("termio.js"), &ours).expect("fixture");
+        let theirs = "export const mine = () => {};\n";
+        std::fs::write(old.join("termio-status.js"), theirs).expect("fixture");
+
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        PluginFile::new(&new.display().to_string(), &spec, &request)
+            .expect("a plugin dialect")
+            .install()
+            .expect("installs");
+
+        assert!(!old.join("termio.js").exists(), "the old file must go");
+        assert!(old.join("termio-status.js").exists(), "the user's file stays");
+        let source = std::fs::read_to_string(new.join("termio.js")).expect("read");
+        assert!(source.contains("async server()") && source.contains("async setup(ctx)"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An agent that now reports its own status (OSC 7501) keeps its hook spec

@@ -19,13 +19,13 @@
   "skills": { "dir": "~/.config/opencode/skills" },
   "hooks": {
     "type": "plugin",
-    "dir": "~/.config/opencode/plugin",
+    "dir": "~/.config/opencode/plugins",
     "dialect": "opencode",
-    "conversation": "properties.sessionID",
+    "conversation": "sessionID",
     "events": [
       { "on": "session.status", "state": "working", "matcher": "busy" },
-      { "on": "session.idle", "state": "done" },
-      { "on": "permission.updated", "state": "attention" }
+      { "on": "session.status", "state": "done", "matcher": "idle" },
+      { "on": "permission.asked", "state": "attention" }
     ]
   }
 }

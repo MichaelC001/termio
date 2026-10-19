@@ -187,7 +187,6 @@ final class AgentManifestFixtureTests: XCTestCase {
         case .copilotFlat: return "copilotFlat"
         case .kimiTOML: return "kimiTOML"
         case .openCodePlugin: return "openCodePlugin"
-        case .openCode2Plugin: return "openCode2Plugin"
         case .piPlugin: return "piPlugin"
         case .ampPlugin: return "ampPlugin"
         case .clineScripts: return "clineScripts"
