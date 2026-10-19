@@ -448,9 +448,6 @@ enum HookDialect: Hashable {
     /// Shipped plugin templates. Each names a closed host API; manifests provide
     /// only the destination directory and event→state data.
     case openCodePlugin
-    /// OpenCode 2's rewritten plugin API: a default-exported `{ id, setup }`
-    /// object consuming `ctx.event.subscribe`, with payloads under `data`.
-    case openCode2Plugin
     case piPlugin
     case ampPlugin
     /// Cline: a directory of executables named after the lifecycle event
@@ -620,8 +617,14 @@ final class AgentCatalog {
     /// The definition for an id, or a surviving fallback when nothing matches (an
     /// orphaned session whose user agent was removed).
     func definition(for id: String) -> AgentDefinition {
-        find(id: id) ?? AgentDefinition.fallback(id: id)
+        find(id: id)
+            ?? Self.foldedIDs[id].flatMap { find(id: $0) }
+            ?? AgentDefinition.fallback(id: id)
     }
+
+    /// Bundled ids a later build folded into another agent. A session saved
+    /// under one relaunches as the agent that absorbed it, not as a shell.
+    private static let foldedIDs = ["opencode2": "opencode"]
 
     private static var legacyAgentsDirectory: URL {
         AppChannel.homeConfigDirectory.appendingPathComponent("agents", isDirectory: true)
@@ -1170,10 +1173,9 @@ struct AgentManifest: Decodable {
             dialect = .copilotFlat
         case (.toml, nil), (.toml, "kimi"):
             dialect = .kimiTOML
-        case (.plugin, "opencode"):
+        // `opencode2` named OpenCode 2's half before one file served both.
+        case (.plugin, "opencode"), (.plugin, "opencode2"):
             dialect = .openCodePlugin
-        case (.plugin, "opencode2"):
-            dialect = .openCode2Plugin
         case (.plugin, "pi"):
             dialect = .piPlugin
         case (.plugin, "amp"):
@@ -1210,7 +1212,7 @@ struct AgentManifest: Decodable {
                     throw ManifestError.invalid(
                         "\(id): hook conversation must name a stdin JSON field, not '\(raw)'")
                 }
-            case .openCodePlugin, .openCode2Plugin:
+            case .openCodePlugin:
                 let components = raw.split(separator: ".", omittingEmptySubsequences: false)
                 guard !components.isEmpty, components.allSatisfy(isIdentifier) else {
                     throw ManifestError.invalid(

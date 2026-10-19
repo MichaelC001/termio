@@ -218,10 +218,8 @@ pub enum HookDialect {
     CopilotFlat,
     /// Kimi's marker-delimited TOML array-of-tables block.
     KimiToml,
+    /// OpenCode 1 and 2: one dropped-in file exporting both plugin APIs.
     OpenCodePlugin,
-    /// OpenCode 2's rewritten plugin API: a default-exported `{ id, setup }`
-    /// object consuming `ctx.event.subscribe`, with payloads under `data`.
-    OpenCode2Plugin,
     PiPlugin,
     AmpPlugin,
     /// Cline: a directory of executables named after the lifecycle event.
@@ -236,7 +234,6 @@ impl HookDialect {
             HookDialect::CopilotFlat => "copilotFlat",
             HookDialect::KimiToml => "kimiTOML",
             HookDialect::OpenCodePlugin => "openCodePlugin",
-            HookDialect::OpenCode2Plugin => "openCode2Plugin",
             HookDialect::PiPlugin => "piPlugin",
             HookDialect::AmpPlugin => "ampPlugin",
             HookDialect::ClineScripts => "clineScripts",
@@ -714,8 +711,8 @@ impl AgentManifest {
             (HookType::Json, Some("cursor")) => HookDialect::CursorFlat,
             (HookType::Json, Some("copilot")) => HookDialect::CopilotFlat,
             (HookType::Toml, None | Some("kimi")) => HookDialect::KimiToml,
-            (HookType::Plugin, Some("opencode")) => HookDialect::OpenCodePlugin,
-            (HookType::Plugin, Some("opencode2")) => HookDialect::OpenCode2Plugin,
+            // `opencode2` named OpenCode 2's half before one file served both.
+            (HookType::Plugin, Some("opencode") | Some("opencode2")) => HookDialect::OpenCodePlugin,
             (HookType::Plugin, Some("pi")) => HookDialect::PiPlugin,
             (HookType::Plugin, Some("amp")) => HookDialect::AmpPlugin,
             (HookType::Scripts, None | Some("cline")) => HookDialect::ClineScripts,
@@ -744,7 +741,7 @@ impl AgentManifest {
 
         // Locators are embedded in generated hook commands and plugin source, so
         // each must be a bare token: a JSON field name for shell hooks, a dot
-        // path of JS identifiers for the OpenCode plugin, or the one named
+        // path of JS identifiers inside the OpenCode event payload, or the one named
         // mechanism (`context`) for the Pi plugin. Anything else is a manifest
         // error, never rendered.
         let mut conversation = None;
@@ -758,7 +755,7 @@ impl AgentManifest {
                         )));
                     }
                 }
-                HookDialect::OpenCodePlugin | HookDialect::OpenCode2Plugin => {
+                HookDialect::OpenCodePlugin => {
                     let components: Vec<&str> = raw.split('.').collect();
                     if components.is_empty() || !components.iter().all(|c| is_identifier(c)) {
                         return Err(invalid(format!(
@@ -995,7 +992,6 @@ pub const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("agents/kimi.json", include_str!("../../../Sources/termio/Resources/agents/kimi.json")),
     ("agents/opencode.json", include_str!("../../../Sources/termio/Resources/agents/opencode.json")),
     ("agents/omp.json", include_str!("../../../Sources/termio/Resources/agents/omp.json")),
-    ("agents/opencode2.json", include_str!("../../../Sources/termio/Resources/agents/opencode2.json")),
     ("agents/pi.json", include_str!("../../../Sources/termio/Resources/agents/pi.json")),
     ("agents/qwen.json", include_str!("../../../Sources/termio/Resources/agents/qwen.json")),
 ];
@@ -1243,6 +1239,26 @@ mod tests {
         assert!(agent.hooks.is_none());
         // The bundled hook wiring is now stale and has to be swept.
         assert_eq!(catalog.stale_bundled_hooks().len(), 1);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A custom agent written for the retired OpenCode 2 dialect still loads,
+    /// as the one OpenCode dialect that now serves both versions.
+    #[test]
+    fn the_retired_opencode2_dialect_still_loads() {
+        let directory = tempdir("opencode2-dialect");
+        std::fs::write(
+            directory.join("mine.json"),
+            r#"{"id":"mine","name":"Mine","command":"opencode2","hooks":{"type":"plugin",
+                "dir":"~/.config/opencode/plugins","dialect":"opencode2",
+                "conversation":"data.sessionID",
+                "events":[{"on":"permission.asked","state":"attention"}]}}"#,
+        )
+        .expect("fixture written");
+        let catalog = AgentCatalog::load_from(Some(&directory));
+        let agent = catalog.find("mine").expect("the custom agent loads");
+        let hooks = agent.hooks.as_ref().expect("its hooks load");
+        assert_eq!(hooks.dialect, HookDialect::OpenCodePlugin);
         let _ = std::fs::remove_dir_all(&directory);
     }
 

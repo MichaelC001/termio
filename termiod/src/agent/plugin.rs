@@ -38,11 +38,22 @@ fn js(value: &str) -> String {
 /// keeps a rename from leaving the agent loading two copies.
 pub fn filenames(dialect: HookDialect) -> Option<(&'static str, &'static str)> {
     match dialect {
-        HookDialect::OpenCodePlugin | HookDialect::OpenCode2Plugin | HookDialect::PiPlugin => {
+        HookDialect::OpenCodePlugin | HookDialect::PiPlugin => {
             Some(("termio.js", "termio-status.js"))
         }
         HookDialect::AmpPlugin => Some(("termio.ts", "termio-status.ts")),
         _ => None,
+    }
+}
+
+/// Files an earlier build wrote for a dialect outside its own directory, as
+/// paths under that directory's parent. OpenCode's plugin lived in `plugin/`
+/// beside a second file for OpenCode 2 in `plugins/`; both versions load both
+/// directories, so a file left behind would report every turn twice.
+pub fn moved_from(dialect: HookDialect) -> &'static [&'static str] {
+    match dialect {
+        HookDialect::OpenCodePlugin => &["plugin/termio.js", "plugin/termio-status.js"],
+        _ => &[],
     }
 }
 
@@ -55,7 +66,6 @@ pub fn source(
 ) -> Option<String> {
     match dialect {
         HookDialect::OpenCodePlugin => Some(open_code_source(events, conversation, request)),
-        HookDialect::OpenCode2Plugin => Some(open_code_2_source(events, conversation, request)),
         HookDialect::PiPlugin => Some(pi_source(events, conversation, request)),
         HookDialect::AmpPlugin => Some(amp_source(events, request)),
         _ => None,
@@ -106,203 +116,152 @@ fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> 
     body
 }
 
-/// OpenCode plugin: a session is `busy` while working and emits `session.idle`
-/// when the turn ends; `permission.updated` means it is waiting on the user.
+/// OpenCode plugin: one file for both plugin APIs. OpenCode 1 (1.3.4 on) and
+/// OpenCode 2 each load every file in `plugin/` *and* `plugins/`, so a file per
+/// API meant each version loaded the other's and rejected it on every launch
+/// (#722). One default export carries both entry points instead: OpenCode 1
+/// calls `server` and uses the hooks it returns; OpenCode 2 validates
+/// `{ id, setup }` and ignores `server`. OpenCode 1 before 1.3.4 calls every
+/// export as a function and cannot load it, and OpenCode 2 rejects a function
+/// as the default export, so no shape serves both.
 ///
-/// `conversation` (the manifest's `hooks.conversation`) is the dot key path in
-/// the event object naming OpenCode's own conversation id; when set, each report
-/// carries it so termio can follow an in-process new-session rotation. Subagent
-/// child sessions share this event bus and adopting a child's id would mis-pin
-/// the tab, so the plugin learns which ids are top-level from
-/// `session.created`/`session.updated` — child sessions carry `parentID` — and
-/// forwards only those.
+/// The APIs differ in delivery, not in vocabulary. OpenCode 1 hands each event
+/// to a returned `event` hook with its payload under `properties`; OpenCode 2
+/// streams them from `ctx.event.subscribe` with the payload under `data`. The
+/// event names are shared, so one manifest list serves both, and a matcher and
+/// the conversation locator are read inside the payload. Bun's `$` is imported
+/// from `"bun"`: both versions run plugins in-process under Bun.
 ///
-/// The hook is the `server` of a default-exported `{ id, server, setup }`, not
-/// a bare named export, because OpenCode 1 and 2 both scan `plugin/` *and*
-/// `plugins/`, so each loads the other dialect's file too. OpenCode 1 (1.3.4
-/// on) calls `server` and ignores `setup`; OpenCode 2 validates `{ id, setup }`
-/// and rejects a module without it on every launch (#722), so `setup` is a
-/// no-op. The id differs from v2's so neither loader collapses the two files.
+/// `conversation`, when set, rides along with each report so termio can follow
+/// an in-process new-session rotation. Subagent child sessions share the event
+/// bus, so each entry point learns from `session.created` which ids are
+/// top-level and which are children (they carry `parentID`). Only a top-level
+/// id is forwarded, since adopting a child's would mis-pin the tab. A child
+/// finishing is not reported, because its parent works on and the terminal is
+/// not done; a child asking permission is, because the parent waits on it. An
+/// id the plugin never saw created, such as a resumed session, reports as a
+/// top-level one.
+///
+/// Outside a termiod session `setup` returns without subscribing, so an
+/// OpenCode started elsewhere holds no idle event stream open. Its cleanup
+/// aborts the subscription, because OpenCode 2 unloads a plugin by running it.
 fn open_code_source(
     events: &[HookEvent],
     conversation: Option<&str>,
     request: &InstallRequest,
 ) -> String {
-    let conversation_expression = conversation.map(|path| {
-        let mut expression = String::from("event");
+    let payload_path = |root: &str, path: &str| {
+        // Locators written when each API had its own file named the payload
+        // root too (`properties.sessionID`, `data.sessionID`).
+        let path = path
+            .strip_prefix("properties.")
+            .or_else(|| path.strip_prefix("data."))
+            .unwrap_or(path);
+        let mut expression = format!("event.{root}");
         for component in path.split('.') {
             expression.push_str(&format!("?.{component}"));
         }
         expression
-    });
-
-    let branches = events
-        .iter()
-        .map(|event| {
-            let arguments = match &conversation_expression {
-                Some(expression) => format!("{}, {expression}", js(&event.state)),
-                None => js(&event.state),
-            };
-            match &event.matcher {
-                Some(matcher) => format!(
-                    "      if (event.type === {} && event.properties?.status?.type === {}) return report({arguments});",
-                    js(&event.name),
-                    js(matcher)
-                ),
-                None => format!(
-                    "      if (event.type === {}) return report({arguments});",
-                    js(&event.name)
-                ),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let identity = if conversation_expression.is_none() {
-        String::new()
-    } else {
-        "\n  const roots = new Set();\n  const note = (info) => {\n    if (!info?.id) return;\n    \
-         if (info.parentID) roots.delete(info.id); else roots.add(info.id);\n  };"
-            .to_string()
     };
-    let identity_branches = if conversation_expression.is_none() {
-        String::new()
-    } else {
-        "      if (event.type === \"session.created\" || event.type === \"session.updated\") \
-         return note(event.properties?.info);\n      if (event.type === \"session.deleted\") \
-         return roots.delete(event.properties?.info?.id);\n"
-            .to_string()
+    let branches = |root: &str, indent: &str, statement: &dyn Fn(String) -> String| {
+        events
+            .iter()
+            .map(|event| {
+                let mut arguments = js(&event.state);
+                if let Some(path) = conversation {
+                    arguments.push_str(&format!(", {}", payload_path(root, path)));
+                }
+                let condition = match &event.matcher {
+                    Some(matcher) => format!(
+                        "event.type === {} && event.{root}?.status?.type === {}",
+                        js(&event.name),
+                        js(matcher)
+                    ),
+                    None => format!("event.type === {}", js(&event.name)),
+                };
+                format!("{indent}if ({condition}) {}", statement(format!("report({arguments})")))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
+    let server_branches = branches("properties", "        ", &|call| format!("return {call};"));
+    // Bun's `$` runs only once awaited. OpenCode 1 awaits what the `event` hook
+    // returns; nothing awaits a call made inside the `setup` loop, so it must.
+    let setup_branches =
+        branches("data", "        ", &|call| format!("{{ await {call}; continue; }}"));
 
-    let report_body = daemon_report_body("$", conversation_expression.is_some(), "    ");
-    let report_parameters = if conversation_expression.is_none() {
-        "(state)"
+    let tracks_conversation = conversation.is_some();
+    let report_body = daemon_report_body("$", tracks_conversation, "    ");
+    let (reporter, bindings, server_identity, setup_identity) = if tracks_conversation {
+        (
+            format!(
+                "const reporter = () => {{\n  \
+                 const roots = new Set();\n  \
+                 const children = new Set();\n  \
+                 const note = (id, parentID) => {{\n    \
+                 if (!id) return;\n    \
+                 if (parentID) children.add(id); else roots.add(id);\n  \
+                 }};\n  \
+                 const forget = (id) => {{\n    \
+                 roots.delete(id);\n    \
+                 children.delete(id);\n  \
+                 }};\n  \
+                 const report = (state, conversation) => {{\n    \
+                 if (state === \"done\" && children.has(conversation)) return;\n\
+                 {report_body}\n  \
+                 }};\n  \
+                 return {{ note, forget, report }};\n\
+                 }};"
+            ),
+            "{ note, forget, report }",
+            "        if (event.type === \"session.created\" || event.type === \"session.updated\") \
+             return note(event.properties?.info?.id, event.properties?.info?.parentID);\n        \
+             if (event.type === \"session.deleted\") return forget(event.properties?.info?.id);\n",
+            "        if (event.type === \"session.created\") \
+             { note(event.data?.sessionID, event.data?.parentID); continue; }\n        \
+             if (event.type === \"session.deleted\") { forget(event.data?.sessionID); continue; }\n",
+        )
     } else {
-        "(state, conversation)"
-    };
-
-    format!(
-        "// termio agent status — reports OpenCode session lifecycle to termio.\n\
-         // Socket marker: {SOCKET_MARKER}\n\
-         const server = async ({{ $ }}) => {{\n  \
-         {}{}{identity}\n  \
-         const report = {report_parameters} => {{\n\
-         {report_body}\n  \
-         }};\n  \
-         return {{\n    \
-         event: async ({{ event }}) => {{\n\
-         {identity_branches}{branches}\n    \
-         }},\n  \
-         }};\n\
-         }};\n\
-         export default {{ id: \"termio-status-v1\", server, setup() {{}} }};",
-        cli_declaration(request),
-        session_declaration()
-    )
-}
-
-/// OpenCode 2 plugin: the same lifecycle report as [`open_code_source`], spoken
-/// through the rewritten v2 plugin API. Verified against the shipped
-/// `@opencode-ai/plugin@0.0.0-beta-19242` and its client: the plugin is a
-/// default-exported `{ id, setup }` object (v2's `Plugin.define` is the
-/// identity function, so the file imports nothing from the package); events
-/// arrive through `ctx.event.subscribe`, an AsyncIterable, instead of a
-/// returned `event` hook; payload fields moved from `event.properties` to
-/// `event.data`; `session.idle` folded into `session.status` as
-/// `{ status: { type: "idle" } }`; and the permission event is
-/// `permission.asked`. Bun's `$` is imported from `"bun"` — plugins run
-/// in-process under Bun — so the report command is byte-identical to v1's.
-///
-/// Two shapes are deliberate. Setup returns without subscribing when no
-/// `TERMIOD_SESSION_ID` is present, so an opencode2 started outside termio does
-/// not hold an idle event stream open for the process's lifetime. And the
-/// returned cleanup aborts the subscription, because v2 unloads a plugin by
-/// running its cleanup — an orphaned iterator would keep reporting into a
-/// session that replaced its plugins.
-///
-/// Top-level session tracking works as in v1 on the flat v2 payload:
-/// `session.created` carries `sessionID` and, for subagent children,
-/// `parentID`, so only top-level ids are forwarded as the conversation.
-///
-/// `server` returns no hooks. OpenCode 1 also scans `plugins/` and, finding a
-/// default object without `server`, throws on load; with it the file is inert
-/// there and the v1 dialect's file does the reporting.
-fn open_code_2_source(
-    events: &[HookEvent],
-    conversation: Option<&str>,
-    request: &InstallRequest,
-) -> String {
-    let conversation_expression = conversation.map(|path| {
-        let mut expression = String::from("event");
-        for component in path.split('.') {
-            expression.push_str(&format!("?.{component}"));
-        }
-        expression
-    });
-
-    let branches = events
-        .iter()
-        .map(|event| {
-            let arguments = match &conversation_expression {
-                Some(expression) => format!("{}, {expression}", js(&event.state)),
-                None => js(&event.state),
-            };
-            match &event.matcher {
-                Some(matcher) => format!(
-                    "        if (event.type === {} && event.data?.status?.type === {}) {{ report({arguments}); continue; }}",
-                    js(&event.name),
-                    js(matcher)
-                ),
-                None => format!(
-                    "        if (event.type === {}) {{ report({arguments}); continue; }}",
-                    js(&event.name)
-                ),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let identity = if conversation_expression.is_none() {
-        String::new()
-    } else {
-        "\n    const roots = new Set();\n    const note = (data) => {\n      \
-         if (!data?.sessionID) return;\n      \
-         if (data.parentID) roots.delete(data.sessionID); else roots.add(data.sessionID);\n    };"
-            .to_string()
-    };
-    let identity_branches = if conversation_expression.is_none() {
-        String::new()
-    } else {
-        "        if (event.type === \"session.created\") { note(event.data); continue; }\n        \
-         if (event.type === \"session.deleted\") { roots.delete(event.data?.sessionID); continue; }\n"
-            .to_string()
-    };
-
-    let report_body = daemon_report_body("$", conversation_expression.is_some(), "      ");
-    let report_parameters = if conversation_expression.is_none() {
-        "(state)"
-    } else {
-        "(state, conversation)"
+        (
+            format!(
+                "const reporter = () => {{\n  \
+                 const report = (state) => {{\n\
+                 {report_body}\n  \
+                 }};\n  \
+                 return {{ report }};\n\
+                 }};"
+            ),
+            "{ report }",
+            "",
+            "",
+        )
     };
 
     format!(
         "// termio agent status — reports OpenCode session lifecycle to termio.\n\
          // Socket marker: {SOCKET_MARKER}\n\
          import {{ $ }} from \"bun\";\n\
+         {}\n\
+         const session = process.env.TERMIOD_SESSION_ID;\n\
+         {reporter}\n\
          export default {{\n  \
          id: \"termio-status\",\n  \
-         server: async () => ({{}}),\n  \
+         async server() {{\n    \
+         if (!session) return {{}};\n    \
+         const {bindings} = reporter();\n    \
+         return {{\n      \
+         event: async ({{ event }}) => {{\n\
+         {server_identity}{server_branches}\n      \
+         }},\n    \
+         }};\n  \
+         }},\n  \
          async setup(ctx) {{\n    \
-         {}\n    \
-         const session = process.env.TERMIOD_SESSION_ID;\n    \
-         if (!session) return;{identity}\n    \
-         const report = {report_parameters} => {{\n\
-         {report_body}\n    \
-         }};\n    \
+         if (!session) return;\n    \
+         const {bindings} = reporter();\n    \
          const abort = new AbortController();\n    \
          (async () => {{\n      \
          for await (const event of ctx.event.subscribe({{ signal: abort.signal }})) {{\n\
-         {identity_branches}{branches}\n      \
+         {setup_identity}{setup_branches}\n      \
          }}\n    \
          }})().catch(() => {{}});\n    \
          return () => abort.abort();\n  \
@@ -411,22 +370,16 @@ mod tests {
     fn opencode_spec() -> crate::agent::manifest::HookSpec {
         spec_of(
             r#"{"id":"opencode","name":"OpenCode","hooks":{"type":"plugin",
-                "dir":"~/.config/opencode/plugin","dialect":"opencode",
-                "conversation":"properties.sessionID","events":[
-                  {"on":"session.status","state":"working","matcher":"busy"},
-                  {"on":"session.idle","state":"done"},
-                  {"on":"permission.updated","state":"attention"}]}}"#,
-        )
-    }
-
-    fn opencode2_spec() -> crate::agent::manifest::HookSpec {
-        spec_of(
-            r#"{"id":"opencode2","name":"OpenCode 2","hooks":{"type":"plugin",
-                "dir":"~/.config/opencode/plugins","dialect":"opencode2",
-                "conversation":"data.sessionID","events":[
+                "dir":"~/.config/opencode/plugins","dialect":"opencode",
+                "conversation":"sessionID","events":[
                   {"on":"session.status","state":"working","matcher":"busy"},
                   {"on":"session.status","state":"done","matcher":"idle"},
-                  {"on":"permission.asked","state":"attention"}]}}"#,
+                  {"on":"session.execution.started","state":"working"},
+                  {"on":"session.execution.succeeded","state":"done"},
+                  {"on":"session.execution.failed","state":"done"},
+                  {"on":"session.execution.interrupted","state":"done"},
+                  {"on":"permission.asked","state":"attention"},
+                  {"on":"permission.replied","state":"working"}]}}"#,
         )
     }
 
@@ -466,7 +419,6 @@ mod tests {
     fn one_template_serves_both_machines() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
-            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {
@@ -502,73 +454,66 @@ mod tests {
             ),
             r#"// termio agent status — reports OpenCode session lifecycle to termio.
 // Socket marker: agent-status.sock
-const server = async ({ $ }) => {
-  const cli = "\/opt\/termiod";
-  const session = process.env.TERMIOD_SESSION_ID;
+import { $ } from "bun";
+const cli = "\/opt\/termiod";
+const session = process.env.TERMIOD_SESSION_ID;
+const reporter = () => {
   const roots = new Set();
-  const note = (info) => {
-    if (!info?.id) return;
-    if (info.parentID) roots.delete(info.id); else roots.add(info.id);
+  const children = new Set();
+  const note = (id, parentID) => {
+    if (!id) return;
+    if (parentID) children.add(id); else roots.add(id);
+  };
+  const forget = (id) => {
+    roots.delete(id);
+    children.delete(id);
   };
   const report = (state, conversation) => {
+    if (state === "done" && children.has(conversation)) return;
     if (!session) return;
     if (conversation && roots.has(conversation)) {
       return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
     }
     return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
   };
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.created" || event.type === "session.updated") return note(event.properties?.info);
-      if (event.type === "session.deleted") return roots.delete(event.properties?.info?.id);
-      if (event.type === "session.status" && event.properties?.status?.type === "busy") return report("working", event?.properties?.sessionID);
-      if (event.type === "session.idle") return report("done", event?.properties?.sessionID);
-      if (event.type === "permission.updated") return report("attention", event?.properties?.sessionID);
-    },
-  };
+  return { note, forget, report };
 };
-export default { id: "termio-status-v1", server, setup() {} };"#
-        );
-    }
-
-    #[test]
-    fn the_opencode2_plugin_renders_exactly() {
-        assert_eq!(
-            rendered(
-                HookDialect::OpenCode2Plugin,
-                &opencode2_spec(),
-                &device_request("/opt/termiod")
-            ),
-            r#"// termio agent status — reports OpenCode session lifecycle to termio.
-// Socket marker: agent-status.sock
-import { $ } from "bun";
 export default {
   id: "termio-status",
-  server: async () => ({}),
+  async server() {
+    if (!session) return {};
+    const { note, forget, report } = reporter();
+    return {
+      event: async ({ event }) => {
+        if (event.type === "session.created" || event.type === "session.updated") return note(event.properties?.info?.id, event.properties?.info?.parentID);
+        if (event.type === "session.deleted") return forget(event.properties?.info?.id);
+        if (event.type === "session.status" && event.properties?.status?.type === "busy") return report("working", event.properties?.sessionID);
+        if (event.type === "session.status" && event.properties?.status?.type === "idle") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.started") return report("working", event.properties?.sessionID);
+        if (event.type === "session.execution.succeeded") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.failed") return report("done", event.properties?.sessionID);
+        if (event.type === "session.execution.interrupted") return report("done", event.properties?.sessionID);
+        if (event.type === "permission.asked") return report("attention", event.properties?.sessionID);
+        if (event.type === "permission.replied") return report("working", event.properties?.sessionID);
+      },
+    };
+  },
   async setup(ctx) {
-    const cli = "\/opt\/termiod";
-    const session = process.env.TERMIOD_SESSION_ID;
     if (!session) return;
-    const roots = new Set();
-    const note = (data) => {
-      if (!data?.sessionID) return;
-      if (data.parentID) roots.delete(data.sessionID); else roots.add(data.sessionID);
-    };
-    const report = (state, conversation) => {
-      if (!session) return;
-      if (conversation && roots.has(conversation)) {
-        return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
-      }
-      return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
-    };
+    const { note, forget, report } = reporter();
     const abort = new AbortController();
     (async () => {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
-        if (event.type === "session.created") { note(event.data); continue; }
-        if (event.type === "session.deleted") { roots.delete(event.data?.sessionID); continue; }
-        if (event.type === "session.status" && event.data?.status?.type === "busy") { report("working", event?.data?.sessionID); continue; }
-        if (event.type === "session.status" && event.data?.status?.type === "idle") { report("done", event?.data?.sessionID); continue; }
-        if (event.type === "permission.asked") { report("attention", event?.data?.sessionID); continue; }
+        if (event.type === "session.created") { note(event.data?.sessionID, event.data?.parentID); continue; }
+        if (event.type === "session.deleted") { forget(event.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "busy") { await report("working", event.data?.sessionID); continue; }
+        if (event.type === "session.status" && event.data?.status?.type === "idle") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.started") { await report("working", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.succeeded") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.failed") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "session.execution.interrupted") { await report("done", event.data?.sessionID); continue; }
+        if (event.type === "permission.asked") { await report("attention", event.data?.sessionID); continue; }
+        if (event.type === "permission.replied") { await report("working", event.data?.sessionID); continue; }
       }
     })().catch(() => {});
     return () => abort.abort();
@@ -618,6 +563,19 @@ export default (amp) => {
         );
     }
 
+    /// A manifest written when each OpenCode API had its own file named the
+    /// payload root in its locator. It renders the same file as today's.
+    #[test]
+    fn an_old_opencode_locator_renders_the_same_plugin() {
+        let request = device_request("/opt/termiod");
+        let current = rendered(HookDialect::OpenCodePlugin, &opencode_spec(), &request);
+        for old in ["properties.sessionID", "data.sessionID"] {
+            let mut spec = opencode_spec();
+            spec.conversation = Some(old.to_string());
+            assert_eq!(rendered(HookDialect::OpenCodePlugin, &spec, &request), current, "{old}");
+        }
+    }
+
     /// A plugin loaded outside a termiod session has no id, and reporting an
     /// empty one is a call the daemon rejects — silently, because the whole form
     /// is `.quiet().nothrow()`.
@@ -625,7 +583,6 @@ export default (amp) => {
     fn a_plugin_outside_a_session_reports_nothing() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
-            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {
@@ -642,7 +599,6 @@ export default (amp) => {
     fn every_generated_plugin_is_recognizable_as_ours() {
         for (dialect, spec) in [
             (HookDialect::OpenCodePlugin, opencode_spec()),
-            (HookDialect::OpenCode2Plugin, opencode2_spec()),
             (HookDialect::PiPlugin, pi_spec()),
             (HookDialect::AmpPlugin, amp_spec()),
         ] {

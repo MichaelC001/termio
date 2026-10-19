@@ -538,3 +538,14 @@ final class DeclaredAgentDemotionTests: XCTestCase {
         XCTAssertNil(store.agentExitNotice(for: session.id))
     }
 }
+
+final class SavedAgentIDTests: XCTestCase {
+    /// OpenCode 2 was folded into OpenCode. A session saved under the old id
+    /// relaunches as OpenCode, not as the plain-shell fallback.
+    func testAFoldedAgentIDDecodesAsTheAgentThatAbsorbedIt() throws {
+        // The catalog is the live one; a user agent that kept the id wins, by design.
+        try XCTSkipIf(AgentCatalog.shared.find(id: "opencode2") != nil, "a user agent owns opencode2")
+        let agent = try JSONDecoder().decode(AgentDefinition.self, from: Data(#""opencode2""#.utf8))
+        XCTAssertEqual(agent.id, "opencode")
+    }
+}

@@ -1026,7 +1026,7 @@ impl<'a> ScriptHookDirectory<'a> {
 // MARK: - The plugin dialects
 
 /// Agents whose integration is a single dropped-in file with no host config to
-/// merge: OpenCode loads a plugin from `~/.config/opencode/plugin`, Pi an
+/// merge: OpenCode loads a plugin from `~/.config/opencode/plugins`, Pi an
 /// extension from `~/.pi/agent/extensions`, Amp one from `~/.config/amp/plugins`.
 /// The source itself is [`super::plugin`]'s; this is the ownership and the write.
 ///
@@ -1035,9 +1035,9 @@ impl<'a> ScriptHookDirectory<'a> {
 struct PluginFile {
     path: String,
     contents: String,
-    /// The filename an earlier build used. Publishing the replacement and then
-    /// sweeping its predecessor is what keeps a rename from leaving the agent
-    /// loading two copies of the same plugin.
+    /// The paths an earlier build used. Publishing the replacement and then
+    /// sweeping its predecessors is what keeps a rename or a move from leaving
+    /// the agent loading two copies of the same plugin.
     legacy_paths: Vec<String>,
 }
 
@@ -1055,8 +1055,18 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents,
-            legacy_paths: vec![format!("{directory}/{legacy}")],
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, spec.dialect),
         })
+    }
+
+    fn legacy_paths(directory: &str, legacy: &str, dialect: HookDialect) -> Vec<String> {
+        let mut paths = vec![format!("{directory}/{legacy}")];
+        if let Some(parent) = Path::new(directory).parent() {
+            for moved in super::plugin::moved_from(dialect) {
+                paths.push(parent.join(moved).display().to_string());
+            }
+        }
+        paths
     }
 
     /// The uninstall form: it needs the paths and the ownership rule, not the
@@ -1066,7 +1076,7 @@ impl PluginFile {
         Some(PluginFile {
             path: format!("{directory}/{filename}"),
             contents: String::new(),
-            legacy_paths: vec![format!("{directory}/{legacy}")],
+            legacy_paths: PluginFile::legacy_paths(directory, legacy, dialect),
         })
     }
 
@@ -1082,9 +1092,39 @@ impl PluginFile {
         if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
-        // Publish the replacement before removing its predecessor.
+        // Publish the replacement before removing its predecessor. Any
+        // predecessor is removed, even a link to the destination, since left
+        // alone it loads the hook twice. A destination that links into one
+        // would dangle once that goes, so it becomes a real file first.
+        let destination_path = machine::expand(&self.path);
+        let legacy_identity = |legacy: &String| entry_identity(&machine::expand(legacy));
+        let chain = resolution_chain(&destination_path);
+        if chain
+            .iter()
+            .skip(1)
+            .any(|hop| self.legacy_paths.iter().any(|legacy| legacy_identity(legacy) == Some(*hop)))
+        {
+            write_atomically(&self.path, self.contents.as_bytes(), false)?;
+        }
+        // A predecessor that is the destination's own entry by another spelling
+        // (an override still naming the old directory, or that directory linked
+        // to the new one) is the hook just written, and sweeping it would
+        // delete the hook on every sync. Sharing the inode proves that only
+        // when the file has one name; a second hard link shares it too and
+        // must go. So an ambiguous one is removed, and whatever the sweep took
+        // from the destination is put back.
+        let destination = entry_identity(&destination_path);
         for legacy in &self.legacy_paths {
+            if destination.is_some()
+                && legacy_identity(legacy) == destination
+                && link_count(&destination_path) == Some(1)
+            {
+                continue;
+            }
             self.remove_if_ours(legacy);
+        }
+        if read_bytes(&self.path).as_deref() != Some(self.contents.as_bytes()) {
+            write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
         Ok(())
     }
@@ -1102,6 +1142,41 @@ impl PluginFile {
             _ => {}
         }
     }
+}
+
+/// What a directory entry is, however a path spells it: the device and inode
+/// `lstat` reports. A link is itself, not its target, and a case-insensitive
+/// volume's `TERMIO.js` is its `termio.js`, which no path comparison gets right.
+type EntryIdentity = (u64, u64);
+
+fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+/// How many names the entry itself has, links not followed.
+fn link_count(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|metadata| metadata.nlink())
+}
+
+/// Every directory entry a path passes through on its way to a file: its own,
+/// then each link's target in turn. Bounded like the kernel's own link limit,
+/// so a cycle ends instead of spinning.
+fn resolution_chain(path: &Path) -> Vec<EntryIdentity> {
+    let mut chain = Vec::new();
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        let Some(identity) = entry_identity(&current) else { break };
+        chain.push(identity);
+        let Ok(target) = std::fs::read_link(&current) else { break };
+        current = match current.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+    }
+    chain
 }
 
 // MARK: - The TOML block
@@ -1836,9 +1911,9 @@ pub(super) mod tests {
     fn opencode_spec() -> HookSpec {
         spec_of(
             r#"{"id":"opencode","name":"OpenCode","hooks":{"type":"plugin",
-                "dir":"~/.config/opencode/plugin","dialect":"opencode",
-                "conversation":"properties.sessionID",
-                "events":[{"on":"session.idle","state":"done"}]}}"#,
+                "dir":"~/.config/opencode/plugins","dialect":"opencode",
+                "conversation":"sessionID",
+                "events":[{"on":"session.status","state":"done","matcher":"idle"}]}}"#,
         )
     }
 
@@ -1906,6 +1981,234 @@ pub(super) mod tests {
             .uninstall();
         assert!(!directory.join("termio.js").exists());
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// OpenCode's plugin moved from `plugin/` to `plugins/`, where an OpenCode 2
+    /// file of ours also lived. Both versions load both directories, so the file
+    /// left in `plugin/` would report every turn twice: it goes, a user's does not.
+    #[test]
+    fn the_opencode_plugin_sweeps_its_old_directory() {
+        let root = scratch("opencode-moved");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let ours = format!("// Socket marker: {SOCKET_MARKER}\n// an older build\n");
+        std::fs::write(old.join("termio.js"), &ours).expect("fixture");
+        std::fs::write(new.join("termio.js"), &ours).expect("fixture");
+        let theirs = "export const mine = () => {};\n";
+        std::fs::write(old.join("termio-status.js"), theirs).expect("fixture");
+
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        PluginFile::new(&new.display().to_string(), &spec, &request)
+            .expect("a plugin dialect")
+            .install()
+            .expect("installs");
+
+        assert!(!old.join("termio.js").exists(), "the old file must go");
+        assert!(old.join("termio-status.js").exists(), "the user's file stays");
+        let source = std::fs::read_to_string(new.join("termio.js")).expect("read");
+        assert!(source.contains("async server()") && source.contains("async setup(ctx)"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An override written before the move still names `plugin/`. The file it
+    /// installs there is the destination, not a predecessor, so it stays.
+    #[test]
+    fn an_override_still_using_the_old_directory_keeps_its_plugin() {
+        let root = scratch("opencode-override");
+        let old = root.join("plugin");
+        std::fs::create_dir_all(&old).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(old.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        for _ in 0..2 {
+            PluginFile::new(&old.display().to_string(), &spec, &request)
+                .expect("a plugin dialect")
+                .install()
+                .expect("installs");
+        }
+        assert!(old.join("termio.js").exists(), "the installed plugin must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The old directory linked to the new one names the same file by another
+    /// spelling. It is still the hook just written, so it stays.
+    #[test]
+    fn an_old_directory_linked_to_the_new_one_keeps_the_plugin() {
+        let root = scratch("opencode-linked");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        PluginFile::new(&new.display().to_string(), &spec, &request)
+            .expect("a plugin dialect")
+            .install()
+            .expect("installs");
+        assert!(new.join("termio.js").exists(), "the installed plugin must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An override still naming `plugin/`, whose `termio.js` is a link to a
+    /// managed dotfile: the link is the destination, so it is never swept.
+    #[test]
+    fn a_destination_that_is_a_link_is_never_swept() {
+        let root = scratch("opencode-dest-link");
+        let old = root.join("plugin");
+        std::fs::create_dir_all(&old).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(old.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&old.display().to_string(), &spec, &request).expect("a plugin dialect");
+        let dotfile = root.join("dotfile.js");
+        std::fs::write(&dotfile, &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink(&dotfile, old.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(std::fs::symlink_metadata(old.join("termio.js")).is_ok(), "the destination link must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Both links at once: `plugin/` linked to `plugins/`, and the installed
+    /// `plugins/termio.js` a link to a dotfile. `plugin/termio.js` is then the
+    /// destination's own entry, so it stays.
+    #[test]
+    fn a_linked_directory_over_a_linked_destination_keeps_the_plugin() {
+        let root = scratch("opencode-both-links");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        let dotfile = root.join("dotfile.js");
+        std::fs::write(&dotfile, &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink(&dotfile, new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(std::fs::symlink_metadata(new.join("termio.js")).is_ok(), "the destination link must survive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The new file linked back to the old one. Kept, the old file loads the
+    /// hook a second time; deleted alone, the link dangles. The new file
+    /// becomes a real file and the old one goes.
+    #[test]
+    fn a_destination_linked_to_its_predecessor_becomes_a_real_file() {
+        let root = scratch("opencode-back-link");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("../plugin/termio.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
+        assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
+        assert!(!old.join("termio.js").exists(), "the old file must go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On a case-insensitive volume a link to `../plugin/TERMIO.js` reaches the
+    /// old `plugin/termio.js`. It is the same entry, so the destination still
+    /// becomes a real file before the old one goes.
+    #[test]
+    fn a_link_spelled_in_another_case_is_still_its_predecessor() {
+        let root = scratch("opencode-case");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::fs::write(old.join("termio.js"), "probe").expect("fixture");
+        let case_insensitive = old.join("TERMIO.js").exists();
+        if !case_insensitive {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("../plugin/TERMIO.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
+        assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
+        assert!(!old.join("termio.js").exists(), "the old file must go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A second hard link to the plugin is a separate name OpenCode loads
+    /// again, so it goes; the plugin itself stays.
+    #[test]
+    fn a_predecessor_hard_linked_to_the_new_file_is_removed() {
+        let root = scratch("opencode-hard-link");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        plugin.install().expect("installs");
+        std::fs::hard_link(new.join("termio.js"), old.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert!(!old.join("termio.js").exists(), "the second name must go");
+        assert_eq!(std::fs::read_to_string(new.join("termio.js")).expect("read"), plugin.contents);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `plugin/` linked to `plugins/`, whose `termio.js` links to its own
+    /// predecessor `termio-status.js`. Rewriting the destination must not
+    /// leave the sweep holding a stale identity that deletes it.
+    #[test]
+    fn a_rewritten_destination_survives_its_own_alias() {
+        let root = scratch("opencode-alias-rewrite");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::os::unix::fs::symlink(&new, root.join("plugin")).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(new.join("termio-status.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("termio-status.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        assert_eq!(std::fs::read_to_string(new.join("termio.js")).expect("read"), plugin.contents);
+        assert!(!new.join("termio-status.js").exists(), "the predecessor must go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A predecessor that is a link to the new file would make OpenCode load
+    /// the hook twice. Removing it unlinks the link and keeps the file.
+    #[test]
+    fn a_predecessor_linked_to_the_new_file_is_removed() {
+        let root = scratch("opencode-file-link");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&new).expect("fixture");
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let install = || {
+            PluginFile::new(&new.display().to_string(), &spec, &request)
+                .expect("a plugin dialect")
+                .install()
+                .expect("installs")
+        };
+        install();
+        std::os::unix::fs::symlink(new.join("termio.js"), new.join("termio-status.js")).expect("fixture");
+        install();
+        assert!(std::fs::symlink_metadata(new.join("termio-status.js")).is_err(), "the link must go");
+        assert!(new.join("termio.js").exists(), "the installed plugin must survive");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An agent that now reports its own status (OSC 7501) keeps its hook spec
