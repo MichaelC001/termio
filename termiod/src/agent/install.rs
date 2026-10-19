@@ -1101,16 +1101,16 @@ impl PluginFile {
         // that links into a predecessor would dangle once that goes, so it
         // becomes a real file first.
         let destination_path = machine::expand(&self.path);
-        let legacy_entries: Vec<Option<PathBuf>> = self
+        let legacy_entries: Vec<Option<EntryIdentity>> = self
             .legacy_paths
             .iter()
-            .map(|legacy| directory_entry(&machine::expand(legacy)))
+            .map(|legacy| entry_identity(&machine::expand(legacy)))
             .collect();
         let chain = resolution_chain(&destination_path);
-        if chain.iter().skip(1).any(|entry| legacy_entries.contains(&Some(entry.clone()))) {
+        if chain.iter().skip(1).any(|entry| legacy_entries.contains(&Some(*entry))) {
             write_atomically(&self.path, self.contents.as_bytes(), false)?;
         }
-        let destination = directory_entry(&destination_path);
+        let destination = entry_identity(&destination_path);
         for (legacy, entry) in self.legacy_paths.iter().zip(&legacy_entries) {
             if entry.is_some() && *entry == destination {
                 continue;
@@ -1135,25 +1135,28 @@ impl PluginFile {
     }
 }
 
-/// The directory entry a path names: its parent resolved through any links,
-/// plus its own name unresolved. Two spellings name the same entry exactly
-/// when these match, whatever the entry itself links to.
-fn directory_entry(path: &Path) -> Option<PathBuf> {
-    Some(std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?))
+/// What a directory entry is, however a path spells it: the device and inode
+/// `lstat` reports. A link is itself, not its target, and a case-insensitive
+/// volume's `TERMIO.js` is its `termio.js`, which no path comparison gets right.
+type EntryIdentity = (u64, u64);
+
+fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
 }
 
 /// Every directory entry a path passes through on its way to a file: its own,
 /// then each link's target in turn. Bounded like the kernel's own link limit,
 /// so a cycle ends instead of spinning.
-fn resolution_chain(path: &Path) -> Vec<PathBuf> {
+fn resolution_chain(path: &Path) -> Vec<EntryIdentity> {
     let mut chain = Vec::new();
     let mut current = path.to_path_buf();
     for _ in 0..40 {
-        let Some(entry) = directory_entry(&current) else { break };
-        let target = std::fs::read_link(&entry);
-        chain.push(entry.clone());
-        let Ok(target) = target else { break };
-        current = match entry.parent() {
+        let Some(identity) = entry_identity(&current) else { break };
+        chain.push(identity);
+        let Ok(target) = std::fs::read_link(&current) else { break };
+        current = match current.parent() {
             Some(parent) if target.is_relative() => parent.join(target),
             _ => target,
         };
@@ -2091,6 +2094,35 @@ pub(super) mod tests {
         let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
         std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
         std::os::unix::fs::symlink("../plugin/termio.js", new.join("termio.js")).expect("fixture");
+        plugin.install().expect("installs");
+        let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
+        assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
+        assert!(!old.join("termio.js").exists(), "the old file must go");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On a case-insensitive volume a link to `../plugin/TERMIO.js` reaches the
+    /// old `plugin/termio.js`. It is the same entry, so the destination still
+    /// becomes a real file before the old one goes.
+    #[test]
+    fn a_link_spelled_in_another_case_is_still_its_predecessor() {
+        let root = scratch("opencode-case");
+        let old = root.join("plugin");
+        let new = root.join("plugins");
+        std::fs::create_dir_all(&old).expect("fixture");
+        std::fs::create_dir_all(&new).expect("fixture");
+        std::fs::write(old.join("termio.js"), "probe").expect("fixture");
+        let case_insensitive = old.join("TERMIO.js").exists();
+        if !case_insensitive {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let mut spec = opencode_spec();
+        spec.directory = Some(new.display().to_string());
+        let request = device_request("/home/u/.local/bin/termiod");
+        let plugin = PluginFile::new(&new.display().to_string(), &spec, &request).expect("a plugin dialect");
+        std::fs::write(old.join("termio.js"), &plugin.contents).expect("fixture");
+        std::os::unix::fs::symlink("../plugin/TERMIO.js", new.join("termio.js")).expect("fixture");
         plugin.install().expect("installs");
         let installed = std::fs::symlink_metadata(new.join("termio.js")).expect("installed");
         assert!(installed.file_type().is_file(), "the installed plugin is a real file now");
