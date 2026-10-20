@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.59.1",
+    date: "2026-10-20",
+    title: "One button to edit or read",
+    changes: {
+      improved: [
+        "Markdown and HTML files switch between Preview and Edit with one button: a pencil to edit, a book to go back to reading.",
+      ],
+    },
+  },
+  {
     version: "0.59.0",
     date: "2026-10-19",
     title: "Drag sessions into groups",
