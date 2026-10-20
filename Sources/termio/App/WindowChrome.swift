@@ -139,7 +139,7 @@ enum ChromeGlyph {
         case .close: base * 0.8
         case .filter, .add: base * 0.85
         case .expand, .collapse: base * 0.87
-        case .edit, .view: base * 0.9
+        case .edit, .view, .bookOpen: base * 0.9
         default: base
         }
     }

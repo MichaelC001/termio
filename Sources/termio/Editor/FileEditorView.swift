@@ -70,8 +70,6 @@ struct FileEditorView: View {
     private enum Mode: Hashable { case edit, preview }
     /// Markdown and HTML open in Preview (a doc you mostly read); source stays one click away.
     @State private var mode: Mode
-    /// Slides the mode toggle's glass pill between Edit and Preview.
-    @Namespace private var modePillNamespace
 
     @State private var text = ""
     /// The text last written to disk, so auto-save only writes on a genuine change.
@@ -490,61 +488,27 @@ struct FileEditorView: View {
         // with the document text beneath it.
         .padding(.leading, 20)
         .padding(.trailing, 12)
-        // One explicit height for every file type: the mode pill is taller than the text row, so
-        // without the clamp a markdown header outgrows plain files'.
+        // One explicit height for every file type, so a header with buttons in it is no taller
+        // than one without.
         .frame(height: Self.headerHeight)
         .modifier(DetailHeaderTitlebarInset())
         .background(Color(nsColor: settings.terminalBackgroundColor))
         .animation(.easeOut(duration: 0.15), value: isDirty)
     }
 
-    /// Uniform header height across file types; the toggle's 26pt outer track sits
-    /// centered inside it with breathing room.
+    /// Uniform header height across file types, so a Markdown header sits level with a plain file's.
     private static let headerHeight: CGFloat = 32
 
-    /// The Edit/Preview switch in the app's glass-pill language — the same construction
-    /// as `GitChangesView`'s mode switch (own capsule track, Liquid Glass selection pill sliding
-    /// between segments via `matchedGeometryEffect`, flat fills pre-Tahoe), scaled to the
-    /// slim header. Hand-drawn for the same reason: a native segmented control has no
-    /// track to sit on over termio's transparent chrome.
+    /// Edit/Preview as one glyph button, the same as the maximize and close beside it, showing
+    /// where a click goes the way Obsidian's view toggle does: a pencil while reading, a book
+    /// while editing. A two-segment pill here was the one filled object in the header and
+    /// read heavier than the document under it.
     private var modeToggle: some View {
-        HStack(spacing: 0) {
-            modeSegment(.edit, icon: .edit, help: localized("Edit source"))
-            modeSegment(.preview, icon: .view, help: localized("Preview"))
+        let editing = mode == .edit
+        return ChromeIconButton(icon: editing ? .bookOpen : .edit,
+                                help: editing ? localized("Preview") : localized("Edit source")) {
+            mode = editing ? .preview : .edit
         }
-        .background { modePill }
-        .padding(2)
-        .background { modeTrack }
-        // The pill's slide is animated locally here; the mode is set WITHOUT
-        // `withAnimation` so the editor/preview content swaps instantly instead of
-        // cross-fading for the pill's whole duration.
-        .animation(.snappy(duration: 0.25), value: mode)
-    }
-
-    private func modeSegment(_ segment: Mode, icon: HugeIcon, help: String) -> some View {
-        let selected = mode == segment
-        return HugeIconView(icon: icon, size: ChromeGlyph.size(for: icon), color: selected ? .primary : .secondary,
-                                   lineWidthOverride: ChromeGlyph.lineWidth())
-            .frame(width: 30, height: 22)
-            .matchedGeometryEffect(id: segment, in: modePillNamespace)
-            // A filled hit shape so the whole segment — not just the icon's thin
-            // stroke — takes the click.
-            .contentShape(.capsule)
-            .onTapGesture { mode = segment }
-            .help(help)
-    }
-
-    // The selected pill: a flat fill, no glass and no drop shadow — the raised/glass pill cast a
-    // shadow that read as heavy chrome over the document. The fill alone (brighter than the track)
-    // is enough to show which segment is active.
-    private var modePill: some View {
-        Capsule(style: .continuous)
-            .fill(Color.primary.opacity(0.14))
-            .matchedGeometryEffect(id: mode, in: modePillNamespace, isSource: false)
-    }
-
-    private var modeTrack: some View {
-        Capsule(style: .continuous).fill(Color.primary.opacity(0.06))
     }
 
     /// An explicit save (⌘S): cancels the pending debounce and flushes the buffer to disk right
