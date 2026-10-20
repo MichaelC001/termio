@@ -499,15 +499,14 @@ struct FileEditorView: View {
     /// Uniform header height across file types, so a Markdown header sits level with a plain file's.
     private static let headerHeight: CGFloat = 32
 
-    /// Edit/Preview as one pencil toggle, the same glyph button as the maximize and close
-    /// beside it: Preview is the resting state, so only Edit needs a control, and its on chip
-    /// says which face is showing. A two-segment pill here was the one filled object in the
-    /// header and read heavier than the document under it.
+    /// Edit/Preview as one glyph button, the same as the maximize and close beside it, showing
+    /// where a click goes the way Obsidian's view toggle does: a pencil while reading, a book
+    /// while editing. A two-segment pill here was the one filled object in the header and
+    /// read heavier than the document under it.
     private var modeToggle: some View {
         let editing = mode == .edit
-        return ChromeIconButton(icon: .edit,
-                                help: editing ? localized("Preview") : localized("Edit source"),
-                                isOn: editing) {
+        return ChromeIconButton(icon: editing ? .bookOpen : .edit,
+                                help: editing ? localized("Preview") : localized("Edit source")) {
             mode = editing ? .preview : .edit
         }
     }
