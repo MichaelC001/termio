@@ -488,8 +488,8 @@ struct FileEditorView: View {
         // with the document text beneath it.
         .padding(.leading, 20)
         .padding(.trailing, 12)
-        // One explicit height for every file type: the mode pill is taller than the text row, so
-        // without the clamp a markdown header outgrows plain files'.
+        // One explicit height for every file type, so a header with buttons in it is no taller
+        // than one without.
         .frame(height: Self.headerHeight)
         .modifier(DetailHeaderTitlebarInset())
         .background(Color(nsColor: settings.terminalBackgroundColor))
