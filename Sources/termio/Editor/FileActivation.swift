@@ -31,9 +31,23 @@ enum FileActivation {
         return !isWebPage(url)
     }
 
+    /// Files the in-app preview can't render, but Quick Look can — video, audio, and the
+    /// office formats Finder's spacebar already plays. Cmd-clicking one of these in the terminal
+    /// pops the shared Quick Look panel instead of dropping the bytes into the text editor.
+    static func quickLooks(_ url: URL) -> Bool {
+        quickLookExtensions.contains(url.pathExtension.lowercased())
+    }
+
     private static let previewExtensions: Set<String> = [
         "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp", "icns", "svg",
         "pdf", "html", "htm",
+    ]
+
+    private static let quickLookExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "webm", "mkv", "avi",
+        "mp3", "m4a", "aac", "wav", "aiff", "aif", "flac",
+        "doc", "docx", "ppt", "pptx", "xls", "xlsx", "key", "pages", "numbers",
+        "rtf", "rtfd", "ttf", "otf", "woff", "woff2",
     ]
 }
 
