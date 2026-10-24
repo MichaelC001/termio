@@ -684,7 +684,7 @@ final class TunnelManager: ObservableObject {
             // than at a `brew install` for a binary we don't know the name of.
             if provider == .custom {
                 throw NSError(domain: "termio.tunnel", code: 4, userInfo: [
-                    NSLocalizedDescriptionKey: "custom relay command not found on PATH — check the command in Settings ▸ Mobile ▸ Custom Tunnel",
+                    NSLocalizedDescriptionKey: "custom relay command not found on PATH — check the command in Settings ▸ Server ▸ Mobile",
                 ])
             }
             throw NSError(domain: "termio.tunnel", code: 3, userInfo: [

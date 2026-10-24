@@ -1,87 +1,11 @@
 import CoreImage
 import SwiftUI
 
-/// Settings ▸ Mobile: what this Mac serves to phones — the companion port, the
-/// pairing token, the QR carrying both, and the tunnel fronting them (RFC §D9).
-///
-/// This lived inside a machine's pane for a while, on the argument that every
-/// line of it is a fact about *one machine*: this Mac's port, this Mac's token,
-/// the phones paired to this Mac. The scope reading was right; the placement it
-/// implied was not. Pairing is the one step a new user cannot guess at, and it
-/// was three levels down a tab named after something else — so nobody found it.
-///
-/// The tab came back with a machine **picker** on top, and that was the wrong
-/// repair: a picker is a mode, so the QR on screen belongs to a box the user has
-/// to remember rather than read, and scanning the wrong one is silent. It also
-/// still cost a row on the overwhelmingly common setup, where the only machine
-/// serving anything is the Mac you are looking at.
-///
-/// So: this Mac's serving *is* the page, and a remote host is a row that pushes
-/// its own. Same information, chosen by navigation instead of by a control, and
-/// on a roster of one there is nothing extra on screen at all.
-struct MobileSettingsTab: View {
-    @ObservedObject var store: TermioStore
-
-    /// The boxes other than this Mac that can serve a phone. Empty for most
-    /// setups, and then the whole second section is absent.
-    private var remoteHosts: [KnownDevice] {
-        DeviceRoster.known(in: store).filter { !$0.isLocal }
-    }
-
-    var body: some View {
-        Form {
-            DeviceServingSection()
-            if !remoteHosts.isEmpty {
-                Section {
-                    ForEach(remoteHosts) { machine in
-                        NavigationLink(value: ServingRoute(key: machine.settingsKey)) {
-                            HStack(spacing: 12) {
-                                HugeIconView(icon: .serverStack, size: 15, color: .secondary)
-                                    .frame(width: settingsRowIconWidth, alignment: .center)
-                                Text(machine.name)
-                                Spacer(minLength: 4)
-                            }
-                        }
-                    }
-                } header: {
-                    SectionHeaderLabel(title: localized("Other machines"))
-                } footer: {
-                    Text(localized("A phone can attach straight to one of these instead, and keep working when this Mac is asleep."))
-                        .font(.settingsDetail)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationDestination(for: ServingRoute.self) { route in
-            if let machine = remoteHosts.first(where: { $0.settingsKey == route.key }) {
-                Form { RemotePairingSection(machine: machine) }
-                    .formStyle(.grouped)
-                    .navigationTitle(machine.name)
-                    // Rebuilt per machine: the pane's whole state is one box's
-                    // invite, and carrying the previous box's QR into the next
-                    // would offer a working code for the wrong host.
-                    .id(route.key)
-            } else {
-                ContentUnavailableView {
-                    Text(localized("Host Unavailable"))
-                } description: {
-                    Text(localized("This host is no longer in your configuration."))
-                }
-            }
-        }
-    }
-}
-
-/// What a serving row pushes. Distinct from `DeviceRoute` so that a machine's
-/// *pane* and a machine's *serving* can never be confused on the settings
-/// window's shared navigation stack.
-struct ServingRoute: Hashable {
-    let key: String
-}
-
-/// The pane's one card: everything this Mac serves, under the machine's own name
-/// so the scope is on screen rather than assumed.
+/// What this Mac serves to phones — the companion port, the pairing token, the QR
+/// carrying both, and the tunnel fronting them (RFC §D9). A section of the Server
+/// pane: a phone attaches to a port this Mac serves, so it is a fact about the
+/// machine. It had a tab of its own while it sat three levels deep under Devices;
+/// Server is now first-level, so the QR is one click away inside it.
 struct DeviceServingSection: View {
     /// The reachable addresses, refreshed on open: Wi-Fi/Ethernet IPv4s
     /// first (the proven path), the Bonjour `.local` name as a fallback that
@@ -262,9 +186,7 @@ struct DeviceServingSection: View {
                 betaRow
             }
         } header: {
-            // The machine, not "Serving": this pane answers for exactly one Mac,
-            // and naming it is what keeps the settings from reading as app-wide.
-            SectionHeaderLabel(title: KnownDevice.thisMac.name)
+            SectionHeaderLabel(title: localized("Mobile"))
         } footer: {
             // Say plainly whose server the phone's traffic crosses, so the
             // "can I self-host the relay?" question is answered in the app: the
