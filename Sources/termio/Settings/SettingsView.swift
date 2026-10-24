@@ -146,8 +146,8 @@ struct SettingsView: View {
     /// fill covers the whole row — including the group gap the first row of a
     /// group carries.
     ///
-    /// The pill is a grey wash, not the accent: Termio marks state with ink, and a
-    /// solid blue bar was the loudest thing in a window whose job is to be calm.
+    /// The pill is the main sidebar's selection glass, not the accent: Termio marks
+    /// state with ink, and the same "this one" in both sidebars reads as one app.
     /// The selected row keeps the full-strength label and takes a medium weight.
     private func row(for tab: SettingsTab) -> some View {
         let isSelected = selection == tab
@@ -173,10 +173,11 @@ struct SettingsView: View {
         .foregroundStyle(Color.primary)
         .padding(.horizontal, settingsSidebarPillPadding)
         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.primary.opacity(0.07) : Color.clear)
-        )
+        .background {
+            if isSelected {
+                SelectionGlass(shape: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
         // Applied *after* the pill so the pill widens with the row rather than
         // sliding out from under it, and last so nothing downstream re-insets it.
         .padding(.leading, settingsSidebarPillInset - settingsSidebarBaseIndent)
