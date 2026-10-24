@@ -426,16 +426,31 @@ final class NavigatorToggleOverlay {
         store.$windowIsFullScreen
             .sink { [weak self] isFullScreen in self?.place(isFullScreen: isFullScreen) }
             .store(in: &observers)
-        // A maximized detail fills the window and has no slot for the toggle; the sidebar is put
-        // away for it anyway.
-        store.$inspectorMaximized
-            .sink { [weak host] maximized in host?.isHidden = maximized }
+        // A maximized detail fills the window and has no slot for the toggle — unless the
+        // sidebar has been brought back over it, whose row keeps one.
+        store.$inspectorMaximized.combineLatest(store.$sidebarVisible)
+            .sink { [weak host] maximized, sidebarVisible in host?.isHidden = maximized && !sidebarVisible }
             .store(in: &observers)
         // The traffic lights take their place after the window first shows (`TrafficLights`).
         DispatchQueue.main.async { [weak self, weak store] in
             guard let store else { return }
             self?.place(isFullScreen: store.windowIsFullScreen)
         }
+    }
+
+    /// Follows the traffic lights, which `TrafficLights` moves after the window first shows and
+    /// again whenever AppKit lays them out anew: placed only once, the toggle read their position
+    /// from before the first move and sat too far left of the slot the rows keep for it.
+    func follow(_ window: NSWindow, store: TermioStore) {
+        guard let zoom = window.standardWindowButton(.zoomButton) else { return }
+        zoom.postsFrameChangedNotifications = true
+        NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: zoom)
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak store] _ in
+                guard let store else { return }
+                self?.place(isFullScreen: store.windowIsFullScreen)
+            }
+            .store(in: &observers)
     }
 
     private func place(isFullScreen: Bool) {

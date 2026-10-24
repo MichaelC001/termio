@@ -745,6 +745,13 @@ final class TermioStore: ObservableObject {
     }
     nonisolated static let panelWidthKey = "cardPanelWidth"
 
+    /// Per-card ceilings on `panelWidth` while the sidebar is hidden: the width each open panel
+    /// showed when the sidebar started to hide, so the room hiding frees goes to the terminals
+    /// and no panel grows into it. Never persisted, and never written into `panelWidth` — a
+    /// card's constrained width is not the person's choice. Cleared once the sidebar is back
+    /// and when a panel's divider is dragged.
+    @Published var panelWidthCaps: [Session.ID: CGFloat] = [:]
+
     /// Whether the focused card's panel is open — the live inspector. Hosted panes read it
     /// to stand down while hidden: the inspector's view hierarchy stays alive while
     /// closed, which would otherwise leave the git pane's auto-refresh spawning

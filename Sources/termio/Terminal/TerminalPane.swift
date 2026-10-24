@@ -178,7 +178,7 @@ struct TerminalPane: View {
                 // ungrouped session has no split geometry and fills the pane.
                 let card = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
                 let panel = PaneCard.panelLayout(in: card, isOpen: store.openPanels.contains(id),
-                                                 width: store.panelWidth,
+                                                 width: panelWidth(for: id),
                                                  covers: slidePanels.covering.contains(id),
                                                  heldWidth: slidePanels.widths[id])
                 let rect = panel.terminal
@@ -337,8 +337,14 @@ struct TerminalPane: View {
         // pieces — the highlight slides, the preview must not.
         .animation(.easeInOut(duration: 0.15), value: store.paneHandleHover)
         // At the slide's first frame, while the bounds are still the ones it starts from.
-        .onChange(of: geometry.slide.map { [$0.from, $0.to] }) {
-            keepPanelWidthWhenHiding(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed)
+        .onChange(of: geometry.slide.map { [$0.from, $0.to] }) { previous, _ in
+            capPanelWidthsWhenHiding(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed)
+            // An expand that has landed: every card is back at the width its caps were taken at.
+            if let previous, previous[1] > previous[0], geometry.slide == nil { store.panelWidthCaps = [:] }
+        }
+        // The sidebar back by any other path (a divider dragged open, a maximized detail put back).
+        .onChange(of: store.sidebarVisible) { _, visible in
+            if visible, geometry.slide == nil, !store.panelWidthCaps.isEmpty { store.panelWidthCaps = [:] }
         }
     }
 
@@ -349,7 +355,7 @@ struct TerminalPane: View {
               store.visiblePaneIDs.contains(id) || zoomed else { return nil }
         let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
         let slidePanels = panelsThroughSlide(bounds: bounds, zoomed: zoomed)
-        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth,
+        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: panelWidth(for: id),
                                           covers: slidePanels.covering.contains(id),
                                           heldWidth: slidePanels.widths[id])
         let notched = cardNotch(card, in: bounds) != nil
@@ -366,7 +372,7 @@ struct TerminalPane: View {
     /// `widths`: every other panel keeps its width, and the terminal beside it takes the travel.
     /// Showing the sidebar can leave a card too narrow for the panel's width; that panel narrows
     /// in step with the slide, on its clock, to the width it will rest at. Hiding the sidebar never
-    /// widens a panel (see `keepPanelWidthWhenHiding`), so the room goes to the terminal.
+    /// widens a panel (see `capPanelWidthsWhenHiding`), so the room goes to the terminal.
     ///
     /// Both empty at rest.
     private func panelsThroughSlide(bounds: CGRect, zoomed: Bool)
@@ -386,7 +392,7 @@ struct TerminalPane: View {
             for id in store.openPanels {
                 let card = zoomed && id == store.selectedSessionID ? end : (frames[id] ?? end)
                 if PaneCard.panelFits(in: card) {
-                    fitted[paneMinX, default: [:]][id] = min(store.panelWidth, PaneCard.widestPanel(in: card))
+                    fitted[paneMinX, default: [:]][id] = min(panelWidth(for: id), PaneCard.widestPanel(in: card))
                 } else {
                     covering.insert(id)
                 }
@@ -402,17 +408,25 @@ struct TerminalPane: View {
         return (covering, widths)
     }
 
-    /// Hiding the sidebar hands its room to the terminal, never to the panel: the panel's width
-    /// becomes the one it shows now. Left at the wider width it was set to with the sidebar
-    /// hidden, the panel grew back to it as the slide landed, and narrowed again on the next show
-    /// — the toggle resizing a column it does not own, every time.
-    private func keepPanelWidthWhenHiding(bounds: CGRect, paneFrames: [Session.ID: CGRect], zoomed: Bool) {
-        guard let slide = geometry.slide, slide.to < slide.from,
-              let id = store.selectedSessionID, store.openPanels.contains(id) else { return }
-        let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
-        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth)
-        guard !layout.covers, let shown = layout.frame?.width, shown < store.panelWidth else { return }
-        store.panelWidth = shown
+    /// The width `id`'s panel asks for: the shared one, under its cap while the sidebar is hidden.
+    private func panelWidth(for id: Session.ID) -> CGFloat {
+        min(store.panelWidth, store.panelWidthCaps[id] ?? .infinity)
+    }
+
+    /// Hiding the sidebar hands its room to the terminals, never to the panels: each open panel
+    /// is capped at the width it shows now (`TermioStore.panelWidthCaps`). Fitted to the wider card
+    /// instead, a panel narrowed by the sidebar grew back as the slide landed and narrowed again on
+    /// the next show — the toggle resizing a column it does not own, every time.
+    private func capPanelWidthsWhenHiding(bounds: CGRect, paneFrames: [Session.ID: CGRect], zoomed: Bool) {
+        guard let slide = geometry.slide, slide.to < slide.from else { return }
+        var caps = store.panelWidthCaps
+        for id in store.openPanels {
+            let card = zoomed && id == store.selectedSessionID ? bounds : (paneFrames[id] ?? bounds)
+            let layout = PaneCard.panelLayout(in: card, isOpen: true, width: panelWidth(for: id))
+            guard !layout.covers, let shown = layout.frame?.width else { continue }
+            caps[id] = shown
+        }
+        if caps != store.panelWidthCaps { store.panelWidthCaps = caps }
     }
 
     /// The corner `card` leaves out for the window's controls (`PaneCard.notch`), if it is the
@@ -1953,6 +1967,7 @@ private struct PanelDividerHandle: View {
                 },
                 onChange: { delta in
                     guard let start = anchorWidth else { return }
+                    if !store.panelWidthCaps.isEmpty { store.panelWidthCaps = [:] }
                     store.panelWidth = min(max(start - delta, PaneCard.minimumPanelWidth),
                                            max(PaneCard.minimumPanelWidth, PaneCard.widestPanel(in: card)))
                 },

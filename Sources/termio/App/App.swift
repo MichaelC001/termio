@@ -245,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.setFrameAutosaveName(Self.mainWindowFrameAutosaveName)
         window.makeKeyAndOrderFront(nil)
         trafficLights = TrafficLights(window: window)
+        navigatorToggle?.follow(window, store: store)
         LaunchTrace.mark("window front")
         applyWindowTransparency()
         applyChromeAppearance()
