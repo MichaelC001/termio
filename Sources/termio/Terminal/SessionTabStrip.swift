@@ -345,10 +345,13 @@ private struct TabIconStack: View {
 /// An app-icon tile drawn as glass: an opaque base so fanned tiles hide the ones behind them,
 /// a sheen that fades down the face, and a rim lit at the top edge and dark at the bottom.
 struct GlassTile: View {
+    /// 6 suits the 20pt session tile; a larger tile wants a proportionally rounder
+    /// corner or it reads as a square with nicked edges.
+    var cornerRadius: CGFloat = 6
     @Environment(\.colorScheme) private var colorScheme
-    private let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let dark = colorScheme == .dark
         shape
             .fill(Color(nsColor: .windowBackgroundColor))
@@ -356,6 +359,14 @@ struct GlassTile: View {
                 shape.fill(LinearGradient(
                     colors: [.white.opacity(dark ? 0.20 : 0.9), .white.opacity(dark ? 0.04 : 0.35)],
                     startPoint: .top, endPoint: .bottom)))
+            // The light face falls off toward the bottom, over the sheen. The sheen
+            // and the lit rim are white, and on a white base — Settings' sidebar, a
+            // light theme's tab strip — they had nothing to be brighter than, so the
+            // tile read as a flat paper chip with a hairline. Dark needs no falloff:
+            // white already stands off a dark base.
+            .overlay(shape.fill(LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(dark ? 0 : 0.13)],
+                startPoint: .top, endPoint: .bottom)))
             .overlay(
                 shape.strokeBorder(LinearGradient(
                     stops: [

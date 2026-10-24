@@ -15,6 +15,9 @@ import SwiftUI
 /// `Set Up` now runs the same lifecycle loop here (`TermioStore.localReadyCheck`).
 struct ServerSettingsTab: View {
     @ObservedObject var settings: AppSettings
+    /// Owned by the settings window, so the sidebar's Server row and this pane
+    /// read one answer rather than probing twice and disagreeing.
+    let model: DevicePaneModel
 
     var body: some View {
         DevicePane(
@@ -29,7 +32,8 @@ struct ServerSettingsTab: View {
             keyToInstall: nil,
             onConnect: { _ in },
             onSetUpKey: { _, _ in },
-            onEditConfig: {}
+            onEditConfig: {},
+            model: model
         )
     }
 }

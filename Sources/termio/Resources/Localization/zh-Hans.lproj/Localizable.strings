@@ -222,6 +222,8 @@
 	<string>竖线</string>
 	<key>Base Branch Missing</key>
 	<string>找不到基础分支</string>
+	<key>Behavior</key>
+	<string>行为</string>
 	<key>Behind</key>
 	<string>落后</string>
 	<key>Binary File</key>
@@ -234,8 +236,8 @@
 	<string>方块</string>
 	<key>Blue</key>
 	<string>蓝色</string>
-	<key>Blur: %lld</key>
-	<string>模糊：%lld</string>
+	<key>Blur</key>
+	<string>模糊</string>
 	<key>Branch</key>
 	<string>分支</string>
 	<key>Bring All to Front</key>
@@ -522,8 +524,6 @@
 	<string>断开 GitHub 连接</string>
 	<key>Discord</key>
 	<string>Discord</string>
-	<key>Discord, GitHub, and the WeChat group</key>
-	<string>Discord、GitHub 与微信群</string>
 	<key>Done</key>
 	<string>完成</string>
 	<key>Don’t Compare</key>
@@ -538,6 +538,8 @@
 	<string>把一个 Agent 拖到另一个上可重新排序。就绪状态涵盖你使用的每台设备。</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>拖动列表可以调整 Agent 出现的顺序。</string>
+	<key>Drop a Ghostty theme file into the Themes folder to add your own.</key>
+	<string>把 Ghostty 格式的主题文件放进主题文件夹，即可添加自己的主题。</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>复制到主题文件夹</string>
 	<key>Edit</key>
@@ -666,8 +668,6 @@
 	<string>找不到主机</string>
 	<key>Hosts</key>
 	<string>主机</string>
-	<key>How much output each session keeps for scrolling back. Agents are verbose, so the default is generous.</key>
-	<string>每个会话保留多少输出供回滚查看。Agent 输出较多，默认值因此较为宽裕。</string>
 	<key>Icon</key>
 	<string>图标</string>
 	<key>Ignore %lld Selected Files (Add to .gitignore)</key>
@@ -722,16 +722,12 @@
 	<string>密钥文件</string>
 	<key>Keyboard</key>
 	<string>键盘</string>
-	<key>Keyboard shortcuts for every command</key>
-	<string>所有命令的快捷键</string>
 	<key>Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt.</key>
 	<string>钥匙串访问已被拒绝，套餐限额保持隐藏。再次允许会重新显示 macOS 提示。</string>
 	<key>Labels</key>
 	<string>标签</string>
 	<key>Language</key>
 	<string>语言</string>
-	<key>Language, GitHub, and privacy</key>
-	<string>语言、GitHub 和隐私</string>
 	<key>Language, notifications, and GitHub</key>
 	<string>语言、通知和 GitHub</string>
 	<key>Last 30 days</key>
@@ -754,12 +750,12 @@
 	<string>允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。</string>
 	<key>Light</key>
 	<string>浅色</string>
+	<key>Line height</key>
+	<string>行高</string>
 	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own.</key>
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。</string>
 	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.</key>
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。此处未设置的字体与主题项将沿用你的 Ghostty 配置。</string>
-	<key>Line height: %@×</key>
-	<string>行高：%@×</string>
 	<key>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</key>
 	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
 	<key>Live agent status</key>
@@ -994,8 +990,6 @@
 	<string>仅显示前 %lld 项——请更新此设备上的 termio 以列出全部。</string>
 	<key>Opacity</key>
 	<string>不透明度</string>
-	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
-	<string>不透明度低于 100% 时会透出桌面，模糊可使其更柔和；完全不透明时窗口保持实色。</string>
 	<key>Open</key>
 	<string>打开</string>
 	<key>Open Link</key>
@@ -1042,16 +1036,14 @@
 	<string>其他设备</string>
 	<key>Overwrite</key>
 	<string>覆盖</string>
-	<key>Padding: %lld pt</key>
-	<string>边距：%lld 点</string>
+	<key>Padding</key>
+	<string>边距</string>
 	<key>Pages</key>
 	<string>页面</string>
 	<key>Pair</key>
 	<string>配对</string>
 	<key>Pair a Phone…</key>
 	<string>配对手机…</string>
-	<key>Pair your iPhone with the machines you work on</key>
-	<string>把 iPhone 与你正在使用的机器配对</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>切换后，已配对的 iPhone 需要重新扫码。</string>
 	<key>Pairing Token</key>
@@ -1078,8 +1070,6 @@
 	<string>选择这个分支将要合入的分支。</string>
 	<key>Pin</key>
 	<string>固定</string>
-	<key>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
-	<string>将 Termio 固定为浅色或深色外观，或跟随系统。下方的浅色与深色终端主题会应用到对应的外观。</string>
 	<key>Pin to Top</key>
 	<string>固定到顶部</string>
 	<key>Pink</key>
@@ -1266,10 +1256,8 @@
 	<string>正在保存到 %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>用微信扫描二维码加入中文社区群。</string>
-	<key>Scrollback history and text selection</key>
-	<string>回滚历史与文本选择</string>
-	<key>Scrollback: %lld MB</key>
-	<string>回滚：%lld MB</string>
+	<key>Scrollback</key>
+	<string>回滚</string>
 	<key>Search</key>
 	<string>搜索</string>
 	<key>Search %@</key>
@@ -1294,8 +1282,6 @@
 	<string>选择一个会话以查看其信息。</string>
 	<key>Select text in the document, then choose Highlight.</key>
 	<string>在文稿中选中文本，然后从右键菜单中选取标注颜色。</string>
-	<key>Selection</key>
-	<string>选择</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
 	<string>每天发送一条匿名事件，用于统计活跃安装数。不含项目路径、终端内容和账号。</string>
 	<key>Server</key>
@@ -1356,8 +1342,8 @@
 	<string>使用 %@ 登录</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>使用 ssh 默认提供的密钥登录。</string>
-	<key>Size: %lld pt</key>
-	<string>大小：%lld 磅</string>
+	<key>Size</key>
+	<string>大小</string>
 	<key>Skill</key>
 	<string>技能</string>
 	<key>Skill installed</key>
@@ -1426,8 +1412,6 @@
 	<string>终端</string>
 	<key>Terminal default</key>
 	<string>终端默认</string>
-	<key>Terminal font</key>
-	<string>终端字体</string>
 	<key>Terminals</key>
 	<string>终端</string>
 	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.</key>
@@ -1446,8 +1430,6 @@
 	<string>无论上面的 Agent 在哪里运行，Termio 都会通知你。</string>
 	<key>Termio server</key>
 	<string>Termio server</string>
-	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
-	<string>Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。</string>
 	<key>Test</key>
 	<string>测试</string>
 	<key>Test Connection</key>
@@ -1458,8 +1440,6 @@
 	<string>截至上次 fetch，基础分支上有当前分支还没有的提交。</string>
 	<key>The clone runs on %@ and opens as a project there.</key>
 	<string>克隆在 %@ 上执行，并作为那台机器上的项目打开。</string>
-	<key>The coding agents offered when you start a session</key>
-	<string>新建会话时可以选用的编程 Agent</string>
 	<key>The device couldn’t read this checkout.</key>
 	<string>该设备无法读取这个检出。</string>
 	<key>The device couldn’t read this comparison.</key>
@@ -1470,10 +1450,10 @@
 	<string>无法添加忽略规则。</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
 	<string>安装页面 —— 无论装在哪台机器上都是同一个页面。</string>
+	<key>The light and dark themes below follow this choice.</key>
+	<string>下方的浅色与深色主题随此选择切换。</string>
 	<key>The listing failed.</key>
 	<string>读取目录失败。</string>
-	<key>The machine Termio is running on</key>
-	<string>Termio 正在运行的设备</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>这台机器没有返回该文件夹的内容。</string>
 	<key>The machine couldn’t read this checkout.</key>
@@ -1482,10 +1462,8 @@
 	<string>该设备无法读取这个对比。</string>
 	<key>The machine everything filed under this workspace lives on.</key>
 	<string>归入这个工作区的一切所在的机器。</string>
-	<key>The machines you reach from this Mac</key>
-	<string>你从这台 Mac 连接的设备</string>
-	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
-	<string>项目与会话列表。与终端字体分开设置，无需等宽字体。</string>
+	<key>The project and session list.</key>
+	<string>项目与会话列表。</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
 	<key>The read failed.</key>
@@ -1508,12 +1486,8 @@
 	<string>工作树中没有任何更改。</string>
 	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
 	<string>这个工作区是空的。之后打开的项目和会话会归入别的工作区。</string>
-	<key>The workspaces your projects and sessions are filed under</key>
-	<string>你的项目和会话归入的工作区</string>
 	<key>Theme</key>
 	<string>主题</string>
-	<key>Theme, fonts, cursor, and window</key>
-	<string>主题、字体、光标与窗口</string>
 	<key>Themes</key>
 	<string>主题</string>
 	<key>Thicken glyphs</key>
@@ -1606,8 +1580,6 @@
 	<string>切换侧栏</string>
 	<key>Token usage</key>
 	<string>Token 用量</string>
-	<key>Token usage for your connected agents</key>
-	<string>已连接 Agent 的 token 用量</string>
 	<key>Try Again</key>
 	<string>重试</string>
 	<key>Try another search term.</key>
@@ -1662,8 +1634,6 @@
 	<string>%@ 上的版本 %@。断开连接后，会话仍在那里继续运行。</string>
 	<key>Vertical</key>
 	<string>纵向</string>
-	<key>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</key>
-	<string>纵向：在侧边栏里列出每个分组的会话。横向：侧边栏只列分组，所选分组的会话作为标签页显示在终端上方。</string>
 	<key>View</key>
 	<string>显示</string>
 	<key>View on %@</key>
@@ -1680,12 +1650,8 @@
 	<string>Termio 写入 %@ 上每个 Agent 配置里的内容，让它能回报状态。手工改过某个配置后请重新安装。</string>
 	<key>What the daemon said</key>
 	<string>守护进程的原始输出</string>
-	<key>What this Mac runs, and what Termio installed on it</key>
-	<string>这台 Mac 运行什么，以及 Termio 装了什么</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>这个工作区在侧栏中显示的名称。</string>
-	<key>When on, selecting text copies it straight to the clipboard.</key>
-	<string>开启后，选中文本会直接拷贝到剪贴板。</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
 	<string>每台设备从哪里启动 %@。留空则使用其默认值。</string>
 	<key>Where each machine launches %@ from. Leave empty to use its default.</key>

@@ -30,8 +30,7 @@ struct GeneralSettingsTab: View {
                 Toggle(isOn: $settings.githubIntegrationEnabled) {
                     SettingsLabel(
                         title: localized("GitHub"),
-                        subtext: localized("Shows the Issues pane in the inspector for projects whose remote is on GitHub."),
-                        titleFont: .headline
+                        subtext: localized("Shows the Issues pane in the inspector for projects whose remote is on GitHub.")
                     )
                 }
                 .toggleStyle(.switch)
@@ -42,8 +41,7 @@ struct GeneralSettingsTab: View {
                 Toggle(isOn: $settings.analyticsEnabled) {
                     SettingsLabel(
                         title: localized("Usage statistics"),
-                        subtext: localized("Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account."),
-                        titleFont: .headline
+                        subtext: localized("Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.")
                     )
                 }
                 .toggleStyle(.switch)

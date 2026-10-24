@@ -37,7 +37,8 @@ struct DevicePane: View {
         keyToInstall: SSHPublicKey?,
         onConnect: @escaping (String) -> Void,
         onSetUpKey: @escaping (String, String) -> Void,
-        onEditConfig: @escaping () -> Void
+        onEditConfig: @escaping () -> Void,
+        model: DevicePaneModel? = nil
     ) {
         self.machine = machine
         self.host = host
@@ -46,15 +47,14 @@ struct DevicePane: View {
         self.onConnect = onConnect
         self.onSetUpKey = onSetUpKey
         self.onEditConfig = onEditConfig
-        _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
+        // This Mac's model is handed in by the settings window, which also shows
+        // its state on the sidebar row; a remote host's pane owns its own.
+        _model = StateObject(wrappedValue: model ?? DevicePaneModel(device: machine, settings: settings))
     }
 
     var body: some View {
         Form {
-            Section { header }
-            Section { outcome } header: {
-                SectionHeaderLabel(title: localized("Status"))
-            }
+            Section { hero }
             reachedBySection
             serverSection
             // Only for a box. This Mac's answer to "which agent CLIs are here,
@@ -81,58 +81,49 @@ struct DevicePane: View {
         }
     }
 
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            // One glyph for both entrances, and no branch: what this pane is
-            // about is the machine's termiod, which this Mac runs as much as a
-            // VPS does. Line ink rather than a filled accent square — the
-            // accent colour is reserved for controls, and a hero mark is not one.
-            HugeIconView(icon: .serverStack, size: 22, color: .secondary)
-                .frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(machine.name)
-                    .font(.title3.weight(.semibold))
-                Text(machine.isLocal
-                     ? localized("The machine Termio is running on")
-                     : host?.destinationLabel ?? localized("Reached over SSH"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let alias = machine.alias {
-                Spacer(minLength: 8)
-                Button(localized("Connect")) { onConnect(alias) }
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
     // MARK: D6 — one outcome
 
-    @ViewBuilder
-    private var outcome: some View {
+    /// The machine, its state and the one thing to do about it, in the card the
+    /// page opens on. They were two cards — a name with a line that said nothing
+    /// ("The machine Termio is running on") and a Status section below it — so
+    /// the first thing on the page was the least informative and the state sat a
+    /// header further down.
+    private var hero: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                SettingsLabel(title: outcomeTitle, subtext: outcomeSubtext, titleFont: .headline)
-                Spacer(minLength: 8)
-                if model.readiness.isBusy {
-                    ProgressView().controlSize(.small)
-                } else if case .ready = model.readiness {
-                    Button(localized("Check Again")) { Task { await model.check() } }
-                } else if case .staged = model.readiness {
-                    // The work holding the old daemon up is named right beside
-                    // this, so the choice is informed; the daemon otherwise
-                    // takes the update the next time it stops on its own.
-                    Button(localized("Update Anyway")) { Task { await model.setUp(force: true) } }
-                } else {
-                    Button(localized("Set Up \(machine.name)")) { Task { await model.setUp() } }
+            HStack(spacing: 12) {
+                // One glyph for both entrances, and no branch: what this pane is
+                // about is the machine's termiod, which this Mac runs as much as
+                // a VPS does. On the sidebar's glass tile, at hero size.
+                HugeIconView(icon: .serverStack, size: 18, color: .primary)
+                    .frame(width: 34, height: 34)
+                    .background(GlassTile(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(machine.name)
+                        .font(.body.weight(.semibold))
+                    Text(statusLine)
+                        .font(.settingsDetail)
+                        .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
+                action
+                if let alias = machine.alias {
+                    Button(localized("Connect")) { onConnect(alias) }
+                }
+            }
+            // The sentence under the state is only worth a line when it says
+            // something the state does not: why a machine is blocked, what an
+            // update waits on, or that Ready has no agent to run.
+            if model.readiness != .ready || !model.hasAgentAvailable {
+                Text(outcomeSubtext)
+                    .font(.settingsDetail)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let feedback = model.feedback {
                 InstallFeedbackLabel(feedback: feedback)
             }
         }
+        .padding(.vertical, 2)
         .task {
             // Asked when the pane opens, not when the roster draws: one machine,
             // because someone is looking at it.
@@ -144,6 +135,29 @@ struct DevicePane: View {
             // only button offered would be Check Again. The cache draws; the
             // probe decides.
             await model.check()
+        }
+    }
+
+    /// The state, and for a box the address it is reached at, which used to be
+    /// the header's whole second line.
+    private var statusLine: String {
+        guard !machine.isLocal else { return outcomeTitle }
+        return "\(outcomeTitle) · \(host?.destinationLabel ?? localized("Reached over SSH"))"
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        if model.readiness.isBusy {
+            ProgressView().controlSize(.small)
+        } else if case .ready = model.readiness {
+            Button(localized("Check Again")) { Task { await model.check() } }
+        } else if case .staged = model.readiness {
+            // The work holding the old daemon up is named right beside this, so
+            // the choice is informed; the daemon otherwise takes the update the
+            // next time it stops on its own.
+            Button(localized("Update Anyway")) { Task { await model.setUp(force: true) } }
+        } else {
+            Button(localized("Set Up \(machine.name)")) { Task { await model.setUp() } }
         }
     }
 
@@ -226,8 +240,7 @@ struct DevicePane: View {
                     SettingsLabel(
                         title: host?.destinationLabel ?? machine.name,
                         subtext: host?.identityFile.map { localized("Signs in with \($0)") }
-                            ?? localized("Signs in with the keys ssh offers by default."),
-                        titleFont: .headline
+                            ?? localized("Signs in with the keys ssh offers by default.")
                     )
                 }
                 if case .result(.wantsPassword) = probe { passwordAdvice }
@@ -236,8 +249,7 @@ struct DevicePane: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Host block"),
-                        subtext: localized("Opens the ~/.ssh/config entry this machine is defined in."),
-                        titleFont: .headline
+                        subtext: localized("Opens the ~/.ssh/config entry this machine is defined in.")
                     )
                 }
             } header: {
@@ -257,7 +269,7 @@ struct DevicePane: View {
     /// running was the only one whose version the app never showed.
     private var serverSection: some View {
         Section {
-            SettingsLabel(title: "termiod", subtext: serverSubtext, titleFont: .headline)
+            SettingsLabel(title: "termiod", subtext: serverSubtext)
         } header: {
             SectionHeaderLabel(title: localized("Termio server"))
         }
@@ -283,14 +295,13 @@ struct DevicePane: View {
             Text(keyToInstall == nil
                  ? localized("This host takes a password. Termio signs in with keys, and ~/.ssh has none that ssh offers on its own — run ssh-keygen to make one, then set it up here.")
                  : localized("This host takes a password. Termio signs in with keys, so set yours up once and every session, file tree and remote terminal can reach it."))
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             if let keyToInstall, let alias = machine.alias {
                 Button(localized("Set Up Key…")) { onSetUpKey(alias, keyToInstall.url.path) }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
                     .help(localized("Runs ssh-copy-id with \(keyToInstall.name) in a terminal — the host asks for your password once, there."))
             }
         }
@@ -342,8 +353,7 @@ struct DevicePane: View {
             NavigationLink(value: MachineAgentsRoute(key: machine.settingsKey)) {
                 SettingsLabel(
                     title: agentsSummary,
-                    subtext: localized("Which agent CLIs are on \(machine.name), where each launches from, and what Termio installed into their configs."),
-                    titleFont: .headline
+                    subtext: localized("Which agent CLIs are on \(machine.name), where each launches from, and what Termio installed into their configs.")
                 )
             }
         } header: {
@@ -405,7 +415,7 @@ struct CommandLineToolRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle(isOn: Binding(get: { isOn }, set: { setEnabled($0) })) {
                 SettingsLabel(
-                    title: localized("Command-line tool"), subtext: description, titleFont: .headline)
+                    title: localized("Command-line tool"), subtext: description)
             }
             .toggleStyle(.switch)
             .disabled(!isSwitchable)
@@ -537,8 +547,7 @@ private struct MachineAgentsPane: View {
                     } label: {
                         SettingsLabel(
                             title: preset.displayName,
-                            subtext: detail(for: preset),
-                            titleFont: .headline
+                            subtext: detail(for: preset)
                         )
                     }
                 }
@@ -546,7 +555,7 @@ private struct MachineAgentsPane: View {
                 SectionHeaderLabel(title: localized("Command paths"))
             } footer: {
                 Text(localized("Leave a path empty to launch the agent the way \(machine.name)’s login shell would. Which agents appear at all is Settings ▸ Agents."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
 
@@ -567,15 +576,13 @@ private struct MachineAgentsPane: View {
                     title: localized("Hooks"),
                     subtext: settings.agentHooksEnabled
                         ? localized("Report each agent’s status back to Termio.")
-                        : localized("Turned off in Settings ▸ Agents, so Termio removes them from \(machine.name)."),
-                    titleFont: .headline
+                        : localized("Turned off in Settings ▸ Agents, so Termio removes them from \(machine.name).")
                 )
                 SettingsLabel(
                     title: localized("Skill"),
                     subtext: settings.sessionControlEnabled
                         ? localized("Teaches agents the termio session commands.")
-                        : localized("Turned off in Settings ▸ Agents, so Termio removes it from \(machine.name)."),
-                    titleFont: .headline
+                        : localized("Turned off in Settings ▸ Agents, so Termio removes it from \(machine.name).")
                 )
                 // Named, not a bare "Reinstall": one button serves both rows above
                 // it, but sitting last it reads as the Skill row's own — leaving
@@ -587,7 +594,7 @@ private struct MachineAgentsPane: View {
                 SectionHeaderLabel(title: localized("Installed by Termio"))
             } footer: {
                 Text(localized("What Termio writes into each agent’s config on \(machine.name) so it can report. Reinstall after hand-editing one."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
         }

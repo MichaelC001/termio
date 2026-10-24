@@ -64,7 +64,7 @@ struct RemoteHostsSettingsTab: View {
                 Text(machines.isEmpty
                      ? localized("Add a host you reach over SSH and Termio can run sessions on it, with agents that keep working after you disconnect.")
                      : localized("Open one to see how it is reached and what it runs."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
 
@@ -74,8 +74,7 @@ struct RemoteHostsSettingsTab: View {
                 } label: {
                     SettingsLabel(
                         title: "~/.ssh/config",
-                        subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list."),
-                        titleFont: .headline
+                        subtext: localized("Reads ~/.ssh/config directly — Termio keeps no separate host list.")
                     )
                 }
             } header: {
@@ -90,21 +89,20 @@ struct RemoteHostsSettingsTab: View {
                                 Text(key.name)
                                 Text(key.comment.isEmpty
                                      ? key.algorithm : "\(key.algorithm) · \(key.comment)")
-                                    .font(.caption)
+                                    .font(.settingsDetail)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 8)
                             Button(copiedKeyID == key.id
                                    ? localized("Copied") : localized("Copy")) { copy(key) }
                                 .buttonStyle(.bordered)
-                                .controlSize(.small)
                         }
                     }
                 } header: {
                     SectionHeaderLabel(title: localized("Public keys"))
                 } footer: {
                     Text(localized("The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read."))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -234,7 +232,7 @@ private struct RemoteHostListRow: View {
                 Text(machine.name)
                 if !detail.isEmpty {
                     Text(detail)
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)

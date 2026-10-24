@@ -35,6 +35,10 @@ struct SettingsView: View {
     /// landed. Held rather than pushed inline because the switch clears the
     /// stack; see the `onChange` below.
     @State private var pendingMachine: String?
+    /// This Mac's readiness, read by the sidebar's Server row and the Server pane
+    /// alike. Checked once when the window opens: the probe is local IPC, so it
+    /// cannot stall on a sleeping box the way a remote host's would.
+    @StateObject private var thisMac: DevicePaneModel
 
     init(
         settings: AppSettings,
@@ -50,6 +54,7 @@ struct SettingsView: View {
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
+        _thisMac = StateObject(wrappedValue: DevicePaneModel(device: .thisMac, settings: settings))
     }
 
     var body: some View {
@@ -86,41 +91,23 @@ struct SettingsView: View {
         } detail: {
             NavigationStack(path: $path) {
                 detail
+                    // One line, no subtitle: the page's name is the only thing the
+                    // title bar has to say, and the second line truncated on half
+                    // the tabs at the default width. What a page is for is said by
+                    // its own section headers.
                     .navigationTitle(selection.title)
-                    .navigationSubtitle(selection.subtitle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .toolbar {
-                        // Without a toolbar item the NavigationStack collapses the
-                        // title + subtitle into one inline "Title – Subtitle" line
-                        // beside the traffic lights. An empty principal item forces
-                        // the full-height two-line chrome on every pane (macOS 26).
-                        //
-                        // It carries a definite 1×1 frame: a bare `Text("")`
-                        // measures zero in both axes, and AppKit answers that by
-                        // re-measuring the item under ambiguous constraints and
-                        // logging about it — four times per tab switch, on the
-                        // main thread, which is work the switch pays for.
-                        //
-                        // macOS 26 backs every toolbar item with the shared glass,
-                        // and at this item's 1pt width that backing is all you see:
-                        // a stray hairline standing in the middle of the title bar.
-                        // The item has to stay — it is what keeps the two-line
-                        // chrome — so the background is what goes.
-                        if #available(macOS 26.0, *) {
-                            ToolbarItem(placement: .principal) {
-                                Color.clear.frame(width: 1, height: 1)
-                            }
-                            .sharedBackgroundVisibility(.hidden)
-                        } else {
-                            ToolbarItem(placement: .principal) {
-                                Color.clear.frame(width: 1, height: 1)
-                            }
-                        }
-                    }
-                    .toolbarBackground(.regularMaterial, for: .windowToolbar)
             }
+            // The page sits on a ground a shade off the window white, so the
+            // sidebar reads as the lighter panel floating above it and each grouped
+            // card as a well sunk into it. On white all three were one sheet, told
+            // apart only by the sidebar's shadow. Set on the stack, not the root
+            // page, so a pushed pane (an agent, a remote host) stands on it too.
+            .scrollContentBackground(.hidden)
+            .background(Color.primary.opacity(settingsCanvasInk).ignoresSafeArea())
         }
         .navigationSplitViewStyle(.balanced)
+        .task { await thisMac.check() }
         .labeledContentStyle(.settingsCentered)
         // Remember where the user is, so the next ⌘, reopens the same tab
         // (see `AppDelegate.showSettings`). Written on every switch — cheap,
@@ -164,23 +151,60 @@ struct SettingsView: View {
     /// One sidebar row, painting its own selection pill because the source list's
     /// fill covers the whole row — including the group gap the first row of a
     /// group carries.
+    ///
+    /// The pill is a grey wash, not the accent: Termio marks state with ink, and a
+    /// solid blue bar was the loudest thing in a window whose job is to be calm.
+    /// The selected row keeps the full-strength label and takes a medium weight.
     private func row(for tab: SettingsTab) -> some View {
         let isSelected = selection == tab
-        return Label {
-            Text(tab.title)
-        } icon: {
-            HugeIconView(icon: tab.icon, size: 15, color: isSelected ? .white : .primary)
+        let isServer = tab == .server
+        // An HStack rather than a Label: a Label centres its icon in a fixed
+        // column, so Server's larger tile grew out to the left past the others.
+        // Here every tile starts on one edge and the larger one pushes its text.
+        return HStack(spacing: 7) {
+            // On the same glass tile the main sidebar puts behind each session's
+            // mark, so the two sidebars read as one app. The tile is the shape that
+            // makes a column of icons scannable; the glyph inside stays ink.
+            //
+            // Server's tile is larger, the way the row that reports state leads a
+            // System Settings sidebar: it is the machine, and it sits above the
+            // preferences rather than among them.
+            HugeIconView(icon: tab.icon, size: isServer ? 16 : 12, color: .primary)
+                .frame(width: isServer ? 28 : 20, height: isServer ? 28 : 20)
+                .background(GlassTile(cornerRadius: isServer ? 8 : 6))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tab.title)
+                    .fontWeight(isSelected ? .medium : .regular)
+                // The one row that carries a state: the machine the rest of the
+                // window configures, and whether it is ready, readable without
+                // opening it.
+                if isServer {
+                    Text(serverStatus)
+                        .font(.settingsDetail)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .padding(.vertical, isServer ? 4 : 0)
+        .foregroundStyle(Color.primary)
         .padding(.horizontal, settingsSidebarPillPadding)
         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isSelected ? Color.accentColor : Color.clear)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Color.primary.opacity(0.07) : Color.clear)
         )
         // Applied *after* the pill so the pill widens with the row rather than
         // sliding out from under it, and last so nothing downstream re-insets it.
         .padding(.leading, settingsSidebarPillInset - settingsSidebarBaseIndent)
+    }
+
+    private var serverStatus: String {
+        switch thisMac.readiness {
+        case .ready: return localized("Ready")
+        case .checking: return localized("Checking…")
+        case .staged: return localized("Update ready")
+        case .blocked, .unasked: return localized("Set up this Mac")
+        }
     }
 
     @ViewBuilder
@@ -190,7 +214,7 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .workspaces: WorkspaceSettingsTab(store: store)
-        case .server: ServerSettingsTab(settings: settings)
+        case .server: ServerSettingsTab(settings: settings, model: thisMac)
         case .remoteHosts:
             RemoteHostsSettingsTab(
                 settings: settings, store: store,
@@ -227,3 +251,7 @@ struct SettingsView: View {
 private let settingsSidebarBaseIndent: CGFloat = 18.7
 private let settingsSidebarPillInset: CGFloat = 10
 private let settingsSidebarPillPadding: CGFloat = 6
+
+/// How much ink the detail page's ground carries over the window background:
+/// #F4F4F4 on light, and the matching lift on dark.
+private let settingsCanvasInk: Double = 0.045

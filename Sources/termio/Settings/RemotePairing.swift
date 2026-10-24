@@ -281,7 +281,7 @@ struct RemotePairingSection: View {
                         Label(
                             localized("\(machine.name) stays published only until you log out of it. Termio couldn’t set it to keep services running after that."),
                             systemImage: "exclamationmark.triangle")
-                            .font(.caption)
+                            .font(.settingsDetail)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -300,7 +300,7 @@ struct RemotePairingSection: View {
             SectionHeaderLabel(title: machine.name)
         } footer: {
             Text(footnote)
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
         }
         .task {
@@ -315,7 +315,7 @@ struct RemotePairingSection: View {
     private func addressRow(_ invite: RemotePairing.Invite) -> some View {
         HStack(spacing: 8) {
             Text(invite.url)
-                .font(.system(.callout, design: .monospaced))
+                .font(.system(.subheadline, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -357,8 +357,7 @@ struct RemotePairingSection: View {
         } label: {
             SettingsLabel(
                 title: localized("Pairing Token"),
-                subtext: localized("Issues a new token and revokes every paired iPhone."),
-                titleFont: .headline)
+                subtext: localized("Issues a new token and revokes every paired iPhone."))
         }
     }
 
@@ -400,7 +399,7 @@ struct RemotePairingSection: View {
             }
 
             if let note = provider.prerequisite {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+                Text(note).font(.settingsDetail).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if provider != .off, !provider.keepsItsAddress {
@@ -409,7 +408,7 @@ struct RemotePairingSection: View {
                 Label(
                     localized("This address changes when the tunnel restarts, and every paired iPhone must scan again."),
                     systemImage: "arrow.triangle.2.circlepath")
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -440,13 +439,13 @@ struct RemotePairingSection: View {
             // like a crash.
             DisclosureGroup(localized("What the daemon said")) {
                 Text(message)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(.subheadline, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(.caption)
+            .font(.settingsDetail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

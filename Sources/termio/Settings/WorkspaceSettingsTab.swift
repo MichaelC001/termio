@@ -41,7 +41,7 @@ struct WorkspaceSettingsTab: View {
                 // One sentence, saying what the thing is. What removing one costs is
                 // the confirmation alert's job, and it already says it.
                 Text(localized("A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
         }
@@ -125,13 +125,12 @@ private struct WorkspaceSettingsRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(workspace.name)
-                    .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -181,8 +180,7 @@ private struct WorkspacePane: View {
                     } label: {
                         SettingsLabel(
                             title: localized("Name"),
-                            subtext: localized("What this workspace is called in the sidebar."),
-                            titleFont: .headline
+                            subtext: localized("What this workspace is called in the sidebar.")
                         )
                     }
                     LabeledContent {
@@ -190,8 +188,7 @@ private struct WorkspacePane: View {
                     } label: {
                         SettingsLabel(
                             title: localized("Machine"),
-                            subtext: localized("Where everything filed under this workspace lives."),
-                            titleFont: .headline
+                            subtext: localized("Where everything filed under this workspace lives.")
                         )
                     }
                 }

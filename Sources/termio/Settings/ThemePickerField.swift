@@ -132,12 +132,12 @@ struct ThemePickerField: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
                 Text(hint)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             } else {
                 Text(selection.isEmpty ? localized("Terminal default") : selection)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
