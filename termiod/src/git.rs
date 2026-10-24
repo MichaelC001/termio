@@ -54,16 +54,26 @@ fn git_command(root: &str) -> tokio::process::Command {
     command
 }
 
-/// Listings share a quiet window per repository, even across control connections.
-/// Keep only pending work: each re-list asks Git afresh, so index and ignore-rule
-/// edits cannot leave a cached decoration behind.
+/// Listings coalesce per repository while a check is running, even across
+/// control connections: an idle repository runs a request at once, and whatever
+/// arrives meanwhile rides the next `git check-ignore` together.
+///
+/// Never a timed window. The decoration rides the listing's own reply, so a
+/// quiet period here is a floor under every folder expand — 500 ms of spinner
+/// for a check git answers in single-digit milliseconds, and a sliding one that
+/// each prefetch pushed further out. VS Code can afford that debounce because
+/// its explorer renders first and decorates after; this reply cannot.
+///
+/// Keep only pending work: each re-list asks Git afresh, so index and
+/// ignore-rule edits cannot leave a cached decoration behind.
 #[derive(Default)]
 struct IgnoreBatch {
     paths: HashSet<String>,
     replies: Vec<tokio::sync::oneshot::Sender<std::result::Result<HashSet<String>, String>>>,
-    last_request: Option<tokio::time::Instant>,
 }
 
+/// A repository's key is present exactly while its worker runs; the value is
+/// the batch waiting for that worker's next turn.
 type IgnoreQueue = tokio::sync::Mutex<HashMap<String, IgnoreBatch>>;
 
 fn ignore_queue() -> &'static IgnoreQueue {
@@ -78,27 +88,24 @@ async fn check_ignored(root: String, paths: Vec<String>) -> Result<HashSet<Strin
     let batch = queue.entry(root.clone()).or_default();
     batch.paths.extend(paths);
     batch.replies.push(reply);
-    batch.last_request = Some(tokio::time::Instant::now());
     drop(queue);
     if start {
         tokio::spawn(async move {
-            let quiet = std::time::Duration::from_millis(500);
             loop {
-                tokio::time::sleep(quiet).await;
-                let mut queue = ignore_queue().lock().await;
-                let Some(batch) = queue.get(&root) else {
-                    return;
+                let batch = {
+                    let mut queue = ignore_queue().lock().await;
+                    let Some(pending) = queue.get_mut(&root) else {
+                        return;
+                    };
+                    // Retired under the same lock a request enqueues under, so
+                    // a request either lands in a batch this worker will take
+                    // or finds no key and starts the next worker.
+                    if pending.replies.is_empty() {
+                        queue.remove(&root);
+                        return;
+                    }
+                    std::mem::take(pending)
                 };
-                if batch
-                    .last_request
-                    .is_some_and(|last| last.elapsed() < quiet)
-                {
-                    continue;
-                }
-                let Some(batch) = queue.remove(&root) else {
-                    return;
-                };
-                drop(queue);
                 let result = run_check_ignore(&root, &batch.paths)
                     .await
                     .map_err(|error| format!("{error:#}"));
@@ -106,7 +113,6 @@ async fn check_ignored(root: String, paths: Vec<String>) -> Result<HashSet<Strin
                     // A closed receiver means its listing was cancelled.
                     let _ = reply.send(result.clone());
                 }
-                return;
             }
         });
     }
@@ -1564,14 +1570,13 @@ mod tests {
         let root = directory.to_string_lossy().into_owned();
         let first = directory.join("first.log").to_string_lossy().into_owned();
         let keep = directory.join("keep.log").to_string_lossy().into_owned();
+        // Both enqueue before the worker's first turn, so one git run answers both.
+        let started = std::time::Instant::now();
         let mut requests = Box::pin(futures_util::future::join_all([
             check_ignored(root.clone(), vec![first.clone()]),
             check_ignored(root.clone(), vec![keep.clone()]),
         ]));
-        tokio::select! {
-            _ = &mut requests => panic!("requests must debounce"),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
-        }
+        assert!(futures_util::FutureExt::now_or_never(&mut requests).is_none());
         {
             let queue = ignore_queue().lock().await;
             let batch = queue.get(&root).unwrap();
@@ -1581,6 +1586,8 @@ mod tests {
         for result in requests.await {
             assert_eq!(result.unwrap(), HashSet::from([first.clone()]));
         }
+        // The old 500 ms quiet window put a floor under every folder expand.
+        assert!(started.elapsed() < std::time::Duration::from_millis(400));
         assert!(!ignore_queue().lock().await.contains_key(&root));
         // Exit 1 and a negative-only match both mean nothing is ignored.
         assert!(run_check_ignore(&root, &HashSet::from([keep])).await.unwrap().is_empty());
