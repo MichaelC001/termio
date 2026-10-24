@@ -24,7 +24,7 @@ struct TerminalSettingsTab: View {
                 )
                 SettingsStepper(
                     title: localized("Size"), value: $settings.fontSize, range: 8...32, step: 1,
-                    display: "\(Int(settings.fontSize)) pt")
+                    display: localized("\(Int(settings.fontSize)) pt"))
                 SettingsStepper(
                     title: localized("Line height"), value: $settings.codeLineHeight, range: 1.0...2.0, step: 0.1,
                     display: String(format: "%.1f×", settings.codeLineHeight))
@@ -55,7 +55,7 @@ struct TerminalSettingsTab: View {
             Section {
                 SettingsStepper(
                     title: localized("Padding"), value: $settings.windowPadding, range: 0...40, step: 2,
-                    display: "\(settings.windowPadding) pt")
+                    display: localized("\(settings.windowPadding) pt"))
                 LabeledContent(localized("Opacity")) {
                     HStack(spacing: 8) {
                         Slider(value: $settings.backgroundOpacity, in: 0.2...1.0)

@@ -57,7 +57,7 @@ struct AppearanceSettingsTab: View {
                 )
                 SettingsStepper(
                     title: localized("Size"), value: $settings.interfaceFontSize, range: 9...20, step: 1,
-                    display: "\(Int(settings.interfaceFontSize)) pt")
+                    display: localized("\(Int(settings.interfaceFontSize)) pt"))
                 LabeledContent(localized("Row padding")) {
                     HStack(spacing: 8) {
                         Slider(value: $settings.interfaceRowPadding, in: 0...12, step: 1)
