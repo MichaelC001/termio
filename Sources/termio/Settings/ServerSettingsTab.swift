@@ -29,7 +29,8 @@ struct ServerSettingsTab: View {
             keyToInstall: nil,
             onConnect: { _ in },
             onSetUpKey: { _, _ in },
-            onEditConfig: {}
+            onEditConfig: {},
+            pairsPhones: true
         )
     }
 }

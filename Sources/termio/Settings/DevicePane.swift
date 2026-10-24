@@ -25,6 +25,10 @@ struct DevicePane: View {
     let onConnect: (String) -> Void
     let onSetUpKey: (String, String) -> Void
     let onEditConfig: () -> Void
+    /// Whether a session has run here, which is when a phone has something to
+    /// attach to. An alias from `~/.ssh/config` alone may have no `termiod`, and
+    /// publishing one would start a tunnel to nothing.
+    let pairsPhones: Bool
 
     @StateObject private var model: DevicePaneModel
     private enum ProbeState { case idle, running, result(SSHProbeResult) }
@@ -37,7 +41,8 @@ struct DevicePane: View {
         keyToInstall: SSHPublicKey?,
         onConnect: @escaping (String) -> Void,
         onSetUpKey: @escaping (String, String) -> Void,
-        onEditConfig: @escaping () -> Void
+        onEditConfig: @escaping () -> Void,
+        pairsPhones: Bool
     ) {
         self.machine = machine
         self.host = host
@@ -46,6 +51,7 @@ struct DevicePane: View {
         self.onConnect = onConnect
         self.onSetUpKey = onSetUpKey
         self.onEditConfig = onEditConfig
+        self.pairsPhones = pairsPhones
         _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
     }
 
@@ -71,12 +77,10 @@ struct DevicePane: View {
             commandLineSection
             // A phone attaches to a port the machine serves, so pairing is a fact
             // about the machine and sits in its pane. This Mac's card drives the
-            // companion port here; a box's card mints its invite over SSH, so it
-            // waits until the box has answered with a `termiod`. An unused alias
-            // has none, and publishing one would start a tunnel to nothing.
+            // companion port here; a box's card mints its invite over SSH.
             if machine.isLocal {
                 DeviceServingSection()
-            } else if model.discovered?.termiodVersion != nil {
+            } else if pairsPhones {
                 RemotePairingSection(machine: machine)
             }
         }
