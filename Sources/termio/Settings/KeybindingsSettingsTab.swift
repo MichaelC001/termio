@@ -69,7 +69,7 @@ struct KeybindingsSettingsTab: View {
             .frame(width: 130)
             .popover(isPresented: rejectionShown(for: info.id), arrowEdge: .bottom) {
                 Text(rejection?.message ?? "")
-                    .font(.callout)
+                    .font(.settingsDetail)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .frame(maxWidth: 280)
@@ -88,7 +88,7 @@ struct KeybindingsSettingsTab: View {
             .disabled(keys.overrides.isEmpty)
         } footer: {
             Text(localized("Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel."))
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
         }
     }

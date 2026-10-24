@@ -154,22 +154,61 @@ struct SectionHeaderLabel: View {
 /// tabs instead of being hand-rolled per row. Settings rows carry no leading
 /// glyph — an icon per row is decoration in a pane that is already labeled by its
 /// section header; badges stay on rows that stand for a *thing* (an agent, a
-/// host, a key). Primary rows read at `.headline`; the `.body` default is for a
-/// nested sub-option that should sit visually below its parent row.
+/// host, a key).
+///
+/// The title is regular weight on every row. Bold is the section header's job,
+/// and a bold row title under a bold header left the card with two headings and
+/// no body; a nested sub-option is told apart by where it sits, not by weight.
 struct SettingsLabel: View {
     let title: String
     var subtext: String?
-    var titleFont: Font = .body
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(titleFont)
             if let subtext {
                 Text(subtext)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+extension Font {
+    /// The settings window's second size, after the 13pt body: row captions,
+    /// section footers, and the read-only values beside a control. 11pt, where it
+    /// used to be the 10pt caption — under a 13pt title the caption read as fine
+    /// print, and the window carried six sizes where it needs three (15pt page
+    /// title, 13pt body and headers, 11pt detail).
+    static let settingsDetail: Font = .subheadline
+}
+
+/// A numeric setting: the name on the left, and the value with a small stepper on
+/// the right, the way System Settings lays out a field it can nudge.
+///
+/// Replaces a `Stepper` whose label carried the value ("Size: 15 pt"), which put
+/// the number in the title column — where nothing else in the window keeps a
+/// value — and hung a regular-size stepper off the row that made it 6pt taller
+/// than its neighbours.
+struct SettingsStepper<Value: Strideable>: View {
+    let title: String
+    @Binding var value: Value
+    let range: ClosedRange<Value>
+    let step: Value.Stride
+    /// The value as the row shows it, unit included.
+    let display: String
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(display)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Stepper(title, value: $value, in: range, step: step)
+                    .labelsHidden()
+                    .controlSize(.small)
             }
         }
     }
@@ -243,7 +282,7 @@ struct InstallFeedbackLabel: View {
                 size: 12,
                 color: feedback.kind == .success ? .green : .orange)
             Text(feedback.message)
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -508,7 +547,7 @@ struct FontFamilyField: View {
                 .foregroundStyle(preview.isFallback ? .tertiary : .secondary)
             if preview.isFallback {
                 Text(localized("“\(family)” isn’t installed — showing the system default."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
         }

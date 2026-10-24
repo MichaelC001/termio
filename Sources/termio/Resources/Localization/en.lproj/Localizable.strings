@@ -222,6 +222,8 @@
 	<string>Bar</string>
 	<key>Base Branch Missing</key>
 	<string>Base Branch Missing</string>
+	<key>Behavior</key>
+	<string>Behavior</string>
 	<key>Behind</key>
 	<string>Behind</string>
 	<key>Binary File</key>
@@ -234,8 +236,8 @@
 	<string>Block</string>
 	<key>Blue</key>
 	<string>Blue</string>
-	<key>Blur: %lld</key>
-	<string>Blur: %lld</string>
+	<key>Blur</key>
+	<string>Blur</string>
 	<key>Branch</key>
 	<string>Branch</string>
 	<key>Bring All to Front</key>
@@ -522,8 +524,6 @@
 	<string>Disconnect GitHub</string>
 	<key>Discord</key>
 	<string>Discord</string>
-	<key>Discord, GitHub, and the WeChat group</key>
-	<string>Discord, GitHub, and the WeChat group</string>
 	<key>Done</key>
 	<string>Done</string>
 	<key>Don’t Compare</key>
@@ -538,6 +538,8 @@
 	<string>Drag an agent onto another to reorder. Readiness covers every machine you work on.</string>
 	<key>Drag the list to change the order agents appear in.</key>
 	<string>Drag the list to change the order agents appear in.</string>
+	<key>Drop a Ghostty theme file into the Themes folder to add your own.</key>
+	<string>Drop a Ghostty theme file into the Themes folder to add your own.</string>
 	<key>Duplicate to Themes Folder</key>
 	<string>Duplicate to Themes Folder</string>
 	<key>Edit</key>
@@ -666,8 +668,6 @@
 	<string>Host not found</string>
 	<key>Hosts</key>
 	<string>Hosts</string>
-	<key>How much output each session keeps for scrolling back. Agents are verbose, so the default is generous.</key>
-	<string>How much output each session keeps for scrolling back. Agents are verbose, so the default is generous.</string>
 	<key>Icon</key>
 	<string>Icon</string>
 	<key>Ignore %lld Selected Files (Add to .gitignore)</key>
@@ -722,16 +722,12 @@
 	<string>Key file</string>
 	<key>Keyboard</key>
 	<string>Keyboard</string>
-	<key>Keyboard shortcuts for every command</key>
-	<string>Keyboard shortcuts for every command</string>
 	<key>Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt.</key>
 	<string>Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt.</string>
 	<key>Labels</key>
 	<string>Labels</string>
 	<key>Language</key>
 	<string>Language</string>
-	<key>Language, GitHub, and privacy</key>
-	<string>Language, GitHub, and privacy</string>
 	<key>Language, notifications, and GitHub</key>
 	<string>Language, notifications, and GitHub</string>
 	<key>Last 30 days</key>
@@ -754,12 +750,12 @@
 	<string>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</string>
 	<key>Light</key>
 	<string>Light</string>
+	<key>Line height</key>
+	<string>Line height</string>
 	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own.</key>
 	<string>Line height applies to the file editor and diffs; the terminal keeps the font’s own.</string>
 	<key>Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.</key>
 	<string>Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.</string>
-	<key>Line height: %@×</key>
-	<string>Line height: %@×</string>
 	<key>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</key>
 	<string>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</string>
 	<key>Live agent status</key>
@@ -994,8 +990,6 @@
 	<string>Only the first %lld items are shown — update termio on this device to list them all.</string>
 	<key>Opacity</key>
 	<string>Opacity</string>
-	<key>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</key>
-	<string>Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.</string>
 	<key>Open</key>
 	<string>Open</string>
 	<key>Open Link</key>
@@ -1042,16 +1036,14 @@
 	<string>Other machines</string>
 	<key>Overwrite</key>
 	<string>Overwrite</string>
-	<key>Padding: %lld pt</key>
-	<string>Padding: %lld pt</string>
+	<key>Padding</key>
+	<string>Padding</string>
 	<key>Pages</key>
 	<string>Pages</string>
 	<key>Pair</key>
 	<string>Pair</string>
 	<key>Pair a Phone…</key>
 	<string>Pair a Phone…</string>
-	<key>Pair your iPhone with the machines you work on</key>
-	<string>Pair your iPhone with the machines you work on</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>Paired iPhones must scan the code again after switching.</string>
 	<key>Pairing Token</key>
@@ -1078,8 +1070,6 @@
 	<string>Pick the branch this one would merge into.</string>
 	<key>Pin</key>
 	<string>Pin</string>
-	<key>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</key>
-	<string>Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.</string>
 	<key>Pin to Top</key>
 	<string>Pin to Top</string>
 	<key>Pink</key>
@@ -1266,10 +1256,8 @@
 	<string>Saving to %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>Scan the QR code with WeChat to join the Chinese community group.</string>
-	<key>Scrollback history and text selection</key>
-	<string>Scrollback history and text selection</string>
-	<key>Scrollback: %lld MB</key>
-	<string>Scrollback: %lld MB</string>
+	<key>Scrollback</key>
+	<string>Scrollback</string>
 	<key>Search</key>
 	<string>Search</string>
 	<key>Search %@</key>
@@ -1294,8 +1282,6 @@
 	<string>Select a session to see its info.</string>
 	<key>Select text in the document, then choose Highlight.</key>
 	<string>Select text in the document, then choose Highlight.</string>
-	<key>Selection</key>
-	<string>Selection</string>
 	<key>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</key>
 	<string>Sends one anonymous event a day so the project can count active installs. No project paths, no terminal contents, no account.</string>
 	<key>Server</key>
@@ -1356,8 +1342,8 @@
 	<string>Signs in with %@</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>Signs in with the keys ssh offers by default.</string>
-	<key>Size: %lld pt</key>
-	<string>Size: %lld pt</string>
+	<key>Size</key>
+	<string>Size</string>
 	<key>Skill</key>
 	<string>Skill</string>
 	<key>Skill installed</key>
@@ -1426,8 +1412,6 @@
 	<string>Terminal</string>
 	<key>Terminal default</key>
 	<string>Terminal default</string>
-	<key>Terminal font</key>
-	<string>Terminal font</string>
 	<key>Terminals</key>
 	<string>Terminals</string>
 	<key>Termio can show %@'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it.</key>
@@ -1446,8 +1430,6 @@
 	<string>Termio notifies you about the agents above, wherever they run.</string>
 	<key>Termio server</key>
 	<string>Termio server</string>
-	<key>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</key>
-	<string>Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.</string>
 	<key>Test</key>
 	<string>Test</string>
 	<key>Test Connection</key>
@@ -1458,8 +1440,6 @@
 	<string>The base branch has commits this branch doesn’t have, as of the last fetch.</string>
 	<key>The clone runs on %@ and opens as a project there.</key>
 	<string>The clone runs on %@ and opens as a project there.</string>
-	<key>The coding agents offered when you start a session</key>
-	<string>The coding agents offered when you start a session</string>
 	<key>The device couldn’t read this checkout.</key>
 	<string>The device couldn’t read this checkout.</string>
 	<key>The device couldn’t read this comparison.</key>
@@ -1470,10 +1450,10 @@
 	<string>The ignore rule couldn’t be added.</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
 	<string>The install page — the same one whichever machine you are installing on.</string>
+	<key>The light and dark themes below follow this choice.</key>
+	<string>The light and dark themes below follow this choice.</string>
 	<key>The listing failed.</key>
 	<string>The listing failed.</string>
-	<key>The machine Termio is running on</key>
-	<string>The machine Termio is running on</string>
 	<key>The machine answered with no listing for that folder.</key>
 	<string>The machine answered with no listing for that folder.</string>
 	<key>The machine couldn’t read this checkout.</key>
@@ -1482,10 +1462,8 @@
 	<string>The machine couldn’t read this comparison.</string>
 	<key>The machine everything filed under this workspace lives on.</key>
 	<string>The machine everything filed under this workspace lives on.</string>
-	<key>The machines you reach from this Mac</key>
-	<string>The machines you reach from this Mac</string>
-	<key>The project and session list. Kept separate from the terminal font, and need not be monospaced.</key>
-	<string>The project and session list. Kept separate from the terminal font, and need not be monospaced.</string>
+	<key>The project and session list.</key>
+	<string>The project and session list.</string>
 	<key>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</key>
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
 	<key>The read failed.</key>
@@ -1508,12 +1486,8 @@
 	<string>The working tree is clean.</string>
 	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
 	<string>The workspace is empty. Projects and sessions you open later go to another workspace.</string>
-	<key>The workspaces your projects and sessions are filed under</key>
-	<string>The workspaces your projects and sessions are filed under</string>
 	<key>Theme</key>
 	<string>Theme</string>
-	<key>Theme, fonts, cursor, and window</key>
-	<string>Theme, fonts, cursor, and window</string>
 	<key>Themes</key>
 	<string>Themes</string>
 	<key>Thicken glyphs</key>
@@ -1606,8 +1580,6 @@
 	<string>Toggle Sidebar</string>
 	<key>Token usage</key>
 	<string>Token usage</string>
-	<key>Token usage for your connected agents</key>
-	<string>Token usage for your connected agents</string>
 	<key>Try Again</key>
 	<string>Try Again</string>
 	<key>Try another search term.</key>
@@ -1662,8 +1634,6 @@
 	<string>Version %@ on %@. Sessions keep running there after you disconnect.</string>
 	<key>Vertical</key>
 	<string>Vertical</string>
-	<key>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</key>
-	<string>Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.</string>
 	<key>View</key>
 	<string>View</string>
 	<key>View on %@</key>
@@ -1680,12 +1650,8 @@
 	<string>What Termio writes into each agent’s config on %@ so it can report. Reinstall after hand-editing one.</string>
 	<key>What the daemon said</key>
 	<string>What the daemon said</string>
-	<key>What this Mac runs, and what Termio installed on it</key>
-	<string>What this Mac runs, and what Termio installed on it</string>
 	<key>What this workspace is called in the sidebar.</key>
 	<string>What this workspace is called in the sidebar.</string>
-	<key>When on, selecting text copies it straight to the clipboard.</key>
-	<string>When on, selecting text copies it straight to the clipboard.</string>
 	<key>Where each device launches %@ from. Leave empty to use its default.</key>
 	<string>Where each device launches %@ from. Leave empty to use its default.</string>
 	<key>Where each machine launches %@ from. Leave empty to use its default.</key>

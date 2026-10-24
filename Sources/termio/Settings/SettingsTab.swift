@@ -4,15 +4,13 @@ import SwiftUI
 /// private so the launch reminder can open settings straight to a given tab (see
 /// `AppDelegate.openSettings`).
 ///
-/// The groups are questions, in the order someone asks them: how should termio
-/// behave, what is this Mac, what runs on it, and what else connects to it.
-/// Where a setting sits is what says which it is, so nobody has to learn a rule
-/// (RFC §D1, §D8).
+/// The groups are questions, in the order someone asks them: is this Mac ready,
+/// how should termio behave, what runs on this Mac, and what else connects to
+/// it. Where a setting sits is what says which it is, so nobody has to learn a
+/// rule (RFC §D1, §D8).
 ///
-/// Server leads the machine half rather than trailing it, because that is the
-/// containment order the app itself uses — a workspace belongs to a machine, and
-/// an agent is a CLI installed on one, so the box is named before the things
-/// filed on it.
+/// Server comes first because it is the machine the rest of the window
+/// configures.
 ///
 /// The last two used to be one group called Machines, and that group was the
 /// split's own point left unmade: it put the box you are sitting at next to boxes
@@ -21,10 +19,6 @@ import SwiftUI
 /// Hosts is this Mac**; Remote Hosts and Mobile are the two tabs about something
 /// else on the other end of a connection — a box you reach over SSH, and a phone.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general
-    case appearance
-    case terminal
-    case keyboard
     /// This Mac: the `termiod` it runs, the `termio` CLI on its PATH, and what
     /// Termio has installed into its agents' configs.
     ///
@@ -34,18 +28,16 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// actually runs, because `DevicePane` spent the local branch on the CLI row.
     /// Promoting it is what gives the local `termiod` a place to be looked at.
     ///
-    /// It *opens* the group that holds Workspaces, Agents and Usage rather than
-    /// standing in one of its own: those three are what this machine runs and
-    /// what is filed on it, so they belong under the same gap, with the box named
-    /// first. A group of one would have made the machine look like a fifth kind
-    /// of setting instead of the subject of the three below it.
-    ///
-    /// Workspaces comes directly under it and Agents and Usage after, widest
-    /// scope first: a workspace is where work is filed on this Mac, an agent is a
-    /// CLI installed on it, and Usage is that agent's meter. Usage reads as a
-    /// detail of the row above it, which is why the two stay adjacent and in that
-    /// order.
+    /// First, in a group of its own, on a larger tile than the rows below. It
+    /// once opened the Workspaces / Agents / Usage group instead, on the worry
+    /// that a group of one would read as a fifth kind of setting; the larger
+    /// tile at the top is what answers that — it is the machine, not a
+    /// preference.
     case server
+    case general
+    case appearance
+    case terminal
+    case keyboard
     case workspaces
     case agents
     case usage
@@ -87,10 +79,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Opens a new sidebar group. `server` opens the group about this machine —
-    /// the box itself, then what runs on it; `remoteHosts` opens the two tabs
-    /// about the far end of a connection; `community` stands alone because it
-    /// leaves the app entirely.
+    /// Opens a new sidebar group. `server` stands alone at the top as the machine
+    /// itself; `general` opens how Termio behaves; `workspaces` opens what is
+    /// filed on and installed on this Mac; `remoteHosts` opens the two tabs about
+    /// the far end of a connection; `community` stands alone because it leaves the
+    /// app entirely.
     ///
     /// Grouped rather than run flat. Collapsing every local tab into one block
     /// would tell the top-level story in a single stroke — this Mac, then what
@@ -98,7 +91,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// set out to fix, and finding Usage among eight is worse than finding it
     /// among three. The gaps are cheap; the chunking is not.
     var startsGroup: Bool {
-        self == .server || self == .remoteHosts || self == .community
+        self == .general || self == .workspaces || self == .remoteHosts || self == .community
     }
 
     /// `allCases` cut into the sidebar's groups, which System Settings separates
@@ -150,24 +143,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .usage: return .chartColumn
         case .mobile: return .smartPhoneWifi
         case .community: return .bubbleChat
-        }
-    }
-
-    /// The one-line description shown under the pane title in the detail header,
-    /// matching macOS System Settings' navigation subtitle.
-    var subtitle: String {
-        switch self {
-        case .general: return localized("Language, GitHub, and privacy")
-        case .appearance: return localized("Theme, fonts, cursor, and window")
-        case .terminal: return localized("Scrollback history and text selection")
-        case .workspaces: return localized("The workspaces your projects and sessions are filed under")
-        case .server: return localized("What this Mac runs, and what Termio installed on it")
-        case .remoteHosts: return localized("The machines you reach from this Mac")
-        case .keyboard: return localized("Keyboard shortcuts for every command")
-        case .agents: return localized("The coding agents offered when you start a session")
-        case .usage: return localized("Token usage for your connected agents")
-        case .mobile: return localized("Pair your iPhone with the machines you work on")
-        case .community: return localized("Discord, GitHub, and the WeChat group")
         }
     }
 }

@@ -26,8 +26,7 @@ struct CommunitySettingsTab: View {
                     VStack(alignment: .leading, spacing: 12) {
                         SettingsLabel(
                             title: localized("WeChat group"),
-                            subtext: localized("Scan the QR code with WeChat to join the Chinese community group."),
-                            titleFont: .headline
+                            subtext: localized("Scan the QR code with WeChat to join the Chinese community group.")
                         )
                         Image(nsImage: qrImage)
                             .resizable()
@@ -64,7 +63,7 @@ private struct CommunityLinkRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SettingsLabel(title: title, subtext: subtext, titleFont: .headline)
+            SettingsLabel(title: title, subtext: subtext)
             Spacer()
             Button(buttonTitle) {
                 guard let destination = URL(string: url) else { return }

@@ -1,10 +1,9 @@
 import AppKit
 
-/// Dev-only diagnostics behind the palette's "Debug: Snapshot Window": renders the main
-/// window into a PNG and dumps its view hierarchy with frames. Self-rendering via
-/// `cacheDisplay` needs no Screen Recording permission, so an automated session can
-/// inspect a layout glitch it drove the app into. Metal-hosted terminal surfaces may
-/// come out empty in the PNG; the text dump is the authoritative geometry record.
+/// Dev-only diagnostics behind the palette's "Debug: Snapshot Window": renders the
+/// frontmost window into a PNG and dumps its view hierarchy with frames. Capturing its
+/// own window needs no Screen Recording permission, so an automated session can
+/// inspect a layout glitch it drove the app into.
 enum DebugWindowSnapshot {
     /// Dev-only: lets an automated session trigger a capture without window focus —
     /// `swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("termio.dev.snapshot"), object: nil, userInfo: nil, deliverImmediately: true)'`
@@ -36,17 +35,45 @@ enum DebugWindowSnapshot {
         let root = window.contentView?.superview ?? window.contentView
         guard let view = root else { return }
 
+        // Scoped by channel because every dev-channel app on the machine answers the
+        // same distributed notification; a probe build and the dev app would
+        // otherwise overwrite each other's capture.
+        let stem = "/tmp/termio\(AppChannel.suffix)"
         var lines: [String] = ["window frame=\(window.frame) key=\(window.isKeyWindow)"]
         dump(view, depth: 0, into: &lines)
         try? lines.joined(separator: "\n").write(
-            toFile: "/tmp/termio-dev-views.txt", atomically: true, encoding: .utf8)
+            toFile: stem + "-views.txt", atomically: true, encoding: .utf8)
 
-        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: rep)
-            if let png = rep.representation(using: .png, properties: [:]) {
-                try? png.write(to: URL(fileURLWithPath: "/tmp/termio-dev-window.png"))
-            }
+        guard let rep = composited(window) ?? cached(view),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: stem + "-window.png"))
+    }
+
+    /// The window as the window server composited it: materials, glass and SwiftUI
+    /// `Form` content included, which `cacheDisplay` leaves blank. A process may
+    /// capture its own windows without Screen Recording permission. The function is
+    /// marked unavailable in the macOS 15 SDK, so it is looked up at runtime.
+    @MainActor
+    private static func composited(_ window: NSWindow) -> NSBitmapImageRep? {
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else {
+            return nil
         }
+        let createImage = unsafeBitCast(symbol, to: CreateImage.self)
+        let includingWindow: UInt32 = 1 << 3
+        let boundsIgnoreFraming: UInt32 = 1 << 0
+        let bestResolution: UInt32 = 1 << 3
+        guard let image = createImage(
+            .null, includingWindow, UInt32(window.windowNumber), boundsIgnoreFraming | bestResolution
+        )?.takeRetainedValue() else { return nil }
+        return NSBitmapImageRep(cgImage: image)
+    }
+
+    @MainActor
+    private static func cached(_ view: NSView) -> NSBitmapImageRep? {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
     }
 
     /// Which window a capture means: the frontmost ordinary window.

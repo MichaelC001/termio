@@ -47,7 +47,7 @@ struct UsageSettingsTab: View {
         Form {
             Section {
                 Text(localized("Enable Claude Code, Codex, Kimi, or Grok in the Agents tab to see their usage here."))
-                    .font(.callout)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             } header: {
                 SectionHeaderLabel(title: localized("Usage"))
@@ -137,7 +137,7 @@ private struct UsageAgentDetail: View {
                     : agent == .kimi
                     ? localized("Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `credentials/kimi-code.json` sign-in. Nothing is read until you allow it.")
                     : localized("Termio can show \(agent.displayName)'s token usage and plan limits by reading its local session logs and its `auth.json` sign-in. Nothing is read until you allow it."))
-                    .font(.callout)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                 Button(localized("Allow Usage Access")) {
                     settings.setUsageAuthorized(agent, enabled: true)
@@ -161,14 +161,14 @@ private struct UsageAgentDetail: View {
                     TokenUsageRow(label: localized("This month"), stats: tokens.month, hasCost: tokens.hasCost)
                 } else {
                     Text(.init(localized("No local usage yet — run `\(agent.command ?? agent.rawValue)` once, then Refresh.")))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             } header: {
                 SectionHeaderLabel(title: localized("Token usage"))
             } footer: {
                 Text(localized("Tallied from \(agent.displayName)'s own local session logs across every terminal and editor on this Mac — your actual usage, regardless of how the plan bills.\(usage.tokenUsage[agent]?.hasCost == true ? localized(" Cost is estimated at API rates.") : "")"))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
 
@@ -198,7 +198,7 @@ private struct UsageAgentDetail: View {
                     SectionHeaderLabel(title: localized("Plan limits"))
                 } footer: {
                     Text(localized("Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt."))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -212,7 +212,7 @@ private struct UsageAgentDetail: View {
                 .foregroundStyle(.secondary)
             } footer: {
                 Text(localized("Plan limits come from \(agent.displayName)'s OAuth login; no passwords are stored. Revoking stops all reading of \(agent.displayName)'s data."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
         }
@@ -231,14 +231,13 @@ private struct TokenUsageRow: View {
     var body: some View {
         HStack {
             Text(label)
-                .font(.callout)
             Spacer()
             Text(localized("\(stats.tokenSummary) tokens"))
-                .font(.callout.monospacedDigit())
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
             if hasCost, !stats.costSummary.isEmpty {
                 Text("· \(stats.costSummary)")
-                    .font(.callout.monospacedDigit())
+                    .monospacedDigit()
                     .foregroundStyle(.tertiary)
             }
         }
@@ -282,7 +281,7 @@ private struct UsageActivityChart: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(summary(for: bars))
-                    .font(.caption.monospacedDigit())
+                    .font(.settingsDetail.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
                 Picker(localized("Range"), selection: $range) {
@@ -381,14 +380,13 @@ private struct UsageWindowRow: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(window.label)
-                    .font(.callout)
                 Spacer()
                 Text("\(window.usedPercent)%")
-                    .font(.callout.monospacedDigit())
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
                 if !window.resetSummary.isEmpty {
                     Text(localized("· resets \(window.resetSummary)"))
-                        .font(.callout)
+                        .font(.settingsDetail)
                         .foregroundStyle(.tertiary)
                 }
             }
