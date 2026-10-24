@@ -393,6 +393,7 @@ final class DeviceFileTreeModel: ObservableObject {
     /// cap is generous enough to cover the folders actually on screen.
     static let prefetchFanout = 32
     static let prefetchCeiling = 256
+    static let spinnerDelay: Duration = .milliseconds(150)
 
     private let provider: DeviceFileProvider
     private var nodesByPath: [String: DeviceFileNode] = [:]
@@ -760,12 +761,19 @@ final class DeviceFileTreeModel: ObservableObject {
             defer { loadsInFlight.remove(node.path) }
             // Only when there is nothing to show meanwhile: a folder opened from
             // a prefetch already has its rows, and a spinner on it would be
-            // reporting work the user has no reason to know about.
-            if node.loadedChildren == nil {
+            // reporting work the user has no reason to know about. And only
+            // once the wait is long enough to notice — a folder on this Mac
+            // lists inside a frame or two, and a spinner that flashes for that
+            // reads as a stall that never happened.
+            let spinner = Task { @MainActor [weak self] in
+                guard (try? await Task.sleep(for: Self.spinnerDelay)) != nil,
+                      let self, node.loadedChildren == nil
+                else { return }
                 node.isLoading = true
                 revision &+= 1
             }
             defer {
+                spinner.cancel()
                 if node.isLoading {
                     node.isLoading = false
                     revision &+= 1
