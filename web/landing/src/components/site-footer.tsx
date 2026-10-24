@@ -1,3 +1,4 @@
+import { ThemeSwitch } from "@/components/theme-switch";
 import { testflightUrl, githubUrl } from "@/lib/site";
 
 const footerLinks: { label: string; href: string }[] = [
@@ -10,9 +11,14 @@ const footerLinks: { label: string; href: string }[] = [
 ];
 
 // Glaze-style footer: one compact centered column — copyright and page links on
-// a single row, a quiet tagline underneath. No border, no link grid; on the
-// homepage it floats over the outro aurora, on inner pages it just sits on the
-// canvas.
+// a single row, a quiet tagline underneath. No border, no link grid. The
+// appearance switch lives here, as it does on Linear's site.
+const themeLabels = {
+  theme: "Appearance",
+  themeSystem: "System appearance",
+  themeLight: "Light",
+  themeDark: "Dark",
+};
 export function SiteFooter() {
   return (
     <footer className="px-5 pb-8 pt-16 sm:px-8 sm:pb-14">
@@ -37,6 +43,9 @@ export function SiteFooter() {
         <p className="font-mono text-xs text-muted-foreground/80">
           Built for AI Builders by AI Builders.
         </p>
+        <div className="mt-2">
+          <ThemeSwitch labels={themeLabels} />
+        </div>
       </div>
     </footer>
   );

@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
-import { DocsThemeScript } from "@/components/docs/theme-script";
+import { ThemeScript } from "@/components/theme-script";
 
 const siteDescription =
   "Termio is the Terminal-first Agentic Development Environment — a native Mac app for your AI coding agents: Claude Code, Codex, OpenCode, Pi Agent and more. Run them side by side, each in a real terminal, switch between them instantly, and nothing ever leaves your machine.";
@@ -53,7 +53,10 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#08080a",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f4f4f6" },
+    { media: "(prefers-color-scheme: dark)", color: "#08080a" },
+  ],
 };
 
 export default function RootLayout({
@@ -62,8 +65,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    // suppressHydrationWarning covers exactly one thing: the docs' theme script
-    // (components/docs/theme-script.tsx) writes `data-docs-theme` onto <html>
+    // suppressHydrationWarning covers exactly one thing: the theme script
+    // (components/theme-script.tsx) writes `data-theme` onto <html>
     // before React hydrates, so the server markup and the live DOM legitimately
     // differ by that attribute. It suppresses only this element's own attributes,
     // not anything nested, so real mismatches below still report.
@@ -80,7 +83,7 @@ export default function RootLayout({
           one has to run before the body is parsed. Metadata still flows in here
           from the Metadata API. */}
       <head>
-        <DocsThemeScript />
+        <ThemeScript />
       </head>
       <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}

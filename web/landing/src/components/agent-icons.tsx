@@ -43,6 +43,10 @@ const brandByAgent: Record<string, BrandIcon> = {
   DeepSeek: DeepSeek,
 };
 
+// Kimi's color mark draws its K in white, which vanishes on a light page; its
+// mono mark already is the brand look.
+const monoOnly = new Set(["Kimi"]);
+
 const glyphByAgent: Record<string, string> = {
   Pi: "π",
   Crush: "╱╱",
@@ -53,7 +57,11 @@ function TextGlyph({ size = 20, text }: GlyphProps & { text: string }) {
     <span
       aria-hidden="true"
       className="inline-flex items-center justify-center font-mono font-semibold leading-none"
-      style={{ width: size, height: size, fontSize: size * 0.95 }}
+      style={{
+        width: size,
+        height: size,
+        fontSize: (size * 0.95) / Math.max(1, text.length * 0.8),
+      }}
     >
       {text}
     </span>
@@ -73,7 +81,8 @@ export function AgentIcon({
   color?: boolean;
 }) {
   const Brand = brandByAgent[name];
-  const Glyph = Brand && (color ? (Brand.Color ?? Brand) : Brand);
+  const Glyph =
+    Brand && (color && !monoOnly.has(name) ? (Brand.Color ?? Brand) : Brand);
   return (
     <span className={cn("inline-flex shrink-0", className)} aria-hidden="true">
       {Glyph ? (
@@ -85,27 +94,3 @@ export function AgentIcon({
   );
 }
 
-// A seamless, auto-scrolling logo carousel: the agent list is rendered twice and
-// translated by -50%, so the loop is continuous. It pauses on hover and respects
-// reduced-motion (the keyframes are disabled in globals.css).
-export function AgentMarquee({ agents }: { agents: readonly string[] }) {
-  const lane = [...agents, ...agents];
-  return (
-    <div className="marquee-mask group relative overflow-hidden">
-      <ul className="animate-marquee flex w-max items-center gap-12 group-hover:[animation-play-state:paused] sm:gap-16">
-        {lane.map((agent, index) => (
-          <li
-            key={`${agent}-${index}`}
-            className="flex items-center gap-2.5 text-muted-foreground/70 transition-colors hover:text-foreground"
-            aria-hidden={index >= agents.length ? true : undefined}
-          >
-            <AgentIcon name={agent} size={22} />
-            <span className="whitespace-nowrap font-mono text-sm font-medium">
-              {agent}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
