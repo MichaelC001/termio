@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.60.0",
+    date: "2026-10-24",
+    title: "Play videos from the terminal",
+    changes: {
+      new: [
+        "Cmd-click an mp4, mov or m4v path in the terminal to play it in the preview.",
+        "Audio, office documents, fonts and other video formats open in Quick Look instead of the text editor.",
+      ],
+    },
+  },
+  {
     version: "0.59.1",
     date: "2026-10-20",
     title: "One button to edit or read",
