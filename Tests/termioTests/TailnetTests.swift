@@ -71,6 +71,40 @@ final class TailnetTests: XCTestCase {
         XCTAssertTrue(Tailnet.hostPeers(fromStatus: Data("not json".utf8), namesResolve: true).isEmpty)
     }
 
+    // MARK: Running the CLI
+
+    private func fakeCLI(_ script: String) throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailscale-\(UUID().uuidString)")
+        try "#!/bin/sh\n\(script)\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url.path
+    }
+
+    func testReadsTheCLIsAnswer() async throws {
+        let json = String(decoding: status(peers: mini), as: UTF8.self)
+        let cli = try fakeCLI("cat <<'EOF'\n\(json)\nEOF")
+        let peers = await Tailnet.hostPeers(cli: cli)
+        XCTAssertEqual(peers.map(\.hostName), ["mini"])
+    }
+
+    func testADescendantHoldingThePipeCannotOutlastTheDeadline() async throws {
+        // The CLI exits at once, but a child it left behind keeps stdout open, so
+        // end-of-file never comes. The read must still answer at the deadline.
+        let cli = try fakeCLI("sleep 10 &\nexit 0")
+        let start = Date()
+        let peers = await Tailnet.hostPeers(cli: cli)
+        XCTAssertTrue(peers.isEmpty)
+        XCTAssertLessThan(Date().timeIntervalSince(start), Tailnet.statusTimeout + 2)
+    }
+
+    func testAFailingCLIOffersNothing() async throws {
+        let cli = try fakeCLI("echo 'failed to connect to local tailscaled' >&2\nexit 1")
+        let peers = await Tailnet.hostPeers(cli: cli)
+        XCTAssertTrue(peers.isEmpty)
+    }
+
     // MARK: Already in ~/.ssh/config
 
     private var miniPeers: [TailnetPeer] {
@@ -89,6 +123,17 @@ final class TailnetTests: XCTestCase {
         // `Host mini` with no `HostName`: ssh resolves `mini` through MagicDNS's
         // search domain, so it is this machine already.
         XCTAssertTrue(Tailnet.peers(miniPeers, notReachedBy: ["mini"]).isEmpty)
+    }
+
+    func testABareNameIsNoIdentityWhereMagicDNSDoesNotResolve() {
+        // Without MagicDNS here, `mini` reaches whatever the LAN calls mini.
+        let peers = Tailnet.hostPeers(fromStatus: status(peers: mini), namesResolve: false)
+        XCTAssertEqual(Tailnet.peers(peers, notReachedBy: ["mini"]).map(\.hostName), ["mini"])
+    }
+
+    func testAnIPv6AddressMatchesHoweverTheConfigSpellsIt() {
+        XCTAssertTrue(Tailnet.peers(miniPeers, notReachedBy: ["fd7a:115c:a1e0:0:0:0:0:7"]).isEmpty)
+        XCTAssertTrue(Tailnet.peers(miniPeers, notReachedBy: ["[FD7A:115C:A1E0::7]"]).isEmpty)
     }
 
     func testAnUnrelatedHostIsNoReasonToHideAMachine() {

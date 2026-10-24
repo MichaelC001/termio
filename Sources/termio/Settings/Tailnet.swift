@@ -8,8 +8,9 @@ struct TailnetPeer: Identifiable, Hashable {
     /// What to put in `HostName`: the MagicDNS name when this Mac can resolve it,
     /// else the first Tailscale address, which works with or without DNS.
     let address: String
-    /// Every name and address that reaches this machine, lowercased, so a config
-    /// block written with any one of them is recognised as this machine.
+    /// Every name and address that reaches this machine from here, in
+    /// `Tailnet.canonical` form, so a config block written with any one of them
+    /// is recognised as this machine.
     let identities: Set<String>
     let os: String
     let isOnline: Bool
@@ -48,62 +49,21 @@ enum Tailnet {
     /// The tailnet's machines that can host sessions, this Mac excluded. Empty when
     /// there is no Tailscale, it is not running, or it did not answer in time.
     static func hostPeers() async -> [TailnetPeer] {
-        guard let cli = cliPath() else { return [] }
-        return await withCheckedContinuation { continuation in
-            let run = StatusRun(continuation)
-            // The deadline answers for the read rather than waiting on it: a
-            // descendant that inherited the pipe keeps the read open after the CLI
-            // itself exits, so terminating the CLI alone bounds nothing. A worker
-            // left blocked that way ends when the descendant does.
-            DispatchQueue.global().asyncAfter(deadline: .now() + statusTimeout) {
-                if run.finish(with: []) {
-                    Log.app.error("tailscale status did not answer in \(statusTimeout, privacy: .public)s")
-                    run.terminate()
-                }
-            }
-            DispatchQueue.global(qos: .userInitiated).async {
-                run.finish(with: readStatus(cli: cli, run: run))
-            }
-        }
+        await hostPeers(cli: cliPath())
     }
 
-    private static func readStatus(cli: String, run: StatusRun) -> [TailnetPeer] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: cli)
-        process.arguments = ["status", "--json"]
-        // The app-bundle binary is the GUI and the CLI in one, and acts as the CLI
-        // only when it sees `TERM` or this. An app opened from Finder has no
-        // `TERM`, so without it the call starts a second Tailscale GUI.
-        var environment = ProcessInfo.processInfo.environment
-        environment["TAILSCALE_BE_CLI"] = "1"
-        process.environment = environment
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        do {
-            try process.run()
-        } catch {
-            Log.app.error("tailscale status failed to start: \(error.localizedDescription, privacy: .public)")
-            return []
-        }
-        run.track(process)
-        // Both pipes drain before the wait: a child that fills either one blocks
-        // forever against a parent waiting on exit.
-        let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        let stderr = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let message = String(data: stderr, encoding: .utf8) ?? ""
-            Log.app.info("tailscale status exited \(process.terminationStatus, privacy: .public): \(message, privacy: .public)")
-            return []
-        }
-        guard let status = decode(stdout) else { return [] }
-        // The tailnet reporting a MagicDNS name is not this Mac resolving it: with
-        // `--accept-dns=false` every name is there and none of them works. This
-        // Mac's own name stands for all of them, since one resolver serves them all.
-        let namesResolve = status.selfNode?.dnsName.map { resolves(trimmingRoot($0)) } ?? false
-        return hostPeers(in: status, namesResolve: namesResolve)
+    static func hostPeers(cli: String?) async -> [TailnetPeer] {
+        guard let cli, let output = await StatusRead.run(cli: cli) else { return [] }
+        // Off the caller's actor: the resolver can take as long as DNS does.
+        return await Task.detached(priority: .userInitiated) {
+            guard let status = decode(output) else { return [] }
+            // The tailnet reporting a MagicDNS name is not this Mac resolving it:
+            // with `--accept-dns=false` every name is there and none of them works.
+            // This Mac's own name stands for all of them, since one resolver
+            // serves them all.
+            let namesResolve = status.selfNode?.dnsName.map { resolves(trimmingRoot($0)) } ?? false
+            return hostPeers(in: status, namesResolve: namesResolve)
+        }.value
     }
 
     static func hostPeers(fromStatus data: Data, namesResolve: Bool) -> [TailnetPeer] {
@@ -125,10 +85,11 @@ enum Tailnet {
             let ip = ips.first { !$0.contains(":") } ?? ips.first
             guard let address = namesResolve && !dnsName.isEmpty ? dnsName : ip,
                   !address.isEmpty else { return nil }
-            // The bare machine name too: MagicDNS's search domain resolves it, which
-            // is how a block with no `HostName` of its own reaches the machine.
-            let names = [dnsName, node.hostName ?? ""] + ips
-            let identities = Set(names.filter { !$0.isEmpty }.map { $0.lowercased() })
+            // Names count only where they resolve here. The bare machine name is
+            // one too: MagicDNS's search domain resolves it, which is how a block
+            // with no `HostName` of its own reaches the machine.
+            let names = namesResolve ? [dnsName, node.hostName ?? ""] : []
+            let identities = Set((names + ips).filter { !$0.isEmpty }.map(canonical))
             return TailnetPeer(
                 id: node.id ?? address,
                 hostName: node.hostName ?? address,
@@ -147,7 +108,7 @@ enum Tailnet {
 
     /// The peers no config `HostName` already reaches, by name or by address.
     static func peers(_ peers: [TailnetPeer], notReachedBy hostNames: [String]) -> [TailnetPeer] {
-        let configured = Set(hostNames.map { trimmingRoot($0).lowercased() })
+        let configured = Set(hostNames.map(canonical))
         return peers.filter { $0.identities.isDisjoint(with: configured) }
     }
 
@@ -155,6 +116,21 @@ enum Tailnet {
     /// the alias derived from it and in every row that shows it.
     static func trimmingRoot(_ name: String) -> String {
         name.hasSuffix(".") ? String(name.dropLast()) : name
+    }
+
+    /// One spelling per host: lowercased, without the root dot or IPv6 brackets,
+    /// and an IPv6 address in its shortest form, since `fd7a:0:0::7` and
+    /// `fd7a::7` are one machine however a config happens to write it.
+    static func canonical(_ host: String) -> String {
+        var value = trimmingRoot(host).lowercased()
+        if value.hasPrefix("["), value.hasSuffix("]") {
+            value = String(value.dropFirst().dropLast())
+        }
+        var address = in6_addr()
+        guard inet_pton(AF_INET6, value, &address) == 1 else { return value }
+        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard inet_ntop(AF_INET6, &address, &buffer, socklen_t(buffer.count)) != nil else { return value }
+        return String(cString: buffer)
     }
 
     private static func decode(_ data: Data) -> Status? {
@@ -176,35 +152,106 @@ enum Tailnet {
         return status == 0
     }
 
-    /// One status read's two finishers — the worker and the deadline — of which
-    /// only the first is heard.
-    private final class StatusRun: @unchecked Sendable {
+    /// One `tailscale status --json`, read by handlers rather than by a thread
+    /// parked on the pipe. A descendant that inherits the pipe can hold it open
+    /// after the CLI exits, and a blocked read would then outlive the deadline:
+    /// with handlers the deadline drops them and nothing is left waiting.
+    private final class StatusRead: @unchecked Sendable {
         private let lock = NSLock()
-        private var continuation: CheckedContinuation<[TailnetPeer], Never>?
-        private var process: Process?
+        private let process = Process()
+        private let out = Pipe()
+        private let err = Pipe()
+        private var stdout = Data()
+        private var stderr = Data()
+        private var openStreams = 2
+        private var exited = false
+        private var continuation: CheckedContinuation<Data?, Never>?
 
-        init(_ continuation: CheckedContinuation<[TailnetPeer], Never>) {
-            self.continuation = continuation
+        static func run(cli: String) async -> Data? {
+            let read = StatusRead(cli: cli)
+            return await withCheckedContinuation { read.start($0) }
         }
 
-        func track(_ process: Process) {
-            lock.withLock { self.process = process }
+        private init(cli: String) {
+            process.executableURL = URL(fileURLWithPath: cli)
+            process.arguments = ["status", "--json"]
+            // The app-bundle binary is the GUI and the CLI in one, and acts as the
+            // CLI only when it sees `TERM` or this. An app opened from Finder has
+            // no `TERM`, so without it the call starts a second Tailscale GUI.
+            var environment = ProcessInfo.processInfo.environment
+            environment["TAILSCALE_BE_CLI"] = "1"
+            process.environment = environment
+            process.standardOutput = out
+            process.standardError = err
         }
 
-        /// Whether this call was the one that answered.
+        private func start(_ continuation: CheckedContinuation<Data?, Never>) {
+            lock.withLock { self.continuation = continuation }
+            out.fileHandleForReading.readabilityHandler = { [self] handle in
+                collect(handle.availableData, from: handle, isError: false)
+            }
+            err.fileHandleForReading.readabilityHandler = { [self] handle in
+                collect(handle.availableData, from: handle, isError: true)
+            }
+            process.terminationHandler = { [self] _ in
+                lock.withLock { exited = true }
+                finishIfComplete()
+            }
+            do {
+                try process.run()
+            } catch {
+                Log.app.error("tailscale status failed to start: \(error.localizedDescription, privacy: .public)")
+                finish(with: nil)
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + Tailnet.statusTimeout) { [self] in
+                guard finish(with: nil) else { return }
+                Log.app.error("tailscale status did not answer in \(Tailnet.statusTimeout, privacy: .public)s")
+                if process.isRunning { process.terminate() }
+            }
+        }
+
+        private func collect(_ data: Data, from handle: FileHandle, isError: Bool) {
+            lock.withLock {
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    openStreams -= 1
+                } else if isError {
+                    stderr.append(data)
+                } else {
+                    stdout.append(data)
+                }
+            }
+            finishIfComplete()
+        }
+
+        private func finishIfComplete() {
+            let output: Data?? = lock.withLock {
+                guard openStreams == 0, exited else { return .none }
+                guard process.terminationStatus == 0 else {
+                    let message = String(data: stderr, encoding: .utf8) ?? ""
+                    Log.app.info("tailscale status exited \(self.process.terminationStatus, privacy: .public): \(message, privacy: .public)")
+                    return .some(nil)
+                }
+                return .some(stdout)
+            }
+            if let output { finish(with: output) }
+        }
+
+        /// Answers once; whether this call was the one that did. The handlers go
+        /// with the answer, which also releases the cycle they hold on `self`.
         @discardableResult
-        func finish(with peers: [TailnetPeer]) -> Bool {
+        private func finish(with output: Data?) -> Bool {
             let pending = lock.withLock {
                 defer { continuation = nil }
                 return continuation
             }
-            pending?.resume(returning: peers)
-            return pending != nil
-        }
-
-        func terminate() {
-            let process = lock.withLock { self.process }
-            if let process, process.isRunning { process.terminate() }
+            guard let pending else { return false }
+            out.fileHandleForReading.readabilityHandler = nil
+            err.fileHandleForReading.readabilityHandler = nil
+            process.terminationHandler = nil
+            pending.resume(returning: output)
+            return true
         }
     }
 
