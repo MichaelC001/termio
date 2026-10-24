@@ -17,18 +17,14 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("Appearance"))
             } footer: {
-                Text(localized("Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance."))
-                    .font(.caption)
+                Text(localized("The light and dark themes below follow this choice."))
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
             Section {
                 TabLayoutPicker(selection: $settings.tabLayout)
             } header: {
                 SectionHeaderLabel(title: localized("Tabs"))
-            } footer: {
-                Text(localized("Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Section {
                 ThemePickerField(title: localized("Light"), prefersDark: false, selection: $settings.lightThemeName, userThemeNames: userThemeNames, onDuplicate: duplicate)
@@ -38,7 +34,7 @@ struct AppearanceSettingsTab: View {
                     Spacer()
                     if !userThemeNames.isEmpty {
                         Text(localized("\(userThemeNames.count) in your Themes folder"))
-                            .font(.caption)
+                            .font(.settingsDetail)
                             .foregroundStyle(.secondary)
                     }
                     Button(localized("Reload"), action: reloadUserThemes)
@@ -46,72 +42,8 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("Theme"))
             } footer: {
-                Text(localized("Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                FontFamilyField(
-                    title: localized("Family"),
-                    prompt: localized("System monospace"),
-                    families: InstalledFonts.monospaced,
-                    previewSize: settings.fontSize,
-                    monospacedDefault: true,
-                    family: $settings.fontFamily
-                )
-                Stepper(value: $settings.fontSize, in: 8...32, step: 1) {
-                    Text(localized("Size: \(Int(settings.fontSize)) pt"))
-                }
-                Stepper(value: $settings.codeLineHeight, in: 1.0...2.0, step: 0.1) {
-                    Text(localized("Line height: \(String(format: "%.1f", settings.codeLineHeight))×"))
-                }
-                Toggle(localized("Thicken glyphs"), isOn: $settings.fontThicken)
-            } header: {
-                SectionHeaderLabel(title: localized("Terminal font"))
-            } footer: {
-                if settings.inheritsGhosttyDefaults {
-                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(localized("Line height applies to the file editor and diffs; the terminal keeps the font’s own."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                Picker(localized("Style"), selection: $settings.cursorStyle) {
-                    ForEach(CursorStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                Toggle(localized("Blink"), isOn: $settings.cursorBlink)
-            } header: {
-                SectionHeaderLabel(title: localized("Cursor"))
-            }
-            Section {
-                Stepper(value: $settings.windowPadding, in: 0...40, step: 2) {
-                    Text(localized("Padding: \(settings.windowPadding) pt"))
-                }
-                LabeledContent(localized("Opacity")) {
-                    HStack(spacing: 8) {
-                        Slider(value: $settings.backgroundOpacity, in: 0.2...1.0)
-                            .frame(width: 160)
-                        Text(settings.backgroundOpacity.formatted(.percent.precision(.fractionLength(0))))
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                }
-                Stepper(value: $settings.backgroundBlur, in: 0...60, step: 5) {
-                    Text(localized("Blur: \(settings.backgroundBlur)"))
-                }
-                .disabled(settings.backgroundOpacity >= 1.0)
-            } header: {
-                SectionHeaderLabel(title: localized("Window"))
-            } footer: {
-                Text(localized("Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity."))
-                    .font(.caption)
+                Text(localized("Drop a Ghostty theme file into the Themes folder to add your own."))
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -123,15 +55,15 @@ struct AppearanceSettingsTab: View {
                     monospacedDefault: false,
                     family: $settings.interfaceFontFamily
                 )
-                Stepper(value: $settings.interfaceFontSize, in: 9...20, step: 1) {
-                    Text(localized("Size: \(Int(settings.interfaceFontSize)) pt"))
-                }
+                SettingsStepper(
+                    title: localized("Size"), value: $settings.interfaceFontSize, range: 9...20, step: 1,
+                    display: localized("\(Int(settings.interfaceFontSize)) pt"))
                 LabeledContent(localized("Row padding")) {
                     HStack(spacing: 8) {
                         Slider(value: $settings.interfaceRowPadding, in: 0...12, step: 1)
                             .frame(width: 160)
                         Text(localized("\(Int(settings.interfaceRowPadding)) pt"))
-                            .font(.callout.monospacedDigit())
+                            .monospacedDigit()
                             .foregroundStyle(.secondary)
                             .frame(width: 40, alignment: .trailing)
                     }
@@ -139,8 +71,8 @@ struct AppearanceSettingsTab: View {
             } header: {
                 SectionHeaderLabel(title: localized("Sidebar"))
             } footer: {
-                Text(localized("The project and session list. Kept separate from the terminal font, and need not be monospaced."))
-                    .font(.caption)
+                Text(localized("The project and session list."))
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -149,6 +81,8 @@ struct AppearanceSettingsTab: View {
                 SectionHeaderLabel(title: localized("File Tree"))
             } footer: {
                 Text(localized("Shows files and folders ignored by Git in a muted color."))
+                    .font(.settingsDetail)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -745,6 +745,13 @@ final class TermioStore: ObservableObject {
     }
     nonisolated static let panelWidthKey = "cardPanelWidth"
 
+    /// Per-card ceilings on `panelWidth` while the sidebar is hidden: the width each open panel
+    /// showed when the sidebar started to hide, so the room hiding frees goes to the terminals
+    /// and no panel grows into it. Never persisted, and never written into `panelWidth` — a
+    /// card's constrained width is not the person's choice. Cleared once the sidebar is back
+    /// and when a panel's divider is dragged.
+    @Published var panelWidthCaps: [Session.ID: CGFloat] = [:]
+
     /// Whether the focused card's panel is open — the live inspector. Hosted panes read it
     /// to stand down while hidden: the inspector's view hierarchy stays alive while
     /// closed, which would otherwise leave the git pane's auto-refresh spawning
@@ -1990,6 +1997,13 @@ final class TermioStore: ObservableObject {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else { return }
+        // Video, audio, and office files aren't in the in-app preview. Quick Look already plays
+        // them — the same panel spacebar uses on the file tree — so hand them over instead of
+        // opening the bytes as text.
+        if FileActivation.quickLooks(url) {
+            InspectorPanelHost.shared.quickLook(url)
+            return
+        }
         filePresentationGeneration &+= 1
         remotePreviewLease = nil
         openFileRemote = nil

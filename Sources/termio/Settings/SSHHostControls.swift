@@ -239,7 +239,7 @@ struct AddSSHHostSheet: View {
                     SectionHeaderLabel(title: localized("Credentials"))
                 } footer: {
                     Text(localized("A key is the credential that works everywhere, including sessions running on the box. A password is saved to your Keychain, never to ssh config, and only ever read when ssh asks for it."))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -248,7 +248,7 @@ struct AddSSHHostSheet: View {
             HStack {
                 if let writeError {
                     Text(writeError)
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.red)
                         .lineLimit(2)
                 }
@@ -410,15 +410,15 @@ struct AddSSHHostSheet: View {
     private var footer: some View {
         if let validationMessage {
             Text(.init(validationMessage))
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.orange)
         } else if effectiveAlias.isEmpty {
             Text(localized("Adds a Host block to ~/.ssh/config."))
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
         } else {
             Text(.init(localized("Adds a Host block to ~/.ssh/config. You’ll be able to run `ssh \(effectiveAlias)` anywhere.")))
-                .font(.caption)
+                .font(.settingsDetail)
                 .foregroundStyle(.secondary)
         }
     }

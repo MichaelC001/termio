@@ -54,51 +54,95 @@ fn git_command(root: &str) -> tokio::process::Command {
     command
 }
 
-/// Listings share a quiet window per repository, even across control connections.
-/// Keep only pending work: each re-list asks Git afresh, so index and ignore-rule
-/// edits cannot leave a cached decoration behind.
+/// Listings coalesce per repository while a check is running, even across
+/// control connections: an idle repository runs a request at once, and whatever
+/// arrives meanwhile rides the next `git check-ignore` together.
+///
+/// Never a timed window. The decoration rides the listing's own reply, so a
+/// quiet period here is a floor under every folder expand — 500 ms of spinner
+/// for a check git answers in single-digit milliseconds, and a sliding one that
+/// each prefetch pushed further out. VS Code can afford that debounce because
+/// its explorer renders first and decorates after; this reply cannot.
+///
+/// Keep only pending work: each re-list asks Git afresh, so index and
+/// ignore-rule edits cannot leave a cached decoration behind.
 #[derive(Default)]
 struct IgnoreBatch {
     paths: HashSet<String>,
     replies: Vec<tokio::sync::oneshot::Sender<std::result::Result<HashSet<String>, String>>>,
-    last_request: Option<tokio::time::Instant>,
 }
 
-type IgnoreQueue = tokio::sync::Mutex<HashMap<String, IgnoreBatch>>;
+/// A repository's key is present exactly while its worker runs; the value is
+/// the batch waiting for that worker's next turn.
+///
+/// A blocking mutex, not an async one: every critical section is a few map
+/// operations with no await inside, and an enqueue that completes on its first
+/// poll is what keeps a caller from being parked in a fair lock's queue behind
+/// a request nobody is polling.
+type IgnoreQueue = std::sync::Mutex<HashMap<String, IgnoreBatch>>;
 
-fn ignore_queue() -> &'static IgnoreQueue {
+fn ignore_queue() -> std::sync::MutexGuard<'static, HashMap<String, IgnoreBatch>> {
     static QUEUE: std::sync::OnceLock<IgnoreQueue> = std::sync::OnceLock::new();
-    QUEUE.get_or_init(IgnoreQueue::default)
+    // No section can leave the map half-edited, so a poisoned lock still
+    // guards a consistent one.
+    QUEUE
+        .get_or_init(IgnoreQueue::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Retires a worker's key however the worker ends. A runtime shutting down
+/// mid-check drops the task at its await, and a key left behind would make
+/// every later request for that repository wait on a worker that is gone;
+/// removing it drops the waiting replies, so those requests fail instead.
+struct IgnoreWorker {
+    root: String,
+    retired: bool,
+}
+
+impl Drop for IgnoreWorker {
+    fn drop(&mut self) {
+        if !self.retired {
+            ignore_queue().remove(&self.root);
+        }
+    }
 }
 
 async fn check_ignored(root: String, paths: Vec<String>) -> Result<HashSet<String>> {
     let (reply, receive) = tokio::sync::oneshot::channel();
-    let mut queue = ignore_queue().lock().await;
-    let start = !queue.contains_key(&root);
-    let batch = queue.entry(root.clone()).or_default();
-    batch.paths.extend(paths);
-    batch.replies.push(reply);
-    batch.last_request = Some(tokio::time::Instant::now());
-    drop(queue);
+    let start = {
+        let mut queue = ignore_queue();
+        let start = !queue.contains_key(&root);
+        let batch = queue.entry(root.clone()).or_default();
+        batch.paths.extend(paths);
+        batch.replies.push(reply);
+        start
+    };
     if start {
+        // Built before the spawn, so a task dropped before its first poll
+        // still retires the key it was started to serve.
+        let worker = IgnoreWorker { root: root.clone(), retired: false };
         tokio::spawn(async move {
-            let quiet = std::time::Duration::from_millis(500);
+            // The whole guard, by name: a precise capture of `worker.retired`
+            // alone would copy the bool in and drop the guard right here.
+            let mut worker = worker;
             loop {
-                tokio::time::sleep(quiet).await;
-                let mut queue = ignore_queue().lock().await;
-                let Some(batch) = queue.get(&root) else {
-                    return;
+                let batch = {
+                    let mut queue = ignore_queue();
+                    // Retired under the same lock a request enqueues under, so
+                    // a request either lands in a batch this worker will take
+                    // or finds no key and starts the next worker.
+                    let Some(pending) = queue.get_mut(&root) else {
+                        worker.retired = true;
+                        return;
+                    };
+                    if pending.replies.is_empty() {
+                        queue.remove(&root);
+                        worker.retired = true;
+                        return;
+                    }
+                    std::mem::take(pending)
                 };
-                if batch
-                    .last_request
-                    .is_some_and(|last| last.elapsed() < quiet)
-                {
-                    continue;
-                }
-                let Some(batch) = queue.remove(&root) else {
-                    return;
-                };
-                drop(queue);
                 let result = run_check_ignore(&root, &batch.paths)
                     .await
                     .map_err(|error| format!("{error:#}"));
@@ -106,7 +150,6 @@ async fn check_ignored(root: String, paths: Vec<String>) -> Result<HashSet<Strin
                     // A closed receiver means its listing was cancelled.
                     let _ = reply.send(result.clone());
                 }
-                return;
             }
         });
     }
@@ -1564,24 +1607,39 @@ mod tests {
         let root = directory.to_string_lossy().into_owned();
         let first = directory.join("first.log").to_string_lossy().into_owned();
         let keep = directory.join("keep.log").to_string_lossy().into_owned();
+        // Both enqueue before the worker's first turn, so one git run answers both.
         let mut requests = Box::pin(futures_util::future::join_all([
             check_ignored(root.clone(), vec![first.clone()]),
             check_ignored(root.clone(), vec![keep.clone()]),
         ]));
-        tokio::select! {
-            _ = &mut requests => panic!("requests must debounce"),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
-        }
+        assert!(futures_util::FutureExt::now_or_never(&mut requests).is_none());
         {
-            let queue = ignore_queue().lock().await;
+            let queue = ignore_queue();
             let batch = queue.get(&root).unwrap();
             assert_eq!(batch.replies.len(), 2);
             assert_eq!(batch.paths, HashSet::from([first.clone(), keep.clone()]));
         }
+        // The worker takes the batch on its first turn, with no quiet window:
+        // the old 500 ms one put a floor under every folder expand. On this
+        // single-threaded runtime the git child cannot finish inside that
+        // turn, so a key with nothing pending means the check is running.
+        let mut turns = 0;
+        while ignore_queue().get(&root).is_some_and(|pending| !pending.replies.is_empty()) {
+            assert!(turns < 8, "the worker must take a batch without waiting");
+            tokio::task::yield_now().await;
+            turns += 1;
+        }
+        assert!(ignore_queue().contains_key(&root));
+        // A request arriving mid-check rides the next batch instead of
+        // starting a second git beside the first.
+        let mut later = Box::pin(check_ignored(root.clone(), vec![keep.clone()]));
+        assert!(futures_util::FutureExt::now_or_never(&mut later).is_none());
+        assert_eq!(ignore_queue().get(&root).unwrap().replies.len(), 1);
         for result in requests.await {
             assert_eq!(result.unwrap(), HashSet::from([first.clone()]));
         }
-        assert!(!ignore_queue().lock().await.contains_key(&root));
+        assert!(later.await.unwrap().is_empty());
+        assert!(!ignore_queue().contains_key(&root));
         // Exit 1 and a negative-only match both mean nothing is ignored.
         assert!(run_check_ignore(&root, &HashSet::from([keep])).await.unwrap().is_empty());
         assert!(run_check_ignore(&root, &HashSet::from(["new.swift".into()])).await.unwrap().is_empty());

@@ -47,7 +47,7 @@ struct MobileSettingsTab: View {
                     SectionHeaderLabel(title: localized("Other machines"))
                 } footer: {
                     Text(localized("A phone can attach straight to one of these instead, and keep working when this Mac is asleep."))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -167,8 +167,7 @@ struct DeviceServingSection: View {
             Toggle(isOn: $mobile.isEnabled) {
                 SettingsLabel(
                     title: localized("Mobile Access"),
-                    subtext: localized("Turn off to disconnect your iPhone; pairing is kept."),
-                    titleFont: .headline
+                    subtext: localized("Turn off to disconnect your iPhone; pairing is kept.")
                 )
             }
             .toggleStyle(.switch)
@@ -180,8 +179,7 @@ struct DeviceServingSection: View {
                 Toggle(isOn: $mobile.attachesDirectly) {
                     SettingsLabel(
                         title: localized("Direct Attach"),
-                        subtext: localized("Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet."),
-                        titleFont: .headline
+                        subtext: localized("Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.")
                     )
                 }
                 .toggleStyle(.switch)
@@ -253,8 +251,7 @@ struct DeviceServingSection: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Pairing Token"),
-                        subtext: localized("Issues a new token and revokes every paired iPhone."),
-                        titleFont: .headline
+                        subtext: localized("Issues a new token and revokes every paired iPhone.")
                     )
                 }
 
@@ -327,15 +324,15 @@ struct DeviceServingSection: View {
         // The prompts stay untranslated: they are literal command lines and a
         // literal regex, not prose.
         TextField(localized("Command"), text: $customCommand, prompt: Text(verbatim: "cloudflared tunnel run --url http://127.0.0.1:{port} my-tunnel"))
-            .font(.system(.callout, design: .monospaced))
+            .font(.system(.body, design: .monospaced))
             .onSubmit(commitCustomTunnel)
         TextField(localized("URL Pattern"), text: $customURLPattern, prompt: Text(verbatim: #"https://[a-z0-9-]+\.example\.com"#))
-            .font(.system(.callout, design: .monospaced))
+            .font(.system(.body, design: .monospaced))
             .onSubmit(commitCustomTunnel)
         HStack {
             if !customURLPattern.isEmpty, !patternCompiles {
                 Label(localized("Not a valid regular expression"), systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
+                    .font(.settingsDetail)
                     .foregroundStyle(.orange)
             }
             Spacer()
@@ -381,8 +378,7 @@ struct DeviceServingSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 SettingsLabel(
                     title: localized("Termio for iPhone is in beta"),
-                    subtext: localized("Open the invite on your iPhone to install it with TestFlight."),
-                    titleFont: .headline
+                    subtext: localized("Open the invite on your iPhone to install it with TestFlight.")
                 )
                 // The invite only installs anything on the phone, so opening it
                 // here would land on the wrong device — copying is the whole
@@ -410,7 +406,7 @@ struct DeviceServingSection: View {
 
     private func footnote(_ text: String) -> some View {
         Text(text)
-            .font(.callout)
+            .font(.settingsDetail)
             .foregroundStyle(.secondary)
     }
 
@@ -444,7 +440,7 @@ struct DeviceServingSection: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.red)
                 Text(message)
-                    .font(.callout)
+                    .font(.settingsDetail)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.trailing)
             }
@@ -476,7 +472,7 @@ struct DeviceServingSection: View {
     private var addressRow: some View {
         HStack(spacing: 8) {
             Text(addressText)
-                .font(.system(.callout, design: .monospaced))
+                .font(.system(.subheadline, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)

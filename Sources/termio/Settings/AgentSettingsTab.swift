@@ -81,16 +81,14 @@ struct AgentSettingsTab: View {
                 Toggle(isOn: $settings.agentHooksEnabled) {
                     SettingsLabel(
                         title: localized("Live agent status"),
-                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse."),
-                        titleFont: .headline
+                        subtext: localized("Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.")
                     )
                 }
                 .toggleStyle(.switch)
                 Toggle(isOn: $settings.sessionControlEnabled) {
                     SettingsLabel(
                         title: localized("Session control"),
-                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command."),
-                        titleFont: .headline
+                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.")
                     )
                 }
                 .toggleStyle(.switch)
@@ -135,7 +133,7 @@ struct AgentSettingsTab: View {
                 Text(behind.isEmpty
                     ? localized("Whether you want these at all. Termio puts them on each machine as you set it up.")
                     : localized("Open a machine to put them there."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
 
@@ -143,8 +141,7 @@ struct AgentSettingsTab: View {
                 Toggle(isOn: $settings.notifyOnTaskCompletion) {
                     SettingsLabel(
                         title: localized("Task completion"),
-                        subtext: localized("Posts a notification when an agent finishes or needs you while Termio is in the background."),
-                        titleFont: .headline
+                        subtext: localized("Posts a notification when an agent finishes or needs you while Termio is in the background.")
                     )
                 }
                 .toggleStyle(.switch)
@@ -161,7 +158,7 @@ struct AgentSettingsTab: View {
                 Text(settings.notifyOnTaskCompletion && !settings.agentHooksEnabled
                     ? localized("Needs Live agent status above: without it, nothing tells Termio an agent finished.")
                     : localized("Termio notifies you about the agents above, wherever they run."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
 
@@ -198,7 +195,7 @@ struct AgentSettingsTab: View {
                 Text(devices.count > 1
                     ? localized("Drag an agent onto another to reorder. Readiness covers every machine you work on.")
                     : localized("Drag an agent onto another to reorder."))
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
         }
@@ -424,7 +421,7 @@ private struct IntegrationGapRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(machine.device.name)
                 Text(machine.detail)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
@@ -521,7 +518,7 @@ private struct AgentListRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.displayName)
                 Text(detail)
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -532,7 +529,7 @@ private struct AgentListRow: View {
             // alarm.
             if fleet?.hasMissing == true {
                 Image(systemName: "exclamationmark.circle")
-                    .font(.caption)
+                    .font(.settingsDetail)
                     .foregroundStyle(.tertiary)
                     .help(missingHelp)
             }
@@ -600,9 +597,9 @@ private struct AgentDetailPane: View {
                         .frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(preset.displayName)
-                            .font(.title3.weight(.semibold))
+                            .font(.body.weight(.semibold))
                         Text(settings.command(for: preset) ?? localized("Login shell"))
-                            .font(.caption)
+                            .font(.settingsDetail)
                             .foregroundStyle(.secondary)
                     }
                     if isUserDefined {
@@ -639,8 +636,7 @@ private struct AgentDetailPane: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Arguments"),
-                        subtext: localized("Passed to \(preset.displayName) every time a session starts."),
-                        titleFont: .headline
+                        subtext: localized("Passed to \(preset.displayName) every time a session starts.")
                     )
                 }
                 LabeledContent {
@@ -652,8 +648,7 @@ private struct AgentDetailPane: View {
                 } label: {
                     SettingsLabel(
                         title: localized("Get \(preset.displayName)"),
-                        subtext: localized("The install page — the same one whichever machine you are installing on."),
-                        titleFont: .headline
+                        subtext: localized("The install page — the same one whichever machine you are installing on.")
                     )
                 }
             } header: {
@@ -664,7 +659,7 @@ private struct AgentDetailPane: View {
                 // more than one machine to report on.
                 if devices.count > 1 {
                     Text(localized("Where each machine launches \(preset.displayName) from. Leave empty to use its default."))
-                        .font(.caption)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -766,7 +761,7 @@ private struct CommandPathRow: View {
             .labelsHidden()
             .frame(minWidth: 180)
         } label: {
-            SettingsLabel(title: title, subtext: subtext, titleFont: .headline)
+            SettingsLabel(title: title, subtext: subtext)
         }
         // Keyed on the path so a corrected one re-reads without leaving the pane.
         // Passive by construction: probing live here would fire an `ssh` per
@@ -836,8 +831,7 @@ private struct DefaultChatAgentRow: View {
         } label: {
             SettingsLabel(
                 title: localized("Default agent"),
-                subtext: localized("The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with."),
-                titleFont: .headline
+                subtext: localized("The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.")
             )
         }
     }
@@ -872,7 +866,7 @@ private struct NotificationPermissionRow: View {
             case .notDetermined:
                 HStack(spacing: 10) {
                     Text(localized("macOS hasn’t been asked to allow Termio’s notifications yet."))
-                        .font(.callout)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(localized("Request Permission")) {
@@ -885,7 +879,7 @@ private struct NotificationPermissionRow: View {
             case .denied:
                 HStack(spacing: 10) {
                     Text(localized("Notifications for Termio are turned off in System Settings."))
-                        .font(.callout)
+                        .font(.settingsDetail)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(localized("Open System Settings")) {

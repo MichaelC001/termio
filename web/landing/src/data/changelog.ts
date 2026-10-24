@@ -17,6 +17,31 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.61.0",
+    date: "2026-10-24",
+    title: "A calmer Settings window",
+    changes: {
+      improved: [
+        "Settings: consistent text sizes, a grey selection instead of the blue bar, and icons on the same glass tiles as the sidebar.",
+        "Server comes first in Settings, and its page opens on one card with the machine, its state and what to do next.",
+        "Terminal font, cursor and window settings moved from Appearance to the Terminal tab.",
+        "Folders in the file tree list right away instead of after a half-second wait.",
+        "Showing and hiding the sidebar no longer moves the toggle or jolts the panes, and the selection highlight snaps instead of fading.",
+      ],
+    },
+  },
+  {
+    version: "0.60.0",
+    date: "2026-10-24",
+    title: "Play videos from the terminal",
+    changes: {
+      new: [
+        "Cmd-click an mp4, mov or m4v path in the terminal to play it in the preview.",
+        "Audio, office documents, fonts and other video formats open in Quick Look instead of the text editor.",
+      ],
+    },
+  },
+  {
     version: "0.59.1",
     date: "2026-10-20",
     title: "One button to edit or read",

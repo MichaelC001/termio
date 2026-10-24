@@ -61,16 +61,6 @@
         }
       }
     },
-    "Vertical lists each group’s sessions in the sidebar. Horizontal lists only the groups there, and shows the selected group’s sessions as tabs above the terminals.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "纵向：在侧边栏里列出每个分组的会话。横向：侧边栏只列分组，所选分组的会话作为标签页显示在终端上方。"
-          }
-        }
-      }
-    },
     "\n…and %lld more": {
       "localizations": {
         "zh-Hans": {
@@ -1182,12 +1172,12 @@
         }
       }
     },
-    "Blur: %lld": {
+    "Blur": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "模糊：%lld"
+            "value": "模糊"
           }
         }
       }
@@ -2603,16 +2593,6 @@
         }
       }
     },
-    "Discord, GitHub, and the WeChat group": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Discord、GitHub 与微信群"
-          }
-        }
-      }
-    },
     "Done": {
       "localizations": {
         "zh-Hans": {
@@ -3304,12 +3284,12 @@
         }
       }
     },
-    "How much output each session keeps for scrolling back. Agents are verbose, so the default is generous.": {
+    "Behavior": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每个会话保留多少输出供回滚查看。Agent 输出较多，默认值因此较为宽裕。"
+            "value": "行为"
           }
         }
       }
@@ -3584,16 +3564,6 @@
         }
       }
     },
-    "Keyboard shortcuts for every command": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "所有命令的快捷键"
-          }
-        }
-      }
-    },
     "Keychain access was declined, so plan limits stay hidden. Allowing again re-shows the macOS prompt.": {
       "localizations": {
         "zh-Hans": {
@@ -3620,16 +3590,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "语言"
-          }
-        }
-      }
-    },
-    "Language, GitHub, and privacy": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "语言、GitHub 和隐私"
           }
         }
       }
@@ -3764,12 +3724,12 @@
         }
       }
     },
-    "Line height: %@×": {
+    "Line height": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "行高：%@×"
+            "value": "行高"
           }
         }
       }
@@ -4947,16 +4907,6 @@
         }
       }
     },
-    "Opacity below 100% lets the desktop show through; blur softens it. The window stays solid at full opacity.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "不透明度低于 100% 时会透出桌面，模糊可使其更柔和；完全不透明时窗口保持实色。"
-          }
-        }
-      }
-    },
     "Open": {
       "localizations": {
         "zh-Hans": {
@@ -5167,12 +5117,12 @@
         }
       }
     },
-    "Padding: %lld pt": {
+    "Padding": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "边距：%lld 点"
+            "value": "边距"
           }
         }
       }
@@ -5203,16 +5153,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对手机…"
-          }
-        }
-      }
-    },
-    "Pair your iPhone with the machines you work on": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "把 iPhone 与你正在使用的机器配对"
           }
         }
       }
@@ -5347,12 +5287,12 @@
         }
       }
     },
-    "Pin Termio to a light or dark look, or follow the system. The light and dark terminal themes below apply to the matching appearance.": {
+    "The light and dark themes below follow this choice.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "将 Termio 固定为浅色或深色外观，或跟随系统。下方的浅色与深色终端主题会应用到对应的外观。"
+            "value": "下方的浅色与深色主题随此选择切换。"
           }
         }
       }
@@ -6298,22 +6238,12 @@
         }
       }
     },
-    "Scrollback history and text selection": {
+    "Scrollback": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "回滚历史与文本选择"
-          }
-        }
-      }
-    },
-    "Scrollback: %lld MB": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "回滚：%lld MB"
+            "value": "回滚"
           }
         }
       }
@@ -6424,16 +6354,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "选择一个会话以查看其信息。"
-          }
-        }
-      }
-    },
-    "Selection": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "选择"
           }
         }
       }
@@ -6738,12 +6658,12 @@
         }
       }
     },
-    "Size: %lld pt": {
+    "Size": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "大小：%lld 磅"
+            "value": "大小"
           }
         }
       }
@@ -7068,16 +6988,6 @@
         }
       }
     },
-    "Terminal font": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "终端字体"
-          }
-        }
-      }
-    },
     "Terminals": {
       "localizations": {
         "zh-Hans": {
@@ -7168,12 +7078,12 @@
         }
       }
     },
-    "Termio switches between these as macOS changes appearance; leave a slot on the default for Termio’s own canvas. Fifty schemes are built in, and any Ghostty-format file you drop into the Themes folder shows up here too.": {
+    "Drop a Ghostty theme file into the Themes folder to add your own.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Termio 会随 macOS 外观变化在两者间切换；将槽位留在默认值即可使用 Termio 自带的画布。内置 50 个精选配色，你放进主题文件夹的 Ghostty 格式文件也会出现在这里。"
+            "value": "把 Ghostty 格式的主题文件放进主题文件夹，即可添加自己的主题。"
           }
         }
       }
@@ -7224,16 +7134,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "克隆在 %@ 上执行，并作为那台机器上的项目打开。"
-          }
-        }
-      }
-    },
-    "The coding agents offered when you start a session": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "新建会话时可以选用的编程 Agent"
           }
         }
       }
@@ -7298,16 +7198,6 @@
         }
       }
     },
-    "The machine Termio is running on": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Termio 正在运行的设备"
-          }
-        }
-      }
-    },
     "The machine answered with no listing for that folder.": {
       "localizations": {
         "zh-Hans": {
@@ -7348,22 +7238,12 @@
         }
       }
     },
-    "The machines you reach from this Mac": {
+    "The project and session list.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "你从这台 Mac 连接的设备"
-          }
-        }
-      }
-    },
-    "The project and session list. Kept separate from the terminal font, and need not be monospaced.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "项目与会话列表。与终端字体分开设置，无需等宽字体。"
+            "value": "项目与会话列表。"
           }
         }
       }
@@ -7478,32 +7358,12 @@
         }
       }
     },
-    "The workspaces your projects and sessions are filed under": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "你的项目和会话归入的工作区"
-          }
-        }
-      }
-    },
     "Theme": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "主题"
-          }
-        }
-      }
-    },
-    "Theme, fonts, cursor, and window": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "主题、字体、光标与窗口"
           }
         }
       }
@@ -7968,16 +7828,6 @@
         }
       }
     },
-    "Token usage for your connected agents": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已连接 Agent 的 token 用量"
-          }
-        }
-      }
-    },
     "Try Again": {
       "localizations": {
         "zh-Hans": {
@@ -8309,32 +8159,12 @@
         }
       }
     },
-    "What this Mac runs, and what Termio installed on it": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这台 Mac 运行什么，以及 Termio 装了什么"
-          }
-        }
-      }
-    },
     "What this workspace is called in the sidebar.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "这个工作区在侧栏中显示的名称。"
-          }
-        }
-      }
-    },
-    "When on, selecting text copies it straight to the clipboard.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "开启后，选中文本会直接拷贝到剪贴板。"
           }
         }
       }
