@@ -308,14 +308,12 @@ struct AddSSHHostSheet: View {
         }
     }
 
-    /// A machine some block already reaches is left out: adding it again would
-    /// only make a second name for one box.
+    /// A machine some block already reaches, by its name or any of its addresses,
+    /// is left out: adding it again would only make a second name for one box. An
+    /// alias that merely matches its name is not that — the sheet derives `mini-2`.
     private func loadTailnetPeers() async {
-        let configured = Set(SSHConfigFile.hosts().map { $0.hostName.lowercased() })
-        tailnetPeers = await Tailnet.hostPeers().filter {
-            !configured.contains($0.address.lowercased())
-                && !existingAliases.contains($0.hostName)
-        }
+        let configured = SSHConfigFile.hosts().map(\.hostName)
+        tailnetPeers = Tailnet.peers(await Tailnet.hostPeers(), notReachedBy: configured)
     }
 
     /// Fills the credential fields from what the config already does, so the common
