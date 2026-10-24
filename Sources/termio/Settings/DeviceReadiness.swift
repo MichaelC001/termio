@@ -362,6 +362,14 @@ final class DevicePaneModel: ObservableObject {
     /// and what the roster row calls when it first appears.
     func check() async {
         guard !readiness.isBusy else { return }
+        // Re-read the record before carrying it forward. The settings window keeps
+        // this Mac's model for as long as it is open, and Agents ▸ Install on This
+        // Mac stamps the file directly; carrying the stamp this model loaded at
+        // open would write the stale one back over the install and put Server on
+        // "set up" again.
+        if let onDisk = DeviceStateCache.load(device.settingsKey) {
+            discovered = onDisk
+        }
         readiness = .checking
         step = .foundation
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)

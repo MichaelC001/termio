@@ -118,6 +118,11 @@ struct SettingsView: View {
             // what writes a deep-linked tab to `lastOpenKey`, and it has no stack
             // to clear.
             guard previous != tab else { return }
+            // Agents can install on this Mac; ask again on the way out so the
+            // sidebar's Server row reports what that install left.
+            if previous == .agents {
+                Task { await thisMac.check() }
+            }
             path = NavigationPath()
             // …and the same clear is why a jump to a machine has to re-push
             // afterwards rather than set both at once: the switch it just made
