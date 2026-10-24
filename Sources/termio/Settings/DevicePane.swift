@@ -71,10 +71,12 @@ struct DevicePane: View {
             commandLineSection
             // A phone attaches to a port the machine serves, so pairing is a fact
             // about the machine and sits in its pane. This Mac's card drives the
-            // companion port here; a box's card mints its invite over SSH.
+            // companion port here; a box's card mints its invite over SSH, so it
+            // waits until the box has answered with a `termiod`. An unused alias
+            // has none, and publishing one would start a tunnel to nothing.
             if machine.isLocal {
                 DeviceServingSection()
-            } else {
+            } else if model.discovered?.termiodVersion != nil {
                 RemotePairingSection(machine: machine)
             }
         }

@@ -957,8 +957,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// — Safari, Xcode), falling back to the first tab on a fresh install;
     /// deep-linked opens (`openSettings(initialTab:)`) still pick their own.
     @objc func showSettings(_ sender: Any?) {
+        // "mobile" was a tab of its own; its controls now live in Server.
         let remembered = UserDefaults.standard.string(forKey: SettingsTab.lastOpenKey)
-            .flatMap(SettingsTab.init(rawValue:))
+            .flatMap { $0 == "mobile" ? .server : SettingsTab(rawValue: $0) }
         openSettings(initialTab: remembered ?? .general)
     }
 
