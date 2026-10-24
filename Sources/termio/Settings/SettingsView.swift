@@ -38,7 +38,8 @@ struct SettingsView: View {
     /// This Mac's readiness for the sidebar's Server row: a watcher that never
     /// writes the cache, so the Server pane stays its only owner. Checked when
     /// the window opens — the probe is local IPC, so it cannot stall on a
-    /// sleeping box the way a remote host's would.
+    /// sleeping box the way a remote host's would — and kept current after that
+    /// by what the pane and the installers record.
     @StateObject private var thisMac: DevicePaneModel
 
     init(
@@ -119,11 +120,6 @@ struct SettingsView: View {
             // what writes a deep-linked tab to `lastOpenKey`, and it has no stack
             // to clear.
             guard previous != tab else { return }
-            // Server sets this Mac up and Agents installs on it; ask again on the
-            // way out of either so the sidebar's Server row reports what they left.
-            if previous == .agents || previous == .server {
-                Task { await thisMac.check() }
-            }
             path = NavigationPath()
             // …and the same clear is why a jump to a machine has to re-push
             // afterwards rather than set both at once: the switch it just made

@@ -289,6 +289,20 @@ enum DeviceStateCache {
             state.recordCoverage(present: present)
         }
         save(state, for: key)
+        // Saved synchronously above, so a watcher can read the file itself.
+        announce(key, state: nil)
+    }
+
+    /// Posted after an owner records a machine's state, so a watcher (the
+    /// settings sidebar's Server row) can follow without writing anything itself.
+    static let didRecord = Notification.Name("DeviceStateCache.didRecord")
+    static let keyInfo = "key"
+    static let stateInfo = "state"
+
+    static func announce(_ key: String, state: DeviceDiscoveredState?) {
+        var info: [String: Any] = [keyInfo: key]
+        if let state { info[stateInfo] = state }
+        NotificationCenter.default.post(name: didRecord, object: nil, userInfo: info)
     }
 }
 
