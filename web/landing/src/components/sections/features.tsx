@@ -1,3 +1,4 @@
+import { FeatureVideo } from "@/components/feature-video";
 import { Reveal } from "@/components/reveal";
 import { Section, Stage } from "@/components/section-label";
 import { cn } from "@/lib/utils";
@@ -70,17 +71,7 @@ export function Features() {
                 ) : null}
               </div>
               <Stage className="aspect-video rounded-none">
-                <video
-                  src={`/videos/${row.video}.mp4`}
-                  poster={`/videos/${row.video}-poster.jpg`}
-                  autoPlay
-                  muted
-                  loop
-                  playsInline
-                  preload="metadata"
-                  aria-label={row.label}
-                  className="absolute inset-0 size-full object-cover"
-                />
+                <FeatureVideo name={row.video} label={row.label} />
               </Stage>
             </Reveal>
           );

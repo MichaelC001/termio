@@ -63,7 +63,7 @@ export function HeroTabs({ slides }: { slides: readonly HeroSlide[] }) {
       {/* The stage: the aurora behind the window, the page's one use of colour
           (Cursor puts its screenshots on painted panels the same way). The
           window sits inset on it with a real cast shadow. */}
-      <div className="relative isolate overflow-hidden rounded-[clamp(12px,2cqw,24px)] p-[clamp(12px,4.5cqw,56px)]">
+      <div className="relative isolate overflow-hidden rounded-[clamp(12px,2cqw,24px)] bg-[#070710] p-[clamp(12px,4.5cqw,56px)]">
         <HeroGradient className="absolute inset-0 -z-10" />
         <div
           aria-hidden="true"

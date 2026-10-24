@@ -28,13 +28,14 @@ async function fetchStarCount(): Promise<number | null> {
 
 // The page's one closing block: download, or star the repo. It sits on the same
 // live aurora as the hero window, so the page opens and closes on one picture;
-// `dark` keeps its ink light in either appearance.
+// `dark` keeps its ink light in either appearance, and the background colour
+// under the shader keeps it legible where WebGL is unavailable.
 export async function CtaBand() {
   const starCount = await fetchStarCount();
   return (
     <Section aria-labelledby="cta-heading">
       <Reveal>
-        <div className="dark relative isolate overflow-hidden rounded-[2rem] px-8 py-24 sm:px-14 sm:py-32">
+        <div className="dark relative isolate overflow-hidden rounded-[2rem] bg-[#070710] px-8 py-24 sm:px-14 sm:py-32">
           <HeroGradient className="absolute inset-0 -z-10" />
           <div
             aria-hidden="true"

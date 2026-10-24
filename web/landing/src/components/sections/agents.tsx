@@ -4,7 +4,7 @@ import { AgentIcon } from "@/components/agent-icons";
 import { supportedAgents } from "@/lib/site";
 
 const cardClass =
-  "flex items-center gap-4 rounded-xl border border-border bg-card p-5 transition-colors hover:bg-accent";
+  "flex items-center gap-3 rounded-xl border border-border bg-card p-3 transition-colors hover:bg-accent sm:gap-4 sm:p-5";
 
 // After VS Code's extension grid: a short heading on the left, and one card
 // per agent on the right, each naming the command it runs. The last card is
@@ -31,7 +31,7 @@ export function Agents() {
                   rel="noreferrer"
                   className={cardClass}
                 >
-                  <AgentIcon name={agent.name} size={32} color />
+                  <AgentIcon name={agent.name} size={28} color />
                   <span className="min-w-0">
                     <span className="block truncate font-medium text-foreground">
                       {agent.name}
@@ -47,7 +47,7 @@ export function Agents() {
               <a href="/docs/custom-agents" className={cardClass}>
                 <span
                   aria-hidden="true"
-                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border border-dashed border-foreground/30 text-lg text-muted-foreground"
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-dashed border-foreground/30 text-lg text-muted-foreground"
                 >
                   +
                 </span>
