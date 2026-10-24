@@ -85,10 +85,12 @@ enum Tailnet {
             let ip = ips.first { !$0.contains(":") } ?? ips.first
             guard let address = namesResolve && !dnsName.isEmpty ? dnsName : ip,
                   !address.isEmpty else { return nil }
-            // Names count only where they resolve here. The bare machine name is
-            // one too: MagicDNS's search domain resolves it, which is how a block
-            // with no `HostName` of its own reaches the machine.
-            let names = namesResolve ? [dnsName, node.hostName ?? ""] : []
+            // Names count only where they resolve here. The short name is one too:
+            // MagicDNS's search domain resolves it, which is how a block with no
+            // `HostName` of its own reaches the machine. It is the DNS name's first
+            // label, not `HostName`, which two machines can share (the second is
+            // `mini-1`), and only inside this tailnet's suffix, the one searched.
+            let names = namesResolve ? [dnsName, shortName(of: dnsName, in: status.magicDNSSuffix)] : []
             let identities = Set((names + ips).filter { !$0.isEmpty }.map(canonical))
             return TailnetPeer(
                 id: node.id ?? address,
@@ -110,6 +112,12 @@ enum Tailnet {
     static func peers(_ peers: [TailnetPeer], notReachedBy hostNames: [String]) -> [TailnetPeer] {
         let configured = Set(hostNames.map(canonical))
         return peers.filter { $0.identities.isDisjoint(with: configured) }
+    }
+
+    private static func shortName(of dnsName: String, in suffix: String?) -> String {
+        guard let suffix = suffix.map(trimmingRoot), !suffix.isEmpty,
+              dnsName.lowercased().hasSuffix("." + suffix.lowercased()) else { return "" }
+        return String(dnsName.dropLast(suffix.count + 1))
     }
 
     /// `mini.tail1.ts.net.` resolves as written, but the dot would also land in
@@ -257,11 +265,13 @@ enum Tailnet {
 
     private struct Status: Decodable {
         let backendState: String?
+        let magicDNSSuffix: String?
         let selfNode: Node?
         let peer: [String: Node]?
 
         enum CodingKeys: String, CodingKey {
             case backendState = "BackendState"
+            case magicDNSSuffix = "MagicDNSSuffix"
             case selfNode = "Self"
             case peer = "Peer"
         }

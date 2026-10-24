@@ -9,6 +9,7 @@ final class TailnetTests: XCTestCase {
         Data("""
         {
           "BackendState": "\(backend)",
+          "MagicDNSSuffix": "tail1.ts.net",
           "Self": {"ID": "self", "HostName": "laptop", "DNSName": "laptop.tail1.ts.net.", "OS": "macOS", "UserID": 1},
           "Peer": {\(peers)}
         }
@@ -123,6 +124,27 @@ final class TailnetTests: XCTestCase {
         // `Host mini` with no `HostName`: ssh resolves `mini` through MagicDNS's
         // search domain, so it is this machine already.
         XCTAssertTrue(Tailnet.peers(miniPeers, notReachedBy: ["mini"]).isEmpty)
+    }
+
+    func testTwoMachinesSharingAHostNameAreToldApartByTheirDNSNames() {
+        // Tailscale gives the second `mini` the DNS name `mini-1`, so `Host mini`
+        // reaches only the first.
+        let peers = Tailnet.hostPeers(fromStatus: status(peers: """
+            \(mini),
+            "b": {"ID": "b", "HostName": "mini", "DNSName": "mini-1.tail1.ts.net.", "OS": "macOS", "Online": true,
+                  "TailscaleIPs": ["100.64.0.8"], "UserID": 1}
+            """), namesResolve: true)
+        XCTAssertEqual(Tailnet.peers(peers, notReachedBy: ["mini"]).map(\.address), ["mini-1.tail1.ts.net"])
+    }
+
+    func testAShortNameOutsideThisTailnetIsNoIdentity() {
+        // A machine shared in from another tailnet is not under the suffix this
+        // Mac searches, so its short name reaches something else.
+        let peers = Tailnet.hostPeers(fromStatus: status(peers: """
+            "a": {"ID": "a", "HostName": "mini", "DNSName": "mini.other.ts.net.", "OS": "macOS", "Online": true,
+                  "TailscaleIPs": ["100.64.0.9"], "UserID": 2}
+            """), namesResolve: true)
+        XCTAssertEqual(Tailnet.peers(peers, notReachedBy: ["mini"]).map(\.hostName), ["mini"])
     }
 
     func testABareNameIsNoIdentityWhereMagicDNSDoesNotResolve() {
