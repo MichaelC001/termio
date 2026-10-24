@@ -37,8 +37,7 @@ struct DevicePane: View {
         keyToInstall: SSHPublicKey?,
         onConnect: @escaping (String) -> Void,
         onSetUpKey: @escaping (String, String) -> Void,
-        onEditConfig: @escaping () -> Void,
-        model: DevicePaneModel? = nil
+        onEditConfig: @escaping () -> Void
     ) {
         self.machine = machine
         self.host = host
@@ -47,9 +46,7 @@ struct DevicePane: View {
         self.onConnect = onConnect
         self.onSetUpKey = onSetUpKey
         self.onEditConfig = onEditConfig
-        // This Mac's model is handed in by the settings window, which also shows
-        // its state on the sidebar row; a remote host's pane owns its own.
-        _model = StateObject(wrappedValue: model ?? DevicePaneModel(device: machine, settings: settings))
+        _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
     }
 
     var body: some View {

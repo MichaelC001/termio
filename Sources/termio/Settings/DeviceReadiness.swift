@@ -301,9 +301,16 @@ final class DevicePaneModel: ObservableObject {
     /// What the last completed setup left behind, shown once and dismissed.
     @Published var feedback: InstallFeedback?
 
-    init(device: KnownDevice, settings: AppSettings) {
+    /// False for a watcher: the settings sidebar reports this Mac's state but
+    /// is not the pane that owns it. A watcher probes and resolves like any
+    /// model and never writes the cache, so living as long as the window cannot
+    /// let it carry an old integration stamp back over a newer install.
+    private let persists: Bool
+
+    init(device: KnownDevice, settings: AppSettings, persists: Bool = true) {
         self.device = device
         self.settings = settings
+        self.persists = persists
         discovered = DeviceStateCache.load(device.settingsKey)
         // Seeded from the cache, but never *blocked* by it: a box that was asleep
         // when we last looked must not greet the user with a failure we have not
@@ -362,12 +369,10 @@ final class DevicePaneModel: ObservableObject {
     /// and what the roster row calls when it first appears.
     func check() async {
         guard !readiness.isBusy else { return }
-        // Re-read the record before carrying it forward. The settings window keeps
-        // this Mac's model for as long as it is open, and Agents ▸ Install on This
-        // Mac stamps the file directly; carrying the stamp this model loaded at
-        // open would write the stale one back over the install and put Server on
-        // "set up" again.
-        if let onDisk = DeviceStateCache.load(device.settingsKey) {
+        // A watcher keeps its model for as long as its window is open, so it
+        // re-reads what the writers have recorded since rather than reporting the
+        // stamp it loaded at open.
+        if !persists, let onDisk = DeviceStateCache.load(device.settingsKey) {
             discovered = onDisk
         }
         readiness = .checking
@@ -526,6 +531,7 @@ final class DevicePaneModel: ObservableObject {
     private func apply(_ state: DeviceDiscoveredState) {
         discovered = state
         readiness = resolve(state)
+        guard persists else { return }
         let key = device.settingsKey
         Task.detached(priority: .utility) { DeviceStateCache.save(state, for: key) }
     }

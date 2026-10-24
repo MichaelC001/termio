@@ -35,9 +35,10 @@ struct SettingsView: View {
     /// landed. Held rather than pushed inline because the switch clears the
     /// stack; see the `onChange` below.
     @State private var pendingMachine: String?
-    /// This Mac's readiness, read by the sidebar's Server row and the Server pane
-    /// alike. Checked once when the window opens: the probe is local IPC, so it
-    /// cannot stall on a sleeping box the way a remote host's would.
+    /// This Mac's readiness for the sidebar's Server row: a watcher that never
+    /// writes the cache, so the Server pane stays its only owner. Checked when
+    /// the window opens — the probe is local IPC, so it cannot stall on a
+    /// sleeping box the way a remote host's would.
     @StateObject private var thisMac: DevicePaneModel
 
     init(
@@ -54,7 +55,7 @@ struct SettingsView: View {
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
-        _thisMac = StateObject(wrappedValue: DevicePaneModel(device: .thisMac, settings: settings))
+        _thisMac = StateObject(wrappedValue: DevicePaneModel(device: .thisMac, settings: settings, persists: false))
     }
 
     var body: some View {
@@ -118,9 +119,9 @@ struct SettingsView: View {
             // what writes a deep-linked tab to `lastOpenKey`, and it has no stack
             // to clear.
             guard previous != tab else { return }
-            // Agents can install on this Mac; ask again on the way out so the
-            // sidebar's Server row reports what that install left.
-            if previous == .agents {
+            // Server sets this Mac up and Agents installs on it; ask again on the
+            // way out of either so the sidebar's Server row reports what they left.
+            if previous == .agents || previous == .server {
                 Task { await thisMac.check() }
             }
             path = NavigationPath()
@@ -219,7 +220,7 @@ struct SettingsView: View {
         case .appearance: AppearanceSettingsTab(settings: settings)
         case .terminal: TerminalSettingsTab(settings: settings)
         case .workspaces: WorkspaceSettingsTab(store: store)
-        case .server: ServerSettingsTab(settings: settings, model: thisMac)
+        case .server: ServerSettingsTab(settings: settings)
         case .remoteHosts:
             RemoteHostsSettingsTab(
                 settings: settings, store: store,
