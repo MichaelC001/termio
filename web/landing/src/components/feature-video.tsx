@@ -13,16 +13,19 @@ export function FeatureVideo({ name, label }: { name: string; label: string }) {
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setWanted(false);
-    }
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    video.addEventListener("play", onPlay);
-    video.addEventListener("pause", onPause);
+    // The system setting can change while the page is open; follow it.
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onMotion = () => setWanted(!motion.matches);
+    onMotion();
+    motion.addEventListener("change", onMotion);
+    // The button shows what the element is doing, not what was asked of it: a
+    // play() that fails, or a source that cannot load, ends on Play.
+    const sync = () => setPlaying(!video.paused && !video.error);
+    const events = ["playing", "pause", "error", "emptied"] as const;
+    events.forEach((name) => video.addEventListener(name, sync));
     return () => {
-      video.removeEventListener("play", onPlay);
-      video.removeEventListener("pause", onPause);
+      motion.removeEventListener("change", onMotion);
+      events.forEach((name) => video.removeEventListener(name, sync));
     };
   }, []);
 
@@ -33,6 +36,7 @@ export function FeatureVideo({ name, label }: { name: string; label: string }) {
       if (entry.isIntersecting && wanted) {
         video.play().catch((error) => {
           console.warn("Feature video did not start", error);
+          setPlaying(!video.paused && !video.error);
         });
       } else {
         video.pause();
@@ -66,6 +70,7 @@ export function FeatureVideo({ name, label }: { name: string; label: string }) {
           } else {
             video.play().catch((error) => {
               console.warn("Feature video did not start", error);
+              setPlaying(!video.paused && !video.error);
             });
           }
         }}

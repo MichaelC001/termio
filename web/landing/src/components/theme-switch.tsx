@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
 
 export type Theme = "system" | "light" | "dark";
@@ -17,22 +17,6 @@ export type ThemeLabels = {
 // them in step (see ThemeScript).
 export const THEME_KEY = "termio-theme";
 const LEGACY_THEME_KEY = "termio-docs-theme";
-
-// The browser bar's colour, one per appearance; layout.tsx declares the same two
-// as media-keyed `theme-color` tags. Those follow the OS only, so an explicit
-// choice repoints both tags at its colour, and System puts each back.
-const THEME_COLOR = { light: "#f4f4f6", dark: "#08080a" } as const;
-
-function syncThemeColor(theme: Theme) {
-  document
-    .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
-    .forEach((meta) => {
-      const own = meta.media.includes("light")
-        ? THEME_COLOR.light
-        : THEME_COLOR.dark;
-      meta.content = theme === "system" ? own : THEME_COLOR[theme];
-    });
-}
 
 function apply(theme: Theme) {
   const root = document.documentElement;
@@ -113,9 +97,6 @@ function readThemeOnServer(): undefined {
 // landing and the docs.
 export function ThemeSwitch({ labels }: { labels: ThemeLabels }) {
   const theme = useSyncExternalStore(subscribe, readTheme, readThemeOnServer);
-  useEffect(() => {
-    if (theme) syncThemeColor(theme);
-  }, [theme]);
 
   const options: { value: Theme; label: string; icon: React.ReactNode }[] = [
     { value: "system", label: labels.themeSystem, icon: <SystemIcon /> },
