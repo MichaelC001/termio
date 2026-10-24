@@ -53,18 +53,20 @@ enum Tailnet {
     }
 
     static func hostPeers(cli: String?) async -> [TailnetPeer] {
-        guard let cli, let output = await StatusRead.run(cli: cli) else { return [] }
-        // Off the caller's actor: the resolver can take as long as DNS does.
-        return await Task.detached(priority: .userInitiated) {
-            guard let status = decode(output) else { return [] }
-            // The tailnet reporting a MagicDNS name is not this Mac resolving it:
-            // with `--accept-dns=false` every name is there and none of them works.
-            // This Mac's own name stands for all of them, since one resolver
-            // serves them all.
-            let namesResolve = status.selfNode?.dnsName.map { resolves(trimmingRoot($0)) } ?? false
-            return hostPeers(in: status, namesResolve: namesResolve)
-        }.value
+        guard let cli, let output = await StatusRead.run(cli: cli),
+              let status = decode(output) else { return [] }
+        // The tailnet reporting a MagicDNS name is not this Mac resolving it: with
+        // `--accept-dns=false` every name is there and none of them works. This
+        // Mac's own name stands for all of them, since one resolver serves them all.
+        let ownName = status.selfNode?.dnsName.map(trimmingRoot) ?? ""
+        let namesResolve = await resolves(ownName, within: resolveTimeout)
+        return hostPeers(in: status, namesResolve: namesResolve)
     }
+
+    /// MagicDNS answers from this Mac itself, in well under this. A name that takes
+    /// longer is going to a resolver that is not MagicDNS, and the IPs are the
+    /// answer that works.
+    static let resolveTimeout: TimeInterval = 1
 
     static func hostPeers(fromStatus data: Data, namesResolve: Bool) -> [TailnetPeer] {
         decode(data).map { hostPeers(in: $0, namesResolve: namesResolve) } ?? []
@@ -150,14 +152,42 @@ enum Tailnet {
         }
     }
 
-    private static func resolves(_ name: String) -> Bool {
+    /// Whether `name` resolves, answered by `timeout` at the latest. `getaddrinfo`
+    /// cannot be cancelled, so a lookup that outlasts the answer finishes on its own
+    /// thread when the system resolver gives up, which bounds it.
+    private static func resolves(_ name: String, within timeout: TimeInterval) async -> Bool {
         guard !name.isEmpty else { return false }
-        var hints = addrinfo()
-        hints.ai_socktype = SOCK_STREAM
-        var result: UnsafeMutablePointer<addrinfo>?
-        let status = getaddrinfo(name, nil, &hints, &result)
-        if let result { freeaddrinfo(result) }
-        return status == 0
+        return await withCheckedContinuation { continuation in
+            let answer = Once(continuation)
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                answer.resume(false)
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                var hints = addrinfo()
+                hints.ai_socktype = SOCK_STREAM
+                var result: UnsafeMutablePointer<addrinfo>?
+                let status = getaddrinfo(name, nil, &hints, &result)
+                if let result { freeaddrinfo(result) }
+                answer.resume(status == 0)
+            }
+        }
+    }
+
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+
+        init(_ continuation: CheckedContinuation<Bool, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ value: Bool) {
+            let pending = lock.withLock {
+                defer { continuation = nil }
+                return continuation
+            }
+            pending?.resume(returning: value)
+        }
     }
 
     /// One `tailscale status --json`, read by handlers rather than by a thread
