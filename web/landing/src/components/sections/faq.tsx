@@ -5,11 +5,12 @@ import {
   AccordionContent,
 } from "@/components/ui/accordion";
 import { Reveal } from "@/components/reveal";
-import { SectionLabel } from "@/components/section-label";
-import { supportedAgents } from "@/lib/site";
+import Link from "next/link";
+import { Section } from "@/components/section-label";
 
 // Plain strings (not JSX) so the same copy feeds both the rendered accordion
-// and the FAQPage structured data below.
+// and the FAQPage structured data below. Only the questions a visitor asks
+// before downloading; the rest live in the docs.
 const faqs: { question: string; answer: string }[] = [
   {
     question: "Is Termio free?",
@@ -37,37 +38,9 @@ const faqs: { question: string; answer: string }[] = [
       "tmux is a prefix-key multiplexer you attach a terminal to. Termio is a native Mac app with its own session host — same sessions on this Mac, a remote box, or the iPhone companion. You don’t have to learn tmux. There is no prefix key to remember.",
   },
   {
-    question: "Which agents are supported?",
-    answer: `${supportedAgents.join(", ")}, and any other coding agent that runs in a terminal. Each session is a real terminal, not a chat view.`,
-  },
-  {
-    question: "How does Termio know when an agent needs me?",
-    answer:
-      "Agents report working, needs you and done through hooks Termio installs. If a hook isn’t there, Termio reads the screen.",
-  },
-  {
     question: "Is my code private?",
     answer:
       "Yes. No account, no cloud, no telemetry. Code never leaves machines you own.",
-  },
-  {
-    question: "Is Termio a fork of Ghostty?",
-    answer: "No. Termio is built on libghostty. It is not a fork.",
-  },
-  {
-    question: "Is there an iPhone app?",
-    answer:
-      "Yes. A free iPhone companion mirrors sessions live; it’s in TestFlight beta. Remote access uses a tunnel you choose — Tunelo, Cloudflare, ngrok, or a self-hosted relay.",
-  },
-  {
-    question: "Can I script it?",
-    answer:
-      "Yes. The termio CLI drives the running app over a local socket, and ships as an agent skill.",
-  },
-  {
-    question: "What are the requirements?",
-    answer:
-      "macOS 14 or later. Universal binary, so the same download runs on Apple silicon and Intel. You bring the agent CLIs and their credentials.",
   },
 ];
 
@@ -84,26 +57,28 @@ const faqJsonLd = {
 
 export function Faq() {
   return (
-    <section id="faq" className="scroll-mt-24">
+    <Section id="faq">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
       />
-      {/* Light top padding — the section above already ends with pb-32/40, so a
-          full py-32 here would double the gap. */}
-      <div className="mx-auto w-full max-w-2xl px-5 pb-32 pt-8 sm:pb-40 sm:pt-10 sm:px-8">
-        <Reveal className="flex flex-col items-center text-center">
-          <SectionLabel accent="muted">Support</SectionLabel>
-          <h2 className="mt-4 text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]">
-            Frequently asked questions
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:gap-16">
+        <Reveal className="flex flex-col items-start">
+          <h2 className="text-balance text-4xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-5xl">
+            Questions.
           </h2>
-          <p className="mt-5 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
-            Can&apos;t find the answer you&apos;re looking for? The docs go
-            deeper, or reach out and a human will help.
+          <p className="mt-5 max-w-sm text-pretty text-base leading-relaxed text-muted-foreground">
+            The docs go deeper, or reach out and a human will help.
           </p>
+          <Link
+            href="/docs"
+            className="mt-6 text-sm font-medium text-foreground underline-offset-4 hover:underline"
+          >
+            Read the docs
+          </Link>
         </Reveal>
 
-        <Reveal delayMs={80} className="mt-10">
+        <Reveal delayMs={80}>
           <Accordion className="border-t border-border">
             {faqs.map((faq) => (
               <AccordionItem key={faq.question} value={faq.question}>
@@ -118,6 +93,6 @@ export function Faq() {
           </Accordion>
         </Reveal>
       </div>
-    </section>
+    </Section>
   );
 }

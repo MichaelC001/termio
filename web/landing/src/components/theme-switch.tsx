@@ -2,16 +2,23 @@
 
 import { useSyncExternalStore } from "react";
 import { cn } from "@/lib/utils";
-import type { DocsChrome } from "@/lib/docs-ui";
 
-export type DocsTheme = "system" | "light" | "dark";
+export type Theme = "system" | "light" | "dark";
+
+export type ThemeLabels = {
+  theme: string;
+  themeSystem: string;
+  themeLight: string;
+  themeDark: string;
+};
 
 // Where the choice is kept, and the attribute the stylesheet keys on. The inline
-// script in the docs layout reads the same two names before first paint — keep
-// them in step (see DocsThemeScript).
-export const DOCS_THEME_KEY = "termio-docs-theme";
+// script in the root layout reads the same two names before first paint — keep
+// them in step (see ThemeScript).
+export const THEME_KEY = "termio-theme";
+const LEGACY_THEME_KEY = "termio-docs-theme";
 
-function apply(theme: DocsTheme) {
+function apply(theme: Theme) {
   const root = document.documentElement;
   // Switch every colour on the same frame. The page background has no transition,
   // the hover-styled controls carry a 150ms one, and the library's sidebar carries
@@ -21,12 +28,19 @@ function apply(theme: DocsTheme) {
   // hover and focus keep their easing the rest of the time.
   root.dataset.themeSwitching = "";
 
+  // Storage can throw (Safari private mode); the attribute still switches the
+  // page, the choice just will not outlive the tab.
   if (theme === "system") {
-    delete root.dataset.docsTheme;
-    localStorage.removeItem(DOCS_THEME_KEY);
+    delete root.dataset.theme;
   } else {
-    root.dataset.docsTheme = theme;
-    localStorage.setItem(DOCS_THEME_KEY, theme);
+    root.dataset.theme = theme;
+  }
+  try {
+    localStorage.removeItem(LEGACY_THEME_KEY);
+    if (theme === "system") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, theme);
+  } catch (error) {
+    console.warn("Could not save the theme choice", error);
   }
 
   // Flush the new colours while the guard is still on. Toggling a universal
@@ -53,22 +67,22 @@ function apply(theme: DocsTheme) {
   setTimeout(release, 120);
 }
 
-// The `data-docs-theme` attribute on <html> is the state — not this component.
-// The shell renders one switch in the desktop sidebar and another inside the
-// mobile menu, and both have to agree, so they read the attribute rather than each
-// holding a copy. That makes it an external store: a subscribe, a snapshot, and no
+// The `data-theme` attribute on <html> is the state — not this component.
+// The docs render one switch in the desktop sidebar and another inside the
+// mobile menu, and the landing has one in its footer; all of them have to agree,
+// so they read the attribute rather than each holding a copy. That makes it an external store: a subscribe, a snapshot, and no
 // local state to keep in sync.
 function subscribe(onChange: () => void) {
   const observer = new MutationObserver(onChange);
   observer.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["data-docs-theme"],
+    attributeFilter: ["data-theme"],
   });
   return () => observer.disconnect();
 }
 
-function readTheme(): DocsTheme {
-  const current = document.documentElement.dataset.docsTheme;
+function readTheme(): Theme {
+  const current = document.documentElement.dataset.theme;
   return current === "light" || current === "dark" ? current : "system";
 }
 
@@ -79,23 +93,22 @@ function readThemeOnServer(): undefined {
   return undefined;
 }
 
-// The docs' appearance switch: System, Light, Dark. Only the docs have it — the
-// landing page is a dark object by design — so the choice is stored under its own
-// key and applied to a `data-docs-theme` attribute the docs styles scope on.
-export function ThemeSwitch({ chrome }: { chrome: DocsChrome }) {
+// The site's appearance switch: System, Light, Dark. One choice covers the
+// landing and the docs.
+export function ThemeSwitch({ labels }: { labels: ThemeLabels }) {
   const theme = useSyncExternalStore(subscribe, readTheme, readThemeOnServer);
 
-  const options: { value: DocsTheme; label: string; icon: React.ReactNode }[] = [
-    { value: "system", label: chrome.themeSystem, icon: <SystemIcon /> },
-    { value: "light", label: chrome.themeLight, icon: <SunIcon /> },
-    { value: "dark", label: chrome.themeDark, icon: <MoonIcon /> },
+  const options: { value: Theme; label: string; icon: React.ReactNode }[] = [
+    { value: "system", label: labels.themeSystem, icon: <SystemIcon /> },
+    { value: "light", label: labels.themeLight, icon: <SunIcon /> },
+    { value: "dark", label: labels.themeDark, icon: <MoonIcon /> },
   ];
 
   return (
     <div
       className="inline-flex items-center gap-0.5 rounded-lg border border-border p-0.5"
       role="group"
-      aria-label={chrome.theme}
+      aria-label={labels.theme}
     >
       {options.map((option) => {
         const active = theme === option.value;
