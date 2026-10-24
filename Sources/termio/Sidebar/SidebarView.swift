@@ -1440,7 +1440,10 @@ private struct SessionRow: View {
                 } action: { height in
                     if rowHeight != height { rowHeight = height }
                 }
-                .animation(.easeInOut(duration: 0.12), value: isSelected)
+                // Selection snaps too. A new session inserts a row and moves the old
+                // selection in the same frame; List froze the 120ms fade-out mid-way on
+                // the moved row, leaving a second, half-lit lift under the new one.
+                .animation(nil, value: isSelected)
                 .animation(nil, value: isHovering)
                 // No animation on the drop cue: it must snap off the instant the drag
                 // leaves or commits (VS Code's `Over` feedback is instant), otherwise
