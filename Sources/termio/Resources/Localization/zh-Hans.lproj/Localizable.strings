@@ -778,6 +778,8 @@
 	<string>设备</string>
 	<key>Machines</key>
 	<string>设备</string>
+	<key>Machines signed in to Tailscale. Choose one to fill in its address.</key>
+	<string>已登录 Tailscale 的机器。选择一台即可填入它的地址。</string>
 	<key>Match Case</key>
 	<string>区分大小写</string>
 	<key>Match Whole Word</key>
@@ -980,6 +982,10 @@
 	<string>关闭 — 仅局域网</string>
 	<key>Off — SSH only</key>
 	<string>关闭 — 仅 SSH</string>
+	<key>Offline · %@</key>
+	<string>离线 · %@</string>
+	<key>On Your Tailnet</key>
+	<string>你的 tailnet 上</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>

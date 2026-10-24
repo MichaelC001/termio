@@ -778,6 +778,8 @@
 	<string>Machine</string>
 	<key>Machines</key>
 	<string>Machines</string>
+	<key>Machines signed in to Tailscale. Choose one to fill in its address.</key>
+	<string>Machines signed in to Tailscale. Choose one to fill in its address.</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -980,6 +982,10 @@
 	<string>Off — LAN only</string>
 	<key>Off — SSH only</key>
 	<string>Off — SSH only</string>
+	<key>Offline · %@</key>
+	<string>Offline · %@</string>
+	<key>On Your Tailnet</key>
+	<string>On Your Tailnet</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>

@@ -133,6 +133,9 @@ struct AddSSHHostSheet: View {
     /// can change under it, and re-reading per keystroke would walk every file
     /// `Include` pulls in.
     @State private var keys: [SSHPublicKey] = []
+    /// The tailnet's machines that no config block reaches yet. Empty without
+    /// Tailscale, and then the sheet is exactly the one it was before.
+    @State private var tailnetPeers: [TailnetPeer] = []
 
     /// What goes on the block's `IdentityFile` line — which is the only question
     /// ssh_config can answer here, so it is the only one the row asks. `defaults`
@@ -213,6 +216,9 @@ struct AddSSHHostSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
+                if !tailnetPeers.isEmpty {
+                    tailnetSection
+                }
                 Section {
                     field(localized("Address"), text: $address, prompt: "server.example.com")
                     field(localized("Port"), text: $port, prompt: "22")
@@ -257,8 +263,59 @@ struct AddSSHHostSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 460, height: 452)
+        .frame(width: 460, height: tailnetPeers.isEmpty ? 452 : 600)
         .onAppear(perform: prefill)
+        .task { await loadTailnetPeers() }
+    }
+
+    /// The tailnet's machines as a list to pick from rather than names to type:
+    /// choosing one only fills the address, so the user, key and name below still
+    /// read as what they are and stay editable.
+    private var tailnetSection: some View {
+        Section {
+            ForEach(tailnetPeers) { peer in
+                Button { address = peer.address } label: {
+                    HStack(spacing: 10) {
+                        HugeIconView(icon: .serverStack, size: 15, color: .secondary)
+                            .frame(width: settingsRowIconWidth, alignment: .center)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(peer.hostName)
+                                .foregroundStyle(.primary)
+                            Text(peer.isOnline
+                                 ? peer.address
+                                 : localized("Offline · \(peer.address)"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        if address == peer.address {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            SectionHeaderLabel(title: localized("On Your Tailnet"))
+        } footer: {
+            Text(localized("Machines signed in to Tailscale. Choose one to fill in its address."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// A machine some block already reaches is left out: adding it again would
+    /// only make a second name for one box.
+    private func loadTailnetPeers() async {
+        let configured = Set(SSHConfigFile.hosts().map { $0.hostName.lowercased() })
+        tailnetPeers = await Tailnet.hostPeers().filter {
+            !configured.contains($0.address.lowercased())
+                && !existingAliases.contains($0.hostName)
+        }
     }
 
     /// Fills the credential fields from what the config already does, so the common

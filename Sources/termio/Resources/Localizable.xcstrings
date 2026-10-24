@@ -8964,6 +8964,36 @@
           }
         }
       }
+    },
+    "On Your Tailnet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的 tailnet 上"
+          }
+        }
+      }
+    },
+    "Machines signed in to Tailscale. Choose one to fill in its address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已登录 Tailscale 的机器。选择一台即可填入它的地址。"
+          }
+        }
+      }
+    },
+    "Offline · %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线 · %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
