@@ -211,8 +211,8 @@ enum RemotePairing {
     }
 }
 
-/// The Mobile pane's remote arm: one card for one box, holding whatever that box
-/// last said when asked for an invite.
+/// A remote host pane's pairing card: one card for one box, holding whatever that
+/// box last said when asked for an invite.
 ///
 /// It asks on appear rather than behind a button. Everything the card can show —
 /// the QR, the address, the reason there is neither — is the answer to the same
@@ -297,7 +297,7 @@ struct RemotePairingSection: View {
                 unpublished(message)
             }
         } header: {
-            SectionHeaderLabel(title: machine.name)
+            SectionHeaderLabel(title: localized("Mobile"))
         } footer: {
             Text(footnote)
                 .font(.settingsDetail)

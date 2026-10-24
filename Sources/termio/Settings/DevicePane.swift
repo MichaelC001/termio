@@ -69,8 +69,14 @@ struct DevicePane: View {
             // so "what does *this box* have" stays a page of its own.
             if !machine.isLocal { agentsSection }
             commandLineSection
-            // What a machine serves to phones is Settings ▸ Mobile, not a second
-            // copy here: one set of controls, one place they live.
+            // A phone attaches to a port the machine serves, so pairing is a fact
+            // about the machine and sits in its pane. This Mac's card drives the
+            // companion port here; a box's card mints its invite over SSH.
+            if machine.isLocal {
+                DeviceServingSection()
+            } else {
+                RemotePairingSection(machine: machine)
+            }
         }
         .formStyle(.grouped)
         .navigationDestination(for: MachineAgentsRoute.self) { _ in

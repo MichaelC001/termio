@@ -16,11 +16,11 @@ import SwiftUI
 /// split's own point left unmade: it put the box you are sitting at next to boxes
 /// that may not exist, when the whole reason Server and Remote Hosts are separate
 /// tabs is that those are different kinds of thing. **Everything above Remote
-/// Hosts is this Mac**; Remote Hosts and Mobile are the two tabs about something
-/// else on the other end of a connection — a box you reach over SSH, and a phone.
+/// Hosts is this Mac**; Remote Hosts is the box on the other end of an SSH
+/// connection.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    /// This Mac: the `termiod` it runs, the `termio` CLI on its PATH, and what
-    /// Termio has installed into its agents' configs.
+    /// This Mac: the `termiod` it runs, the `termio` CLI on its PATH, what Termio
+    /// has installed into its agents' configs, and the port it serves phones on.
     ///
     /// A tab rather than the first row of a roster. The roster shape was the
     /// earlier answer and it hid the one machine that is always there behind a
@@ -42,7 +42,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case agents
     case usage
     /// Every other machine sessions can run on, one row apiece, drilling into how
-    /// that machine is reached and what it runs.
+    /// that machine is reached, what it runs, and how a phone pairs with it.
     ///
     /// The split from `server` is top-level only: both entrances land on the same
     /// `DevicePane`, so the five concerns a machine has are built once. What the
@@ -55,10 +55,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     ///
     /// **Opens the far-end group**, closing the machine arc that Server began:
     /// this Mac, what runs on it, what is filed on it, then the other boxes
-    /// sessions can run on. Mobile follows rather than leads because a phone is a
-    /// client, not a host — its own subtitle names "the machines you work on", and
-    /// naming them first is the same rule that puts Server ahead of Agents and
-    /// Workspaces. That this tab is the one that can be empty does not sink it:
+    /// sessions can run on. That this tab is the one that can be empty does not sink it:
     /// empty here is an Add Remote Host button, which is the tab doing its job,
     /// not a dead end. Community still sits below: that is About, not a setting.
     ///
@@ -67,23 +64,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// everyone who left this one showing. It has now survived five renamings,
     /// which is the point of it.
     case remoteHosts = "ssh"
-    /// Pairing an iPhone, and the tunnel that carries it.
-    ///
-    /// Kept first-level rather than folded into the machine that serves it: the
-    /// QR is the one step a new user cannot guess at, and three levels down a tab
-    /// named after something else is where it went unfound. The scope objection
-    /// is answered by navigation instead of a picker — this renders the Mac's own
-    /// serving, and a remote host's is pushed from its row.
-    case mobile
     case community
 
     var id: String { rawValue }
 
     /// Opens a new sidebar group. `server` stands alone at the top as the machine
     /// itself; `general` opens how Termio behaves; `workspaces` opens what is
-    /// filed on and installed on this Mac; `remoteHosts` opens the two tabs about
-    /// the far end of a connection; `community` stands alone because it leaves the
-    /// app entirely.
+    /// filed on and installed on this Mac; `remoteHosts` stands for the far end of
+    /// a connection; `community` stands alone because it leaves the app entirely.
     ///
     /// Grouped rather than run flat. Collapsing every local tab into one block
     /// would tell the top-level story in a single stroke — this Mac, then what
@@ -123,7 +111,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return localized("Keyboard")
         case .agents: return localized("Agents")
         case .usage: return localized("Usage")
-        case .mobile: return localized("Mobile")
         case .community: return localized("Community")
         }
     }
@@ -141,7 +128,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .keyboard: return .keyboard
         case .agents: return .bot
         case .usage: return .chartColumn
-        case .mobile: return .smartPhoneWifi
         case .community: return .bubbleChat
         }
     }
