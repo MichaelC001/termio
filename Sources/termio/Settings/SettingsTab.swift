@@ -9,8 +9,8 @@ import SwiftUI
 /// it. Where a setting sits is what says which it is, so nobody has to learn a
 /// rule (RFC §D1, §D8).
 ///
-/// Server comes first because it is the one row that reports rather than
-/// configures: its state is the first thing the window says.
+/// Server comes first because it is the machine the rest of the window
+/// configures.
 ///
 /// The last two used to be one group called Machines, and that group was the
 /// split's own point left unmade: it put the box you are sitting at next to boxes
@@ -28,11 +28,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// actually runs, because `DevicePane` spent the local branch on the CLI row.
     /// Promoting it is what gives the local `termiod` a place to be looked at.
     ///
-    /// First, in a group of its own, carrying its state on a second line. It
+    /// First, in a group of its own, on a larger tile than the rows below. It
     /// once opened the Workspaces / Agents / Usage group instead, on the worry
-    /// that a group of one would read as a fifth kind of setting; the status line
-    /// is what answers that. A row that says "Ready" is the machine, not a
-    /// preference, and at the top it is the first thing the window reports.
+    /// that a group of one would read as a fifth kind of setting; the larger
+    /// tile at the top is what answers that — it is the machine, not a
+    /// preference.
     case server
     case general
     case appearance

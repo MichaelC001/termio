@@ -35,12 +35,6 @@ struct SettingsView: View {
     /// landed. Held rather than pushed inline because the switch clears the
     /// stack; see the `onChange` below.
     @State private var pendingMachine: String?
-    /// This Mac's readiness for the sidebar's Server row: a watcher that never
-    /// writes the cache, so the Server pane stays its only owner. Checked when
-    /// the window opens — the probe is local IPC, so it cannot stall on a
-    /// sleeping box the way a remote host's would — and kept current after that
-    /// by what the pane and the installers record.
-    @StateObject private var thisMac: DevicePaneModel
 
     init(
         settings: AppSettings,
@@ -56,7 +50,6 @@ struct SettingsView: View {
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
         _selection = State(initialValue: initialTab)
-        _thisMac = StateObject(wrappedValue: DevicePaneModel(device: .thisMac, settings: settings, persists: false))
     }
 
     var body: some View {
@@ -109,7 +102,6 @@ struct SettingsView: View {
             .background(Color.primary.opacity(settingsCanvasInk).ignoresSafeArea())
         }
         .navigationSplitViewStyle(.balanced)
-        .task { await thisMac.check() }
         .labeledContentStyle(.settingsCentered)
         // Remember where the user is, so the next ⌘, reopens the same tab
         // (see `AppDelegate.showSettings`). Written on every switch — cheap,
@@ -174,18 +166,8 @@ struct SettingsView: View {
             HugeIconView(icon: tab.icon, size: isServer ? 16 : 12, color: .primary)
                 .frame(width: isServer ? 28 : 20, height: isServer ? 28 : 20)
                 .background(GlassTile(cornerRadius: isServer ? 8 : 6))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(tab.title)
-                    .fontWeight(isSelected ? .medium : .regular)
-                // The one row that carries a state: the machine the rest of the
-                // window configures, and whether it is ready, readable without
-                // opening it.
-                if isServer {
-                    Text(serverStatus)
-                        .font(.settingsDetail)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(tab.title)
+                .fontWeight(isSelected ? .medium : .regular)
         }
         .padding(.vertical, isServer ? 4 : 0)
         .foregroundStyle(Color.primary)
@@ -198,15 +180,6 @@ struct SettingsView: View {
         // Applied *after* the pill so the pill widens with the row rather than
         // sliding out from under it, and last so nothing downstream re-insets it.
         .padding(.leading, settingsSidebarPillInset - settingsSidebarBaseIndent)
-    }
-
-    private var serverStatus: String {
-        switch thisMac.readiness {
-        case .ready: return localized("Ready")
-        case .checking: return localized("Checking…")
-        case .staged: return localized("Update ready")
-        case .blocked, .unasked: return localized("Set up this Mac")
-        }
     }
 
     @ViewBuilder

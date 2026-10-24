@@ -301,21 +301,9 @@ final class DevicePaneModel: ObservableObject {
     /// What the last completed setup left behind, shown once and dismissed.
     @Published var feedback: InstallFeedback?
 
-    /// False for a watcher: the settings sidebar reports this Mac's state but
-    /// is not the pane that owns it. A watcher probes and resolves like any
-    /// model and never writes the cache, so living as long as the window cannot
-    /// let it carry an old integration stamp back over a newer install.
-    private let persists: Bool
-
-    /// A watcher's subscription to what the owners record. Nonisolated so
-    /// `deinit` can remove it.
-    nonisolated(unsafe) private var recordObserver: NSObjectProtocol?
-
-    init(device: KnownDevice, settings: AppSettings, persists: Bool = true) {
+    init(device: KnownDevice, settings: AppSettings) {
         self.device = device
         self.settings = settings
-        self.persists = persists
-        if !persists { observeRecords() }
         discovered = DeviceStateCache.load(device.settingsKey)
         // Seeded from the cache, but never *blocked* by it: a box that was asleep
         // when we last looked must not greet the user with a failure we have not
@@ -374,12 +362,6 @@ final class DevicePaneModel: ObservableObject {
     /// and what the roster row calls when it first appears.
     func check() async {
         guard !readiness.isBusy else { return }
-        // A watcher keeps its model for as long as its window is open, so it
-        // re-reads what the writers have recorded since rather than reporting the
-        // stamp it loaded at open.
-        if !persists, let onDisk = DeviceStateCache.load(device.settingsKey) {
-            discovered = onDisk
-        }
         readiness = .checking
         step = .foundation
         var state = await DeviceProbe.inspect(device: device, commands: commandPairs)
@@ -397,8 +379,7 @@ final class DevicePaneModel: ObservableObject {
     /// `force` stops the machine's old daemon even while it has work in
     /// progress — "Update Anyway", offered only once that work has been named.
     func setUp(force: Bool = false) async {
-        // Setting a machine up is the owner's job; a watcher only reports.
-        guard persists, !readiness.isBusy else { return }
+        guard !readiness.isBusy else { return }
         readiness = .checking
         feedback = nil
         defer { step = nil }
@@ -537,36 +518,8 @@ final class DevicePaneModel: ObservableObject {
     private func apply(_ state: DeviceDiscoveredState) {
         discovered = state
         readiness = resolve(state)
-        guard persists else { return }
         let key = device.settingsKey
         Task.detached(priority: .utility) { DeviceStateCache.save(state, for: key) }
-        // The state travels with the note: the save above has not landed yet, so a
-        // watcher that re-read the file now would get the record this replaces.
-        DeviceStateCache.announce(key, state: state)
-    }
-
-    /// Follows the owners: a pane's probe or setup, and an install stamped
-    /// straight into the file. Without this the sidebar went on saying "set up"
-    /// beside a Server pane that had just finished setting up.
-    private func observeRecords() {
-        let key = device.settingsKey
-        recordObserver = NotificationCenter.default.addObserver(
-            forName: DeviceStateCache.didRecord, object: nil, queue: .main
-        ) { [weak self] note in
-            guard note.userInfo?[DeviceStateCache.keyInfo] as? String == key else { return }
-            let carried = note.userInfo?[DeviceStateCache.stateInfo] as? DeviceDiscoveredState
-            MainActor.assumeIsolated {
-                guard let self, let state = carried ?? DeviceStateCache.load(key) else { return }
-                self.discovered = state
-                // A check in flight carries this record forward when it lands, so
-                // only an idle watcher needs its line redrawn now.
-                if !self.readiness.isBusy { self.readiness = self.resolve(state) }
-            }
-        }
-    }
-
-    deinit {
-        if let recordObserver { NotificationCenter.default.removeObserver(recordObserver) }
     }
 
     /// What a completed probe means, in one line: ready when the machine
