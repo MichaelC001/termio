@@ -44,6 +44,7 @@ struct TerminalPane: View {
     static let splitCoordinateSpace = "termio.splitPane"
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var geometry: NavigatorGeometry
     @State private var focusDriver = TerminalFocusDriver()
     @State private var activated: [Session.ID] = []
     @State private var lastLivePanelFrame: CGRect = .zero
@@ -55,8 +56,9 @@ struct TerminalPane: View {
             // the terminal, so this pane is only ever terminal surfaces + split dividers.
             // No leading margin while the sidebar is open: the window's split divider is the gap
             // on that side, as wide as every other (`SeamlessSplitView`). Collapsed, the divider
-            // goes with it and the cards keep their own margin.
-            let leading = store.sidebarVisible ? 0 : PaneCard.spacing
+            // goes with it and the cards keep their own margin. Read from where the pane is, so
+            // the margin grows exactly as the divider leaves and the cards never step.
+            let leading = max(0, PaneCard.spacing - geometry.paneMinX)
             // The horizontal layout's tab strip takes the top row; the cards start under it.
             let top = PaneCard.spacing + (showsTabStrip ? WindowChrome.rowHeight + PaneCard.spacing : 0)
             let bounds = CGRect(x: leading, y: top,
@@ -69,7 +71,7 @@ struct TerminalPane: View {
                     .frame(width: geo.size.width, height: geo.size.height)
                 if showsTabStrip {
                     SessionTabStrip()
-                        .padding(.leading, leading)
+                        .padding(.leading, leading + stripClearance(leading: leading))
                         .padding(.trailing, PaneCard.spacing)
                         .padding(.top, PaneCard.spacing)
                 }
@@ -161,6 +163,7 @@ struct TerminalPane: View {
         // repainting — the flash on the way back in (issue #245).
         let paneFrames = SplitNode.paneFrames(of: store.splitGroups, in: bounds,
                                               dividerThickness: PaneCard.spacing)
+        let slidePanels = panelsThroughSlide(bounds: bounds, zoomed: zoomed)
         let visibleIDs = Set(store.visiblePaneIDs)
         ZStack {
             if mounted.isEmpty {
@@ -175,14 +178,15 @@ struct TerminalPane: View {
                 // ungrouped session has no split geometry and fills the pane.
                 let card = zoomed && isSelected ? bounds : (paneFrames[id] ?? bounds)
                 let panel = PaneCard.panelLayout(in: card, isOpen: store.openPanels.contains(id),
-                                                 width: store.panelWidth)
+                                                 width: store.panelWidth,
+                                                 covers: slidePanels.covering.contains(id),
+                                                 heldWidth: slidePanels.widths[id])
                 let rect = panel.terminal
                 let context = store.surface(for: item.session)
                 let notch = cardNotch(card, in: bounds)
                 PaneCardChrome(session: item.session, isSelected: isSelected,
-                               background: paneBackground,
-                               isTopLeading: PaneCard.isTopLeading(card, in: bounds),
-                               cardMinX: card.minX)
+                               background: paneBackground, notch: notch,
+                               panelEdgeX: panel.frame.flatMap { panel.covers ? nil : $0.minX - card.minX })
                     .frame(width: card.width, height: card.height)
                     // Before `position`, so the probe is the card's size rather than the pane's.
                     .background(PaneCardProbeView(sessionID: id,
@@ -226,9 +230,10 @@ struct TerminalPane: View {
                         .clipShape(PaneCard.panelClip(covers: panel.covers, notched: notch != nil))
                         .position(x: frame.midX, y: frame.midY)
                         .onTapGesture { store.selectedSessionID = id }
+                    let edge = PaneCard.panelEdgeFrame(frame, covers: panel.covers)
                     PanelEdge(covers: panel.covers, notched: notch != nil)
-                        .frame(width: frame.width, height: frame.height)
-                        .position(x: frame.midX, y: frame.midY)
+                        .frame(width: edge.width, height: edge.height)
+                        .position(x: edge.midX, y: edge.midY)
                 }
                 if let frame = panel.frame, isVisible, !panel.covers {
                     PanelDividerHandle(panelFrame: frame, card: card)
@@ -259,9 +264,10 @@ struct TerminalPane: View {
                     if let frame { lastLivePanelFrame = frame }
                 }
             if let livePanel {
+                let edge = PaneCard.panelEdgeFrame(livePanel.frame, covers: livePanel.covers)
                 PanelEdge(covers: livePanel.covers, notched: livePanel.notched)
-                    .frame(width: livePanel.frame.width, height: livePanel.frame.height)
-                    .position(x: livePanel.frame.midX, y: livePanel.frame.midY)
+                    .frame(width: edge.width, height: edge.height)
+                    .position(x: edge.midX, y: edge.midY)
             }
             if let layout, !zoomed {
                 ForEach(layout.dividers) { divider in
@@ -330,6 +336,10 @@ struct TerminalPane: View {
         // brightens rather than blinking. The drag overlay animates its own
         // pieces — the highlight slides, the preview must not.
         .animation(.easeInOut(duration: 0.15), value: store.paneHandleHover)
+        // At the slide's first frame, while the bounds are still the ones it starts from.
+        .onChange(of: geometry.slide.map { [$0.from, $0.to] }) {
+            keepPanelWidthWhenHiding(bounds: bounds, paneFrames: paneFrames, zoomed: zoomed)
+        }
     }
 
     /// The focused card's panel, when its panel is open and the card is on screen.
@@ -338,17 +348,84 @@ struct TerminalPane: View {
         guard let id = store.selectedSessionID, store.openPanels.contains(id),
               store.visiblePaneIDs.contains(id) || zoomed else { return nil }
         let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
-        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth)
+        let slidePanels = panelsThroughSlide(bounds: bounds, zoomed: zoomed)
+        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth,
+                                          covers: slidePanels.covering.contains(id),
+                                          heldWidth: slidePanels.widths[id])
         let notched = cardNotch(card, in: bounds) != nil
         return layout.frame.map { ($0, layout.covers, notched) }
     }
 
+    /// How the open panels hold still while the sidebar slides: the slide moves boxes, and what is
+    /// in them is laid out again once, when it lands. The terminal waits for its new size until
+    /// then; the panel waits with it.
+    ///
+    /// `covering`: the panels that lay over their terminal at either end of the slide. Those cover
+    /// it for the whole slide, so a panel changes between beside and over only when the slide
+    /// starts or lands, never mid-flight as the card's width crosses `panelFits`.
+    /// `widths`: every other panel keeps its width, and the terminal beside it takes the travel.
+    /// Showing the sidebar can leave a card too narrow for the panel's width; that panel narrows
+    /// in step with the slide, on its clock, to the width it will rest at. Hiding the sidebar never
+    /// widens a panel (see `keepPanelWidthWhenHiding`), so the room goes to the terminal.
+    ///
+    /// Both empty at rest.
+    private func panelsThroughSlide(bounds: CGRect, zoomed: Bool)
+        -> (covering: Set<Session.ID>, widths: [Session.ID: CGFloat]) {
+        guard let slide = geometry.slide, !store.openPanels.isEmpty else { return ([], [:]) }
+        // The pane runs to the window's trailing edge, so its width at any leading edge follows
+        // from this one.
+        let windowWidth = geometry.paneMinX + bounds.maxX + PaneCard.spacing
+        var covering = Set<Session.ID>()
+        var fitted: [CGFloat: [Session.ID: CGFloat]] = [:]
+        for paneMinX in [slide.from, slide.to] {
+            let leading = max(0, PaneCard.spacing - paneMinX)
+            let end = CGRect(x: leading, y: bounds.minY,
+                             width: max(0, windowWidth - paneMinX - leading - PaneCard.spacing),
+                             height: bounds.height)
+            let frames = SplitNode.paneFrames(of: store.splitGroups, in: end, dividerThickness: PaneCard.spacing)
+            for id in store.openPanels {
+                let card = zoomed && id == store.selectedSessionID ? end : (frames[id] ?? end)
+                if PaneCard.panelFits(in: card) {
+                    fitted[paneMinX, default: [:]][id] = min(store.panelWidth, PaneCard.widestPanel(in: card))
+                } else {
+                    covering.insert(id)
+                }
+            }
+        }
+        let travel = slide.to - slide.from
+        let progress = travel == 0 ? 1 : min(1, max(0, (geometry.paneMinX - slide.from) / travel))
+        var widths: [Session.ID: CGFloat] = [:]
+        for (id, start) in fitted[slide.from] ?? [:] where !covering.contains(id) {
+            let end = min(start, fitted[slide.to]?[id] ?? start)
+            widths[id] = start + (end - start) * progress
+        }
+        return (covering, widths)
+    }
+
+    /// Hiding the sidebar hands its room to the terminal, never to the panel: the panel's width
+    /// becomes the one it shows now. Left at the wider width it was set to with the sidebar
+    /// hidden, the panel grew back to it as the slide landed, and narrowed again on the next show
+    /// — the toggle resizing a column it does not own, every time.
+    private func keepPanelWidthWhenHiding(bounds: CGRect, paneFrames: [Session.ID: CGRect], zoomed: Bool) {
+        guard let slide = geometry.slide, slide.to < slide.from,
+              let id = store.selectedSessionID, store.openPanels.contains(id) else { return }
+        let card = zoomed ? bounds : (paneFrames[id] ?? bounds)
+        let layout = PaneCard.panelLayout(in: card, isOpen: true, width: store.panelWidth)
+        guard !layout.covers, let shown = layout.frame?.width, shown < store.panelWidth else { return }
+        store.panelWidth = shown
+    }
+
     /// The corner `card` leaves out for the window's controls (`PaneCard.notch`), if it is the
-    /// card that carries them.
+    /// card that runs under them. In the horizontal layout the tab strip holds the top row.
     private func cardNotch(_ card: CGRect, in bounds: CGRect) -> CGSize? {
-        PaneCard.notch(carriesToggle: PaneCard.isTopLeading(card, in: bounds)
-                           && !store.sidebarVisible && settings.tabLayout == .vertical,
-                       isFullScreen: store.windowIsFullScreen, cardMinX: card.minX)
+        PaneCard.notch(isTopLeading: PaneCard.isTopLeading(card, in: bounds) && settings.tabLayout == .vertical,
+                       isFullScreen: store.windowIsFullScreen, cardWindowMinX: geometry.paneMinX + card.minX)
+    }
+
+    /// How far the tab strip starts past its own edge to keep clear of the window's controls.
+    private func stripClearance(leading: CGFloat) -> CGFloat {
+        let stripMinX = geometry.paneMinX + leading
+        return max(0, WindowChrome.controlsEnd(isFullScreen: store.windowIsFullScreen) + 4 - stripMinX)
     }
 
     /// What the in-flight drop would land on. A `.center` target highlights the
@@ -1416,13 +1493,15 @@ enum PaneCard {
     /// The room between the navigator toggle and the notch's edge.
     static let notchGap: CGFloat = 4
 
-    /// The corner the top-leading card leaves out while the sidebar is collapsed, holding the
-    /// traffic lights and the navigator toggle: window controls, not the card's, so they sit on
-    /// the window's ground and the card's edge curves around them. `nil` for every other card.
-    @MainActor static func notch(carriesToggle: Bool, isFullScreen: Bool, cardMinX: CGFloat) -> CGSize? {
-        guard carriesToggle else { return nil }
-        let width = WindowChrome.leadingInset(isFullScreen: isFullScreen, columnMinX: cardMinX)
-            + ChromeGlyph.prominentFrame.width + notchGap
+    /// The corner the top-leading card leaves out where it runs under the traffic lights and the
+    /// navigator toggle: window controls, not the card's, so they sit on the window's ground and
+    /// the card's edge curves around them. It grows from nothing as the card slides under them
+    /// and shrinks as it leaves, so the card's edge and title are never under a control. `nil`
+    /// for every other card, and for this one while it is clear of them.
+    @MainActor static func notch(isTopLeading: Bool, isFullScreen: Bool, cardWindowMinX: CGFloat) -> CGSize? {
+        guard isTopLeading else { return nil }
+        let width = WindowChrome.controlsEnd(isFullScreen: isFullScreen) + notchGap - cardWindowMinX
+        guard width > 0 else { return nil }
         return CGSize(width: width, height: headerHeight)
     }
     static let borderWidth: CGFloat = 1
@@ -1442,16 +1521,19 @@ enum PaneCard {
     /// terminal's text is anchored to its leading edge, so opening the panel narrows the
     /// terminal without moving a character of it.
     /// `covers`: the person laid the panel over the terminal (the header's hide-terminal button).
-    static func panelLayout(in card: CGRect, isOpen: Bool, width: CGFloat)
+    /// Passing `covers` lays the panel over the terminal even where it would fit beside it, and
+    /// `heldWidth` keeps the panel at that width whatever the card can spare.
+    static func panelLayout(in card: CGRect, isOpen: Bool, width: CGFloat, covers: Bool = false,
+                            heldWidth: CGFloat? = nil)
         -> (terminal: CGRect, frame: CGRect?, covers: Bool) {
         let body = terminalRect(in: card)
         guard isOpen else { return (body, nil, false) }
-        guard panelFits(in: card) else { return (body, body, true) }
+        guard !covers, panelFits(in: card) else { return (body, body, true) }
         // The shared width, narrowed to what this card can spare: a width set in a wide card
         // narrows the panel here rather than hiding this card's terminal.
-        let fitted = min(width, widestPanel(in: card))
+        let fitted = heldWidth ?? min(width, widestPanel(in: card))
         let terminal = CGRect(x: body.minX, y: body.minY,
-                              width: body.width - fitted - panelDivider, height: body.height)
+                              width: max(0, body.width - fitted - panelDivider), height: body.height)
         let panel = CGRect(x: body.maxX - fitted, y: body.minY, width: fitted, height: body.height)
         return (terminal, panel, false)
     }
@@ -1467,12 +1549,23 @@ enum PaneCard {
     ///
     /// `notched`: a panel covering the card that leaves its top-leading corner out meets the
     /// card's rounded shoulder there, so it rounds that corner too.
+    /// A panel beside the terminal is square on its leading side, where its edge runs straight
+    /// from the card's top border to its bottom border.
     static func panelClip(covers: Bool, notched: Bool = false) -> UnevenRoundedRectangle {
         let inner = cornerRadius - borderWidth
-        return UnevenRoundedRectangle(topLeadingRadius: covers ? (notched ? inner : 0) : cornerRadius,
+        return UnevenRoundedRectangle(topLeadingRadius: covers && notched ? inner : 0,
                                       bottomLeadingRadius: covers ? inner : 0,
                                       bottomTrailingRadius: inner,
                                       style: .continuous)
+    }
+
+    /// Where a panel's edge is drawn. Beside the terminal it runs the card's full height, from
+    /// the top border through the header to the bottom border, so the header's strip over the
+    /// panel is the panel's too; a panel covering the terminal keeps its own rect.
+    static func panelEdgeFrame(_ panel: CGRect, covers: Bool) -> CGRect {
+        guard !covers else { return panel }
+        return CGRect(x: panel.minX, y: panel.minY - headerHeight,
+                      width: panel.width, height: panel.height + headerHeight + borderWidth)
     }
 
     /// Clips the body's bottom corners — the ones it shares with the card — to the card's
@@ -1515,20 +1608,17 @@ private struct PaneCardChrome: View {
     let session: Session
     let isSelected: Bool
     let background: Color
-    let isTopLeading: Bool
-    /// The card's leading edge in the pane area, which starts at the window's leading edge while
-    /// the sidebar is collapsed.
-    let cardMinX: CGFloat
+    /// The corner left out for the window's controls (`PaneCard.notch`).
+    let notch: CGSize?
+    /// Where the panel's edge crosses the header, from the card's leading edge, while a panel
+    /// sits beside the terminal. The edge runs the card's full height (`PanelEdge`), so the
+    /// title stops short of it and the buttons past it sit in the panel.
+    var panelEdgeX: CGFloat?
 
-    /// In the horizontal layout the tab strip holds the top row, and the toggle with it.
-    private var carriesNavigatorToggle: Bool {
-        isTopLeading && !store.sidebarVisible && settings.tabLayout == .vertical
-    }
-
-    /// Clear of the traffic lights when this header is the one sitting beside them.
+    /// The header starts past the notch, so the title waits beside the toggle while the card
+    /// slides under it.
     private var leadingPadding: CGFloat {
-        guard carriesNavigatorToggle else { return 10 }
-        return WindowChrome.leadingInset(isFullScreen: store.windowIsFullScreen, columnMinX: cardMinX)
+        (notch?.width ?? 0) + 10
     }
 
     var body: some View {
@@ -1539,46 +1629,38 @@ private struct PaneCardChrome: View {
         .background(background, in: PaneCardShape(notch: notch))
     }
 
-    private var notch: CGSize? {
-        PaneCard.notch(carriesToggle: carriesNavigatorToggle,
-                       isFullScreen: store.windowIsFullScreen, cardMinX: cardMinX)
-    }
-
     private var header: some View {
         HStack(spacing: 6) {
-            if carriesNavigatorToggle {
-                NavigatorToggleButton()
-                    // Out to the notch's edge and a header inset past it, so the card's own
-                    // header starts where the card does.
-                    .padding(.trailing, PaneCard.notchGap + 10 - 6)
-                    .transition(.opacity)
-            }
-            Group {
-                if session.isSSH {
-                    HugeIconView(icon: .serverStack, size: 13, color: .secondary)
-                } else {
-                    AgentIconView(agent: store.effectiveAgent(for: session), size: 13)
+            HStack(spacing: 6) {
+                Group {
+                    if session.isSSH {
+                        HugeIconView(icon: .serverStack, size: 13, color: .secondary)
+                    } else {
+                        AgentIconView(agent: store.effectiveAgent(for: session), size: 13)
+                    }
+                }
+                .frame(width: 14)
+                Text(location)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(location)
+                    .layoutPriority(1)
+                if let branch {
+                    HStack(spacing: 3) {
+                        HugeIconView(icon: .gitBranch, size: 11, color: .secondary)
+                        Text(branch)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .help(branch)
                 }
             }
-            .frame(width: 14)
-            Text(location)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(location)
-                .layoutPriority(1)
-            if let branch {
-                HStack(spacing: 3) {
-                    HugeIconView(icon: .gitBranch, size: 11, color: .secondary)
-                    Text(branch)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .help(branch)
-            }
+            .frame(maxWidth: panelEdgeX.map { max(0, $0 - leadingPadding - 8) } ?? .infinity, alignment: .leading)
+            .layoutPriority(1)
             Spacer(minLength: 8)
             // Always laid out, only hidden: showing them must not reflow the title.
             // Only the focused card's: the buttons act on the card you are in, and a row of
@@ -1764,8 +1846,14 @@ struct PaneCardShape: InsettableShape {
         var path = Path()
         path.move(to: CGPoint(x: (last.x + first.x) / 2, y: (last.y + first.y) / 2))
         for index in corners.indices {
+            let previous = corners[(index + corners.count - 1) % corners.count]
+            let corner = corners[index]
             let next = corners[(index + 1) % corners.count]
-            path.addArc(tangent1End: corners[index], tangent2End: next, radius: radius)
+            // A notch grows from zero width as the card slides under the window's controls; a
+            // corner never rounds wider than half its shorter edge, so a thin notch stays a notch.
+            let fit = min(hypot(corner.x - previous.x, corner.y - previous.y),
+                          hypot(next.x - corner.x, next.y - corner.y)) / 2
+            path.addArc(tangent1End: corner, tangent2End: next, radius: min(radius, fit))
         }
         path.closeSubpath()
         return path
@@ -1825,18 +1913,17 @@ private struct PanelSnapshot: View {
     let image: NSImage?
     let background: Color
 
+    /// At the size it was taken, pinned top-leading and cut at the panel's edges. The card can
+    /// change width after the picture is taken (the sidebar sliding, a window resize); filled to
+    /// the new frame instead, the picture outgrew it and was centred, cutting every file name's
+    /// start off.
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            background
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .clipped()
+        background
+            .overlay(alignment: .topLeading) {
+                if let image { Image(nsImage: image) }
             }
-        }
-        .contentShape(Rectangle())
+            .clipped()
+            .contentShape(Rectangle())
     }
 }
 
@@ -1896,7 +1983,7 @@ private struct PanelEdge: View {
     var notched = false
 
     var body: some View {
-        PanelEdgeShape(radius: covers ? 0 : PaneCard.cornerRadius, leading: !covers,
+        PanelEdgeShape(leading: !covers,
                        startInset: covers && notched ? PaneCard.cornerRadius : 0)
             .stroke(Color.primary.opacity(0.1), lineWidth: PaneCard.borderWidth)
             .allowsHitTesting(false)
@@ -1904,7 +1991,6 @@ private struct PanelEdge: View {
 }
 
 private struct PanelEdgeShape: Shape {
-    let radius: CGFloat
     let leading: Bool
     var startInset: CGFloat = 0
 
@@ -1913,13 +1999,12 @@ private struct PanelEdgeShape: Shape {
         let edge = rect.insetBy(dx: PaneCard.borderWidth / 2, dy: PaneCard.borderWidth / 2)
         var path = Path()
         if leading {
-            path.move(to: CGPoint(x: edge.minX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: edge.minX, y: edge.minY + radius))
-            path.addArc(center: CGPoint(x: edge.minX + radius, y: edge.minY + radius), radius: radius,
-                        startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
-        } else {
-            path.move(to: CGPoint(x: rect.minX + startInset, y: edge.minY))
+            // Straight from the card's top border to its bottom border, meeting each square.
+            path.move(to: CGPoint(x: edge.minX, y: edge.maxY))
+            path.addLine(to: CGPoint(x: edge.minX, y: edge.minY))
+            return path
         }
+        path.move(to: CGPoint(x: rect.minX + startInset, y: edge.minY))
         path.addLine(to: CGPoint(x: rect.maxX, y: edge.minY))
         return path
     }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// The window has no toolbar. The traffic lights float over the content, and every control that
@@ -30,8 +31,9 @@ enum WindowChrome {
         AppDelegate.mainWindow?.standardWindowButton(.zoomButton)?.frame.maxX ?? 79
     }
 
-    /// The gap between the last traffic light and the first control after it.
-    static let trafficLightsGap: CGFloat = 10
+    /// The gap between the last traffic light and the first control after it. Wider than the
+    /// lights' own spacing, so the toggle reads as the row's first control, not a fourth light.
+    static let trafficLightsGap: CGFloat = 16
 
     /// The leading inset of a row whose column starts at `columnMinX` in the window: clear of the
     /// traffic lights while they are drawn, and a plain margin in fullscreen, where they only appear
@@ -39,6 +41,36 @@ enum WindowChrome {
     @MainActor
     static func leadingInset(isFullScreen: Bool, columnMinX: CGFloat) -> CGFloat {
         isFullScreen ? 10 : max(10, trafficLightsEnd + trafficLightsGap - columnMinX)
+    }
+
+    /// Where the window's own controls — the traffic lights and the navigator toggle — end, in
+    /// window coordinates. Nothing else draws to the leading side of this on the top row.
+    @MainActor
+    static func controlsEnd(isFullScreen: Bool) -> CGFloat {
+        leadingInset(isFullScreen: isFullScreen, columnMinX: 0) + ChromeGlyph.prominentFrame.width
+    }
+}
+
+/// Where the sidebar's slide has things right now, published on every frame of it.
+///
+/// The traffic lights and the navigator toggle stand still while the column and the cards move
+/// under them. Anything that has to keep clear of them is placed from this live geometry, never
+/// from where the slide will end: a margin computed for the end position and eased over on its own
+/// clock put the card's title under the traffic lights at the start of an expand, and slid the
+/// sidebar's row under the toggle on a collapse.
+@MainActor
+final class NavigatorGeometry: ObservableObject {
+    /// The pane area's leading edge in window coordinates: past the column while the sidebar is
+    /// open, 0 once it is gone. Unknown until the pane is first laid out, which reads as far away.
+    @Published var paneMinX: CGFloat = .greatestFiniteMagnitude
+    /// How far the sidebar's content has slid out past the window's leading edge.
+    @Published var sidebarTravel: CGFloat = 0
+    /// Where `paneMinX` starts and ends while the navigator toggle's slide runs; `nil` at rest.
+    @Published var slide: Slide?
+
+    struct Slide {
+        let from: CGFloat
+        let to: CGFloat
     }
 }
 
@@ -306,10 +338,11 @@ struct ChromeMenuButton: View {
 struct SidebarControlRow: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var geometry: NavigatorGeometry
 
     var body: some View {
         HStack(spacing: 2) {
-            NavigatorToggleButton()
+            NavigatorToggleButton.slot
             WorkspaceSwitcherToolbarView()
                 .padding(.leading, 6)
             Spacer(minLength: 4)
@@ -323,18 +356,90 @@ struct SidebarControlRow: View {
         .padding(.trailing, 8)
         .frame(height: WindowChrome.rowHeight)
         .background(WindowDragArea())
+        .mask(alignment: .leading) { clearOfWindowControls }
         // Flush with the window's top edge, like the inspector.
         .padding(.top, WindowChrome.inset)
     }
+
+    /// While the column slides, the row passes the toggle and the traffic lights, which stay put.
+    /// It goes under a soft edge at the toggle's trailing side instead of under them. At rest the
+    /// edge sits in the row's empty slot and hides nothing.
+    private var clearOfWindowControls: some View {
+        let feather: CGFloat = 6
+        let edge = WindowChrome.controlsEnd(isFullScreen: store.windowIsFullScreen) + geometry.sidebarTravel
+        return HStack(spacing: 0) {
+            Color.clear.frame(width: max(0, edge - feather))
+            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: feather)
+            Color.black
+        }
+    }
 }
 
-/// Shows or hides the navigator. Lives in the sidebar's row while the sidebar is open and in the
-/// top-left card's header while it is collapsed, so it is always beside the traffic lights.
+/// Shows or hides the navigator. Drawn once, by `NavigatorToggleOverlay`, beside the traffic lights.
 struct NavigatorToggleButton: View {
     var body: some View {
         ChromeIconButton(icon: .sidebarLeft, help: localized("Hide or show the navigator"), prominence: .glass) {
             NSApp.sendAction(#selector(AppDelegate.toggleNavigator(_:)), to: nil, from: nil)
         }
+    }
+
+    /// The room a row beside the traffic lights keeps for the toggle, which floats over it.
+    static var slot: some View {
+        Color.clear.frame(width: ChromeGlyph.prominentFrame.width, height: ChromeGlyph.prominentFrame.height)
+    }
+}
+
+/// Holds the navigator toggle still while the sidebar slides. The toggle belongs to the window, not
+/// to the sidebar's row or the top-left card: when either row carried it, collapsing slid the
+/// sidebar's copy away with the column and the card's copy appeared beside the traffic lights, so
+/// the button jumped. Rex keeps a single toggle on its window container the same way. The rows
+/// that pass under it keep an empty `NavigatorToggleButton.slot` instead.
+@MainActor
+final class NavigatorToggleOverlay {
+    private let host: NSHostingView<NavigatorToggleButton>
+    private let leading: NSLayoutConstraint
+    // Held for the window's lifetime, which is the app's.
+    private var observers: Set<AnyCancellable> = []
+
+    init(over container: NSView, store: TermioStore) {
+        let host = NSHostingView(rootView: NavigatorToggleButton())
+        host.sizingOptions = []
+        // The host sits inside the titlebar strip, and SwiftUI otherwise insets its content by the
+        // titlebar's safe area: the glyph drew below the traffic lights' line, by however tall
+        // AppKit had laid the titlebar out at that moment.
+        host.safeAreaRegions = []
+        host.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(host, positioned: .above, relativeTo: nil)
+        let size = ChromeGlyph.prominentFrame
+        leading = host.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+        NSLayoutConstraint.activate([
+            leading,
+            host.topAnchor.constraint(equalTo: container.topAnchor,
+                                      constant: WindowChrome.rowCenter - size.height / 2),
+            host.widthAnchor.constraint(equalToConstant: size.width),
+            host.heightAnchor.constraint(equalToConstant: size.height),
+        ])
+        self.host = host
+        // `@Published` sends before the store changes, so each sink takes the new value it is
+        // handed rather than reading the store back.
+        store.$windowIsFullScreen
+            .sink { [weak self] isFullScreen in self?.place(isFullScreen: isFullScreen) }
+            .store(in: &observers)
+        // A maximized detail fills the window and has no slot for the toggle; the sidebar is put
+        // away for it anyway.
+        store.$inspectorMaximized
+            .sink { [weak host] maximized in host?.isHidden = maximized }
+            .store(in: &observers)
+        // The traffic lights take their place after the window first shows (`TrafficLights`).
+        DispatchQueue.main.async { [weak self, weak store] in
+            guard let store else { return }
+            self?.place(isFullScreen: store.windowIsFullScreen)
+        }
+    }
+
+    private func place(isFullScreen: Bool) {
+        leading.constant = WindowChrome.leadingInset(isFullScreen: isFullScreen, columnMinX: 0)
     }
 }
 
@@ -628,13 +733,20 @@ struct WindowDragArea: NSViewRepresentable {
 /// the content leaves past the window's leading edge the way a stock sidebar does.
 final class SidebarSlideController: NSViewController {
     private let content: NSViewController
+    private let onTravel: (CGFloat) -> Void
 
     var holdsWidth = false {
         didSet { (viewIfLoaded as? SlideView)?.holdsWidth = holdsWidth }
     }
 
-    init(content: NSViewController) {
+    /// The column's width when it last rested open; 0 if it has not been open yet.
+    var restingWidth: CGFloat { (viewIfLoaded as? SlideView)?.restingWidth ?? 0 }
+
+    /// `onTravel` hears how far the content has slid past the column's leading edge, on every
+    /// layout of the slide.
+    init(content: NSViewController, onTravel: @escaping (CGFloat) -> Void) {
         self.content = content
+        self.onTravel = onTravel
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -647,13 +759,15 @@ final class SidebarSlideController: NSViewController {
         addChild(content)
         slide.addSubview(content.view)
         slide.content = content.view
+        slide.onTravel = onTravel
         view = slide
     }
 
     private final class SlideView: NSView {
         weak var content: NSView?
+        var onTravel: ((CGFloat) -> Void)?
         /// The column's width when it last rested open: what the content keeps while it slides.
-        private var restingWidth: CGFloat = 0
+        private(set) var restingWidth: CGFloat = 0
         var holdsWidth = false { didSet { needsLayout = true } }
 
         override func layout() {
@@ -662,6 +776,7 @@ final class SidebarSlideController: NSViewController {
             if !holdsWidth, bounds.width > 0 { restingWidth = bounds.width }
             let width = holdsWidth ? max(restingWidth, bounds.width) : bounds.width
             content.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+            onTravel?(width - bounds.width)
         }
     }
 }

@@ -85,7 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // animation is running — while it is, the toggle owns `store.sidebarVisible`'s timing.
     private var sidebarSlide: SidebarSlideController?
     private var navigatorAnimating = false
+    private var navigatorToggle: NavigatorToggleOverlay?
+    private let navigatorGeometry = NavigatorGeometry()
     private static let navigatorDuration: TimeInterval = 0.25
+    // Ease-out, not ease-in-out: the column answers the click on the first frame and settles at
+    // the end. Ease-in-out held still for its first frames, which read as a slow, late toggle.
+    private static let navigatorCurve = (x1: 0.23, y1: 1.0, x2: 0.32, y2: 1.0)
     // KVO on the window's effective appearance, so a *system-driven* light↔dark flip (macOS auto
     // day/night, Control Center) re-resolves the window background. In `.system` appearance mode
     // nothing else re-runs `applyWindowTransparency` on an OS flip — the settings never change —
@@ -120,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // `noteSplitViewResize`).
     private var splitResizeObserver: NSObjectProtocol?
     private var detailFrameObserver: NSObjectProtocol?
+    private var paneOriginObserver: NSObjectProtocol?
     private weak var terminalContainerView: NSView?
     /// Whether the split view's dividers are under the pointer right now. See
     /// `noteSplitViewResize`.
@@ -566,6 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .ignoresSafeArea(.container, edges: .top)
             .environmentObject(store)
             .environmentObject(store.sidebarDrag)
+            .environmentObject(navigatorGeometry)
             .environmentObject(settings))
         // Same reason as the detail pane below: the default `.preferredContentSize`
         // publishes the tree's ideal size on every view update, so a 30Hz working
@@ -577,7 +584,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // could never share a row with the traffic lights. A plain item runs the full height of
         // the window, flush to its edges, and paints nothing: it sits on the window's one backdrop
         // (see `WindowBackdrop`), the same one the cards float on.
-        let sidebarSlide = SidebarSlideController(content: sidebarContent)
+        let geometry = navigatorGeometry
+        let sidebarSlide = SidebarSlideController(content: sidebarContent) { travel in
+            if geometry.sidebarTravel != travel { geometry.sidebarTravel = travel }
+        }
         self.sidebarSlide = sidebarSlide
         let sidebarItem = NSSplitViewItem(viewController: sidebarSlide)
         // The stock sidebar's own holding priority, so a window resize is absorbed by the
@@ -593,6 +603,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let detail = NSHostingController(rootView: TerminalPane()
             .environmentObject(store)
+            .environmentObject(navigatorGeometry)
             .environmentObject(settings))
         // Fill the split pane; don't size the window to the SwiftUI content. `NSHostingController`
         // defaults `sizingOptions` to `.preferredContentSize`, which publishes the tree's *ideal*
@@ -620,6 +631,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.logTerminalContainerBounds() }
         }
+        // No queue: delivered inside the layout pass that moved the pane, so the cards' margin and
+        // notch land in the same frame as the slide instead of one behind it.
+        paneOriginObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: detail.view, queue: nil
+        ) { [weak self, weak pane = detail.view] _ in
+            MainActor.assumeIsolated {
+                guard let self, let pane, pane.window != nil else { return }
+                let minX = pane.convert(pane.bounds, to: nil).minX
+                if self.navigatorGeometry.paneMinX != minX { self.navigatorGeometry.paneMinX = minX }
+            }
+        }
         let detailItem = NSSplitViewItem(viewController: detail)
         // Without a floor here the terminal pane absorbs every squeeze. With a floor, shrinking the window past the sum of minimums collapses the collapsible
         // side panes instead, the native Xcode behaviour.
@@ -644,6 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // controller loaded with no items set up an empty split view and threw from AppKit's
         // constraint pass — a crash at launch.
         backdrop = WindowBackdrop.install(under: splitViewController.view)
+        navigatorToggle = NavigatorToggleOverlay(over: splitViewController.view, store: store)
         self.splitViewController = splitViewController
         return splitViewController
     }
@@ -1116,29 +1139,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// which only acts on an item with the `.sidebar` behaviour.
     ///
     /// One motion on one clock. The column slides (its content held at full width, so it moves
-    /// rather than squeezes), and what depends on the sidebar being there changes with it rather
-    /// than ahead of it: collapsing, the top-left card takes the toggle only once the column is
-    /// gone, so there is never a second one on screen; expanding, it hands the toggle back as the
-    /// column starts in, the card's title and margin easing over on the same curve.
+    /// rather than squeezes), and the card's title and margin ease over on the same curve. The
+    /// toggle itself never moves: it floats over both rows (`NavigatorToggleOverlay`).
     @objc func toggleNavigator(_ sender: Any?) {
         guard let item = sidebarSplitItem, !navigatorAnimating else { return }
         let collapsing = !item.isCollapsed
         let duration = Self.navigatorDuration
         navigatorAnimating = true
         sidebarSlide?.holdsWidth = true
+        let openPaneMinX = max(sidebarSlide?.restingWidth ?? 0, item.minimumThickness)
+            + (splitViewController?.splitView.dividerThickness ?? 0)
+        navigatorGeometry.slide = .init(from: navigatorGeometry.paneMinX, to: collapsing ? 0 : openPaneMinX)
         // Both ways on the slide's own clock, not after it: the content's leading inset clears
         // the traffic lights while the sidebar leaves, so nothing slides in under them.
-        withAnimation(.easeInOut(duration: duration)) { store.sidebarVisible = !collapsing }
+        let curve = Self.navigatorCurve
+        withAnimation(.timingCurve(curve.x1, curve.y1, curve.x2, curve.y2, duration: duration)) {
+            store.sidebarVisible = !collapsing
+        }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.timingFunction = CAMediaTimingFunction(controlPoints: Float(curve.x1), Float(curve.y1),
+                                                           Float(curve.x2), Float(curve.y2))
             item.animator().isCollapsed = collapsing
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.navigatorAnimating = false
                 self.sidebarSlide?.holdsWidth = false
+                self.navigatorGeometry.slide = nil
                 self.store.sidebarVisible = self.sidebarSplitItem?.isCollapsed == false
+                // The column has landed, so the terminals' new width is one the user chose. Declare it
+                // now: left to the 400ms debounce that keeps layout animations from declaring
+                // passing sizes, the shell repainted at the new width ~650ms after the click.
+                // Next turn, once SwiftUI has laid the panes out at their final width.
+                DispatchQueue.main.async { self.store.flushViewports() }
             }
         })
     }
@@ -2387,3 +2421,4 @@ private func buildMainMenu() -> NSMenu {
 
     return mainMenu
 }
+

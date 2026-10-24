@@ -44,7 +44,6 @@ struct SessionTabStrip: View {
         let group = store.selectedSessionID.flatMap(store.group(of:))
         HStack(spacing: 4) {
             if !store.sidebarVisible {
-                NavigatorToggleButton()
                 ChromeMenuButton(icon: .cardStack, help: localized("Groups"), makeMenu: groupMenu)
             }
             if let group {
@@ -129,9 +128,6 @@ struct SessionTabStrip: View {
             }
             if group == nil { Spacer(minLength: 0) }
         }
-        .padding(.leading, store.sidebarVisible
-                 ? 0
-                 : WindowChrome.leadingInset(isFullScreen: store.windowIsFullScreen, columnMinX: 0))
         .frame(height: WindowChrome.rowHeight)
         .background(WindowDragArea())
     }
