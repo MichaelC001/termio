@@ -4,7 +4,8 @@ description: Set your terminal theme and font, tune the cursor and window, and f
 ---
 
 Open **Settings** with `⌘,`. It’s a standard macOS settings window with a sidebar
-of tabs; **Appearance** is where the terminal’s look lives.
+of tabs. **Appearance** holds the theme and the app’s own look; **Terminal** holds
+the terminal’s font, cursor, and window.
 
 ## Theme
 
@@ -55,26 +56,29 @@ up new files without a restart.
 
 ## Font
 
-Choose any monospaced font installed on your Mac, set its size, and toggle
-**Thicken glyphs** if you like a heavier weight. Font size also has live shortcuts
-while you work — `⌘=` to grow, `⌘-` to shrink, `⌘0` to reset.
+In **Settings ▸ Terminal**, choose any monospaced font installed on your Mac, set
+its size, and toggle **Thicken glyphs** if you like a heavier weight. Font size
+also has live shortcuts while you work — `⌘=` to grow, `⌘-` to shrink, `⌘0` to
+reset.
 
 ## Cursor & window
 
-The same tab tunes the cursor (block, bar, or underline; steady or blinking) and
-the window itself — padding around the terminal, and background opacity and blur
-for a translucent window over your desktop. The app’s own chrome lives here too:
-the sidebar’s font and density.
+The Terminal tab also tunes the cursor (block, bar, or underline; steady or
+blinking) and the window itself — padding around the terminal, and background
+opacity and blur for a translucent window over your desktop. The app’s own
+chrome stays under **Appearance**: the sidebar’s font and density.
 
 ## The rest of Settings
 
 The other tabs cover the rest of the app:
 
+- **Server** — first in the sidebar, with this Mac’s state under its name: the
+  session host, and the switches for the `termio`
+  [command-line tool](/docs/cli). See [The Termio server](/docs/server).
 - **General** — language, the GitHub integration behind the inspector’s Issues
   pane, and a Privacy switch for anonymous daily usage statistics.
-- **Terminal** — scrollback history and text selection.
-- **Server** — this Mac’s own session host, and the switches for the `termio`
-  [command-line tool](/docs/cli). See [The Termio server](/docs/server).
+- **Terminal** — besides the font, cursor, and window: scrollback history and
+  text selection.
 - **Remote Hosts** — every machine you reach from this Mac, one row each,
   drilling into how that machine is reached and what Termio has installed on it.
   See [Devices](/docs/devices).
