@@ -152,7 +152,7 @@ struct VideoPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+        let view = PausingPlayerView()
         view.controlsStyle = .floating
         view.showsFullScreenToggleButton = true
         view.player = AVPlayer(url: url)
@@ -168,6 +168,36 @@ struct VideoPreview: NSViewRepresentable {
     static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
         view.player?.pause()
         view.player = nil
+    }
+}
+
+/// Closing the inspector hides it rather than tearing it down, so `dismantleNSView` never runs
+/// and a playing movie would keep its sound with nothing on screen. The same holds for the main
+/// window, which is kept alive when closed. Pause whenever the player stops being visible:
+/// hidden itself or by an ancestor, taken out of the window, or its window closed.
+private final class PausingPlayerView: AVPlayerView {
+    private var windowCloseObserver: NSObjectProtocol?
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        player?.pause()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let windowCloseObserver {
+            NotificationCenter.default.removeObserver(windowCloseObserver)
+            self.windowCloseObserver = nil
+        }
+        guard let window else {
+            player?.pause()
+            return
+        }
+        windowCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.player?.pause() }
+        }
     }
 }
 

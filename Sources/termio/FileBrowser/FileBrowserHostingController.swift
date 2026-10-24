@@ -100,6 +100,12 @@ final class FileBrowserHostingController: NSHostingController<AnyView>, @preconc
     /// The file the panel is showing: an explicitly opened one wins over the tree selection,
     /// which is what spacebar has always previewed.
     private var previewURL: URL? { quickLookURL ?? state.selectedLocalURL }
+
+    /// Hands the panel back to the tree selection. Without this, a file opened from the terminal
+    /// would keep showing while the user walks the tree with the panel up.
+    fileprivate func followTreeSelection() {
+        quickLookURL = nil
+    }
 }
 
 /// The one live inspector. It is mounted in the focused card's panel (see `TerminalPane`); a card
@@ -114,6 +120,11 @@ final class InspectorPanelHost {
     /// or office document gets, since the in-app preview only renders images and PDFs.
     func quickLook(_ url: URL) {
         controller?.presentQuickLook(url, toggle: false)
+    }
+
+    /// The tree selection moved, so the panel previews it again instead of a file opened elsewhere.
+    func quickLookFollowsTreeSelection() {
+        controller?.followTreeSelection()
     }
 
     /// Whether a point (window coordinates) is on the live panel while it is open. The terminal's

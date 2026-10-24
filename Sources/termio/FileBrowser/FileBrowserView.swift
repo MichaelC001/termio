@@ -150,6 +150,7 @@ struct FileBrowserView: View {
             // swallows. So a selection *change* opens: a file opens, a folder opens
             // (expands). Collapse stays on the disclosure triangle. This is also what
             // carries an arrow-key walk through the tree, which sends no click at all.
+            InspectorPanelHost.shared.quickLookFollowsTreeSelection()
             activateSelection()
             // Keep an open Quick Look panel in step as the selection moves.
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
@@ -191,6 +192,12 @@ struct FileBrowserView: View {
         // `clickedRow` is only meaningful during the action send `rowClicked` is delivering.
         // -1 is the empty area below the rows, which must not re-open what is still selected.
         guard let outline = browserState.outlineView, outline.clickedRow >= 0 else { return }
+        // A click on the row already selected sends no selection change, so it hands Quick Look
+        // back to the tree here.
+        InspectorPanelHost.shared.quickLookFollowsTreeSelection()
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
+            QLPreviewPanel.shared().reloadData()
+        }
         // Folders belong to the selection handler, which toggles and then clears. Skipping a
         // file that is already open is both the Zed/VS Code no-op and what stops a click that
         // *did* move the selection from being opened twice, once down each path.
