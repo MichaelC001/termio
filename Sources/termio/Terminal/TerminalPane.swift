@@ -370,9 +370,9 @@ struct TerminalPane: View {
     /// it for the whole slide, so a panel changes between beside and over only when the slide
     /// starts or lands, never mid-flight as the card's width crosses `panelFits`.
     /// `widths`: every other panel keeps its width, and the terminal beside it takes the travel.
-    /// Showing the sidebar can leave a card too narrow for the panel's width; that panel narrows
-    /// in step with the slide, on its clock, to the width it will rest at. Hiding the sidebar never
-    /// widens a panel (see `capPanelWidthsWhenHiding`), so the room goes to the terminal.
+    /// Hiding the sidebar never widens a panel (see `capPanelWidthsWhenHiding`), so the room goes
+    /// to the terminal. Showing it moves each panel, in step with the slide, to the width it will
+    /// rest at — narrower where the card can no longer hold it — so landing changes nothing.
     ///
     /// Both empty at rest.
     private func panelsThroughSlide(bounds: CGRect, zoomed: Bool)
@@ -382,7 +382,7 @@ struct TerminalPane: View {
         // from this one.
         let windowWidth = geometry.paneMinX + bounds.maxX + PaneCard.spacing
         var covering = Set<Session.ID>()
-        var fitted: [CGFloat: [Session.ID: CGFloat]] = [:]
+        var room: [CGFloat: [Session.ID: CGFloat]] = [:]
         for paneMinX in [slide.from, slide.to] {
             let leading = max(0, PaneCard.spacing - paneMinX)
             let end = CGRect(x: leading, y: bounds.minY,
@@ -392,7 +392,7 @@ struct TerminalPane: View {
             for id in store.openPanels {
                 let card = zoomed && id == store.selectedSessionID ? end : (frames[id] ?? end)
                 if PaneCard.panelFits(in: card) {
-                    fitted[paneMinX, default: [:]][id] = min(panelWidth(for: id), PaneCard.widestPanel(in: card))
+                    room[paneMinX, default: [:]][id] = PaneCard.widestPanel(in: card)
                 } else {
                     covering.insert(id)
                 }
@@ -401,8 +401,14 @@ struct TerminalPane: View {
         let travel = slide.to - slide.from
         let progress = travel == 0 ? 1 : min(1, max(0, (geometry.paneMinX - slide.from) / travel))
         var widths: [Session.ID: CGFloat] = [:]
-        for (id, start) in fitted[slide.from] ?? [:] where !covering.contains(id) {
-            let end = min(start, fitted[slide.to]?[id] ?? start)
+        for (id, startRoom) in room[slide.from] ?? [:] where !covering.contains(id) {
+            let start = min(panelWidth(for: id), startRoom)
+            // Hiding holds the width it starts at; showing heads for the width the panel rests at
+            // once its cap is cleared on landing, which a window resized while the sidebar was
+            // hidden can put above the cap.
+            let end = slide.to > slide.from
+                ? min(store.panelWidth, room[slide.to]?[id] ?? startRoom)
+                : start
             widths[id] = start + (end - start) * progress
         }
         return (covering, widths)
