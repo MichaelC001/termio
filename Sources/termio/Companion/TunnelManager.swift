@@ -232,6 +232,7 @@ final class TunnelManager: ObservableObject {
     /// App-launch hook (and Mobile-Access resume): bring the tunnel the user had
     /// on last quit back up. A no-op when the provider is Off.
     func startIfEnabled() {
+        Self.reapLegacyTunelo()
         if provider != .off { restart() }
     }
 
@@ -485,17 +486,26 @@ final class TunnelManager: ObservableObject {
         let ports = [AppChannel.companionPort, AppChannel.devicePort]
         let patterns = ports.flatMap { port in
             Provider.allCases.compactMap { $0.reapPattern(servedPort: port) }
-                // Tunelo was a provider until it lost its maintainer. A build
-                // from before can leave one running, still advertising a URL.
-                + ["tunelo port \(port)"]
         }
-        for pattern in patterns {
-            let pkill = Process()
-            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            pkill.arguments = ["-9", "-f", pattern]
-            try? pkill.run()
-            pkill.waitUntilExit()
+        for pattern in patterns { forceKill(matching: pattern) }
+    }
+
+    /// Tunelo was a provider until it lost its maintainer. A build from before
+    /// can leave one running that still publishes the companion port, and the
+    /// saved choice now reads back as Off, which never reaches `restart` and its
+    /// reaper. So it is reaped on its own, whatever the provider is.
+    private static func reapLegacyTunelo() {
+        for port in [AppChannel.companionPort, AppChannel.devicePort] {
+            forceKill(matching: "tunelo port \(port)")
         }
+    }
+
+    private static func forceKill(matching pattern: String) {
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-9", "-f", pattern]
+        try? pkill.run()
+        pkill.waitUntilExit()
     }
 
     // Read from the `nonisolated` reaper, so they can't inherit the type's
