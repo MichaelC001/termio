@@ -369,53 +369,35 @@ def main():
     rejects("report unknown flag", ["agent", "report", "done", "--bogus"])
     rejects("report unknown state", ["agent", "report", "sleeping"])
     rejects("unknown agent cmd", ["agent", "bogus"])
-    # With a session id and a recorder daemon, the exec'd argv is the contract
-    # the daemon parses. It is asserted directly rather than against the shell
-    # client: the script expanded its accumulated flag string unquoted, so
-    # `--tool-from "tool name"` reached `set-status` as two arguments and was
-    # rejected there as an unexpected positional. The Rust client forwards the
-    # value as one argv item.
-    recorder = os.path.join(HOME, "record-termiod")
-    argv_log = os.path.join(HOME, "argv")
-    with open(recorder, "w") as handle:
-        handle.write(f'#!/bin/sh\nprintf \'%s\\n\' "$@" > "{argv_log}"\n')
-    os.chmod(recorder, 0o755)
-    if os.path.exists(argv_log):
-        os.unlink(argv_log)
+    # Inside a session the report goes to the daemon in-process. A value with a
+    # space stays one argv item — the shell client expanded its flag string
+    # unquoted and split it — and `--reply` prints `{}` even when nothing
+    # answers, because Cursor reads the hook's stdout as its reply.
     code, out, err = run(
         RUST,
         ["agent", "report", "working", "--transcript", "--tool-from", "tool name", "--reply"],
-        {"TERMIOD_SESSION_ID": "S1", "TERMIOD_BIN": recorder},
+        {"TERMIOD_SESSION_ID": "S1", "TERMIOD_BIN": "/nonexistent/termiod"},
     )
-    argv = open(argv_log).read().splitlines() if os.path.exists(argv_log) else []
     check(
-        "report execs set-status with the value intact",
-        argv == ["set-status", "S1", "working", "--transcript", "--tool-from", "tool name", "--reply"],
-        f"    exit={code} argv={argv!r} stderr={err!r}",
+        "report in a session parses and replies",
+        code != 2 and out == "{}",
+        f"    exit={code} out={out!r} stderr={err!r}",
     )
 
-    print("== remote passthrough ==")
-    # `remote` is an argv passthrough: its help belongs to the daemon, so
-    # `--help` must reach the exec'd binary rather than being claimed by the
-    # client's own parser.
-    for name, args, expected in [
-        ("remote help reaches the daemon", ["remote", "--help"], ["remote", "--help"]),
-        ("remote -h reaches the daemon", ["remote", "-h"], ["remote", "-h"]),
-        ("remote flags pass through", ["remote", "deploy", "--host", "box"],
-         ["remote", "deploy", "--host", "box"]),
-        # clap claims the first `--` after a subcommand as its own
-        # end-of-options marker. For a passthrough that marker is the daemon's
-        # argument, not ours.
-        ("remote keeps a leading separator", ["remote", "--", "deploy"],
-         ["remote", "--", "deploy"]),
-        ("remote keeps a later separator", ["remote", "deploy", "--", "--host", "box"],
-         ["remote", "deploy", "--", "--host", "box"]),
+    print("== daemon verbs ==")
+    # Everything but `serve` is the client's; each verb's usage names it.
+    for name, args, usage in [
+        ("server --host help", ["server", "-H", "box", "deploy", "--help"], "Usage: termio server deploy"),
+        ("server tailscale help", ["server", "tailscale", "--help"], "Usage: termio server tailscale"),
+        ("version json help", ["version", "--help"], "--json"),
+        ("completion help", ["completion", "--help"], "Usage: termio completion"),
+        ("pair help", ["pair", "--help"], "Usage: termio pair"),
+        ("server help", ["server", "--help"], "Usage: termio server"),
+        ("server logs help", ["server", "logs", "--help"], "Usage: termio server logs"),
+        ("agent install help", ["agent", "install", "--help"], "Usage: termio agent install"),
     ]:
-        if os.path.exists(argv_log):
-            os.unlink(argv_log)
-        code, out, err = run(RUST, args, {"TERMIOD_BIN": recorder})
-        argv = open(argv_log).read().splitlines() if os.path.exists(argv_log) else []
-        check(name, argv == expected, f"    argv={argv!r} want={expected!r} stderr={err!r}")
+        code, out, err = run(RUST, args)
+        check(name, code == 0 and usage in out, f"    exit={code} out={out[:200]!r} stderr={err!r}")
 
     print("== help ==")
     # The per-verb prose is the shell client's, carried as clap `long_about`;

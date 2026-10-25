@@ -37,6 +37,7 @@ pub mod protocol;
 pub mod pty;
 pub mod remote;
 pub mod resource;
+pub mod server;
 pub mod service;
 pub mod session;
 pub mod shell_integration;

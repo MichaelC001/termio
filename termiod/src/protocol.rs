@@ -1556,7 +1556,7 @@ pub enum Event {
     Unknown,
 }
 
-/// A row in `termiod list`.
+/// A row in `termio server list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,

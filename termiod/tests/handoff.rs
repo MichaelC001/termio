@@ -1,4 +1,4 @@
-//! `termiod handoff` against a real daemon: the claim is that the process, its
+//! `termio server handoff` against a real daemon: the claim is that the process, its
 //! children and their PTYs all survive a binary replacement, and the only way
 //! to check that is to run one.
 //!
@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 
 static DIRECTORIES: AtomicUsize = AtomicUsize::new(0);
 
@@ -98,23 +99,23 @@ impl Drop for Daemon {
     }
 }
 
-fn termiod(socket: &Path, args: &[&str]) -> Output {
-    Command::new(BIN)
+fn termio(socket: &Path, args: &[&str]) -> Output {
+    Command::new(CLIENT)
         .args(args)
         .env("TERMIOD_SOCK", socket)
         .output()
-        .expect("run termiod")
+        .expect("run termio")
 }
 
 fn status(socket: &Path) -> Value {
-    let output = termiod(socket, &["status", "--json"]);
+    let output = termio(socket, &["server", "status", "--json"]);
     assert!(output.status.success(), "status failed: {output:?}");
     serde_json::from_slice(&output.stdout).expect("status is json")
 }
 
 /// `list --json` — `SessionInfo`, which carries the pid that `status` omits.
 fn listed(socket: &Path) -> Vec<Value> {
-    let output = termiod(socket, &["list", "--json"]);
+    let output = termio(socket, &["server", "list", "--json"]);
     assert!(output.status.success(), "list failed: {output:?}");
     let parsed: Value = serde_json::from_slice(&output.stdout).expect("list is json");
     match parsed {
@@ -164,7 +165,7 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
     // upgrade" a question that can be asked — while the loop keeps writing,
     // which is what makes "it never got a hangup" a question that can be
     // answered.
-    let created = termiod(&socket, &["create", "--name", "carried", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "carried", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
 
     let before = status(&socket);
@@ -173,21 +174,21 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
     assert_eq!(sessions.len(), 1, "{before}");
     let session_id = sessions[0]["id"].as_str().expect("session id").to_string();
 
-    let sent = termiod(
+    let sent = termio(
         &socket,
-        &["send", &session_id, "echo MARKER-BEFORE-HANDOFF"],
+        &["server", "send", &session_id, "echo MARKER-BEFORE-HANDOFF"],
     );
     assert!(sent.status.success(), "send failed: {sent:?}");
     let ticker = format!(
         "(n=0; while :; do n=$((n+1)); echo $n > {}; sleep 0.1; done) &",
         tally.display()
     );
-    let sent = termiod(&socket, &["send", &session_id, &ticker]);
+    let sent = termio(&socket, &["server", "send", &session_id, &ticker]);
     assert!(sent.status.success(), "send failed: {sent:?}");
 
     let ticks = wait_for_counter(&tally, 3);
 
-    let handed = termiod(&socket, &["handoff", "--json"]);
+    let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(
         handed.status.success(),
         "handoff failed: {}",
@@ -215,7 +216,7 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
     // And it is still reachable — the new image is reading and writing the same
     // master, not merely holding a descriptor open.
     let marker = format!("touch {}", dir.0.join("typed").display());
-    let sent = termiod(&socket, &["send", &session_id, &marker]);
+    let sent = termio(&socket, &["server", "send", &session_id, &marker]);
     assert!(sent.status.success(), "send failed: {sent:?}");
     let typed = dir.0.join("typed");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -240,8 +241,8 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
 /// What an observer sees on attach — the ring the daemon replays. Read for a
 /// moment and then stopped, because `attach --observe` streams forever.
 fn observed(socket: &Path, session: &str) -> String {
-    let mut child = Command::new(BIN)
-        .args(["attach", session, "--observe", "--no-create"])
+    let mut child = Command::new(CLIENT)
+        .args(["server", "attach", session, "--observe", "--no-create"])
         .env("TERMIOD_SOCK", socket)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -272,7 +273,7 @@ fn a_binary_that_cannot_adopt_is_refused_and_changes_nothing() {
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
 
-    let created = termiod(&socket, &["create", "--name", "kept", "--", "sleep", "300"]);
+    let created = termio(&socket, &["server", "create", "--name", "kept", "--", "sleep", "300"]);
     assert!(created.status.success(), "create failed: {created:?}");
     let before = status(&socket);
     let daemon_pid = before["daemon"]["pid"].as_i64().expect("daemon pid");
@@ -290,9 +291,9 @@ fn a_binary_that_cannot_adopt_is_refused_and_changes_nothing() {
             .expect("chmod impostor");
     }
 
-    let refused = termiod(
+    let refused = termio(
         &socket,
-        &["handoff", "--binary", impostor.to_str().expect("path")],
+        &["server", "handoff", "--binary", impostor.to_str().expect("path")],
     );
     assert!(
         !refused.status.success(),
@@ -338,15 +339,23 @@ fn the_probe_is_what_separates_a_termiod_from_a_convincing_impostor() {
     );
 
     let probe = Command::new(BIN)
-        .args(["handoff", "--probe"])
+        .args(["serve", "--handoff-probe"])
         .output()
         .expect("probe the real binary");
     assert!(probe.status.success());
     let token = String::from_utf8_lossy(&probe.stdout).trim().to_string();
     assert!(token.starts_with("termiod-handoff "), "{token}");
+    // A daemon from before `serve --handoff-probe` asks `handoff --probe`; the
+    // hidden old spelling must give the same answer, or that daemon's one
+    // upgrade becomes a stop.
+    let legacy = Command::new(BIN)
+        .args(["handoff", "--probe"])
+        .output()
+        .expect("probe the real binary the old way");
+    assert_eq!(String::from_utf8_lossy(&legacy.stdout).trim(), token);
 
     let impostor_probe = Command::new(&impostor)
-        .args(["handoff", "--probe"])
+        .args(["serve", "--handoff-probe"])
         .output()
         .expect("probe the impostor");
     assert_ne!(
@@ -370,14 +379,14 @@ fn a_session_is_either_listed_or_gone_never_both() {
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
 
-    let created = termiod(&socket, &["create", "--name", "kept", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "kept", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
     let session_pid = listed(&socket)[0]["pid"].as_i64().expect("session pid");
     let daemon_pid = status(&socket)["daemon"]["pid"]
         .as_i64()
         .expect("daemon pid");
 
-    let handed = termiod(&socket, &["handoff", "--json"]);
+    let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(handed.status.success(), "handoff failed: {handed:?}");
     assert_eq!(
         status(&socket)["daemon"]["pid"].as_i64(),
@@ -415,7 +424,7 @@ fn a_session_with_a_client_attached_is_still_driveable_afterwards() {
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
 
-    let created = termiod(&socket, &["create", "--name", "resized", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "resized", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
     let before = status(&socket);
     let session_id = before["sessions"][0]["id"]
@@ -423,18 +432,18 @@ fn a_session_with_a_client_attached_is_still_driveable_afterwards() {
         .expect("session id")
         .to_string();
 
-    let sent = termiod(&socket, &["send", &session_id, "echo MARKER-BEFORE-RESIZE"]);
+    let sent = termio(&socket, &["server", "send", &session_id, "echo MARKER-BEFORE-RESIZE"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
 
     let _ = observed(&socket, &session_id);
 
-    let handed = termiod(&socket, &["handoff", "--json"]);
+    let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(handed.status.success(), "handoff failed: {handed:?}");
 
     // The session is still there and still driveable — degrading the snapshot
     // must not degrade the session.
     let marker = format!("touch {}", dir.0.join("after-resize").display());
-    let sent = termiod(&socket, &["send", &session_id, &marker]);
+    let sent = termio(&socket, &["server", "send", &session_id, &marker]);
     assert!(sent.status.success(), "send failed: {sent:?}");
     let typed = dir.0.join("after-resize");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -463,7 +472,7 @@ fn a_probe_that_hangs_or_floods_is_refused_and_leaves_the_daemon_working() {
     let socket = dir.0.join("s");
     let daemon = Daemon::start(&socket);
 
-    let created = termiod(&socket, &["create", "--name", "kept", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "kept", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
     let daemon_pid = status(&socket)["daemon"]["pid"]
         .as_i64()
@@ -488,9 +497,9 @@ fn a_probe_that_hangs_or_floods_is_refused_and_leaves_the_daemon_working() {
                 .expect("chmod candidate");
         }
         let started = Instant::now();
-        let refused = termiod(
+        let refused = termio(
             &socket,
-            &["handoff", "--binary", path.to_str().expect("path")],
+            &["server", "handoff", "--binary", path.to_str().expect("path")],
         );
         assert!(
             !refused.status.success(),
@@ -511,7 +520,7 @@ fn a_probe_that_hangs_or_floods_is_refused_and_leaves_the_daemon_working() {
         "a refused probe cost the daemon"
     );
     assert_eq!(listed(&socket).len(), 1, "a refused probe cost a session");
-    let handed = termiod(&socket, &["handoff", "--json"]);
+    let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(
         handed.status.success(),
         "the verb was wedged by the refusals: {handed:?}"
@@ -540,7 +549,7 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
         Some(&log),
     );
 
-    let created = termiod(&socket, &["create", "--name", "survivor", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "survivor", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
 
     let before = status(&socket);
@@ -556,7 +565,7 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
         "(n=0; while :; do n=$((n+1)); echo $n > {}; sleep 0.1; done) &",
         tally.display()
     );
-    let sent = termiod(&socket, &["send", &session_id, &ticker]);
+    let sent = termio(&socket, &["server", "send", &session_id, &ticker]);
     assert!(sent.status.success(), "send failed: {sent:?}");
     let ticks = wait_for_counter(&tally, 3);
 
@@ -566,7 +575,7 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
     // connection with it, so an aborted one is exactly the case where it does
     // not close — which is why reporting used to be wrong here, and is now the
     // assertion.
-    let handed = termiod(&socket, &["handoff", "--json"]);
+    let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(
         !handed.status.success(),
         "an aborted handoff reported success: {handed:?}"
@@ -606,7 +615,7 @@ fn a_blob_write_that_fails_after_the_carry_costs_nothing() {
     // And it is still driveable — the master went back to a live actor, not
     // merely back into a roster entry.
     let marker = dir.0.join("typed-after-abort");
-    let sent = termiod(&socket, &["send", &session_id, &format!("touch {}", marker.display())]);
+    let sent = termio(&socket, &["server", "send", &session_id, &format!("touch {}", marker.display())]);
     assert!(sent.status.success(), "send after the abort failed: {sent:?}");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !marker.exists() {
@@ -636,7 +645,7 @@ fn a_second_handoff_is_refused_while_one_is_under_way() {
         Some(&log),
     );
 
-    let created = termiod(&socket, &["create", "--name", "one", "--", "sh"]);
+    let created = termio(&socket, &["server", "create", "--name", "one", "--", "sh"]);
     assert!(created.status.success(), "create failed: {created:?}");
     let before = status(&socket);
     let session_id = before["sessions"].as_array().expect("sessions")[0]["id"]
@@ -653,11 +662,11 @@ fn a_second_handoff_is_refused_while_one_is_under_way() {
     // both about to be accepted — which only two connections in flight can
     // reach.
     let (a, b) = (socket.clone(), socket.clone());
-    let left = std::thread::spawn(move || termiod(&a, &["handoff", "--json"]));
-    let right = std::thread::spawn(move || termiod(&b, &["handoff", "--json"]));
+    let left = std::thread::spawn(move || termio(&a, &["server", "handoff", "--json"]));
+    let right = std::thread::spawn(move || termio(&b, &["server", "handoff", "--json"]));
     let first = left.join().expect("first handoff thread");
     let second = right.join().expect("second handoff thread");
-    // The replies say nothing: `termiod handoff` composes its success message on
+    // The replies say nothing: `termio server handoff` composes its success message on
     // the client from a status it fetched, so both calls print the same thing
     // whatever the daemon decided. That is its own gap — reporting a handoff
     // that has only been *accepted* as one that happened — and it is why the
@@ -688,9 +697,9 @@ fn a_second_handoff_is_refused_while_one_is_under_way() {
         "{after}"
     );
     let marker = dir.0.join("typed-after-race");
-    let sent = termiod(
+    let sent = termio(
         &socket,
-        &["send", &session_id, &format!("touch {}", marker.display())],
+        &["server", "send", &session_id, &format!("touch {}", marker.display())],
     );
     assert!(sent.status.success(), "send after the race failed: {sent:?}");
 

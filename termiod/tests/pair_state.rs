@@ -1,4 +1,4 @@
-//! `termiod pair` runs in its own process, usually before the upgraded daemon
+//! `termio pair` runs in its own process, usually before the upgraded daemon
 //! restarts, so the files an older build kept beside the socket may not have
 //! been adopted yet. These tests pin the three CLI paths that used to bypass
 //! that: `--rotate` left the legacy token valid, `--wss-off` left a legacy
@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 
 /// A sandboxed home + runtime dir pair, mirroring the daemon's own
 /// derivations: the legacy dir is `$XDG_RUNTIME_DIR/termiod`, the durable dir
@@ -54,15 +55,15 @@ impl Sandbox {
     }
 
     fn pair(&self, args: &[&str]) -> std::process::Output {
-        Command::new(BIN)
-            .arg("pair")
+        Command::new(CLIENT)
+            .args(["pair"])
             .args(args)
             .env_clear()
             .env("HOME", self.home())
             .env("XDG_RUNTIME_DIR", self.runtime())
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .output()
-            .expect("running termiod pair")
+            .expect("running termio pair")
     }
 }
 
@@ -154,8 +155,8 @@ fn wss_off_wins_against_a_concurrent_adopter() {
             let home = sandbox.home();
             let runtime = sandbox.runtime();
             std::thread::spawn(move || {
-                Command::new(BIN)
-                    .arg("pair")
+                Command::new(CLIENT)
+                    .args(["pair"])
                     .env_clear()
                     .env("HOME", home)
                     .env("XDG_RUNTIME_DIR", runtime)

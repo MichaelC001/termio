@@ -115,7 +115,7 @@ axis. Opening it gives you:
 
   The skill a box gets is not the one this Mac gets. Agents here learn
   `termio sessions`, scoped to their own project; agents on a machine learn
-  `termiod list`, `create`, `send` and `kill`, scoped to that whole machine —
+  `termio server list`, `create`, `send` and `kill`, scoped to that whole machine —
   because that is the command that exists there.
 
 *Can’t check* is a third answer on purpose, and it’s never a defect in the agent:
@@ -146,7 +146,7 @@ or an agent mid-task does.
 From the command line the same reconcile is one verb:
 
 ```bash
-termiod deploy --host mybox
+termio server -H mybox deploy
 ```
 
 It ends in the same state whatever state it started in, so running it against a
@@ -157,15 +157,15 @@ box that looks wrong is safe. See [The Termio server](/docs/server).
 Work from the outside in — `ssh` first, then the daemon, then Termio:
 
 ```bash
-ssh mybox true                 # does SSH itself work?
-termiod list --host mybox      # is the server answering there?
-termiod deploy --host mybox    # reinstall and verify it
+ssh mybox true                # does SSH itself work?
+termio server -H mybox ls      # is the server answering there?
+termio server -H mybox deploy    # reinstall and verify it
 ```
 
 A dropped connection detaches you; it doesn’t kill anything. The sessions are on
 that box, in its daemon, and reattaching restores the screen — see [What
 survives](/docs/persistence). If they really did go away after a reboot, the box
-is missing a service: `termiod service install`.
+is missing a service: `termio server service install`.
 
 The device switcher reports an unreachable machine in `ssh`’s own words rather
 than going quiet, so the failure you read is the failure `ssh` had. More symptoms

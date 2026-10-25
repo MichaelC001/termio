@@ -201,7 +201,7 @@ pub fn login_environment(name: &str) -> Option<String> {
 /// Where a command could be found from this box, login shell first.
 ///
 /// `PATH` is the one variable whose *inherited* value must not win. A daemon
-/// auto-started from `ssh host termiod stdio` inherits ssh's minimal `PATH`, and
+/// auto-started from `ssh host termio stdio` inherits ssh's minimal `PATH`, and
 /// a Mac one started by launchd inherits almost nothing — while the agents worth
 /// finding are exactly the ones outside a default `PATH`. On a stock Ubuntu box
 /// `claude` installs to `~/.local/bin`, which only `~/.profile` adds; trusting
@@ -495,22 +495,34 @@ fn read_probe(output: &str, names: &[&str]) -> HashMap<String, String> {
     resolved
 }
 
-/// This daemon's own executable, as an absolute path, for stamping into a hook
-/// command. The SSH arm had to emit `$HOME/.local/bin/termiod` and escape it
-/// three ways; the process that will be exec'd knows where it lives.
-pub fn daemon_binary() -> String {
+/// The `termio` client beside this daemon, as an absolute path, for stamping
+/// into a hook command. The daemon answers only `serve`; a hook reports through
+/// the client's `agent report`. A dev bundle names its client `termio-dev`,
+/// and a bundle holds only one of the two names.
+pub fn client_binary() -> String {
     if let Ok(path) = std::env::current_exe() {
         // A daemon started through a symlink still reports the link's path here,
         // which is the path the user's own `PATH` resolves — the right one to
         // stamp. Canonicalizing would replace it with a build artefact's path
         // that a later upgrade renames out from under every hook.
-        if let Some(path) = path.to_str() {
-            return path.to_string();
+        if path.file_name().is_some_and(|name| name != "termiod") {
+            if let Some(path) = path.to_str() {
+                return path.to_string();
+            }
+        }
+        if let Some(directory) = path.parent() {
+            let found = ["termio", "termio-dev"]
+                .iter()
+                .map(|name| directory.join(name))
+                .find(|candidate| candidate.is_file());
+            if let Some(path) = found.as_deref().and_then(Path::to_str) {
+                return path.to_string();
+            }
         }
     }
     match home_directory() {
-        Some(home) => home.join(".local/bin/termiod").display().to_string(),
-        None => "termiod".to_string(),
+        Some(home) => home.join(".local/bin/termio").display().to_string(),
+        None => "termio".to_string(),
     }
 }
 

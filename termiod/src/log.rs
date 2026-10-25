@@ -174,7 +174,7 @@ fn rotate(path: &Path) {
     let _ = std::fs::rename(path, generation(1));
 }
 
-/// `termiod logs` — the answer to "where are the logs?", which until now was
+/// `termio server logs` — the answer to "where are the logs?", which until now was
 /// "there aren't any". Reading the file directly works too; this exists so the
 /// answer is one command rather than a path the user has to be told.
 pub async fn show(path_only: bool, follow: bool, lines: usize) -> Result<()> {

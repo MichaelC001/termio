@@ -3,7 +3,7 @@ import TermioShared
 import XCTest
 @testable import termio
 
-/// `termiod deploy --json` is the one document the app reads a machine's
+/// `termio server deploy --json` is the one document the app reads a machine's
 /// lifecycle state from. These pin the field names the daemon writes
 /// (`termiod/src/lifecycle.rs`, `Report` and `Outcome`) so a rename on either
 /// side fails here rather than as a machine that reads as broken.

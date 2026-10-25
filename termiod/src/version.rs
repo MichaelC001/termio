@@ -20,12 +20,27 @@ use anyhow::Result;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn row(name: &str, version: &str, proto: &str, note: &str) {
-    let line = format!("{name:<14} {version:<22} {proto:<9} {note}");
-    println!("{}", line.trim_end());
+/// One line of the table, and one object of `--json`.
+#[derive(serde::Serialize)]
+struct Row {
+    name: String,
+    version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    proto: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    note: String,
 }
 
-pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()> {
+pub async fn print_table(channel: &Channel, provenance: Provenance, json: bool) -> Result<()> {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut row = |name: &str, version: &str, proto: &str, note: &str| {
+        rows.push(Row {
+            name: name.to_string(),
+            version: version.to_string(),
+            proto: proto.to_string(),
+            note: note.to_string(),
+        })
+    };
     row(
         "termio",
         lifecycle::BUILD_VERSION,
@@ -51,23 +66,29 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
                 )
             })
             .unwrap_or_default(),
+        // The client overwrites an inherited `TERMIO_CHANNEL` with the one
+        // its own name implies, so the session's channel is what a pasted
+        // command has to carry.
         Provenance::ProgramName | Provenance::SessionChannel => {
-            format!("TERMIO_CHANNEL={}", channel.name)
+            format!("TERMIO_SESSION_CHANNEL={}", channel.name)
         }
     };
 
     match channel::daemon_binary(channel) {
         None => row("termiod local", "-", "", "(not installed)"),
-        Some(daemon) => match daemon_status(&daemon) {
+        Some(daemon) => match lifecycle::status_of(&daemon).await.ok() {
             Some(status) if status.daemon.running => {
                 // A stale local daemon is the one skew with no command in this
                 // table's margins — a remote is reconciled before each terminal
                 // opens, and the machine the app runs on is the one nobody
                 // asks — so the row itself names the way out.
+                let client = std::env::current_exe()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "termio".to_string());
                 let behind = behind_note(
                     status.daemon.version.as_deref(),
                     &status.binary.version,
-                    &daemon,
+                    &client,
                     &env_pin,
                 );
                 let version = status.daemon.version.unwrap_or(status.binary.version);
@@ -97,31 +118,39 @@ pub async fn print_table(channel: &Channel, provenance: Provenance) -> Result<()
         row(&remote.alias, &remote.version, &remote.proto, &remote.stamp);
     }
 
-    if let Ok(socket) = paths::socket_path() {
-        let why = match provenance {
-            Provenance::ExplicitSocket => "via TERMIOD_SOCK",
-            Provenance::ProgramName => "via program name",
-            Provenance::SessionChannel => "via the session's channel",
-        };
+    let socket = paths::socket_path().ok();
+    let why = match provenance {
+        Provenance::ExplicitSocket => "TERMIOD_SOCK",
+        Provenance::ProgramName => "program name",
+        Provenance::SessionChannel => "the session's channel",
+    };
+    if json {
+        let report = serde_json::json!({
+            "rows": rows,
+            "socket": socket.as_ref().map(|path| path.display().to_string()),
+            "socket_from": why,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for Row { name, version, proto, note } in &rows {
+        let line = format!("{name:<14} {version:<22} {proto:<9} {note}");
+        println!("{}", line.trim_end());
+    }
+    if let Some(socket) = socket {
         println!();
-        println!("socket {} ({why})", socket.display());
+        println!("socket {} (via {why})", socket.display());
     }
     Ok(())
 }
 
-/// "← behind; run `<daemon> handoff`" when the running daemon is older than
-/// the binary staged at its path, and quiet in every other case — including
-/// the versionless answer of a daemon too old to say, which `handoff` would
-/// refuse anyway. The command names the resolved binary, not a bare
-/// `termiod`: the app puts `termio` on PATH and keeps the daemon inside the
-/// bundle, so the bare name is "command not found" on a normal install — or,
-/// worse, some other build that happens to be on PATH.
-fn behind_note(
-    running: Option<&str>,
-    staged: &str,
-    daemon: &std::path::Path,
-    env_pin: &str,
-) -> String {
+/// "← behind; run `<client> server handoff`" when the running daemon is older
+/// than the binary staged at its path, and quiet in every other case —
+/// including the versionless answer of a daemon too old to say, which
+/// `handoff` would refuse anyway. The command names this client by its path,
+/// not a bare `termio`: its name is what picks the channel, so a bare name on
+/// PATH could drive another channel's daemon.
+fn behind_note(running: Option<&str>, staged: &str, client: &str, env_pin: &str) -> String {
     let (Some(running), Some(staged)) = (
         running.and_then(lifecycle::Version::parse),
         lifecycle::Version::parse(staged),
@@ -131,25 +160,12 @@ fn behind_note(
     if running < staged {
         let space = if env_pin.is_empty() { "" } else { " " };
         format!(
-            "← behind; run `{env_pin}{space}{} handoff`",
-            lifecycle::shell_quote(&daemon.display().to_string())
+            "← behind; run `{env_pin}{space}{} server handoff`",
+            lifecycle::shell_quote(client)
         )
     } else {
         String::new()
     }
-}
-
-/// The located daemon binary answering for itself, exactly as the shell
-/// client asked it: its own build, the daemon on the canonical socket, and
-/// that daemon's hello — so a staged binary that differs from the running
-/// daemon shows as two different versions. `channel::resolve` already pinned
-/// `TERMIO_CHANNEL`, which the child inherits.
-fn daemon_status(daemon: &std::path::Path) -> Option<lifecycle::NodeStatus> {
-    let output = Command::new(daemon).args(["status", "--json"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&output.stdout).ok()
 }
 
 /// The running app's `CFBundleShortVersionString+CFBundleVersion`, through
@@ -346,11 +362,11 @@ mod tests {
 
     #[test]
     fn only_a_running_daemon_older_than_its_binary_is_flagged() {
-        let daemon = std::path::Path::new("/Applications/Termio.app/Contents/Resources/termiod");
-        let pin = "TERMIO_CHANNEL=dev";
+        let daemon = "/Applications/Termio.app/Contents/Resources/termio";
+        let pin = "TERMIO_SESSION_CHANNEL=dev";
         assert_eq!(
             behind_note(Some("0.49.0+1881"), "0.50.0+1913", daemon, pin),
-            "← behind; run `TERMIO_CHANNEL=dev /Applications/Termio.app/Contents/Resources/termiod handoff`"
+            "← behind; run `TERMIO_SESSION_CHANNEL=dev /Applications/Termio.app/Contents/Resources/termio server handoff`"
         );
         assert_eq!(behind_note(Some("0.50.0+1913"), "0.50.0+1913", daemon, pin), "");
         assert_eq!(behind_note(Some("0.51.0+2000"), "0.50.0+1913", daemon, pin), "");

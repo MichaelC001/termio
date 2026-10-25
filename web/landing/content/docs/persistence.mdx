@@ -29,7 +29,7 @@ purpose — **Close Session** (`⌘W`), and the process exiting by itself.
 | Quit Termio (`⌘Q`) and relaunch | Yes | Yes | Yes | Yes |
 | Termio updates itself | Yes | Yes | Yes | Yes |
 | The SSH link to a remote machine drops | Yes | Yes | Yes | Yes |
-| `termiod handoff` (server updates in place) | Yes | Yes | Yes | Yes |
+| `termio server handoff` (server updates in place) | Yes | Yes | Yes | Yes |
 | The server stops, or the machine reboots | No | Yes | No | On this Mac, where the agent supports [resume](/docs/atp#resume). Never on another machine |
 | **Close Session** (`⌘W`) | No | — | — | — |
 
@@ -63,7 +63,7 @@ See [Keyboard shortcuts](/docs/keyboard#panes).
 
 ## When the process really does go away
 
-A server that stops — a reboot, a `termiod stop`, a box that lost power — takes
+A server that stops — a reboot, a `termio server stop`, a box that lost power — takes
 its PTYs with it. There is no way around that; a process is a process. What
 Termio does is make coming back cheap:
 
@@ -88,8 +88,8 @@ fine on the Mac in front of you and almost never fine on a box you only ever rea
 over SSH, where nobody logs in interactively at all.
 
 ```bash
-termiod service install    # launchd on macOS, systemd --user on Linux
-termiod service status
+termio server service install    # launchd on macOS, systemd --user on Linux
+termio server service status
 ```
 
 With a service installed the server is brought back after a crash, and started
@@ -128,7 +128,7 @@ A new server build replaces the running one **in place**: the process keeps its
 id and its PTYs, and the sessions never notice.
 
 ```bash
-termiod handoff
+termio server handoff
 ```
 
 That is also what happens when the app updates itself, which is why a Termio

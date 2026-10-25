@@ -1,4 +1,4 @@
-//! `termiod status` and `termiod stop` against a real daemon on an isolated
+//! `termio server status` and `termio server stop` against a real daemon on an isolated
 //! socket — the node half of the lifecycle loop, exercised the way the control
 //! plane runs it: as the binary on disk, over the canonical socket.
 
@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 const VERSION: &str = env!("TERMIOD_VERSION");
 
 /// One number per directory, per process. The tests here run concurrently in
@@ -85,12 +86,12 @@ impl Drop for Daemon {
     }
 }
 
-fn termiod(socket: &Path, args: &[&str]) -> Output {
-    Command::new(BIN)
+fn termio(socket: &Path, args: &[&str]) -> Output {
+    Command::new(CLIENT)
         .args(args)
         .env("TERMIOD_SOCK", socket)
         .output()
-        .expect("run termiod")
+        .expect("run termio")
 }
 
 fn json(output: &Output) -> Value {
@@ -111,7 +112,7 @@ fn status_reports_the_binary_the_daemon_and_its_sessions() {
     let dir = TestDir::new();
     let socket = dir.0.join("d.sock");
 
-    let before = termiod(&socket, &["status", "--json"]);
+    let before = termio(&socket, &["server", "status", "--json"]);
     assert!(before.status.success());
     let report = json(&before);
     assert_eq!(report["binary"]["version"], VERSION);
@@ -119,10 +120,10 @@ fn status_reports_the_binary_the_daemon_and_its_sessions() {
     assert!(report["daemon"]["version"].is_null());
 
     let daemon = Daemon::start(&socket);
-    let created = termiod(&socket, &["create", "--name", "shell", "--", "sleep", "300"]);
+    let created = termio(&socket, &["server", "create", "--name", "shell", "--", "sleep", "300"]);
     assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
 
-    let during = termiod(&socket, &["status", "--json"]);
+    let during = termio(&socket, &["server", "status", "--json"]);
     assert!(during.status.success(), "{}", String::from_utf8_lossy(&during.stderr));
     let report = json(&during);
     assert_eq!(report["daemon"]["running"], true);
@@ -141,17 +142,17 @@ fn stop_takes_an_idle_daemon_down() {
     let dir = TestDir::new();
     let socket = dir.0.join("d.sock");
     let mut daemon = Daemon::start(&socket);
-    let created = termiod(&socket, &["create", "--name", "shell", "--", "sleep", "300"]);
+    let created = termio(&socket, &["server", "create", "--name", "shell", "--", "sleep", "300"]);
     assert!(created.status.success());
 
-    let stopped = termiod(&socket, &["stop", "--json"]);
+    let stopped = termio(&socket, &["server", "stop", "--json"]);
     assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
     assert_eq!(json(&stopped)["stopped"], true);
     assert!(daemon.wait_exit(), "daemon still running after stop");
     assert!(!socket.exists(), "socket left behind after stop");
 
     // Nothing running is the state wanted, so asking again is success.
-    let again = termiod(&socket, &["stop", "--json"]);
+    let again = termio(&socket, &["server", "stop", "--json"]);
     assert!(again.status.success());
     assert_eq!(json(&again)["stopped"], true);
 }
@@ -179,7 +180,7 @@ fn stop_succeeds_when_the_daemon_left_its_socket_and_its_pid_behind() {
     let sealed = std::fs::Permissions::from_mode(0o500);
     std::fs::set_permissions(&dir.0, sealed).expect("seal the daemon's directory");
 
-    let stopped = termiod(&socket, &["stop", "--force", "--json"]);
+    let stopped = termio(&socket, &["server", "stop", "--force", "--json"]);
     std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700))
         .expect("unseal the daemon's directory");
 
@@ -259,7 +260,7 @@ fn serve_replaces_a_socket_its_daemon_died_holding() {
     let _replacement = Daemon::start(&socket);
     let deadline = Instant::now() + Duration::from_secs(5);
     let running = loop {
-        let status = termiod(&socket, &["status", "--json"]);
+        let status = termio(&socket, &["server", "status", "--json"]);
         if status.status.success() && json(&status)["daemon"]["running"] == true {
             break true;
         }
@@ -286,7 +287,7 @@ fn stop_refuses_to_call_an_unreachable_daemon_stopped() {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o000))
         .expect("deny the socket");
 
-    let refused = termiod(&socket, &["stop", "--json"]);
+    let refused = termio(&socket, &["server", "stop", "--json"]);
     assert!(!refused.status.success(), "an unreachable daemon was reported stopped");
     let complaint = String::from_utf8_lossy(&refused.stderr);
     assert!(
@@ -300,7 +301,7 @@ fn stop_refuses_to_call_an_unreachable_daemon_stopped() {
 
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
         .expect("restore the socket");
-    let stopped = termiod(&socket, &["stop", "--json"]);
+    let stopped = termio(&socket, &["server", "stop", "--json"]);
     assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
     assert!(daemon.wait_exit(), "daemon still running after stop");
 }
@@ -313,13 +314,18 @@ fn stop_declines_while_an_agent_is_mid_task_unless_forced() {
     let dir = TestDir::new();
     let socket = dir.0.join("d.sock");
     let mut daemon = Daemon::start(&socket);
-    let created = termiod(&socket, &["create", "--name", "claude", "--", "sleep", "300"]);
+    let created = termio(&socket, &["server", "create", "--name", "claude", "--", "sleep", "300"]);
     assert!(created.status.success());
     let id = String::from_utf8_lossy(&created.stdout).trim().to_string();
-    let marked = termiod(&socket, &["set-status", &id, "working"]);
+    let marked = Command::new(CLIENT)
+        .args(["agent", "report", "working"])
+        .env("TERMIOD_SOCK", &socket)
+        .env("TERMIOD_SESSION_ID", &id)
+        .output()
+        .expect("run termio agent report");
     assert!(marked.status.success(), "{}", String::from_utf8_lossy(&marked.stderr));
 
-    let declined = termiod(&socket, &["stop", "--json"]);
+    let declined = termio(&socket, &["server", "stop", "--json"]);
     assert_eq!(declined.status.code(), Some(3), "{}", String::from_utf8_lossy(&declined.stderr));
     let report = json(&declined);
     assert_eq!(report["stopped"], false);
@@ -327,7 +333,7 @@ fn stop_declines_while_an_agent_is_mid_task_unless_forced() {
     assert_eq!(report["busy"][0]["status"], "working");
     assert!(daemon.child.try_wait().expect("poll").is_none(), "daemon exited on a declined stop");
 
-    let forced = termiod(&socket, &["stop", "--force", "--json"]);
+    let forced = termio(&socket, &["server", "stop", "--force", "--json"]);
     assert!(forced.status.success(), "{}", String::from_utf8_lossy(&forced.stderr));
     assert!(daemon.wait_exit(), "daemon still running after --force");
 }

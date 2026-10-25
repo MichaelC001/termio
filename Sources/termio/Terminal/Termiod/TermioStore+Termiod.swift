@@ -691,7 +691,7 @@ extension TermioStore {
     ///
     /// This is the only source of the session list a device's world is drawn from.
     /// It is a `list` over that device's own control channel — for this Mac a Unix
-    /// socket, for anything else `ssh <alias> termiod stdio` — so the same code
+    /// socket, for anything else `ssh <alias> termio stdio` — so the same code
     /// path serves every machine and this Mac is not a special case. What comes
     /// back includes sessions this app never opened, which is the difference
     /// between reading a device's state and filtering your own.
@@ -1227,7 +1227,7 @@ extension TermioStore {
 
     /// Opens a **remote session** on `host`: a session whose termiod link runs
     /// on that SSH box (`session.termiodRemoteHost`), so the process lives on
-    /// the remote and the Mac attaches over `ssh <host> termiod stdio`. Unlike
+    /// the remote and the Mac attaches over `ssh <host> termio stdio`. Unlike
     /// `addSSHSession` (a plain `ssh <host>` in a *local* PTY), this is the durable
     /// termiod path — detach-not-kill and snapshot repaint carry across the network.
     ///
@@ -1240,7 +1240,7 @@ extension TermioStore {
     /// it surfaces a clear message rather than silently opening a broken pane. The
     /// remote must have `termiod` installed; `ensureRemoteReady` deploys it if
     /// missing (off the main thread, with progress) before the session is created —
-    /// otherwise the first `termiod stdio` over SSH would fail and the pane would
+    /// otherwise the first `termio stdio` over SSH would fail and the pane would
     /// sit dead.
     ///
     /// `cwd` (used by "Clone to <device>…") is the remote directory the shell spawns
@@ -1392,7 +1392,7 @@ extension TermioStore {
     }
 
     /// Ensures `host` runs the `termiod` this app ships before an attach, by
-    /// running the daemon's own lifecycle loop against it (`termiod deploy
+    /// running the daemon's own lifecycle loop against it (`termio server deploy
     /// --host`): observe, stage the binary if older, stop the old daemon if it
     /// is idle, verify the new one answers, roll back if it does not. Runs off
     /// the main thread with a borderless "Setting up host…" HUD; `completion`
@@ -1453,19 +1453,17 @@ extension TermioStore {
     private nonisolated static func performRemoteReadyCheck(
         host: String, force: Bool = false
     ) -> RemoteSetupResult {
-        let localBinary = Termiod.daemonBinaryPath()
+        let localBinary = Termiod.clientBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: localBinary) else {
             return .failure(RemoteSetupError(
                 state: .failed,
-                message: "The termiod binary to deploy wasn't found at \(localBinary)."))
+                message: "The termio binary that deploys wasn't found at \(localBinary)."))
         }
-        // The `remote` spelling, not `deploy --host`: the top-level twin is
-        // deprecated and warns on stderr, which this side reads as a diagnosis.
-        var arguments = ["remote", "deploy", host, "--json"]
+        var arguments = ["server", "--host", host, "deploy", "--json"]
         if force { arguments.append("--force") }
         guard let run = runProcess(localBinary, arguments) else {
             return .failure(RemoteSetupError(
-                state: .failed, message: "Couldn't run termiod deploy."))
+                state: .failed, message: "Couldn't run termio deploy."))
         }
         let report: Termiod.LifecycleReport
         do {
@@ -1475,7 +1473,7 @@ extension TermioStore {
             // not start, or died. Its last words are the diagnosis.
             let detail = run.standardError
                 .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .last(where: { !$0.isEmpty }) ?? "termiod deploy exited \(run.exitCode)"
+                .last(where: { !$0.isEmpty }) ?? "termio server deploy exited \(run.exitCode)"
             return .failure(RemoteSetupError(
                 state: .failed, message: "Couldn't set up termiod on \(host).\n\(detail)"))
         }
@@ -1594,15 +1592,16 @@ extension TermioStore {
         // reach the stop rung while the daemon holds any live session — an
         // idle shell included, which a plain `stop` deliberately lets through
         // for the user who clicked Update.
-        guard let run = runProcess(binary, ["deploy", "--handoff-only", "--json"]) else {
-            Log.termiod.error("couldn't run \(binary, privacy: .public) deploy")
+        let client = Termiod.clientBinaryPath()
+        guard let run = runProcess(client, ["server", "deploy", "--handoff-only", "--json"]) else {
+            Log.termiod.error("couldn't run \(client, privacy: .public) server deploy")
             return
         }
         guard let report = try? Termiod.LifecycleReport.decode(
             Data(run.standardOutput.utf8))
         else {
             Log.termiod.error("""
-            the local termiod deploy ended without a report: \
+            the local termio server deploy ended without a report: \
             \(run.standardError, privacy: .public)
             """)
             return
@@ -1626,7 +1625,7 @@ extension TermioStore {
             """)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    offerLocalDaemonUpdate(report: report, binary: binary)
+                    offerLocalDaemonUpdate(report: report, binary: client)
                 }
             }
         case .unhealthy:
@@ -1669,17 +1668,17 @@ extension TermioStore {
     /// one process, one JSON document, and the loop's own vocabulary turned into
     /// a sentence here rather than decided here.
     private nonisolated static func performLocalReadyCheck(force: Bool) -> RemoteSetupResult {
-        let binary = Termiod.daemonBinaryPath()
+        let binary = Termiod.clientBinaryPath()
         guard FileManager.default.isExecutableFile(atPath: binary) else {
             return .failure(RemoteSetupError(
                 state: .failed,
-                message: "The termiod binary to deploy wasn't found at \(binary)."))
+                message: "The termio binary that deploys wasn't found at \(binary)."))
         }
-        var arguments = ["deploy", "--json"]
+        var arguments = ["server", "deploy", "--json"]
         if force { arguments.append("--force") }
         guard let run = runProcess(binary, arguments) else {
             return .failure(RemoteSetupError(
-                state: .failed, message: "Couldn't run termiod deploy."))
+                state: .failed, message: "Couldn't run termio deploy."))
         }
         let report: Termiod.LifecycleReport
         do {
@@ -1687,7 +1686,7 @@ extension TermioStore {
         } catch {
             let detail = run.standardError
                 .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .last(where: { !$0.isEmpty }) ?? "termiod deploy exited \(run.exitCode)"
+                .last(where: { !$0.isEmpty }) ?? "termio server deploy exited \(run.exitCode)"
             return .failure(RemoteSetupError(
                 state: .failed, message: "Couldn't set up termiod on this Mac.\n\(detail)"))
         }
@@ -1739,15 +1738,15 @@ extension TermioStore {
         alert.buttons.last?.hasDestructiveAction = true
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let run = runProcess(binary, ["deploy", "--force", "--json"]),
+            guard let run = runProcess(binary, ["server", "deploy", "--force", "--json"]),
                   let forced = try? Termiod.LifecycleReport.decode(
                     Data(run.standardOutput.utf8))
             else {
-                Log.termiod.error("the forced local termiod deploy ended without a report")
+                Log.termiod.error("the forced local termio server deploy ended without a report")
                 return
             }
             Log.termiod.info("""
-            forced local termiod deploy ended \(forced.state.rawValue, privacy: .public): \
+            forced local termio server deploy ended \(forced.state.rawValue, privacy: .public): \
             \(forced.message ?? forced.version ?? "", privacy: .public)
             """)
         }
@@ -1785,8 +1784,7 @@ extension TermioStore {
         // CLI it runs must not honor one either — launched from a dev session,
         // the app would probe the release daemon and then deploy against the
         // dev socket, updating (or stopping) a daemon it never looked at.
-        var environment = ProcessInfo.processInfo.environment
-        environment["TERMIO_CHANNEL"] = Termiod.channelName
+        var environment = Termiod.clientEnvironment()
         if AppChannel.isTermioAppBundle {
             environment["TERMIOD_SOCK"] = nil
         }

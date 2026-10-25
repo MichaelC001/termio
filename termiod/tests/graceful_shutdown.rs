@@ -5,6 +5,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 
 struct TestDir(PathBuf);
 
@@ -113,8 +114,9 @@ fn sigterm_buries_sessions_as_deliberately_stopped_before_the_next_daemon_starts
     let graves = state.0.join("tombstones.json");
     let mut first = Daemon::start(&socket);
 
-    let created = Command::new(BIN)
+    let created = Command::new(CLIENT)
         .args([
+            "server",
             "create",
             "--name",
             "shutdown-proof",
@@ -152,8 +154,8 @@ fn sigterm_buries_sessions_as_deliberately_stopped_before_the_next_daemon_starts
     );
 
     let mut second = Daemon::start(&socket);
-    let ready = Command::new(BIN)
-        .args(["list", "--json"])
+    let ready = Command::new(CLIENT)
+        .args(["server", "list", "--json"])
         .env("TERMIOD_SOCK", &socket)
         .output()
         .expect("query replacement daemon");

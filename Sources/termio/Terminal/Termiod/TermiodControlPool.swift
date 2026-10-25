@@ -7,7 +7,7 @@ import TermioShared
 ///
 /// `withControlChannel` opens a pipe, shakes hands, asks one question and hangs
 /// up. On the local socket that is free. On the SSH road it is not: the pipe is
-/// `ssh <host> termiod stdio`, so every folder expand, every file open and every
+/// `ssh <host> termio stdio`, so every folder expand, every file open and every
 /// search pays an SSH channel open, a remote `termiod` exec and a hello round
 /// trip before it asks anything. Measured against a VPS at 8 ms round trip, that
 /// setup is **32 ms median and 260 ms at p90** — four times the cost of the

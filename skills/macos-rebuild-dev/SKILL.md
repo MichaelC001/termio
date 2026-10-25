@@ -97,7 +97,7 @@ When invoked, execute these steps sequentially:
    *release* daemon, and it overrides the channel.
    ```bash
    unset TERMIOD_SOCK
-   TERMIO_CHANNEL=dev ./termio-dev.app/Contents/Resources/termiod deploy --json 2>&1 | tail -3
+   ./termio-dev.app/Contents/Resources/termio-dev server deploy --json 2>&1 | tail -3
    ```
    A daemon that isn't running needs nothing: the first pane starts it from
    the new bundle.

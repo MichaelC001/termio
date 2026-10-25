@@ -80,21 +80,41 @@ enum Verb {
         verb: SimVerb,
     },
 
-    /// Drive a box's termiod over SSH (deploy, list, attach, open).
+    /// Print the pairing token that lets a phone or a browser attach.
     ///
-    /// Every argument is passed through to the daemon, whose own `--help`
-    /// lists the verbs — so this subcommand must not claim `--help` for
-    /// itself, and `disable_help_flag` is what keeps `termio remote --help`
-    /// reaching the daemon rather than printing this paragraph.
-    #[command(disable_help_flag = true)]
-    Remote {
-        #[arg(value_name = "ARGS", trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    /// The token authenticates the WebSocket pipe. It is not the session write
+    /// token, and it never expires: `--rotate` is the only revocation.
+    Pair(termiod::server::PairArgs),
+
+    /// A machine's termiod — status, logs, sessions, deploy, Tailscale.
+    ///
+    /// This machine's by default; `--host` reaches another over SSH.
+    Server(termiod::server::ServerArgs),
+
+    /// Bridge the framed protocol over stdin/stdout to the local daemon.
+    ///
+    /// Non-interactive: no tty, no raw mode. Run as `ssh <host> termio stdio`,
+    /// it lets a native client speak the same framed protocol to a remote host
+    /// that it speaks to a local Unix socket. The daemon auto-starts.
+    #[command(hide = true)]
+    Stdio,
 
     /// One table: this client, the running app, the local termiod, and every
     /// known remote as of last connect.
-    Version,
+    Version {
+        /// Output the table as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print a shell completion script.
+    ///
+    /// For zsh: `termio completion zsh > ~/.zfunc/_termio`, with `~/.zfunc` on
+    /// `fpath`. For bash: `termio completion bash > ~/.local/share/bash-completion/completions/termio`.
+    Completion {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 
     /// `termio [DIR]` — the `code .`-shaped shorthand for `open DIR`.
     #[command(external_subcommand)]
@@ -104,7 +124,7 @@ enum Verb {
 #[derive(Subcommand)]
 enum SessionVerb {
     /// List the sessions in this project with their live status.
-    #[command(long_about = LIST_HELP)]
+    #[command(long_about = LIST_HELP, visible_alias = "ls")]
     List(ListArgs),
 
     /// Stream status transitions until Ctrl-C.
@@ -352,6 +372,15 @@ struct SimDevice {
 enum AgentVerb {
     /// Report this agent's activity to the session that owns it.
     Report(ReportArgs),
+
+    /// Install status hooks and the termio skill for the agents on this machine.
+    Install(termiod::server::InstallArgs),
+
+    /// Remove every agent integration termio has installed on this machine.
+    Uninstall {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `--json` reads the same on every verb that answers, so it is declared once.
@@ -738,7 +767,7 @@ fn control_error_reply(format: &str, code: &str, message: &str) {
     }
 }
 /// The public hook contract: the flags keep their names because users
-/// hand-write hooks against them. Every one forwards to `termiod set-status`,
+/// hand-write hooks against them. Every one forwards to `termio agent report`,
 /// which declares the same names and reads the same stdin blob, so the payload
 /// is parsed once — by whichever binary the hook actually invoked.
 #[derive(Args)]
@@ -825,19 +854,21 @@ async fn main() -> Result<()> {
             let directory = words.first().map(String::as_str).unwrap_or(".");
             open_project(&channel, Path::new(directory))
         }
-        Some(Verb::Version) => version::print_table(&channel, provenance).await,
-        // The parsed vector cannot be forwarded: clap claims the first `--`
-        // after the subcommand as its own end-of-options marker and drops it,
-        // so `termio remote -- deploy` reached the daemon as `remote deploy`.
-        // Every argument past the literal `remote` belongs to the daemon,
-        // including that separator, so they are taken from argv directly.
-        Some(Verb::Remote { .. }) => {
-            remote_passthrough(&channel, &std::env::args().skip(2).collect::<Vec<String>>())
+        Some(Verb::Version { json }) => version::print_table(&channel, provenance, json).await,
+        Some(Verb::Completion { shell }) => {
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
+            Ok(())
         }
-        Some(Verb::Agent { verb }) => {
-            let AgentVerb::Report(args) = verb;
-            agent_report(&channel, args)
-        }
+        Some(Verb::Pair(args)) => termiod::server::pair(args),
+        Some(Verb::Server(args)) => termiod::server::run(args).await,
+        Some(Verb::Stdio) => termiod::client::stdio().await,
+        Some(Verb::Agent { verb }) => match verb {
+            AgentVerb::Report(args) => agent_report(args).await,
+            AgentVerb::Install(args) => termiod::server::install_agents(args).await,
+            AgentVerb::Uninstall { json } => termiod::server::uninstall_agents(json).await,
+        },
         Some(Verb::Notify(args)) => notify(&channel, args),
         Some(Verb::Sim { verb }) => simulator(&channel, verb),
         Some(Verb::Sessions { verb }) => {
@@ -1092,60 +1123,69 @@ extern "C" fn watch_interrupted(_: libc::c_int) {
     unsafe { libc::_exit(0) }
 }
 
-/// `termio agent report <state> …` forwards to `termiod set-status`, which
-/// declares the same flags. The value of a `--…-from` flag is forwarded as one
-/// argv item: the shell client expanded its accumulated string unquoted, so a
-/// field name containing a space arrived at the daemon as two arguments and
-/// `set-status` rejected it as an unexpected positional.
-fn agent_report(channel: &Channel, args: ReportArgs) -> Result<()> {
-    let mut forwarded: Vec<String> = Vec::new();
-    if args.transcript {
-        forwarded.push("--transcript".to_string());
-    }
-    for (flag, value) in [
-        ("--conversation", &args.conversation),
-        ("--conversation-from", &args.conversation_from),
-        ("--tool-from", &args.tool_from),
-        ("--prompt-title-from", &args.prompt_title_from),
-    ] {
-        if let Some(value) = value {
-            forwarded.push(flag.to_string());
-            forwarded.push(value.clone());
-        }
-    }
-
+/// `termio agent report <state> …` — what every installed hook runs, on every
+/// machine. The mining flags exist because a hook's host hands it a JSON blob
+/// on stdin that nothing else sees, so mining here is what lets an agent carry
+/// the transcript path, the conversation id, the running tool and a
+/// first-prompt label.
+async fn agent_report(args: ReportArgs) -> Result<()> {
     // A hook outside a termiod session has nothing to report to, and reporting
     // with an empty target is a call the daemon rejects. Silent, because hooks
     // fire constantly and a hook that talks is worse than one that does not.
     let session = std::env::var("TERMIOD_SESSION_ID").unwrap_or_default();
-    if session.is_empty() {
-        if args.reply {
-            print!("{{}}");
-        }
-        return Ok(());
-    }
-    let Some(daemon) = channel::daemon_binary(channel) else {
-        if args.reply {
-            print!("{{}}");
-        }
-        return Ok(());
+    let outcome = if session.is_empty() {
+        Ok(())
+    } else {
+        let wants_stdin = args.transcript
+            || args.conversation_from.is_some()
+            || args.tool_from.is_some()
+            || args.prompt_title_from.is_some();
+        let payload = if wants_stdin { read_hook_payload() } else { None };
+        let mined = |field: &Option<String>| -> Option<String> {
+            mine_field(payload.as_ref()?, field.as_deref()?)
+        };
+        let details = termiod::protocol::StatusDetails {
+            transcript_path: args
+                .transcript
+                .then(|| payload.as_ref().and_then(|p| mine_field(p, "transcript_path")))
+                .flatten(),
+            conversation_id: args.conversation.clone().or_else(|| mined(&args.conversation_from)),
+            tool: mined(&args.tool_from),
+            prompt_title: mined(&args.prompt_title_from),
+        };
+        termiod::client::set_status(&session, args.state.wire(), None, details).await
     };
-
-    // `--reply` is handled by the daemon binary, which prints `{}` itself even
-    // when the report could not be delivered — one implementation of Cursor's
-    // stdout contract rather than two. `channel::resolve` already pinned
-    // `TERMIO_CHANNEL`, which the exec inherits.
-    let mut command = Command::new(&daemon);
-    command
-        .arg("set-status")
-        .arg(&session)
-        .arg(args.state.wire())
-        .args(&forwarded);
+    // Cursor reads a hook's stdout as its JSON reply, so the contract is an
+    // empty object even when the report itself could not be delivered.
     if args.reply {
-        command.arg("--reply");
+        print!("{{}}");
     }
-    let error = command.exec();
-    Err(error).with_context(|| format!("running {}", daemon.display()))
+    outcome
+}
+
+/// The host's JSON payload on stdin, or `None`. Never read from a tty: a hook
+/// invoked without its payload piped in would wait on the terminal forever, and
+/// a hook that hangs hangs the agent's turn with it.
+fn read_hook_payload() -> Option<serde_json::Value> {
+    use std::io::Read;
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        return None;
+    }
+    let mut raw = String::new();
+    std::io::stdin().read_to_string(&mut raw).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// One top-level string field of the hook payload.
+///
+/// Only a string, and only at the top level: a hook contract that quietly
+/// started accepting nested paths would be a second dialect to keep in step.
+fn mine_field(payload: &serde_json::Value, field: &str) -> Option<String> {
+    payload
+        .get(field)?
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// `termio notify [--title T] "<message>"` — post a macOS notification on
@@ -1343,21 +1383,6 @@ fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
         .arg(&absolute)
         .exec();
     Err(error).context("running open")
-}
-
-/// `termio remote …` execs the daemon binary rather than calling
-/// `remote::run` in-process: `shipped_binary()` deploys `current_exe()` to
-/// Mac targets, so an in-process call from this client would ship the client
-/// as the remote daemon. The in-process move happens together with a
-/// daemon-sibling fix, not here. `channel::resolve` already pinned
-/// `TERMIO_CHANNEL`, which the exec inherits.
-fn remote_passthrough(channel: &Channel, rest: &[String]) -> Result<()> {
-    let Some(daemon) = channel::daemon_binary(channel) else {
-        eprintln!("termio: no termiod binary found — install the termio app, or set TERMIOD_BIN");
-        std::process::exit(1);
-    };
-    let error = Command::new(&daemon).arg("remote").args(rest).exec();
-    Err(error).with_context(|| format!("running {}", daemon.display()))
 }
 
 const NOTIFY_HELP: &str = "\

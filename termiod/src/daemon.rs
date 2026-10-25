@@ -783,7 +783,7 @@ pub async fn serve(
         Ok(wss) => wss,
         Err(error) if adopted => {
             eprintln!("termiod: the WebSocket configuration did not resolve after the handoff: {error:#}");
-            eprintln!("termiod: sessions are unaffected; `termiod pair` and a restart re-establish it");
+            eprintln!("termiod: sessions are unaffected; `termio pair` and a restart re-establish it");
             None
         }
         Err(error) => return Err(error),
@@ -911,7 +911,7 @@ pub async fn serve(
             // "the phone cannot connect" than the phone not connecting.
             Err(error) if adopted => {
                 eprintln!("termiod: the WebSocket listener did not come back after the handoff: {error:#}");
-                eprintln!("termiod: sessions are unaffected; `termiod pair` and a restart re-establish it");
+                eprintln!("termiod: sessions are unaffected; `termio pair` and a restart re-establish it");
             }
             Err(error) => return Err(error),
         }
