@@ -1,0 +1,76 @@
+---
+title: iOS 模拟器
+description: 在检查器里运行 iOS 模拟器，用指针和键盘操作它，并让 Agent 用 termio sim 启动、点按和检查你的 App。
+x-i18n:
+  source_path: simulator.mdx
+  source_hash: 36bfef479708e055835750dc8a27609a283bfd9404af212026e51299e8f5dd79
+  generated_at: 2026-10-25
+---
+
+模拟器窗格在检查器里、会话旁边，实时显示一台 iOS 模拟器。你用指针和 Mac 键盘操作它。Agent 通过 `termio sim` 操作设备；当 Agent 操作的正是窗格显示的那台设备时，它的每一次点按你都看得见，也随时可以接手。
+
+这个窗格需要搭载 Apple 芯片的 Mac 和 macOS 15 或更高版本。在其他 Mac 上，窗格菜单里没有它。它还需要下载了 iOS 运行时的 Xcode。缺了这些时，窗格会说明该怎么做：安装 Xcode、接受 Xcode 许可协议，或下载 iOS 平台。
+
+## 打开窗格
+
+在所选会话标题栏的窗格菜单里选择 **iOS Simulator**。窗格会打开你上次用的设备；如果它已经关机，就启动它。
+
+左上角的设备菜单用来切换设备。已启动的设备排在前面，选择一台已关机的设备会启动它。同一个菜单里还有 **新建模拟器**、**重新启动**、**关机**、**重命名…**、**抹掉所有内容和设置…** 和 **删除…**。
+
+## 自己使用
+
+在屏幕上点按和拖移，就是触摸它。在 Mac 键盘上打字，就是在设备上打字。
+
+标题栏放着指针够不到的控制：
+
+- **主屏幕** 和 **向右旋转**。
+- **存储截屏到桌面** 和 **录制屏幕到桌面**。
+- **选择元素**：选中屏幕上的一个元素，看它的类型、标签和辅助功能特征。它打开的卡片可以拷贝这个元素，或用 **添加到聊天** 把它加进所选会话的提示里，让 Agent 去点按它。
+- **标注**：用笔、矩形或箭头在截屏上画。
+- **更多**（`…`）：其他硬件按钮、缩放、浅色或深色外观、干净的状态栏、慢速动画、帧率、App 日志，以及屏幕键盘。在 Simulator.app 里有快捷键的项会标出它，屏幕获得焦点时就能用。
+
+你截的屏会以卡片的形式留在屏幕下方。从卡片上你可以预览、标注、拷贝图像、用 **添加到聊天** 把它加进所选会话，或者移到废纸篓。
+
+## 让 Agent 来操作
+
+Agent 第一次请求一台设备时，Termio 会问你：**允许 Agent 使用“iPhone 17”吗？** 之后 Agent 就能控制这台模拟器，并截取它的整个屏幕，所以不要在上面登录真实账户。Termio 会记住你允许的每台设备。如果你不允许，Agent 的下一条命令会再问一次。
+
+在 Termio 会话里运行的 Agent 用 `termio sim` 操作设备：
+
+```bash
+termio sim attach --device "iPhone 17"
+xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -derivedDataPath build build
+termio sim launch build/Build/Products/Debug-iphonesimulator/MyApp.app
+termio sim inspect
+termio sim tap --label "Continue"
+termio sim text "hello@example.com" && termio sim key return
+termio sim screenshot
+```
+
+`attach` 在这台设备上打开窗格，需要时启动它，设备一开始绘制就返回。在构建之前运行它，这样设备会在 Xcode 编译的同时启动。
+
+不加 `--device` 时，命令使用下面第一台已启动的设备：
+
+1. 这个会话上次用的设备。
+2. 窗格显示的设备，除非另一个会话正在操作它。
+3. 没有被其他会话操作的设备。
+4. 任意一台设备。
+
+没有设备启动时，用 `attach --device` 指定一台。
+
+| 命令 | 作用 |
+|---|---|
+| `list` | 列出模拟器；`*` 标出窗格显示的那一台 |
+| `attach`、`detach` | 在一台设备上打开窗格，或关闭实时画面、让设备继续运行 |
+| `launch` | 安装构建好的 `.app` 并启动它，替换正在运行的那一份 |
+| `open-url` | 打开 URL 或深层链接 |
+| `inspect` | 打印最前面那个 App 的辅助功能树，坐标以设备点为单位 |
+| `tap` | 在以设备点为单位的 `X Y` 处点按，或点按标签包含 `--label` 的元素 |
+| `swipe`、`touch-path`、`touch2-path` | 用一根手指拖移、沿路径移动，或用两根手指捏合和旋转 |
+| `text`、`key` | 在获得焦点的输入框里打字，或按一个键或编辑命令 |
+| `button`、`rotate`、`keyboard` | 按硬件按钮、旋转设备，或显示或隐藏屏幕键盘 |
+| `screenshot` | 把屏幕存为 PNG 并打印它的路径 |
+| `logs`、`crash-report` | 打印 App 最近的日志，或总结它最近一次崩溃 |
+
+点按一个还没定位的东西之前，先用 `inspect` 读屏幕；颜色、图片和布局用 `screenshot` 看。`termio sim <command> --help` 列出一条命令的选项。CLI 的其余部分见[命令行工具](/zh-CN/docs/cli)。
