@@ -142,11 +142,28 @@ final class PairingModel: ObservableObject {
     /// so revoking it is the daemon's verb rather than a defaults key this app
     /// clears.
     func rotateToken() {
-        if mobile.attachesDirectly {
-            refreshInvite(rotate: true)
-        } else {
+        guard mobile.attachesDirectly else {
             token = PairingToken.regenerate()
+            return
         }
+        guard mobile.isEnabled, directBase != nil else {
+            // No address to mint an invite for, as while built-in Tailscale
+            // reconnects. Revoking cannot wait for one.
+            Task {
+                do {
+                    let result = try await RemotePairing.runLocally(arguments: ["pair", "--rotate"])
+                    if result.status != 0 {
+                        inviteFailure = RemotePairing.message(from: result)
+                    }
+                } catch let failure as RemotePairing.Failure {
+                    inviteFailure = failure.message
+                } catch {
+                    inviteFailure = error.localizedDescription
+                }
+            }
+            return
+        }
+        refreshInvite(rotate: true)
     }
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
