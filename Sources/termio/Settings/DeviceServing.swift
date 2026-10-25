@@ -507,6 +507,27 @@ struct DeviceServingSection: View {
         }
     }
 
+    private var signOutRow: some View {
+        LabeledContent {
+            Button(localized("Sign Out…")) { confirmSignOut = true }
+                .confirmationDialog(
+                    localized("Sign this Mac out of Tailscale?"),
+                    isPresented: $confirmSignOut,
+                    titleVisibility: .visible
+                ) {
+                    Button(localized("Sign Out"), role: .destructive) { builtIn.signOut() }
+                    Button(localized("Cancel"), role: .cancel) {}
+                } message: {
+                    Text(localized("iPhones paired over the tailnet can’t connect until you sign in again."))
+                }
+        } label: {
+            SettingsLabel(
+                title: localized("Tailscale Account"),
+                subtext: localized("Signs this Mac’s device out of your tailnet.")
+            )
+        }
+    }
+
     private var builtInSubtext: String {
         if !builtIn.available, builtIn.report != nil {
             return localized("This build of Termio doesn’t include built-in Tailscale.")
@@ -539,24 +560,7 @@ struct DeviceServingSection: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent {
-                Button(localized("Sign Out…")) { confirmSignOut = true }
-                    .confirmationDialog(
-                        localized("Sign this Mac out of Tailscale?"),
-                        isPresented: $confirmSignOut,
-                        titleVisibility: .visible
-                    ) {
-                        Button(localized("Sign Out"), role: .destructive) { builtIn.signOut() }
-                        Button(localized("Cancel"), role: .cancel) {}
-                    } message: {
-                        Text(localized("iPhones paired over the tailnet can’t connect until you sign in again."))
-                    }
-            } label: {
-                SettingsLabel(
-                    title: localized("Tailscale Account"),
-                    subtext: localized("Signs this Mac’s device out of your tailnet.")
-                )
-            }
+            signOutRow
         case "needs_login":
             LabeledContent {
                 if let link = status?.authURL.flatMap(URL.init(string:)) {
@@ -581,6 +585,9 @@ struct DeviceServingSection: View {
                     subtext: localized("Approve this Mac in the Tailscale admin console.")
                 )
             }
+            // Signed in to an account whose admin has to approve it: signing
+            // out is the way to another account.
+            signOutRow
         case "error":
             LabeledContent(localized("Status")) {
                 Text(status?.message ?? localized("Stopped"))

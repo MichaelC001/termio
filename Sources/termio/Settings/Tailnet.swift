@@ -462,9 +462,12 @@ final class BuiltInTailscale: ObservableObject {
 
     func setEnabled(_ on: Bool) {
         requested = on
-        let arguments = on
-            ? ["tailscale", "on", "--no-wait", "--hostname", Self.deviceName]
-            : ["tailscale", "off"]
+        var arguments = on ? ["tailscale", "on", "--no-wait"] : ["tailscale", "off"]
+        // Named only while the node still has the default name. Renaming one
+        // that has its own would move the address a paired phone has saved.
+        if on, report?.hostname == nil || report?.hostname == "termio" {
+            arguments += ["--hostname", Self.deviceName]
+        }
         perform(arguments)
     }
 
