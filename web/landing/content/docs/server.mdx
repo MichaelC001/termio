@@ -22,19 +22,48 @@ Panes, splits and layout are the app's business and never the server's.
 
 ## Getting it onto a machine
 
-Adding a box under **Settings ▸ Remote Hosts** and pressing **Set Up** copies one
-binary into `~/.local/bin` over SSH and starts it. There is no package to
-install and no root involved.
+There are two ways in, and both put the same binary in `~/.local/bin`. Neither
+needs root or a package manager.
+
+### On the Linux box itself
+
+```bash
+curl -fsSL https://www.termio.sh/install | sh
+```
+
+It downloads `termiod` and the `termio` CLI for the box's architecture (x86_64
+or aarch64), checks them against the release's checksums, installs them, and
+keeps the daemon running with `systemd --user`. The builds are static, so the
+distribution doesn't matter.
+
+If the box is signed in to Tailscale and the tailnet has HTTPS on, it also
+publishes the server on your tailnet and prints a pairing link and a QR code.
+Paste the link into **Settings ▸ Remote Hosts ▸ ＋ ▸ Pair with a Device…** on a
+Mac, or scan the code with the iPhone app. No SSH is involved after that.
+
+Running it again upgrades in place, and sessions keep running through the
+upgrade. Options go after `sh -s --`:
+
+| Option | What it does |
+| --- | --- |
+| `--version 0.63.0` | Installs that release instead of the latest. |
+| `--no-service` | Installs the binaries and leaves starting the daemon to you. |
+| `--no-tailscale` | Skips publishing on the tailnet. |
+| `--dry-run` | Prints what it would do and changes nothing. |
+
+### From a Mac, over SSH
+
+Adding a box under **Settings ▸ Remote Hosts** and pressing **Set Up** copies the
+binary over SSH and starts it.
 
 ```bash
 termiod deploy                      # install or update it here, then verify
 termiod deploy --host mybox         # same, over your own SSH config
 ```
 
-`deploy` is the only install path, and it is a reconcile: run it against a box
-in any state and it ends in the same one. Termio reads `~/.ssh/config` to find
-the host, so a machine you can already `ssh` to needs nothing new. See
-[Devices](/docs/devices).
+`deploy` is a reconcile: run it against a box in any state and it ends in the
+same one. Termio reads `~/.ssh/config` to find the host, so a machine you can
+already `ssh` to needs nothing new. See [Devices](/docs/devices).
 
 ## Keeping it running
 

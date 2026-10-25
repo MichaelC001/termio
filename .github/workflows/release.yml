@@ -263,7 +263,38 @@ jobs:
             --endpoint-url "$R2_ENDPOINT" \
             --cache-control "no-cache"
 
-      # The stable DMG + appcast change every release, so purge just those two from
+      # The Linux server, on its own, for `curl -fsSL https://www.termio.sh/install | sh`
+      # (web/landing/public/install.sh). The binaries are the ones the DMG step
+      # above checked, taken from the same bundle. Versioned paths are immutable;
+      # linux/latest names the newest version and is the one file that changes.
+      - name: Publish the Linux server to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          resources="$PWD/${APP_NAME}.app/Contents/Resources"
+          staging="$RUNNER_TEMP/linux"
+          mkdir -p "$staging"
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            for name in termiod termio; do
+              cp "$resources/$name-$target" "$staging/"
+            done
+          done
+          (cd "$staging" && shasum -a 256 termiod-* termio-* > SHA256SUMS)
+          cat "$staging/SHA256SUMS"
+
+          aws s3 cp "$staging" "s3://$R2_BUCKET/v${VERSION}/linux/" \
+            --recursive --endpoint-url "$R2_ENDPOINT"
+
+          printf '%s\n' "$VERSION" > "$RUNNER_TEMP/linux-latest"
+          aws s3 cp "$RUNNER_TEMP/linux-latest" "s3://$R2_BUCKET/linux/latest" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type "text/plain" \
+            --cache-control "no-cache"
+
+      # The stable DMG, the appcast and linux/latest change every release, so purge just those from
       # Cloudflare's edge so updates appear immediately. Versioned URLs are immutable
       # and need no purge. No-ops (with a notice) until the secrets are set.
       - name: Purge Cloudflare cache
@@ -281,7 +312,8 @@ jobs:
             -H "Content-Type: application/json" \
             --data '{"files":[
               "'"$DOWNLOAD_BASE_URL/${APP_NAME}.dmg"'",
-              "'"$DOWNLOAD_BASE_URL/appcast.xml"'"
+              "'"$DOWNLOAD_BASE_URL/appcast.xml"'",
+              "'"$DOWNLOAD_BASE_URL/linux/latest"'"
             ]}' \
             && echo "Purged stable DMG + appcast from Cloudflare cache"
 

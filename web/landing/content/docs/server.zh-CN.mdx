@@ -3,8 +3,8 @@ title: Termio server
 description: 一台机器上跑着什么，才让会话比应用活得久——termiod 怎么装、怎么保活、怎么原地升级，以及出问题时怎么查。
 x-i18n:
   source_path: server.mdx
-  source_hash: bf864f95fa2aa45c230d824957fdd651ad91d6840177e71f4aa2c9d5241cc495
-  generated_at: 2026-09-19
+  source_hash: 9d87b7583e2659c0321e1a7b2c4a8c01cdce727b88ec5bb2b45e54bd8012b266
+  generated_at: 2026-10-25
 ---
 
 每个会话都跑在 `termiod` —— Termio server —— 里，跑在拥有它的那台机器上，本机的会话也
@@ -24,16 +24,41 @@ x-i18n:
 
 ## 装到一台机器上
 
-在**设置 ▸ 远程主机**里添加一台机器并按**设置**，就会通过 SSH 把一个二进制复制到
-`~/.local/bin` 并启动它。没有要装的包，也不需要 root。
+有两种装法，都把同一个二进制放进 `~/.local/bin`，都不需要 root，也不需要包管理器。
+
+### 在 Linux 机器上直接装
+
+```bash
+curl -fsSL https://www.termio.sh/install | sh
+```
+
+它按机器的架构（x86_64 或 aarch64）下载 `termiod` 和 `termio` 命令行工具，用发布时的校验和
+核对，装好后用 `systemd --user` 让守护进程一直运行。这些构建是静态链接的，所以不挑发行版。
+
+如果这台机器已登录 Tailscale，且 tailnet 开启了 HTTPS，它还会把 server 发布到你的 tailnet 上，
+并打印一条配对链接和一个二维码。在 Mac 上把链接粘贴到**设置 ▸ 远程主机 ▸ ＋ ▸ 与设备配对…**，
+或者用 iPhone 应用扫码。之后就不再经过 SSH。
+
+再跑一次就是原地升级，会话在升级过程中继续运行。选项写在 `sh -s --` 后面：
+
+| 选项 | 作用 |
+| --- | --- |
+| `--version 0.63.0` | 安装指定版本，而不是最新版。 |
+| `--no-service` | 只装二进制，守护进程由你自己启动。 |
+| `--no-tailscale` | 不发布到 tailnet。 |
+| `--dry-run` | 只打印要做的事，不做任何改动。 |
+
+### 从 Mac 通过 SSH 装
+
+在**设置 ▸ 远程主机**里添加一台机器并按**设置**，就会通过 SSH 把二进制复制过去并启动它。
 
 ```bash
 termiod deploy                      # 在本机安装或更新，然后校验
 termiod deploy --host mybox         # 同样的事，走你自己的 SSH 配置
 ```
 
-`deploy` 是唯一的安装路径，而且它是一次调和：无论机器处于什么状态，跑完都落到同一个状态。
-Termio 读 `~/.ssh/config` 找主机，所以一台你已经能 `ssh` 上去的机器不需要任何新配置。参见
+`deploy` 是一次调和：无论机器处于什么状态，跑完都落到同一个状态。Termio 读
+`~/.ssh/config` 找主机，所以一台你已经能 `ssh` 上去的机器不需要任何新配置。参见
 [设备](/docs/devices)。
 
 ## 让它一直活着
