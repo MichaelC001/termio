@@ -535,13 +535,14 @@ fn sweep_retired(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<String
             if let Some(spec) = copy.hooks.as_ref() {
                 let targets = [spec.file.as_deref(), spec.directory.as_deref()];
                 if targets.iter().flatten().all(|path| stays_inside(Path::new(path), &root)) {
-                    // The uninstallers log a failed write and carry on, so ask
-                    // first whether the write can happen at all: a locked or
-                    // read-only file keeps the folder queued for a later sync.
-                    if !targets.iter().flatten().all(|path| writable(Path::new(path))) {
+                    // The uninstallers log a failure and carry on, so the
+                    // result is read back from the file: anything of termio's
+                    // still there (a locked file, a settings.json that no
+                    // longer parses) keeps the folder queued for a later sync.
+                    uninstall_hooks(copy, spec);
+                    if still_wired(spec) {
                         clean = false;
                     }
-                    uninstall_hooks(copy, spec);
                 }
             }
             if let Some(directory) = copy.skill_dir.as_deref() {
@@ -563,24 +564,32 @@ fn sweep_retired(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<String
     settled
 }
 
-/// Whether termio could rewrite `path` now: the file itself opens for writing
-/// (a locked or read-only file does not), and the folder an atomic rename
-/// lands in accepts a new entry. A path that does not exist is trivially clean.
-fn writable(path: &Path) -> bool {
-    if !path.exists() {
-        return true;
-    }
-    let folder = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
-    if path.is_file() && std::fs::OpenOptions::new().append(true).open(path).is_err() {
+/// Whether termio's hooks may still be in a spec's file after an uninstall.
+/// An unreadable or unparseable file counts as wired: nothing proves it clean.
+/// Directory dialects (script and plugin hooks) belong to agents that cannot
+/// have extra accounts, so they are not checked here.
+fn still_wired(spec: &HookSpec) -> bool {
+    let Some(file) = spec.file.as_deref() else {
         return false;
-    }
-    let probe = folder.join(format!(".termio-write-probe-{}", std::process::id()));
-    match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
+    };
+    match spec.hook_type {
+        HookType::Json => match read_state(file) {
+            FileState::Missing(_) => false,
+            FileState::Unreadable => true,
+            FileState::Ok(settings, _) => {
+                let Some(serde_json::Value::Object(hooks)) = settings.get("hooks") else {
+                    return false;
+                };
+                let mut stripped = hooks.clone();
+                strip_groups(&mut stripped, &is_ours);
+                stripped != *hooks
+            }
+        },
+        HookType::Toml => match std::fs::read_to_string(machine::expand(file)) {
+            Ok(text) => text.contains(TOML_BLOCK_BEGIN),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        },
+        _ => false,
     }
 }
 
@@ -1735,15 +1744,6 @@ pub(super) mod tests {
         assert!(stays_inside(&account.join("settings.json"), &account));
         assert!(!stays_inside(&account.join("skills").join("termio"), &account));
         assert!(!stays_inside(&account.join("skills"), &account));
-
-        let settings = account.join("settings.json");
-        std::fs::write(&settings, "{}").unwrap();
-        assert!(writable(&settings));
-        let mut permissions = std::fs::metadata(&settings).unwrap().permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&settings, permissions).unwrap();
-        assert!(!writable(&settings));
-        assert!(writable(&account.join("absent.json")));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2131,6 +2131,27 @@ pub(super) mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("scratch dir");
         directory
+    }
+
+    /// A removed account is reported clean only when its file really is: after
+    /// an install the hooks are there, after an uninstall they are gone, and a
+    /// file that no longer parses proves nothing either way.
+    #[test]
+    fn retired_cleanup_reads_back_whether_the_hooks_are_gone() {
+        let directory = scratch("still-wired");
+        let path = directory.join("settings.json").display().to_string();
+        let mut spec = claude_spec();
+        spec.file = Some(path.clone());
+        let request = local_request("/opt/termiod");
+
+        assert!(!still_wired(&spec));
+        JsonHookFile::new(&path, &spec, &request).install().expect("installs");
+        assert!(still_wired(&spec));
+        JsonHookFile::bare(&path, spec.dialect).uninstall();
+        assert!(!still_wired(&spec));
+        std::fs::write(&path, "{ not json").expect("fixture");
+        assert!(still_wired(&spec));
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     fn kimi_spec() -> HookSpec {
