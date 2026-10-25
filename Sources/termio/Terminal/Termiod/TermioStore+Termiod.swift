@@ -183,8 +183,14 @@ extension TermioStore {
         // otherwise; the previous one's terminal must not stay on screen.
         runtime(for: session.id).streamLink = nil
         link.onStreaming = { [weak self, weak link] streaming in
-            guard let self, let link, termiodLinks[session.id] === link else { return }
-            runtime(for: session.id).streamLink = streaming ? link : nil
+            guard let self, let link else { return }
+            let runtime = runtime(for: session.id)
+            if streaming {
+                // Only the session's current link may take the pane.
+                if termiodLinks[session.id] === link { runtime.streamLink = link }
+            } else if runtime.streamLink === link {
+                runtime.streamLink = nil
+            }
         }
         if let colors = streamColors(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
             link.setStreamColors(colors)
@@ -2082,8 +2088,10 @@ final class RemoteSetupHUD {
 /// `TermioStreamTerminal` default is set: it draws but does not take input yet
 /// (docs/design/20261024-client-vt-follows-the-stream.md, phase 3).
 extension TermioStore {
+    /// Offered only where this Mac can draw it: a link that negotiated the
+    /// plane with no renderer behind it would show nothing at all.
     static var streamTerminalEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "TermioStreamTerminal")
+        UserDefaults.standard.bool(forKey: "TermioStreamTerminal") && TermiodStreamRenderer.isAvailable
     }
 
     /// The settings the embedded surface is configured with, in the form the

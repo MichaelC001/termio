@@ -94,6 +94,25 @@ final class StreamLinkIntegrationTests: XCTestCase {
         try wait("input echoed back through the stream") { try text(link).contains("typed after") }
     }
 
+    /// A start the daemon refuses never takes the pane to the stream view:
+    /// the refusal is shown where the embedded surface shows it.
+    func testARefusedStartNeverStreams() throws {
+        let link = TermiodSessionLink(
+            sessionName: "refused-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: "/nonexistent-\(UUID().uuidString)", argv: ["/bin/cat"], env: [], rows: 20, cols: 60),
+            rows: 20, cols: 60, offersStream: true)
+        var refusal: String?
+        var streaming: [Bool] = []
+        link.onStartRefused = { refusal = $0 }
+        link.onStreaming = { streaming.append($0) }
+        link.start()
+        defer { link.detach() }
+        wait("the daemon refused the missing directory") { refusal != nil }
+        XCTAssertEqual(streaming, [], "the stream view was never selected")
+        XCTAssertFalse(link.isStreaming)
+    }
+
     /// Without the capability the link stays on keyframes and has no terminal.
     func testALinkThatDoesNotOfferTheStreamStaysOnKeyframes() throws {
         let link = TermiodSessionLink(

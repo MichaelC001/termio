@@ -33,12 +33,19 @@ final class TermiodStreamRenderer {
         case metal(String)
     }
 
+    /// Whether a renderer can be made on this Mac at all: a Metal device and
+    /// shaders that compile. Asked once, before a link offers the plane.
+    static let isAvailable: Bool = {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let library = try? device.makeLibrary(source: streamShaderSource, options: nil)
+        else { return false }
+        return (try? pipeline(device, library, "glyph_vertex", "glyph_fragment")) != nil
+    }()
+
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let rectanglePipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
-    /// Only this renderer touches it; `nonisolated(unsafe)` lets `deinit` free it.
-    nonisolated(unsafe) private let renderState: GhosttyRenderState
     private let builder: TermiodStreamFrameBuilder
     private(set) var atlas: TermiodGlyphAtlas
     private(set) var appearance: Appearance
@@ -60,17 +67,8 @@ final class TermiodStreamRenderer {
         let library = try device.makeLibrary(source: streamShaderSource, options: nil)
         rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
         glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
-        var state: GhosttyRenderState?
-        guard ghostty_render_state_new(nil, &state) == GHOSTTY_SUCCESS, let state else {
-            throw Failure.metal("ghostty_render_state_new failed")
-        }
-        renderState = state
         builder = try TermiodStreamFrameBuilder()
         atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
-    }
-
-    deinit {
-        ghostty_render_state_free(renderState)
     }
 
     /// One cell in points, which is what a pane measures its viewport with.
@@ -154,15 +152,13 @@ final class TermiodStreamRenderer {
     }
 
     private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool) throws -> Bool {
-        // Held by synchronized output: keep drawing what was built last.
-        guard try terminal.capture(into: renderState) else { return false }
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
-        return try builder.build(
-            from: renderState, atlas: atlas,
-            cursorStyle: focused ? appearance.cursorStyle : .hollow
-        )
+        let style = focused ? appearance.cursorStyle : .hollow
+        return try terminal.withFrame { state in
+            try builder.build(from: state, atlas: atlas, cursorStyle: style)
+        }
     }
 
     private func encode(into buffer: MTLCommandBuffer, texture: MTLTexture) -> Bool {
@@ -341,10 +337,17 @@ final class TermiodGlyphAtlas {
         var italic: Bool
     }
 
-    let texture: MTLTexture
+    /// Replaced, never rewritten, when the atlas is emptied: a frame still on
+    /// the GPU keeps sampling the texture it was encoded with.
+    private(set) var texture: MTLTexture
     let metrics: TermiodCellMetrics
     let size: Int
+    private let device: MTLDevice
     private let fonts: [CTFont]
+    /// Off for the pass that rebuilds a screen after the atlas was emptied:
+    /// emptying it again would undo the rows that pass already built. A
+    /// glyph that does not fit then is dropped, not drawn from a stale slot.
+    var mayEmpty = true
     private var slots: [Key: Slot?] = [:]
     private var shelfX = 0
     private var shelfY = 0
@@ -389,6 +392,11 @@ final class TermiodGlyphAtlas {
             strikethroughPosition: baseline - Int((CTFontGetXHeight(base) / 2).rounded())
         )
         self.size = size
+        self.device = device
+        texture = try Self.makeTexture(device, size: size)
+    }
+
+    private static func makeTexture(_ device: MTLDevice, size: Int) throws -> MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: size, height: size, mipmapped: false
         )
@@ -397,7 +405,7 @@ final class TermiodGlyphAtlas {
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             throw TermiodStreamRenderer.Failure.metal("atlas texture")
         }
-        self.texture = texture
+        return texture
     }
 
     private static func font(family: String, size: CGFloat) -> CTFont {
@@ -418,9 +426,10 @@ final class TermiodGlyphAtlas {
         let key = Key(graphemes: graphemes, bold: bold, italic: italic)
         if let cached = slots[key] { return cached }
         var slot = rasterize(key, cells: cells)
-        if slot == nil, exhausted {
+        if slot == nil, exhausted, mayEmpty, let fresh = try? Self.makeTexture(device, size: size) {
             // Full: start over rather than stop drawing new characters. The
             // screen's own glyphs come back on the rebuild this triggers.
+            texture = fresh
             slots.removeAll(keepingCapacity: true)
             shelfX = 0
             shelfY = 0
@@ -581,7 +590,9 @@ final class TermiodStreamFrameBuilder {
             // The atlas was emptied to make room partway through, so rows
             // built before that point name sprites that are gone.
             if atlas.generation != generation {
+                atlas.mayEmpty = false
                 rebuildRows(state, full: true, colors: colors, atlas: atlas)
+                atlas.mayEmpty = true
             }
             var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
             _ = ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)

@@ -1595,7 +1595,13 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard !streamRefused else { return }
             streamRefused = true
-            guard attached else { return }
+            // Not attached — between attempts, or after the process exited —
+            // there is nothing to reattach; the next attempt, if any, asks for
+            // keyframes, and the pane leaves the stream view now.
+            guard attached else {
+                setStreaming(false)
+                return
+            }
             teardownLocked()
             scheduleReattachLocked()
         }
@@ -1703,7 +1709,9 @@ final class TermiodSessionLink: @unchecked Sendable {
                 channel, role: "attach",
                 caps: Termiod.attachCapabilities + (offering ? [Termiod.streamCapability] : []))
             clientID = handshake.clientID
-            setStreaming(offering && handshake.capabilities.contains(Termiod.streamCapability))
+            // Published only once the attach succeeds: a refused start has no
+            // stream to show, and the pane must stay where its error is.
+            let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
             hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
             let sizesByPolicy = hostSizesByPolicy
             DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
@@ -1748,6 +1756,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 throw TermiodClientError.handshakeRejected("attach was not acknowledged")
             }
             attached = true
+            setStreaming(streamGranted)
             isWriter = attachedPayload.writer
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
@@ -1811,6 +1820,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             switch error {
             case TermiodClientError.handshakeRejected(let message),
                  TermiodClientError.requestFailed(let message):
+                setStreaming(false)
                 deliverStartRefusedLocked(message)
             default:
                 // Could not reach it, or it stopped talking mid-handshake.
