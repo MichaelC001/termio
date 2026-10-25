@@ -261,7 +261,10 @@ struct TerminalPane: View {
                         .position(x: edge.midX, y: edge.midY)
                 }
                 if let frame = panel.frame, isVisible, !panel.covers {
+                    // Above the live panel, which comes later in this stack: the grip lights
+                    // over the panel's own edge, and under the panel only its header run showed.
                     PanelDividerHandle(panelFrame: frame, card: card)
+                        .zIndex(1)
                 }
                 // Over the surface, not behind it: the surface is square-cornered, so
                 // a border drawn underneath would lose its rounded bottom corners.
@@ -1995,9 +1998,13 @@ private struct PanelDividerHandle: View {
     @State private var isHovering = false
 
     var body: some View {
+        // The grip lights over the seam itself (`PanelEdge`), at its full height through the
+        // header: centred in the gap, it stood beside the seam and stopped short under the header.
+        let edge = PaneCard.panelEdgeFrame(panelFrame, covers: false)
         ZStack {
-            // At rest the panel's own edge is the seam (`PanelEdge`); the grip lights over it.
             SashGrip(axis: .vertical, isActive: isHovering || anchorWidth != nil)
+                .frame(width: SashGrip.lineWidth, height: edge.height)
+                .position(x: panelFrame.minX + PaneCard.borderWidth / 2, y: edge.midY)
             SashHandle(
                 axis: .vertical,
                 onHover: { isHovering = $0 },
@@ -2020,9 +2027,13 @@ private struct PanelDividerHandle: View {
                     GeometryDragTracker.shared.endDrag()
                     DispatchQueue.main.async { store.flushViewports() }
                 })
+            // The gap and the seam: the line the grip draws is part of what grabs. Below the
+            // header only: the header is the pane's to drag, and its centred handle can sit on
+            // the seam, where the rearrange monitor takes the press first.
+            .frame(width: PaneCard.panelDivider + PaneCard.borderWidth, height: panelFrame.height)
+            .position(x: panelFrame.minX + (PaneCard.borderWidth - PaneCard.panelDivider) / 2,
+                      y: panelFrame.midY)
         }
-        .frame(width: PaneCard.panelDivider, height: panelFrame.height)
-        .position(x: panelFrame.minX - PaneCard.panelDivider / 2, y: panelFrame.midY)
         .onDisappear {
             guard anchorWidth != nil else { return }
             anchorWidth = nil
