@@ -146,19 +146,28 @@ tailnet_has_https() {
     tailscale status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"CertDomains":\["'
 }
 
-# The origin the daemon is already handed, whoever set it and however they
-# spelled it: systemd's own reading of the unit first, the drop-in files when
-# the unit is not loaded yet.
-current_origin() {
+# One WebSocket setting as the daemon would see it, wherever it was set and
+# however it was spelled: systemd's reading of the unit, then the drop-in
+# files, then the file termiod keeps for a hand-run `serve --wss`. Empty when
+# nothing sets it.
+existing_setting() {
+    key="$1" state_file="$2"
     shown="$(systemctl --user show termiod.service -p Environment --value 2>/dev/null || true)"
     for word in $shown; do
         word="${word#\"}"
         case "$word" in
-            TERMIOD_WSS_ORIGIN=*) printf '%s\n' "${word#TERMIOD_WSS_ORIGIN=}" | tr -d '"'; return 0 ;;
+            "$key"=*) printf '%s\n' "${word#"$key"=}" | tr -d '"'; return 0 ;;
         esac
     done
-    cat "$(dirname "$DROPIN")"/*.conf 2>/dev/null |
-        sed -n 's/^Environment="\{0,1\}TERMIOD_WSS_ORIGIN=\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' | tail -n1
+    from_dropins="$(cat "$(dirname "$DROPIN")"/*.conf 2>/dev/null |
+        sed -n "s/^Environment=\"\{0,1\}$key=\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" | tail -n1)"
+    if [ -n "$from_dropins" ]; then
+        printf '%s\n' "$from_dropins"
+        return 0
+    fi
+    persisted="${XDG_STATE_HOME:-$HOME/.local/state}/termio/$state_file"
+    [ -f "$persisted" ] && tr -d ' \n' < "$persisted"
+    return 0
 }
 
 # Decides, before anything starts, whether the daemon will listen for the
@@ -183,10 +192,16 @@ plan_tailnet() {
         return 0
     fi
     want_origin="https://$name"
-    existing="$(current_origin)"
-    if [ -n "$existing" ] && [ "$existing" != "$want_origin" ]; then
-        say "    termiod is already published at $existing, so the tailnet is left alone."
-        say "    To publish on the tailnet instead, remove $DROPIN and run this again."
+    want_bind="127.0.0.1:$PORT"
+    existing="$(existing_setting TERMIOD_WSS_ORIGIN wss.origin)"
+    existing_bind="$(existing_setting TERMIOD_WSS wss.bind)"
+    # Anything already set that is not exactly this is someone's publication:
+    # a Mac's tunnel, a custom domain, a hand-run listener. It is left alone.
+    if { [ -n "$existing" ] && [ "$existing" != "$want_origin" ]; } ||
+        { [ -n "$existing_bind" ] && [ "$existing_bind" != "$want_bind" ]; }; then
+        say "    termiod is already published (${existing:-no origin} on ${existing_bind:-no bind}),"
+        say "    so the tailnet is left alone. To publish on the tailnet instead, remove that"
+        say "    setting (see termiod/DEPLOY.md) and run this again."
         return 0
     fi
     URL="$want_origin"
