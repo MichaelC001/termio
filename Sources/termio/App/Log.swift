@@ -27,6 +27,7 @@ enum Log {
     static let focus = Logger(subsystem: subsystem, category: "focus")
     static let app = Logger(subsystem: subsystem, category: "app")
     static let markdown = Logger(subsystem: subsystem, category: "markdown")
+    static let simulator = Logger(subsystem: subsystem, category: "simulator")
 }
 
 /// Timing for the paths a user waits on, in the same categories `Log` already

@@ -107,3 +107,134 @@ enum DebugWindowSnapshot {
         }
     }
 }
+
+/// Dev-only: drives the Simulator pane's pointer from outside, for an automated
+/// session that cannot click — Stage Manager keeps a background window as a
+/// thumbnail, so posted mouse events never reach it. Real `NSEvent`s go through
+/// `NSWindow.sendEvent`, so AppKit's own hit-testing and dispatch run; only the
+/// window server's delivery is skipped.
+///
+/// `swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("termio.dev.simulator.pointer"), object: "0.5,0.5;0.5,0.2", userInfo: nil, deliverImmediately: true)'`
+///
+/// The object is `fx,fy;…` as fractions of the screen view's bounds from its
+/// top-left: the first is the press, any middle ones drags, the last the release.
+enum DebugSimulatorPointer {
+    static func installTrigger() {
+        DistributedNotificationCenter.default().addObserver(
+            Trigger.shared, selector: #selector(Trigger.fire),
+            name: Notification.Name("termio.dev.simulator.pointer"), object: nil,
+            suspensionBehavior: .deliverImmediately)
+        DistributedNotificationCenter.default().addObserver(
+            Trigger.shared, selector: #selector(Trigger.type),
+            name: Notification.Name("termio.dev.simulator.keys"), object: nil,
+            suspensionBehavior: .deliverImmediately)
+    }
+
+    // @unchecked: stateless, as `DebugWindowSnapshot.Trigger`.
+    private final class Trigger: NSObject, @unchecked Sendable {
+        static let shared = Trigger()
+        @objc func fire(_ note: Notification) {
+            let path = (note.object as? String) ?? ""
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { DebugSimulatorPointer.drive(path) }
+            }
+        }
+
+        /// The object is the text to type, one key event per character, into
+        /// whatever has the window's keyboard focus — the pane's screen, once a
+        /// pointer press there has made it first responder.
+        @objc func type(_ note: Notification) {
+            let text = (note.object as? String) ?? ""
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { DebugSimulatorPointer.type(text) }
+            }
+        }
+    }
+
+    @MainActor
+    private static func type(_ text: String) {
+        guard let window = NSApp.windows.first(where: { find(SimulatorScreenView.self, in: $0.contentView) != nil })
+        else { return }
+        for (index, character) in text.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30 * index)) {
+                guard let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, characters: String(character), charactersIgnoringModifiers: String(character),
+                    isARepeat: false, keyCode: 0)
+                else { return }
+                window.sendEvent(event)
+            }
+        }
+    }
+
+    @MainActor
+    private static func drive(_ path: String) {
+        // `window:x,y` clicks at a point in the window (points from its
+        // top-left), for the SwiftUI controls round the screen — the header's
+        // Home, Rotate and Screenshot buttons.
+        if path.hasPrefix("window:") {
+            let parts = path.dropFirst("window:".count).split(separator: ",").compactMap { Double($0) }
+            guard parts.count == 2,
+                  let window = NSApp.windows.first(where: { find(SimulatorScreenView.self, in: $0.contentView) != nil })
+            else { return }
+            let point = CGPoint(x: parts[0], y: window.frame.height - parts[1])
+            for (index, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80 * index)) {
+                    guard let event = NSEvent.mouseEvent(
+                        with: type, location: point, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: index, clickCount: 1, pressure: index == 0 ? 1 : 0)
+                    else { return }
+                    window.sendEvent(event)
+                }
+            }
+            return
+        }
+        let fractions = path.split(separator: ";").compactMap { pair -> CGPoint? in
+            let parts = pair.split(separator: ",").compactMap { Double($0) }
+            return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+        }
+        guard !fractions.isEmpty,
+              let (window, view) = NSApp.windows.lazy.compactMap({ window in
+                  find(SimulatorScreenView.self, in: window.contentView).map { (window, $0) }
+              }).first
+        else { return }
+        let points = fractions.map { fraction in
+            view.convert(CGPoint(x: fraction.x * view.bounds.width,
+                                 y: (1 - fraction.y) * view.bounds.height), to: nil)
+        }
+        // A frame apart, as a real drag arrives: a whole drag in one instant
+        // reads as a jump, not a scroll.
+        for (index, point) in points.enumerated() {
+            let type: NSEvent.EventType = index == 0 ? .leftMouseDown
+                : index == points.count - 1 ? .leftMouseUp : .leftMouseDragged
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16 * index)) {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: index, clickCount: 1, pressure: 1)
+                else { return }
+                window.sendEvent(event)
+            }
+        }
+        // A press and release at one point is a tap: two events, the same point.
+        if points.count == 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) {
+                guard let event = NSEvent.mouseEvent(
+                    with: .leftMouseUp, location: points[0], modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: 0)
+                else { return }
+                window.sendEvent(event)
+            }
+        }
+    }
+
+    @MainActor
+    private static func find<T: NSView>(_ type: T.Type, in view: NSView?) -> T? {
+        guard let view else { return nil }
+        if let match = view as? T { return match }
+        for subview in view.subviews { if let match = find(type, in: subview) { return match } }
+        return nil
+    }
+}

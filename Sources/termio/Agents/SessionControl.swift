@@ -167,10 +167,14 @@ struct ControlRequest: Decodable {
     /// `spawn`/`run` placement: the new pane's fraction of the split. Stating
     /// one pins the divider so later spawns don't redistribute it away.
     let ratio: Double?
+    /// `sim` only: the action's parameters (`x`, `y`, `label`, `device`, …), as
+    /// strings the way they were typed. One map rather than a field per
+    /// parameter, because each action takes a different handful.
+    let arguments: [String: String]?
 
     private enum CodingKeys: String, CodingKey {
         case op, format, target, text, lines, agent, snapshot, wait, title, enter, keys
-        case direction, ratio
+        case direction, ratio, arguments
         case callerSession = "caller_session"
         case callerCwd = "caller_cwd"
         case timeoutMs = "timeout_ms"

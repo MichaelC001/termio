@@ -73,6 +73,13 @@ enum Verb {
         verb: AgentVerb,
     },
 
+    /// Drive the iOS Simulator shown in the Simulator pane — look, tap, type.
+    #[command(long_about = SIM_HELP)]
+    Sim {
+        #[command(subcommand)]
+        verb: SimVerb,
+    },
+
     /// Drive a box's termiod over SSH (deploy, list, attach, open).
     ///
     /// Every argument is passed through to the daemon, whose own `--help`
@@ -131,6 +138,214 @@ enum SessionVerb {
     /// Select the session in the app.
     #[command(long_about = FOCUS_HELP)]
     Focus(FocusArgs),
+}
+
+#[derive(Subcommand)]
+enum SimVerb {
+    /// List simulators; `*` marks the one the Simulator pane shows.
+    List(SimDevice),
+
+    /// Open the Simulator pane on a device; boots it if needed. Run before building.
+    Attach(SimDevice),
+
+    /// Close the pane's live view of the device. The device keeps running.
+    Detach(SimDevice),
+
+    /// Install a built .app and launch it, replacing a running copy.
+    Launch {
+        /// The .app bundle, e.g. DerivedData/…/Debug-iphonesimulator/MyApp.app.
+        #[arg(value_name = "APP")]
+        app: PathBuf,
+        /// The bundle identifier (default: read from the app's Info.plist).
+        #[arg(long, value_name = "ID")]
+        bundle_id: Option<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Open a URL or deep link (myapp://…, https://…).
+    OpenUrl {
+        #[arg(value_name = "URL")]
+        url: String,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Save the screen as a PNG and print its path.
+    Screenshot {
+        /// Where to write the PNG (default: a new file in the temp directory).
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Print the frontmost app's accessibility tree, the element at X Y, or the
+    /// first element matching --marker.
+    #[command(long_about = SIM_INSPECT_HELP)]
+    Inspect {
+        #[arg(value_name = "X", requires = "y")]
+        x: Option<f64>,
+        #[arg(value_name = "Y")]
+        y: Option<f64>,
+        /// Print only the first element whose --match attribute contains this
+        /// (case-sensitive), with its descendants.
+        #[arg(long, value_name = "TEXT", conflicts_with = "x")]
+        marker: Option<String>,
+        /// What --marker is compared with.
+        #[arg(long, value_name = "ATTRIBUTE", requires = "marker",
+              value_parser = ["label", "value", "role", "id"])]
+        r#match: Option<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Tap at X Y (device points), or the element whose label contains --label.
+    Tap {
+        #[arg(value_name = "X", requires = "y", conflicts_with = "label")]
+        x: Option<f64>,
+        #[arg(value_name = "Y")]
+        y: Option<f64>,
+        /// Tap the first element whose label contains this (case-sensitive).
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+        /// Hold for this many seconds; over 0.5 is a long press.
+        #[arg(long, value_name = "SECONDS")]
+        duration: Option<f64>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Drag from X Y to X2 Y2 (device points). Starting within 4 points of an
+    /// edge is the system edge gesture: back, notifications, Home, Control Center.
+    Swipe {
+        #[arg(value_name = "X")]
+        x: f64,
+        #[arg(value_name = "Y")]
+        y: f64,
+        #[arg(value_name = "X2")]
+        x2: f64,
+        #[arg(value_name = "Y2")]
+        y2: f64,
+        /// How long the drag takes, in seconds (default 0.3).
+        #[arg(long, value_name = "SECONDS")]
+        duration: Option<f64>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// One finger along a path: --points '[{"x":200,"y":600,"dt_ms":0},{"x":200,"y":300,"dt_ms":16},…]'.
+    TouchPath {
+        /// JSON samples; dt_ms (0–1000) is the delay before each, 30 s in all.
+        #[arg(long, value_name = "JSON")]
+        points: String,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Two fingers, for pinch and rotate: --points '[{"x1":…,"y1":…,"x2":…,"y2":…,"dt_ms":16},…]'.
+    Touch2Path {
+        #[arg(long, value_name = "JSON")]
+        points: String,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Type text into the focused field — any language; non-US text is pasted.
+    Text {
+        #[arg(value_name = "TEXT", required = true)]
+        words: Vec<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Press a key, or an editing command.
+    Key {
+        #[arg(value_name = "NAME", value_parser = [
+            "return", "enter", "tab", "delete", "backspace", "forward-delete",
+            "escape", "esc", "space", "up", "down", "left", "right",
+            "home", "end", "page-up", "page-down",
+            "select-all", "copy", "cut", "paste", "undo", "redo",
+        ])]
+        name: String,
+        /// Press it this many times (1–20).
+        #[arg(long, value_name = "N")]
+        count: Option<u32>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Press a hardware button.
+    Button {
+        #[arg(value_name = "NAME", value_parser = [
+            "home", "lock", "side", "siri", "volume-up", "volume-down", "apple-pay",
+        ])]
+        name: String,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Turn the device a quarter left or right, or to --orientation.
+    Rotate {
+        #[arg(value_name = "DIRECTION", value_parser = ["left", "right"], conflicts_with = "orientation")]
+        direction: Option<String>,
+        #[arg(long, value_name = "ORIENTATION",
+              value_parser = ["portrait", "landscapeLeft", "landscapeRight", "portraitUpsideDown"])]
+        orientation: Option<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Print an app's log: the last 100 lines of the last 5 minutes by default.
+    Logs {
+        /// The app (default: the one `launch` last started on the device).
+        #[arg(long, value_name = "ID")]
+        bundle_id: Option<String>,
+        /// How many lines, newest last (1–1000).
+        #[arg(long, value_name = "N")]
+        tail: Option<u32>,
+        /// How far back to look, in minutes.
+        #[arg(long, value_name = "MINUTES")]
+        minutes: Option<u32>,
+        /// Only lines after this cursor — the `next:` a previous read printed.
+        #[arg(long, value_name = "CURSOR")]
+        since: Option<String>,
+        /// The least severe level to show.
+        #[arg(long, value_name = "LEVEL", value_parser = ["debug", "info", "default", "error", "fault"])]
+        level: Option<String>,
+        /// Only lines containing this (case-insensitive).
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Summarise the app's latest crash on this device: exception, reason, crashed thread.
+    CrashReport {
+        #[arg(long, value_name = "ID")]
+        bundle_id: Option<String>,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+
+    /// Show or hide the on-screen keyboard (hiding connects the Mac's keyboard).
+    Keyboard {
+        #[arg(value_name = "STATE", value_parser = ["show", "hide"])]
+        state: String,
+        #[command(flatten)]
+        device: SimDevice,
+    },
+}
+
+#[derive(Args)]
+struct SimDevice {
+    /// The simulator to act on, by UDID or name (default: the one the
+    /// Simulator pane shows, else the first booted one).
+    #[arg(long, value_name = "DEVICE", global = true)]
+    device: Option<String>,
+
+    #[command(flatten)]
+    output: Output,
 }
 
 #[derive(Subcommand)]
@@ -624,6 +839,7 @@ async fn main() -> Result<()> {
             agent_report(&channel, args)
         }
         Some(Verb::Notify(args)) => notify(&channel, args),
+        Some(Verb::Sim { verb }) => simulator(&channel, verb),
         Some(Verb::Sessions { verb }) => {
             sessions(
                 &channel,
@@ -957,6 +1173,157 @@ fn notify(channel: &Channel, args: NotifyArgs) -> Result<()> {
     ));
 }
 
+/// `termio sim <action>` — one request per action: the action in `target`, its
+/// parameters as strings in `arguments`, and the text to type in `text`.
+fn simulator(channel: &Channel, verb: SimVerb) -> Result<()> {
+    let number = |value: f64| value.to_string();
+    let mut arguments: Vec<(&str, String)> = Vec::new();
+    let mut text = String::new();
+    let (action, device) = match verb {
+        SimVerb::List(device) => ("list", device),
+        SimVerb::Attach(device) => ("attach", device),
+        SimVerb::Detach(device) => ("detach", device),
+        SimVerb::Launch { app, bundle_id, device } => {
+            arguments.push(("app", app.display().to_string()));
+            if let Some(id) = bundle_id {
+                arguments.push(("bundle-id", id));
+            }
+            ("launch", device)
+        }
+        SimVerb::OpenUrl { url, device } => {
+            arguments.push(("url", url));
+            ("open-url", device)
+        }
+        SimVerb::Screenshot { out, device } => {
+            if let Some(out) = out {
+                arguments.push(("out", out.display().to_string()));
+            }
+            ("screenshot", device)
+        }
+        SimVerb::Inspect { x, y, marker, r#match, device } => {
+            if let (Some(x), Some(y)) = (x, y) {
+                arguments.push(("x", number(x)));
+                arguments.push(("y", number(y)));
+            }
+            if let Some(marker) = marker {
+                arguments.push(("marker", marker));
+            }
+            if let Some(key) = r#match {
+                arguments.push(("match", key));
+            }
+            ("inspect", device)
+        }
+        SimVerb::Tap { x, y, label, duration, device } => {
+            match (x, y, label) {
+                (_, _, Some(label)) => arguments.push(("label", label)),
+                (Some(x), Some(y), None) => {
+                    arguments.push(("x", number(x)));
+                    arguments.push(("y", number(y)));
+                }
+                _ => fail("termio: tap needs X Y or --label (e.g. `termio sim tap 200 400`)"),
+            }
+            if let Some(duration) = duration {
+                arguments.push(("duration", number(duration)));
+            }
+            ("tap", device)
+        }
+        SimVerb::Swipe { x, y, x2, y2, duration, device } => {
+            arguments.push(("x", number(x)));
+            arguments.push(("y", number(y)));
+            arguments.push(("x2", number(x2)));
+            arguments.push(("y2", number(y2)));
+            if let Some(duration) = duration {
+                arguments.push(("duration", number(duration)));
+            }
+            ("swipe", device)
+        }
+        SimVerb::TouchPath { points, device } => {
+            arguments.push(("points", points));
+            ("touch-path", device)
+        }
+        SimVerb::Touch2Path { points, device } => {
+            arguments.push(("points", points));
+            ("touch2-path", device)
+        }
+        SimVerb::Text { words, device } => {
+            text = join(&words);
+            ("text", device)
+        }
+        SimVerb::Key { name, count, device } => {
+            arguments.push(("name", name));
+            if let Some(count) = count {
+                arguments.push(("count", count.to_string()));
+            }
+            ("key", device)
+        }
+        SimVerb::Button { name, device } => {
+            arguments.push(("name", name));
+            ("button", device)
+        }
+        SimVerb::Rotate { direction, orientation, device } => {
+            if let Some(orientation) = orientation {
+                arguments.push(("orientation", orientation));
+            } else {
+                arguments.push(("direction", direction.unwrap_or_else(|| "right".to_string())));
+            }
+            ("rotate", device)
+        }
+        SimVerb::Logs { bundle_id, tail, minutes, since, level, filter, device } => {
+            let optional: [(&str, Option<String>); 6] = [
+                ("bundle-id", bundle_id),
+                ("tail", tail.map(|value| value.to_string())),
+                ("minutes", minutes.map(|value| value.to_string())),
+                ("since", since),
+                ("level", level),
+                ("filter", filter),
+            ];
+            for (key, value) in optional {
+                if let Some(value) = value {
+                    arguments.push((key, value));
+                }
+            }
+            ("logs", device)
+        }
+        SimVerb::CrashReport { bundle_id, device } => {
+            if let Some(id) = bundle_id {
+                arguments.push(("bundle-id", id));
+            }
+            ("crash-report", device)
+        }
+        SimVerb::Keyboard { state, device } => {
+            arguments.push(("state", state));
+            ("keyboard", device)
+        }
+    };
+    if let Some(name) = device.device {
+        arguments.push(("device", name));
+    }
+    let fields = arguments
+        .iter()
+        .map(|(key, value)| format!("\"{key}\":\"{}\"", app_socket::json_escape(value)))
+        .collect::<Vec<_>>()
+        .join(",");
+    // Any command may wait out a boot `attach` started — half a minute, a first
+    // boot several — and installing a large app is slow too; the app answers
+    // when it is done. An explicit TERMIO_CLI_TIMEOUT still wins.
+    let timeout = if action != "list" && !app_socket::explicit_client_timeout() {
+        app_socket::client_timeout().max(180)
+    } else {
+        app_socket::client_timeout()
+    };
+    app_socket::require_socket(channel);
+    exit_outcome(app_socket::request_once(
+        channel,
+        timeout,
+        "sim",
+        device.output.format(),
+        action,
+        "",
+        &text,
+        &format!("\"arguments\":{{{fields}}}"),
+    ));
+}
+
 /// Resolve to an absolute, symlink-free path so termio keys the project by
 /// the same canonical path it stores, avoiding duplicate sidebar entries.
 fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
@@ -999,6 +1366,45 @@ directly — \"build finished\", \"need a decision\" — regardless of whether t
 frontmost (unlike the automatic completion banner). --title overrides the default
 (the calling agent's name); the banner's subtitle is the project, and clicking it
 focuses the session that posted it.";
+
+const SIM_HELP: &str = "\
+Drive the iOS Simulator shown in termio's Simulator pane, so an agent can run
+and check an iOS app the way the person watching would. Coordinates are device
+points from the top-left of the screen as it is shown — after a rotation too —
+the unit `inspect` reports frames in, so tap the centre of a frame it printed.
+Read the screen with `inspect` before tapping anything you have not located;
+use `screenshot` for colour, images and layout.
+
+Run `attach` FIRST, before you build: the person watches from the first
+frame, and a shut-down device boots while xcodebuild compiles. It answers as
+soon as the device is drawing — a few seconds — not once it has booted; the
+next command waits for the boot to finish (half a minute, minutes on a first
+boot), so start the build in between.
+
+  termio sim attach
+  xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 16 Pro' build
+  termio sim launch build/Debug-iphonesimulator/MyApp.app
+  termio sim inspect
+  termio sim tap --label \"Continue\"
+  termio sim swipe 200 700 200 200
+  termio sim text \"hello@example.com\" && termio sim key return
+  termio sim screenshot --out /tmp/screen.png
+
+With no --device, a session drives the device it used last, else a booted one
+no other session is driving, else the first booted one. Build with xcodebuild
+in your shell; `logs` reads the app's log and `crash-report` its last crash.
+Needs a Mac with Apple silicon and macOS 15 or later.";
+
+const SIM_INSPECT_HELP: &str = "\
+Print the frontmost app's accessibility tree, one element per line:
+type, label, value, identifier, then the frame as x,y width x height in device
+points. Elements that say nothing are folded away, and elements wholly off
+the screen are counted, not printed. With X Y, print the element drawn at that
+point, as a tap there would find it — the read that resolves what covers what.
+With --marker, print the first element, in tree order, whose label (or
+--match value, role or id) contains the text; a title can match before the
+button that shares it, so check the type. When the reply names a modal, stay
+inside it. --json prints idb's full accessibility document instead.";
 
 const LIST_HELP: &str = "\
 List the sessions in this project with their live status (working / idle /

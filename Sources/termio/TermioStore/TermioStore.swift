@@ -1736,10 +1736,14 @@ final class TermioStore: ObservableObject {
         for id in Set(states.keys).union(openPanels) {
             let state = states[id] ?? InspectorState()
             let panelOpen = openPanels.contains(id)
+            // The Simulator pane is a live view of a device that will not be
+            // booted next launch, so it restores as Files. Writing it would also
+            // make the whole state file unreadable to a build without the case.
+            let tab = state.tab == .simulator ? .files : state.tab
             // Skip the plain default (Files tab, nothing open, panel closed) to keep the file lean.
-            guard state.tab != .files || state.openFileURL != nil || panelOpen else { continue }
+            guard tab != .files || state.openFileURL != nil || panelOpen else { continue }
             layouts[id.uuidString] = StateFile.InspectorLayout(
-                tab: state.tab,
+                tab: tab,
                 filePath: state.openFileURL?.path,
                 fileLine: state.openFileLine,
                 fileReadOnly: state.openFileReadOnly,

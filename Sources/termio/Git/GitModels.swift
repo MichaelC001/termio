@@ -5,10 +5,10 @@ import SwiftUI
 // MARK: - Models
 
 /// Which inspector pane the trailing column is showing — the file tree, the file
-/// search, the git changes list, the issue tracker, or the session Info pane.
-/// Drives the segmented switch at the top of `FileBrowserView`.
+/// search, the git changes list, the issue tracker, the session Info pane, or the
+/// live iOS Simulator. Drives the segmented switch at the top of `FileBrowserView`.
 enum InspectorTab: String, Hashable, Sendable, Codable {
-    case files, search, changes, issues, info
+    case files, search, changes, issues, info, simulator
 }
 
 /// The git pane's own inner switch, in scope order: what isn't committed yet, what

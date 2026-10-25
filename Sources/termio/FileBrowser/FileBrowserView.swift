@@ -390,6 +390,8 @@ struct FileBrowserView: View {
             }
         case .info:
             SessionInfoView()
+        case .simulator:
+            SimulatorPane()
         }
     }
 

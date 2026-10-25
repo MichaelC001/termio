@@ -159,7 +159,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Dev-only: focus-independent window snapshot for automated UI debugging
         // (see DebugWindowSnapshot).
-        if AppChannel.isDev { DebugWindowSnapshot.installTrigger() }
+        if AppChannel.isDev {
+            DebugWindowSnapshot.installTrigger()
+            DebugSimulatorPointer.installTrigger()
+            // Dev-only: opens the inspector on a pane by name, as choosing it
+            // from the pane menu does — for an automated session that cannot
+            // reach the menu (see DebugSimulatorPointer).
+            DistributedNotificationCenter.default().addObserver(
+                self, selector: #selector(debugShowInspectorPane(_:)),
+                name: Notification.Name("termio.dev.inspector"), object: nil,
+                suspensionBehavior: .deliverImmediately)
+        }
         // Sweep up session processes a previous instance stranded (crash,
         // force-quit, dev rebuild's kill -9) before this run adds its own.
         StraySessionReaper.reapStrayOrphans()
@@ -1186,6 +1196,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// View ▸ Show Project Files (and the card's panel menu) — opens or closes the focused
     /// card's panel. Reached via the responder chain (the menu item and the panel menu both
     /// target `nil`), like the other app actions.
+    @objc private func debugShowInspectorPane(_ note: Notification) {
+        guard let name = note.object as? String, let tab = InspectorTab(rawValue: name) else { return }
+        DispatchQueue.main.async { [self] in
+            store.inspectorTab = tab
+            if !store.inspectorVisible { toggleFilesInspector(nil) }
+        }
+    }
+
     @objc func toggleFilesInspector(_ sender: Any?) {
         store.inspectorVisible.toggle()
     }
