@@ -514,6 +514,9 @@ final class StreamInputTests: XCTestCase {
         let path = "/Users/me/" + String(repeating: "my-dir/", count: 60) + "file.txt"
         XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path).first, NSRange(location: 0, length: (path as NSString).length))
         XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path, around: 430), [])
+        let spaced = "/Users/me/Library/" + String(repeating: "x-dir/", count: 45) + "Mobile Documents/file.txt"
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: spaced).first?.length, (spaced as NSString).length)
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: spaced, around: 305), [], "not Documents/file.txt")
     }
 
     /// Ghostty's scheme branch: a suffix is a matched `(word)` or `[word]`

@@ -888,15 +888,20 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             guard let scalar = Unicode.Scalar(units[index]) else { return true }
             return scalar == "_" || CharacterSet.alphanumerics.contains(scalar) || "-.~:/?#@!$&*+;=%".unicodeScalars.contains(scalar)
         }
-        // A path whose characters run unbroken past a window edge the text
-        // goes past may be longer than what was searched, and is passed over.
+        // Ghostty's paths carry across a single space not after a colon.
+        func joins(_ space: Int) -> Bool {
+            space > 0 && space + 1 < units.count && units[space] == 0x20
+                && isPathCharacter(space - 1) && units[space - 1] != 0x3A && isPathCharacter(space + 1)
+        }
+        // A path whose characters run past a window edge the text goes past
+        // may be longer than what was searched, and is passed over.
         func isCut(_ range: NSRange) -> Bool {
             var start = range.location
-            while start > window.lowerBound, isPathCharacter(start - 1) { start -= 1 }
-            if start == window.lowerBound, start > 0, isPathCharacter(start - 1) { return true }
+            while start > window.lowerBound, isPathCharacter(start - 1) || joins(start - 1) { start -= 1 }
+            if start == window.lowerBound, start > 0, isPathCharacter(start - 1) || joins(start - 1) { return true }
             var end = range.location + range.length
-            while end < window.upperBound, isPathCharacter(end) { end += 1 }
-            return end == window.upperBound && end < units.count && isPathCharacter(end)
+            while end < window.upperBound, isPathCharacter(end) || joins(end) { end += 1 }
+            return end == window.upperBound && end < units.count && (isPathCharacter(end) || joins(end))
         }
         // The next path from `position`, seen through the window. One search
         // answers every later position up to the path it found, and a search
