@@ -198,7 +198,13 @@ Each phase ends at a gate. A failed gate stops the work.
      keys. Search is not part of it: the embedded surface offers no ⌘F in
      termio today, so there is nothing to match yet.
    - M4c, links: OSC 8 hyperlinks, detected URLs and paths, hover and ⌘-click.
-   - M4d, Kitty images.
+   - M4d, Kitty images. Both VTs must take an image the same way, or the
+     cursor diverges after it: same cell size (8 by 16), same storage limit,
+     the same media (direct only; file, temp file and shared memory are off
+     on both). Raw RGB and RGBA ship first, because both engines decode them
+     alike. PNG follows once termiod decodes PNG too: a PNG only the client
+     can decode moves only the client's cursor. The parity fixture places an
+     image, so a client that diverges here fails the test.
 
    Rex's server sends the title, PWD, bell, notifications, progress and OSC 52
    to clients as events, because its consumers include clients that do not
