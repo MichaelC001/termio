@@ -66,6 +66,10 @@ final class TermiodStreamView: NSView {
     fileprivate var selecting = false
     /// The link under the pointer while ⌘ is held.
     fileprivate var hoveredLink: TermiodStreamTerminal.Link?
+    /// What the last hover looked at, so a resting pointer over unchanged
+    /// text costs one counter read a frame, not a copy of its line.
+    fileprivate var hoverKey: HoverKey?
+    fileprivate var hoverLine: TermiodStreamTerminal.LineText?
     /// Settings ▸ Copy on select.
     var copyOnSelect = false
     /// Keys an editing binding took, whose releases the program never sees.
@@ -77,7 +81,7 @@ final class TermiodStreamView: NSView {
         didSet {
             guard isShowing != oldValue else { return }
             displayLinkHandle?.isPaused = !isShowing
-            if !isShowing { setHoveredLink(nil) }
+            if !isShowing { clearHoveredLink() }
             needsFullDraw = true
         }
     }
@@ -146,7 +150,7 @@ final class TermiodStreamView: NSView {
             displayLinkHandle?.invalidate()
             displayLinkHandle = nil
             // A pane leaving the window leaves no hand pointer behind.
-            setHoveredLink(nil)
+            clearHoveredLink()
             return
         }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
@@ -654,7 +658,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     }
 
     override func mouseExited(with event: NSEvent) {
-        setHoveredLink(nil)
+        clearHoveredLink()
     }
 
     /// Ghostty's link hover: with ⌘ held, the link under the pointer is
@@ -663,17 +667,50 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// surface, even inside a program tracking the mouse.
     fileprivate func updateHoveredLink(command: Bool) {
         guard command, NSApp.isActive, let window, window.isKeyWindow, let terminal = terminal() else {
-            setHoveredLink(nil)
+            clearHoveredLink()
             return
         }
         let location = window.mouseLocationOutsideOfEventStream
+        // A panel or sheet over the pane takes the pointer, as it takes the click.
         guard bounds.contains(convert(location, from: nil)),
+              let hit = window.contentView?.hitTest(location), hit === self || hit.isDescendant(of: self),
               let point = selectionPoint(at: location)
         else {
-            setHoveredLink(nil)
+            clearHoveredLink()
             return
         }
-        setHoveredLink(terminal.link(at: point))
+        let key = HoverKey(
+            terminal: ObjectIdentifier(terminal), column: point.column, row: point.row, changes: terminal.changes
+        )
+        guard key != hoverKey else { return }
+        hoverKey = key
+        switch terminal.lineUnder(point) {
+        case .hyperlink(let link):
+            hoverLine = nil
+            setHoveredLink(link)
+        case .text(let line):
+            // Output elsewhere on screen leaves this line as it was.
+            guard line != hoverLine else { return }
+            hoverLine = line
+            setHoveredLink(TermiodStreamTerminal.link(in: line))
+        case .none:
+            hoverLine = nil
+            setHoveredLink(nil)
+        }
+    }
+
+    fileprivate struct HoverKey: Equatable {
+        var terminal: ObjectIdentifier
+        var column: UInt16
+        var row: UInt16
+        var changes: UInt64
+    }
+
+    /// The pointer stopped hovering: the next ⌘ looks afresh.
+    fileprivate func clearHoveredLink() {
+        hoverKey = nil
+        hoverLine = nil
+        setHoveredLink(nil)
     }
 
     fileprivate func setHoveredLink(_ link: TermiodStreamTerminal.Link?) {

@@ -377,7 +377,9 @@ final class StreamInputTests: XCTestCase {
     /// Ghostty's own cases for its link pattern (`src/config/url.zig`): the
     /// first match in each input, and inputs with no match at all.
     func testTheLinkPatternMatchesGhosttysCases() throws {
-        let pattern = try XCTUnwrap(TermiodStreamTerminal.linkPattern)
+        func first(_ input: String) -> String? {
+            TermiodStreamTerminal.linkRanges(in: input).first.map { (input as NSString).substring(with: $0) }
+        }
         let cases: [(String, String)] = [
             ("hello https://example.com world", "https://example.com"),
             ("https://example.com/foo(bar) more", "https://example.com/foo(bar)"),
@@ -461,15 +463,33 @@ final class StreamInputTests: XCTestCase {
             ("./Downloads: Operation not permitted", "./Downloads"),
         ]
         for (input, expected) in cases {
-            let range = NSRange(location: 0, length: (input as NSString).length)
-            let match = pattern.firstMatch(in: input, range: range).map { (input as NSString).substring(with: $0.range) }
-            XCTAssertEqual(match, expected, input)
+            XCTAssertEqual(first(input), expected, input)
         }
         for input in ["input/output", "foo/bar", "$10/bar", "$10/$20", "$10/bar.txt", "foo/bar,baz.txt",
                       "foo$BAR/baz.txt", "foo~/bar.txt", "// foo bar", "//foo"] {
-            let range = NSRange(location: 0, length: (input as NSString).length)
-            XCTAssertNil(pattern.firstMatch(in: input, range: range), input)
+            XCTAssertNil(first(input), input)
         }
+    }
+
+    /// Text that made Ghostty's pattern, run by ICU, backtrack for seconds
+    /// finds its links at once.
+    func testHostileTextIsMatchedInLinearTime() {
+        let base64 = String(repeating: "QUJDRA", count: 1700)
+        let hostile = [
+            "https://a" + String(repeating: ".,", count: 2000),
+            "https://[2001:0db8:85a3:0000:0000:0000:0000:0000:0000",
+            base64,
+            String(repeating: "a/", count: 3000),
+        ]
+        for text in hostile {
+            let started = ContinuousClock.now
+            _ = TermiodStreamTerminal.linkRanges(in: text, around: (text as NSString).length / 2)
+            XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200), String(text.prefix(20)))
+        }
+        XCTAssertEqual(
+            TermiodStreamTerminal.linkRanges(in: "https://a" + String(repeating: ".,", count: 20)).first?.length,
+            9, "the trailing dots and commas are not the URL"
+        )
     }
 
     /// The link under the pointer: an OSC 8 hyperlink first, then a detected
@@ -501,6 +521,18 @@ final class StreamInputTests: XCTestCase {
         let started = ContinuousClock.now
         _ = hostile.link(at: point(12, 0))
         XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200))
+    }
+
+    /// A wrapped URL whose start has scrolled out of the view is still the
+    /// whole URL, underlined only where it is on screen.
+    func testALinkIsFollowedIntoScrollback() throws {
+        let url = "https://github.com/termio-sh/termio/pull/785"
+        // 40 columns and 10 rows: 9 more lines push the URL's first row off the top.
+        let terminal = try terminal("x " + url + String(repeating: "\r\n", count: 9))
+        XCTAssertEqual(
+            terminal.link(at: point(3, 0)),
+            .init(url: url, segments: [.init(row: 0, columns: 0 ... 5)])
+        )
     }
 
     /// The hovered link is underlined across the cells it covers.
