@@ -17,6 +17,17 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.64.0",
+    date: "2026-10-25",
+    title: "Termio server on Linux in one line",
+    changes: {
+      new: [
+        "Install the Termio server on a Linux box with curl -fsSL https://www.termio.sh/install | sh. It needs no root, keeps the server running with systemd, and upgrades in place without ending sessions.",
+        "On a box signed in to Tailscale with HTTPS turned on, the installer publishes the server on your tailnet and prints a QR code to pair your iPhone.",
+      ],
+    },
+  },
+  {
     version: "0.63.0",
     date: "2026-10-25",
     title: "The iOS Simulator, beside your agents",
