@@ -7,6 +7,9 @@ struct SimulatorElement: Equatable, Sendable {
     let type: String
     let label: String?
     let value: String?
+    /// An empty text field's placeholder, which iOS reports as its value; nil
+    /// once the field holds text.
+    let placeholder: String?
     let identifier: String?
     /// VoiceOver's hint: what happens on activating it, when the app says.
     let hint: String?
@@ -22,6 +25,7 @@ struct SimulatorElement: Equatable, Sendable {
         var line = type
         if let label { line += " \"\(label)\"" }
         if let value, value != label { line += " = \"\(value)\"" }
+        if let placeholder { line += " placeholder \"\(placeholder)\"" }
         if let identifier { line += " #\(identifier)" }
         line += " @ \(Int(frame.minX.rounded())),\(Int(frame.minY.rounded()))"
         line += " \(Int(frame.width.rounded()))x\(Int(frame.height.rounded()))"
@@ -55,7 +59,8 @@ struct SimulatorElement: Equatable, Sendable {
                 // when nothing else is there.
                 let isPrivate = element.type.hasPrefix("_")
                 if !isPrivate || any == nil { any = element }
-                if !isPrivate, element.label != nil || element.value != nil || element.identifier != nil {
+                if !isPrivate, element.label != nil || element.value != nil || element.placeholder != nil
+                    || element.identifier != nil {
                     speaking = element
                 }
                 walk(raw["children"] as? [[String: Any]] ?? [], level: level + 1)
@@ -79,6 +84,7 @@ struct SimulatorElement: Equatable, Sendable {
         type = text(raw["type"]) ?? "Element"
         label = text(raw["label"])
         value = text(raw["value"])
+        placeholder = value == nil ? text(raw["placeholder"]) : nil
         identifier = text(raw["identifier"])
         // idb's key for the hint is `help`, after the macOS attribute it maps to.
         hint = text(raw["help"])
@@ -163,6 +169,7 @@ struct SimulatorElementCard: View {
         var parts: [String] = []
         if let identifier = element.identifier { parts.append("#\(identifier)") }
         if let value = element.value, value != element.label { parts.append("= \(value)") }
+        if let placeholder = element.placeholder { parts.append(localized("Placeholder: \(placeholder)")) }
         parts.append("\(Int(frame.minX.rounded())),\(Int(frame.minY.rounded())) "
             + "\(Int(frame.width.rounded()))×\(Int(frame.height.rounded()))")
         return parts.joined(separator: " · ")

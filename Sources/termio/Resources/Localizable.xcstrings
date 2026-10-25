@@ -5421,6 +5421,16 @@
         }
       }
     },
+    "Placeholder: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "占位符：%@"
+          }
+        }
+      }
+    },
     "Play sound": {
       "localizations": {
         "zh-Hans": {
