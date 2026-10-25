@@ -4,17 +4,18 @@ description: Run an iOS Simulator inside the inspector, drive it with the pointe
 ---
 
 The Simulator pane shows one iOS Simulator, live, in the inspector beside your
-sessions. You use it with the pointer and the Mac keyboard. Agents use the same
-device through `termio sim`, so you watch every tap they make and can take over
-at any point.
+sessions. You use it with the pointer and the Mac keyboard. Agents drive devices
+through `termio sim`, and when an agent drives the device the pane shows, you see
+each tap as it happens and can take over at any point.
 
-The pane needs a Mac with Apple silicon, macOS 15 or later, and Xcode with an iOS
-runtime downloaded. When one of those is missing, the pane says which and offers
-the fix: install Xcode, accept its license, or download the iOS platform.
+The pane needs a Mac with Apple silicon and macOS 15 or later. On other Macs the
+pane menu doesn’t offer it. It also needs Xcode with an iOS runtime downloaded.
+When that’s missing, the pane says what to do: install Xcode, accept its license,
+or download the iOS platform.
 
 ## Open the pane
 
-Choose **iOS Simulator** from the pane menu in the selected session's header. The
+Choose **iOS Simulator** from the pane menu in the selected session’s header. The
 pane opens on the device you used last, and boots it if it was shut down.
 
 The device menu at the top left switches devices. Booted devices are listed
@@ -27,19 +28,18 @@ Settings…** and **Delete…**.
 Click and drag on the screen to touch it. Type on the Mac keyboard to type into
 the device.
 
-The header holds the controls a pointer can't reach:
+The header holds the controls a pointer can’t reach:
 
 - **Home** and **Rotate Right**.
 - **Save Screenshot to Desktop** and **Record Screen to Desktop**.
-- **Select Element**: pick anything on screen to see what it is: its type,
-  label and accessibility traits. The card it opens can copy the element or add
-  it to the selected session's prompt with **Add to Chat**, so an agent can tap
-  it.
+- **Select Element**: pick an element on screen to see its type, label and
+  accessibility traits. The card it opens can copy the element or add it to the
+  selected session’s prompt with **Add to Chat**, so an agent can tap it.
 - **Annotate**: draw on a screenshot with a pen, a rectangle or an arrow.
 - **More** (`…`): the other hardware buttons, zoom, light or dark appearance, a
-  clean status bar, slow animations, the frame rate, the app's logs, and the
-  on-screen keyboard. Each item shows Simulator.app's shortcut, which works
-  while the screen has focus.
+  clean status bar, slow animations, the frame rate, the app’s logs, and the
+  on-screen keyboard. Items that have a shortcut in Simulator.app show it, and
+  it works while the screen has focus.
 
 A screenshot you take stays under the screen as a card. From it you can preview,
 annotate, copy the image, add it to the selected session with **Add to Chat**,
@@ -49,25 +49,34 @@ or move it to the Trash.
 
 The first time an agent asks for a device, Termio asks you: **Allow agents to use
 iPhone 17?** Agents can then control that simulator and take screenshots of its
-entire screen, so don't sign in to real accounts on it. Termio asks once per
-device.
+entire screen, so don’t sign in to real accounts on it. Termio remembers each
+device you allow. If you don’t allow it, the agent’s next command asks again.
 
-An agent running in a Termio session drives the device with `termio sim`:
+An agent running in a Termio session drives a device with `termio sim`:
 
 ```bash
-termio sim attach
-xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 17' build
-termio sim launch build/Debug-iphonesimulator/MyApp.app
+termio sim attach --device "iPhone 17"
+xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -derivedDataPath build build
+termio sim launch build/Build/Products/Debug-iphonesimulator/MyApp.app
 termio sim inspect
 termio sim tap --label "Continue"
 termio sim text "hello@example.com" && termio sim key return
 termio sim screenshot
 ```
 
-`attach` opens the pane on the device and answers as soon as the device is
-drawing. Run it before the build, so a shut-down device boots while Xcode
-compiles. Without `--device`, a session drives the device it used last, then a
-booted device no other session is driving, then the first booted one.
+`attach` opens the pane on the device, boots it if needed, and answers as soon as
+the device is drawing. Run it before the build, so the device boots while Xcode
+compiles.
+
+Without `--device`, a command uses the first of these that is booted:
+
+1. The device this session used last.
+2. The device the pane shows, unless another session is driving it.
+3. A device no other session is driving.
+4. Any device.
+
+When nothing is booted, name a device with `attach --device`.
 
 | Command | What it does |
 |---|---|
@@ -75,14 +84,15 @@ booted device no other session is driving, then the first booted one.
 | `attach`, `detach` | Opens the pane on a device, or closes the live view and leaves the device running |
 | `launch` | Installs a built `.app` and launches it, replacing a running copy |
 | `open-url` | Opens a URL or a deep link |
-| `inspect` | Prints the frontmost app's accessibility tree, with frames in device points |
+| `inspect` | Prints the frontmost app’s accessibility tree, with frames in device points |
 | `tap` | Taps at `X Y` in device points, or the element whose label contains `--label` |
 | `swipe`, `touch-path`, `touch2-path` | Drags one finger, follows a path, or pinches and rotates with two |
 | `text`, `key` | Types into the focused field, or presses a key or an editing command |
 | `button`, `rotate`, `keyboard` | Presses a hardware button, turns the device, or shows or hides the on-screen keyboard |
 | `screenshot` | Saves the screen as a PNG and prints its path |
-| `logs`, `crash-report` | Prints the app's recent log, or summarises its latest crash |
+| `logs`, `crash-report` | Prints the app’s recent log, or summarises its latest crash |
 
-Read the screen with `inspect` before tapping something you haven't located, and
-use `screenshot` for colour, images and layout. `termio sim --help` lists every
-option. The rest of the CLI is in [Command-line tool](/docs/cli).
+Read the screen with `inspect` before tapping something you haven’t located, and
+use `screenshot` for colour, images and layout. `termio sim <command> --help`
+lists a command’s options. The rest of the CLI is in
+[Command-line tool](/docs/cli).
