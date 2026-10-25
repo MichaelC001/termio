@@ -47,6 +47,7 @@ final class PairingModel: ObservableObject {
     /// What a refresh asked for while a mint was in flight. Run when the mint
     /// ends: dropping it left the sheet on a spinner, or on the old address.
     private var queuedRefresh: (rotate: Bool, force: Bool)?
+    private var tailnetReads = 0
     private let tunnel = TunnelManager.shared
     private let mobile = MobileAccess.shared
     private var observers: Set<AnyCancellable> = []
@@ -84,8 +85,14 @@ final class PairingModel: ObservableObject {
         tailnetRead = false
         refreshHosts()
         refreshInvite(force: true)
+        // The section and the sheet both refresh on appear, and a stalled read
+        // that finishes last must not replace the answer a later one gave.
+        tailnetReads &+= 1
+        let read = tailnetReads
         Task {
-            tailnetAddress = await Tailnet.ownAddress()
+            let address = await Tailnet.ownAddress()
+            guard read == tailnetReads else { return }
+            tailnetAddress = address
             tailnetRead = true
         }
     }
