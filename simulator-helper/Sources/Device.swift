@@ -671,8 +671,10 @@ final class Device: @unchecked Sendable {
 
     /// How long a just-launched app is given to start answering. Short,
     /// because a `tap --label` waits inline: touches from the pane queue behind
-    /// it, and one failed attempt alone can take five seconds. An app that
-    /// never starts its accessibility server fails after this, not at once.
+    /// it, and one failed attempt alone can take five seconds. The last retry
+    /// may start just inside it, so the worst case is about one attempt more.
+    /// An app that never starts its accessibility server fails after this,
+    /// not at once.
     private static let startupGrace: TimeInterval = 6
 
     /// Runs a read again while the app it lands on is still starting. An app
