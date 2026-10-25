@@ -195,7 +195,7 @@ final class StreamInputTests: XCTestCase {
         let terminal = try TermiodStreamTerminal(
             nativeSnapshot: Data(bytes: pointer, count: length), onSignal: { signals.append($0) }
         )
-        XCTAssertEqual(signals, [.title("agent at work"), .workingDirectory("/tmp/work")], "carried by the snapshot")
+        XCTAssertEqual(signals, [.workingDirectory("/tmp/work")], "the snapshot's directory, not its title")
 
         signals = []
         terminal.write(Data("\u{1b}]2;thinking\u{07}".utf8))

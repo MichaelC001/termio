@@ -128,9 +128,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             heldSince = ContinuousClock.now
         }
         try installSignals()
-        // The snapshot carries the title and directory the program last set,
-        // which no callback reports, as a replayed surface would have.
-        if let title = string(GHOSTTY_TERMINAL_DATA_TITLE), !title.isEmpty { onSignal(.title(title)) }
+        // The snapshot's directory is reported, since it is a fact about the
+        // session. Its title is not: the embedded surface never learns a title
+        // from an attach, and one a conversation rotation cleared would come
+        // back on every relaunch.
         if let directory = workingDirectoryLocked() { onSignal(.workingDirectory(directory)) }
     }
 
@@ -236,11 +237,13 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return raw ? path : path.removingPercentEncoding
     }
 
-    private static let localHost: String = {
+    /// Asked at every report, as Ghostty does: a Mac's name can change while
+    /// the app runs, as when it joins another network.
+    private static var localHost: String {
         var buffer = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
         guard gethostname(&buffer, buffer.count - 1) == 0 else { return "" }
         return String(cString: buffer)
-    }()
+    }
 
     /// The decoder borrows `bytes` until it is freed, so everything from its
     /// creation to its release stays inside the caller's `withUnsafeBytes`.
