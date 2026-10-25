@@ -57,8 +57,12 @@ extension TermioStore {
 
     /// Re-installs when an account folder is added or removed, so a sign-in in
     /// a fresh folder gets termio's hooks before its first session starts.
+    /// Only once a first sync has run (the app's launch does one): a store that
+    /// never started its integration — a test's — must not open a daemon
+    /// connection on an unrelated settings change.
     func syncAccountFoldersIfNeeded() {
-        guard installedAccountFolders != settings.usageAccountFolders else { return }
+        guard let installed = installedAccountFolders,
+              installed != settings.usageAccountFolders else { return }
         syncAgentIntegration()
     }
 
@@ -103,6 +107,9 @@ extension TermioStore {
         let retired = settings.usageRetiredAccountFolders
             .mapValues { $0.filter { !inUse.contains($0) } }
             .filter { !$0.value.isEmpty }
+        // The settings, not the store: a task that held `self` would keep the
+        // whole store — its daemon links included — alive past its owner.
+        let settings = self.settings
         Task {
             let outcome = await AgentIntegrationInstaller.sync(
                 hooks: hooks, skills: skills, commands: commands, homes: homes,
