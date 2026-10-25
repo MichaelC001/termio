@@ -11,6 +11,7 @@
     "workspaces",
     "navigation",
     "inspector",
+    "simulator",
     "appearance",
     "keyboard",
     "---Agent---",

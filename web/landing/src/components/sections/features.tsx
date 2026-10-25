@@ -4,12 +4,13 @@ import { Section, Stage } from "@/components/section-label";
 import { cn } from "@/lib/utils";
 import { testflightUrl } from "@/lib/site";
 
-// Four panels after Cursor's feature sections: the text and the picture share
+// Five panels after Cursor's feature sections: the text and the picture share
 // one card, so the words sit against the thing they describe instead of
 // floating in the page. The text is anchored to the panel's bottom corner and
-// the sides swap panel by panel. Every picture is a silent loop rendered from
-// a real capture (termio-sh/launch-video, 20261024-landing-*); each carries its
-// own aurora, so it fills the stage edge to edge.
+// the sides swap panel by panel. Every picture is a silent, level loop rendered
+// from a real capture (termio-sh/launch-video, 20261024-landing-* and
+// 20261025-ios-simulator/site); each carries its own aurora, so it fills the
+// stage edge to edge.
 const rows = [
   {
     title: "See which agent needs you.",
@@ -24,6 +25,18 @@ const rows = [
     video: "survive-quit",
     label:
       "Termio quits with Command-Q and reopens on the same session, where the agent has read further",
+  },
+  {
+    title: "Agents test your iOS app in a pane.",
+    blurb: (
+      <>
+        They launch and tap it with <code className="whitespace-nowrap font-mono text-[0.9em]">termio sim</code>, and you can
+        type into the same simulator.
+      </>
+    ),
+    video: "ios-simulator",
+    label:
+      "Claude Code launches TermioMobile in the Simulator pane with termio sim, taps through to an address field, and the person types an address into it",
   },
   {
     title: "Every agent, one switch.",
