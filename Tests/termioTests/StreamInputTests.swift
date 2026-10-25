@@ -184,7 +184,7 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(ghostty_terminal_new(nil, &raw, 40, 10), GHOSTTY_SUCCESS)
         let source = try XCTUnwrap(raw)
         defer { ghostty_terminal_free(source) }
-        let setup = Array("\u{1b}]0;agent at work\u{07}\u{1b}]7;file://box/tmp/work\u{07}".utf8)
+        let setup = Array("\u{1b}]0;agent at work\u{07}\u{1b}]7;file://localhost/tmp/work\u{07}".utf8)
         ghostty_terminal_vt_write(source, setup, setup.count)
         var encoded: UnsafeMutablePointer<UInt8>?
         var length = 0
@@ -199,7 +199,7 @@ final class StreamInputTests: XCTestCase {
 
         signals = []
         terminal.write(Data("\u{1b}]2;thinking\u{07}".utf8))
-        terminal.write(Data("\u{1b}]7;file://box/home/me/project%20one\u{07}".utf8))
+        terminal.write(Data("\u{1b}]7;file://localhost/home/me/project%20one\u{07}".utf8))
         terminal.write(Data("\u{07}".utf8))
         terminal.write(Data("\u{1b}]9;build finished\u{07}".utf8))
         terminal.write(Data("\u{1b}]777;notify;Claude;needs you\u{07}".utf8))
@@ -212,6 +212,19 @@ final class StreamInputTests: XCTestCase {
             .notification(title: "Claude", body: "needs you"),
             .clipboard("hello"),
         ])
+    }
+
+    /// Ghostty's OSC 7 rule: a `file` or `kitty-shell-cwd` URL naming this
+    /// machine. A path from a box reached with ssh does not exist here.
+    func testAWorkingDirectoryMustNameThisMachine() {
+        let read = { TermiodStreamTerminal.workingDirectory(fromOSC7: $0, localHost: "mac") }
+        XCTAssertEqual(read("file://mac/Users/me/a%20b"), "/Users/me/a b")
+        XCTAssertEqual(read("file://localhost/tmp"), "/tmp")
+        XCTAssertEqual(read("kitty-shell-cwd://mac/raw/%20path"), "/raw/%20path", "kitty sends the path as is")
+        XCTAssertNil(read("file://prod/home/deploy"), "another machine")
+        XCTAssertNil(read("file:///tmp"), "no host")
+        XCTAssertNil(read("https://mac/tmp"), "another scheme")
+        XCTAssertNil(read("/tmp"), "not a URL")
     }
 
     /// A program reading the clipboard is answered through the reply path,

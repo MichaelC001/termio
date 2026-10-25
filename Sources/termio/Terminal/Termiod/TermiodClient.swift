@@ -1597,6 +1597,46 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// (`TermiodStreamTerminal.Signal`), on the main thread: what the embedded
     /// surface publishes for a pane that is not streaming.
     var onStreamSignal: ((TermiodStreamTerminal.Signal) -> Void)?
+    /// The title and directory last reported, kept across attaches: a new
+    /// terminal reports what its snapshot carries, and only a change is news,
+    /// as the embedded surface's `removeDuplicates` makes it.
+    private var reportedTitle: String?
+    private var reportedDirectory: String?
+    /// An OSC 52 copy on its way to the pasteboard, which a read that
+    /// follows it in the stream must already see.
+    private var unwrittenCopy: String?
+    private let signalLock = NSLock()
+
+    private func pendingCopy() -> String? {
+        signalLock.withLock { unwrittenCopy }
+    }
+
+    /// Called on the reader thread, from inside the terminal's `write`.
+    private func deliverStreamSignal(_ signal: TermiodStreamTerminal.Signal) {
+        let news: Bool = signalLock.withLock {
+            switch signal {
+            case .title(let title):
+                guard reportedTitle != title else { return false }
+                reportedTitle = title
+            case .workingDirectory(let path):
+                guard reportedDirectory != path else { return false }
+                reportedDirectory = path
+            case .clipboard(let text):
+                unwrittenCopy = text
+            case .bell, .notification:
+                break
+            }
+            return true
+        }
+        guard news else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            onStreamSignal?(signal)
+            if case .clipboard(let text) = signal {
+                signalLock.withLock { if unwrittenCopy == text { unwrittenCopy = nil } }
+            }
+        }
+    }
 
     var streamTerminal: TermiodStreamTerminal? {
         streamLock.lock()
@@ -1671,11 +1711,14 @@ final class TermiodSessionLink: @unchecked Sendable {
                     // which `sendDeviceReport` enforces.
                     self?.sendDeviceReport(reply)
                 },
-                onSignal: { [weak self] signal in
-                    DispatchQueue.main.async { self?.onStreamSignal?(signal) }
-                },
+                onSignal: { [weak self] signal in self?.deliverStreamSignal(signal) },
                 // What the embedded surface serves: a copied file is its path.
-                readClipboard: { NSPasteboard.general.terminalPasteText() }
+                // A copy the program made a moment ago that the main thread has
+                // not written yet is what it reads back, in stream order.
+                readClipboard: { [weak self] in
+                    if let copy = self?.pendingCopy() { return copy }
+                    return NSPasteboard.general.terminalPasteText()
+                }
             )
             streamLock.lock()
             defer { streamLock.unlock() }

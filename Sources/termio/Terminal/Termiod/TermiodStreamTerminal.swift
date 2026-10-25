@@ -155,17 +155,17 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 title: TermiodStreamTerminal.text(notification.pointee.title), body: TermiodStreamTerminal.text(notification.pointee.body)
             ))
         }
-        // Written as the embedded surface writes it: the standard clipboard's
-        // text, with no prompt. The reply must come before this returns.
+        // Written as the embedded surface writes it: the text, with no prompt.
+        // The reply must come before this returns.
         let clipboard: GhosttyTerminalClipboardWriteFn = { _, userdata, write in
             guard let write else { return }
             var reply = GhosttyClipboardWriteReply()
             reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
             reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
             defer { withUnsafePointer(to: &reply) { write.pointee.reply(write, $0) } }
-            guard write.pointee.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD,
-                  let owner = owner(userdata), let contents = write.pointee.contents
-            else { return }
+            // Every location is the one pasteboard, as the embedded surface
+            // treats them: macOS has no selection clipboard.
+            guard let owner = owner(userdata), let contents = write.pointee.contents else { return }
             let entries = UnsafeBufferPointer(start: contents, count: write.pointee.contents_len)
             guard let text = entries.first(where: { TermiodStreamTerminal.text($0.mime).hasPrefix("text/plain") }) else { return }
             owner.onSignal(.clipboard(TermiodStreamTerminal.text(text.data)))
@@ -174,9 +174,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             guard let read else { return }
             var reply = GhosttyClipboardReadReply()
             reply.size = MemoryLayout<GhosttyClipboardReadReply>.size
-            guard read.pointee.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD,
-                  let owner = owner(userdata), let text = owner.readClipboard()
-            else {
+            guard let owner = owner(userdata), let text = owner.readClipboard() else {
                 reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_UNSUPPORTED
                 withUnsafePointer(to: &reply) { read.pointee.reply(read, $0) }
                 return
@@ -218,14 +216,31 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return Self.text(value)
     }
 
-    /// OSC 7 reports a `file://` URL; the app works with the path.
     private func workingDirectoryLocked() -> String? {
-        guard let reported = string(GHOSTTY_TERMINAL_DATA_PWD), !reported.isEmpty else { return nil }
-        if reported.hasPrefix("file://"), let url = URL(string: reported) {
-            return url.path.isEmpty ? nil : url.path
-        }
-        return reported
+        string(GHOSTTY_TERMINAL_DATA_PWD).flatMap { Self.workingDirectory(fromOSC7: $0, localHost: Self.localHost) }
     }
+
+    /// Ghostty's own rule for OSC 7 (`StreamHandler.reportPwd`), which
+    /// libghostty-vt leaves to the embedder: a `file` or `kitty-shell-cwd` URL
+    /// naming this machine. A shell on a box reached with ssh reports a path
+    /// that does not exist here, and is ignored, as the embedded surface does.
+    static func workingDirectory(fromOSC7 reported: String, localHost: String) -> String? {
+        let raw = reported.hasPrefix("kitty-shell-cwd://")
+        guard raw || reported.hasPrefix("file://") else { return nil }
+        let rest = reported.dropFirst(raw ? "kitty-shell-cwd://".count : "file://".count)
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let host = String(rest[..<slash])
+        guard !host.isEmpty, host == "localhost" || host == localHost else { return nil }
+        let path = String(rest[slash...])
+        // kitty sends the path as it is; a file URL percent-encodes it.
+        return raw ? path : path.removingPercentEncoding
+    }
+
+    private static let localHost: String = {
+        var buffer = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+        guard gethostname(&buffer, buffer.count - 1) == 0 else { return "" }
+        return String(cString: buffer)
+    }()
 
     /// The decoder borrows `bytes` until it is freed, so everything from its
     /// creation to its release stays inside the caller's `withUnsafeBytes`.
