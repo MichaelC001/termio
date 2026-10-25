@@ -142,6 +142,8 @@
 	<string>工作区把侧栏限定在归入它的项目和会话上，都在它所属的那台机器上。</string>
 	<key>Accept the Xcode License</key>
 	<string>接受 Xcode 许可协议</string>
+	<key>Access</key>
+	<string>访问</string>
 	<key>Accounts</key>
 	<string>账户</string>
 	<key>Add</key>
@@ -234,6 +236,10 @@
 	<string>将 Host 块追加到 ~/.ssh/config，该别名也可直接用于 `ssh %@`。</string>
 	<key>Apply</key>
 	<string>应用</string>
+	<key>Approve this Mac in the Tailscale admin console.</key>
+	<string>在 Tailscale 管理控制台中批准这台 Mac。</string>
+	<key>Approve…</key>
+	<string>批准…</string>
 	<key>Arguments</key>
 	<string>参数</string>
 	<key>Arrow</key>
@@ -276,8 +282,12 @@
 	<string>分支</string>
 	<key>Bring All to Front</key>
 	<string>前置全部窗口</string>
+	<key>Built-In Tailscale</key>
+	<string>内置 Tailscale</string>
 	<key>Built-in</key>
 	<string>内置</string>
+	<key>Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing.</key>
+	<string>内置 Tailscale 尚未连接。请在“设置 ▸ Termio server ▸ 配对”中完成登录。</string>
 	<key>Cancel</key>
 	<string>取消</string>
 	<key>Can’t Compare</key>
@@ -912,6 +922,8 @@
 	<string>导航</string>
 	<key>Navigator</key>
 	<string>导航器</string>
+	<key>Needs Direct Attach.</key>
+	<string>需要开启直接连接。</string>
 	<key>Needs Live agent status above: without it, nothing tells Termio an agent finished.</key>
 	<string>需要上面的“实时 Agent 状态”：没有它，就没有东西告诉 Termio 一个 Agent 完成了。</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
@@ -1050,6 +1062,8 @@
 	<string>没有主题与“%@”匹配</string>
 	<key>No tunnel selected.</key>
 	<string>尚未选择隧道。</string>
+	<key>Nobody: a tagged device has no owner</key>
+	<string>无人可访问：带标签的设备没有所有者</string>
 	<key>None</key>
 	<string>无</string>
 	<key>None found</key>
@@ -1104,10 +1118,14 @@
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
 	<string>在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。</string>
+	<key>Only %@</key>
+	<string>仅限 %@</string>
 	<key>Only regular files can be previewed.</key>
 	<string>只能预览普通文件。</string>
 	<key>Only text can be pasted into the simulator.</key>
 	<string>只能把文本粘贴到模拟器中。</string>
+	<key>Only the account that signed in</key>
+	<string>仅限登录的账号</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
 	<string>仅显示前 %lld 项——请更新此设备上的 termio 以列出全部。</string>
 	<key>Opacity</key>
@@ -1514,16 +1532,26 @@
 	<string>侧栏</string>
 	<key>Sign In…</key>
 	<string>登录…</string>
+	<key>Sign Out</key>
+	<string>退出登录</string>
+	<key>Sign Out…</key>
+	<string>退出登录…</string>
 	<key>Sign in again to see this account's limits.</key>
 	<string>重新登录即可查看此账户的限额。</string>
 	<key>Sign in with a different account in the terminal, or cancel.</key>
 	<string>请在终端里换一个账户登录，或者取消。</string>
+	<key>Sign in with the Tailscale account your iPhone uses.</key>
+	<string>用你的 iPhone 所用的 Tailscale 账号登录。</string>
+	<key>Sign this Mac out of Tailscale?</key>
+	<string>让这台 Mac 退出 Tailscale 登录？</string>
 	<key>Signed out</key>
 	<string>已退出登录</string>
 	<key>Signs in with %@</key>
 	<string>使用 %@ 登录</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>使用 ssh 默认提供的密钥登录。</string>
+	<key>Signs this Mac’s device out of your tailnet.</key>
+	<string>让这台 Mac 的设备退出你的 tailnet。</string>
 	<key>Simulator Unavailable</key>
 	<string>模拟器不可用</string>
 	<key>Size</key>
@@ -1580,6 +1608,8 @@
 	<string>停止录制</string>
 	<key>Stop Selecting</key>
 	<string>停止选择</string>
+	<key>Stopped</key>
+	<string>已停止</string>
 	<key>Style</key>
 	<string>样式</string>
 	<key>Switch between project files, search, changes, and info</key>
@@ -1592,6 +1622,8 @@
 	<string>系统等宽字体</string>
 	<key>Tabs</key>
 	<string>标签页</string>
+	<key>Tailscale Account</key>
+	<string>Tailscale 账号</string>
 	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
 	<string>这台 Mac 上的 Tailscale 未连接。连接后重新打开此面板。</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
@@ -1704,6 +1736,8 @@
 	<string>模拟器辅助程序发回了 Termio 无法读取的回复。</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
+	<key>The token wasn’t rotated: %@</key>
+	<string>令牌未轮换：%@</string>
 	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>The working tree is clean.</key>
@@ -1720,6 +1754,8 @@
 	<string>本机</string>
 	<key>This Mac and the machines you reach from it</key>
 	<string>本机以及你能连接的设备</string>
+	<key>This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.</key>
+	<string>这台 Mac 作为一台独立设备加入你的 tailnet，不需要 Tailscale 应用。</string>
 	<key>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</key>
 	<string>这台 Mac 正在使用 Command Line Tools，其中没有模拟器。请在终端中切换到 Xcode。</string>
 	<key>This Mac…</key>
@@ -1736,6 +1772,8 @@
 	<string>此分支还没有提交。</string>
 	<key>This branch has nothing the base branch doesn’t already have.</key>
 	<string>这个分支没有基础分支尚未包含的内容。</string>
+	<key>This build of Termio doesn’t include built-in Tailscale.</key>
+	<string>这个版本的 Termio 不含内置 Tailscale。</string>
 	<key>This build of Termio doesn’t include the simulator helper.</key>
 	<string>此版本的 Termio 不包含模拟器辅助程序。</string>
 	<key>This checkout has no other branch to compare with.</key>
@@ -1916,6 +1954,8 @@
 	<string>工作目录</string>
 	<key>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
 	<string>两台设备都连接 Tailscale 时，可在任意网络使用。流量只经过你的 tailnet。</string>
+	<key>Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.</key>
+	<string>只要 iPhone 上的 Tailscale 已连接，在任何网络下都能用。流量只走你的 tailnet。</string>
 	<key>Workspace</key>
 	<string>工作区</string>
 	<key>Workspace Settings…</key>
@@ -1984,6 +2024,8 @@
 	<string>git 已不再跟踪“%@”，且其文件夹中仍有文件。请删除该文件夹后再移除 worktree。</string>
 	<key>git still lists “%@”, so it was not removed.</key>
 	<string>git 仍列出“%@”，因此未移除。</string>
+	<key>iPhones paired over the tailnet can’t connect until you sign in again.</key>
+	<string>在你重新登录之前，通过 tailnet 配对的 iPhone 无法连接。</string>
 	<key>issue.state.open</key>
 	<string>开放</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>

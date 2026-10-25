@@ -50,6 +50,7 @@ final class PairingModel: ObservableObject {
     private var tailnetReads = 0
     private let tunnel = TunnelManager.shared
     private let mobile = MobileAccess.shared
+    private let builtIn = BuiltInTailscale.shared
     private var observers: Set<AnyCancellable> = []
     private static let servesTailnetKey = "companion.servesTailnet"
 
@@ -66,12 +67,60 @@ final class PairingModel: ObservableObject {
             $selectedHost.map { _ in }.eraseToAnyPublisher(),
             $tailnetAddress.map { _ in }.eraseToAnyPublisher(),
             $servesTailnet.map { _ in }.eraseToAnyPublisher(),
+            builtIn.$report.map { _ in }.eraseToAnyPublisher(),
+            builtIn.$fresh.map { _ in }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(triggers)
             .dropFirst(triggers.count)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.refreshInvite() }
             .store(in: &observers)
+        // Allow Paired Devices and Direct Attach cover the node too: it
+        // reaches the session host past the servers they stop, so a phone
+        // paired through it would otherwise outlive either switch.
+        Publishers.CombineLatest(mobile.$isEnabled, mobile.$attachesDirectly)
+            .map { $0 && $1 }
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] allowed in self?.followMasterSwitch(allowed) }
+            .store(in: &observers)
+        // A node reported on while either switch is off is paused the moment
+        // the report arrives: the switch may have gone off before the first
+        // read, when there was nothing yet to pause.
+        // On every read, not only a changed one: a pause that failed is
+        // retried by the next poll even when the node's state stands still.
+        builtIn.$reads
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if !(self.mobile.isEnabled && self.mobile.attachesDirectly) {
+                    self.followMasterSwitch(false)
+                }
+            }
+            .store(in: &observers)
+    }
+
+    private static let pausedNodeKey = "companion.builtInTailscalePaused"
+
+    /// Turning either switch off takes the node off the tailnet, and turning
+    /// it back on brings back a node it took off, and only that one.
+    /// When a pause may be tried again. Every read retries a pause that
+    /// failed, and a failure that lasts would otherwise retry without pause.
+    private var pauseRetry = Date.distantPast
+
+    private func followMasterSwitch(_ allowed: Bool) {
+        let defaults = UserDefaults.standard
+        if !allowed, builtIn.headedOn {
+            guard Date() >= pauseRetry else { return }
+            pauseRetry = Date().addingTimeInterval(10)
+            defaults.set(true, forKey: Self.pausedNodeKey)
+            builtIn.setEnabled(false)
+        } else if allowed, defaults.bool(forKey: Self.pausedNodeKey) {
+            pauseRetry = .distantPast
+            defaults.removeObject(forKey: Self.pausedNodeKey)
+            builtIn.setEnabled(true, naming: false)
+        }
     }
 
     /// Re-reads everything that can change while the pane is closed. The invite
@@ -83,6 +132,7 @@ final class PairingModel: ObservableObject {
         // now, and a QR minted for it would save an address nothing answers on.
         tailnetAddress = nil
         tailnetRead = false
+        builtIn.refresh()
         refreshHosts()
         refreshInvite(force: true)
         // The section and the sheet both refresh on appear, and a stalled read
@@ -101,16 +151,23 @@ final class PairingModel: ObservableObject {
     /// so revoking it is the daemon's verb rather than a defaults key this app
     /// clears.
     func rotateToken() {
-        if mobile.attachesDirectly {
-            refreshInvite(rotate: true)
-        } else {
+        guard mobile.attachesDirectly else {
             token = PairingToken.regenerate()
+            return
         }
+        refreshInvite(rotate: true)
     }
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
     var onTunnel: Bool { tunnel.provider != .off }
+
+    /// The phone reaches this Mac's own node on the tailnet rather than the
+    /// address the Tailscale app gives it. The node forwards to the session
+    /// host only, so it carries Direct Attach and nothing else.
+    var usesBuiltInTailscale: Bool {
+        servesTailnet && !onTunnel && builtIn.enabled && mobile.attachesDirectly
+    }
 
     var tunnelRunning: Bool {
         if case .running = tunnel.status { return true }
@@ -157,8 +214,45 @@ final class PairingModel: ObservableObject {
         if case .running(let publicURL) = tunnel.status {
             return publicURL.absoluteString
         }
+        if usesBuiltInTailscale { return builtIn.url }
         guard !servedHost.isEmpty else { return nil }
         return "http://\(servedHost):\(AppChannel.devicePort)"
+    }
+
+    /// Why the last Rotate Token did not revoke anything. Shown under the
+    /// button until a rotation works: a revocation that did not happen must
+    /// not read as one that did, and a working QR later does not undo that.
+    @Published private(set) var rotationFailure: String?
+
+    /// `termio pair --rotate` with no invite to mint. It holds the mint lock,
+    /// so an address that appears meanwhile is minted after the new token
+    /// exists, never with the one being revoked.
+    private func rotateWithoutInvite() {
+        guard !minting else {
+            queuedRefresh = (true, true)
+            return
+        }
+        minting = true
+        invite = nil
+        invitedBase = nil
+        Task {
+            var failure: String?
+            do {
+                let result = try await RemotePairing.runLocally(arguments: ["pair", "--rotate"])
+                if result.status != 0 { failure = RemotePairing.message(from: result) }
+            } catch let error as RemotePairing.Failure {
+                failure = error.message
+            } catch {
+                failure = error.localizedDescription
+            }
+            rotationFailure = failure
+            minting = false
+            let queued = queuedRefresh
+            queuedRefresh = nil
+            // A rotation asked for again while this one ran has just been
+            // tried; a failure stays shown for the user to try again.
+            refreshInvite(force: queued != nil || failure == nil)
+        }
     }
 
     /// Asks this Mac's daemon for the invite that names `directBase`.
@@ -166,6 +260,12 @@ final class PairingModel: ObservableObject {
     /// `rotate` mints a fresh pairing token first, which is what Rotate Token
     /// does on this side.
     private func refreshInvite(rotate: Bool = false, force: Bool = false) {
+        // Revoking cannot wait for an address: with none, as while built-in
+        // Tailscale reconnects, the token is rotated on its own.
+        if rotate, mobile.attachesDirectly, directBase == nil {
+            rotateWithoutInvite()
+            return
+        }
         guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
             invite = nil
             inviteFailure = nil
@@ -193,6 +293,8 @@ final class PairingModel: ObservableObject {
             }
             do {
                 let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
+                // The token was rotated whatever address the pane is on now.
+                if rotate { rotationFailure = nil }
                 // The pane may have moved to another address while the daemon
                 // was answering; a QR for the previous one would scan and then
                 // reach nothing.
@@ -200,10 +302,14 @@ final class PairingModel: ObservableObject {
                 invite = minted
                 inviteFailure = nil
             } catch let failure as RemotePairing.Failure {
+                // Said whether or not the pane moved on: the token was not
+                // revoked either way.
+                if rotate { rotationFailure = failure.message }
                 guard base == invitedBase else { return }
                 invite = nil
                 inviteFailure = failure.message
             } catch {
+                if rotate { rotationFailure = error.localizedDescription }
                 guard base == invitedBase else { return }
                 invite = nil
                 inviteFailure = error.localizedDescription
@@ -261,8 +367,10 @@ struct DeviceServingSection: View {
     @ObservedObject private var pairing = PairingModel.shared
     @ObservedObject private var tunnel = TunnelManager.shared
     @ObservedObject private var mobile = MobileAccess.shared
+    @ObservedObject private var builtIn = BuiltInTailscale.shared
     @State private var inviteCopied = false
     @State private var confirmRotate = false
+    @State private var confirmSignOut = false
     /// Draft custom-relay fields, loaded from the persisted values on appear and
     /// written back only when the user commits them, so a half-typed command
     /// never becomes the live spec mid-keystroke.
@@ -308,6 +416,13 @@ struct DeviceServingSection: View {
                 )
             }
             .toggleStyle(.switch)
+            // Turning this off takes built-in Tailscale off the tailnet too, and
+            // its rows go with it, so a failure to do that is said here.
+            if !(mobile.isEnabled && pairing.servesTailnet && !onTunnel), let failure = builtIn.failure {
+                Text(failure)
+                    .font(.settingsDetail)
+                    .foregroundStyle(.red)
+            }
 
             // Everything below only means anything while we're serving, so the
             // master switch reveals it — a dimmed, unscannable QR (and an
@@ -318,9 +433,9 @@ struct DeviceServingSection: View {
                 Picker(localized("Network"), selection: reach) {
                     ForEach(TunnelManager.Provider.allCases) { provider in
                         Text(Self.pickerLabel(provider)).tag(Reach.tunnel(provider))
-                        // Offered only on a tailnet, but kept while chosen so
-                        // the picker never shows a selection it has no row for.
-                        if provider == .off, pairing.tailnetAddress != nil || pairing.servesTailnet {
+                        // Offered without a Tailscale app too: built-in Tailscale
+                        // needs none.
+                        if provider == .off {
                             Text(verbatim: "Tailscale").tag(Reach.tailnet)
                         }
                     }
@@ -336,7 +451,10 @@ struct DeviceServingSection: View {
                     }
                 }
                 if onTunnel { statusRow }
-                if pairing.servesTailnet, !onTunnel { tailnetRow }
+                if pairing.servesTailnet, !onTunnel {
+                    builtInRows
+                    if !pairing.usesBuiltInTailscale { tailnetRow }
+                }
 
                 LabeledContent {
                     Button(localized("Show QR Code…")) { pairing.showsSheet = true }
@@ -382,6 +500,11 @@ struct DeviceServingSection: View {
                         subtext: localized("Issues a new token and revokes every paired iPhone.")
                     )
                 }
+                if let failure = pairing.rotationFailure {
+                    Text(localized("The token wasn’t rotated: \(failure)"))
+                        .font(.settingsDetail)
+                        .foregroundStyle(.red)
+                }
 
                 // The QR is unscannable without the companion installed, so the
                 // one step that happens off this Mac stays on the pane. The
@@ -398,8 +521,10 @@ struct DeviceServingSection: View {
             // the user runs themselves.
             if mobile.isEnabled { footnote(networkFootnote) }
         }
+        .onDisappear { builtIn.stopWatching() }
         .onAppear {
             pairing.refresh()
+            builtIn.startWatching()
             let custom = CustomTunnel.current
             customCommand = custom.command
             customURLPattern = custom.urlPattern
@@ -428,6 +553,126 @@ struct DeviceServingSection: View {
     }
 
     private static let tailscaleApp = URL(fileURLWithPath: "/Applications/Tailscale.app")
+    private static let tailscaleMachines = URL(string: "https://login.tailscale.com/admin/machines")
+
+    /// Built-in Tailscale, the way Rex puts its server on the tailnet: one
+    /// switch, then the one step the node is waiting on, then who gets in.
+    @ViewBuilder
+    private var builtInRows: some View {
+        Toggle(isOn: Binding(get: { builtIn.enabled }, set: { builtIn.setEnabled($0) })) {
+            SettingsLabel(
+                title: localized("Built-In Tailscale"),
+                subtext: builtInSubtext
+            )
+        }
+        .toggleStyle(.switch)
+        .disabled(builtIn.busy || !builtIn.available || (!mobile.attachesDirectly && !builtIn.enabled))
+
+        if builtIn.enabled { builtInStatusRow }
+        if let failure = builtIn.failure {
+            Text(failure)
+                .font(.settingsDetail)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var signOutRow: some View {
+        LabeledContent {
+            Button(localized("Sign Out…")) { confirmSignOut = true }
+                .confirmationDialog(
+                    localized("Sign this Mac out of Tailscale?"),
+                    isPresented: $confirmSignOut,
+                    titleVisibility: .visible
+                ) {
+                    Button(localized("Sign Out"), role: .destructive) { builtIn.signOut() }
+                    Button(localized("Cancel"), role: .cancel) {}
+                } message: {
+                    Text(localized("iPhones paired over the tailnet can’t connect until you sign in again."))
+                }
+        } label: {
+            SettingsLabel(
+                title: localized("Tailscale Account"),
+                subtext: localized("Signs this Mac’s device out of your tailnet.")
+            )
+        }
+    }
+
+    private var builtInSubtext: String {
+        if !builtIn.available, builtIn.report != nil {
+            return localized("This build of Termio doesn’t include built-in Tailscale.")
+        }
+        if !mobile.attachesDirectly {
+            return localized("Needs Direct Attach.")
+        }
+        return localized("This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.")
+    }
+
+    @ViewBuilder
+    private var builtInStatusRow: some View {
+        let status = builtIn.report?.status
+        switch status?.state {
+        case "running":
+            LabeledContent(localized("Status")) {
+                Text(localized("Connected · \(Tailnet.trimmingRoot(status?.dnsName ?? ""))"))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            LabeledContent(localized("Access")) {
+                if status?.tagged == true {
+                    Text(localized("Nobody: a tagged device has no owner"))
+                        .foregroundStyle(.red)
+                } else if let owner = status?.owner {
+                    Text(localized("Only \(owner)"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(localized("Only the account that signed in"))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            signOutRow
+        case "needs_login":
+            LabeledContent {
+                if let link = status?.authURL.flatMap(URL.init(string:)) {
+                    Button(localized("Sign In…")) { NSWorkspace.shared.open(link) }
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            } label: {
+                SettingsLabel(
+                    title: localized("Status"),
+                    subtext: localized("Sign in with the Tailscale account your iPhone uses.")
+                )
+            }
+        case "needs_approval":
+            LabeledContent {
+                Button(localized("Approve…")) {
+                    if let machines = Self.tailscaleMachines { NSWorkspace.shared.open(machines) }
+                }
+            } label: {
+                SettingsLabel(
+                    title: localized("Status"),
+                    subtext: localized("Approve this Mac in the Tailscale admin console.")
+                )
+            }
+            // Signed in to an account whose admin has to approve it: signing
+            // out is the way to another account.
+            signOutRow
+        case "error":
+            LabeledContent(localized("Status")) {
+                Text(status?.message ?? localized("Stopped"))
+                    .font(.settingsDetail)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.trailing)
+            }
+        default:
+            LabeledContent(localized("Status")) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(localized("Starting…")).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
     /// name, so it reaches the screen untranslated — right for the two brands
@@ -450,6 +695,9 @@ struct DeviceServingSection: View {
         }
         if onTunnel {
             return localized("The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
+        }
+        if pairing.usesBuiltInTailscale {
+            return localized("Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.")
         }
         if pairing.servesTailnet {
             return localized("Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
@@ -595,6 +843,7 @@ struct PairingSheet: View {
     @ObservedObject private var pairing = PairingModel.shared
     @ObservedObject private var tunnel = TunnelManager.shared
     @ObservedObject private var mobile = MobileAccess.shared
+    @ObservedObject private var builtIn = BuiltInTailscale.shared
     @State private var copied = false
 
     /// The QR with its address, or the one reason there is none yet. Mobile
@@ -612,7 +861,15 @@ struct PairingSheet: View {
                         footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
                         Button(localized("Turn On")) { mobile.isEnabled = true }
                     }
-                } else if pairing.servesTailnet, !pairing.onTunnel, pairing.tailnetAddress == nil {
+                } else if pairing.usesBuiltInTailscale, !builtIn.fresh {
+                    ProgressView().controlSize(.small)
+                } else if pairing.usesBuiltInTailscale, builtIn.report?.status?.tagged == true {
+                    footnote(localized("Nobody: a tagged device has no owner"))
+                } else if pairing.usesBuiltInTailscale, builtIn.url == nil {
+                    // The node has no address until it is signed in and up,
+                    // and the step it waits on is in Settings, not here.
+                    footnote(localized("Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing."))
+                } else if pairing.servesTailnet, !pairing.onTunnel, !pairing.usesBuiltInTailscale, pairing.tailnetAddress == nil {
                     if pairing.tailnetRead {
                         footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
                     } else {
@@ -651,8 +908,13 @@ struct PairingSheet: View {
         .padding(20)
         .frame(width: 380)
         // Opened from the menu bar, the sheet is the first thing to need fresh
-        // addresses, before the section below it has appeared.
-        .onAppear { pairing.refresh() }
+        // addresses, before the section below it has appeared, and it has to
+        // see a sign-in finish while it is open.
+        .onAppear {
+            pairing.refresh()
+            builtIn.startWatching()
+        }
+        .onDisappear { builtIn.stopWatching() }
     }
 
     /// The hero unit: the QR to scan with its own URL captioned directly beneath

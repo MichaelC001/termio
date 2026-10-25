@@ -142,6 +142,8 @@
 	<string>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</string>
 	<key>Accept the Xcode License</key>
 	<string>Accept the Xcode License</string>
+	<key>Access</key>
+	<string>Access</string>
 	<key>Accounts</key>
 	<string>Accounts</string>
 	<key>Add</key>
@@ -234,6 +236,10 @@
 	<string>Appends a Host block to ~/.ssh/config, so the alias works in plain `ssh %@` too.</string>
 	<key>Apply</key>
 	<string>Apply</string>
+	<key>Approve this Mac in the Tailscale admin console.</key>
+	<string>Approve this Mac in the Tailscale admin console.</string>
+	<key>Approve…</key>
+	<string>Approve…</string>
 	<key>Arguments</key>
 	<string>Arguments</string>
 	<key>Arrow</key>
@@ -276,8 +282,12 @@
 	<string>Branch</string>
 	<key>Bring All to Front</key>
 	<string>Bring All to Front</string>
+	<key>Built-In Tailscale</key>
+	<string>Built-In Tailscale</string>
 	<key>Built-in</key>
 	<string>Built-in</string>
+	<key>Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing.</key>
+	<string>Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing.</string>
 	<key>Cancel</key>
 	<string>Cancel</string>
 	<key>Can’t Compare</key>
@@ -912,6 +922,8 @@
 	<string>Navigation</string>
 	<key>Navigator</key>
 	<string>Navigator</string>
+	<key>Needs Direct Attach.</key>
+	<string>Needs Direct Attach.</string>
 	<key>Needs Live agent status above: without it, nothing tells Termio an agent finished.</key>
 	<string>Needs Live agent status above: without it, nothing tells Termio an agent finished.</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
@@ -1050,6 +1062,8 @@
 	<string>No theme matches “%@”</string>
 	<key>No tunnel selected.</key>
 	<string>No tunnel selected.</string>
+	<key>Nobody: a tagged device has no owner</key>
+	<string>Nobody: a tagged device has no owner</string>
 	<key>None</key>
 	<string>None</string>
 	<key>None found</key>
@@ -1104,10 +1118,14 @@
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</string>
+	<key>Only %@</key>
+	<string>Only %@</string>
 	<key>Only regular files can be previewed.</key>
 	<string>Only regular files can be previewed.</string>
 	<key>Only text can be pasted into the simulator.</key>
 	<string>Only text can be pasted into the simulator.</string>
+	<key>Only the account that signed in</key>
+	<string>Only the account that signed in</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
 	<string>Only the first %lld items are shown — update termio on this device to list them all.</string>
 	<key>Opacity</key>
@@ -1514,16 +1532,26 @@
 	<string>Sidebar</string>
 	<key>Sign In…</key>
 	<string>Sign In…</string>
+	<key>Sign Out</key>
+	<string>Sign Out</string>
+	<key>Sign Out…</key>
+	<string>Sign Out…</string>
 	<key>Sign in again to see this account's limits.</key>
 	<string>Sign in again to see this account's limits.</string>
 	<key>Sign in with a different account in the terminal, or cancel.</key>
 	<string>Sign in with a different account in the terminal, or cancel.</string>
+	<key>Sign in with the Tailscale account your iPhone uses.</key>
+	<string>Sign in with the Tailscale account your iPhone uses.</string>
+	<key>Sign this Mac out of Tailscale?</key>
+	<string>Sign this Mac out of Tailscale?</string>
 	<key>Signed out</key>
 	<string>Signed out</string>
 	<key>Signs in with %@</key>
 	<string>Signs in with %@</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>Signs in with the keys ssh offers by default.</string>
+	<key>Signs this Mac’s device out of your tailnet.</key>
+	<string>Signs this Mac’s device out of your tailnet.</string>
 	<key>Simulator Unavailable</key>
 	<string>Simulator Unavailable</string>
 	<key>Size</key>
@@ -1580,6 +1608,8 @@
 	<string>Stop Recording</string>
 	<key>Stop Selecting</key>
 	<string>Stop Selecting</string>
+	<key>Stopped</key>
+	<string>Stopped</string>
 	<key>Style</key>
 	<string>Style</string>
 	<key>Switch between project files, search, changes, and info</key>
@@ -1592,6 +1622,8 @@
 	<string>System monospace</string>
 	<key>Tabs</key>
 	<string>Tabs</string>
+	<key>Tailscale Account</key>
+	<string>Tailscale Account</string>
 	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
 	<string>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
@@ -1704,6 +1736,8 @@
 	<string>The simulator helper sent a reply Termio couldn’t read.</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
+	<key>The token wasn’t rotated: %@</key>
+	<string>The token wasn’t rotated: %@</string>
 	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>The working tree is clean.</key>
@@ -1720,6 +1754,8 @@
 	<string>This Mac</string>
 	<key>This Mac and the machines you reach from it</key>
 	<string>This Mac and the machines you reach from it</string>
+	<key>This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.</key>
+	<string>This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.</string>
 	<key>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</key>
 	<string>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</string>
 	<key>This Mac…</key>
@@ -1736,6 +1772,8 @@
 	<string>This branch has no commits yet.</string>
 	<key>This branch has nothing the base branch doesn’t already have.</key>
 	<string>This branch has nothing the base branch doesn’t already have.</string>
+	<key>This build of Termio doesn’t include built-in Tailscale.</key>
+	<string>This build of Termio doesn’t include built-in Tailscale.</string>
 	<key>This build of Termio doesn’t include the simulator helper.</key>
 	<string>This build of Termio doesn’t include the simulator helper.</string>
 	<key>This checkout has no other branch to compare with.</key>
@@ -1916,6 +1954,8 @@
 	<string>Working Directory</string>
 	<key>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
 	<string>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</string>
+	<key>Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.</key>
+	<string>Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.</string>
 	<key>Workspace</key>
 	<string>Workspace</string>
 	<key>Workspace Settings…</key>
@@ -1984,6 +2024,8 @@
 	<string>git no longer tracks “%@”, and its folder still holds files. Delete the folder to remove the worktree.</string>
 	<key>git still lists “%@”, so it was not removed.</key>
 	<string>git still lists “%@”, so it was not removed.</string>
+	<key>iPhones paired over the tailnet can’t connect until you sign in again.</key>
+	<string>iPhones paired over the tailnet can’t connect until you sign in again.</string>
 	<key>issue.state.open</key>
 	<string>Open</string>
 	<key>macOS hasn’t been asked to allow Termio’s notifications yet.</key>

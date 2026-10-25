@@ -422,6 +422,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             TunnelManager.shared.suspend()
         }
 
+        // Built-in Tailscale follows Allow Paired Devices and Direct Attach from
+        // launch, not from the first time Pairing is opened: a node turned on
+        // from a terminal while either is off would otherwise stay reachable.
+        _ = PairingModel.shared
+        BuiltInTailscale.shared.refresh()
         if MobileAccess.shared.isEnabled {
             startServing()
             TunnelManager.shared.startIfEnabled()

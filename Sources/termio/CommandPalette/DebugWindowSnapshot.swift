@@ -22,16 +22,37 @@ enum DebugWindowSnapshot {
     private final class Trigger: NSObject, @unchecked Sendable {
         static let shared = Trigger()
         @objc func fire(_ note: Notification) {
+            let title = note.userInfo?["title"] as? String
+            let tab = (note.userInfo?["settings"] as? String).flatMap(SettingsTab.init(rawValue:))
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { DebugWindowSnapshot.capture() }
+                MainActor.assumeIsolated {
+                    // `settings: <tab>` opens that tab first, from inside the
+                    // app: driven from outside, the window loses the focus race
+                    // to whatever sends the keystroke.
+                    guard let tab, let delegate = NSApp.delegate as? AppDelegate else {
+                        DebugWindowSnapshot.capture(title: title)
+                        return
+                    }
+                    delegate.openSettings(initialTab: tab)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        MainActor.assumeIsolated { DebugWindowSnapshot.capture(autosaveName: "TermioSettingsWindow") }
+                    }
+                }
             }
         }
     }
 
     @MainActor
-    static func capture() {
+    static func capture(title: String? = nil, autosaveName: String? = nil) {
+        let named = autosaveName.flatMap { name in NSApp.windows.first { $0.frameAutosaveName == name } }
         // A sheet open on the window is what is on screen, so it is the capture.
-        guard let window = target().map({ $0.attachedSheet ?? $0 }) else { return }
+        guard let window = (named ?? target(title: title)).map({ $0.attachedSheet ?? $0 }) else {
+            // Says what there was to pick from, so the next try names one.
+            let titles = NSApp.windows.filter(\.isVisible).map { "\($0.title) (\(type(of: $0)))" }
+            try? "no visible window titled \(title ?? "")\nwindows: \(titles)".write(
+                toFile: "/tmp/termio\(AppChannel.suffix)-views.txt", atomically: true, encoding: .utf8)
+            return
+        }
         // The frame view (contentView's superview) includes the titlebar/toolbar chrome.
         let root = window.contentView?.superview ?? window.contentView
         guard let view = root else { return }
@@ -88,8 +109,14 @@ enum DebugWindowSnapshot {
     /// behind it. Panels are skipped because the command palette is one, and it
     /// is *always* frontmost at the moment a palette action runs.
     @MainActor
-    private static func target() -> NSWindow? {
-        NSApp.orderedWindows.first {
+    /// `title` names the window outright (`userInfo: ["title": "Server"]`): an
+    /// app in the background has no key window, and a stray window that never
+    /// reached the screen can sit first in the order.
+    private static func target(title: String? = nil) -> NSWindow? {
+        if let title {
+            return NSApp.windows.first { $0.isVisible && $0.title == title }
+        }
+        return NSApp.orderedWindows.first {
             $0.isVisible && !($0 is NSPanel) && $0.contentView != nil
         }
         ?? NSApp.windows.first { $0.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName }
