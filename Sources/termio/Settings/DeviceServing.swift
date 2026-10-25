@@ -224,7 +224,7 @@ final class PairingModel: ObservableObject {
     /// not read as one that did, and a working QR later does not undo that.
     @Published private(set) var rotationFailure: String?
 
-    /// `termiod pair --rotate` with no invite to mint. It holds the mint lock,
+    /// `termio pair --rotate` with no invite to mint. It holds the mint lock,
     /// so an address that appears meanwhile is minted after the new token
     /// exists, never with the one being revoked.
     private func rotateWithoutInvite() {
