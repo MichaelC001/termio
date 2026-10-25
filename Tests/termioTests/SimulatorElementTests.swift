@@ -75,6 +75,16 @@ final class SimulatorElementTests: XCTestCase {
         XCTAssertNil(plain.hint)
     }
 
+    func testAnEmptyFieldIsPickedWithItsPlaceholder() throws {
+        var field = element("TextField", 71, 307, 260, 35)
+        field["placeholder"] = "ws://mac-hostname:8787"
+        let picked = try XCTUnwrap(SimulatorElement.pick(
+            from: ["elements": [element("Other", 0, 0, 402, 874, children: [field])]],
+            at: CGPoint(x: 200, y: 320), interface: interface))
+        XCTAssertNil(picked.value)
+        XCTAssertEqual(picked.summary, "TextField placeholder \"ws://mac-hostname:8787\" @ 71,307 260x35")
+    }
+
     func testAnEmptyReadPicksNothing() {
         XCTAssertNil(SimulatorElement.pick(from: ["elements": []], at: .zero, interface: interface))
     }

@@ -86,6 +86,24 @@ final class SimulatorOutlineTests: XCTestCase {
             """)
     }
 
+    /// iOS reports an empty field's placeholder as its value, and an agent read
+    /// it as text to delete (termio-sh/termio#774). The helper drops such a
+    /// value and sends the placeholder beside it.
+    func testAnEmptyFieldPrintsItsPlaceholderNotAValue() {
+        var empty = element("TextField", frame: (71, 307, 260, 35))
+        empty["value"] = NSNull()
+        empty["placeholder"] = "ws://mac-hostname:8787"
+        var typed = element("TextField", frame: (71, 360, 260, 35))
+        typed["value"] = "ws://studio.local:8787"
+        typed["placeholder"] = "ws://mac-hostname:8787"
+        XCTAssertEqual(
+            TermioStore.outline(document([empty, typed])),
+            """
+            TextField placeholder "ws://mac-hostname:8787" @ 71,307 260x35
+            TextField = "ws://studio.local:8787" @ 71,360 260x35
+            """)
+    }
+
     func testAnEmptyScreenSaysSo() {
         XCTAssertEqual(TermioStore.outline(document([])), "no accessible elements")
     }
