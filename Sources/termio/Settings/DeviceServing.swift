@@ -78,6 +78,10 @@ final class PairingModel: ObservableObject {
     /// a terminal revokes the token it carries without moving the address.
     func refresh() {
         token = PairingToken.current
+        // The address read last time may belong to another tailnet account by
+        // now, and a QR minted for it would save an address nothing answers on.
+        tailnetAddress = nil
+        tailnetRead = false
         refreshHosts()
         refreshInvite(force: true)
         Task {
