@@ -301,4 +301,54 @@ final class StreamRendererTests: XCTestCase {
         let underCursor = try XCTUnwrap(glyphs.first { $0.cellX == 5 })
         XCTAssertEqual([underCursor.r, underCursor.g, underCursor.b], [9, 99, 199])
     }
+
+    private func decoded(_ text: String) throws -> TermiodStreamTerminal {
+        var raw: GhosttyTerminal?
+        XCTAssertEqual(ghostty_terminal_new(nil, &raw, 40, 10), GHOSTTY_SUCCESS)
+        let source = try XCTUnwrap(raw)
+        defer { ghostty_terminal_free(source) }
+        let bytes = Array(text.utf8)
+        ghostty_terminal_vt_write(source, bytes, bytes.count)
+        var encoded: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        XCTAssertEqual(ghostty_snapshot_encode_alloc(source, nil, &encoded, &length), GHOSTTY_SUCCESS)
+        let pointer = try XCTUnwrap(encoded)
+        defer { ghostty_free(nil, pointer, length) }
+        return try TermiodStreamTerminal(nativeSnapshot: Data(bytes: pointer, count: length))
+    }
+
+    /// A program's own blink survives the first theme, and the Blink setting
+    /// is still the default a later `CSI 0 q` returns to.
+    func testAProgramsBlinkSurvivesAttachAndResetsToTheSetting() throws {
+        let terminal = try decoded("\u{1b}[1 q")
+        var theme = colors()
+        theme.cursorBlink = true
+        try terminal.setTheme(theme)
+        XCTAssertTrue(try blinking(terminal), "the program's blinking block")
+        terminal.write(Data("\u{1b}[0 q".utf8))
+        XCTAssertTrue(try blinking(terminal), "reset to the default, which the setting says blinks")
+    }
+
+    /// Box and block characters keep the color a program chose, contrast floor
+    /// or not; emoji are scaled into their row.
+    func testGraphicsKeepTheirColorAndEmojiFitTheirRow() throws {
+        let terminal = try terminal()
+        var theme = colors()
+        theme.background = GhosttyColorRgb(r: 255, g: 255, b: 255)
+        theme.minimumContrast = 1.5
+        try terminal.setTheme(theme)
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("\u{1b}[38;2;250;250;250m\u{2588}".utf8))
+        let frame = try builtFrame(terminal, builder, renderer.atlas)
+        XCTAssertEqual(frame.glyphs.first?.r, 250, "the block keeps its color")
+
+        let courier = TermiodStreamRenderer.Appearance(
+            fontFamily: "Courier", fallbackFamilies: [], fontSize: 13, paddingX: 8, paddingY: 2, backgroundOpacity: 1)
+        let atlas = try TermiodGlyphAtlas(device: renderer.device, appearance: courier, scale: 2)
+        let emoji = try XCTUnwrap(atlas.slot(graphemes: [0x1F600], bold: false, italic: false, cells: 2))
+        XCTAssertTrue(emoji.colored)
+        XCTAssertLessThanOrEqual(Int(emoji.offset.y) + Int(emoji.size.y), atlas.metrics.height, "stays in its row")
+        XCTAssertGreaterThanOrEqual(emoji.offset.y, 0)
+    }
 }

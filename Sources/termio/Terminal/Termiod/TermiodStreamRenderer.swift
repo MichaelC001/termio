@@ -445,6 +445,14 @@ final class TermiodGlyphAtlas {
     /// Box drawing, block elements and the powerline arrows meet their
     /// neighbours only when they fill the cell exactly; drawn at the font's
     /// own size they stop short of the line spacing and leave gaps.
+    /// Characters that draw pictures rather than text, which keep the exact
+    /// color a program chose: Ghostty exempts them from minimum contrast.
+    static func isGraphic(_ graphemes: [UInt32]) -> Bool {
+        guard graphemes.count == 1, let codepoint = graphemes.first else { return false }
+        return (0x2500...0x259F).contains(codepoint) || (0x2800...0x28FF).contains(codepoint)
+            || (0xE0B0...0xE0D7).contains(codepoint) || (0x1FB00...0x1FBFF).contains(codepoint)
+    }
+
     private static func fillsCell(_ graphemes: [UInt32]) -> Bool {
         guard graphemes.count == 1, let codepoint = graphemes.first else { return false }
         return (0x2500...0x259F).contains(codepoint) || (0xE0B0...0xE0B3).contains(codepoint)
@@ -511,15 +519,26 @@ final class TermiodGlyphAtlas {
             text.append(scalar)
         }
         let font = fonts[(key.bold ? 1 : 0) + (key.italic ? 2 : 0)]
-        let attributed = CFAttributedStringCreate(
-            nil, String(text) as CFString,
-            [kCTFontAttributeName: font, kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1)] as CFDictionary
-        )
-        guard let attributed else { return nil }
-        let line = CTLineCreateWithAttributedString(attributed)
-        let bounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        func layout(_ font: CTFont) -> (CTLine, CGRect)? {
+            let attributed = CFAttributedStringCreate(
+                nil, String(text) as CFString,
+                [kCTFontAttributeName: font, kCTForegroundColorAttributeName: CGColor(gray: 1, alpha: 1)] as CFDictionary
+            )
+            guard let attributed else { return nil }
+            let line = CTLineCreateWithAttributedString(attributed)
+            return (line, CTLineGetBoundsWithOptions(line, .useGlyphPathBounds))
+        }
+        guard var (line, bounds) = layout(font), bounds.width > 0, bounds.height > 0 else { return nil }
         let colored = Self.usesColorFont(line)
+        if colored {
+            // An emoji is drawn at the font's size, which is taller than a cell
+            // on most fonts: shrink it to fit its cells.
+            let span = CGFloat(metrics.width * max(1, cells)) - 2
+            let fit = min(1, (CGFloat(metrics.height) - 2) / bounds.height, span / bounds.width)
+            if fit < 1, let smaller = layout(CTFontCreateCopyWithAttributes(font, CTFontGetSize(font) * fit, nil, nil)) {
+                (line, bounds) = smaller
+            }
+        }
         let padding = 1
         let width = Int(bounds.width.rounded(.up)) + 2 * padding
         let height = Int(bounds.height.rounded(.up)) + 2 * padding
@@ -547,9 +566,6 @@ final class TermiodGlyphAtlas {
         var top = metrics.baseline - Int(bounds.maxY.rounded(.up)) - padding
         var left = Int(bounds.minX.rounded(.down)) - padding
         if colored {
-            // An emoji is drawn at the font's size, which is taller than a cell
-            // on most fonts; centring it in its cells keeps it off the rows
-            // above and below.
             let span = metrics.width * max(1, cells)
             left = (span - width) / 2
             top = (metrics.height - height) / 2
@@ -819,7 +835,7 @@ final class TermiodStreamFrameBuilder {
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {
                 continue
             }
-            if minimumContrast > 1, !slot.colored {
+            if minimumContrast > 1, !slot.colored, !TermiodGlyphAtlas.isGraphic(grapheme) {
                 foreground = Self.contrasted(foreground, against: background, minimum: minimumContrast)
             }
             glyphs.append(TermiodStreamGlyph(

@@ -171,22 +171,24 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             // nobody styled shows. One the program chose explicitly keeps its
             // own shape: the terminal tells the two apart even after a decode.
             //
-            // Setting either default rewrites the blink mode, so each is set
-            // only when its setting changes. The first theme skips the blink
-            // default when the decoded screen already blinks: the daemon's
-            // own default is off, so that blink is the program's.
+            // Setting either default also rewrites the blink mode, so each is
+            // set only when its setting changes, as Ghostty does on a config
+            // change. On the first theme a decoded screen that already blinks
+            // keeps blinking — the daemon's own default is off, so that blink
+            // is the program's. One a program turned off cannot be told from
+            // that default, and takes the setting.
             let programBlinks = theme == nil ? try mode(ghostty_mode_new(12, false)) : false
             if theme?.cursorStyle != colors.cursorStyle {
                 var cursorStyle = colors.cursorStyle
                 try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cursorStyle), "ghostty_terminal_set(default cursor)")
-                if programBlinks {
-                    var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(12, false), value: true)
-                    try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode), "ghostty_terminal_set(blink mode)")
-                }
             }
-            if theme?.cursorBlink != colors.cursorBlink, !programBlinks {
+            if theme?.cursorBlink != colors.cursorBlink {
                 var cursorBlink = colors.cursorBlink
                 try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &cursorBlink), "ghostty_terminal_set(default blink)")
+            }
+            if programBlinks {
+                var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(12, false), value: true)
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode), "ghostty_terminal_set(blink mode)")
             }
             theme = colors
         }
