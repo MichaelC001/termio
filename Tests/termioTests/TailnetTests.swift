@@ -74,22 +74,19 @@ final class TailnetTests: XCTestCase {
 
     // MARK: This Mac's own address
 
-    func testThisMacIsReachedByItsMagicDNSName() {
-        XCTAssertEqual(Tailnet.ownAddress(fromStatus: status(peers: mini), namesResolve: true),
-                       "laptop.tail1.ts.net")
-    }
-
-    func testThisMacFallsBackToItsIPv4WhereNamesDoNotResolve() {
+    func testThisMacIsReachedByItsIPv4EvenWithMagicDNS() {
+        // The phone dials plain `ws://`, which App Transport Security allows to an
+        // IP address and refuses to a `.ts.net` name.
         let data = Data("""
             {"BackendState": "Running",
              "Self": {"ID": "self", "HostName": "laptop", "DNSName": "laptop.tail1.ts.net.", "OS": "macOS",
                       "TailscaleIPs": ["fd7a:115c:a1e0::1", "100.64.0.1"]}}
             """.utf8)
-        XCTAssertEqual(Tailnet.ownAddress(fromStatus: data, namesResolve: false), "100.64.0.1")
+        XCTAssertEqual(Tailnet.ownAddress(fromStatus: data), "100.64.0.1")
     }
 
     func testAStoppedClientGivesThisMacNoAddress() {
-        XCTAssertNil(Tailnet.ownAddress(fromStatus: status(backend: "Stopped", peers: mini), namesResolve: true))
+        XCTAssertNil(Tailnet.ownAddress(fromStatus: status(backend: "Stopped", peers: mini)))
     }
 
     // MARK: Running the CLI

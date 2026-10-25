@@ -57,24 +57,23 @@ enum Tailnet {
         return hostPeers(in: status, namesResolve: namesResolve)
     }
 
-    /// Where another device on the tailnet reaches this Mac, picked by the same
-    /// rule as a peer's address. nil when this Mac is not on a running tailnet.
+    /// Where another device on the tailnet reaches this Mac: its Tailscale IP, IPv4
+    /// first. Never the MagicDNS name, because the phone dials it over plain `ws://`
+    /// and App Transport Security lets that through to an IP address but not to a
+    /// `.ts.net` name. nil when this Mac is not on a running tailnet.
     static func ownAddress() async -> String? {
         await ownAddress(cli: cliPath())
     }
 
     static func ownAddress(cli: String?) async -> String? {
-        guard let (status, namesResolve) = await read(cli: cli) else { return nil }
-        return ownAddress(in: status, namesResolve: namesResolve)
+        guard let cli, let output = await StatusRead.run(cli: cli) else { return nil }
+        return ownAddress(fromStatus: output)
     }
 
-    static func ownAddress(fromStatus data: Data, namesResolve: Bool) -> String? {
-        decode(data).flatMap { ownAddress(in: $0, namesResolve: namesResolve) }
-    }
-
-    private static func ownAddress(in status: Status, namesResolve: Bool) -> String? {
-        guard status.backendState == "Running", let node = status.selfNode else { return nil }
-        return address(of: node, namesResolve: namesResolve)
+    static func ownAddress(fromStatus data: Data) -> String? {
+        guard let status = decode(data), status.backendState == "Running",
+              let node = status.selfNode else { return nil }
+        return address(of: node, namesResolve: false)
     }
 
     private static func read(cli: String?) async -> (Status, Bool)? {
