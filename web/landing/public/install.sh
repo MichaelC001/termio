@@ -324,8 +324,13 @@ serve_on_tailnet() {
         say "    installer again after the daemon restarts."
         return 0
     fi
-    serves_termiod_at_root "${URL#https://}" && return 0
-    if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+    if serves_termiod_at_root "${URL#https://}"; then
+        PUBLISHED=1
+        return 0
+    fi
+    if tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+        PUBLISHED=1
+    else
         say "    Tailscale Serve needs permission. Run once:"
         say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
         say "    or allow it for your user with: sudo tailscale set --operator=$(id -un)"
@@ -351,6 +356,7 @@ main() {
     LISTENER_CHANGED=0
     LISTENER_WANTED=0
     SERVICE_OK=0
+    PUBLISHED=0
 
     parse_arguments "$@"
 
@@ -389,12 +395,15 @@ main() {
 
     say ""
     say "termio $VERSION is installed: $TERMIOD"
-    if [ -n "$URL" ] && [ "$SERVICE_OK" = 1 ] && listening; then
+    if [ "$PUBLISHED" = 1 ]; then
         say ""
         say "To use this machine from a Mac, open Settings > Remote Hosts > + > Pair with a Device..."
         say "and paste this link. Scan the code with the iPhone app to pair a phone."
         say ""
         "$TERMIOD" pair --url "$URL" --qr
+    elif [ -n "$URL" ] && listening; then
+        say "Once Tailscale Serve is set up as shown above, print the pairing link with:"
+        say "  $TERMIOD pair --url $URL --qr"
     else
         say "A Mac can reach it over SSH: Settings > Remote Hosts > + > Add SSH Host..."
     fi
