@@ -41,6 +41,7 @@ struct DeviceServingSection: View {
     /// tailnet, which keeps Tailscale out of the picker.
     @State private var tailnetAddress: String?
     @State private var tailnetRead = false
+    @State private var showsPairing = false
     /// The phone reaches this Mac across the user's tailnet. Not a tunnel
     /// provider: nothing is spawned, because both listeners already take every
     /// interface, so only the address in the QR changes.
@@ -122,14 +123,16 @@ struct DeviceServingSection: View {
         return false
     }
 
-    /// One card, not the four this was the first time it was a tab: a card per
-    /// lone switch read as four unrelated subjects. The switches stay rows with
-    /// their sentence as subtext, which is the shape every settings row has.
+    /// Configuration first, the code last. The QR is something you do once per
+    /// phone, not a setting, so it sits behind Pair iPhone in a sheet, the way
+    /// Rex puts "Pair Device with QR Code" behind a button. The pane then reads
+    /// top to bottom as: is this Mac paired at all, which network carries it,
+    /// pair a phone, and the rare maintenance.
     var body: some View {
         Section {
             Toggle(isOn: $mobile.isEnabled) {
                 SettingsLabel(
-                    title: localized("Mobile Access"),
+                    title: localized("Allow Paired Devices"),
                     subtext: localized("Turn off to disconnect your iPhone; pairing is kept.")
                 )
             }
@@ -139,48 +142,9 @@ struct DeviceServingSection: View {
             // master switch reveals it — a dimmed, unscannable QR (and an
             // address nothing is listening on) is more misleading than absent.
             if mobile.isEnabled {
-                Toggle(isOn: $mobile.attachesDirectly) {
-                    SettingsLabel(
-                        title: localized("Direct Attach"),
-                        subtext: localized("Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.")
-                    )
-                }
-                .toggleStyle(.switch)
-                // The switch changes what the QR means, so every phone paired
-                // the other way is signed out by flipping it. Said here rather
-                // than in a dialog: it is a fact about the switch, not a
-                // consequence of one particular flip.
-                footnote(localized("Paired iPhones must scan the code again after switching."))
-
-                if servesTailnet, !onTunnel, tailnetAddress == nil {
-                    if tailnetRead {
-                        footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                } else if !servesTailnet, hosts.isEmpty, !tunnelRunning {
-                    footnote(localized("No network address found. Join a network, then reopen this pane."))
-                } else if mobile.attachesDirectly, let inviteFailure {
-                    footnote(inviteFailure)
-                } else if mobile.attachesDirectly, invite == nil {
-                    // A QR generated from an empty string is a scannable code
-                    // for nothing, which is worse than the wait it hides.
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                } else {
-                    // QR + its URL are one unit ("scan this, or copy the same
-                    // thing") — kept in a single row so no divider splits them.
-                    scanBlock
-                }
-
-                // One precise control: where the companion is reachable —
-                // LAN only, the user's tailnet, or fronted by a named tunnel.
-                Picker(localized("Tunnel"), selection: reach) {
+                // One precise control: where the phone reaches this Mac — the
+                // LAN, the user's tailnet, or a named tunnel.
+                Picker(localized("Network"), selection: reach) {
                     ForEach(TunnelManager.Provider.allCases) { provider in
                         Text(Self.pickerLabel(provider)).tag(Reach.tunnel(provider))
                         // Offered only on a tailnet, but kept while chosen so
@@ -201,6 +165,29 @@ struct DeviceServingSection: View {
                     }
                 }
                 if onTunnel { statusRow }
+                if servesTailnet, !onTunnel { tailnetRow }
+
+                LabeledContent {
+                    Button(localized("Show QR Code…")) { showsPairing = true }
+                } label: {
+                    SettingsLabel(
+                        title: localized("Pair iPhone"),
+                        subtext: localized("On iPhone, tap the Mac pill ▸ Scan QR Code.")
+                    )
+                }
+
+                Toggle(isOn: $mobile.attachesDirectly) {
+                    SettingsLabel(
+                        title: localized("Direct Attach"),
+                        subtext: localized("Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.")
+                    )
+                }
+                .toggleStyle(.switch)
+                // The switch changes what the QR means, so every phone paired
+                // the other way is signed out by flipping it. Said here rather
+                // than in a dialog: it is a fact about the switch, not a
+                // consequence of one particular flip.
+                footnote(localized("Paired iPhones must scan the code again after switching."))
 
                 LabeledContent {
                     // A rare, destructive maintenance action: it rests as a plain
@@ -236,14 +223,15 @@ struct DeviceServingSection: View {
                 betaRow
             }
         } header: {
-            SectionHeaderLabel(title: localized("Mobile"))
+            SectionHeaderLabel(title: localized("Pairing"))
         } footer: {
             // Say plainly whose server the phone's traffic crosses, so the
             // "can I self-host the relay?" question is answered in the app: the
             // bundled providers all terminate on a third party, Custom is one
             // the user runs themselves.
-            if mobile.isEnabled { footnote(tunnelFootnote) }
+            if mobile.isEnabled { footnote(networkFootnote) }
         }
+        .sheet(isPresented: $showsPairing) { pairingSheet }
         .onAppear {
             refreshHosts()
             let custom = CustomTunnel.current
@@ -265,6 +253,75 @@ struct DeviceServingSection: View {
         .onChange(of: tunnel.status) { refreshInvite() }
     }
 
+    /// The QR with its address, or the one reason there is none yet. Mobile
+    /// Access switching off while it is open leaves nothing to scan, so the
+    /// sheet says that instead of keeping a code for a server that stopped.
+    private var pairingSheet: some View {
+        VStack(spacing: 16) {
+            Text(localized("Pair iPhone"))
+                .font(.headline)
+            Group {
+                if !mobile.isEnabled {
+                    footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
+                } else if servesTailnet, !onTunnel, tailnetAddress == nil {
+                    if tailnetRead {
+                        footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else if !servesTailnet, hosts.isEmpty, !tunnelRunning {
+                    footnote(localized("No network address found. Join a network, then reopen this pane."))
+                } else if onTunnel, !tunnelRunning {
+                    // The QR would name the LAN until the tunnel prints its URL,
+                    // and a phone that scans it in that second is paired to an
+                    // address the picker says is not in use.
+                    if case .failed(let message) = tunnel.status {
+                        footnote(message)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else if mobile.attachesDirectly, let inviteFailure {
+                    footnote(inviteFailure)
+                } else if mobile.attachesDirectly, invite == nil {
+                    // A QR generated from an empty string is a scannable code
+                    // for nothing, which is worse than the wait it hides.
+                    ProgressView().controlSize(.small)
+                } else {
+                    scanBlock
+                }
+            }
+            .frame(minHeight: 120)
+            footnote(localized("On iPhone, tap the Mac pill ▸ Scan QR Code."))
+                .multilineTextAlignment(.center)
+            HStack {
+                Spacer()
+                Button(localized("Done")) { showsPairing = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
+    /// Where Tailscale stands on this Mac, in the place a tunnel shows its
+    /// status. The IP is the fact the phone is about to dial.
+    @ViewBuilder
+    private var tailnetRow: some View {
+        LabeledContent(localized("Status")) {
+            if let tailnetAddress {
+                Text(localized("Connected · \(tailnetAddress)"))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            } else if tailnetRead {
+                Button(localized("Open Tailscale")) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Tailscale.app"))
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
     /// name, so it reaches the screen untranslated — right for the three brands
     /// (Tunelo, Cloudflare, ngrok are proper nouns everywhere), wrong for the
@@ -272,26 +329,25 @@ struct DeviceServingSection: View {
     /// already carries "Custom" for the theme picker.
     private static func pickerLabel(_ provider: TunnelManager.Provider) -> String {
         switch provider {
-        case .off: return localized("Off — LAN only")
+        case .off: return localized("Local Network")
         case .custom: return localized("Custom")
         case .tunelo, .cloudflared, .ngrok: return provider.label
         }
     }
 
-    /// Whose server the phone's traffic crosses, phrased for the current
-    /// selection: a self-hosted Custom relay, a bundled third-party tunnel, or
-    /// LAN-only. Answers the "is the relay self-hostable?" question in the app.
-    private var tunnelFootnote: String {
+    /// Whose network the phone's traffic crosses, phrased for the current
+    /// selection. Answers the "is the relay self-hostable?" question in the app.
+    private var networkFootnote: String {
         if tunnel.provider == .custom {
-            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.")
+            return localized("Traffic crosses the relay you run yourself — no third party in the path.")
         }
         if onTunnel {
-            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
+            return localized("The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
         }
         if servesTailnet {
-            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
+            return localized("Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
         }
-        return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.")
+        return localized("Your iPhone must be on the same network as this Mac.")
     }
 
     /// Command + URL-pattern editor for a self-hosted relay. A run-any-command
