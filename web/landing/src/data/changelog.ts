@@ -17,6 +17,24 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.63.0",
+    date: "2026-10-25",
+    title: "The iOS Simulator, beside your agents",
+    changes: {
+      new: [
+        "iOS Simulator: a live simulator in the inspector. Tap, type, scroll, rotate, zoom, record and take screenshots, with Simulator.app's shortcuts.",
+        "Agents drive it with termio sim: launch an app, tap, type, read the screen, its logs and crash reports — on devices you allow.",
+        "Select Element and Annotate hand a piece of the screen, or a screenshot you drew on, to the chat.",
+        "Pair your iPhone over Tailscale from Settings ▸ Server ▸ Pairing or the menu bar, with no public tunnel.",
+        "Add SSH Host lists the machines on your tailnet.",
+        "A zoom button on the focused pane's header when the window is split.",
+      ],
+      improved: [
+        "Updated the terminal engine to a newer Ghostty.",
+      ],
+    },
+  },
+  {
     version: "0.62.0",
     date: "2026-10-24",
     title: "Several accounts per agent",
