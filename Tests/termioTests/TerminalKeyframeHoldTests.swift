@@ -52,6 +52,23 @@ final class TerminalKeyframeHoldTests: XCTestCase {
         XCTAssertFalse(hold.isHolding)
     }
 
+    /// The relaunch case: the attach keyframe arrives before the surface's first
+    /// layout pass, while it still sits at the frame it was created with. Not
+    /// even a repaint this client asked for may land there — it would be
+    /// wrapped at the creation width and reflowed into the pane afterwards,
+    /// which is what scrambled an agent's input box after every app update.
+    func testNothingPaintsBeforeTheSurfaceHasReportedAGrid() {
+        var hold = TerminalKeyframeHold()
+        hold.paintNextKeyframe()
+        XCTAssertTrue(hold.receive(keyframe: bytes("repaint"), at: new).isEmpty)
+        XCTAssertTrue(hold.receive(output: bytes("live"), limit: limit).emit.isEmpty)
+
+        XCTAssertTrue(hold.surfaceReached(TerminalGrid(rows: 15, cols: 40)).paint.isEmpty)
+        let arrived = hold.surfaceReached(new)
+        XCTAssertEqual(joined(arrived.paint), "repaintlive")
+        XCTAssertTrue(arrived.painted)
+    }
+
     /// `painted` is what stands down the resync. Reporting it for a grid nobody
     /// was waiting on would suppress the repair the degraded path depends on.
     func testOnlyTheGridThatWasWaitedOnReportsPainted() {

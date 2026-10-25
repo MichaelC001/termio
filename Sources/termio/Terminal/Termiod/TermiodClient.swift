@@ -1156,8 +1156,12 @@ extension Termiod {
 /// is pinned by tests.
 struct TerminalKeyframeHold {
     var surfaceReadyAfter: DispatchTime = .now()
-    /// The grid libghostty last reported this surface laid out at.
-    private(set) var surfaceGrid: TerminalGrid
+    /// The grid libghostty last reported this surface laid out at, or nil
+    /// until it has reported one. Nil is not a guess to be filled in: a surface
+    /// made before its first layout pass sits at the frame it was created with
+    /// (traced at 15x40 under a 35x68 pane on relaunch), and a keyframe painted
+    /// there is wrapped at that width before the pane ever reflows it.
+    private(set) var surfaceGrid: TerminalGrid?
     /// Bumped whenever a hold opens or closes, so a deadline armed for an older
     /// keyframe does nothing when it fires.
     private(set) var epoch: UInt64 = 0
@@ -1178,7 +1182,7 @@ struct TerminalKeyframeHold {
         painting = true
     }
 
-    init(surfaceGrid: TerminalGrid) {
+    init(surfaceGrid: TerminalGrid? = nil) {
         self.surfaceGrid = surfaceGrid
     }
 
@@ -1193,7 +1197,10 @@ struct TerminalKeyframeHold {
         epoch &+= 1
         let asked = painting
         painting = false
-        if DispatchTime.now() >= surfaceReadyAfter, grid == surfaceGrid || asked {
+        // Not even a repaint this client asked for goes through before the
+        // surface has a grid: there is no right width to paint it at yet.
+        if let surfaceGrid, DispatchTime.now() >= surfaceReadyAfter,
+           grid == surfaceGrid || asked {
             keyframe = nil
             keyframeGrid = nil
             return [repaint]
@@ -1338,9 +1345,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether the viewport now pending was measured while a person was
     /// dragging geometry. See `setViewport`.
     private var viewportIsUserDriven = false
-    /// The grid libghostty says this surface is actually laid out at. Read only
-    /// by the repaint arming below — it is never what goes on the wire.
-    private var surfaceGrid: TerminalGrid
+    /// The grid libghostty says this surface is actually laid out at, nil until
+    /// it first says. Read only by the repaint arming below — it is never what
+    /// goes on the wire.
+    private var surfaceGrid: TerminalGrid?
     /// A local viewport growth that has not reached the daemon yet. While this
     /// is true the surface may widen with the pane instead of letterboxing at
     /// the old session grid; shrinking never takes this path.
@@ -1535,8 +1543,13 @@ final class TermiodSessionLink: @unchecked Sendable {
         self.rendering = rendering
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
-        surfaceGrid = grid
-        hold = TerminalKeyframeHold(surfaceGrid: grid)
+        // `rows`/`cols` are the size this attachment asks for, not one the
+        // surface has been laid out at. Seeding the hold with them let the
+        // attach keyframe paint into a surface still at its creation frame
+        // whenever the guess matched the session, which on every relaunch it
+        // does — and a matching guess also meant no repaint was ever armed.
+        surfaceGrid = nil
+        hold = TerminalKeyframeHold()
     }
 
     /// Kicks off connect → hello → attach in the background. The caller wires
@@ -1951,10 +1964,24 @@ final class TermiodSessionLink: @unchecked Sendable {
         let epoch = hold.epoch
         outputLock.unlock()
         guard waiting else { return }
+        armKeyframeDeadline(for: epoch)
+    }
+
+    /// Must not be called with `outputLock` held.
+    private func armKeyframeDeadline(for epoch: UInt64) {
         workQueue.asyncAfter(deadline: .now() + Self.keyframeHoldDeadline) { [self] in
             outputLock.lock()
             guard epoch == hold.epoch else {
                 outputLock.unlock()
+                return
+            }
+            // A surface that has never reported is one that has not been laid
+            // out yet — the launch case — and it will report. Giving up here
+            // would only ask for a repaint that has no grid to land on either,
+            // so the wait restarts and is judged once the surface has a grid.
+            guard hold.surfaceGrid != nil else {
+                outputLock.unlock()
+                armKeyframeDeadline(for: epoch)
                 return
             }
             hold.discard()
