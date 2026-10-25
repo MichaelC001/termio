@@ -85,6 +85,18 @@ final class PairingModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] allowed in self?.followMasterSwitch(allowed) }
             .store(in: &observers)
+        // A node reported on while either switch is off is paused the moment
+        // the report arrives: the switch may have gone off before the first
+        // read, when there was nothing yet to pause.
+        builtIn.$report
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if !(self.mobile.isEnabled && self.mobile.attachesDirectly) {
+                    self.followMasterSwitch(false)
+                }
+            }
+            .store(in: &observers)
     }
 
     private static let pausedNodeKey = "companion.builtInTailscalePaused"
