@@ -401,21 +401,36 @@ final class BuiltInTailscale: ObservableObject {
 
     var enabled: Bool { report?.enabled ?? false }
     var state: String? { report?.status?.state }
-    /// Where a phone reaches this Mac's session host on the tailnet, once the
-    /// node is connected.
-    var url: String? { state == "running" ? report?.url : nil }
+    /// The report was read since the pane last opened. One read before that
+    /// may name a node that has since signed out or changed accounts.
+    @Published private(set) var fresh = false
+    /// Where a phone reaches this Mac's session host on the tailnet: only a
+    /// node that is connected, read just now, and owned by someone, because a
+    /// tagged node admits nobody.
+    var url: String? {
+        guard fresh, state == "running", report?.status?.tagged != true else { return nil }
+        return report?.url
+    }
     /// The build carries the helper. A dev build without Go does not.
     var available: Bool { report?.helper != nil }
 
     private var polling: Task<Void, Never>?
+    /// The section and the QR sheet each watch; polling runs while either is
+    /// on screen.
+    private var watchers = 0
+    /// Reads finish out of order, so only the newest one started may publish.
+    private var reads = 0
 
-    /// Reads the state now, and keeps reading while the node is on its way
-    /// somewhere: signing in, waiting for approval, starting.
+    /// Reads the state now. What was read before stops counting until then.
     func refresh() {
+        fresh = false
         Task { await read() }
     }
 
+    /// Keeps reading while the node is on its way somewhere: signing in,
+    /// waiting for approval, starting.
     func startWatching() {
+        watchers += 1
         guard polling == nil else { return }
         polling = Task { [weak self] in
             while !Task.isCancelled {
@@ -427,6 +442,8 @@ final class BuiltInTailscale: ObservableObject {
     }
 
     func stopWatching() {
+        watchers = max(0, watchers - 1)
+        guard watchers == 0 else { return }
         polling?.cancel()
         polling = nil
     }
@@ -447,12 +464,18 @@ final class BuiltInTailscale: ObservableObject {
         perform(["tailscale", "logout"])
     }
 
+    /// A command asked for while one runs, such as Allow Paired Devices going
+    /// off mid-sign-in. It runs next; dropping it left the node on.
+    private var pending: [String]?
+
     private func perform(_ arguments: [String]) {
-        guard !busy else { return }
+        guard !busy else {
+            pending = arguments
+            return
+        }
         busy = true
         failure = nil
         Task {
-            defer { busy = false }
             do {
                 let result = try await RemotePairing.runLocally(arguments: arguments)
                 if result.status != 0 {
@@ -464,16 +487,25 @@ final class BuiltInTailscale: ObservableObject {
                 failure = error.localizedDescription
             }
             await read()
+            busy = false
+            if let next = pending {
+                pending = nil
+                perform(next)
+            }
         }
     }
 
     private func read() async {
+        reads &+= 1
+        let mine = reads
         guard let result = try? await RemotePairing.runLocally(arguments: ["tailscale", "status", "--json"]),
+              mine == reads,
               result.status == 0,
               let data = result.stdout.data(using: .utf8),
               let decoded = try? JSONDecoder().decode(Report.self, from: data)
         else { return }
         if decoded != report { report = decoded }
+        fresh = true
     }
 
     /// `termio-` and this Mac's name as a DNS label, so two Macs on one tailnet

@@ -68,12 +68,36 @@ final class PairingModel: ObservableObject {
             $tailnetAddress.map { _ in }.eraseToAnyPublisher(),
             $servesTailnet.map { _ in }.eraseToAnyPublisher(),
             builtIn.$report.map { _ in }.eraseToAnyPublisher(),
+            builtIn.$fresh.map { _ in }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(triggers)
             .dropFirst(triggers.count)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.refreshInvite() }
             .store(in: &observers)
+        // Allow Paired Devices covers the node too: a phone that reaches the
+        // session host through it would otherwise outlive the switch.
+        mobile.$isEnabled
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] allowed in self?.followMasterSwitch(allowed) }
+            .store(in: &observers)
+    }
+
+    private static let pausedNodeKey = "companion.builtInTailscalePaused"
+
+    /// Turning Allow Paired Devices off takes the node off the tailnet, and
+    /// turning it on brings back a node it took off, and only that one.
+    private func followMasterSwitch(_ allowed: Bool) {
+        let defaults = UserDefaults.standard
+        if !allowed, builtIn.enabled {
+            defaults.set(true, forKey: Self.pausedNodeKey)
+            builtIn.setEnabled(false)
+        } else if allowed, defaults.bool(forKey: Self.pausedNodeKey) {
+            defaults.removeObject(forKey: Self.pausedNodeKey)
+            builtIn.setEnabled(true)
+        }
     }
 
     /// Re-reads everything that can change while the pane is closed. The invite
@@ -747,6 +771,10 @@ struct PairingSheet: View {
                         footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
                         Button(localized("Turn On")) { mobile.isEnabled = true }
                     }
+                } else if pairing.usesBuiltInTailscale, !builtIn.fresh {
+                    ProgressView().controlSize(.small)
+                } else if pairing.usesBuiltInTailscale, builtIn.report?.status?.tagged == true {
+                    footnote(localized("Nobody: a tagged device has no owner"))
                 } else if pairing.usesBuiltInTailscale, builtIn.url == nil {
                     // The node has no address until it is signed in and up,
                     // and the step it waits on is in Settings, not here.
@@ -790,8 +818,13 @@ struct PairingSheet: View {
         .padding(20)
         .frame(width: 380)
         // Opened from the menu bar, the sheet is the first thing to need fresh
-        // addresses, before the section below it has appeared.
-        .onAppear { pairing.refresh() }
+        // addresses, before the section below it has appeared, and it has to
+        // see a sign-in finish while it is open.
+        .onAppear {
+            pairing.refresh()
+            builtIn.startWatching()
+        }
+        .onDisappear { builtIn.stopWatching() }
     }
 
     /// The hero unit: the QR to scan with its own URL captioned directly beneath
