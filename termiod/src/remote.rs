@@ -495,11 +495,17 @@ impl Node for SshNode {
     async fn hello(&self) -> Result<DaemonHello> {
         // The daemon's own `stdio`, not the client's: this verifies the
         // daemon, and a client repair may just have taken a broken client
-        // back off the box.
+        // back off the box. A renamed daemon is named to itself, so the
+        // daemon its autostart spawns is this one and not a sibling.
+        let daemon = remote_bin();
+        let command = match remote_client_bin() {
+            Some(_) => format!("{daemon} stdio"),
+            None => format!("TERMIOD_BIN={daemon} {daemon} stdio"),
+        };
         let mut child = self
             .ssh()
             .arg(&self.host)
-            .arg(format!("{} stdio", remote_bin()))
+            .arg(command)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
