@@ -196,29 +196,35 @@ struct TerminalPane: View {
                     .opacity(isVisible ? 1 : 0)
                     .allowsHitTesting(isVisible)
                 if let link = store.runtime(for: id).streamLink {
-                    // The stream view never letterboxes: it draws the session's
-                    // grid anchored top-left and declares what the pane holds.
-                    TermiodStreamPane(
-                        link: link,
-                        sessionID: id,
-                        appearance: store.streamAppearance(),
-                        colors: store.streamTheme(dark: colorScheme == .dark),
-                        isSelected: isSelected,
-                        isVisible: isVisible,
-                        copyOnSelect: settings.copyOnSelect,
-                        onViewport: { grid in store.reportViewport(grid, for: id) },
-                        onVisibility: { store.reportRendering($0, for: id) },
-                        onFocused: { selectFocusedSurface(id) }
-                    )
-                    // One view per link: a relaunch attaches a new one.
-                    .id(ObjectIdentifier(link))
-                    .frame(width: rect.width, height: rect.height)
-                    .background(paneBackground)
-                    .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
-                                                 topLeading: notch != nil))
-                    .position(x: rect.midX, y: rect.midY)
-                    .opacity(isVisible ? 1 : 0)
-                    .allowsHitTesting(isVisible)
+                    // Stays mounted while the view comes and goes, so the link
+                    // hears a hidden pane stop counting toward the session's size.
+                    StreamRenderingReport(isVisible: isVisible) { store.reportRendering($0, for: id) }
+                        .id(ObjectIdentifier(link))
+                    // Unlike the embedded surface, which owns its terminal and so
+                    // stays mounted at zero opacity, the stream view is mounted
+                    // only on screen: the terminal lives in the link, and a new
+                    // view at the same size declares a grid the link already holds.
+                    if isVisible {
+                        // The stream view never letterboxes: it draws the session's
+                        // grid anchored top-left and declares what the pane holds.
+                        TermiodStreamPane(
+                            link: link,
+                            sessionID: id,
+                            appearance: store.streamAppearance(),
+                            colors: store.streamTheme(dark: colorScheme == .dark),
+                            isSelected: isSelected,
+                            copyOnSelect: settings.copyOnSelect,
+                            onViewport: { grid in store.reportViewport(grid, for: id) },
+                            onFocused: { selectFocusedSurface(id) }
+                        )
+                        // One view per link: a relaunch attaches a new one.
+                        .id(ObjectIdentifier(link))
+                        .frame(width: rect.width, height: rect.height)
+                        .background(paneBackground)
+                        .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
+                                                     topLeading: notch != nil))
+                        .position(x: rect.midX, y: rect.midY)
+                    }
                 } else {
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
@@ -809,6 +815,20 @@ private struct SharedGridLetterbox<Content: View>: View {
         return CGSize(
             width: CGFloat(metrics.cellWidthPixels) / displayScale,
             height: CGFloat(metrics.cellHeightPixels) / displayScale)
+    }
+}
+
+/// Tells a stream pane's link whether the pane is on screen, from a view that
+/// stays mounted while the pane's own view is mounted only when it shows.
+private struct StreamRenderingReport: View {
+    let isVisible: Bool
+    let report: (Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onChange(of: isVisible, initial: true) { _, visible in report(visible) }
     }
 }
 

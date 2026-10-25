@@ -1660,6 +1660,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     func setStreamTheme(_ colors: TermiodStreamTerminal.Theme) {
         streamLock.lock()
         defer { streamLock.unlock() }
+        // Each view mounted for the pane hands its theme over again; the
+        // current terminal already has it.
+        guard streamThemeLocked != colors else { return }
         streamThemeLocked = colors
         do {
             try streamTerminalLocked?.setTheme(colors)

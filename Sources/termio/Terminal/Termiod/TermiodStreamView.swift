@@ -69,15 +69,9 @@ final class TermiodStreamView: NSView {
     /// Keys an editing binding took, whose releases the program never sees.
     fileprivate var consumedKeys: Set<UInt16> = []
     fileprivate var trackingArea: NSTrackingArea?
-    /// Off while the pane is not on screen: a hidden pane draws nothing, as
-    /// `setSurfaceVisible` arranges for the embedded surface.
-    var isShowing = true {
-        didSet {
-            guard isShowing != oldValue else { return }
-            displayLinkHandle?.isPaused = !isShowing
-            needsFullDraw = true
-        }
-    }
+    /// The pane is the selected one, so a view mounted for it takes the
+    /// keyboard as soon as it is in a window.
+    var claimsFocus = false
 
     init(appearance: TermiodStreamRenderer.Appearance) {
         super.init(frame: .zero)
@@ -136,6 +130,22 @@ final class TermiodStreamView: NSView {
         return true
     }
 
+    /// A pane going off screen takes its view with it (Rex's rule: the
+    /// terminal lives in the link, a view only while someone looks). Leaving
+    /// here, rather than trusting a `resignFirstResponder` during removal,
+    /// sends the program its key releases and focus-out, and drops unfinished
+    /// input.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            if hasMarkedText() {
+                inputContext?.discardMarkedText()
+                unmarkText()
+            }
+            focused = false
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
@@ -150,10 +160,15 @@ final class TermiodStreamView: NSView {
             )
         }
         viewDidChangeBackingProperties()
+        if claimsFocus {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.claimsFocus, let window = self.window, window.firstResponder !== self else { return }
+                window.makeFirstResponder(self)
+            }
+        }
         guard displayLinkHandle == nil else { return }
         let link = displayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
-        link.isPaused = !isShowing
         displayLinkHandle = link
     }
 
@@ -197,7 +212,7 @@ final class TermiodStreamView: NSView {
     }
 
     @objc private func tick() {
-        guard isShowing, let renderer, let terminal = terminal() else { return }
+        guard let renderer, let terminal = terminal() else { return }
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
@@ -702,22 +717,21 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
 import SwiftUI
 
 /// Mounts a `TermiodStreamView` for a pane whose link is on the `vt_stream`
-/// plane, in place of the embedded surface.
+/// plane, in place of the embedded surface. Mounted only while the pane is on
+/// screen: the terminal lives in the link, so a hidden pane holds no view,
+/// layer or drawables, and showing it again draws the link's current screen.
 struct TermiodStreamPane: NSViewRepresentable {
     let link: TermiodSessionLink
     let sessionID: Session.ID
     let appearance: TermiodStreamRenderer.Appearance
     let colors: TermiodStreamTerminal.Theme?
     let isSelected: Bool
-    let isVisible: Bool
     let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
-    let onVisibility: (Bool) -> Void
     let onFocused: () -> Void
 
     final class Coordinator {
         var themeApplied: TermiodStreamTerminal.Theme?
-        var visible: Bool?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -741,16 +755,12 @@ struct TermiodStreamPane: NSViewRepresentable {
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
-        view.isShowing = isVisible
+        view.claimsFocus = isSelected
         if let colors, context.coordinator.themeApplied != colors {
             context.coordinator.themeApplied = colors
             link.setStreamTheme(colors)
         }
-        if context.coordinator.visible != isVisible {
-            context.coordinator.visible = isVisible
-            onVisibility(isVisible)
-        }
-        if isSelected, isVisible, let window = view.window, window.firstResponder !== view {
+        if isSelected, let window = view.window, window.firstResponder !== view {
             DispatchQueue.main.async { window.makeFirstResponder(view) }
         }
     }
