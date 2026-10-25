@@ -275,9 +275,10 @@ listening() {
     ls -l "/proc/$pid/fd" 2>/dev/null | grep -q "socket:\[$inode\]"
 }
 
-# Something other than termiod holds the port.
+# Something other than termiod listens on the port, on any address.
 port_taken() {
-    grep -q "0100007F:$(printf '%04X' "$PORT") 00000000:0000 0A" /proc/net/tcp 2>/dev/null && ! listening
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        grep -q " [0-9A-F]*:$(printf '%04X' "$PORT") [0-9A-F]*:0000 0A" && ! listening
 }
 
 # A daemon that was just started binds its socket before its listener.
@@ -291,8 +292,15 @@ wait_for_listener() {
     return 1
 }
 
+# Published only once termiod's own listener is confirmed: whatever else could
+# be on that port must never reach the tailnet.
 serve_on_tailnet() {
     [ -n "$URL" ] && [ "$SERVICE_OK" = 1 ] || return 0
+    if ! listening; then
+        say "    Nothing is published on the tailnet until termiod is listening. Run this"
+        say "    installer again after the daemon restarts."
+        return 0
+    fi
     if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
         say "    Tailscale Serve needs permission. Run once:"
         say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
