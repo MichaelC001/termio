@@ -1827,9 +1827,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                         Log.termiod.info("\(self.sessionName, privacy: .public): dropped an input event typed during a fallback to keyframes")
                     }
                 }
-                if streamingNow, let focused = lastFocusLocked {
-                    try sendEventLocked(.focus(focused))
-                }
+            }
+            // Whether or not this attachment holds the token: termiod keeps a
+            // non-writer's focus and reports it when that pane takes over.
+            if streamingNow, let focused = lastFocusLocked {
+                try sendEventLocked(.focus(focused))
             }
             pendingInput.removeAll(keepingCapacity: false)
             startReader(channel.readDescriptor)
@@ -1924,10 +1926,11 @@ final class TermiodSessionLink: @unchecked Sendable {
             inputLock.unlock()
         }
         workQueue.async { [self] in
-            guard !closed else { return }
-            // Kept for every attach: a pane that already has focus says so
-            // once, and a program that asks after a reconnect must hear it.
+            // Kept for every attach, even between them: a pane that already
+            // has focus says so once, and a program that asks after a
+            // reconnect must hear the pane's focus as it is now.
             if case .focus(let focused) = event { lastFocusLocked = focused }
+            guard !closed else { return }
             guard attached else {
                 if case .focus = event { return }
                 pendingInput.append(.event(event))

@@ -531,13 +531,20 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     override func rightMouseDragged(with event: NSEvent) { motion(event, 2) }
     override func otherMouseDragged(with event: NSEvent) { motion(event, Self.otherButton(event)) }
 
-    /// Ghostty's numbering for the buttons past the first two: AppKit's 2 is
-    /// the middle button, 3 and 4 are back and forward (buttons eight and
-    /// nine), and so on to eleven.
+    /// Ghostty's numbering for the buttons past the first two
+    /// (`MouseButton(fromNSEventButtonNumber:)`): AppKit's 2 is the middle
+    /// button, 3 and 4 are back and forward.
     static func otherButton(_ event: NSEvent) -> UInt8? {
         switch event.buttonNumber {
         case 2: return 3
-        case 3 ... 6: return UInt8(event.buttonNumber + 5)
+        case 3: return 8
+        case 4: return 9
+        case 5: return 6
+        case 6: return 7
+        case 7: return 4
+        case 8: return 5
+        case 9: return 10
+        case 10: return 11
         default: return nil
         }
     }

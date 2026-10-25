@@ -8,7 +8,7 @@
 mod input;
 
 pub use input::{
-    key_named, InputEncoder, InputModes, KeyAction, KeyInput, MouseAction, MouseInput, Pointer,
+    is_modifier_key, key_named, InputEncoder, InputModes, KeyAction, KeyInput, MouseAction, MouseInput, Pointer,
     WheelInput,
 };
 

@@ -164,7 +164,10 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(try other(2), 3, "middle")
         XCTAssertEqual(try other(3), 8, "back")
         XCTAssertEqual(try other(4), 9, "forward")
-        XCTAssertNil(try other(9))
+        XCTAssertEqual(try other(5), 6)
+        XCTAssertEqual(try other(7), 4)
+        XCTAssertEqual(try other(10), 11)
+        XCTAssertNil(try other(11))
     }
 
     func testTheWheelIsTheProgramsOnlyWhenGhosttyWouldSendIt() throws {

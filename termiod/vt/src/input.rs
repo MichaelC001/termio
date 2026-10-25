@@ -417,6 +417,16 @@ fn button(number: u8) -> Option<mouse::Button> {
     })
 }
 
+/// The modifier keys, by name: pressed alone they type nothing, so they do
+/// not take the write token (the app's `claimsWriter` lists the same).
+pub fn is_modifier_key(name: &str) -> bool {
+    matches!(
+        name,
+        "shift_left" | "shift_right" | "control_left" | "control_right" | "alt_left" | "alt_right"
+            | "meta_left" | "meta_right" | "caps_lock" | "fn" | "fn_lock"
+    )
+}
+
 /// Ghostty's own names for the physical keys, as its keybind syntax spells
 /// them. The wire carries names, not the C enum's numbers, because a remote
 /// daemon and the app can run different engine releases for a while.

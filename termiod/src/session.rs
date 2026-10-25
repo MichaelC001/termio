@@ -571,8 +571,12 @@ impl Session {
         if self.writer.as_ref() != Some(id) {
             // A release, plain motion or a composing key does not claim the
             // token, so from a non-writer it is dropped without a complaint.
+            // The app's rule (`Termiod.InputEvent.claimsWriter`), so neither
+            // side calls a modifier on its way to a shortcut typing.
             let typing = match &event {
-                Event::Key { action, composing, .. } => *action != InputAction::Release && !*composing,
+                Event::Key { action, composing, key, .. } => {
+                    *action != InputAction::Release && !*composing && !termiod_vt::is_modifier_key(key)
+                }
                 Event::Mouse { action, .. } => *action == InputAction::Press,
                 _ => true,
             };
