@@ -49,9 +49,9 @@ env:
   # the toolchain has to land on PATH under exactly that name. Pinned with its
   # published checksum: this Zig is what decides whether the VT engine we link
   # is the one we think it is.
-  ZIG_VERSION: "0.16.0"
-  ZIG_SHA256_AARCH64_MACOS: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-  ZIG_SHA256_AARCH64_LINUX: "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
+  ZIG_VERSION: "0.17.0"
+  ZIG_SHA256_AARCH64_MACOS: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+  ZIG_SHA256_AARCH64_LINUX: "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
   CARGO_TERM_COLOR: always
 
 jobs:

@@ -11,7 +11,7 @@ open an issue and discuss before writing code.
 
 - macOS 14+.
 - Swift 6 (Xcode 26).
-- Rust (`cargo`) and **Zig 0.16.0 on `PATH` under that exact name**, to build
+- Rust (`cargo`) and **Zig 0.17.0 on `PATH` under that exact name**, to build
   `termiod`. The daemon embeds libghostty-vt, which `build.rs` builds with Zig;
   `termiod/DEPLOY.md` has the exact environment. Without them there is no
   session backend, so the app starts but can open no session.

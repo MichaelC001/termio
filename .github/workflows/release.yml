@@ -26,8 +26,8 @@ env:
   # build-app.sh builds termiod into the bundle, and its VT engine is compiled by
   # Zig from our libghostty fork. Pinned with its published checksum, exactly as
   # .github/workflows/termiod.yml pins it — keep the two in step.
-  ZIG_VERSION: "0.16.0"
-  ZIG_SHA256_AARCH64_MACOS: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+  ZIG_VERSION: "0.17.0"
+  ZIG_SHA256_AARCH64_MACOS: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
   # The DMG lives at $DOWNLOAD_BASE_URL/v<version>/termio.dmg (immutable) with a
   # stable $DOWNLOAD_BASE_URL/termio.dmg copy; the appcast at $DOWNLOAD_BASE_URL/
   # appcast.xml (matches SUFeedURL in packaging/Info.plist).
