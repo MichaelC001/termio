@@ -627,6 +627,40 @@ final class StreamInputTests: XCTestCase {
         XCTAssertNotEqual(try pixel(cell.width / 2, cell.height / 2), [0xFF, 0, 0], "deleted")
     }
 
+    /// A fast animation shows a frame on every draw: the list and the
+    /// storage name the same frame, so no draw finds its texture missing.
+    func testAFastAnimationIsNeverBlank() throws {
+        let terminal = try terminal()
+        try terminal.resize(rows: 10, cols: 40, reflow: true)
+        func solid(_ pixel: [UInt8]) -> String {
+            Data(Array(repeating: pixel, count: 16 * 32).flatMap { $0 }).base64EncodedString()
+        }
+        for command in [
+            "a=T,f=32,s=16,v=32,i=7,q=2;" + solid([0xFF, 0, 0, 0xFF]),
+            "a=f,i=7,f=32,s=16,v=32,z=10,q=2;" + solid([0, 0xFF, 0, 0xFF]),
+            "a=a,i=7,r=1,z=10,q=2",
+            "a=a,i=7,s=3,v=1,q=2",
+        ] {
+            terminal.write(Data("\u{1b}_G\(command)\u{1b}\\".utf8))
+        }
+        let appearance = TermiodStreamRenderer.Appearance(
+            fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, paddingX: 0, paddingY: 0, backgroundOpacity: 1
+        )
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let cell = renderer.atlas.metrics
+        var shown: Set<[UInt8]> = []
+        for _ in 0 ..< 30 {
+            let image = try renderer.image(of: terminal, width: cell.width * 40, height: cell.height * 10, focused: false)
+            let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+            let offset = (cell.height / 2) * image.bytesPerRow + (cell.width / 2) * 4
+            let pixel = [data[offset + 2], data[offset + 1], data[offset]]
+            XCTAssertTrue(pixel == [0xFF, 0, 0] || pixel == [0, 0xFF, 0], "a blank frame: \(pixel)")
+            shown.insert(pixel)
+            usleep(16_000)
+        }
+        XCTAssertEqual(shown.count, 2, "both frames played")
+    }
+
     /// What `termio sessions read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")

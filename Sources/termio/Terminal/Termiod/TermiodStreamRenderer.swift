@@ -345,8 +345,8 @@ vertex ImageOut image_vertex(uint vid [[vertex_id]], constant Image& image [[buf
 
 fragment float4 image_fragment(ImageOut in [[stage_in]], texture2d<float> pixels [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);
-    float4 texel = pixels.sample(s, in.uv);
-    return float4(texel.rgb * texel.a, texel.a);
+    // Uploaded premultiplied.
+    return pixels.sample(s, in.uv);
 }
 
 fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
@@ -408,7 +408,6 @@ final class TermiodStreamImages {
     private var pending: [Key: TermiodStreamTerminal.ImagePixels] = [:]
     /// A placement whose pixels have not arrived: looked for every frame.
     private var missing = false
-    private let started = ContinuousClock.now
 
     init() throws {
         guard ghostty_render_state_image_iterator_new(nil, &iterator) == GHOSTTY_SUCCESS else {
@@ -420,15 +419,10 @@ final class TermiodStreamImages {
         ghostty_render_state_image_iterator_free(iterator)
     }
 
-    /// Under the frame's lock: plays animations, rereads the list if it
-    /// moved, and copies pixels the textures lack. Returns whether the
-    /// frame must be drawn for the images' sake.
+    /// Under the frame's lock: rereads the list if it moved, and copies the
+    /// pixels the textures lack. Returns whether the frame must be drawn for
+    /// the images' sake.
     func read(_ state: GhosttyRenderState, storage: TermiodStreamTerminal.FrameImages, force: Bool) -> Bool {
-        if !placements.isEmpty {
-            let elapsed = ContinuousClock.now - started
-            storage.advanceAnimations(nowMilliseconds: UInt64(max(0, elapsed.components.seconds)) * 1000
-                + UInt64(elapsed.components.attoseconds / 1_000_000_000_000_000))
-        }
         var generation: UInt64 = 0
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
         guard force || missing || generation != listGeneration else { return false }
@@ -440,17 +434,19 @@ final class TermiodStreamImages {
             placements = list(state)
         }
         missing = false
+        var arrived = false
         for key in Set(placements.map { Key(id: $0.id, generation: $0.generation) })
         where textures[key] == nil && pending[key] == nil {
             // An image's pixels move to a new generation together, so a read
             // that finds another generation is the next frame's to draw.
             if let pixels = storage.pixels(id: key.id), pixels.generation == key.generation {
                 pending[key] = pixels
+                arrived = true
             } else {
                 missing = true
             }
         }
-        return moved
+        return moved || arrived
     }
 
     private func list(_ state: GhosttyRenderState) -> [Placement] {
@@ -506,7 +502,7 @@ final class TermiodStreamImages {
                 Log.termiod.error("image texture \(pixels.width)x\(pixels.height) failed")
                 continue
             }
-            pixels.rgba.withUnsafeBytes { bytes in
+            pixels.rgba().withUnsafeBytes { bytes in
                 guard let base = bytes.baseAddress else { return }
                 texture.replace(
                     region: MTLRegionMake2D(0, 0, pixels.width, pixels.height), mipmapLevel: 0,
