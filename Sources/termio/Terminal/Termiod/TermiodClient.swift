@@ -1900,9 +1900,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// a focus change does not, and termiod reports only the writer's.
     func sendInput(_ event: Termiod.InputEvent) {
         if case .paste(let text, false) = event, text.utf8.count > Termiod.InputEvent.pastePieceBytes {
-            for piece in Termiod.InputEvent.pastePieces(text) { sendInput(piece) }
+            // Each piece fits, so none comes back here.
+            for piece in Termiod.InputEvent.pastePieces(text) { sendInputEvent(piece) }
             return
         }
+        sendInputEvent(event)
+    }
+
+    private func sendInputEvent(_ event: Termiod.InputEvent) {
         let typing: Bool
         if case .focus = event { typing = false } else { typing = true }
         if typing {

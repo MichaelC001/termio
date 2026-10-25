@@ -1989,24 +1989,26 @@ public enum Termiod {
         /// sixfold (`\\u0001`), and a frame holds 16 MiB.
         public static let pastePieceBytes = 1 << 20
 
-        /// The events that carry `text`, split on character boundaries into
-        /// pieces no larger than `pastePieceBytes`.
+        /// The events that carry `text`, in pieces no larger than
+        /// `pastePieceBytes`. Split between Unicode scalars, which termiod
+        /// joins back into one byte stream: a grapheme has no size limit, so
+        /// splitting only between characters could leave a piece too large.
         public static func pastePieces(_ text: String) -> [InputEvent] {
             guard text.utf8.count > pastePieceBytes else { return [.paste(text)] }
             var pieces: [String] = []
-            var current = ""
+            var current = String.UnicodeScalarView()
             var size = 0
-            for character in text {
-                let length = character.utf8.count
-                if size + length > pastePieceBytes, !current.isEmpty {
-                    pieces.append(current)
-                    current = ""
+            for scalar in text.unicodeScalars {
+                let length = String(scalar).utf8.count
+                if size + length > pastePieceBytes {
+                    pieces.append(String(current))
+                    current = String.UnicodeScalarView()
                     size = 0
                 }
-                current.append(character)
+                current.append(scalar)
                 size += length
             }
-            if !current.isEmpty { pieces.append(current) }
+            if !current.isEmpty { pieces.append(String(current)) }
             return pieces.enumerated().map { index, piece in .paste(piece, more: index < pieces.count - 1) }
         }
 

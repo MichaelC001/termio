@@ -119,6 +119,20 @@ final class StreamInputTests: XCTestCase {
         let first = try XCTUnwrap(JSONSerialization.jsonObject(with: try pieces[0].payload()) as? [String: Any])
         XCTAssertEqual(first["more"] as? Bool, true)
         XCTAssertEqual(Termiod.InputEvent.pastePieces("short"), [.paste("short")])
+
+        // One character larger than a piece: `a` and half a million combining
+        // accents. It is still split, so every piece fits.
+        let huge = "a" + String(repeating: "\u{0301}", count: 524_288)
+        XCTAssertEqual(huge.count, 1)
+        let hugePieces = Termiod.InputEvent.pastePieces(huge)
+        XCTAssertGreaterThan(hugePieces.count, 1)
+        var rejoined = ""
+        for piece in hugePieces {
+            guard case .paste(let part, _) = piece else { return XCTFail("not a paste") }
+            XCTAssertLessThanOrEqual(part.utf8.count, Termiod.InputEvent.pastePieceBytes)
+            rejoined += part
+        }
+        XCTAssertEqual(rejoined.utf8.count, huge.utf8.count)
     }
 
     func testTheWheelIsTheProgramsOnlyWhenGhosttyWouldSendIt() throws {

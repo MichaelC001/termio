@@ -266,15 +266,24 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// report. Its side decides which key it was.
     override func flagsChanged(with event: NSEvent) {
         guard markedText.length == 0, terminal() != nil else { return }
-        let held: Bool
+        // Each side has its own device bit, so releasing one Shift while the
+        // other is held reads as the release it is.
+        let device: Int32
         switch Int(event.keyCode) {
-        case kVK_CapsLock: held = event.modifierFlags.contains(.capsLock)
-        case kVK_Shift, kVK_RightShift: held = Self.sideHeld(event, .shift, right: NX_DEVICERSHIFTKEYMASK)
-        case kVK_Control, kVK_RightControl: held = Self.sideHeld(event, .control, right: NX_DEVICERCTLKEYMASK)
-        case kVK_Option, kVK_RightOption: held = Self.sideHeld(event, .option, right: NX_DEVICERALTKEYMASK)
-        case kVK_Command, kVK_RightCommand: held = Self.sideHeld(event, .command, right: NX_DEVICERCMDKEYMASK)
+        case kVK_CapsLock: device = 0
+        case kVK_Shift: device = NX_DEVICELSHIFTKEYMASK
+        case kVK_RightShift: device = NX_DEVICERSHIFTKEYMASK
+        case kVK_Control: device = NX_DEVICELCTLKEYMASK
+        case kVK_RightControl: device = NX_DEVICERCTLKEYMASK
+        case kVK_Option: device = NX_DEVICELALTKEYMASK
+        case kVK_RightOption: device = NX_DEVICERALTKEYMASK
+        case kVK_Command: device = NX_DEVICELCMDKEYMASK
+        case kVK_RightCommand: device = NX_DEVICERCMDKEYMASK
         default: return
         }
+        let held = device == 0
+            ? event.modifierFlags.contains(.capsLock)
+            : event.modifierFlags.rawValue & UInt(device) != 0
         let key = TermiodStreamKeyboard.input(for: event, action: held ? .press : .release, text: nil)
         if held {
             heldKeys[event.keyCode] = key
@@ -295,15 +304,6 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         }
         heldKeys.removeAll()
         consumedKeys.removeAll()
-    }
-
-    /// Whether the modifier this event's key names is down: the flag alone
-    /// cannot say for one side while the other is held.
-    private static func sideHeld(_ event: NSEvent, _ flag: NSEvent.ModifierFlags, right mask: Int32) -> Bool {
-        guard event.modifierFlags.contains(flag) else { return false }
-        let rightDown = event.modifierFlags.rawValue & UInt(mask) != 0
-        let isRight = [kVK_RightShift, kVK_RightControl, kVK_RightOption, kVK_RightCommand].contains(Int(event.keyCode))
-        return isRight ? rightDown : true
     }
 
     /// Ghostty's: the editing keys it binds win over the menu; Control and

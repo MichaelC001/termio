@@ -95,6 +95,12 @@ pub struct InputEncoder {
     /// The size last given to the mouse encoder. Setting it clears the
     /// encoder's motion deduplication, so it is set only when it changes.
     mouse_size: Option<mouse::EncoderSize>,
+    /// The mouse modes last copied in. Copying them clears the encoder's
+    /// motion deduplication too, so they are copied only when they change.
+    mouse_modes: Option<[bool; 8]>,
+    /// Keys whose press went out without Alt because Option typed text with
+    /// them, so their repeats and release go out the same way.
+    option_text_keys: std::collections::HashSet<String>,
 }
 
 /// The most rows or columns one wheel event may scroll. A real gesture is a
@@ -124,6 +130,8 @@ impl InputEncoder {
             mouse_event: check(mouse::Event::new(), "mouse::Event::new")?,
             modes: InputModes::default(),
             mouse_size: None,
+            mouse_modes: None,
+            option_text_keys: std::collections::HashSet::new(),
         })
     }
 
@@ -134,8 +142,22 @@ impl InputEncoder {
         self.key.set_options_from_terminal(terminal);
         // Option composes text on a Mac, as Ghostty leaves it by default.
         self.key.set_macos_option_as_alt(OptionAsAlt::False);
-        self.mouse.set_options_from_terminal(terminal);
         let mode = |mode| terminal.mode(mode).unwrap_or(false);
+        let mouse_modes = [
+            Mode::X10_MOUSE,
+            Mode::NORMAL_MOUSE,
+            Mode::BUTTON_MOUSE,
+            Mode::ANY_MOUSE,
+            Mode::UTF8_MOUSE,
+            Mode::SGR_MOUSE,
+            Mode::URXVT_MOUSE,
+            Mode::SGR_PIXELS_MOUSE,
+        ]
+        .map(mode);
+        if self.mouse_modes != Some(mouse_modes) {
+            self.mouse.set_options_from_terminal(terminal);
+            self.mouse_modes = Some(mouse_modes);
+        }
         self.modes = InputModes {
             rows: terminal.rows().unwrap_or(0),
             cols: terminal.cols().unwrap_or(0),
@@ -164,11 +186,24 @@ impl InputEncoder {
         // German `@` (Option-L) would arrive as `ESC @`. When Option produced
         // the text, the key is sent without it.
         let mut mods = input.mods;
-        if cfg!(not(target_os = "macos"))
-            && mods & ALT != 0
-            && input.text.as_deref().is_some_and(|text| !text.is_empty())
-        {
-            mods &= !ALT;
+        if cfg!(not(target_os = "macos")) && mods & ALT != 0 {
+            let typed = input.text.as_deref().is_some_and(|text| !text.is_empty());
+            let pressed_so = self.option_text_keys.contains(&input.key);
+            if (input.action == KeyAction::Press && typed) || (input.action != KeyAction::Press && pressed_so) {
+                mods &= !ALT;
+            }
+        }
+        match input.action {
+            KeyAction::Press if mods != input.mods => {
+                self.option_text_keys.insert(input.key.clone());
+            }
+            KeyAction::Press => {
+                self.option_text_keys.remove(&input.key);
+            }
+            KeyAction::Release => {
+                self.option_text_keys.remove(&input.key);
+            }
+            KeyAction::Repeat => {}
         }
         self.key_event
             .set_action(match input.action {
@@ -643,6 +678,10 @@ mod tests {
         assert!(!any.mouse(&moved(12.0)).is_empty());
         assert!(any.mouse(&moved(15.0)).is_empty(), "the same cell again");
         assert!(!any.mouse(&moved(25.0)).is_empty());
+        // Output between movements leaves the deduplication alone.
+        vt.vt_write(b"x");
+        any.refresh(&vt);
+        assert!(any.mouse(&moved(26.0)).is_empty(), "still the same cell after output");
     }
 
     /// Option-L types `@` on a German Mac. It must arrive as `@`, as it does
@@ -657,6 +696,16 @@ mod tests {
         at.text = Some("@".into());
         at.unshifted = u32::from('l');
         assert_eq!(plain.key(&at), b"@");
+
+        // Under Kitty's event reporting the release matches the press.
+        let mut kitty = encoder(&mut vt, b"\x1b[>11u");
+        let press = kitty.key(&at);
+        let mut release = at.clone();
+        release.action = KeyAction::Release;
+        release.text = None;
+        let released = kitty.key(&release);
+        let modifiers = |bytes: &[u8]| String::from_utf8_lossy(bytes).contains(";3");
+        assert_eq!(modifiers(&press), modifiers(&released), "{press:?} then {released:?}");
     }
 
     #[test]
