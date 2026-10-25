@@ -14,7 +14,7 @@ let package = Package(
         // live resize" suspicion that briefly rolled this back to Lakr233 was a
         // misdiagnosis — the real bug was termio's own PTY spawn shape (see
         // docs/bug/terminal-resize-no-reflow-HANDOFF.md §0).
-        .package(url: "https://github.com/termio-sh/libghostty-swift", from: "1.1.9"),
+        .package(url: "https://github.com/termio-sh/libghostty-swift", from: "1.2.0"),
         // Sparkle powers in-app auto-update (the "Check for Updates…" menu item and
         // background update checks). It reads the appcast published with each GitHub
         // release; the matching EdDSA public key is embedded in packaging/Info.plist.
@@ -43,6 +43,11 @@ let package = Package(
                 // Bundled color-scheme catalog (Ghostty's built-in themes), used by
                 // the appearance settings to offer a theme picker.
                 .product(name: "GhosttyTheme", package: "libghostty-swift"),
+                // libghostty-vt on its own: the terminal a `vt_stream` session
+                // keeps on this side (TermiodStreamTerminal). Built from the same
+                // ghostty as termiod's VT, with only its C API left global so it
+                // links beside GhosttyKit.
+                .product(name: "GhosttyVt", package: "libghostty-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "TermioShared", package: "Shared"),
