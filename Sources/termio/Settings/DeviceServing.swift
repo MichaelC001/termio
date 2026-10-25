@@ -161,6 +161,9 @@ final class PairingModel: ObservableObject {
             invitedBase = nil
             return
         }
+        // A forced or rotating mint means the invite on screen may carry a token
+        // that no longer works, so it stops being scannable until the new one.
+        if force || rotate { invite = nil }
         guard !minting else {
             let queued = queuedRefresh
             queuedRefresh = (rotate || queued?.rotate == true, force || queued?.force == true)
