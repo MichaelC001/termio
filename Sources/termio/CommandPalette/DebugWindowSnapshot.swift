@@ -30,7 +30,8 @@ enum DebugWindowSnapshot {
 
     @MainActor
     static func capture() {
-        guard let window = target() else { return }
+        // A sheet open on the window is what is on screen, so it is the capture.
+        guard let window = target().map({ $0.attachedSheet ?? $0 }) else { return }
         // The frame view (contentView's superview) includes the titlebar/toolbar chrome.
         let root = window.contentView?.superview ?? window.contentView
         guard let view = root else { return }
@@ -66,6 +67,9 @@ enum DebugWindowSnapshot {
         guard let image = createImage(
             .null, includingWindow, UInt32(window.windowNumber), boundsIgnoreFraming | bestResolution
         )?.takeRetainedValue() else { return nil }
+        // Under Stage Manager a window off stage composites as its thumbnail,
+        // a fraction of its size; the cached render is the one worth reading then.
+        guard CGFloat(image.width) >= window.frame.width * window.backingScaleFactor * 0.9 else { return nil }
         return NSBitmapImageRep(cgImage: image)
     }
 
@@ -152,9 +156,74 @@ enum DebugSimulatorPointer {
     }
 
     @MainActor
+    private static func scroll(_ path: String) {
+        let wheel = path.hasPrefix("wheel:")
+        let numbers = path.split(separator: ":").last?.split(separator: ",").compactMap { Double($0) } ?? []
+        guard numbers.count >= 3,
+              let (window, view) = NSApp.windows.lazy.compactMap({ window in
+                  find(SimulatorScreenView.self, in: window.contentView).map { (window, $0) }
+              }).first
+        else { return }
+        let inWindow = view.convert(CGPoint(x: numbers[0] * view.bounds.width,
+                                            y: (1 - numbers[1]) * view.bounds.height), to: nil)
+        // An NSEvent made from a CGEvent has no window, and AppKit then reads its
+        // screen location as the window location; so the location given is the
+        // window point, flipped to the CGEvent's top-left origin.
+        let flipped = CGPoint(x: inWindow.x, y: (NSScreen.screens.first?.frame.height ?? 0) - inWindow.y)
+        func post(_ delta: Int32, phase: CGScrollPhase?, after index: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16 * index)) {
+                guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: wheel ? .line : .pixel,
+                                       wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)
+                else { return }
+                cg.location = flipped
+                if path.hasPrefix("pan:") { cg.flags = .maskAlternate }
+                if let phase { cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue)) }
+                guard let event = NSEvent(cgEvent: cg) else { return }
+                window.sendEvent(event)
+            }
+        }
+        if wheel {
+            post(Int32(numbers[2]), phase: nil, after: 0)
+            return
+        }
+        let steps = Int(numbers.count > 3 ? numbers[3] : 10)
+        post(0, phase: .began, after: 0)
+        for index in 1 ... max(1, steps) { post(Int32(numbers[2]), phase: .changed, after: index) }
+        post(0, phase: .ended, after: steps + 1)
+    }
+
+    @MainActor
     private static func type(_ text: String) {
         guard let window = NSApp.windows.first(where: { find(SimulatorScreenView.self, in: $0.contentView) != nil })
         else { return }
+        // `shortcut:cmd+shift+h` presses a key with modifiers, the way a real
+        // ⇧⌘H arrives. Arrows are named: left, right, up, down.
+        if text.hasPrefix("shortcut:") {
+            let parts = text.dropFirst("shortcut:".count).split(separator: "+").map(String.init)
+            var flags: NSEvent.ModifierFlags = []
+            for part in parts.dropLast() {
+                switch part {
+                case "cmd": flags.insert(.command)
+                case "shift": flags.insert(.shift)
+                case "ctrl": flags.insert(.control)
+                case "opt": flags.insert(.option)
+                default: break
+                }
+            }
+            let arrows = ["left": NSLeftArrowFunctionKey, "right": NSRightArrowFunctionKey,
+                          "up": NSUpArrowFunctionKey, "down": NSDownArrowFunctionKey]
+            let name = parts.last ?? ""
+            let key = arrows[name].flatMap { UnicodeScalar($0).map { String(Character($0)) } } ?? name
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)
+            else { return }
+            // Posted, not sent: through the event queue, where local monitors —
+            // the pane's shortcuts among them — see it as they see a real key.
+            NSApp.postEvent(event, atStart: false)
+            return
+        }
         for (index, character) in text.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30 * index)) {
                 guard let event = NSEvent.keyEvent(
@@ -173,6 +242,57 @@ enum DebugSimulatorPointer {
         // `window:x,y` clicks at a point in the window (points from its
         // top-left), for the SwiftUI controls round the screen — the header's
         // Home, Rotate and Screenshot buttons.
+        // `scroll:fx,fy,dy,steps` scrolls a trackpad gesture of `steps` events,
+        // `dy` points each, at a point in the screen view; `wheel:fx,fy,lines`
+        // turns a mouse wheel by `lines` notches there; `pan:` is `scroll:` with ⌥.
+        if path.hasPrefix("scroll:") || path.hasPrefix("wheel:") || path.hasPrefix("pan:") {
+            scroll(path)
+            return
+        }
+        // `move:fx,fy` hands the screen view a mouse move there, the way its
+        // tracking area would, for Select Element's hover.
+        if path.hasPrefix("move:") {
+            let parts = path.dropFirst("move:".count).split(separator: ",").compactMap { Double($0) }
+            guard parts.count == 2,
+                  let (window, view) = NSApp.windows.lazy.compactMap({ window in
+                      find(SimulatorScreenView.self, in: window.contentView).map { (window, $0) }
+                  }).first
+            else { return }
+            let inWindow = view.convert(
+                CGPoint(x: parts[0] * view.bounds.width, y: (1 - parts[1]) * view.bounds.height), to: nil)
+            guard let event = NSEvent.mouseEvent(
+                with: .mouseMoved, location: inWindow, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+            else { return }
+            view.mouseMoved(with: event)
+            return
+        }
+        // `sheet:x,y` clicks in the sheet open on the window, and
+        // `sheetdrag:x,y;x,y;…` drags through those points there, 16 ms apart.
+        if path.hasPrefix("sheet:") || path.hasPrefix("sheetdrag:") {
+            guard let main = NSApp.windows.first(where: { find(SimulatorScreenView.self, in: $0.contentView) != nil }),
+                  let sheet = main.attachedSheet
+            else { return }
+            let points = path.split(separator: ":").last?.split(separator: ";").compactMap { pair -> CGPoint? in
+                let numbers = pair.split(separator: ",").compactMap { Double($0) }
+                return numbers.count == 2 ? CGPoint(x: numbers[0], y: sheet.frame.height - numbers[1]) : nil
+            } ?? []
+            guard let first = points.first, let last = points.last else { return }
+            let steps: [(NSEvent.EventType, CGPoint)] = [(.leftMouseDown, first)]
+                + points.dropFirst().map { (.leftMouseDragged, $0) } + [(.leftMouseUp, last)]
+            for (index, step) in steps.enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16 * index)) {
+                    guard let event = NSEvent.mouseEvent(
+                        with: step.0, location: step.1, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: sheet.windowNumber,
+                        context: nil, eventNumber: index, clickCount: 1, pressure: step.0 == .leftMouseUp ? 0 : 1)
+                    else { return }
+                    sheet.sendEvent(event)
+                }
+            }
+            return
+        }
         if path.hasPrefix("window:") {
             let parts = path.dropFirst("window:".count).split(separator: ",").compactMap { Double($0) }
             guard parts.count == 2,

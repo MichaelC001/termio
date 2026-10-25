@@ -150,6 +150,22 @@ extension SimulatorHost {
         return SimulatorDiagnostics.parseLog(output, since: since, tail: tail, minimumLevel: level, filter: filter)
     }
 
+    /// The apps someone installed on `udid` — not Apple's — by name, for the
+    /// logs drawer to pick from.
+    func userApps(on udid: String) async throws -> [(name: String, bundleID: String)] {
+        let output = try await simctl(["listapps", udid])
+        // simctl prints an old-style property list, which the parser reads.
+        guard let apps = try PropertyListSerialization.propertyList(from: Data(output.utf8), format: nil)
+            as? [String: [String: Any]]
+        else { throw SimulatorHostError.malformedReply }
+        return apps.compactMap { bundleID, info in
+            guard info["ApplicationType"] as? String == "User" else { return nil }
+            let name = info["CFBundleDisplayName"] as? String ?? info["CFBundleName"] as? String ?? bundleID
+            return (name, bundleID)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     func crashReport(udid: String, bundleID: String) async throws -> (summary: String, path: String)? {
         let executable = try await executableName(bundleID: bundleID, on: udid)
         return SimulatorDiagnostics.latestCrash(executable: executable, udid: udid)
