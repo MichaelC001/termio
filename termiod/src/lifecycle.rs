@@ -1717,6 +1717,20 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
             )
         };
         staged.client = true;
+        // Built-in Tailscale's helper, beside the client where `termiod
+        // tailscale` looks for it, in the same command: a box gets the whole
+        // build or none of it, and a deploy that failed here is tried again by
+        // the next one rather than leaving the helper missing for good. It has
+        // no `.prev`: nothing verifies it, so nothing rolls it back.
+        if let (Some(helper), true) = (&artifacts.tailnet, plan == StagePlan::Full) {
+            let target = format!("{client}-tailnet");
+            node.put(helper, "termio-tailnet.new").await?;
+            command = format!(
+                "{command} && {{ {{ chmod +x {target}.new && mv -f {target}.new {target}; }} || {{ {}; {}; false; }}; }}",
+                shell_restore(&client, "termio_replaced"),
+                shell_restore(&node.binary(), "termiod_replaced")
+            );
+        }
     }
     if command.is_empty() {
         return Ok(staged);
@@ -1742,37 +1756,7 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
             .stdout
             .lines()
             .any(|line| line.contains(STAGE_REPORT) && line.contains("client_replaced=1"));
-    if staged.daemon {
-        stage_tailnet_helper(node, &artifacts).await;
-    }
     Ok(staged)
-}
-
-/// Puts `termio-tailnet` beside the client, the name `termiod tailscale`
-/// looks for. Best effort: without it the box still serves sessions, and
-/// `termiod tailscale on` says what is missing.
-async fn stage_tailnet_helper<N: Node>(node: &N, artifacts: &Artifacts) {
-    let (Some(local), Some(client)) = (&artifacts.tailnet, node.client_binary()) else {
-        return;
-    };
-    let target = format!("{client}-tailnet");
-    let result = async {
-        node.put(local, "termio-tailnet.new").await?;
-        let run = node
-            .run(&format!("chmod +x {target}.new && mv -f {target}.new {target}"))
-            .await?;
-        if run.code != 0 {
-            bail!("{}", last_line(&run.stderr));
-        }
-        Ok(())
-    }
-    .await;
-    if let Err(error) = result {
-        eprintln!(
-            "[deploy] built-in Tailscale was not installed on {}: {error:#}",
-            node.label()
-        );
-    }
 }
 
 /// Marks the activation's own account of itself, so a login banner on the way
@@ -2577,8 +2561,7 @@ mod tests {
         let mut node = FakeNode::new(
             vec![
                 failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
-                ok(""), // chmod + mv, both binaries
-                ok(""), // the helper
+                ok(""), // chmod + mv, all three binaries
                 ok(&status_json(WANT, None, false)),
             ],
             vec![hello(Some(WANT))],
@@ -2591,27 +2574,31 @@ mod tests {
         assert!(puts[2].ends_with("→ termio-tailnet.new"), "{puts:?}");
         let commands = node.commands.borrow();
         assert!(
-            commands[2].contains("mv -f $HOME/.local/bin/termio-tailnet.new $HOME/.local/bin/termio-tailnet"),
+            commands[1].contains("mv -f $HOME/.local/bin/termio-tailnet.new $HOME/.local/bin/termio-tailnet"),
             "{}",
-            commands[2]
+            commands[1]
         );
     }
 
-    /// A helper that does not land costs built-in Tailscale, never the deploy.
+    /// A helper that does not land takes the daemon and client back with it,
+    /// so the next deploy finds the box as it was and tries the whole build.
     #[tokio::test]
-    async fn a_helper_that_fails_to_install_does_not_fail_the_deploy() {
+    async fn a_helper_that_fails_to_install_undoes_the_stage() {
         let mut node = FakeNode::new(
             vec![
                 failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
-                ok(""),
                 failed(1, "mv: cannot move: No space left on device"),
-                ok(&status_json(WANT, None, false)),
             ],
-            vec![hello(Some(WANT))],
+            vec![],
         );
         node.tailnet_artifact = Some(PathBuf::from("/bundle/termio-tailnet-aarch64-unknown-linux-musl"));
         let report = reconcile(&node, WANT, Options::default()).await;
-        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        assert!(matches!(report.outcome, Outcome::Failed { .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        let activation = &commands[1];
+        let helper = activation.find("termio-tailnet.new").unwrap_or(usize::MAX);
+        let undo = activation.rfind("termiod.prev").unwrap_or(0);
+        assert!(undo > helper, "the daemon's undo follows the helper: {activation}");
     }
 
     /// A binary too old to answer `status` is staged first and asked again with
