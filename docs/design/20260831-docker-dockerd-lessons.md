@@ -105,7 +105,7 @@ map this RFC proposes:
 | `termiod pair` | `termio pair` (amended 2026-10-25) | a person types it to pair a phone |
 | `termiod status/logs/stop/deploy/service/handoff/tailscale` | `termio server …` (amended 2026-10-25) | this machine by default; `--host` runs the same verb on another machine over `ssh`, and `deploy --host` runs its loop from here |
 | `termiod serve` | stays `termiod` | the daemon itself, like `dockerd`, and the only verb it keeps |
-| `termiod stdio`, `termiod set-status`, `termiod handoff --probe` | `termio stdio`, `termio agent report`, `termiod serve --handoff-probe` (amended 2026-10-25) | machine-invoked; moved, with `termiod stdio` and `termiod handoff --probe` kept hidden for code already shipped — see the amendment below |
+| `termiod stdio`, `termiod set-status`, `termiod handoff --probe` | `termio stdio`, `termio agent report`; `termiod handoff --probe` stays (amended 2026-10-25) | machine-invoked; moved, with `termiod stdio`, `termiod status` and `termiod handoff --probe` kept hidden — see the amendment below |
 | `termiod agent install/uninstall` | `termio agent install/uninstall` (amended 2026-10-25) | host integration, written by the deploy loop |
 
 ### 1.2 Where each command exists
@@ -149,16 +149,17 @@ verb now lives on `termio`, machine-invoked ones included: hooks run
 now takes a client from the deploy, because the daemon alone answers
 nothing but `serve`.
 
-Two entry points stay on `termiod`, hidden from its help, because code
-already shipped calls them: `termiod stdio`, which released apps open over
-SSH, and `termiod handoff --probe`, which a daemon from before the change
-asks a new binary before it hands off. With them, an older app still
-reaches an upgraded box, and the first upgrade is a handoff that keeps
-every session. The cost that remains: hooks written before the change call
-`termiod set-status` and report nothing until the next install rewrites
-them (it recognizes and replaces them). The deploy loop reads a box from
-before the change through its old daemon's own `status`, so that box can be
-upgraded at all. The curl
+Three entry points stay on `termiod`, hidden from its help, because code
+calls the daemon binary itself: `termiod stdio`, which released apps open
+over SSH; `termiod handoff --probe`, which every daemon, old or new, asks a
+binary before handing off to it; and `termiod status`, which the deploy loop
+reads when the client beside the daemon cannot answer — a box from before
+the change, or a staged client that is broken. With them, an older app
+still reaches an upgraded box, every upgrade and rollback can hand off in
+place, and a broken client is repaired instead of misread. The cost that
+remains: hooks written before the change call `termiod set-status` and
+report nothing until the next install rewrites them (it recognizes and
+replaces them). The curl
 installer stays deferred (§7): the Mac's reconcile loop reaches every
 box the user has, so no second install path exists and the single-writer
 invariant holds.

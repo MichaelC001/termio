@@ -339,23 +339,15 @@ fn the_probe_is_what_separates_a_termiod_from_a_convincing_impostor() {
     );
 
     let probe = Command::new(BIN)
-        .args(["serve", "--handoff-probe"])
+        .args(["handoff", "--probe"])
         .output()
         .expect("probe the real binary");
     assert!(probe.status.success());
     let token = String::from_utf8_lossy(&probe.stdout).trim().to_string();
     assert!(token.starts_with("termiod-handoff "), "{token}");
-    // A daemon from before `serve --handoff-probe` asks `handoff --probe`; the
-    // hidden old spelling must give the same answer, or that daemon's one
-    // upgrade becomes a stop.
-    let legacy = Command::new(BIN)
-        .args(["handoff", "--probe"])
-        .output()
-        .expect("probe the real binary the old way");
-    assert_eq!(String::from_utf8_lossy(&legacy.stdout).trim(), token);
 
     let impostor_probe = Command::new(&impostor)
-        .args(["serve", "--handoff-probe"])
+        .args(["handoff", "--probe"])
         .output()
         .expect("probe the impostor");
     assert_ne!(

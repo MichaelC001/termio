@@ -484,11 +484,20 @@ pub fn paired_daemon() -> Result<PathBuf> {
     if let Some(directory) = own.canonicalize().ok().as_deref().and_then(Path::parent) {
         directories.push(directory.to_path_buf());
     }
-    directories
+    if let Some(beside) = directories
         .iter()
         .map(|directory| directory.join("termiod"))
         .find(|candidate| candidate.is_file())
-        .with_context(|| format!("no termiod beside {}", own.display()))
+    {
+        return Ok(beside);
+    }
+    // The Mac's PATH link points at the app's support copy, which has no
+    // daemon beside it; the running app's bundle does. The channel's locator
+    // asks `lsappinfo` for that bundle, then tries the standalone install.
+    let channel = std::env::var("TERMIO_CHANNEL").unwrap_or_default();
+    let channel = crate::channel::Channel::named(if channel.is_empty() { "release" } else { &channel });
+    crate::channel::daemon_binary(&channel)
+        .with_context(|| format!("no termiod beside {} or in the running app", own.display()))
 }
 
 /// Which init owns the daemon, if any. This is what decides what "restart"
@@ -2142,9 +2151,19 @@ impl Node for LocalNode {
     }
 
     fn control(&self) -> String {
-        std::env::current_exe()
+        // `current_exe` resolves a `termio-dev` link to the file it names, and
+        // a client named `termio` takes its channel from
+        // `TERMIO_SESSION_CHANNEL`, so the channel this process resolved is
+        // handed to the commands it runs.
+        let client = std::env::current_exe()
             .map(|path| shell_quote(&path.display().to_string()))
-            .unwrap_or_else(|_| "termio".to_string())
+            .unwrap_or_else(|_| "termio".to_string());
+        match std::env::var("TERMIO_CHANNEL") {
+            Ok(channel) if !channel.is_empty() => {
+                format!("TERMIO_SESSION_CHANNEL={} {client}", shell_quote(&channel))
+            }
+            _ => client,
+        }
     }
 
     async fn run(&self, command: &str) -> Result<Run> {

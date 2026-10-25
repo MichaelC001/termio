@@ -56,15 +56,6 @@ enum Cmd {
         #[arg(long = "handoff", value_name = "FD", hide = true)]
         handoff_fd: Option<std::os::fd::RawFd>,
 
-        /// Print the handoff contract this build speaks and exit.
-        ///
-        /// How a running daemon decides whether a candidate binary can be
-        /// exec'd in its place. Hidden because it is a machine's question: it
-        /// is asked of the *new* binary, by the *old* daemon, before it takes
-        /// itself apart.
-        #[arg(long, hide = true, conflicts_with = "handoff_fd")]
-        handoff_probe: bool,
-
         /// Let the machine idle-sleep even while an agent is working or
         /// waiting on its user.
         ///
@@ -83,9 +74,19 @@ enum Cmd {
     #[command(hide = true)]
     Stdio,
 
-    /// The question a daemon from before `serve --handoff-probe` asks a new
-    /// binary before handing off to it. Kept so that one upgrade is a handoff
-    /// that keeps every session, not a stop.
+    /// The daemon binary's own `status --json`, which the deploy loop reads
+    /// when the client beside it cannot answer: a box from before the client
+    /// took the verbs, or a staged client that is broken. Without it the loop
+    /// would misread a new daemon as one too old to have `status`.
+    #[command(hide = true)]
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// The question a running daemon asks a binary before handing off to it:
+    /// which handoff contract it speaks. Asked of every build, old and new, so
+    /// the spelling never changes. Hidden because only a daemon asks it.
     #[command(hide = true)]
     Handoff {
         #[arg(long)]
@@ -101,13 +102,8 @@ async fn main() -> Result<()> {
             wss,
             wss_origin,
             handoff_fd,
-            handoff_probe,
             no_keep_awake,
         } => {
-            if handoff_probe {
-                println!("{}", handoff::probe_token());
-                return Ok(());
-            }
             let keep_awake = !no_keep_awake
                 && !matches!(
                     std::env::var("TERMIOD_KEEP_AWAKE").as_deref(),
@@ -116,6 +112,15 @@ async fn main() -> Result<()> {
             daemon::serve(wss, wss_origin, handoff_fd, keep_awake).await
         }
         Cmd::Stdio => client::stdio().await,
+        Cmd::Status { json } => {
+            let status = lifecycle::status().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                lifecycle::print_status(&status);
+            }
+            Ok(())
+        }
         Cmd::Handoff { probe: true } => {
             println!("{}", handoff::probe_token());
             Ok(())

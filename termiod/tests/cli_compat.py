@@ -127,8 +127,12 @@ def run(client, args, env_extra=None):
     }
     if env_extra:
         env.update(env_extra)
+    # stdin is closed, as an agent closes a hook's: `agent report --transcript`
+    # reads its payload from stdin to EOF, and an inherited open pipe would
+    # never end.
     completed = subprocess.run(
-        [client] + args, env=env, cwd=HOME, capture_output=True, text=True, timeout=30
+        [client] + args, env=env, cwd=HOME, capture_output=True, text=True, timeout=30,
+        stdin=subprocess.DEVNULL,
     )
     return completed.returncode, completed.stdout, completed.stderr
 

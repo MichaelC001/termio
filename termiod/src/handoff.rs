@@ -88,7 +88,7 @@ const MAGIC: &[u8; 8] = b"TERMIOD\x01";
 /// notice it cannot read the blob, the old one is gone and so are the sessions.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// What `termiod serve --handoff-probe` prints, and the only thing `vet` accepts.
+/// What `termiod handoff --probe` prints, and the only thing `vet` accepts.
 ///
 /// Whether a candidate can be handed off to is not a question `--version`
 /// answers. Every termiod ever built answers `--version`, including the ones
@@ -271,13 +271,13 @@ fn run_probe(binary: &Path) -> Result<String> {
     use std::io::Read as _;
 
     let mut child = std::process::Command::new(binary)
-        .arg("serve")
-        .arg("--handoff-probe")
+        .arg("handoff")
+        .arg("--probe")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .with_context(|| format!("running {} serve --handoff-probe", binary.display()))?;
+        .with_context(|| format!("running {} handoff --probe", binary.display()))?;
 
     let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
     let status = loop {
@@ -287,13 +287,13 @@ fn run_probe(binary: &Path) -> Result<String> {
                 let _ = child.kill();
                 let _ = child.wait();
                 bail!(
-                    "{} did not answer serve --handoff-probe within {}s",
+                    "{} did not answer handoff --probe within {}s",
                     binary.display(),
                     PROBE_TIMEOUT.as_secs()
                 );
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(error) => bail!("waiting for {} serve --handoff-probe: {error}", binary.display()),
+            Err(error) => bail!("waiting for {} handoff --probe: {error}", binary.display()),
         }
     };
 
@@ -307,7 +307,7 @@ fn run_probe(binary: &Path) -> Result<String> {
     }
     if !status.success() {
         bail!(
-            "{} does not implement the handoff contract (serve --handoff-probe exited {status})",
+            "{} does not implement the handoff contract (handoff --probe exited {status})",
             binary.display()
         );
     }

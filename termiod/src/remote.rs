@@ -39,13 +39,17 @@ pub fn remote_client_bin() -> Option<String> {
 /// same directory. The second is only ever executed, never installed over, so
 /// the rename's protection of a box's real client still holds.
 pub fn remote_control_bin() -> String {
-    remote_client_bin().unwrap_or_else(|| {
-        let binary = remote_bin();
-        match binary.rsplit_once('/') {
-            Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
-            _ => "$HOME/.local/bin/termio".to_string(),
-        }
-    })
+    if let Some(client) = remote_client_bin() {
+        return client;
+    }
+    // A renamed daemon is not the one the client would pair with by itself,
+    // so the client is told which one it is.
+    let binary = remote_bin();
+    let client = match binary.rsplit_once('/') {
+        Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
+        _ => "$HOME/.local/bin/termio".to_string(),
+    };
+    format!("TERMIOD_BIN={binary} {client}")
 }
 
 /// The client that belongs to a daemon at `daemon`, or `None` when nothing on

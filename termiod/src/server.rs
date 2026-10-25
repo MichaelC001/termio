@@ -288,7 +288,10 @@ async fn run_on_host(host: String, cmd: ServerCmd) -> Result<()> {
 /// is what the host's own `termio server` should parse. Taken from argv rather
 /// than rebuilt from the parsed command, so no flag can be dropped on the way.
 fn verb_words() -> Result<Vec<String>> {
-    let argv: Vec<String> = std::env::args().collect();
+    verb_words_of(&std::env::args().collect::<Vec<String>>())
+}
+
+fn verb_words_of(argv: &[String]) -> Result<Vec<String>> {
     let Some(start) = argv.iter().skip(1).position(|word| word == "server") else {
         bail!("`--host` is only understood after `termio server`");
     };
@@ -310,6 +313,15 @@ fn verb_words() -> Result<Vec<String>> {
             }
             _ if word.starts_with("--host=") => {}
             _ if word.starts_with("-H") && word.len() > 2 && !word.starts_with("--") => {}
+            // Short flags combined into one word, `-fHbox`: everything from
+            // the `H` on is the host. No other short flag of `server` takes a
+            // value that could contain an `H`, except `-n`, which takes digits.
+            _ if !word.starts_with("--") && word.starts_with('-') && word[1..].contains('H') => {
+                let flags = &word[..word.find('H').unwrap_or(word.len())];
+                if flags.len() > 1 {
+                    words.push(flags.to_string());
+                }
+            }
             _ => words.push(word.clone()),
         }
     }
@@ -628,4 +640,30 @@ async fn print_install(request: agent::install::InstallRequest, json: bool) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        let argv: Vec<String> = line.split(' ').map(str::to_string).collect();
+        verb_words_of(&argv).expect("a server command")
+    }
+
+    /// The host's own `termio server` must parse exactly what was typed, less
+    /// the host: every spelling of `--host` goes, and nothing after `--` is
+    /// touched, even a `-H`.
+    #[test]
+    fn the_host_is_the_only_thing_removed() {
+        assert_eq!(words("termio server -H box status --json"), ["status", "--json"]);
+        assert_eq!(words("termio server status --host box"), ["status"]);
+        assert_eq!(words("termio server --host=box ls"), ["ls"]);
+        assert_eq!(words("termio server -Hbox logs -n 5"), ["logs", "-n", "5"]);
+        assert_eq!(words("termio server logs -fHbox"), ["logs", "-f"]);
+        assert_eq!(
+            words("termio server -H box send server -- -H x"),
+            ["send", "server", "--", "-H", "x"]
+        );
+    }
 }

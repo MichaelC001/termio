@@ -505,7 +505,14 @@ pub fn client_binary() -> String {
         // which is the path the user's own `PATH` resolves — the right one to
         // stamp. Canonicalizing would replace it with a build artefact's path
         // that a later upgrade renames out from under every hook.
-        if path.file_name().is_some_and(|name| name != "termiod") {
+        // Any name starting `termiod` is the daemon — `termiod.prev` included,
+        // which is what `/proc/self/exe` reports once a staged build renamed
+        // the running file aside.
+        let is_daemon = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("termiod"));
+        if !is_daemon {
             if let Some(path) = path.to_str() {
                 return path.to_string();
             }
