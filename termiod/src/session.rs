@@ -550,6 +550,12 @@ impl Session {
     fn input_event(&mut self, id: &ClientId, event: crate::protocol::Event) {
         use crate::protocol::{Event, InputAction};
         use termiod_vt::{KeyAction, MouseAction, Pointer};
+        // A session that lost its modes in a handoff takes no encoded input:
+        // its stream attachments are refused once their snapshot settles, and
+        // nothing may reach the program encoded with guesses meanwhile.
+        if !self.input_modes_known {
+            return;
+        }
         if let Event::Focus { focused } = event {
             // Kept for every attachment, so a pane that takes the token back
             // has its focus known; reported only for the writer, since a pane
@@ -2143,13 +2149,13 @@ fn seed_input(
             }
         }
     }
-    if !chunks.is_empty() {
-        if let Ok(mut terminal) = termiod_vt::VtTerminal::new(rows, cols) {
-            for chunk in chunks {
-                terminal.vt_write(chunk);
-            }
-            encoder.refresh(&terminal);
+    // A new session is a blank terminal of its size; an adopted one without a
+    // usable snapshot is that terminal after the ring.
+    if let Ok(mut terminal) = termiod_vt::VtTerminal::new(rows, cols) {
+        for chunk in chunks {
+            terminal.vt_write(chunk);
         }
+        encoder.refresh(&terminal);
     }
     None
 }
@@ -2511,7 +2517,9 @@ fn spawn_sidecar_sharing(
             let mut fault = terminal
                 .is_none()
                 .then(|| "VT sidecar initialization failed".to_string());
-            refresh_input(&input, terminal.as_ref());
+            // Not refreshed here: `seed_input` already gave the encoders this
+            // session's modes, and a terminal still blank before its replay
+            // would take them away again. The first parsed batch refreshes.
             let mut pending = None;
             let mut grid_diff_wanted = false;
             let mut frame_seq = 0u32;
@@ -3993,7 +4001,7 @@ mod tests {
     }
 
     /// A handoff carries the VT as a native snapshot, so the next image's
-    /// encoders start with the program's modes — set long ago, past anything
+    /// sidecar keeps the program's modes — set long ago, past anything
     /// the replay ring still holds — instead of a blank terminal's.
     #[tokio::test]
     async fn a_carried_vt_brings_the_programs_input_modes_with_it() {
@@ -4002,6 +4010,9 @@ mod tests {
         let input = Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap()));
         let Sidecar { commands, results: _results, queue: _queue, thread } =
             super::spawn_sidecar_sharing(24, 80, input.clone(), Some(vt.native_snapshot().unwrap())).unwrap();
+        // The sidecar's VT is the carried one: the first batch it parses
+        // refreshes the encoders with the program's modes, not a blank's.
+        commands.send(SidecarCommand::Write(Bytes::from_static(b"x"))).unwrap();
         let (reply, answer) = std_mpsc::channel();
         commands.send(SidecarCommand::Carry(reply)).unwrap();
         assert!(answer.recv().unwrap().is_some(), "a live VT answers a carry with its snapshot");
@@ -4606,6 +4617,26 @@ mod tests {
         session.vt.shut_down();
         drop(session);
         let _ = thread.join();
+    }
+
+    /// Nor does it take an input event while that refusal is on its way.
+    #[tokio::test]
+    async fn input_events_are_dropped_while_the_input_modes_are_unknown() {
+        use crate::protocol::Event;
+        let Sidecar { commands, results: _results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        session.input_tx = input_tx;
+        session.input_modes_known = false;
+        let _mac = attach_interactive_client(&mut session, "mac");
+        assert!(claim_writer(&mut session, "mac"));
+        handle_msg(
+            &mut session,
+            SessionMsg::InputEvent { id: ClientId::new("mac"), event: Event::Paste { text: "a\nb".into(), more: false } },
+        );
+        assert!(input_rx.try_recv().is_err(), "a paste encoded without the program's modes");
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
     }
 
     /// A session that lost its input modes in a handoff refuses the stream:
