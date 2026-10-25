@@ -44,6 +44,8 @@
 	<string>%@ is ready.</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ isn’t a UTF-8 text file.</string>
+	<key>%@ isn’t an .app bundle.</key>
+	<string>%@ isn’t an .app bundle.</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ isn’t available on this device yet.</string>
 	<key>%@ isn’t available on this machine yet.</key>
@@ -114,6 +116,10 @@
 	<string>%lldw</string>
 	<key>1 result</key>
 	<string>1 result</string>
+	<key>9:41</key>
+	<string>9:41</string>
+	<key>9:41, Full Signal and Battery</key>
+	<string>9:41, Full Signal and Battery</string>
 	<key>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</key>
 	<string>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
@@ -134,6 +140,8 @@
 	<string>A port is a number from 1 to 65535.</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
 	<string>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</string>
+	<key>Accept the Xcode License</key>
+	<string>Accept the Xcode License</string>
 	<key>Accounts</key>
 	<string>Accounts</string>
 	<key>Add</key>
@@ -174,6 +182,8 @@
 	<string>Agent skill</string>
 	<key>Agents</key>
 	<string>Agents</string>
+	<key>Agents in Termio will control this simulator and take screenshots of its entire screen. Don’t sign in to real accounts on it.</key>
+	<string>Agents in Termio will control this simulator and take screenshots of its entire screen. Don’t sign in to real accounts on it.</string>
 	<key>Agents on %@</key>
 	<string>Agents on %@</string>
 	<key>Agents on %@ can run, and report their status back here.</key>
@@ -198,14 +208,22 @@
 %@%@</string>
 	<key>All changes to “%@” will be lost. This cannot be undone.</key>
 	<string>All changes to “%@” will be lost. This cannot be undone.</string>
+	<key>Allow</key>
+	<string>Allow</string>
 	<key>Allow Usage Access</key>
 	<string>Allow Usage Access</string>
+	<key>Allow agents to use %@?</key>
+	<string>Allow agents to use %@?</string>
 	<key>Allow…</key>
 	<string>Allow…</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>An older install points at %@. Update it to this version of Termio.</string>
+	<key>Annotate</key>
+	<string>Annotate</string>
 	<key>Anyone</key>
 	<string>Anyone</string>
+	<key>App Logs</key>
+	<string>App Logs</string>
 	<key>App language</key>
 	<string>App language</string>
 	<key>Appearance</key>
@@ -216,6 +234,8 @@
 	<string>Apply</string>
 	<key>Arguments</key>
 	<string>Arguments</string>
+	<key>Arrow</key>
+	<string>Arrow</string>
 	<key>Asking %@ what it has.</key>
 	<string>Asking %@ what it has.</string>
 	<key>Asking %@…</key>
@@ -248,6 +268,8 @@
 	<string>Blue</string>
 	<key>Blur</key>
 	<string>Blur</string>
+	<key>Booting %@…</key>
+	<string>Booting %@…</string>
 	<key>Branch</key>
 	<string>Branch</string>
 	<key>Bring All to Front</key>
@@ -304,6 +326,12 @@
 	<string>Checking the machine…</string>
 	<key>Checking…</key>
 	<string>Checking…</string>
+	<key>Choose Xcode</key>
+	<string>Choose Xcode</string>
+	<key>Choose a Simulator</key>
+	<string>Choose a Simulator</string>
+	<key>Choose a device above to boot it.</key>
+	<string>Choose a device above to boot it.</string>
 	<key>Choose a different name.</key>
 	<string>Choose a different name.</string>
 	<key>Choose a folder named like “%@-work”</key>
@@ -314,6 +342,8 @@
 	<string>Choose a project folder on %@.</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>Choose a project folder to open in Termio.</string>
+	<key>Choose an App</key>
+	<string>Choose an App</string>
 	<key>Choose another branch to compare with.</key>
 	<string>Choose another branch to compare with.</string>
 	<key>Choose how projects are ordered</key>
@@ -414,6 +444,8 @@
 	<string>Copied</string>
 	<key>Copy</key>
 	<string>Copy</string>
+	<key>Copy Command</key>
+	<string>Copy Command</string>
 	<key>Copy Diff</key>
 	<string>Copy Diff</string>
 	<key>Copy Image</key>
@@ -442,10 +474,16 @@
 	<string>Couldn't read plan limits.</string>
 	<key>Couldn’t change the Themes folder</key>
 	<string>Couldn’t change the Themes folder</string>
+	<key>Couldn’t copy the capture.</key>
+	<string>Couldn’t copy the capture.</string>
 	<key>Couldn’t create the worktrees folder: %@</key>
 	<string>Couldn’t create the worktrees folder: %@</string>
 	<key>Couldn’t create worktree session</key>
 	<string>Couldn’t create worktree session</string>
+	<key>Couldn’t draw the annotations onto the screenshot.</key>
+	<string>Couldn’t draw the annotations onto the screenshot.</string>
+	<key>Couldn’t find the caches folder.</key>
+	<string>Couldn’t find the caches folder.</string>
 	<key>Couldn’t inspect worktree</key>
 	<string>Couldn’t inspect worktree</string>
 	<key>Couldn’t install %@ on %@.
@@ -458,6 +496,12 @@
 	<string>Couldn’t load</string>
 	<key>Couldn’t open a pull request page</key>
 	<string>Couldn’t open a pull request page</string>
+	<key>Couldn’t read %@’s executable name.</key>
+	<string>Couldn’t read %@’s executable name.</string>
+	<key>Couldn’t read the bundle identifier from %@.</key>
+	<string>Couldn’t read the bundle identifier from %@.</string>
+	<key>Couldn’t read the screenshot.</key>
+	<string>Couldn’t read the screenshot.</string>
 	<key>Couldn’t remove %@.</key>
 	<string>Couldn’t remove %@.</string>
 	<key>Couldn’t remove worktree</key>
@@ -542,8 +586,12 @@
 	<string>Discord</string>
 	<key>Done</key>
 	<string>Done</string>
+	<key>Don’t Allow</key>
+	<string>Don’t Allow</string>
 	<key>Don’t Compare</key>
 	<string>Don’t Compare</string>
+	<key>Download the iOS Platform</key>
+	<string>Download the iOS Platform</string>
 	<key>Draft</key>
 	<string>Draft</string>
 	<key>Drag an agent onto another to reorder.</key>
@@ -582,6 +630,12 @@
 	<string>Enter a path that starts with “/”. “~/” works too, once %@ has said where home is.</string>
 	<key>Enter an absolute path</key>
 	<string>Enter an absolute path</string>
+	<key>Erase</key>
+	<string>Erase</string>
+	<key>Erase All Content and Settings…</key>
+	<string>Erase All Content and Settings…</string>
+	<key>Erase all content and settings on %@?</key>
+	<string>Erase all content and settings on %@?</string>
 	<key>Every %@ session on this Mac, from all accounts.%@</key>
 	<string>Every %@ session on this Mac, from all accounts.%@</string>
 	<key>Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.</key>
@@ -592,6 +646,10 @@
 	<string>Exited with status %lld.</string>
 	<key>Expand Results</key>
 	<string>Expand Results</string>
+	<key>FPS: %lld</key>
+	<string>FPS: %lld</string>
+	<key>FPS: idle</key>
+	<string>FPS: idle</string>
 	<key>Family</key>
 	<string>Family</string>
 	<key>File</key>
@@ -612,10 +670,14 @@
 	<string>Find Previous</string>
 	<key>Find…</key>
 	<string>Find…</string>
+	<key>Finish Setting Up Xcode</key>
+	<string>Finish Setting Up Xcode</string>
 	<key>Finish signing in in the terminal</key>
 	<string>Finish signing in in the terminal</string>
 	<key>Finish updating Termio’s session host?</key>
 	<string>Finish updating Termio’s session host?</string>
+	<key>Fit to Pane</key>
+	<string>Fit to Pane</string>
 	<key>Focus Pane Down</key>
 	<string>Focus Pane Down</string>
 	<key>Focus Pane Left</key>
@@ -668,6 +730,8 @@
 	<string>Highlights</string>
 	<key>History</key>
 	<string>History</string>
+	<key>Home</key>
+	<string>Home</string>
 	<key>Hooks</key>
 	<string>Hooks</string>
 	<key>Hooks and skill installed</key>
@@ -708,6 +772,8 @@
 	<string>Install %@</string>
 	<key>Install Page</key>
 	<string>Install Page</string>
+	<key>Install Xcode</key>
+	<string>Install Xcode</string>
 	<key>Install on %@</key>
 	<string>Install on %@</string>
 	<key>Installed</key>
@@ -732,6 +798,8 @@
 	<string>Issues</string>
 	<key>Issues a new token and revokes every paired iPhone.</key>
 	<string>Issues a new token and revokes every paired iPhone.</string>
+	<key>Its apps, data and settings are removed, as on a new device. It restarts when the erase is done.</key>
+	<string>Its apps, data and settings are removed, as on a new device. It restarts when the erase is done.</string>
 	<key>Join</key>
 	<string>Join</string>
 	<key>Jump to session, project, or file…</key>
@@ -778,12 +846,16 @@
 	<string>Line height applies to the file editor and diffs; the terminal keeps the font’s own. Font and theme values you haven’t set here follow your Ghostty config.</string>
 	<key>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</key>
 	<string>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</string>
+	<key>Live</key>
+	<string>Live</string>
 	<key>Live agent status</key>
 	<string>Live agent status</string>
 	<key>Live agent status is off</key>
 	<string>Live agent status is off</string>
 	<key>Local</key>
 	<string>Local</string>
+	<key>Lock</key>
+	<string>Lock</string>
 	<key>Login shell</key>
 	<string>Login shell</string>
 	<key>Looking for agent CLIs…</key>
@@ -864,6 +936,8 @@
 	<string>New SSH Connection…</string>
 	<key>New Session</key>
 	<string>New Session</string>
+	<key>New Simulator</key>
+	<string>New Simulator</string>
 	<key>New Terminal</key>
 	<string>New Terminal</string>
 	<key>New Terminal at Home</key>
@@ -918,8 +992,12 @@
 	<string>No Pull Requests</string>
 	<key>No Session</key>
 	<string>No Session</string>
+	<key>No Simulator Running</key>
+	<string>No Simulator Running</string>
 	<key>No agent CLIs on %@ yet. Install one there and it shows up here.</key>
 	<string>No agent CLIs on %@ yet. Install one there and it shows up here.</string>
+	<key>No apps are installed on this simulator.</key>
+	<string>No apps are installed on this simulator.</string>
 	<key>No bundled tool to install from.</key>
 	<string>No bundled tool to install from.</string>
 	<key>No command to run.</key>
@@ -928,12 +1006,18 @@
 	<string>No contents</string>
 	<key>No description provided.</key>
 	<string>No description provided.</string>
+	<key>No element there.</key>
+	<string>No element there.</string>
 	<key>No file changes</key>
 	<string>No file changes</string>
 	<key>No highlights</key>
 	<string>No highlights</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>No hosts yet — add one, or write a Host block in ~/.ssh/config.</string>
+	<key>No iOS runtimes are installed in Xcode.</key>
+	<string>No iOS runtimes are installed in Xcode.</string>
+	<key>No iOS simulator is downloaded. Get one in Xcode ▸ Settings ▸ Components, or in Terminal.</key>
+	<string>No iOS simulator is downloaded. Get one in Xcode ▸ Settings ▸ Components, or in Terminal.</string>
 	<key>No issues found.</key>
 	<string>No issues found.</string>
 	<key>No matches</key>
@@ -952,6 +1036,8 @@
 	<string>No route to host</string>
 	<key>No sessions on this Mac yet.</key>
 	<string>No sessions on this Mac yet.</string>
+	<key>No simulator is booted. Boot one with `xcrun simctl boot &lt;device&gt;`, or pick one in the Simulator pane.</key>
+	<string>No simulator is booted. Boot one with `xcrun simctl boot &lt;device&gt;`, or pick one in the Simulator pane.</string>
 	<key>No textual changes to show.</key>
 	<string>No textual changes to show.</string>
 	<key>No theme matches “%@”</key>
@@ -984,12 +1070,16 @@
 	<string>Not running yet. Sessions start it, and keep running after you quit Termio.</string>
 	<key>Not set up yet</key>
 	<string>Not set up yet</string>
+	<key>Nothing logged yet.</key>
+	<string>Nothing logged yet.</string>
 	<key>Nothing to Compare</key>
 	<string>Nothing to Compare</string>
 	<key>Nothing to install.</key>
 	<string>Nothing to install.</string>
 	<key>Nothing to reach — this is the machine you’re on.</key>
 	<string>Nothing to reach — this is the machine you’re on.</string>
+	<key>Nothing was selected to copy.</key>
+	<string>Nothing was selected to copy.</string>
 	<key>Notifications</key>
 	<string>Notifications</string>
 	<key>Notifications for Termio are turned off in System Settings.</key>
@@ -1010,6 +1100,8 @@
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
 	<key>Only regular files can be previewed.</key>
 	<string>Only regular files can be previewed.</string>
+	<key>Only text can be pasted into the simulator.</key>
+	<string>Only text can be pasted into the simulator.</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
 	<string>Only the first %lld items are shown — update termio on this device to list them all.</string>
 	<key>Opacity</key>
@@ -1028,6 +1120,8 @@
 	<string>Open System Settings</string>
 	<key>Open Themes Folder…</key>
 	<string>Open Themes Folder…</string>
+	<key>Open Xcode</key>
+	<string>Open Xcode</string>
 	<key>Open a Folder</key>
 	<string>Open a Folder</string>
 	<key>Open a Project on %@</key>
@@ -1046,6 +1140,8 @@
 	<string>Open on GitHub</string>
 	<key>Open one to see how it is reached and what it runs.</key>
 	<string>Open one to see how it is reached and what it runs.</string>
+	<key>Open the App Store</key>
+	<string>Open the App Store</string>
 	<key>Open the invite on your iPhone to install it with TestFlight.</key>
 	<string>Open the invite on your iPhone to install it with TestFlight.</string>
 	<key>Opened outside Termio on this device</key>
@@ -1084,8 +1180,12 @@
 	<string>Paste</string>
 	<key>Path</key>
 	<string>Path</string>
+	<key>Pen</key>
+	<string>Pen</string>
 	<key>Permissions</key>
 	<string>Permissions</string>
+	<key>Physical Size</key>
+	<string>Physical Size</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>Pick a file on the left to see its changes.</string>
 	<key>Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.</key>
@@ -1164,8 +1264,16 @@
 	<string>Reconnect to sign in with a different account, or grant Termio access to the organization that owns this repository.</string>
 	<key>Reconnecting…</key>
 	<string>Reconnecting…</string>
+	<key>Record Screen</key>
+	<string>Record Screen</string>
+	<key>Record Screen to Desktop</key>
+	<string>Record Screen to Desktop</string>
 	<key>Record Shortcut</key>
 	<string>Record Shortcut</string>
+	<key>Recording Saved</key>
+	<string>Recording Saved</string>
+	<key>Rectangle</key>
+	<string>Rectangle</string>
 	<key>Refresh</key>
 	<string>Refresh</string>
 	<key>Reinstall</key>
@@ -1214,6 +1322,8 @@
 	<string>Rename</string>
 	<key>Rename Session</key>
 	<string>Rename Session</string>
+	<key>Rename Simulator</key>
+	<string>Rename Simulator</string>
 	<key>Rename Workspace</key>
 	<string>Rename Workspace</string>
 	<key>Rename “%@”</key>
@@ -1236,12 +1346,18 @@
 	<string>Resets in %@</string>
 	<key>Resetting</key>
 	<string>Resetting</string>
+	<key>Restart</key>
+	<string>Restart</string>
 	<key>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</key>
 	<string>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</string>
 	<key>Restore Defaults</key>
 	<string>Restore Defaults</string>
 	<key>Reveal in Finder</key>
 	<string>Reveal in Finder</string>
+	<key>Rotate Left</key>
+	<string>Rotate Left</string>
+	<key>Rotate Right</key>
+	<string>Rotate Right</string>
 	<key>Rotate Token</key>
 	<string>Rotate Token</string>
 	<key>Rotate Token…</key>
@@ -1272,12 +1388,18 @@
 	<string>Save</string>
 	<key>Save Highlights into PDF</key>
 	<string>Save Highlights into PDF</string>
+	<key>Save Screenshot</key>
+	<string>Save Screenshot</string>
+	<key>Save Screenshot to Desktop</key>
+	<string>Save Screenshot to Desktop</string>
 	<key>Save failed: %@</key>
 	<string>Save failed: %@</string>
 	<key>Saving to %@…</key>
 	<string>Saving to %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>Scan the QR code with WeChat to join the Chinese community group.</string>
+	<key>Screenshot Saved</key>
+	<string>Screenshot Saved</string>
 	<key>Scrollback</key>
 	<string>Scrollback</string>
 	<key>Search</key>
@@ -1298,6 +1420,10 @@
 	<string>Searching…</string>
 	<key>Select All</key>
 	<string>Select All</string>
+	<key>Select Element</key>
+	<string>Select Element</string>
+	<key>Select a session to add this to.</key>
+	<string>Select a session to add this to.</string>
 	<key>Select a session to browse its files.</key>
 	<string>Select a session to browse its files.</string>
 	<key>Select a session to see its info.</key>
@@ -1332,12 +1458,18 @@
 	<string>Settings</string>
 	<key>Settings…</key>
 	<string>Settings…</string>
+	<key>Shake</key>
+	<string>Shake</string>
 	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</string>
 	<key>Show</key>
 	<string>Show</string>
 	<key>Show All</key>
 	<string>Show All</string>
+	<key>Show Frame Rate</key>
+	<string>Show Frame Rate</string>
+	<key>Show On-Screen Keyboard</key>
+	<string>Show On-Screen Keyboard</string>
 	<key>Show Original</key>
 	<string>Show Original</string>
 	<key>Show Project Files</key>
@@ -1346,6 +1478,8 @@
 	<string>Show Replace</string>
 	<key>Show another file in this diff</key>
 	<string>Show another file in this diff</string>
+	<key>Show in Finder</key>
+	<string>Show in Finder</string>
 	<key>Show one column (inline diff)</key>
 	<string>Show one column (inline diff)</string>
 	<key>Show two columns (side-by-side diff)</key>
@@ -1358,6 +1492,10 @@
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse.</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</key>
 	<string>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</string>
+	<key>Shut Down</key>
+	<string>Shut Down</string>
+	<key>Side Button</key>
+	<string>Side Button</string>
 	<key>Sidebar</key>
 	<string>Sidebar</string>
 	<key>Sign In…</key>
@@ -1372,6 +1510,8 @@
 	<string>Signs in with %@</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>Signs in with the keys ssh offers by default.</string>
+	<key>Simulator Unavailable</key>
+	<string>Simulator Unavailable</string>
 	<key>Size</key>
 	<string>Size</string>
 	<key>Skill</key>
@@ -1382,6 +1522,8 @@
 	<string>Skill reinstalled</string>
 	<key>Skip permission prompts</key>
 	<string>Skip permission prompts</string>
+	<key>Slow Animations</key>
+	<string>Slow Animations</string>
 	<key>Somebody else wrote this file after you opened it. Overwriting replaces their version.</key>
 	<string>Somebody else wrote this file after you opened it. Overwriting replaces their version.</string>
 	<key>Something else already owns %@.</key>
@@ -1416,8 +1558,14 @@
 	<string>State</string>
 	<key>Status</key>
 	<string>Status</string>
+	<key>Status Bar</key>
+	<string>Status Bar</string>
 	<key>Stop Reading %@ Data</key>
 	<string>Stop Reading %@ Data</string>
+	<key>Stop Recording</key>
+	<string>Stop Recording</string>
+	<key>Stop Selecting</key>
+	<string>Stop Selecting</string>
 	<key>Style</key>
 	<string>Style</string>
 	<key>Switch between project files, search, changes, and info</key>
@@ -1452,6 +1600,8 @@
 	<string>Termio can show %@'s token usage and plan limits by reading its local session logs and its sign-in from your login Keychain. Nothing is read until you allow it; macOS will ask once about the Keychain.</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</string>
+	<key>Termio couldn’t open a channel for the simulator’s screen.</key>
+	<string>Termio couldn’t open a channel for the simulator’s screen.</string>
 	<key>Termio for iPhone is in beta</key>
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
@@ -1468,6 +1618,10 @@
 	<string>Test</string>
 	<key>Test Connection</key>
 	<string>Test Connection</string>
+	<key>The Simulator pane needs a Mac with Apple silicon.</key>
+	<string>The Simulator pane needs a Mac with Apple silicon.</string>
+	<key>The Simulator pane needs macOS 15 or later.</key>
+	<string>The Simulator pane needs macOS 15 or later.</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
@@ -1480,6 +1634,10 @@
 	<string>The device couldn’t read this comparison.</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>The devices in your ~/.ssh/config, and the keys that reach them</string>
+	<key>The iOS Simulator comes with Xcode. Install it from the App Store, then open it once.</key>
+	<string>The iOS Simulator comes with Xcode. Install it from the App Store, then open it once.</string>
+	<key>The iOS Simulator isn’t available on this Mac.</key>
+	<string>The iOS Simulator isn’t available on this Mac.</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>The ignore rule couldn’t be added.</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
@@ -1502,6 +1660,8 @@
 	<string>The public keys in ~/.ssh. Copy one to paste into a server’s authorized_keys — private keys are never read.</string>
 	<key>The read failed.</key>
 	<string>The read failed.</string>
+	<key>The recording couldn’t be saved.</key>
+	<string>The recording couldn’t be saved.</string>
 	<key>The search failed.</key>
 	<string>The search failed.</string>
 	<key>The session host answered, but not with a pairing invite.</key>
@@ -1514,6 +1674,18 @@
 	<string>The session host went away</string>
 	<key>The sidebar shows this workspace</key>
 	<string>The sidebar shows this workspace</string>
+	<key>The simulator and everything on it are removed from this Mac.</key>
+	<string>The simulator and everything on it are removed from this Mac.</string>
+	<key>The simulator didn’t finish booting.</key>
+	<string>The simulator didn’t finish booting.</string>
+	<key>The simulator helper keeps quitting. Pick the device again to retry.</key>
+	<string>The simulator helper keeps quitting. Pick the device again to retry.</string>
+	<key>The simulator helper quit. Try again.</key>
+	<string>The simulator helper quit. Try again.</string>
+	<key>The simulator helper reported an error.</key>
+	<string>The simulator helper reported an error.</string>
+	<key>The simulator helper sent a reply Termio couldn’t read.</key>
+	<string>The simulator helper sent a reply Termio couldn’t read.</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
 	<key>The working tree is clean.</key>
@@ -1530,6 +1702,8 @@
 	<string>This Mac</string>
 	<key>This Mac and the machines you reach from it</key>
 	<string>This Mac and the machines you reach from it</string>
+	<key>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</key>
+	<string>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</string>
 	<key>This Mac…</key>
 	<string>This Mac…</string>
 	<key>This PDF carries no table of contents.</key>
@@ -1544,6 +1718,8 @@
 	<string>This branch has no commits yet.</string>
 	<key>This branch has nothing the base branch doesn’t already have.</key>
 	<string>This branch has nothing the base branch doesn’t already have.</string>
+	<key>This build of Termio doesn’t include the simulator helper.</key>
+	<string>This build of Termio doesn’t include the simulator helper.</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>This checkout has no other branch to compare with.</string>
 	<key>This closes by itself once %@ is signed in.</key>
@@ -1604,6 +1780,8 @@
 	<string>Timed out</string>
 	<key>Today</key>
 	<string>Today</string>
+	<key>Toggle Appearance</key>
+	<string>Toggle Appearance</string>
 	<key>Toggle Full Screen</key>
 	<string>Toggle Full Screen</string>
 	<key>Toggle Project Files</key>
@@ -1628,6 +1806,8 @@
 	<string>URL Pattern</string>
 	<key>Underline</key>
 	<string>Underline</string>
+	<key>Undo</key>
+	<string>Undo</string>
 	<key>Ungroup</key>
 	<string>Ungroup</string>
 	<key>Unlock “%@” (git worktree unlock) before removing it.</key>
@@ -1672,6 +1852,10 @@
 	<string>View</string>
 	<key>View on %@</key>
 	<string>View on %@</string>
+	<key>Volume Down</key>
+	<string>Volume Down</string>
+	<key>Volume Up</key>
+	<string>Volume Up</string>
 	<key>Waiting for the agent’s first status report.</key>
 	<string>Waiting for the agent’s first status report.</string>
 	<key>Wants a password</key>
@@ -1718,6 +1902,10 @@
 	<string>Worktree has changes</string>
 	<key>Worktree is locked</key>
 	<string>Worktree is locked</string>
+	<key>Xcode hasn’t finished installing its components. Open Xcode once, or finish in Terminal.</key>
+	<string>Xcode hasn’t finished installing its components. Open Xcode once, or finish in Terminal.</string>
+	<key>Xcode needs its license accepted before the simulator runs. Open Xcode, or accept it in Terminal.</key>
+	<string>Xcode needs its license accepted before the simulator runs. Open Xcode, or accept it in Terminal.</string>
 	<key>Yellow</key>
 	<string>Yellow</string>
 	<key>You can restore it from the Trash.</key>
@@ -1728,6 +1916,10 @@
 	<string>Your themes</string>
 	<key>Zoom</key>
 	<string>Zoom</string>
+	<key>Zoom In</key>
+	<string>Zoom In</string>
+	<key>Zoom Out</key>
+	<string>Zoom Out</string>
 	<key>Zoom Split</key>
 	<string>Zoom Split</string>
 	<key>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</key>
@@ -1772,6 +1964,8 @@
 	<string>machines</string>
 	<key>nothing</key>
 	<string>nothing</string>
+	<key>open-url doesn’t open %@: URLs.</key>
+	<string>open-url doesn’t open %@: URLs.</string>
 	<key>optional</key>
 	<string>optional</string>
 	<key>optional — ~/.ssh/id_ed25519</key>
