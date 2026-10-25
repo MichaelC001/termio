@@ -2119,6 +2119,41 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
 /// screen they drew the first time.
 const PASTE_END: &[u8] = b"\x1b[201~";
 
+/// Gives an adopted session's encoders the program's modes, from the carried
+/// snapshot or by replaying the ring, and returns the snapshot if it decoded.
+///
+/// Done on the actor before it takes input: the sidecar parses on its own
+/// thread after the session is already accepting keystrokes, so it cannot be
+/// what seeds them. The ring is bounded by `RING_CAP`, replayed once here.
+fn seed_input(
+    encoder: &mut termiod_vt::InputEncoder,
+    native: Option<Vec<u8>>,
+    chunks: &[Bytes],
+    rows: u16,
+    cols: u16,
+) -> Option<Vec<u8>> {
+    if let Some(bytes) = native {
+        match termiod_vt::VtTerminal::from_native_snapshot(&bytes) {
+            Ok(terminal) => {
+                encoder.refresh(&terminal);
+                return Some(bytes);
+            }
+            Err(error) => {
+                eprintln!("termiod: carried VT snapshot undecodable, replaying the ring: {error}");
+            }
+        }
+    }
+    if !chunks.is_empty() {
+        if let Ok(mut terminal) = termiod_vt::VtTerminal::new(rows, cols) {
+            for chunk in chunks {
+                terminal.vt_write(chunk);
+            }
+            encoder.refresh(&terminal);
+        }
+    }
+    None
+}
+
 /// How long a handoff waits for the VT to finish what it was fed and
 /// snapshot it. Past it the session still crosses, on ring replay. Well inside
 /// `handoff::CARRY_TIMEOUT`, which this actor must answer within or the session
@@ -2241,18 +2276,12 @@ fn start(
         termiod_vt::InputEncoder::new().map_err(|error| anyhow::anyhow!("input encoders: {error}"))?,
     ));
     let mut replay = replay;
-    // Decoded once here as a check, because a snapshot the sidecar could not
-    // decode must still leave the ring to replay.
-    let native = replay
-        .native
-        .take()
-        .filter(|bytes| match termiod_vt::VtTerminal::from_native_snapshot(bytes) {
-            Ok(_) => true,
-            Err(error) => {
-                eprintln!("termiod: carried VT snapshot undecodable, replaying the ring: {error}");
-                false
-            }
-        });
+    // Before anything can attach, the encoders take the program's modes, and
+    // a snapshot that does not decode leaves the ring to replay instead.
+    let native = match input.lock() {
+        Ok(mut encoder) => seed_input(&mut encoder, replay.native.take(), &replay.chunks, facts.rows, facts.cols),
+        Err(_) => None,
+    };
     let starts_from_snapshot = native.is_some();
     let input_modes_unknown = replay.input_modes_unknown;
     let paste_was_open = replay.paste_open;
@@ -3938,6 +3967,29 @@ mod tests {
 
         session.vt.shut_down();
         let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// An adopted session's encoders hold the program's modes before the
+    /// sidecar has parsed anything, so the first keystroke is encoded right.
+    #[test]
+    fn an_adopted_session_is_seeded_with_the_carried_modes() {
+        let mut vt = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        vt.vt_write(b"\x1b[?2004h");
+        let mut encoder = termiod_vt::InputEncoder::new().unwrap();
+        let kept = super::seed_input(&mut encoder, Some(vt.native_snapshot().unwrap()), &[], 24, 80);
+        assert!(kept.is_some());
+        assert!(encoder.modes().bracketed_paste, "seeded from the carried VT");
+
+        let mut encoder = termiod_vt::InputEncoder::new().unwrap();
+        let kept = super::seed_input(
+            &mut encoder,
+            Some(b"not a snapshot".to_vec()),
+            &[Bytes::from_static(b"\x1b[?1h")],
+            24,
+            80,
+        );
+        assert!(kept.is_none(), "an undecodable snapshot falls back to the ring");
+        assert!(encoder.modes().cursor_keys_application, "seeded from the ring");
     }
 
     /// A handoff carries the VT as a native snapshot, so the next image's
