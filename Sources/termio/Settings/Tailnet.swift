@@ -453,7 +453,15 @@ final class BuiltInTailscale: ObservableObject {
         return !report.enabled || report.status?.state == "running"
     }
 
+    /// The last on or off asked for and not yet read back, so a decision taken
+    /// mid-command acts on where the node is going rather than where it was.
+    private var requested: Bool?
+
+    /// On, or on its way there.
+    var headedOn: Bool { requested ?? enabled }
+
     func setEnabled(_ on: Bool) {
+        requested = on
         let arguments = on
             ? ["tailscale", "on", "--no-wait", "--hostname", Self.deviceName]
             : ["tailscale", "off"]
@@ -488,6 +496,7 @@ final class BuiltInTailscale: ObservableObject {
             }
             await read()
             busy = false
+            if pending == nil { requested = nil }
             if let next = pending {
                 pending = nil
                 perform(next)

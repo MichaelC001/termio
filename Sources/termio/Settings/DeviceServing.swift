@@ -75,9 +75,11 @@ final class PairingModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.refreshInvite() }
             .store(in: &observers)
-        // Allow Paired Devices covers the node too: a phone that reaches the
-        // session host through it would otherwise outlive the switch.
-        mobile.$isEnabled
+        // Allow Paired Devices and Direct Attach cover the node too: it
+        // reaches the session host past the servers they stop, so a phone
+        // paired through it would otherwise outlive either switch.
+        Publishers.CombineLatest(mobile.$isEnabled, mobile.$attachesDirectly)
+            .map { $0 && $1 }
             .dropFirst()
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -87,11 +89,11 @@ final class PairingModel: ObservableObject {
 
     private static let pausedNodeKey = "companion.builtInTailscalePaused"
 
-    /// Turning Allow Paired Devices off takes the node off the tailnet, and
-    /// turning it on brings back a node it took off, and only that one.
+    /// Turning either switch off takes the node off the tailnet, and turning
+    /// it back on brings back a node it took off, and only that one.
     private func followMasterSwitch(_ allowed: Bool) {
         let defaults = UserDefaults.standard
-        if !allowed, builtIn.enabled {
+        if !allowed, builtIn.headedOn {
             defaults.set(true, forKey: Self.pausedNodeKey)
             builtIn.setEnabled(false)
         } else if allowed, defaults.bool(forKey: Self.pausedNodeKey) {
