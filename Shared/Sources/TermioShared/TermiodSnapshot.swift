@@ -55,6 +55,10 @@ public enum TermiodSnapshot {
         /// Set for payload v2 — the repaint, already in the terminal's own
         /// language. When present, `cells` is empty and `render` is a pass-through.
         public var vt: Data?
+        /// Set for payload v4 — libghostty's native snapshot, which a
+        /// `vt_stream` client decodes into a fresh terminal of its own. Never
+        /// rendered: there is no surface to replay it into.
+        public var native: Data?
     }
 
     /// Snapshot payload v3 (see `encode_snapshot_payload` in `protocol.rs`):
@@ -73,6 +77,9 @@ public enum TermiodSnapshot {
     /// all survive. Packed cells remain the fallback when the host's formatter
     /// fails, and the seed for a grid-diff client.
     public static let vtFormatVersion: UInt8 = 2
+    /// Payload v4, sent only to a client that negotiated `vt_stream`. The
+    /// header is v2's; the body is libghostty's own snapshot encoding.
+    public static let nativeFormatVersion: UInt8 = 4
     public static let cellSize = 16
     public static let colorTagPalette: UInt8 = 1
     public static let colorTagRGB: UInt8 = 2
@@ -80,9 +87,10 @@ public enum TermiodSnapshot {
     public static func decode(_ payload: Data) -> Frame? {
         let bytes = [UInt8](payload)
         guard bytes.count >= 12,
-              bytes[0] == formatVersion || bytes[0] == vtFormatVersion
+              [formatVersion, vtFormatVersion, nativeFormatVersion].contains(bytes[0])
         else { return nil }
-        let isVT = bytes[0] == vtFormatVersion
+        let isNative = bytes[0] == nativeFormatVersion
+        let isVT = bytes[0] == vtFormatVersion || isNative
 
         func u16(_ offset: Int) -> Int { Int(bytes[offset]) << 8 | Int(bytes[offset + 1]) }
         let rows = u16(1)
@@ -106,10 +114,11 @@ public enum TermiodSnapshot {
                 | Int(bytes[cellsOffset + 2]) << 8 | Int(bytes[cellsOffset + 3])
             let start = cellsOffset + 4
             guard bytes.count == start + length else { return nil }
+            let body = Data(bytes[start..<(start + length)])
             return Frame(
                 rows: rows, cols: cols, cursorX: cursorX, cursorY: cursorY,
                 alternateScreen: alternateScreen, title: title, cells: [],
-                vt: Data(bytes[start..<(start + length)])
+                vt: isNative ? nil : body, native: isNative ? body : nil
             )
         }
 
@@ -161,6 +170,8 @@ public enum TermiodSnapshot {
         if let vt = frame.vt {
             return vt
         }
+        // A native snapshot is decoded, never replayed, and carries no cells.
+        guard frame.native == nil else { return Data() }
 
         var output = String()
         // Alt-screen frames (vim, top) must repaint on the alternate buffer, or
