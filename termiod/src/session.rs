@@ -697,7 +697,7 @@ impl Session {
                 pending_len: 0,
                 pending_input: Vec::new(),
                 native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
-                native: native.unwrap_or_default(),
+                native: native.map(Bytes::from).unwrap_or_default(),
             },
             master,
             ring,
@@ -2064,7 +2064,7 @@ pub fn adopt(
         input_modes_unknown: carried.input_modes_unknown,
         paste_open: carried.paste_open,
         pending_input: carried.pending_input,
-        native: (!carried.native.is_empty()).then_some(carried.native),
+        native: (!carried.native.is_empty()).then(|| carried.native.to_vec()),
         faithful: carried.ring_reconstructs_screen,
     };
     start(
@@ -2132,7 +2132,7 @@ struct Replay {
     /// The previous image left the program inside a paste.
     paste_open: bool,
     /// Input the previous image accepted and had not written.
-    pending_input: Vec<u8>,
+    pending_input: Vec<Bytes>,
     /// The previous image's VT, as a native snapshot. When present the new VT
     /// starts from it and the chunks only refill the ring.
     native: Option<Vec<u8>>,
@@ -2193,7 +2193,7 @@ fn start(
     // Input accepted but not yet on the PTY, which the writer hands back
     // when it is stopped: a handoff carries it to the next image instead of
     // losing it in the exec, and a handoff that fails puts it back.
-    let unwritten = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let unwritten = Arc::new(Mutex::new(Vec::<Bytes>::new()));
     let writer_unwritten = unwritten.clone();
     let (stop_writer, mut writer_stopped) = tokio::sync::oneshot::channel::<()>();
     let input_writer = tokio::spawn(async move {
@@ -2201,7 +2201,9 @@ fn start(
         let mut offset = 0;
         loop {
             if offset == current.len() {
-                current.clear();
+                // Dropped, not cleared: a carried backlog can be large, and an
+                // idle session should not keep its allocation.
+                current = Vec::new();
                 offset = 0;
                 tokio::select! {
                     next = input_rx.recv() => match next {
@@ -2221,9 +2223,14 @@ fn start(
                 _ = &mut writer_stopped => break,
             }
         }
-        let mut rest = current.split_off(offset);
+        // Moved, not joined: handing back a large backlog costs nothing
+        // inside the carry deadline.
+        let mut rest = Vec::new();
+        if offset < current.len() {
+            rest.push(Bytes::from(current).slice(offset..));
+        }
         while let Ok(bytes) = input_rx.try_recv() {
-            rest.extend_from_slice(&bytes);
+            rest.push(Bytes::from(bytes));
         }
         if let Ok(mut unwritten) = writer_unwritten.lock() {
             *unwritten = rest;
@@ -2325,8 +2332,8 @@ fn start(
     session.input_modes_known = !input_modes_unknown && (starts_from_snapshot || session.ring_reconstructs_screen);
     // What the previous image accepted and never wrote goes first, then the
     // end of a paste whose remaining pieces went to that image's connection.
-    if !pending_input.is_empty() {
-        let _ = session.input_tx.send(pending_input);
+    for chunk in pending_input {
+        let _ = session.input_tx.send(chunk.to_vec());
     }
     if paste_was_open {
         let _ = session.input_tx.send(PASTE_END.to_vec());
@@ -2719,7 +2726,7 @@ async fn run(
     sidecar_thread: JoinHandle<()>,
     input_writer: tokio::task::JoinHandle<()>,
     stop_writer: tokio::sync::oneshot::Sender<()>,
-    unwritten: Arc<Mutex<Vec<u8>>>,
+    unwritten: Arc<Mutex<Vec<Bytes>>>,
     termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -2897,7 +2904,8 @@ async fn run(
                     if let Ok(carried) = carried.as_mut() {
                         carried.info.pending_input =
                             unwritten.lock().map(|mut bytes| std::mem::take(&mut *bytes)).unwrap_or_default();
-                        carried.info.pending_len = carried.info.pending_input.len() as u64;
+                        carried.info.pending_len =
+                            carried.info.pending_input.iter().map(|chunk| chunk.len() as u64).sum();
                     }
                     // The parser is a few kilobytes of grid and a thread that
                     // has already stopped; joining it costs a scheduler turn,
