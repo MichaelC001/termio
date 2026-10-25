@@ -416,7 +416,11 @@ final class SimulatorScreenView: NSView {
             send("button", ["udid": udid, "name": button.name])
             return
         }
-        guard let point = devicePoint(event) else { return }
+        // A press on the bezel starts on the screen's edge, as a thumb does:
+        // the way to swipe up from the Home indicator or down from the top,
+        // which iOS reads as system gestures only from the edge itself.
+        let onBezel = geometry.screen.insetBy(dx: -geometry.bezel, dy: -geometry.bezel).contains(local)
+        guard let point = devicePoint(event) ?? (onBezel ? devicePoint(event, clamped: true) : nil) else { return }
         if SimulatorHost.shared.inspecting {
             select(at: point)
             return

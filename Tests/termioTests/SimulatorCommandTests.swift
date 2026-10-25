@@ -36,4 +36,13 @@ final class SimulatorCommandTests: XCTestCase {
         XCTAssertNil(SimulatorCommand.matching(try XCTUnwrap(key("l", []))))
         XCTAssertNil(SimulatorCommand.matching(try XCTUnwrap(key("h", [.command]))))
     }
+
+    /// `termio sim launch build/App.app` names a path from where the agent is,
+    /// not from where Termio was started.
+    func testARelativeCLIPathResolvesFromTheCallersDirectory() {
+        XCTAssertEqual(TermioStore.absolute("build/App.app", from: "/Users/me/project"), "/Users/me/project/build/App.app")
+        XCTAssertEqual(TermioStore.absolute("../shot.png", from: "/Users/me/project"), "/Users/me/shot.png")
+        XCTAssertEqual(TermioStore.absolute("/tmp/a.png", from: "/Users/me/project"), "/tmp/a.png")
+        XCTAssertEqual(TermioStore.absolute("~/a.png", from: "/Users/me/project"), NSString("~/a.png").expandingTildeInPath)
+    }
 }

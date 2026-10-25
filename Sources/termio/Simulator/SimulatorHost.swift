@@ -135,6 +135,7 @@ final class SimulatorHost: ObservableObject {
     private var lineBuffer = Data()
     private let receiver = SimulatorSurfaceReceiver()
     private var lastReattach = Date.distantPast
+    private let writer = DispatchQueue(label: "sh.termio.simulator.writer")
 
     /// Per stream: the latest surface and the views presenting it. Kept outside
     /// SwiftUI state on purpose — a frame tick arrives up to 60 times a second,
@@ -148,6 +149,14 @@ final class SimulatorHost: ObservableObject {
             : nil)
         receiver.onSurface = { [weak self] stream, surface in
             Task { @MainActor in self?.receive(surface, stream: stream) }
+        }
+        // A recording outlives Termio otherwise: simctl keeps recording the
+        // device with nothing left to stop it, and a movie never interrupted
+        // has no index and does not play.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { SimulatorHost.shared.finishRecordingForQuit() }
         }
     }
 
@@ -193,14 +202,28 @@ final class SimulatorHost: ObservableObject {
         var object = parameters
         object["id"] = id
         object["op"] = op
+        var line: Data
         do {
-            var line = try JSONSerialization.data(withJSONObject: object)
-            line.append(0x0A)
-            pending[id] = reply
-            try input.write(contentsOf: line)
+            line = try JSONSerialization.data(withJSONObject: object)
         } catch {
-            pending[id] = nil
-            reply(.failure(SimulatorHostError.helperExited))
+            reply(.failure(error))
+            return
+        }
+        line.append(0x0A)
+        pending[id] = reply
+        // Written on one serial queue, in the order requests are made, never
+        // on the main actor: the helper runs touches inline in its read loop,
+        // so while a long press is held it stops reading, and a pipe that
+        // fills would block the app inside `write` for as long as that lasts.
+        writer.async { [weak self] in
+            do {
+                try input.write(contentsOf: line)
+            } catch {
+                Task { @MainActor in
+                    guard let reply = self?.pending.removeValue(forKey: id) else { return }
+                    reply(.failure(SimulatorHostError.helperExited))
+                }
+            }
         }
     }
 
@@ -366,19 +389,22 @@ final class SimulatorHost: ObservableObject {
             return allowed
         }
         consentQuestions[screen.udid] = question
-        return await withTaskGroup(of: Bool?.self) { group in
-            group.addTask { await question.value }
-            group.addTask {
+        // A race the first finisher settles. Not a task group: a group waits
+        // for every child before returning, and the one awaiting the answer
+        // can't be cancelled, so the wait would last as long as the sheet.
+        let race = ConsentRace()
+        return await withCheckedContinuation { continuation in
+            race.continuation = continuation
+            Task { @MainActor in race.finish(await question.value) }
+            Task { @MainActor in
                 do {
                     try await Task.sleep(for: patience)
                 } catch {
-                    return nil
+                    // Cancelled sleep: the answer task settles the race.
+                    return
                 }
-                return nil
+                race.finish(nil)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
         }
     }
 
@@ -562,6 +588,9 @@ final class SimulatorHost: ObservableObject {
 
     private func startIfNeeded() throws {
         if process?.isRunning == true { return }
+        // Dead, but its exit not yet handled: handle it now, so its requests
+        // fail rather than wait on a helper that will never answer.
+        if let dead = process { helperExited(dead) }
         guard let helper = Self.helperURL() else {
             throw SimulatorHostError.unavailable(
                 localized("This build of Termio doesn’t include the simulator helper."))
@@ -591,8 +620,7 @@ final class SimulatorHost: ObservableObject {
             Log.simulator.info("helper: \(text, privacy: .public)")
         }
         process.terminationHandler = { [weak self] exited in
-            let status = exited.terminationStatus
-            Task { @MainActor in self?.helperExited(status: status) }
+            Task { @MainActor in self?.helperExited(exited) }
         }
         try process.run()
         self.process = process
@@ -654,8 +682,12 @@ final class SimulatorHost: ObservableObject {
         }
     }
 
-    private func helperExited(status: Int32) {
-        Log.simulator.info("termio-sim exited with status \(status, privacy: .public)")
+    /// Clears what `exited` left behind. Only for the helper still on record:
+    /// one that died before its replacement started was cleaned up then, and
+    /// its late callback must not wipe the replacement's requests.
+    private func helperExited(_ exited: Process) {
+        guard process === exited else { return }
+        Log.simulator.info("termio-sim exited with status \(exited.terminationStatus, privacy: .public)")
         process = nil
         input = nil
         lineBuffer.removeAll()
@@ -985,6 +1017,18 @@ extension SimulatorHost {
         }
     }
 
+    /// Termio is quitting: interrupt the recorder and give it a moment to
+    /// write the movie's index. Blocking, as nothing after quit can wait.
+    func finishRecordingForQuit() {
+        guard let current = recording else { return }
+        recording = nil
+        current.process.terminationHandler = nil
+        current.process.interrupt()
+        let deadline = Date().addingTimeInterval(3)
+        while current.process.isRunning, Date() < deadline { usleep(50_000) }
+        if current.process.isRunning { current.process.terminate() }
+    }
+
     /// simctl writes the movie's index when it is interrupted, the way ⌃C in a
     /// terminal stops it; a movie killed any other way is unplayable.
     func stopRecording() async throws {
@@ -1198,5 +1242,17 @@ extension SimulatorHost {
             case .physicalSize: zoom = .physical
             }
         }
+    }
+}
+
+/// One consent wait: resumed once, by whichever of the answer and the
+/// patience timer comes first.
+@MainActor
+private final class ConsentRace {
+    var continuation: CheckedContinuation<Bool?, Never>?
+
+    func finish(_ answer: Bool?) {
+        continuation?.resume(returning: answer)
+        continuation = nil
     }
 }

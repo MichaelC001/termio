@@ -28,6 +28,12 @@ final class Device: @unchecked Sendable {
     private var port: SurfacePort?
     /// The surface the app was last sent.
     private var surfaceID: IOSurfaceID?
+    private var currentSurface: IOSurface?
+    private var lastSurfaceCheckFailure: String?
+    /// The screen edge the finger now down on the pane went down on, held for
+    /// its whole stroke: iOS reads a swipe from an edge as a system gesture
+    /// only when every report of it names that edge.
+    private var strokeEdge: SimulatorHIDEdge?
     private let lock = NSLock()
     /// The device's orientation as last read or written. Read back from the
     /// simulator's own motion state (`refreshOrientation`), so a turn made in
@@ -92,7 +98,9 @@ final class Device: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard attachment == nil else {
-            if let surface = attachment?.initialSurface { port.send(surface, stream: stream) }
+            // The surface in use now, not the attachment's first: the display
+            // may have moved to another since, and the first is a dead frame.
+            if let surface = currentSurface ?? attachment?.initialSurface { send(surface, to: port) }
             return
         }
         let framebuffer = try currentFramebuffer()
@@ -129,15 +137,17 @@ final class Device: @unchecked Sendable {
     }
 
     private func send(_ surface: IOSurface, to port: SurfacePort) {
+        currentSurface = surface
         surfaceID = IOSurfaceGetID(surface)
         port.send(surface, stream: stream)
     }
 
     /// When the display sleeps and wakes — the side button pressed on a lock
-    /// screen, then again — CoreSimulator moves it to a new surface without
-    /// telling the framebuffer, which goes on holding the last frame. So after
-    /// a press that can do that, the display is located afresh, twice as the
-    /// wake settles, and attached anew if its surface is not the one in use.
+    /// screen, then again — or a boot settles, CoreSimulator moves it to a new
+    /// surface without telling the framebuffer, which goes on holding the last
+    /// frame. So after a press that can do that, the display is located afresh,
+    /// twice as the wake settles, and attached anew if its surface is not the
+    /// one in use; the orientation watch does the same every few seconds.
     func followDisplayAfterPower() async {
         for delay in [0.8, 2.0] {
             do {
@@ -159,9 +169,16 @@ final class Device: @unchecked Sendable {
             fresh = try Framebuffer.mainScreenSurface(for: simulator, logger: logger)
             freshAttachment = try fresh.attach()
         } catch {
-            Wire.log("locating \(simulator.udid)'s display after a power press failed: \(error)")
+            // Once per distinct failure: a device shut down while attached
+            // fails the same way every few seconds until it detaches.
+            let message = "\(error)"
+            if message != lastSurfaceCheckFailure {
+                Wire.log("locating \(simulator.udid)'s display to check its surface failed: \(message)")
+            }
+            lastSurfaceCheckFailure = message
             return
         }
+        lastSurfaceCheckFailure = nil
         guard let surface = freshAttachment.initialSurface, IOSurfaceGetID(surface) != surfaceID else {
             freshAttachment.cancel()
             return
@@ -184,6 +201,23 @@ final class Device: @unchecked Sendable {
         attachment = nil
         port = nil
         surfaceID = nil
+        currentSurface = nil
+        // Detached is how a device leaves the pane to shut down or restart, and
+        // each of these is bound to the boot it was made in: the display, the
+        // HID connection, the accessibility readers. The next use makes fresh ones.
+        framebuffer = nil
+        hid = nil
+        readers.removeAll()
+    }
+
+    /// The edge for one report of a pane stroke: decided where it goes down,
+    /// kept until it lifts.
+    func edge(forStrokeAt point: CGPoint, lifting: Bool) -> SimulatorHIDEdge {
+        lock.lock()
+        defer { lock.unlock() }
+        let edge = strokeEdge ?? gestureEdge(at: point, interface: interface.interfaceSize(panel: pointSize))
+        strokeEdge = lifting ? nil : edge
+        return edge
     }
 
     private func currentFramebuffer() throws -> Framebuffer {
@@ -322,6 +356,11 @@ final class Device: @unchecked Sendable {
         orientationWatch = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshOrientation()
+                // The display can move to a new surface with no callback — on
+                // waking from sleep, and as a boot settles — and the pane would
+                // hold the last frame of the old one for good. Checked here too,
+                // not only after a power press, since a boot needs no press.
+                self?.reattachIfSurfaceMoved()
                 do {
                     try await Task.sleep(for: .seconds(3))
                 } catch {

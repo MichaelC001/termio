@@ -79,18 +79,34 @@ struct Request {
         (parameters[key] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// Points and counts. Bounded, because idb turns them into integers and
+    /// nanoseconds, and a value past those traps — taking the shared helper,
+    /// and every device it drives, down with it.
     func number(_ key: String) throws -> Double {
         guard let value = parameters[key] as? NSNumber else { throw HelperError.missing(key) }
-        return value.doubleValue
+        return try Self.bounded(value.doubleValue, key, limit: 100_000)
     }
 
-    func optionalNumber(_ key: String) -> Double? {
-        (parameters[key] as? NSNumber)?.doubleValue
+    func optionalNumber(_ key: String) throws -> Double? {
+        guard let value = parameters[key] as? NSNumber else { return nil }
+        return try Self.bounded(value.doubleValue, key, limit: 100_000)
+    }
+
+    /// Seconds, at most a minute.
+    func duration(_ key: String) throws -> Double? {
+        guard let value = parameters[key] as? NSNumber else { return nil }
+        return try Self.bounded(value.doubleValue, key, limit: 60)
+    }
+
+    private static func bounded(_ value: Double, _ key: String, limit: Double) throws -> Double {
+        guard value.isFinite, abs(value) <= limit else { throw HelperError.outOfRange(key, limit) }
+        return value
     }
 }
 
 enum HelperError: LocalizedError {
     case missing(String)
+    case outOfRange(String, Double)
     case unknownOperation(String)
     case noSuchDevice(String)
     case notBooted(String, String)
@@ -104,6 +120,7 @@ enum HelperError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missing(let key): "missing parameter '\(key)'"
+        case .outOfRange(let key, let limit): "'\(key)' must be a finite number no larger than \(Int(limit))"
         case .unknownOperation(let op): "unknown op '\(op)'"
         case .noSuchDevice(let udid): "no simulator with UDID \(udid)"
         case .notBooted(let udid, let state): "simulator \(udid) is not booted (state: \(state))"

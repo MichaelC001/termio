@@ -58,7 +58,7 @@ extension TermioStore {
                 host.detachPane(udid)
                 return control(request, ok: true, text: "detached \(screen.name)", json: [:])
             case "launch":
-                guard let appPath = arguments["app"].map(Self.absolute) else {
+                guard let appPath = arguments["app"].map({ Self.absolute($0, from: request.callerCwd) }) else {
                     return controlError(request, "missing_app", "launch needs the .app to install, e.g. `termio sim launch build/MyApp.app`.")
                 }
                 let launched = try await host.launch(appPath: appPath, bundleID: arguments["bundle-id"], on: udid)
@@ -76,7 +76,7 @@ extension TermioStore {
                 try await host.openURL(url, on: udid)
                 return control(request, ok: true, text: "opened \(url)", json: [:])
             case "screenshot":
-                let path = arguments["out"].map(Self.absolute)
+                let path = arguments["out"].map({ Self.absolute($0, from: request.callerCwd) })
                     ?? FileManager.default.temporaryDirectory
                         .appendingPathComponent("termio-sim-\(Int(Date().timeIntervalSince1970 * 1000)).png").path
                 let result = try await host.callObject("screenshot", ["udid": udid, "path": path])
@@ -318,8 +318,16 @@ extension TermioStore {
         "\(Int(size.width))x\(Int(size.height))"
     }
 
-    private static func absolute(_ path: String) -> String {
-        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    /// A path from the CLI, made absolute against the caller's directory —
+    /// `termio sim launch build/App.app` means the build folder where the
+    /// agent is, not wherever Termio was started from.
+    nonisolated static func absolute(_ path: String, from callerDirectory: String?) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        guard !expanded.hasPrefix("/"), let callerDirectory, callerDirectory.hasPrefix("/") else {
+            return URL(fileURLWithPath: expanded).standardizedFileURL.path
+        }
+        return URL(fileURLWithPath: callerDirectory, isDirectory: true)
+            .appendingPathComponent(expanded).standardizedFileURL.path
     }
 
     private static func optionalNumber(_ arguments: [String: String], _ key: String) throws -> Double? {

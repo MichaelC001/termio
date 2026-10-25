@@ -126,7 +126,7 @@ func handle(_ request: Request) async throws {
             return
         } else {
             let (x, y) = try point(request)
-            if let duration = request.optionalNumber("duration"), duration > 0 {
+            if let duration = try request.duration("duration"), duration > 0 {
                 try await device.send(.tapAt(x: x, y: y, duration: duration))
             } else {
                 try await device.send(.tapAt(x: x, y: y))
@@ -138,8 +138,9 @@ func handle(_ request: Request) async throws {
         // so a move is another down at the new point; only `up` lifts it.
         let device = try registry.device(try request.string("udid"))
         let (x, y) = try point(request)
-        let direction: SimulatorHIDDirection = try request.string("phase") == "up" ? .up : .down
-        try await device.send(.touch(direction: direction, x: x, y: y))
+        let lifting = try request.string("phase") == "up"
+        let edge = device.edge(forStrokeAt: CGPoint(x: x, y: y), lifting: lifting)
+        try await device.send(.touch(direction: lifting ? .up : .down, x: x, y: y, edge: edge))
         Wire.reply(request.id, result: [:])
     case "swipe":
         let device = try registry.device(try request.string("udid"))
@@ -147,7 +148,7 @@ func handle(_ request: Request) async throws {
         let (x2, y2) = try point(request, x: "x2", y: "y2")
         try await device.send(.swipe(
             x, yStart: y, xEnd: x2, yEnd: y2, delta: SimulatorHIDEvent.defaultSwipeDelta,
-            duration: request.optionalNumber("duration") ?? 0.3,
+            duration: try request.duration("duration") ?? 0.3,
             edge: device.edge(startingAt: CGPoint(x: x, y: y))))
         Wire.reply(request.id, result: [:])
     case "touchPath":
@@ -179,6 +180,9 @@ func handle(_ request: Request) async throws {
             guard let x1 = (sample["x1"] as? NSNumber)?.doubleValue, let y1 = (sample["y1"] as? NSNumber)?.doubleValue,
                   let x2 = (sample["x2"] as? NSNumber)?.doubleValue, let y2 = (sample["y2"] as? NSNumber)?.doubleValue
             else { throw HelperError.missing("points2[].x1/y1/x2/y2") }
+            guard [x1, y1, x2, y2].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else {
+                throw HelperError.outOfRange("points2[]", 100_000)
+            }
             let delay = min(1, max(0, ((sample["dt_ms"] as? NSNumber)?.doubleValue ?? 16) / 1000))
             total += delay
             guard total <= pathLimit else { throw HelperError.pathTooLong }
@@ -209,7 +213,7 @@ func handle(_ request: Request) async throws {
         let device = try registry.device(try request.string("udid"))
         let name = try request.string("name")
         guard let press = Keymap.press(named: name) else { throw HelperError.unknownKey(name) }
-        let count = max(1, min(20, Int(request.optionalNumber("count") ?? 1)))
+        let count = max(1, min(20, Int(try request.optionalNumber("count") ?? 1)))
         try await device.send(.composite(Array(repeating: press, count: count).flatMap { $0 }))
         Wire.reply(request.id, result: ["count": count])
     case "rotate":
@@ -233,7 +237,7 @@ func handle(_ request: Request) async throws {
         let device = try registry.device(try request.string("udid"))
         await device.refreshOrientation()
         var at: CGPoint?
-        if let x = request.optionalNumber("x"), let y = request.optionalNumber("y") {
+        if let x = try request.optionalNumber("x"), let y = try request.optionalNumber("y") {
             at = CGPoint(x: x, y: y)
         }
         // `match` is what `marker` is compared with: the label by default, or the
@@ -275,6 +279,9 @@ func pathSamples(_ request: Request, key: String) throws -> [PathSample] {
     return try raw.map { sample in
         guard let x = (sample["x"] as? NSNumber)?.doubleValue, let y = (sample["y"] as? NSNumber)?.doubleValue else {
             throw HelperError.missing("\(key)[].x/y")
+        }
+        guard x.isFinite, y.isFinite, abs(x) <= 100_000, abs(y) <= 100_000 else {
+            throw HelperError.outOfRange("\(key)[]", 100_000)
         }
         let delay = min(1, max(0, ((sample["dt_ms"] as? NSNumber)?.doubleValue ?? 16) / 1000))
         total += delay
