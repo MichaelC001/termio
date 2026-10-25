@@ -148,8 +148,22 @@ final class PairingModel: ObservableObject {
         }
         guard mobile.isEnabled, directBase != nil else {
             // No address to mint an invite for, as while built-in Tailscale
-            // reconnects. Revoking cannot wait for one.
+            // reconnects. Revoking cannot wait for one. It holds the mint lock,
+            // so an address that appears meanwhile is minted after the new
+            // token exists, never with the one being revoked.
+            guard !minting else {
+                queuedRefresh = (true, true)
+                return
+            }
+            minting = true
+            invite = nil
             Task {
+                defer {
+                    minting = false
+                    let queued = queuedRefresh
+                    queuedRefresh = nil
+                    refreshInvite(rotate: queued?.rotate == true, force: true)
+                }
                 do {
                     let result = try await RemotePairing.runLocally(arguments: ["pair", "--rotate"])
                     if result.status != 0 {
