@@ -142,6 +142,12 @@ tailnet_name() {
         grep -m1 '"DNSName"' | sed 's/.*"DNSName": *"\([^"]*\)".*/\1/; s/\.$//'
 }
 
+# What Tailscale Serve already routes on this node, flattened. Empty when it
+# serves nothing.
+serve_routes() {
+    tailscale serve status --json 2>/dev/null | tr -d ' \n\t'
+}
+
 tailnet_has_https() {
     tailscale status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"CertDomains":\["'
 }
@@ -193,6 +199,17 @@ plan_tailnet() {
     fi
     want_origin="https://$name"
     want_bind="127.0.0.1:$PORT"
+    # Serve replaces whatever already answers at the same address, so a node
+    # that serves something else keeps it, and termiod stays off the tailnet.
+    routes="$(serve_routes)"
+    case "$routes" in
+        ""|"{}"|*'"Proxy":"http://127.0.0.1:'"$PORT"'"'*) ;;
+        *'"Web":{'*|*'"TCP":{'*)
+            say "    Tailscale Serve already publishes something on this machine, so termiod"
+            say "    is not added to it. See: tailscale serve status"
+            return 0
+            ;;
+    esac
     existing="$(existing_setting TERMIOD_WSS_ORIGIN wss.origin)"
     existing_bind="$(existing_setting TERMIOD_WSS wss.bind)"
     # Anything already set that is not exactly this is someone's publication:
@@ -301,6 +318,9 @@ serve_on_tailnet() {
         say "    installer again after the daemon restarts."
         return 0
     fi
+    case "$(serve_routes)" in
+        *'"Proxy":"http://127.0.0.1:'"$PORT"'"'*) return 0 ;;
+    esac
     if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
         say "    Tailscale Serve needs permission. Run once:"
         say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
