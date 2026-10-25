@@ -65,18 +65,24 @@ fn read_frame(r: &mut impl Read) -> Option<(u8, Vec<u8>)> {
 struct Daemon {
     child: Child,
     socket: String,
+    directory: std::path::PathBuf,
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
-        let _ = std::fs::remove_file(&self.socket);
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
+/// Each daemon in a directory of its own: the daemon locks a file beside its
+/// socket, so two tests sharing /tmp would wait on each other's lock.
 fn start_daemon(tag: &str) -> Daemon {
-    let socket = format!("/tmp/termiod-vt-stream-{tag}-{}.sock", std::process::id());
-    let _ = std::fs::remove_file(&socket);
+    let directory = std::env::temp_dir().join(format!("termiod-vt-stream-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let socket = directory.join("termiod.sock").to_string_lossy().to_string();
     let child = Command::new(BIN)
         .arg("serve")
         .env("TERMIOD_SOCK", &socket)
@@ -90,7 +96,11 @@ fn start_daemon(tag: &str) -> Daemon {
         assert!(Instant::now() < deadline, "daemon never bound the socket");
         std::thread::sleep(Duration::from_millis(30));
     }
-    Daemon { child, socket }
+    Daemon {
+        child,
+        socket,
+        directory,
+    }
 }
 
 struct Client {
@@ -283,4 +293,30 @@ fn a_stream_client_holds_the_host_screen_through_resizes_with_no_keyframe() {
         model.markers
     );
     let _ = std::fs::remove_file(&script);
+}
+
+/// vt_stream resizes through an event, so a client that did not take the event
+/// plane is not granted it: it would never see a marker.
+#[test]
+fn vt_stream_is_not_granted_without_events() {
+    let daemon = start_daemon("caps");
+    let mut bridge = Command::new(BIN)
+        .arg("stdio")
+        .env("TERMIOD_SOCK", &daemon.socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn stdio bridge");
+    let mut to_bridge = bridge.stdin.take().expect("bridge stdin");
+    let mut from_bridge = bridge.stdout.take().expect("bridge stdout");
+    let hello = r#"{"op":"hello","proto":1,"min_proto":1,"role":"attach","caps":["snapshot","vt_stream"],"client":"vt-stream-test"}"#;
+    write_frame(&mut to_bridge, b'C', hello.as_bytes());
+    let (_, payload) = read_frame(&mut from_bridge).expect("hello reply");
+    let reply: serde_json::Value = serde_json::from_slice(&payload).expect("hello json");
+    let caps: Vec<&str> = reply["caps"].as_array().expect("caps").iter().filter_map(|cap| cap.as_str()).collect();
+    assert!(caps.contains(&"snapshot"), "snapshot was not granted: {caps:?}");
+    assert!(!caps.contains(&"vt_stream"), "vt_stream was granted without events: {caps:?}");
+    let _ = bridge.kill();
+    let _ = bridge.wait();
 }

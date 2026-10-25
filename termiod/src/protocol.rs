@@ -488,6 +488,10 @@ pub enum ErrorCode {
     /// the writer read it. Its own code because a client shows it as a question
     /// (overwrite, or not) rather than as a failure.
     Conflict,
+    /// This `vt_stream` attachment cannot be given an exact copy of the host's
+    /// VT — it is stale, mid-sequence past the tracking limit, or too large
+    /// for one frame. The client attaches again without `vt_stream`.
+    VtStreamUnavailable,
     #[default]
     Internal,
 }

@@ -568,10 +568,30 @@ impl Session {
     /// Resize this session's VT, and put the same operation in every live
     /// `vt_stream` client's stream at this exact byte position, so their VTs
     /// make it too. Sent whether or not the sidecar is live: the clients' VTs
-    /// do not depend on it. A pending client gets no marker; its attach
-    /// snapshot is re-requested by the barrier instead.
+    /// do not depend on it.
+    ///
+    /// A pending client gets no marker — deferred, it would land after the
+    /// data buffered behind its barrier — so its snapshot is re-requested
+    /// here, behind this resize. Here rather than in the barrier, because the
+    /// rollback and the trimmed-by-the-kernel paths resize the VT without
+    /// opening one.
     fn resize_vt(&mut self, rows: u16, cols: u16, reflow: bool) {
         self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
+        let pending: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| entry.plane.is_stream() && entry.plane.is_pending())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for client_id in pending {
+            let request_id = self.allocate_snapshot_request();
+            let Some(entry) = self.clients.get_mut(&client_id) else {
+                continue;
+            };
+            let superseded = entry.plane.begin_pending(request_id);
+            release_buffered(&entry.backlog, superseded);
+            self.request_snapshot(client_id, request_id, false);
+        }
         let marker = Event::VtResize {
             session: self.id.to_string(),
             rows,
@@ -790,14 +810,12 @@ impl Session {
     /// output that scrolled past the top during the barrier keeps its place in
     /// the scrollback.
     fn begin_resize_snapshot_barrier(&mut self) {
-        // A live `vt_stream` client is not behind this barrier: it got the
-        // `vt_resize` marker in place and resizes its own VT.
+        // `vt_stream` clients are not behind this barrier: `resize_vt` already
+        // gave each live one its marker and re-snapshotted each pending one.
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| {
-                entry.plane.snapshots() && !(entry.plane.is_stream() && !entry.plane.is_pending())
-            })
+            .filter(|(_, entry)| entry.plane.snapshots() && !entry.plane.is_stream())
             .map(|(id, _)| id.clone())
             .collect();
         let mut requests = Vec::with_capacity(snapshot_clients.len());
@@ -1324,6 +1342,36 @@ impl Session {
         };
         let (mut data, mut deferred) = entry.plane.settle();
 
+        if entry.plane.is_stream() {
+            let unusable = match &result {
+                Err(error) => Some(error.clone()),
+                Ok(capture) => match &capture.native {
+                    None => Some("the native snapshot could not be encoded".to_string()),
+                    Some(native) if native.len() > MAX_NATIVE_SNAPSHOT_BYTES => Some(format!(
+                        "the native snapshot is {} bytes, more than one frame carries",
+                        native.len()
+                    )),
+                    Some(_) => None,
+                },
+            };
+            if let Some(reason) = unusable {
+                // A repaint or a replay would start this client's VT somewhere
+                // the host's is not, and every later marker would keep it there.
+                eprintln!(
+                    "termiod: vt_stream unavailable for client {client_id} in session {}: {reason}",
+                    self.id
+                );
+                release_buffered(&entry.backlog, data);
+                let _ = entry.out.send(ClientEvent::Control(Control::Error {
+                    re: None,
+                    code: ErrorCode::VtStreamUnavailable,
+                    message: format!("vt_stream unavailable: {reason}"),
+                    retryable: false,
+                }));
+                self.remove_finished_client(client_id);
+                return false;
+            }
+        }
         let capture = match result {
             Ok(capture) => capture,
             Err(error) => {
@@ -1519,27 +1567,6 @@ impl Session {
         );
         release_buffered(&entry.backlog, buffered);
 
-        // A `vt_stream` client replaces its terminal on every `S`. An empty one
-        // here gives it a blank terminal at the session's grid for the replay
-        // to land on, instead of its previous terminal's state.
-        if entry.plane.is_stream() {
-            let blank = Snapshot {
-                native: None,
-                vt: Some(Vec::new()),
-                rows: self.rows,
-                cols: self.cols,
-                cursor_x: 0,
-                cursor_y: 0,
-                alt_screen: false,
-                title: self.title.clone().unwrap_or_else(|| self.name.clone()),
-                cells: Vec::new(),
-            };
-            if entry.out.send(ClientEvent::Snapshot(blank)).is_err() {
-                self.remove_finished_client(client_id);
-                return;
-            }
-        }
-
         for replay in &self.ring {
             let Some(metered) = entry.backlog.reserve(replay.clone()) else {
                 entry.backlog.mark_dropped();
@@ -1599,6 +1626,11 @@ impl Session {
         }
     }
 }
+
+/// The largest native snapshot one `S` frame carries, with room for the header
+/// and the title. Kitty images on both screens can exceed it.
+const MAX_NATIVE_SNAPSHOT_BYTES: usize =
+    crate::protocol::MAX_FRAME_SIZE - 16 - u16::MAX as usize;
 
 fn keyframe_every_frames() -> u32 {
     std::env::var("TERMIOD_KEYFRAME_EVERY")
@@ -4020,6 +4052,111 @@ mod tests {
             }
         }
         (seen, native)
+    }
+
+    fn attach_stream_client(session: &mut Session, id: &str) -> mpsc::UnboundedReceiver<ClientEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (reply, _reply_rx) = oneshot::channel();
+        handle_msg(
+            session,
+            SessionMsg::AddClient {
+                id: ClientId::new(id),
+                interactive: true,
+                rows: 0,
+                cols: 0,
+                rendering: true,
+                out: tx,
+                backlog: Arc::new(ClientBacklog::new()),
+                snapshot: true,
+                scrollback: false,
+                grid_diff: false,
+                vt_stream: true,
+                reply,
+            },
+        );
+        rx
+    }
+
+    fn vt_stream_refusal(client: &mut mpsc::UnboundedReceiver<ClientEvent>) -> Option<String> {
+        while let Ok(event) = client.try_recv() {
+            match event {
+                ClientEvent::Control(Control::Error {
+                    code: ErrorCode::VtStreamUnavailable,
+                    message,
+                    ..
+                }) => return Some(message),
+                ClientEvent::Snapshot(_) | ClientEvent::Data(_) => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// A stale VT has no exact state to hand over. The client is told so and
+    /// let go, instead of being given a replay its VT would diverge from.
+    #[tokio::test]
+    async fn a_stream_client_is_refused_rather_than_replayed_from_a_stale_vt() {
+        let Sidecar { commands, mut results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.mark_vt_stale("test".to_string());
+        let mut stream = attach_stream_client(&mut session, "stream");
+        pump_sidecar(&mut session, &mut results, 0).await;
+        let refusal = vt_stream_refusal(&mut stream);
+        assert!(refusal.is_some(), "a stale VT still served a vt_stream client");
+        assert!(!session.clients.contains_key(&ClientId::new("stream")));
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
+    }
+
+    /// Past the continuation limit the native snapshot cannot be encoded, and
+    /// a repaint would start the client outside the sequence the host is in.
+    #[tokio::test]
+    async fn a_stream_client_is_refused_mid_sequence_past_the_tracking_limit() {
+        let Sidecar { commands, mut results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let mut unfinished = b"\x1b_Ga=t,f=32;".to_vec();
+        unfinished.resize(termiod_vt::CONTINUATION_LIMIT + 4096, b'A');
+        session.write_sidecar(Bytes::from(unfinished));
+        let mut stream = attach_stream_client(&mut session, "stream");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        let refusal = vt_stream_refusal(&mut stream);
+        assert!(
+            refusal
+                .as_deref()
+                .is_some_and(|message| message.contains("could not be encoded")),
+            "a snapshot cut past the tracking limit was served anyway: {refusal:?}"
+        );
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
+    }
+
+    /// A resize while the attach snapshot is pending re-requests it behind
+    /// the resize: one S, at the new grid, and no marker for a VT the client
+    /// does not have yet.
+    #[tokio::test]
+    async fn a_resize_while_the_attach_snapshot_is_pending_resnapshots_behind_it() {
+        let Sidecar { commands, mut results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+        let mut stream = attach_stream_client(&mut session, "stream");
+        declare_viewport(&mut session, "stream", 12, 40, true);
+        pump_sidecar(&mut session, &mut results, 2).await;
+        let mut snapshots = Vec::new();
+        let mut markers = 0;
+        while let Ok(event) = stream.try_recv() {
+            match event {
+                ClientEvent::Snapshot(snapshot) => snapshots.push((snapshot.rows, snapshot.cols, snapshot.native.is_some())),
+                ClientEvent::Event(Event::VtResize { .. }) => markers += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(snapshots, vec![(12, 40, true)], "the pre-resize capture was delivered");
+        assert_eq!(markers, 0, "a pending client was sent a marker");
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
     }
 
     /// The `vt_stream` plane end to end in the session actor: the attach `S`
