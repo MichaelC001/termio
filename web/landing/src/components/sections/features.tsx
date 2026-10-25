@@ -28,7 +28,12 @@ const rows = [
   },
   {
     title: "Agents test your iOS app in a pane.",
-    blurb: "They launch and tap it with termio sim, and you can type into the same simulator.",
+    blurb: (
+      <>
+        They launch and tap it with <code className="whitespace-nowrap font-mono text-[0.9em]">termio sim</code>, and you can
+        type into the same simulator.
+      </>
+    ),
     video: "ios-simulator",
     label:
       "Claude Code launches TermioMobile in the Simulator pane with termio sim, taps through to an address field, and the person types an address into it",
