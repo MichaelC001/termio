@@ -19,7 +19,7 @@ struct SimulatorDevice: Identifiable, Hashable, Sendable {
 /// in (points, top-left origin) and the stream its surfaces arrive tagged with.
 struct SimulatorScreen: Equatable, Sendable {
     let udid: String
-    let name: String
+    var name: String
     let stream: UInt32
     /// The interface's size: turned with the device, so a landscape iPad is
     /// wider than tall. Every point an agent or the pointer sends is in it.
@@ -69,8 +69,64 @@ final class SimulatorHost: ObservableObject {
     /// Set while a shut-down device the person picked is booting.
     @Published private(set) var booting: String?
     @Published private(set) var lastError: String?
+    /// The screenshot or recording the pane last saved, for the card that
+    /// offers it to copy, add to a chat, or throw away.
+    @Published var lastCapture: URL?
+    /// The screen recording running now, if one is. One at a time, like
+    /// Simulator.app: a recording is of the device the pane shows.
+    @Published private(set) var recording: SimulatorRecording?
+    /// One line under the screen for a moment: what a menu or a shortcut did,
+    /// or why it failed.
+    @Published var notice: String?
+    /// How big the pane draws the device.
+    @Published var zoom: SimulatorZoom = .fit
+    /// Whether the logs drawer is open under the screen.
+    @Published var logsShown = false
+    /// Select Element: the pointer reads elements instead of touching.
+    @Published var inspecting = false {
+        didSet { if !inspecting { hoveredElement = nil } }
+    }
+    /// The element under the pointer while selecting.
+    @Published var hoveredElement: SimulatorElement?
+    /// The element last clicked while selecting, shown in its card.
+    @Published var selectedElement: SimulatorElement?
+    /// The screenshot open in Annotate.
+    @Published var annotating: SimulatorAnnotationSource?
+    /// Show Frame Rate: the readout in the header, counted while it is on.
+    @Published var showsFrameRate = false {
+        didSet {
+            guard showsFrameRate != oldValue else { return }
+            frameRateTask?.cancel()
+            frameRate = nil
+            guard showsFrameRate else { return }
+            framesCounted = 0
+            frameRateTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    guard let self else { return }
+                    self.frameRate = self.framesCounted
+                    self.framesCounted = 0
+                }
+            }
+        }
+    }
+    /// Frames the pane's device rendered in the last second. CoreSimulator
+    /// renders only when something on screen changes, so a still screen is 0.
+    @Published private(set) var frameRate: Int?
+    private var framesCounted = 0
+    private var frameRateTask: Task<Void, Never>?
+    /// Devices whose on-screen keyboard is showing — it shows only while no
+    /// hardware keyboard is connected, and a simulator boots with one.
+    @Published private(set) var onScreenKeyboard: Set<String> = []
+    /// The status bar preset last applied per device; simctl offers no read.
+    var statusBars: [String: SimulatorStatusBar] = [:]
     /// Why the pane can't work on this Mac, when it can't. Nil means it can.
     @Published private(set) var unavailableReason: String?
+    /// A step of Xcode's setup still to do, which the pane shows instead of a
+    /// device. Unlike `unavailableReason`, the person can fix it.
+    @Published var setupProblem: SimulatorSetupProblem?
+    /// Whether the setup has been checked since launch.
+    var setupChecked = false
 
     private var process: Process?
     private var input: FileHandle?
@@ -159,10 +215,19 @@ final class SimulatorHost: ObservableObject {
 
     @discardableResult
     func refreshDevices() async -> [SimulatorDevice] {
-        guard unavailableReason == nil,
-              let result = try? await callObject("devices"),
-              let rows = result["devices"] as? [[String: Any]]
-        else { return devices }
+        // Before the helper starts: on a Mac without a ready Xcode it would
+        // fail with idb's words, not the step that fixes it.
+        if !setupChecked { await checkSetup() }
+        guard unavailableReason == nil, setupProblem == nil else { return devices }
+        let result: [String: Any]
+        do {
+            result = try await callObject("devices")
+        } catch {
+            // The list the pane already has stays up; the next refresh retries.
+            Log.simulator.error("listing devices failed: \(error.localizedDescription, privacy: .public)")
+            return devices
+        }
+        guard let rows = result["devices"] as? [[String: Any]] else { return devices }
         let listed = rows.compactMap { row -> SimulatorDevice? in
             guard let udid = row["udid"] as? String, let name = row["name"] as? String else { return nil }
             return SimulatorDevice(
@@ -178,6 +243,7 @@ final class SimulatorHost: ObservableObject {
 
     func attach(_ udid: String) async throws -> SimulatorScreen {
         let result = try await callObject("attach", ["udid": udid])
+        await enableAccessibility(udid)
         guard let stream = (result["stream"] as? NSNumber)?.uint32Value,
               let width = (result["pointWidth"] as? NSNumber)?.doubleValue,
               let height = (result["pointHeight"] as? NSNumber)?.doubleValue
@@ -189,7 +255,23 @@ final class SimulatorHost: ObservableObject {
             deviceTypePath: result["deviceTypePath"] as? String)
     }
 
-    private static let lastDeviceKey = "simulator.lastDevice"
+    /// An app answers accessibility reads only if this setting was on when it
+    /// launched; idb turns it on at its first read, too late for an app already
+    /// running, which then stays unreadable until relaunched. Turned on as a
+    /// device is attached, so every app launched after — by an agent, Xcode or
+    /// a tap — can be inspected. Once per device per run of Termio.
+    private func enableAccessibility(_ udid: String) async {
+        guard accessibilityEnabled.insert(udid).inserted else { return }
+        do {
+            try await simctl(["spawn", udid, "defaults", "write", "com.apple.Accessibility",
+                              "ApplicationAccessibilityEnabled", "-bool", "true"])
+        } catch {
+            accessibilityEnabled.remove(udid)
+            Log.simulator.error("enabling accessibility on \(udid, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    fileprivate static let lastDeviceKey = "simulator.lastDevice"
 
     /// The device the pane last showed, across launches: the one opening the
     /// pane starts, booting it if it has been shut down since.
@@ -198,7 +280,8 @@ final class SimulatorHost: ObservableObject {
     /// Devices whose boot has finished, by UDID — `bootstatus` answered for
     /// them in this run. A device that is drawing may still be booting; input
     /// and reads wait for this, the display does not.
-    private var readyDevices: Set<String> = []
+    fileprivate var readyDevices: Set<String> = []
+    private var accessibilityEnabled: Set<String> = []
 
     /// Waits until `udid` has finished booting — a first boot's setup
     /// included — before an agent's input or read runs on it. A tenth of a
@@ -213,6 +296,10 @@ final class SimulatorHost: ObservableObject {
     /// attaches its display. Errors land in `lastError` for the pane to show.
     func show(_ udid: String) async {
         lastError = nil
+        // A recording is of the device on screen; switching ends it first.
+        if let recording, recording.udid != udid {
+            await attempt("stop recording") { try await stopRecording() }
+        }
         UserDefaults.standard.set(udid, forKey: Self.lastDeviceKey)
         do {
             if devices.first(where: { $0.udid == udid })?.isBooted == false {
@@ -322,7 +409,7 @@ final class SimulatorHost: ObservableObject {
     private var bindings: [String: String] = [:]
     /// The app `launch` last started on each device: what `logs` and
     /// `crash-report` read when the caller names none.
-    private(set) var lastLaunched: [String: String] = [:]
+    @Published private(set) var lastLaunched: [String: String] = [:]
 
     func bind(session: String, to udid: String) { bindings[session] = udid }
     func binding(for session: String) -> String? { bindings[session] }
@@ -384,6 +471,33 @@ final class SimulatorHost: ObservableObject {
         _ = try await call("key", ["udid": udid, "name": "paste"])
     }
 
+    /// Edit ▸ Paste on the screen: the Mac's text goes onto the device's
+    /// pasteboard and the device pastes it, so it lands as one paste — undoable
+    /// in one step, with the field's own paste handling — not as typed keys.
+    func paste(_ text: String, on udid: String) async throws {
+        try await simctl(["pbcopy", udid], input: Data(text.utf8))
+        _ = try await call("key", ["udid": udid, "name": "paste"])
+    }
+
+    /// Edit ▸ Copy or Cut on the screen: the device copies its own selection,
+    /// and what lands on its pasteboard is brought over to the Mac's. The
+    /// device's pasteboard is emptied first so a stale entry is never mistaken
+    /// for the copy; a selection that copies nothing says so.
+    func copySelection(on udid: String, cut: Bool) async throws {
+        try await simctl(["pbcopy", udid], input: Data())
+        _ = try await call("key", ["udid": udid, "name": cut ? "cut" : "copy"])
+        for _ in 0 ..< 10 {
+            try await Task.sleep(for: .milliseconds(100))
+            let copied = try await simctl(["pbpaste", udid])
+            guard !copied.isEmpty else { continue }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(copied, forType: .string)
+            notice = localized("Copied")
+            return
+        }
+        notice = localized("Nothing was selected to copy.")
+    }
+
     /// Boots a shut-down device through `simctl`, the public tool, and waits
     /// until it reports booted. The helper attaches only to booted devices.
     ///
@@ -438,6 +552,7 @@ final class SimulatorHost: ObservableObject {
     }
 
     private func frame(stream: UInt32) {
+        if stream == screen?.stream { framesCounted += 1 }
         guard let presenters = presenters[stream], !presenters.isEmpty else { return }
         let surface = surfaces[stream]
         presenters.values.forEach { $0(surface) }
@@ -505,8 +620,13 @@ final class SimulatorHost: ObservableObject {
             case "frame":
                 if let stream = (object["stream"] as? NSNumber)?.uint32Value { frame(stream: stream) }
             case "unavailable":
-                unavailableReason = object["error"] as? String
+                // Usually Xcode's setup; its named step beats the helper's error.
+                let error = object["error"] as? String
                     ?? localized("The iOS Simulator isn’t available on this Mac.")
+                Task {
+                    await checkSetup()
+                    if setupProblem == nil { unavailableReason = error }
+                }
             case "rotated":
                 guard let stream = (object["stream"] as? NSNumber)?.uint32Value,
                       var turned = screen, turned.stream == stream,
@@ -610,7 +730,7 @@ final class SimulatorHost: ObservableObject {
         return result.output
     }
 
-    private static func simctlProcess(
+    static func simctlProcess(
         _ executable: String, _ arguments: [String], input: Data?
     ) async throws -> (status: Int32, output: String, error: String) {
         try await withCheckedThrowingContinuation { continuation in
@@ -728,3 +848,355 @@ final class SimulatorSurfaceReceiver: @unchecked Sendable {
 private func bootstrapCheckIn(
     _ bootstrap: mach_port_t, _ name: UnsafePointer<CChar>, _ port: UnsafeMutablePointer<mach_port_t>
 ) -> kern_return_t
+
+// MARK: - Device settings
+
+/// The status bar a screenshot should show, as Simulator.app's own presets.
+enum SimulatorStatusBar: CaseIterable {
+    case live, nineFortyOne, full
+
+    var title: String {
+        switch self {
+        case .live: localized("Live")
+        case .nineFortyOne: localized("9:41")
+        case .full: localized("9:41, Full Signal and Battery")
+        }
+    }
+}
+
+extension SimulatorHost {
+    /// Runs a menu action, logging a failure: a menu row has nowhere to show one.
+    /// Runs a menu's or a shortcut's action. A failure is logged and shown
+    /// under the screen, since nothing else would tell the person it failed.
+    func attempt(_ label: String, _ body: () async throws -> Void) async {
+        do {
+            try await body()
+        } catch {
+            Log.simulator.error("\(label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            notice = error.localizedDescription
+        }
+    }
+
+    /// The device's appearance, through `simctl ui`. A failed read answers
+    /// light, the boot default, and is logged.
+    func isDark(_ udid: String) async -> Bool {
+        do {
+            return try await simctl(["ui", udid, "appearance"]).trimmingCharacters(in: .whitespacesAndNewlines) == "dark"
+        } catch {
+            Log.simulator.error("reading appearance failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    func setDark(_ dark: Bool, on udid: String) async throws {
+        try await simctl(["ui", udid, "appearance", dark ? "dark" : "light"])
+    }
+
+    func toggleAppearance(on udid: String) async throws {
+        try await setDark(!(await isDark(udid)), on: udid)
+    }
+
+    func setStatusBar(_ preset: SimulatorStatusBar, on udid: String) async throws {
+        defer { statusBars[udid] = preset }
+        switch preset {
+        case .live:
+            try await simctl(["status_bar", udid, "clear"])
+        case .nineFortyOne:
+            try await simctl(["status_bar", udid, "clear"])
+            try await simctl(["status_bar", udid, "override", "--time", "9:41"])
+        case .full:
+            try await simctl([
+                "status_bar", udid, "override", "--time", "9:41",
+                "--dataNetwork", "wifi", "--wifiMode", "active", "--wifiBars", "3",
+                "--cellularMode", "active", "--cellularBars", "4",
+                "--batteryState", "charged", "--batteryLevel", "100",
+            ])
+        }
+    }
+
+    private static let slowMotion = "com.apple.UIKit.SimulatorSlowMotionAnimationState"
+
+    /// Slow animations is a notify state inside the device, the one
+    /// Simulator.app's Debug ▸ Slow Animations flips.
+    func slowAnimations(_ udid: String) async -> Bool {
+        do {
+            return try await simctl(["spawn", udid, "notifyutil", "-g", Self.slowMotion])
+                .trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(" 1")
+        } catch {
+            Log.simulator.error("reading slow animations failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    func setSlowAnimations(_ on: Bool, on udid: String) async throws {
+        try await simctl(["spawn", udid, "notifyutil", "-s", Self.slowMotion, on ? "1" : "0"])
+        try await simctl(["spawn", udid, "notifyutil", "-p", Self.slowMotion])
+    }
+
+    func shake(_ udid: String) async throws {
+        try await simctl(["spawn", udid, "notifyutil", "-p", "com.apple.UIKit.SimulatorShake"])
+    }
+
+    /// Saves the screen to the Desktop under Simulator.app's own name for it,
+    /// and returns where.
+    func saveScreenshot(of screen: SimulatorScreen) async throws -> URL {
+        let url = Self.desktopFile("Simulator Screenshot", screen, "png")
+        _ = try await call("screenshot", ["udid": screen.udid, "path": url.path])
+        return url
+    }
+
+    /// Simulator.app's names: "<kind> - <device> - <date> at <time>.<ext>".
+    private static func desktopFile(_ kind: String, _ screen: SimulatorScreen, _ ext: String) -> URL {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        return desktop.appendingPathComponent("\(kind) - \(screen.name) - \(formatter.string(from: Date())).\(ext)")
+    }
+
+    /// Starts recording the screen to the Desktop, or stops the recording
+    /// running now and offers the movie in the capture card.
+    func toggleRecording(of screen: SimulatorScreen) async throws {
+        if recording != nil {
+            try await stopRecording()
+            return
+        }
+        let url = Self.desktopFile("Simulator Screen Recording", screen, "mp4")
+        // simctl's recorder, as Simulator.app's own is: H.264 plays in every
+        // chat and browser a recording is likely to be dropped into; HEVC, the
+        // default, does not.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        process.arguments = ["simctl", "io", screen.udid, "recordVideo", "--codec=h264", "--force", url.path]
+        let error = Pipe()
+        process.standardError = error
+        process.standardOutput = FileHandle.nullDevice
+        try process.run()
+        recording = SimulatorRecording(udid: screen.udid, url: url, started: Date(), process: process, error: error)
+        process.terminationHandler = { [weak self] ended in
+            Task { @MainActor in
+                guard let self, self.recording?.process === ended else { return }
+                // Ended on its own: the device shut down, or simctl failed.
+                let reason = String(data: error.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+                Log.simulator.error("recording ended by itself (\(ended.terminationStatus, privacy: .public)): \(reason, privacy: .public)")
+                self.recording = nil
+                if FileManager.default.fileExists(atPath: url.path) { self.lastCapture = url }
+            }
+        }
+    }
+
+    /// simctl writes the movie's index when it is interrupted, the way ⌃C in a
+    /// terminal stops it; a movie killed any other way is unplayable.
+    func stopRecording() async throws {
+        guard let current = recording else { return }
+        recording = nil
+        current.process.terminationHandler = nil
+        current.process.interrupt()
+        let process = current.process
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                continuation.resume()
+            }
+        }
+        guard process.terminationStatus == 0, FileManager.default.fileExists(atPath: current.url.path) else {
+            let reason = String(data: current.error.fileHandleForReading.availableData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw SimulatorHostError.failed(reason.isEmpty ? localized("The recording couldn’t be saved.") : reason)
+        }
+        lastCapture = current.url
+    }
+}
+
+/// A `simctl io recordVideo` running into a file on the Desktop.
+struct SimulatorRecording {
+    let udid: String
+    let url: URL
+    let started: Date
+    let process: Process
+    let error: Pipe
+}
+
+/// An iOS runtime installed in Xcode, and the iPhones and iPads it can run:
+/// what New Simulator offers.
+struct SimulatorRuntime: Sendable {
+    let name: String
+    let identifier: String
+    let deviceTypes: [(name: String, identifier: String)]
+}
+
+// MARK: Device management
+
+extension SimulatorHost {
+    /// Shuts `udid` down, ending a recording of it and taking it off the pane
+    /// first; the pane then shows the empty state until another is picked.
+    func shutDown(_ udid: String) async throws {
+        if recording?.udid == udid { try await stopRecording() }
+        detachPane(udid)
+        readyDevices.remove(udid)
+        if devices.first(where: { $0.udid == udid })?.isBooted == true {
+            try await simctl(["shutdown", udid])
+        }
+        await refreshDevices()
+    }
+
+    func restart(_ udid: String) async throws {
+        try await shutDown(udid)
+        await show(udid)
+    }
+
+    /// Erase All Content and Settings, as on a device: simctl erases only a
+    /// shut-down simulator, so it is shut down, erased, and — if the pane was
+    /// showing it — booted again.
+    func erase(_ udid: String) async throws {
+        let wasShown = screen?.udid == udid
+        try await shutDown(udid)
+        try await simctl(["erase", udid])
+        if wasShown { await show(udid) }
+    }
+
+    func rename(_ udid: String, to name: String) async throws {
+        try await simctl(["rename", udid, name])
+        if screen?.udid == udid { screen?.name = name }
+        await refreshDevices()
+    }
+
+    func delete(_ udid: String) async throws {
+        try await shutDown(udid)
+        try await simctl(["delete", udid])
+        if lastDevice == udid { UserDefaults.standard.removeObject(forKey: Self.lastDeviceKey) }
+        await refreshDevices()
+    }
+
+    /// Creates a simulator and shows it, booting it.
+    func create(name: String, deviceType: String, runtime: String) async throws {
+        let udid = try await simctl(["create", name, deviceType, runtime])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        await refreshDevices()
+        await show(udid)
+    }
+
+    /// Installed iOS runtimes, newest first, each once: a point release can
+    /// list under the identifier of the one it updates.
+    func runtimes() async throws -> [SimulatorRuntime] {
+        let json = try await simctl(["list", "runtimes", "--json"])
+        guard let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let rows = object["runtimes"] as? [[String: Any]]
+        else { throw SimulatorHostError.malformedReply }
+        var seen = Set<String>()
+        return rows
+            .filter { $0["platform"] as? String == "iOS" && $0["isAvailable"] as? Bool == true }
+            .sorted { ($0["version"] as? String ?? "").compare($1["version"] as? String ?? "", options: .numeric) == .orderedDescending }
+            .compactMap { row in
+                guard let identifier = row["identifier"] as? String, seen.insert(identifier).inserted,
+                      let name = row["name"] as? String
+                else { return nil }
+                let types = (row["supportedDeviceTypes"] as? [[String: Any]] ?? []).compactMap { type -> (String, String)? in
+                    guard ["iPhone", "iPad"].contains(type["productFamily"] as? String ?? ""),
+                          let typeName = type["name"] as? String, let typeID = type["identifier"] as? String
+                    else { return nil }
+                    return (typeName, typeID)
+                }
+                return SimulatorRuntime(name: name, identifier: identifier, deviceTypes: types)
+            }
+    }
+}
+
+/// The actions the pane offers from its menus and its keyboard shortcuts —
+/// one list, so a menu row and its shortcut can never do different things.
+enum SimulatorCommand: CaseIterable {
+    case home, rotateLeft, rotateRight, screenshot, record, lock, volumeUp, volumeDown
+    case shake, toggleAppearance, toggleKeyboard
+    case zoomIn, zoomOut, zoomToFit, physicalSize
+
+    var title: String {
+        switch self {
+        case .home: localized("Home")
+        case .rotateLeft: localized("Rotate Left")
+        case .rotateRight: localized("Rotate Right")
+        case .screenshot: localized("Save Screenshot")
+        case .record: localized("Record Screen")
+        case .lock: localized("Lock")
+        case .volumeUp: localized("Volume Up")
+        case .volumeDown: localized("Volume Down")
+        case .shake: localized("Shake")
+        case .toggleAppearance: localized("Toggle Appearance")
+        case .toggleKeyboard: localized("Show On-Screen Keyboard")
+        case .zoomIn: localized("Zoom In")
+        case .zoomOut: localized("Zoom Out")
+        case .zoomToFit: localized("Fit to Pane")
+        case .physicalSize: localized("Physical Size")
+        }
+    }
+
+    /// Simulator.app's shortcuts, answered while the pane's screen has focus.
+    var shortcut: (key: String, modifiers: NSEvent.ModifierFlags) {
+        switch self {
+        case .home: ("h", [.command, .shift])
+        case .rotateLeft: (String(UnicodeScalar(NSLeftArrowFunctionKey).map(Character.init) ?? " "), [.command])
+        case .rotateRight: (String(UnicodeScalar(NSRightArrowFunctionKey).map(Character.init) ?? " "), [.command])
+        case .screenshot: ("s", [.command])
+        case .record: ("r", [.command])
+        case .lock: ("l", [.command])
+        case .volumeUp: (String(UnicodeScalar(NSUpArrowFunctionKey).map(Character.init) ?? " "), [.command])
+        case .volumeDown: (String(UnicodeScalar(NSDownArrowFunctionKey).map(Character.init) ?? " "), [.command])
+        case .shake: ("z", [.command, .control])
+        case .toggleAppearance: ("a", [.command, .shift])
+        case .toggleKeyboard: ("k", [.command])
+        case .zoomIn: ("=", [.command])
+        case .zoomOut: ("-", [.command])
+        case .zoomToFit: ("0", [.command])
+        case .physicalSize: ("1", [.command])
+        }
+    }
+
+    static func matching(_ event: NSEvent) -> SimulatorCommand? {
+        let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        return allCases.first { $0.shortcut.modifiers == flags && $0.shortcut.key == key }
+    }
+}
+
+extension SimulatorHost {
+    /// The current zoom as a multiple of fitted, clamped, to step from.
+    /// Physical Size steps from fitted: its multiple depends on the pane.
+    private var zoomFactor: CGFloat {
+        guard case .factor(let factor) = zoom else { return 1 }
+        return factor
+    }
+
+    /// Clamped, and Fit again when the steps land back on it.
+    private static func zoom(_ factor: CGFloat) -> SimulatorZoom {
+        let clamped = min(max(factor, SimulatorZoom.range.lowerBound), SimulatorZoom.range.upperBound)
+        return abs(clamped - 1) < 0.01 ? .fit : .factor(clamped)
+    }
+
+    func setOnScreenKeyboard(_ show: Bool, on udid: String) async throws {
+        _ = try await call("setKeyboard", ["udid": udid, "state": show ? "show" : "hide"])
+        if show { onScreenKeyboard.insert(udid) } else { onScreenKeyboard.remove(udid) }
+    }
+
+    func perform(_ command: SimulatorCommand, on screen: SimulatorScreen) async {
+        let udid = screen.udid
+        await attempt(String(describing: command)) {
+            switch command {
+            case .home: _ = try await call("button", ["udid": udid, "name": "home"])
+            case .lock: _ = try await call("button", ["udid": udid, "name": "lock"])
+            case .volumeUp: _ = try await call("button", ["udid": udid, "name": "volume-up"])
+            case .volumeDown: _ = try await call("button", ["udid": udid, "name": "volume-down"])
+            case .rotateLeft: _ = try await call("rotate", ["udid": udid, "direction": "left"])
+            case .rotateRight: _ = try await call("rotate", ["udid": udid, "direction": "right"])
+            case .screenshot: lastCapture = try await saveScreenshot(of: screen)
+            case .record: try await toggleRecording(of: screen)
+            case .shake: try await shake(udid)
+            case .toggleAppearance: try await toggleAppearance(on: udid)
+            case .toggleKeyboard:
+                try await setOnScreenKeyboard(!onScreenKeyboard.contains(udid), on: udid)
+            case .zoomIn: zoom = Self.zoom(zoomFactor * SimulatorZoom.step)
+            case .zoomOut: zoom = Self.zoom(zoomFactor / SimulatorZoom.step)
+            case .zoomToFit: zoom = .fit
+            case .physicalSize: zoom = .physical
+            }
+        }
+    }
+}

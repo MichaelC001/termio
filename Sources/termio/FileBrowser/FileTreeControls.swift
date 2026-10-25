@@ -8,13 +8,15 @@ import SwiftUI
 /// so a `Button` and a `Menu` label render pixel-identical chrome despite being different types.
 struct TreeHeaderChip: ViewModifier {
     @Binding var hovering: Bool
+    /// A toggle that is on keeps the chip, as if hovered.
+    var isOn = false
 
     func body(content: Content) -> some View {
         content
             // The window's one glyph button size (`ChromeGlyph`), so the panel's headers match
             // the cards' and the sidebar's.
             .frame(width: ChromeGlyph.frame.width, height: ChromeGlyph.frame.height)
-            .background(ChromeHoverChip(isHovering: hovering))
+            .background(ChromeHoverChip(isHovering: hovering || isOn))
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
     }
@@ -36,11 +38,19 @@ struct TreeHeaderButton: View {
     let source: Source
     let help: String
     let action: () -> Void
+    var isOn = false
     @State private var isHovering = false
 
     init(codicon: Codicon, help: String, action: @escaping () -> Void) {
         self.source = .codicon(codicon)
         self.help = help
+        self.action = action
+    }
+
+    init(symbol: String, help: String, isOn: Bool = false, action: @escaping () -> Void) {
+        self.source = .symbol(symbol)
+        self.help = help
+        self.isOn = isOn
         self.action = action
     }
 
@@ -52,7 +62,7 @@ struct TreeHeaderButton: View {
 
     var body: some View {
         Button(action: action) {
-            icon.modifier(TreeHeaderChip(hovering: $isHovering))
+            icon.modifier(TreeHeaderChip(hovering: $isHovering, isOn: isOn))
         }
         .buttonStyle(.plain)
         .help(help)
@@ -65,7 +75,7 @@ struct TreeHeaderButton: View {
             Image(systemName: name)
                 .symbolRenderingMode(.hierarchical)
                 .font(.system(size: ChromeGlyph.size))
-                .foregroundStyle(isHovering ? Color.primary : Color.secondary)
+                .foregroundStyle(isHovering || isOn ? Color.primary : Color.secondary)
         case .codicon(let codicon):
             CodiconView(icon: codicon, size: ChromeGlyph.size, color: isHovering ? .primary : .secondary)
         case .huge(let icon):

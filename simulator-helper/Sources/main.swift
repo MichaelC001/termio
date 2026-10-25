@@ -194,8 +194,12 @@ func handle(_ request: Request) async throws {
         Wire.reply(request.id, result: ["samples": raw.count])
     case "button":
         let device = try registry.device(try request.string("udid"))
-        try await device.send(.shortButtonPress(try button(named: try request.string("name"))))
+        let name = try request.string("name")
+        try await device.send(.shortButtonPress(try button(named: name)))
         Wire.reply(request.id, result: [:])
+        if ["lock", "side"].contains(name.lowercased()) {
+            Task { await device.followDisplayAfterPower() }
+        }
     case "text":
         let device = try registry.device(try request.string("udid"))
         let (event, skipped) = Keymap.events(typing: try request.string("text"))

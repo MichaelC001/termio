@@ -25,6 +25,9 @@ final class Device: @unchecked Sendable {
     private var framebuffer: Framebuffer?
     private var attachment: FramebufferAttachment?
     private var events: Task<Void, Never>?
+    private var port: SurfacePort?
+    /// The surface the app was last sent.
+    private var surfaceID: IOSurfaceID?
     private let lock = NSLock()
     /// The device's orientation as last read or written. Read back from the
     /// simulator's own motion state (`refreshOrientation`), so a turn made in
@@ -94,16 +97,23 @@ final class Device: @unchecked Sendable {
         }
         let framebuffer = try currentFramebuffer()
         let attachment = try framebuffer.attach()
-        self.attachment = attachment
-        if let surface = attachment.initialSurface { port.send(surface, stream: stream) }
+        listen(to: attachment, port: port)
         watchOrientation()
+    }
+
+    /// Takes `attachment` as the display's, sends its surface, and relays its
+    /// events. Called with the lock held.
+    private func listen(to attachment: FramebufferAttachment, port: SurfacePort) {
+        self.attachment = attachment
+        self.port = port
+        if let surface = attachment.initialSurface { send(surface, to: port) }
         let stream = self.stream
         let udid = simulator.udid
-        events = Task {
+        events = Task { [weak self] in
             for await event in attachment.events {
                 switch event {
                 case .surfaceChanged(let surface):
-                    if let surface { port.send(surface, stream: stream) }
+                    if let surface { self?.send(surface, to: port) }
                 case .frameRendered:
                     Wire.event("frame", ["stream": stream])
                 case .configurationChanged:
@@ -118,6 +128,51 @@ final class Device: @unchecked Sendable {
         }
     }
 
+    private func send(_ surface: IOSurface, to port: SurfacePort) {
+        surfaceID = IOSurfaceGetID(surface)
+        port.send(surface, stream: stream)
+    }
+
+    /// When the display sleeps and wakes — the side button pressed on a lock
+    /// screen, then again — CoreSimulator moves it to a new surface without
+    /// telling the framebuffer, which goes on holding the last frame. So after
+    /// a press that can do that, the display is located afresh, twice as the
+    /// wake settles, and attached anew if its surface is not the one in use.
+    func followDisplayAfterPower() async {
+        for delay in [0.8, 2.0] {
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            reattachIfSurfaceMoved()
+        }
+    }
+
+    private func reattachIfSurfaceMoved() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let port, attachment != nil else { return }
+        let fresh: Framebuffer
+        let freshAttachment: FramebufferAttachment
+        do {
+            fresh = try Framebuffer.mainScreenSurface(for: simulator, logger: logger)
+            freshAttachment = try fresh.attach()
+        } catch {
+            Wire.log("locating \(simulator.udid)'s display after a power press failed: \(error)")
+            return
+        }
+        guard let surface = freshAttachment.initialSurface, IOSurfaceGetID(surface) != surfaceID else {
+            freshAttachment.cancel()
+            return
+        }
+        Wire.log("\(simulator.udid)'s display moved to surface \(IOSurfaceGetID(surface)); reattached")
+        events?.cancel()
+        attachment?.cancel()
+        framebuffer = fresh
+        listen(to: freshAttachment, port: port)
+    }
+
     func detach() {
         lock.lock()
         defer { lock.unlock() }
@@ -127,6 +182,8 @@ final class Device: @unchecked Sendable {
         orientationWatch = nil
         attachment?.cancel()
         attachment = nil
+        port = nil
+        surfaceID = nil
     }
 
     private func currentFramebuffer() throws -> Framebuffer {

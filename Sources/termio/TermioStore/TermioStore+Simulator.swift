@@ -16,6 +16,13 @@ extension TermioStore {
         if let reason = host.unavailableReason {
             return controlError(request, "unavailable", reason)
         }
+        // Checked once before the first request, so an agent on a Mac that
+        // isn't set up is told the step to take rather than a helper's error.
+        if !host.setupChecked { await host.checkSetup() }
+        if let problem = host.setupProblem {
+            let step = problem.command.map { " Run: \($0)" } ?? ""
+            return controlError(request, "setup", "\(problem.title): \(problem.message)\(step)")
+        }
         do {
             if action == "list" { return await listSimulators(request) }
             let (screen, booted) = try await resolveSimulator(
@@ -193,7 +200,7 @@ extension TermioStore {
                 guard let state = arguments["state"], state == "show" || state == "hide" else {
                     return controlError(request, "bad_state", "keyboard takes show or hide.")
                 }
-                _ = try await host.call("setKeyboard", ["udid": udid, "state": state])
+                try await host.setOnScreenKeyboard(state == "show", on: udid)
                 return control(request, ok: true, text: "on-screen keyboard \(state == "show" ? "shown" : "hidden")", json: [:])
             default:
                 return controlError(request, "bad_action", "Unknown sim action '\(action)'.")
