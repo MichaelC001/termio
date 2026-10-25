@@ -7,7 +7,7 @@ import CoreGraphics
 /// knows how the bytes get to a daemon.
 ///
 /// It lives beside `WireProtocol.swift` for the same reason that one does: the
-/// Mac reaches a daemon over a Unix socket or an `ssh … termiod stdio` pipe, the
+/// Mac reaches a daemon over a Unix socket or an `ssh … termio stdio` pipe, the
 /// phone will reach one over a WebSocket, and a second Swift copy of this format
 /// would drift from the first without anything failing to build. Everything a
 /// route needs — sockets, `ssh -G`, spawning the daemon — stays in the app's
@@ -962,7 +962,7 @@ public enum Termiod {
         }
     }
 
-    /// One row of `termiod list` — a session as the **device** describes it.
+    /// One row of `termio server list` — a session as the **device** describes it.
     ///
     /// This carries enough to draw a row without consulting anything on the
     /// viewer, which is the point: a session the app never opened (started from

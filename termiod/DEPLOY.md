@@ -49,7 +49,7 @@ tio remote attach ukvps demo
 tio remote attach ukvps demo --observe | head -50
 
 # 8. Done? End the session for real:
-ssh ukvps '~/.local/bin/termiod kill demo'
+ssh ukvps '~/.local/bin/termio server kill demo'
 ```
 
 What you are testing at each step: durable host (4–5), snapshot-on-attach
@@ -58,27 +58,23 @@ plane (7, #179). The resize barrier (1b) fires whenever you resize your
 terminal while attached as the writer — observers repaint from a fresh
 snapshot instead of parsing at the wrong width. The `grid_diff` plane (1e)
 has no remote CLI flag yet (`attach --grid-diff` is local-only today); it
-rides the same framed protocol, so it lights up remotely once `termiod stdio`
+rides the same framed protocol, so it lights up remotely once `termio stdio`
 lands (see the protocol doc's roadmap).
 
 ## The one-liner
 
 ```sh
-termio remote open my-vps             # deploy if needed, create a session, attach
+termio server -H my-vps deploy        # install or update it, then verify
+termio server -H my-vps attach api    # create the session if missing, attach
 ```
 
-`termio remote …` is the spelling on a machine that has the client — the
-script execs the daemon bundled beside it, so it always matches the app's
-channel. On the box itself there is only `termiod`, which is why the SSH
-examples below keep that name. `my-vps` is any `~/.ssh/config` alias (or
-`user@host`). Behind that:
-
-1. `ssh my-vps test -x ~/.local/bin/termiod` — installed? If not, deploy.
-2. `ssh my-vps termiod create …` — create a durable session; capture its id.
-3. `ssh -t my-vps termiod attach <id>` — attach over an SSH PTY.
+`--host` (`-H`) works with every `termio server` verb. `deploy` runs its loop
+from this machine; every other verb runs as the same `termio server` command
+on the box, over your own `ssh`. `my-vps` is any `~/.ssh/config` alias (or
+`user@host`). `attach` is `ssh -t my-vps termio server attach api`.
 
 Close your laptop mid-session; the daemon on the VPS owns the PTY, so the agent
-keeps running. Reconnect with `termio remote attach my-vps <id>` (or `open`).
+keeps running. Reconnect with `termio server -H my-vps attach <id>`.
 
 ## Cross-compiling on the Mac
 
@@ -105,7 +101,7 @@ rustup target add aarch64-unknown-linux-musl   # ARM VPS (Graviton, Ampere, Pi)
 rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 ```
 
-`termio remote deploy <host>` runs `uname -sm` on the host, picks the matching
+`termio server -H <host> deploy` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
 otherwise — and installs. On a Linux box the `termio` client installs beside the
 daemon in the same pass, so a box's client and daemon are always the same build.
@@ -124,7 +120,7 @@ install one and override `linker` in `.cargo/config.toml`, or build on the host
 and deploy the prebuilt binary:
 
 ```sh
-termio remote deploy my-vps --bin path/to/linux/termiod
+termio server -H my-vps deploy --bin path/to/linux/termiod
 ```
 
 ## What deploy does
@@ -133,13 +129,13 @@ One reconcile loop (`src/lifecycle.rs`; the design is
 `docs/design/20260827-termiod-lifecycle-reconcile.md`):
 
 ```sh
-termio remote deploy my-vps
-#  ssh  my-vps ~/.local/bin/termiod status --json   # observe: binary, daemon, sessions
+termio server -H my-vps deploy
+#  ssh  my-vps ~/.local/bin/termio server status --json   # observe: binary, daemon, sessions
 #  scp  <bundled slice>  my-vps:.local/bin/termiod.new
 #  ssh  my-vps 'chmod +x … && mv termiod termiod.prev && mv termiod.new termiod'   # stage
-#  ssh  my-vps ~/.local/bin/termiod handoff --json  # activate — execve in place, sessions kept
-#  ssh  my-vps ~/.local/bin/termiod stop --json      # only if the daemon is too old to hand off
-#  ssh  my-vps ~/.local/bin/termiod stdio            # verify: hello, compare the version
+#  ssh  my-vps ~/.local/bin/termio server handoff --json  # activate — execve in place, sessions kept
+#  ssh  my-vps ~/.local/bin/termio server stop --json      # only if the daemon is too old to hand off
+#  ssh  my-vps ~/.local/bin/termio stdio            # verify: hello, compare the version
 #  on failure: mv termiod.prev termiod                # roll back
 ```
 
@@ -198,8 +194,8 @@ attach, and a crash or a reboot brings it back), let it install its own
 `--user` unit:
 
 ```sh
-ssh my-vps ~/.local/bin/termiod service install
-ssh my-vps ~/.local/bin/termiod service status
+ssh my-vps ~/.local/bin/termio server service install
+ssh my-vps ~/.local/bin/termio server service status
 ```
 
 `service install` writes the unit below to `~/.config/systemd/user/`, runs
@@ -218,7 +214,7 @@ The unit is generated from the absolute path of the binary that installed it,
 so it never depends on `PATH`:
 
 ```ini
-# ~/.config/systemd/user/termiod.service — what `termiod service install` writes
+# ~/.config/systemd/user/termiod.service — what `termio server service install` writes
 [Unit]
 Description=termiod session host
 
@@ -230,7 +226,7 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
-`Restart=on-failure` rather than `always`: `termiod stop` (and `deploy`) sends
+`Restart=on-failure` rather than `always`: `termio server stop` (and `deploy`) sends
 `SIGTERM` and waits for the socket to stay gone, and the next client contact
 starts the unit again — a client never forks a second daemon beside a unit
 systemd owns. A dev build (`TERMIO_CHANNEL=dev`) installs `termiod-dev.service`
@@ -248,7 +244,7 @@ onto the same socket, with a pairing token in front. Nothing about the SSH path
 changes, and a daemon with no WSS bind behaves exactly as it does above.
 
 ```sh
-ssh my-vps ~/.local/bin/termiod pair              # mint the token; prints it
+ssh my-vps ~/.local/bin/termio pair              # mint the token; prints it
 ssh my-vps ~/.local/bin/termiod serve --wss 127.0.0.1:8790 \
       --wss-origin https://box.tailnet.ts.net
 ```
@@ -274,7 +270,7 @@ running both does not have them fight.
 
 ### The token
 
-`termiod pair` mints 24 random bytes as base64url and stores them `0600` at
+`termio pair` mints 24 random bytes as base64url and stores them `0600` at
 `pair.token`, beside `host.id` in the state dir (`~/.local/state/termio` on
 Linux), so both survive a reboot — the socket's tmpfs does not. `--wss` never
 mints one: a listener that cannot
@@ -282,11 +278,11 @@ authenticate is not something to start by accident.
 
 | Command | What it does |
 | --- | --- |
-| `termiod pair` | Print the token, minting it on first run. |
-| `termiod pair --json` | The invite as JSON: `url`, `token`, `host_id`, `proto`. |
-| `termiod pair --qr` | The invite as a QR code, drawn in this terminal. |
-| `termiod pair --rotate` | Replace the token. Attached clients detach; no session dies. |
-| `termiod pair --wss-off` | Delete `wss.bind`. The next start is Unix-only. |
+| `termio pair` | Print the token, minting it on first run. |
+| `termio pair --json` | The invite as JSON: `url`, `token`, `host_id`, `proto`. |
+| `termio pair --qr` | The invite as a QR code, drawn in this terminal. |
+| `termio pair --rotate` | Replace the token. Attached clients detach; no session dies. |
+| `termio pair --wss-off` | Delete `wss.bind`. The next start is Unix-only. |
 
 `--json` and `--qr` need a reachable URL, and the daemon cannot derive one: the
 listener binds loopback on purpose, so the public name lives in `--wss-origin`
@@ -296,7 +292,7 @@ a proxy mounted under a path.
 
 **What the QR costs you: whoever photographs it has full access to the daemon
 until you rotate the token.** It is the long-lived pairing secret, not a
-short-lived enrollment code, and `termiod pair --rotate` is the only revocation
+short-lived enrollment code, and `termio pair --rotate` is the only revocation
 there is. Do not screenshare or record a terminal you have just printed one in;
 if you do, rotate.
 
@@ -304,7 +300,7 @@ if you do, rotate.
 
 A flag that lives only on one foreground argv dies on the next crash restart —
 the daemon auto-starts as bare `termiod serve`, and so does the unit
-`termiod service install` writes. So an explicit `--wss` with a token in place
+`termio server service install` writes. So an explicit `--wss` with a token in place
 writes `wss.bind` (`0600`) into the state dir, and every later bare start —
 including the first one after a reboot — reads it back. That is the whole durable path; the generated unit deliberately puts
 nothing about WSS on its command line.
@@ -324,7 +320,7 @@ Environment=TERMIOD_WSS_ORIGIN=https://box.tailnet.ts.net
 ```
 
 ```sh
-ssh my-vps ~/.local/bin/termiod service install
+ssh my-vps ~/.local/bin/termio server service install
 ```
 
 The bind is resolved in this order, first valid loopback address winning:
@@ -334,7 +330,7 @@ TCP listener at all.
 Missing `pair.token` splits by where the bind came from:
 
 - **`--wss` on this process's argv** — refuse the whole start, write nothing,
-  and say `run termiod pair`. The operator asked for a listener that cannot
+  and say `run termio pair`. The operator asked for a listener that cannot
   authenticate.
 - **Inherited from `TERMIOD_WSS` or `wss.bind`** — bind the Unix socket, skip
   TCP, log `wss skipped: no pair.token`. A restart must never take the daemon's
@@ -343,9 +339,9 @@ Missing `pair.token` splits by where the bind came from:
 ## Reconnect workflow
 
 ```sh
-termio remote list my-vps               # what's running on the VPS
-termio remote attach my-vps <id|name>   # reattach; Ctrl-\ detaches
-termio remote attach my-vps build -- npm run dev   # attach-or-create by name
+termio server -H my-vps ls                         # what's running on the VPS
+termio server -H my-vps attach <id|name>             # reattach; Ctrl-\ detaches
+termio server -H my-vps attach build -- npm run dev  # attach-or-create by name
 ```
 
 Session survives: SSH disconnects, laptop sleep, network drops. It ends only on
@@ -361,7 +357,7 @@ Session survives: SSH disconnects, laptop sleep, network drops. It ends only on
 | Multi-user | Socket is per-uid and 0600; another user on the box can't connect. A user who can read `pair.token` can, which is why it is `0600` in a `0700` dir. |
 | Transport crypto | Entirely SSH's, or entirely the front proxy's. termiod adds no crypto and no bespoke protocol on the wire beyond the framed session stream inside the channel. |
 | Browser CSRF | An `Origin` allowlist (`--wss-origin`), defaulting to same-origin. It constrains pages; the token is what authenticates the pipe. There is no exemption for clients that "look native". |
-| Revocation | `termiod pair --rotate`. It drops every attached WebSocket and refuses the old secret from then on. Sessions keep running — a rotation is a detach, not a kill. |
+| Revocation | `termio pair --rotate`. It drops every attached WebSocket and refuses the old secret from then on. Sessions keep running — a rotation is a detach, not a kill. |
 
 Do **not** expose the Unix socket over TCP (e.g. `socat`) without adding your
 own authentication — the daemon assumes socket access already means "trusted

@@ -57,7 +57,7 @@ impl Channel {
     /// path component, so anything that isn't lowercase alphanumeric-or-dash
     /// falls back to the release channel instead of opening a stray
     /// directory.
-    fn named(candidate: &str) -> Channel {
+    pub(crate) fn named(candidate: &str) -> Channel {
         let name = candidate.trim().to_lowercase();
         if name.is_empty() || name == "release" {
             return Channel::release();

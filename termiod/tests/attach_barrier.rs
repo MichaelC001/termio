@@ -18,6 +18,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 /// Long enough for a barrier to cross the sidecar and come back; every drain
 /// ends on this timeout, so it is also most of the test's runtime.
 const QUIET: Duration = Duration::from_millis(600);
@@ -53,7 +54,11 @@ impl Drop for Daemon {
 }
 
 fn start_daemon(tag: &str) -> Daemon {
-    let socket = format!("/tmp/termiod-attach-barrier-{tag}.sock");
+    // A directory per daemon: the serve lock lives beside the socket, so two
+    // daemons sharing `/tmp` would have the second refuse to start.
+    let directory = format!("/tmp/termiod-attach-barrier-{tag}");
+    let _ = std::fs::create_dir_all(&directory);
+    let socket = format!("{directory}/d.sock");
     let _ = std::fs::remove_file(&socket);
     let child = Command::new(BIN)
         .arg("serve")
@@ -87,8 +92,8 @@ impl Drop for Client {
 
 /// Attaches as an interactive, snapshot-capable client at `rows`x`cols`.
 fn attach(socket: &str, session: &str, rows: u16, cols: u16) -> Client {
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -149,8 +154,8 @@ fn keyframe_grids(client: &Client) -> Vec<(u16, u16)> {
 #[test]
 fn attaching_at_the_session_size_repaints_nobody() {
     let daemon = start_daemon("sizes");
-    let created = Command::new(BIN)
-        .arg("create")
+    let created = Command::new(CLIENT)
+        .args(["server", "create"])
         .arg("--name")
         .arg("barrier")
         .arg("--")

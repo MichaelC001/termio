@@ -28,6 +28,17 @@ import termios
 import time
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "./target/debug/termiod"
+
+# `termiod` answers only `serve`; every other verb is the client's, and the
+# daemon-plane ones are spelled `termio server <verb>`.
+CLIENT = os.path.join(os.path.dirname(os.path.abspath(BIN)), "termio")
+SERVER_VERBS = {"create", "list", "kill", "send", "attach", "watch", "status",
+                "stop", "handoff", "deploy", "logs", "service"}
+
+
+def client_argv(*args):
+    head = ["server"] if args and args[0] in SERVER_VERBS else []
+    return [CLIENT, *head, *args]
 SOCK_DIR = "/tmp/termiod-smoke"
 ENV = dict(
     os.environ,
@@ -47,7 +58,7 @@ def check(name, ok):
 
 def cli(*args):
     return subprocess.run(
-        [BIN, *args], env=ENV, capture_output=True, text=True
+        client_argv(*args), env=ENV, capture_output=True, text=True
     )
 
 
@@ -315,11 +326,11 @@ def set_winsize(fd, rows, cols):
 
 
 def spawn_attach(extra_args, rows=24, cols=80):
-    """Spawn `termiod attach <extra_args>` wired to a fresh PTY."""
+    """Spawn `termio server attach <extra_args>` wired to a fresh PTY."""
     master, slave = pty.openpty()
     set_winsize(master, rows, cols)
     p = subprocess.Popen(
-        [BIN, "attach", *extra_args],
+        [CLIENT, "server", "attach", *extra_args],
         stdin=slave,
         stdout=slave,
         stderr=slave,
@@ -516,7 +527,7 @@ def main():
     writer_before = before_observe.get("writer_client_id")
 
     observer = subprocess.Popen(
-        [BIN, "attach", "observe-pipe", "--observe", "--no-create"],
+        [CLIENT, "server", "attach", "observe-pipe", "--observe", "--no-create"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

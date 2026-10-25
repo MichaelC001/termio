@@ -52,8 +52,9 @@ usage:
 
   termio notify [--title T] "<message>"      post a macOS notification (e.g. "I'm done")
 
-  termio remote <verb> [...]                 drive a box's termiod over SSH (deploy, list,
-                                             attach, open — `termio remote --help` lists them)
+  termio pair [--qr|--json|--rotate]         print the token that lets a phone or a browser attach
+  termio server [-H HOST] <verb> [...]       a machine's termiod (status, logs, sessions, deploy,
+                                             service, tailscale); -H reaches another over SSH
   termio version                             one table: this client, the running app, the local
                                              termiod, and every known remote as of last connect
 
@@ -303,6 +304,35 @@ locate_termiod() {
         return 0
     fi
     command -v termiod 2>/dev/null || true
+}
+
+# The Rust `termio` that ships beside the located daemon. The daemon answers
+# only `serve`; everything this script cannot do itself — reporting to a
+# session, the daemon's own verbs — goes to that client. Never this script:
+# a bundle built without Rust holds no daemon, but a copy of this script
+# could still sit beside one.
+locate_client() {
+    daemon=$(locate_termiod)
+    [ -n "$daemon" ] || return 0
+    directory=$(dirname "$daemon")
+    for name in termio termio-dev; do
+        candidate="$directory/$name"
+        if [ -x "$candidate" ] && ! [ "$candidate" -ef "$0" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+}
+
+# Run the located client with this script's channel: a client named `termio`
+# takes its channel from `TERMIO_SESSION_CHANNEL`.
+exec_client() {
+    client=$(locate_client)
+    if [ -z "$client" ]; then
+        echo "termio: no termio client found beside a termiod — install the termio app, or set TERMIOD_BIN" >&2
+        exit 1
+    fi
+    TERMIO_CHANNEL="$CHANNEL" TERMIO_SESSION_CHANNEL="$CHANNEL" exec "$client" "$@"
 }
 
 # JSON-escape a string for embedding in a request: backslashes, double quotes,
@@ -687,7 +717,7 @@ sessions() {
 # local agent and a device one carry the same facts — the flags below all reach
 # a VPS now, where before they had nowhere to land.
 #
-# The mining moves with the call rather than staying here: `termiod set-status`
+# The mining moves with the call rather than staying here: `termio agent report`
 # takes the same flag names and reads the same stdin blob, so the payload is
 # parsed once, by whichever binary the hook actually invoked.
 #
@@ -741,22 +771,19 @@ agent() {
         return 0
     fi
 
-    daemon=$(locate_termiod)
-    if [ -z "$daemon" ]; then
+    if [ -z "$(locate_client)" ]; then
         if [ "$reply" -eq 1 ]; then printf '{}'; fi
         return 0
     fi
 
-    # `--reply` is handled by the daemon binary, which prints `{}` itself even
-    # when the report could not be delivered — one implementation of Cursor's
-    # stdout contract rather than two. The channel is pinned like every other
-    # daemon exec in this script: a dev-located daemon with a stale or absent
-    # inherited channel would otherwise report to the release socket.
+    # `--reply` is handled by the client, which prints `{}` itself even when
+    # the report could not be delivered — one implementation of Cursor's
+    # stdout contract rather than two.
     # shellcheck disable=SC2086
     if [ "$reply" -eq 1 ]; then
-        TERMIO_CHANNEL="$CHANNEL" exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded --reply
+        exec_client agent report "$state" $forwarded --reply
     fi
-    TERMIO_CHANNEL="$CHANNEL" exec "$daemon" set-status "$TERMIOD_SESSION_ID" "$state" $forwarded
+    exec_client agent report "$state" $forwarded
 }
 
 # `termio notify [--title T] "<message>"` — post a macOS notification on demand.
@@ -803,22 +830,9 @@ EOF
     request_once notify "$format" "" "" "$body" "$extra"
 }
 
-# `termio remote <verb>` — one spelling for driving another box's termiod
-# (deploy, list, attach, open). Pure passthrough: the daemon binary owns the
-# verbs, their flags, and their help; this side only picks the right binary —
-# the one bundled beside this script's channel — and pins the channel so the
-# daemon commands land on this app's socket.
-remote_command() {
-    daemon=$(locate_termiod)
-    if [ -z "$daemon" ]; then
-        echo "termio: no termiod binary found — install the termio app, or set TERMIOD_BIN" >&2
-        exit 1
-    fi
-    TERMIO_CHANNEL="$CHANNEL" exec "$daemon" remote "$@"
-}
 
 # `termio version` — every version in one table: this client, the running app,
-# the local termiod (wrapping `termiod status --json`), and one row per known
+# the local termiod (wrapping `termio server status --json`), and one row per known
 # remote from the device registry the app writes at each handshake
 # (`devices.json`). A remote row is what the last connect observed, stamped so
 # a stale row announces its staleness instead of posing as live state; a host
@@ -847,7 +861,9 @@ version_table() {
         # The keys live in known sections of a stable shape; tracking the
         # section is what keeps a session's own command line, echoed in the
         # sessions array, from ever matching.
-        parsed=$(TERMIO_CHANNEL="$CHANNEL" "$daemon" status --json 2>/dev/null | awk '
+        client=$(locate_client)
+        parsed=$([ -n "$client" ] && TERMIO_CHANNEL="$CHANNEL" TERMIO_SESSION_CHANNEL="$CHANNEL" \
+            "$client" server status --json 2>/dev/null | awk '
             function value(line) {
                 sub(/^[^:]*: */, "", line); gsub(/^"|",?$|,$/, "", line)
                 gsub(/\\\//, "/", line); return line
@@ -940,9 +956,8 @@ case "${1:-}" in
         version_table
         exit 0
         ;;
-    remote)
-        shift
-        remote_command "$@"
+    pair|server|stdio)
+        exec_client "$@"
         ;;
     sessions)
         shift

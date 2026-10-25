@@ -3,8 +3,8 @@ title: 远程主机
 description: 在另一台机器上跑 Agent 的操作那一半——添加主机、测试线路、为什么密码不够用、Set Up 究竟装了什么，以及怎么读那一行说明机器是否就绪的话。
 x-i18n:
   source_path: remote-hosts.mdx
-  source_hash: 1fcd19ff49d2a6931c564b23c1d609d4816871b65c50e14b95a1a411105e5dfb
-  generated_at: 2026-09-19
+  source_hash: bd99db0677216f7824e210d1f92836292dbe2a632d82d5ce91979abc2d5c2f6f
+  generated_at: 2026-10-25
 ---
 
 [设备](/zh-CN/docs/devices)讲的是模型：一台机器就是一台你能 `ssh` 上去的机器，其余的一切
@@ -102,7 +102,7 @@ Termio 读 `~/.ssh/config`，并且从不背着你改写它。任何你已经能
   其中一个之后，或者状态点不动了的时候，就用它。
 
   一台机器拿到的技能，和本机拿到的不是同一个。这里的 Agent 学的是 `termio sessions`，
-  限定在它自己的项目里；一台机器上的 Agent 学的是 `termiod list`、`create`、`send` 和
+  限定在它自己的项目里；一台机器上的 Agent 学的是 `termio server list`、`create`、`send` 和
   `kill`，作用范围是整台机器——因为那才是那边真正存在的命令。
 
 *无法检查*是有意留的第三个答案，而且它从来不是 Agent 的毛病：它的意思是 Termio 连不上这台
@@ -128,7 +128,7 @@ daemon 还没接过去的版本——而且如果新的那个不应答，它会�
 从命令行来看，同一次对账就是一个动词：
 
 ```bash
-termiod deploy --host mybox
+termio server -H mybox deploy
 ```
 
 不管从什么状态开始，它都结束在同一个状态，所以对一台看起来不对劲的机器跑它是安全的。参见
@@ -139,14 +139,14 @@ termiod deploy --host mybox
 从外往里查——先 `ssh`，再 daemon，最后 Termio：
 
 ```bash
-ssh mybox true                 # SSH 本身通不通？
-termiod list --host mybox      # 那边的 server 在应答吗？
-termiod deploy --host mybox    # 重装并校验一遍
+ssh mybox true                # SSH 本身通不通？
+termio server -H mybox ls      # 那边的 server 在应答吗？
+termio server -H mybox deploy    # 重装并校验一遍
 ```
 
 连接断了只是把你脱离，不会杀掉任何东西。会话在那台机器上、在它的 daemon 里，重新附着会
 恢复屏幕——参见[什么会留下来](/zh-CN/docs/persistence)。如果重启之后它们是真的没了，那台
-机器缺的是一个服务：`termiod service install`。
+机器缺的是一个服务：`termio server service install`。
 
 设备切换器会用 `ssh` 自己的话来报告一台连不上的机器，而不是默不作声，所以你读到的失败就是
 `ssh` 遇到的失败。更多症状和对应的检查在[问题排查](/zh-CN/docs/troubleshooting)里。

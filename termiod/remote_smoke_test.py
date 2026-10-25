@@ -2,8 +2,8 @@
 """Remote-orchestration smoke test for #171/#172 without a real VPS.
 
 A fake `ssh` on PATH runs the remote command *locally* (dropping -t/-o flags),
-standing in for the SSH transport. `TERMIOD_REMOTE_BIN` points the `remote`
-subcommands at the local binary. This exercises the real orchestration in
+standing in for the SSH transport. `TERMIOD_REMOTE_BIN` points
+`termio server --host` at the local binaries. This exercises the real orchestration in
 `remote.rs` — build the remote command line, capture the created session id
 over the "transport", attach over a PTY, and prove the session survives the
 "ssh" process going away (the remote analogue of detach ≠ kill) — end to end.
@@ -24,6 +24,17 @@ import tempfile
 import time
 
 BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "./target/debug/termiod")
+
+# `termiod` answers only `serve`; every other verb is the client's, and the
+# daemon-plane ones are spelled `termio server <verb>`.
+CLIENT = os.path.join(os.path.dirname(os.path.abspath(BIN)), "termio")
+SERVER_VERBS = {"create", "list", "kill", "send", "attach", "watch", "status",
+                "stop", "handoff", "deploy", "logs", "service"}
+
+
+def client_argv(*args):
+    head = ["server"] if args and args[0] in SERVER_VERBS else []
+    return [CLIENT, *head, *args]
 WORK = tempfile.mkdtemp(prefix="termiod-remote-")
 FAKE = os.path.join(WORK, "bin")
 os.makedirs(FAKE)
@@ -51,13 +62,13 @@ def check(name, ok):
 
 
 def run(*args):
-    return subprocess.run([BIN, *args], env=ENV, capture_output=True, text=True)
+    return subprocess.run(client_argv(*args), env=ENV, capture_output=True, text=True)
 
 
 def sessions():
     # Query the daemon directly (local list) to inspect state.
     out = subprocess.run(
-        [BIN, "list", "--json"], env=ENV, capture_output=True, text=True
+        client_argv("list", "--json"), env=ENV, capture_output=True, text=True
     ).stdout.strip()
     try:
         return json.loads(out)
@@ -68,7 +79,7 @@ def sessions():
 def spawn_pty(args):
     master, slave = pty.openpty()
     p = subprocess.Popen(
-        [BIN, *args], stdin=slave, stdout=slave, stderr=slave, env=ENV, close_fds=True
+        client_argv(*args), stdin=slave, stdout=slave, stderr=slave, env=ENV, close_fds=True
     )
     os.close(slave)
     return p, master
@@ -103,20 +114,17 @@ def cleanup():
 def main():
     print("\n# remote over a fake-ssh transport (#171/#172 orchestration)")
 
-    # 1. remote list on an empty host auto-starts the remote daemon.
-    r = run("remote", "list", "localhost")
-    check("remote list works over ssh transport", r.returncode == 0)
+    # 1. Listing an empty host auto-starts the remote daemon.
+    r = run("server", "--host", "localhost", "ls")
+    check("server --host ls works over ssh transport", r.returncode == 0)
 
-    # 2. remote open: ensure(no-deploy) → create durable session → attach.
-    p, m = spawn_pty(
-        ["remote", "open", "localhost", "--no-deploy", "--agent", "shell", "--name", "rmt"]
-    )
-    read_until(m, "attaching")
+    # 2. Attach creates the durable session on the host and attaches to it.
+    p, m = spawn_pty(["server", "-H", "localhost", "attach", "rmt"])
     read_until(m, "attached to rmt")
     os.write(m, b"PS1=P>; echo REMOTE_MARKER\r")
-    check("remote open: session runs and echoes", b"REMOTE_MARKER" in read_until(m, "REMOTE_MARKER"))
+    check("server --host attach: session runs and echoes", b"REMOTE_MARKER" in read_until(m, "REMOTE_MARKER"))
     listed = [s for s in sessions() if s["name"] == "rmt"]
-    check("remote open: durable session registered", len(listed) == 1)
+    check("server --host attach: durable session registered", len(listed) == 1)
     pid_before = listed[0]["pid"] if listed else None
 
     # 3. Detach the transport (Ctrl-\) — the remote analogue of the ssh link
@@ -133,19 +141,19 @@ def main():
     survivors = [s for s in sessions() if s["name"] == "rmt"]
     check("session survives ssh disconnect (detach ≠ kill)", len(survivors) == 1)
 
-    # 4. remote attach reconnects to the same process.
-    p2, m2 = spawn_pty(["remote", "attach", "localhost", "rmt"])
+    # 4. Attaching again reconnects to the same process.
+    p2, m2 = spawn_pty(["server", "attach", "rmt", "--host", "localhost"])
     read_until(m2, "attached to rmt")
     os.write(m2, b"echo REMOTE_AGAIN\r")
-    check("remote attach: reconnect works", b"REMOTE_AGAIN" in read_until(m2, "REMOTE_AGAIN"))
+    check("server --host attach: reconnect works", b"REMOTE_AGAIN" in read_until(m2, "REMOTE_AGAIN"))
     same = [s for s in sessions() if s["name"] == "rmt"]
-    check("remote attach: same process (pid unchanged)", bool(same) and same[0]["pid"] == pid_before)
+    check("server --host attach: same process (pid unchanged)", bool(same) and same[0]["pid"] == pid_before)
     os.write(m2, b"\x1c")
     p2.wait(timeout=5)
 
-    # 5. remote list shows it in JSON.
-    r = run("remote", "list", "localhost", "--json")
-    check("remote list --json shows the remote session", '"name": "rmt"' in r.stdout)
+    # 5. The host's own listing shows it in JSON.
+    r = run("server", "-H", "localhost", "ls", "--json")
+    check("server --host ls --json shows the remote session", '"name": "rmt"' in r.stdout)
 
     print()
     if FAILURES:

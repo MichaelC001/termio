@@ -26,7 +26,7 @@ extension Termiod {
 /// one.
 ///
 /// This used to hold a private control channel open, because opening one per
-/// keystroke means `ssh <host> termiod stdio` and a whole SSH round trip on
+/// keystroke means `ssh <host> termio stdio` and a whole SSH round trip on
 /// every `/` the user types. That reasoning was right and is now general:
 /// `ControlPool` holds one channel per device for the tree, the file reader, the
 /// search and this, so a picker opened over a checkout that is already on screen

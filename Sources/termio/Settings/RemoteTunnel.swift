@@ -192,7 +192,7 @@ enum RemoteTunnelProvider: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// The Linux architectures we ship tunnel binaries for, as `uname -m` reports
-/// them. The same two `termiod remote deploy` already cross-compiles for.
+/// them. The same two `termio server --host … deploy` already cross-compiles for.
 enum RemoteArchitecture: String, Sendable {
     case arm64
     case amd64
@@ -283,7 +283,7 @@ extension RemoteTunnelProvider {
 /// looking for it. `systemctl --user restart` addresses a unit, not a string.
 ///
 /// Only the tunnel is written this way. The daemon's unit belongs to
-/// `termiod service install`: this file once wrote its own `termiod.service`
+/// `termio server service install`: this file once wrote its own `termiod.service`
 /// too, and two writers of one unit name with opposite restart policies left a
 /// box restarting a daemon every three seconds, forever, against the one a
 /// client had already autostarted.
@@ -378,7 +378,7 @@ enum RemoteTunnelService {
     }
 
     static let tunnelUnit = "termio-tunnel.service"
-    /// The unit `termiod service install` writes on the release channel
+    /// The unit `termio server service install` writes on the release channel
     /// (`service.rs`, `unit_name_for`). Named here only to stop it, to reload
     /// it, and to place the drop-in beside it — never to write it. The remote
     /// daemon is always the release build: nothing this app runs over SSH sets
@@ -420,7 +420,7 @@ enum RemoteTunnelService {
             throw Failure(message: localized("\(name) isn’t installed on \(alias), and Termio doesn’t ship a build of it. Install it there, then try again."))
         }
         // Downloaded beside the target and renamed over it — atomic, and safe to
-        // repeat, the same shape `termiod remote deploy` uses.
+        // repeat, the same shape `termio server --host … deploy` uses.
         let install = """
             mkdir -p \(RemoteTunnelPaths.binaryDirectory) && \
             curl -fsSL -o \(RemoteTunnelPaths.binaryDirectory)/\(name).new \(RemoteShell.quoted(url)) && \
@@ -574,7 +574,7 @@ extension RemoteTunnelService {
     /// to `systemd --user`, so the listener exists now and comes back after a
     /// crash, a logout and a reboot.
     ///
-    /// The unit is the daemon's own — `termiod service install` writes it,
+    /// The unit is the daemon's own — `termio server service install` writes it,
     /// with an absolute `ExecStart`, `Restart=on-failure`, and nothing about
     /// WSS on its command line. The bind and the origin go in a drop-in beside
     /// it, which is the durable place for them: `wss.bind` and `wss.origin`
@@ -590,7 +590,7 @@ extension RemoteTunnelService {
         try await retireHandWrittenUnit(on: alias)
         try await installListenerDropIn(on: alias, origin: origin, port: port)
 
-        // `termiod stop`, never `pkill`: the daemon is found by the credential
+        // `termio server stop`, never `pkill`: the daemon is found by the credential
         // on its socket, so this stops the one actually serving this user and
         // cannot stop anything else — including the ssh wrapper running the
         // command, which is what an unanchored pattern match reaches.
@@ -599,10 +599,10 @@ extension RemoteTunnelService {
         // owns holds the socket.
         _ = await RemoteShell.run(
             alias: alias,
-            command: "\(Termiod.remoteBinary()) stop --force > /dev/null 2>&1 || true")
+            command: "\(Termiod.remoteClient()) server stop --force > /dev/null 2>&1 || true")
 
         let installed = await RemoteShell.run(
-            alias: alias, command: "\(Termiod.remoteBinary()) service install")
+            alias: alias, command: "\(Termiod.remoteClient()) server service install")
         guard installed.succeeded else {
             throw Failure(message: localized("Couldn’t put termiod on \(alias) under systemd.\n\(installed.failure)"))
         }
@@ -631,7 +631,7 @@ extension RemoteTunnelService {
     /// that is running the daemon ends what the caller already agreed to end.
     ///
     /// `--wss` on the unit's own command line is the mark: the unit
-    /// `termiod service install` writes never carries it.
+    /// `termio server service install` writes never carries it.
     private static func retireHandWrittenUnit(on alias: String) async throws {
         let path = "\(RemoteTunnelPaths.unitDirectory)/\(daemonUnit)"
         let retired = await RemoteShell.run(
@@ -674,7 +674,7 @@ extension RemoteTunnelService {
 
     /// Writes the drop-in and reloads before anything starts the unit. The
     /// reload is here rather than left to `service install`: with
-    /// `Restart=on-failure` the daemon `termiod stop` ends can be restarted by
+    /// `Restart=on-failure` the daemon `termio server stop` ends can be restarted by
     /// systemd before the install runs, and a start that happened between the
     /// write and a reload would run without the listener.
     private static func installListenerDropIn(
@@ -724,7 +724,7 @@ extension RemoteTunnelService {
     /// Dials the published address the way the iPhone will, and returns the
     /// `host_id` the daemon answers with.
     ///
-    /// This exists because a successful `termiod pair` proves nothing about
+    /// This exists because a successful `termio pair` proves nothing about
     /// reachability: `pair` reads the token and the origin off disk and never
     /// contacts the daemon, let alone the tunnel in front of it. A QR minted
     /// from it can scan perfectly and then 403, and the user finds out on the

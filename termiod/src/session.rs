@@ -110,7 +110,7 @@ pub enum SessionMsg {
         cols: u16,
         rendering: bool,
     },
-    /// `termiod send` — inject input without attaching. Always applied.
+    /// `termio server send` — inject input without attaching. Always applied.
     Inject {
         data: Vec<u8>,
     },
@@ -1654,7 +1654,7 @@ fn release_buffered(backlog: &ClientBacklog, data: VecDeque<Metered>) {
 /// the client's `CreateSpec.env` so a client cannot spoof either value.
 ///
 /// A hook installed for an agent on this machine reports by running
-/// `termiod set-status`, which needs two things the child would otherwise have
+/// `termio agent report`, which needs two things the child would otherwise have
 /// to guess:
 ///
 /// - **which session it is.** `Pty::spawn` sets `TERMIOD_SESSION=1`, which says
@@ -3079,7 +3079,7 @@ mod tests {
         Bytes::from(vec![b'x'; len])
     }
 
-    /// A hook reports with `termiod set-status --id "$TERMIOD_SESSION_ID"`, so a
+    /// A hook reports with `termio agent report --id "$TERMIOD_SESSION_ID"`, so a
     /// session that cannot name itself cannot report at all.
     #[test]
     fn session_env_carries_the_session_id() {

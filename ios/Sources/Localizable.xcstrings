@@ -1231,12 +1231,12 @@
         }
       }
     },
-    "Scan the QR code in Settings ▸ Mobile on a Mac, or the one `termiod pair --qr` prints on a machine running the server. Re-scanning a paired device updates its address.": {
+    "Scan the QR code in Settings ▸ Mobile on a Mac, or the one `termio pair --qr` prints on a machine running the server. Re-scanning a paired device updates its address.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 上打开“设置 ▸ 移动设备”扫描其二维码，或扫描运行服务器的机器上 `termiod pair --qr` 打印出的二维码。对已配对的设备重新扫描会更新其地址。"
+            "value": "在 Mac 上打开“设置 ▸ 移动设备”扫描其二维码，或扫描运行服务器的机器上 `termio pair --qr` 打印出的二维码。对已配对的设备重新扫描会更新其地址。"
           }
         }
       }
@@ -1491,12 +1491,12 @@
         }
       }
     },
-    "The address your Mac is serving, or the link `termiod pair` prints.": {
+    "The address your Mac is serving, or the link `termio pair` prints.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "你的 Mac 正在提供服务的地址，或 `termiod pair` 打印出的链接。"
+            "value": "你的 Mac 正在提供服务的地址，或 `termio pair` 打印出的链接。"
           }
         }
       }

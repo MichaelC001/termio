@@ -96,8 +96,8 @@ fn session_declaration() -> &'static str {
 }
 
 /// The body of a plugin's `report`. A plugin loaded outside a termiod session
-/// reports nothing rather than invoking `set-status` with an empty id the daemon
-/// would reject.
+/// reports nothing rather than invoking `agent report`, which would have no
+/// session to report to.
 ///
 /// `conversation`, when the manifest declared a locator, rides along — on both
 /// machines now. Bun's `$` escapes each interpolation into one argv token, so
@@ -107,11 +107,11 @@ fn daemon_report_body(shell: &str, carries_conversation: bool, indent: &str) -> 
     if carries_conversation {
         body.push_str(&format!(
             "{indent}if (conversation && roots.has(conversation)) {{\n{indent}  \
-             return {shell}`${{cli}} set-status ${{session}} ${{state}} --conversation ${{conversation}}`.quiet().nothrow();\n{indent}}}\n"
+             return {shell}`${{cli}} agent report ${{state}} --conversation ${{conversation}}`.quiet().nothrow();\n{indent}}}\n"
         ));
     }
     body.push_str(&format!(
-        "{indent}return {shell}`${{cli}} set-status ${{session}} ${{state}}`.quiet().nothrow();"
+        "{indent}return {shell}`${{cli}} agent report ${{state}}`.quiet().nothrow();"
     ));
     body
 }
@@ -325,7 +325,7 @@ fn pi_source(events: &[HookEvent], conversation: Option<&str>, request: &Install
          if (!session) return;\n    \
          const id = context?.sessionManager?.getSessionId?.();\n    \
          const conversation = id && /^[A-Za-z0-9._-]+$/.test(id) ? ` --conversation ${{id}}` : \"\";\n    \
-         pi.exec(\"sh\", [\"-c\", `${{cli}} set-status \"$TERMIOD_SESSION_ID\" ${{state}}${{conversation}} 2>/dev/null || true`]);\n  \
+         pi.exec(\"sh\", [\"-c\", `${{cli}} agent report ${{state}}${{conversation}} 2>/dev/null || true`]);\n  \
          }};\n{listeners}\n}};",
         js(&super::install::shell_quote_path(request.binary()))
     )
@@ -472,9 +472,9 @@ const reporter = () => {
     if (state === "done" && children.has(conversation)) return;
     if (!session) return;
     if (conversation && roots.has(conversation)) {
-      return $`${cli} set-status ${session} ${state} --conversation ${conversation}`.quiet().nothrow();
+      return $`${cli} agent report ${state} --conversation ${conversation}`.quiet().nothrow();
     }
-    return $`${cli} set-status ${session} ${state}`.quiet().nothrow();
+    return $`${cli} agent report ${state}`.quiet().nothrow();
   };
   return { note, forget, report };
 };
@@ -535,7 +535,7 @@ export default (pi) => {
     if (!session) return;
     const id = context?.sessionManager?.getSessionId?.();
     const conversation = id && /^[A-Za-z0-9._-]+$/.test(id) ? ` --conversation ${id}` : "";
-    pi.exec("sh", ["-c", `${cli} set-status "$TERMIOD_SESSION_ID" ${state}${conversation} 2>/dev/null || true`]);
+    pi.exec("sh", ["-c", `${cli} agent report ${state}${conversation} 2>/dev/null || true`]);
   };
   pi.on("session_start", (_event, context) => report("idle", context));
   pi.on("agent_start", (_event, context) => report("working", context));
@@ -555,7 +555,7 @@ export default (amp) => {
   const session = process.env.TERMIOD_SESSION_ID;
   const report = (state) => {
     if (!session) return;
-    return amp.$`${cli} set-status ${session} ${state}`.quiet().nothrow();
+    return amp.$`${cli} agent report ${state}`.quiet().nothrow();
   };
   amp.on("agent.start", () => report("working"));
   amp.on("agent.end", () => report("done"));

@@ -50,11 +50,11 @@ pub async fn connect() -> Result<UnixStream> {
 
 /// Transparent stdio bridge: splice this process's stdin/stdout to the local
 /// daemon socket, byte for byte, understanding no frames of its own. Run as
-/// `ssh <host> termiod stdio`, it puts the *framed protocol itself* on the SSH
+/// `ssh <host> termio stdio`, it puts the *framed protocol itself* on the SSH
 /// pipe — so a native client (Mac app, iOS) speaks the exact same messages to a
 /// remote host that it speaks to a local Unix socket, and the §C.9 "recorded
 /// transcript replays byte-identical over SSH" claim becomes real. This is what
-/// today's `ssh -t host termiod attach` never did (that ran the client on the
+/// today's `ssh -t host termio server attach` never did (that ran the client on the
 /// far end; the frames stopped at the remote socket).
 ///
 /// The daemon auto-starts if it is not already running, exactly like every
@@ -72,7 +72,7 @@ pub async fn stdio() -> Result<()> {
         let _ = socket_write.shutdown().await;
     };
     // The socket closing (the session exited or the daemon went away) ends the
-    // bridge so the remote `ssh … termiod stdio` command returns.
+    // bridge so the remote `ssh … termio stdio` command returns.
     let downstream = async {
         let _ = tokio::io::copy(&mut socket_read, &mut output).await;
         let _ = output.flush().await;
@@ -114,13 +114,13 @@ fn denial_hint(errno: Option<i32>) -> &'static str {
 
 fn spawn_daemon() -> Result<()> {
     // A box whose unit systemd owns gets its daemon back from systemd. After a
-    // clean `termiod stop` the unit is merely inactive, and a `setsid` fork
+    // clean `termio server stop` the unit is merely inactive, and a `setsid` fork
     // here would take the socket the unit binds next — leaving the unit
     // failing at every later start and the daemon unsupervised again.
     if crate::service::systemd_unit_owns_daemon() {
         return crate::service::start_systemd_unit();
     }
-    let exe = std::env::current_exe().context("locating termiod binary")?;
+    let exe = crate::lifecycle::paired_daemon().context("locating termiod binary")?;
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("serve");
@@ -523,7 +523,7 @@ type LinkRead = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
 type LinkWrite = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
 
 /// Open an attach channel to a **remote** host: the framed protocol itself
-/// rides `ssh <host> termiod stdio`, so this process is a full protocol client
+/// rides `ssh <host> termio stdio`, so this process is a full protocol client
 /// of the remote daemon — not a terminal watching a remote CLI's tty. That
 /// distinction is what makes the parsed plane (`S` + `G`) reachable over the
 /// network at all.
@@ -537,7 +537,7 @@ async fn open_ssh_attach_link(
         cmd.arg(arg);
     }
     cmd.arg(host)
-        .arg(format!("{} stdio", crate::remote::remote_bin()))
+        .arg(format!("{} stdio", crate::remote::remote_control_bin()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
@@ -580,7 +580,7 @@ async fn open_ssh_attach_link(
         Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
             bail!("{host}: protocol negotiation failed ({code:?}); host supports {supported:?}")
         }
-        _ => bail!("{host}: no protocol reply — is termiod deployed there? try `termiod remote deploy {host}`"),
+        _ => bail!("{host}: no protocol reply — is termiod deployed there? try `termio server -H {host} deploy`"),
     };
     Ok((rd, wr, child, client_id))
 }
