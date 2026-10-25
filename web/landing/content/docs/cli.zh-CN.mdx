@@ -3,7 +3,7 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: dfbc007c0393149fe49c2414d1090b3deeb8e79800af007cda2110114eb5a43a
+  source_hash: 3c3e3cd84582842797cc0d65558b3754451e6d16f943b8ca92cfdbc6c39c9f53
   generated_at: 2026-10-25
 ---
 
@@ -172,14 +172,9 @@ termio session spawn "summarize the failing CI job" --wait --timeout 120000
 每个会话都运行在 [Termio server](/docs/server) 上，应用只是看到它的一种方式。所以
 `termio session` 完全不依赖应用：
 
-- 应用在运行时，命令作用于你所在项目的会话，如上文所述。当应用拒绝时——它没有这个会话、你
-  不在任何项目里，或者会话控制已关闭——不是应用创建的会话（比如用 `create` 建的）交给
-  Termio server。应用创建的会话留在它自己的项目里。
+- 应用在运行时，命令作用于你所在项目的会话，如上文所述。项目范围和会话控制开关照常生效。
 - 没有应用在运行时，所有命令都交给 Termio server。`list` 列出这台设备上的全部会话，`run`
-  在那里的一个新会话里运行命令，命令结束后会话里的 shell 仍然保留。
-
-应用在运行时，`send` 会把不是链接或 id 的第一个词当成提示文本，并用它启动一个 Agent，所以
-这时请用 id 来指定 server 上的会话。
+  在那里的一个新会话里运行命令，命令结束后会话里的 shell 仍然保留，会话名也可以当作地址。
 
 即使应用在运行，`list --all` 也会列出这台设备上的全部会话。`create` 和 `attach` 总是作用于
 server：
@@ -244,7 +239,7 @@ JSON 回复都带 `"schema_version": 1`；在同一个版本内字段只会*新�
 
 稳定的错误码：`disabled`、`no_scope`、`bad_op`、`bad_request`、`no_text`、`no_target`、
 `not_found`、`ambiguous`、`wrong_agent`、`bad_agent`、`no_agent`、`start_failed`、
-`not_live`、`needs_app`（只有应用才提供的参数，用在了应用够不着的会话上）、`daemon`（Termio
+`not_live`、`needs_app`（只有应用才提供的参数，却在没有应用运行时使用）、`daemon`（Termio
 server 没有应答）——以及仅在 `--wait` 上出现的 `prompt_stalled`、`session_closed` 和 `agent_gone`。
 
 成功回复，按动词分（下表为简洁起见省略 `schema_version` 和 `"ok": true`）：
@@ -258,8 +253,9 @@ server 没有应答）——以及仅在 `--wait` 上出现的 `prompt_stalled`�
 | `send`/`spawn`/`run` 加 `--wait` | `target`、`title`、`status`、`timed_out`、`created?`、`transcript?`、`cursor?`、`cursor_end?`、`prompt?` |
 | `close` | `closed`、`title` |
 | `focus` | `focused` |
-| `list --all` | `sessions: [{id, name, cwd, command, pid, status, …}]`——Termio server 自己的行 |
-| `create`，以及由 Termio server 回答的 `send` 或 `close` | `id` |
+| `list --all`，以及没有应用时的 `list` | `sessions: [{id, name, cwd, command, pid, status, …}]`——Termio server 自己的行 |
+| `create` | `id` |
+| 没有应用时的 `run`、`send`、`close` | 同上，`target` 为会话的 id |
 
 两个等待型动词共用同一种回复结构（`--wait` 在任何地方都是同一个意思）：最终的 `status`，以及
 承载回应的对话记录行号区间 `cursor`..`cursor_end`。`prompt` 只在 `needs-you` 结果里出现——

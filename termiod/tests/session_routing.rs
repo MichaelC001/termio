@@ -3,7 +3,10 @@
 //! host's own termio.
 //!
 //! Each test gets its own `HOME`, so no app socket exists, and its own daemon
-//! directory, so the serve lock beside the socket is never shared.
+//! directory, so the serve lock beside the socket is never shared. Every
+//! client runs on its own channel, `routingtest`, whose app is never a running
+//! process — a real Termio on this Mac cannot make a fake app socket look
+//! alive.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -60,10 +63,16 @@ fn termio(daemon: &Daemon, args: &[&str]) -> Output {
         .env("TERMIOD_SOCK", &daemon.socket)
         .env_remove("TERMIO_SESSION")
         .env_remove("TERMIO_CHANNEL")
-        .env_remove("TERMIO_SESSION_CHANNEL")
+        .env("TERMIO_SESSION_CHANNEL", CHANNEL)
         .stdin(Stdio::null())
         .output()
         .expect("run termio")
+}
+
+const CHANNEL: &str = "routingtest";
+
+fn app_directory(home: &Path) -> PathBuf {
+    home.join("Library/Application Support").join(format!("termio-{CHANNEL}"))
 }
 
 fn stdout(output: &Output) -> String {
@@ -211,7 +220,7 @@ fn host_runs_the_same_words_on_the_host() {
 fn fake_app(home: &Path, no_scope: bool) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let directory = home.join("Library/Application Support/termio");
+    let directory = app_directory(home);
     std::fs::create_dir_all(&directory).expect("the app's support directory");
     let listener =
         std::os::unix::net::UnixListener::bind(directory.join("app.sock")).expect("bind app.sock");
@@ -255,11 +264,11 @@ fn fake_app(home: &Path, no_scope: bool) -> std::sync::Arc<std::sync::atomic::At
     requests
 }
 
-/// With the app running, the app answers first. A session it does not know
-/// goes to termiod only after the app says so, and a bare name in `send` stays
-/// prompt text for the app, as it always was.
+/// With the app running, the app answers every session verb, and its project
+/// scope holds: termiod is not asked behind its back, even for a session only
+/// termiod holds. `create`, `attach` and `ls --all` are termiod's by name.
 #[test]
-fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
+fn with_the_app_the_app_answers() {
     use std::sync::atomic::Ordering;
     let daemon = start_daemon("app");
     let created = termio(&daemon, &["session", "create", "--name", "headless", "--json", "--", "/bin/cat"]);
@@ -268,61 +277,39 @@ fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
     let id = reply["id"].as_str().expect("an id").to_string();
     let app = fake_app(&daemon.home, false);
 
-    let sent = termio(&daemon, &["session", "send", &id, "to-the-daemon"]);
-    assert!(sent.status.success(), "send failed: {sent:?}");
-    assert_eq!(app.load(Ordering::SeqCst), 1, "the app was not asked first");
-    assert!(screen_shows(&daemon, &id, "to-the-daemon"));
+    let sent = termio(&daemon, &["session", "send", &id, "not-for-termiod"]);
+    assert!(!sent.status.success(), "the app's not-found must stand: {sent:?}");
+    assert_eq!(app.load(Ordering::SeqCst), 1);
+    let read = termio(&daemon, &["session", "ls", "--all"]);
+    assert!(read.status.success() && stdout(&read).contains("headless"), "{read:?}");
+    assert_eq!(app.load(Ordering::SeqCst), 1, "`ls --all` asked the app");
+
+    let closed = termio(&daemon, &["session", "close", "headless"]);
+    assert!(!closed.status.success(), "the app's not-found must stand: {closed:?}");
+    let listed = termio(&daemon, &["session", "ls", "--all"]);
+    assert!(stdout(&listed).contains("headless"), "termiod closed it behind the app: {listed:?}");
 
     let sent = termio(&daemon, &["session", "send", "8de0b387", "to-the-app"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
-    let after_app_send = app.load(Ordering::SeqCst);
 
     // A name is prompt text when the app runs: it starts an agent there.
+    let before = app.load(Ordering::SeqCst);
     let spawned = termio(&daemon, &["session", "send", "headless", "the-prompt"]);
     assert!(spawned.status.success(), "send failed: {spawned:?}");
-    assert_eq!(app.load(Ordering::SeqCst), after_app_send + 1);
-    let read = termio(&daemon, &["session", "read", &id]);
-    assert!(!stdout(&read).contains("the-prompt"), "a prompt reached termiod: {read:?}");
-
-    // A screen that reads like an error is still the app's screen.
-    let read = termio(&daemon, &["session", "read", "8de0b387"]);
-    assert!(read.status.success(), "read failed: {read:?}");
-    assert_eq!(stdout(&read), "error: No session 'x' in this project.\n");
-
-    let wait = termio(&daemon, &["session", "send", &id, "x", "--wait", "--json"]);
-    assert!(!wait.status.success(), "--wait on a termiod-only session must refuse");
-    let refusal: serde_json::Value = serde_json::from_slice(&wait.stdout).expect("a JSON refusal");
-    assert_eq!(refusal["error"], "needs_app");
-
-    let closed = termio(&daemon, &["session", "close", "headless"]);
-    assert!(closed.status.success(), "close failed: {closed:?}");
-    let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
-    let reply: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("ls --json");
-    assert_eq!(reply["sessions"].as_array().map(Vec::len), Some(0), "close left: {reply}");
+    assert_eq!(app.load(Ordering::SeqCst), before + 1);
 }
 
-/// Outside any project the app declines every request. A session the app did
-/// not make is still reachable; one it made, by its UUID name, is not.
+/// Outside any project the app declines everything, and that stands.
 #[test]
-fn outside_a_project_termiod_answers_for_its_own_sessions_only() {
+fn the_app_declining_is_the_answer() {
     let daemon = start_daemon("scope");
     let created = termio(&daemon, &["session", "create", "--name", "headless", "--", "/bin/cat"]);
     assert!(created.status.success(), "create failed: {created:?}");
-    let uuid = "8de0b387-485a-4016-8990-cbcbfff03199";
-    let created = termio(&daemon, &["session", "create", "--name", uuid, "--", "/bin/cat"]);
-    assert!(created.status.success(), "create failed: {created:?}");
     let _app = fake_app(&daemon.home, true);
-
-    let sent = termio(&daemon, &["session", "send", "--json", "termio://session/x"]);
-    assert!(!sent.status.success(), "{sent:?}");
     let closed = termio(&daemon, &["session", "close", "headless"]);
-    assert!(closed.status.success(), "close failed: {closed:?}");
-    assert!(stdout(&closed).starts_with("closed "), "close reply: {closed:?}");
-
-    let refused = termio(&daemon, &["session", "close", uuid]);
-    assert!(!refused.status.success(), "an app session must stay the app's: {refused:?}");
+    assert!(!closed.status.success(), "{closed:?}");
     let listed = termio(&daemon, &["session", "ls", "--all"]);
-    assert!(stdout(&listed).contains(uuid), "the app's session was closed: {listed:?}");
+    assert!(stdout(&listed).contains("headless"), "termiod closed it behind the app: {listed:?}");
 }
 
 /// Every target of `close` gets its attempt, even after one fails.
@@ -342,7 +329,7 @@ fn close_tries_every_target() {
 #[test]
 fn a_socket_file_with_no_listener_is_no_app() {
     let daemon = start_daemon("stale");
-    let directory = daemon.home.join("Library/Application Support/termio");
+    let directory = app_directory(&daemon.home);
     std::fs::create_dir_all(&directory).expect("the app's support directory");
     drop(std::os::unix::net::UnixListener::bind(directory.join("app.sock")).expect("bind"));
     let created = termio(&daemon, &["session", "create", "--name", "left", "--", "/bin/cat"]);
@@ -369,7 +356,7 @@ fn a_failed_lookup_starts_no_daemon() {
             .env("HOME", &home)
             .env("TERMIOD_SOCK", &socket)
             .env_remove("TERMIO_SESSION")
-            .env_remove("TERMIO_SESSION_CHANNEL")
+            .env("TERMIO_SESSION_CHANNEL", CHANNEL)
             .stdin(Stdio::null())
             .output()
             .expect("run termio");

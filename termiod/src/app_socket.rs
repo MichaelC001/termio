@@ -202,34 +202,14 @@ pub fn request_once(
 pub enum Reply {
     /// The app's reply, unprinted.
     Answered(String),
-    /// Nothing listens on the socket: there is no file, or the app that made
-    /// it has quit. The request reached no one, so another owner may act
-    /// instead. Unprinted; `finish` reports it.
+    /// No app: there is no socket file, or the file refused the connection
+    /// and the app is not a running process (it quit and left the file). The
+    /// request reached no one, so another owner may act instead. Unprinted;
+    /// `finish` reports it. A refusal while the app runs is a busy app, whose
+    /// backlog is full, and stays an error.
     NoApp(PathBuf, std::io::ErrorKind),
     /// Any other failure, already reported on stderr.
     Failed,
-}
-
-/// Whether the app declined the request without doing anything: it has no
-/// such session, the caller is in no project it knows, or session control is
-/// off. Another owner may still answer. The text forms are the app's own
-/// wording (`TermioStore+SessionControl.swift`); only `send` and `close` are
-/// matched in text, whose successful replies never start with `error:`.
-pub fn app_declined(reply: &Reply, format: &str) -> bool {
-    let Reply::Answered(reply) = reply else { return false };
-    if format == "json" {
-        ["not_found", "no_scope", "disabled"]
-            .iter()
-            .any(|code| reply.contains(&format!("\"error\":\"{code}\"")))
-    } else {
-        [
-            "error: No session '",
-            "error: Couldn’t tell which project you’re in.",
-            "error: Session control is off.",
-        ]
-        .iter()
-        .any(|prefix| reply.starts_with(prefix))
-    }
 }
 
 /// One request to the app. Failures other than an absent app are reported
@@ -251,12 +231,18 @@ pub fn request_reply(
         Ok(bytes) => bytes,
         // Only a connect fails these ways, so the request reached no one.
         Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
+            if error.kind() == std::io::ErrorKind::NotFound
+                || (error.kind() == std::io::ErrorKind::ConnectionRefused
+                    && !crate::channel::app_is_running(channel)) =>
         {
             return Reply::NoApp(socket, error.kind());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            eprintln!(
+                "termio: the app refused the connection to {} — it is running but busy; try again",
+                socket.display()
+            );
+            return Reply::Failed;
         }
         Err(error) => {
             // A refused connect and a live-but-silent app are different

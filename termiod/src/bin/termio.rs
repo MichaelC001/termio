@@ -1003,9 +1003,9 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
     // same reason — a malformed command should say so, not report that the
     // app is down.
     //
-    // The app answers first. termiod answers when nothing listens on the
-    // app's socket, or when the app says it has no such session: in both cases
-    // the request did nothing, so the termiod half cannot act twice.
+    // The app answers whenever it runs, and its project scope and Session
+    // control switch hold. termiod answers only when there is no app: the
+    // request reached no one, so the termiod half cannot act twice.
     let mut agent = String::new();
     let mut extra = String::new();
     let mut client_timeout = app_socket::client_timeout();
@@ -1068,7 +1068,7 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                     "",
                     "",
                 );
-                let outcome = match on_termiod(&reply, format, target).await {
+                let outcome = match on_termiod(&reply, target).await {
                     Err((code, message)) => {
                         control_error_reply(format, &code, &message);
                         Outcome::Error
@@ -1210,16 +1210,11 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
     };
 
     let format = output.format();
-    // `read`'s text reply is the screen itself, which can say anything,
-    // including what an error says. Asked in JSON, the reply is unambiguous,
-    // and this prints the text the app would have.
-    let reads = matches!(fallback, Fallback::Read { .. });
-    let asked = if reads { "json" } else { format };
     let reply = app_socket::request_reply(
         channel,
         client_timeout,
         operation,
-        asked,
+        format,
         &target,
         &agent,
         &text,
@@ -1231,11 +1226,11 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             daemon_reply(format, termiod::server::list_sessions(output.json, true).await);
         }
         // With no app to show a pane, the command runs in a session on
-        // termiod. Like the app's `run`, it types into a shell that stays:
-        // the line ends by replacing itself with an interactive login shell,
-        // so the output stays on the screen for `read` after the command
-        // exits. `exec "$SHELL" -l` reads the same in sh, bash, zsh, fish and
-        // csh.
+        // termiod. Like the app's `run`, it leaves a shell behind: the line
+        // ends by replacing itself with the login shell, so the output stays
+        // on the screen for `read` after the command exits. The shell is the
+        // passwd one the daemon runs the line in, quoted the way sh, bash,
+        // zsh, fish and csh all read.
         Fallback::Run { line, app_only } if no_app => {
             if app_only {
                 refuse(format, "needs_app", "--wait, --direction and --ratio need the Termio app, and it is not running");
@@ -1248,8 +1243,9 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 json: output.json,
                 argv: Vec::new(),
             };
-            let line = format!("{line}\nexec \"$SHELL\" -l");
-            daemon_reply(format, termiod::server::create_session(create, Some(line)).await);
+            let shell = termiod::agent::machine::login_shell();
+            let line = format!("{line}\nexec {} -l", termiod::lifecycle::shell_quote(&shell));
+            daemon_reply(format, termiod::server::run_session(create, line).await);
         }
         // An unaddressed send starts an agent, which only the app can do.
         Fallback::Send { first, .. } if target.is_empty() && no_app => refuse(
@@ -1258,10 +1254,10 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             &format!("no session matches '{first}', and starting an agent needs the Termio app, which is not running"),
         ),
         Fallback::Send { enter, app_only, .. } if !target.is_empty() => {
-            match on_termiod(&reply, format, &target).await {
+            match on_termiod(&reply, &target).await {
                 Ok(Some(info)) => {
                     if app_only {
-                        refuse(format, "needs_app", "--key and --wait need the Termio app to know the session, and it does not");
+                        refuse(format, "needs_app", "--key and --wait need the Termio app, and it is not running");
                     }
                     daemon_reply(
                         format,
@@ -1272,7 +1268,7 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 Err((code, message)) => refuse(format, &code, &message),
             }
         }
-        Fallback::Read { lines } => match on_termiod(&reply, asked, &target).await {
+        Fallback::Read { lines } => match on_termiod(&reply, &target).await {
             Ok(Some(info)) => {
                 std::process::exit(serve_daemon_read(channel, &info, lines, format).await)
             }
@@ -1281,36 +1277,10 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
         },
         _ => {}
     }
-    if reads && format != "json" {
-        if let app_socket::Reply::Answered(json) = &reply {
-            std::process::exit(print_read_as_text(json));
-        }
-    }
     exit_outcome(app_socket::finish(reply, format, &extra));
 }
 
-/// The app's text reply to `read`, from its JSON one: the screen, or
-/// `(blank screen)`, or `error: <message>`.
-fn print_read_as_text(json: &str) -> i32 {
-    let reply: serde_json::Value = match serde_json::from_str(json) {
-        Ok(reply) => reply,
-        Err(_) => {
-            println!("error: the app's reply was not JSON");
-            return 1;
-        }
-    };
-    if reply["ok"] == true {
-        let screen = reply["screen"].as_str().unwrap_or("");
-        println!("{}", if screen.is_empty() { "(blank screen)" } else { screen });
-        0
-    } else {
-        println!("error: {}", reply["message"].as_str().unwrap_or("the app refused"));
-        1
-    }
-}
-
-/// What a verb does on termiod when no app answers, or when the app answers
-/// that it has no such session.
+/// What a verb does on termiod when there is no app.
 enum Fallback {
     None,
     List,
@@ -1319,33 +1289,20 @@ enum Fallback {
     Read { lines: Option<u64> },
 }
 
-/// The termiod session to act on instead of the app, after `reply`, or the
-/// error to report as `(code, message)`.
-///
-/// With no app, it is whatever session the target names, and naming none is
-/// not found. When the app declined (no such session, no project, control
-/// off), it is only a session the app did not make: the app names its own by
-/// UUID and scopes them to a project, and falling through to termiod must not
-/// reach around that scope. `Ok(None)` leaves the app's reply to be printed.
+/// The termiod session to act on when `reply` found no app, or the error to
+/// report as `(code, message)`. `Ok(None)` when there is an app: its reply is
+/// the answer.
 async fn on_termiod(
     reply: &app_socket::Reply,
-    format: &str,
     target: &str,
 ) -> Result<Option<termiod::protocol::SessionInfo>, (String, String)> {
-    let no_app = matches!(reply, app_socket::Reply::NoApp(..));
-    if !no_app && !app_socket::app_declined(reply, format) {
+    if !matches!(reply, app_socket::Reply::NoApp(..)) {
         return Ok(None);
     }
-    let found = termiod::server::resolve_running(target, termiod::server::LOOKUP_TIMEOUT)
-        .await
-        .map_err(|error| ("daemon".to_string(), format!("{error:#}")))?;
-    match found {
-        Some(info) if no_app || !uuid_shaped(&info.name.to_lowercase()) => Ok(Some(info)),
-        None if no_app => Err((
-            "not_found".to_string(),
-            format!("no session matches '{target}'"),
-        )),
-        _ => Ok(None),
+    match termiod::server::resolve_running(target, termiod::server::LOOKUP_TIMEOUT).await {
+        Ok(Some(info)) => Ok(Some(info)),
+        Ok(None) => Err(("not_found".to_string(), format!("no session matches '{target}'"))),
+        Err(error) => Err(("daemon".to_string(), format!("{error:#}"))),
     }
 }
 
@@ -1382,16 +1339,16 @@ fn push(extra: &mut String, fragment: &str) {
     extra.push_str(fragment);
 }
 
-/// Whether the app answers on its control socket. The file alone is not
-/// enough: the app leaves it behind when it quits. A refusal from the OS is
-/// not "no app" — the app request reports that one with its own advice.
+/// Whether there is an app, by the same rule a request uses: a socket file
+/// is an app unless nothing listens there and the app is not running.
 fn app_running(channel: &Channel) -> bool {
     match std::os::unix::net::UnixStream::connect(app_socket::socket_path(channel)) {
         Ok(_) => true,
-        Err(error) => !matches!(
-            error.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-        ),
+        Err(error) => match error.kind() {
+            std::io::ErrorKind::NotFound => false,
+            std::io::ErrorKind::ConnectionRefused => channel::app_is_running(channel),
+            _ => true,
+        },
     }
 }
 
@@ -1733,9 +1690,9 @@ const SESSION_HELP: &str = "\
 List, start, drive and close sessions.
 
 With the Termio app running, these commands act on the sessions of the
-project you run them in, and a session the app does not know goes to this
-machine's termiod. With no app running, they all go to termiod.
-`termio -H <host> session …` acts on another machine's.
+project you run them in. With no app running, they act on this machine's
+termiod. `create`, `attach` and `ls --all` always act on termiod.
+`termio -H <host> session …` acts on another machine.
 
 A SESSION is a termio://session/<id> link, an id, an id prefix of 8 or more
 characters, or a name. `ls` and a `spawn` reply print them. With the app

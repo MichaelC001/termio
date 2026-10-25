@@ -520,7 +520,13 @@ pub async fn list_sessions(json: bool, contract: bool) -> Result<()> {
     for s in sessions {
         println!(
             "{:<10} {:<14} {:>6} {:>7} {:>3}x{:<3} {}",
-            s.id, s.name, s.pid, s.attached_clients, s.rows, s.cols, s.command
+            s.id,
+            s.name,
+            s.pid,
+            s.attached_clients,
+            s.rows,
+            s.cols,
+            s.command.replace('\n', "; ")
         );
     }
     Ok(())
@@ -545,6 +551,34 @@ pub async fn create_session(args: CreateArgs, command: Option<String>) -> Result
         println!("{}", serde_json::json!({ "ok": true, "schema_version": 1, "id": id }));
     } else {
         println!("{id}");
+    }
+    Ok(())
+}
+
+/// `termio session run` with no app: `create_session` for a shell line,
+/// replying in the shape of the app's `run` reply.
+pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
+    let (rows, cols) = client::term_size();
+    let json = args.json;
+    let spec = CreateSpec {
+        name: args.name,
+        cwd: args.cwd,
+        argv: Vec::new(),
+        command: Some(line),
+        env: Vec::new(),
+        rows,
+        cols,
+        workstream: None,
+    };
+    let id = client::create(spec).await?;
+    if json {
+        let reply = serde_json::json!({
+            "ok": true, "schema_version": 1, "id": id, "target": id, "title": id, "created": true,
+        });
+        println!("{reply}");
+    } else {
+        println!("started {id} — command running; use this address for follow-ups");
+        println!("  (read its output with `termio session read {id}`)");
     }
     Ok(())
 }

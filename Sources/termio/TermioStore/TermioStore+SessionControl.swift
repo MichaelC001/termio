@@ -1208,10 +1208,6 @@ extension TermioStore {
         return Data((text.hasSuffix("\n") ? text : text + "\n").utf8)
     }
 
-    /// The Rust client keys off three of these in text mode — the openings of
-    /// the `not_found`, `no_scope` and `disabled` messages — to hand a session
-    /// the app does not know to termiod (`app_socket::app_declined`). Change
-    /// those openings in both places.
     func controlError(_ request: ControlRequest, _ code: String, _ message: String) -> Data {
         control(request, ok: false, text: "error: \(message)", json: ["error": code, "message": message])
     }

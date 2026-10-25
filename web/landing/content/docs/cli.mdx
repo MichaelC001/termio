@@ -210,17 +210,11 @@ Every session runs on a [Termio server](/docs/server), and the app is only one
 way to see it. So `termio session` works with no app at all:
 
 - With the app running, a command acts on the sessions of your project, as
-  above. When the app declines — it has no such session, you are in no
-  project, or Session control is off — a session the app did not make, such as
-  one from `create`, goes to the Termio server. A session the app made stays
-  in its own project.
+  above. The project scope and the Session control switch hold.
 - With no app running, every command goes to the Termio server. `list` shows
-  every session on the machine, and `run` starts its command in a new session
-  there, under a shell that stays after the command exits.
-
-With the app running, `send` reads a first word that is not a link or id as
-prompt text and starts an agent with it, so address a server session by its id
-there.
+  every session on the machine, `run` starts its command in a new session there
+  under a shell that stays after the command exits, and a session’s name works
+  as its address.
 
 `list --all` shows every session on the machine even when the app is running.
 `create` and `attach` always act on the server:
@@ -293,7 +287,7 @@ Every error, on any verb, has one shape — and the exit code is nonzero:
 The stable codes: `disabled`, `no_scope`, `bad_op`, `bad_request`, `no_text`,
 `no_target`, `not_found`, `ambiguous`, `wrong_agent`, `bad_agent`, `no_agent`,
 `start_failed`, `not_live`, `needs_app` (a flag that only the app serves, used
-on a session the app cannot reach), and `daemon` (the Termio server failed to
+with no app running), and `daemon` (the Termio server failed to
 answer) — plus, on `--wait` only, `prompt_stalled`, `session_closed`, and
 `agent_gone`.
 
@@ -309,8 +303,9 @@ brevity):
 | `send`/`spawn`/`run` `--wait` | `target`, `title`, `status`, `timed_out`, `created?`, `transcript?`, `cursor?`, `cursor_end?`, `prompt?` |
 | `close` | `closed`, `title` |
 | `focus` | `focused` |
-| `list --all` | `sessions: [{id, name, cwd, command, pid, status, …}]` — the Termio server’s own rows |
-| `create`, and `send` or `close` answered by the Termio server | `id` |
+| `list --all`, and `list` with no app | `sessions: [{id, name, cwd, command, pid, status, …}]` — the Termio server’s own rows |
+| `create` | `id` |
+| `run`, `send`, `close` with no app | as above, with the session’s id as `target` |
 
 The two wait verbs share one reply shape (`--wait` means the same thing
 everywhere): the final `status`, and the transcript line range
