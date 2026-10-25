@@ -11,7 +11,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use termiod::protocol::CreateSpec;
-use termiod::{agent, client, daemon, handoff, lifecycle, log, protocol, remote, service, wss};
+use termiod::{
+    agent, client, daemon, handoff, lifecycle, log, protocol, remote, service, tailnet, wss,
+};
 
 #[derive(Parser)]
 #[command(
@@ -347,6 +349,43 @@ enum Cmd {
         #[command(subcommand)]
         cmd: service::ServiceCmd,
     },
+
+    /// Put this box on your tailnet as a device of its own, with Tailscale
+    /// built in, so paired Macs and iPhones reach it with no Tailscale install
+    /// here.
+    Tailscale {
+        #[command(subcommand)]
+        cmd: TailscaleCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum TailscaleCmd {
+    /// Join the tailnet, printing a sign-in link the first time.
+    ///
+    /// Only the Tailscale account that signs in gets in, and each client still
+    /// needs the pairing token. The setting survives restarts and reboots.
+    On {
+        /// The device name on the tailnet (default: termio).
+        #[arg(long, value_name = "NAME")]
+        hostname: Option<String>,
+        /// Sign in with a one-time auth key from this file, or `-` for stdin,
+        /// instead of a browser.
+        #[arg(long, value_name = "FILE")]
+        auth_key_file: Option<std::path::PathBuf>,
+        /// Return at once instead of waiting for the sign-in.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Leave the tailnet until `on`. This box stays signed in.
+    Off,
+    /// Sign this box out of Tailscale and turn built-in Tailscale off.
+    Logout,
+    /// Show whether this box is on the tailnet, and where clients reach it.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -509,6 +548,24 @@ async fn main() -> Result<()> {
                 lifecycle::run_handoff(json, binary).await
             }
         }
+
+        Cmd::Tailscale { cmd } => match cmd {
+            TailscaleCmd::On {
+                hostname,
+                auth_key_file,
+                no_wait,
+            } => {
+                tailnet::run_on(tailnet::OnOptions {
+                    hostname,
+                    auth_key_file,
+                    no_wait,
+                })
+                .await
+            }
+            TailscaleCmd::Off => tailnet::run_off(),
+            TailscaleCmd::Logout => tailnet::run_logout().await,
+            TailscaleCmd::Status { json } => tailnet::run_status(json),
+        },
 
         Cmd::Pair {
             json,

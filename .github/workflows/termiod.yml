@@ -245,3 +245,26 @@ jobs:
         run: |
           pkill -9 -f "target/debug/[t]ermiod|deps/[t]ermiod-" || true
           python3 tests/cli_read_smoke.py
+
+  # Built-in Tailscale's helper. Only cross builds and vet: it needs a tailnet
+  # to do anything, and termiod's own tests cover the side it talks to.
+  tailnet:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: termiod/tailnet
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: termiod/tailnet/go.mod
+          cache-dependency-path: termiod/tailnet/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        run: go vet ./...
+      - name: Build every shipped target
+        run: |
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath -o /dev/null .
+          done

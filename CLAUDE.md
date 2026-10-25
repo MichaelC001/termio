@@ -41,7 +41,10 @@ is a design regression, not a tradeoff:
    per frame. `grid_diff` is an opt-in bad-network degrade, never the default.
 3. **Never embed SSH or crypto.** System OpenSSH, tailnets, and OS keychains are the
    security team we didn't hire. The user's `~/.ssh/config` is authoritative — read
-   it, never override it.
+   it, never override it. One exception, chosen on purpose: built-in Tailscale.
+   Tailscale's own tsnet library runs in `termio-tailnet` (`termiod/tailnet`), a
+   separate helper process, never linked into termiod or the app. Nothing else
+   brings its own crypto.
 4. **One protocol, versioned and transport-agnostic.** Unix socket, SSH stdio, and
    later QUIC carry the *same* framed messages. No second protocol for the phone.
 5. **No nested window manager in the host.** One PTY per session; panes and layout

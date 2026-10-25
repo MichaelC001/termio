@@ -31,15 +31,17 @@ needs root or a package manager.
 curl -fsSL https://www.termio.sh/install | sh
 ```
 
-It downloads `termiod` and the `termio` CLI for the box's architecture (x86_64
-or aarch64), checks them against the release's checksums, installs them, and
-keeps the daemon running with `systemd --user`. The builds are static, so the
-distribution doesn't matter.
+It downloads `termiod`, the `termio` CLI and `termio-tailnet` for the box's
+architecture (x86_64 or aarch64), checks them against the release's checksums,
+installs them, and keeps the daemon running with `systemd --user`. The builds
+are static, so the distribution doesn't matter.
 
-If the box is signed in to Tailscale and the tailnet has HTTPS on, it also
-publishes the server on your tailnet and prints a pairing link and a QR code.
-Paste the link into **Settings ▸ Remote Hosts ▸ ＋ ▸ Pair with a Device…** on a
-Mac, or scan the code with the iPhone app. No SSH is involved after that.
+Then it puts the server on your tailnet, with Tailscale built in, and prints a
+sign-in link. Sign in with the Tailscale account your Mac and iPhone use. The
+box doesn't need Tailscale installed. Once you've signed in, the installer prints
+a pairing link and a QR code. Paste the link into **Settings ▸ Remote Hosts ▸ ＋
+▸ Pair with a Device…** on a Mac, or scan the code with the iPhone app. No SSH is
+involved after that.
 
 Running it again upgrades in place, and sessions keep running through the
 upgrade. Options go after `sh -s --`:
@@ -48,7 +50,8 @@ upgrade. Options go after `sh -s --`:
 | --- | --- |
 | `--version 0.63.0` | Installs that release instead of the latest. |
 | `--no-service` | Installs the binaries and leaves starting the daemon to you. |
-| `--no-tailscale` | Skips publishing on the tailnet. |
+| `--no-tailscale` | Doesn't join the tailnet. |
+| `--tailscale-auth-key-file FILE` | Joins the tailnet with a one-time [auth key](https://tailscale.com/kb/1085/auth-keys) instead of a browser sign-in. |
 | `--dry-run` | Prints what it would do and changes nothing. |
 
 ### From a Mac, over SSH
@@ -74,6 +77,31 @@ termiod service install    # launchd on macOS, systemd --user on Linux
 Without a service the server lives as long as your login session. With one it
 comes back after a crash and after a reboot, which is what you want on a box you
 only ever reach remotely.
+
+## Built-in Tailscale [#tailscale]
+
+The server can join your tailnet as a device of its own, named `termio`, with
+Tailscale built in. The machine doesn't need Tailscale installed.
+
+```bash
+termiod tailscale on       # prints a sign-in link the first time
+termiod pair --qr          # the pairing link and QR code, once it's connected
+```
+
+Only the Tailscale account that signed it in gets in, and each Mac or iPhone
+still needs the pairing link. The setting survives restarts and reboots.
+
+If your tailnet has HTTPS certificates turned on, clients reach the server at
+`https://termio.<tailnet>.ts.net`. If not, they use its tailnet address on port
+8790, which Tailscale already encrypts.
+
+| Command | What it does |
+| --- | --- |
+| `termiod tailscale on --hostname NAME` | Uses another device name. |
+| `termiod tailscale on --auth-key-file FILE` | Signs in with a one-time auth key instead of a browser. |
+| `termiod tailscale status` | Shows whether it's connected, and where clients reach it. |
+| `termiod tailscale off` | Leaves the tailnet until `on`. The device stays signed in. |
+| `termiod tailscale logout` | Signs the device out of Tailscale and turns it off. |
 
 ## Updating without dropping sessions
 

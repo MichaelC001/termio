@@ -917,6 +917,9 @@ pub async fn serve(
         }
     }
 
+    // The tailnet helper stops on the same signal as the WebSocket listener.
+    crate::tailnet::start(wss_shutdown.subscribe());
+
     // Other platforms never spawn this: the boxes termiod serves there are
     // servers that do not idle-sleep, and the mechanism is caffeinate anyway.
     if keep_awake && cfg!(target_os = "macos") {

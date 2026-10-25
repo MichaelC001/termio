@@ -355,6 +355,57 @@ else
     fi
 fi
 
+# Built-in Tailscale (termiod/tailnet): a Go helper on Tailscale's tsnet that
+# termiod runs beside itself, so it is built for every platform termiod ships
+# to. Pure Go with cgo off, so a cross build needs nothing but the Go toolchain.
+# A release needs it; a dev build without Go ships without built-in Tailscale,
+# and `termiod tailscale on` says so.
+tailnet_name="termio-tailnet"
+if ! command -v go >/dev/null 2>&1; then
+    if [[ "$channel" != "dev" ]]; then
+        echo "error: cannot build $tailnet_name — go not found (https://go.dev/dl)." >&2
+        exit 1
+    fi
+    echo "==> Skipping $tailnet_name: go not found — this dev build has no built-in Tailscale"
+else
+    tailnet_build() {
+        (
+            cd "$repo_root/termiod/tailnet"
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" go build -trimpath -ldflags='-s -w' -o "$3" .
+        )
+    }
+    tailnet_slices=()
+    for arch in "${architectures[@]}"; do
+        case "$arch" in
+            arm64) go_arch=arm64 ;;
+            x86_64) go_arch=amd64 ;;
+            *) echo "error: no Go architecture for $arch" >&2; exit 1 ;;
+        esac
+        echo "==> Building $tailnet_name (darwin/$go_arch)"
+        slice="$(mktemp -d)/$tailnet_name-$arch"
+        tailnet_build darwin "$go_arch" "$slice"
+        tailnet_slices+=("$slice")
+    done
+    lipo -create "${tailnet_slices[@]}" -output "$resources_dir/$tailnet_name"
+    chmod +x "$resources_dir/$tailnet_name"
+    if [[ "$channel" == "dev" && "${TERMIO_REMOTE_SLICES:-}" != "1" ]]; then
+        echo "==> Skipping the Linux $tailnet_name slices (dev build; TERMIO_REMOTE_SLICES=1 to build them)"
+    else
+        for linux_target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            case "$linux_target" in
+                x86_64-*) go_arch=amd64 ;;
+                aarch64-*) go_arch=arm64 ;;
+            esac
+            echo "==> Building $tailnet_name ($linux_target)"
+            tailnet_build linux "$go_arch" "$resources_dir/$tailnet_name-$linux_target"
+            if ! file "$resources_dir/$tailnet_name-$linux_target" | grep -q "ELF 64-bit"; then
+                echo "error: $tailnet_name-$linux_target is not a Linux ELF binary" >&2
+                exit 1
+            fi
+        done
+    fi
+fi
+
 # The Simulator pane's helper (simulator-helper/), which links idb's simulator
 # libraries and so builds arm64-only, for macOS 15+, with XcodeGen. Like the
 # daemon, a release needs it and a dev build without the prerequisites ships
@@ -457,6 +508,7 @@ codesign "${sign_args[@]}" "$sparkle"
 # outer app for the same reason — and with the same hardened runtime, because
 # notarization rejects any executable inside the bundle that lacks it.
 [[ -e "$daemon_dest" ]] && codesign "${sign_args[@]}" "$daemon_dest"
+[[ -e "$resources_dir/termio-tailnet" ]] && codesign "${sign_args[@]}" "$resources_dir/termio-tailnet"
 # The simulator helper and its in-simulator guest are nested Mach-Os too, and
 # notarization wants the hardened runtime on both. idb says to ship the guest as
 # built, but re-signed with the runtime it dies on launch inside the simulator

@@ -22,8 +22,8 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::{HeaderValue, StatusCode};
@@ -404,11 +404,13 @@ async fn accept_loop(tcp: TcpListener, origins: Vec<Origin>, mut shutdown: watch
         };
         match accepted {
             Ok((stream, peer)) => {
-                let origins = origins.clone();
+                let policy = OriginPolicy::Listed(origins.clone());
                 let shutdown = shutdown.clone();
                 let rotation = rotation.subscribe();
+                // Keystrokes are one-byte writes; Nagle would batch them into lag.
+                let _ = stream.set_nodelay(true);
                 tokio::spawn(async move {
-                    if let Err(error) = serve_connection(stream, origins, shutdown, rotation).await
+                    if let Err(error) = serve_connection(stream, policy, shutdown, rotation).await
                     {
                         eprintln!("termiod: wss {peer}: {error:#}");
                     }
@@ -424,15 +426,54 @@ async fn accept_loop(tcp: TcpListener, origins: Vec<Origin>, mut shutdown: watch
     }
 }
 
-async fn serve_connection(
-    stream: TcpStream,
-    origins: Arc<Vec<Origin>>,
+/// Which pages may open the socket. A loopback listener checks its allowlist,
+/// or same-origin against a loopback Host. A connection the tailnet helper
+/// forwards was already admitted by Tailscale identity, and arrives on the
+/// node's own name at 443 or 8790, so its rule is that the Origin names the
+/// host the caller dialed.
+pub(crate) enum OriginPolicy {
+    Listed(Arc<Vec<Origin>>),
+    SameHostName,
+}
+
+impl OriginPolicy {
+    fn allows(&self, origin: Option<&str>, host: Option<&str>) -> bool {
+        match self {
+            OriginPolicy::Listed(origins) => origin_allowed(origin, host, origins),
+            OriginPolicy::SameHostName => origin_names_host(origin, host),
+        }
+    }
+}
+
+/// The tailnet rule: the Origin's host is the Host header's host, and neither
+/// is loopback. The port is not compared, because the helper hands over
+/// connections from two ports and the Host header omits the default one.
+pub fn origin_names_host(origin: Option<&str>, host: Option<&str>) -> bool {
+    let Some(raw) = origin.map(str::trim) else {
+        return false;
+    };
+    if raw.is_empty() || raw.eq_ignore_ascii_case("null") {
+        return false;
+    }
+    let Ok(origin) = parse_origin(raw) else {
+        return false;
+    };
+    let Some(host) = host else { return false };
+    let Ok((host_name, _)) = split_authority(host.trim()) else {
+        return false;
+    };
+    !is_loopback_host(&host_name) && host_name == origin.host
+}
+
+pub(crate) async fn serve_connection<S>(
+    stream: S,
+    policy: OriginPolicy,
     shutdown: watch::Receiver<bool>,
     rotation: watch::Receiver<u64>,
-) -> Result<()> {
-    // Keystrokes are one-byte writes; Nagle would batch them into lag.
-    let _ = stream.set_nodelay(true);
-
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     // Disk is the source of truth for the secret, re-read per handshake, so a
     // rotation takes effect on the next Upgrade even if the watcher is down.
     let expected = paths::read_pair_token()?;
@@ -470,7 +511,7 @@ async fn serve_connection(
 
             let origin = header(request, "origin");
             let host = header(request, "host");
-            if !origin_allowed(origin, host, &origins) {
+            if !policy.allows(origin, host) {
                 return Err(record("origin not allowed", StatusCode::FORBIDDEN));
             }
 
@@ -563,11 +604,14 @@ enum Step {
 /// Copy bytes between the WebSocket and a connected `UnixStream`, understanding
 /// no frames — the same shape as `client::stdio()`, so `handle_conn` stays
 /// Unix-only and every backlog, snapshot and writer rule keeps working.
-async fn splice(
-    mut websocket: WebSocketStream<TcpStream>,
+async fn splice<S>(
+    mut websocket: WebSocketStream<S>,
     mut shutdown: watch::Receiver<bool>,
     mut rotation: watch::Receiver<u64>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // Not `client::connect()`: that auto-spawns a daemon, and a listener living
     // inside one must never fork a second.
     let socket_path = paths::socket_path()?;
@@ -655,18 +699,18 @@ async fn splice(
 
 /// Live splices close when the token changes. `pair --rotate` is the only
 /// revocation there is, so it has to reach connections that are already up.
-struct Rotation {
+pub(crate) struct Rotation {
     sender: watch::Sender<u64>,
     _watcher: Option<RecommendedWatcher>,
 }
 
 impl Rotation {
-    fn subscribe(&self) -> watch::Receiver<u64> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
         self.sender.subscribe()
     }
 }
 
-fn start_rotation_watch() -> Rotation {
+pub(crate) fn start_rotation_watch() -> Rotation {
     let (sender, _) = watch::channel(0u64);
     let watcher = match install_watch(sender.clone()) {
         Ok(watcher) => Some(watcher),
@@ -776,8 +820,8 @@ pub fn run_pair(options: PairOptions) -> Result<()> {
         let Some(url) = url.as_deref() else {
             bail!(
                 "no reachable URL for this box, so there is nothing to pair against.\n\
-                 Pass `--url https://<host>/termio/`, or start the daemon with \
-                 `--wss-origin https://<host>`."
+                 Run `termiod tailscale on`, pass `--url https://<host>/termio/`, \
+                 or start the daemon with `--wss-origin https://<host>`."
             );
         };
         let host_id = paths::load_or_create_host_id()?;
@@ -829,7 +873,7 @@ fn invite_url(explicit: Option<&str>) -> Result<Option<String>> {
             return Ok(Some(origin.base_url()));
         }
     }
-    Ok(None)
+    Ok(crate::tailnet::read_status().and_then(|status| status.reachable_url()))
 }
 
 /// The four fields of the invite, in the `termio://device?…` form a phone can
