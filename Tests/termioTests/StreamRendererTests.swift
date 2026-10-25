@@ -85,8 +85,8 @@ final class StreamRendererTests: XCTestCase {
     private func builtFrame(
         _ terminal: TermiodStreamTerminal, _ builder: TermiodStreamFrameBuilder, _ atlas: TermiodGlyphAtlas
     ) throws -> (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]) {
-        let changed = try terminal.withFrame { state, _ in
-            try builder.build(from: state, atlas: atlas, focused: true)
+        let changed = try terminal.withFrame { state, theme in
+            try builder.build(from: state, atlas: atlas, focused: true, theme: theme)
         }
         var rectangles: [TermiodStreamRectangle] = []
         var glyphs: [TermiodStreamGlyph] = []
@@ -344,7 +344,7 @@ final class StreamRendererTests: XCTestCase {
         XCTAssertEqual(frame.glyphs.first?.r, 250, "the block keeps its color")
 
         let courier = TermiodStreamRenderer.Appearance(
-            fontFamily: "Courier", fallbackFamilies: [], fontSize: 13, paddingX: 8, paddingY: 2, backgroundOpacity: 1)
+            fontFamily: "Courier", fallbackFamilies: [], fontSize: 10, paddingX: 8, paddingY: 2, backgroundOpacity: 1)
         let atlas = try TermiodGlyphAtlas(device: renderer.device, appearance: courier, scale: 2)
         let emoji = try XCTUnwrap(atlas.slot(graphemes: [0x1F600], bold: false, italic: false, cells: 2))
         XCTAssertTrue(emoji.colored)

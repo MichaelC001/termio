@@ -451,6 +451,7 @@ final class TermiodGlyphAtlas {
         guard graphemes.count == 1, let codepoint = graphemes.first else { return false }
         return (0x2500...0x259F).contains(codepoint) || (0x2800...0x28FF).contains(codepoint)
             || (0xE0B0...0xE0D7).contains(codepoint) || (0x1FB00...0x1FBFF).contains(codepoint)
+            || (0x1CC00...0x1CEBF).contains(codepoint)
     }
 
     private static func fillsCell(_ graphemes: [UInt32]) -> Bool {
@@ -528,20 +529,18 @@ final class TermiodGlyphAtlas {
             let line = CTLineCreateWithAttributedString(attributed)
             return (line, CTLineGetBoundsWithOptions(line, .useGlyphPathBounds))
         }
-        guard var (line, bounds) = layout(font), bounds.width > 0, bounds.height > 0 else { return nil }
+        guard let (line, bounds) = layout(font), bounds.width > 0, bounds.height > 0 else { return nil }
         let colored = Self.usesColorFont(line)
-        if colored {
-            // An emoji is drawn at the font's size, which is taller than a cell
-            // on most fonts: shrink it to fit its cells.
-            let span = CGFloat(metrics.width * max(1, cells)) - 2
-            let fit = min(1, (CGFloat(metrics.height) - 2) / bounds.height, span / bounds.width)
-            if fit < 1, let smaller = layout(CTFontCreateCopyWithAttributes(font, CTFontGetSize(font) * fit, nil, nil)) {
-                (line, bounds) = smaller
-            }
-        }
         let padding = 1
-        let width = Int(bounds.width.rounded(.up)) + 2 * padding
-        let height = Int(bounds.height.rounded(.up)) + 2 * padding
+        // An emoji is drawn at the font's size, which is taller than a cell on
+        // most fonts. Its bitmap is its cells exactly, with the emoji scaled
+        // and centred inside, so no pixel can reach the rows around it.
+        let span = metrics.width * max(1, cells)
+        let width = colored ? span : Int(bounds.width.rounded(.up)) + 2 * padding
+        let height = colored ? metrics.height : Int(bounds.height.rounded(.up)) + 2 * padding
+        let fit = colored
+            ? min(1, CGFloat(span - 2) / bounds.width, CGFloat(metrics.height - 2) / bounds.height)
+            : 1
         guard let origin = allocate(width: width, height: height) else { return nil }
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
@@ -552,7 +551,14 @@ final class TermiodGlyphAtlas {
             ) else { return false }
             context.setShouldAntialias(true)
             context.setShouldSmoothFonts(false)
-            context.textPosition = CGPoint(x: CGFloat(padding) - bounds.minX, y: CGFloat(padding) - bounds.minY)
+            if colored {
+                context.translateBy(
+                    x: (CGFloat(width) - bounds.width * fit) / 2, y: (CGFloat(height) - bounds.height * fit) / 2)
+                context.scaleBy(x: fit, y: fit)
+                context.textPosition = CGPoint(x: -bounds.minX, y: -bounds.minY)
+            } else {
+                context.textPosition = CGPoint(x: CGFloat(padding) - bounds.minX, y: CGFloat(padding) - bounds.minY)
+            }
             CTLineDraw(line, context)
             return true
         }
@@ -562,14 +568,9 @@ final class TermiodGlyphAtlas {
             mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4
         )
         // CoreGraphics counts up from the bottom: the bitmap's top edge sits
-        // maxY + padding above the baseline.
-        var top = metrics.baseline - Int(bounds.maxY.rounded(.up)) - padding
-        var left = Int(bounds.minX.rounded(.down)) - padding
-        if colored {
-            let span = metrics.width * max(1, cells)
-            left = (span - width) / 2
-            top = (metrics.height - height) / 2
-        }
+        // maxY + padding above the baseline. An emoji's bitmap is its cells.
+        let top = colored ? 0 : metrics.baseline - Int(bounds.maxY.rounded(.up)) - padding
+        let left = colored ? 0 : Int(bounds.minX.rounded(.down)) - padding
         return Slot(
             origin: SIMD2(UInt16(origin.x), UInt16(origin.y)),
             size: SIMD2(UInt16(width), UInt16(height)),
