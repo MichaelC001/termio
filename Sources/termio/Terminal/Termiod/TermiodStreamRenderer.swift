@@ -154,8 +154,10 @@ final class TermiodStreamRenderer {
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
+        // Ghostty's blink: 600 ms on, 600 ms off.
+        let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
         return try terminal.withFrame { state in
-            try builder.build(from: state, atlas: atlas, focused: focused)
+            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn)
         }
     }
 
@@ -565,7 +567,9 @@ final class TermiodStreamFrameBuilder {
     }
 
     /// Returns false when nothing changed since the last build.
-    func build(from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool) throws -> Bool {
+    func build(
+        from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true
+    ) throws -> Bool {
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         var rows: UInt16 = 0
@@ -598,7 +602,7 @@ final class TermiodStreamFrameBuilder {
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
-        let cursorState = CursorState(state, colors: colors, focused: focused)
+        let cursorState = CursorState(state, colors: colors, focused: focused, blinkOn: blinkOn)
         if changed || cursorState != lastCursorState {
             lastCursorState = cursorState
             buildCursor(cursorState, colors: colors, atlas: atlas)
@@ -633,12 +637,16 @@ final class TermiodStreamFrameBuilder {
         var green: UInt8 = 0
         var blue: UInt8 = 0
 
-        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool) {
+        /// `blinkOn` is the blink phase now; a cursor that blinks is drawn
+        /// only in the on half, and a pane out of focus never blinks.
+        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool, blinkOn: Bool) {
             var visible = false
             var hasValue = false
+            var blinking = false
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
-            guard visible, hasValue else { return }
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking)
+            guard visible, hasValue, !(focused && blinking && !blinkOn) else { return }
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
             // The terminal's own style: the program's DECSCUSR, or the setting
@@ -679,7 +687,11 @@ final class TermiodStreamFrameBuilder {
             _ = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw)
             var wide = GHOSTTY_CELL_WIDE_NARROW
             _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
-            if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
+            // A tail is covered by the wide character before it. A head — the
+            // last column, left empty when a wide character wrapped — has no
+            // glyph but keeps the background it was written with.
+            if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { continue }
+            let spacer = wide == GHOSTTY_CELL_WIDE_SPACER_HEAD
             let span: UInt16 = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1
             if span == 2 { wideStarts.insert(x) }
 
@@ -712,10 +724,11 @@ final class TermiodStreamFrameBuilder {
                     r: background.r, g: background.g, b: background.b, a: 255
                 ))
             }
+            if spacer { continue }
             let alpha: UInt8 = style.faint ? 128 : 255
             if !style.invisible {
                 appendDecorations(style, x: x, y: y, span: span, foreground: foreground, alpha: alpha,
-                                  metrics: metrics, into: &rectangles)
+                                  palette: colors, metrics: metrics, into: &rectangles)
             }
 
             var length: UInt32 = 0
@@ -748,8 +761,8 @@ final class TermiodStreamFrameBuilder {
 
     private func appendDecorations(
         _ style: GhosttyStyle, x: UInt16, y: Int, span: UInt16,
-        foreground: GhosttyColorRgb, alpha: UInt8, metrics: TermiodCellMetrics,
-        into rectangles: inout [TermiodStreamRectangle]
+        foreground: GhosttyColorRgb, alpha: UInt8, palette colors: GhosttyRenderStateColors,
+        metrics: TermiodCellMetrics, into rectangles: inout [TermiodStreamRectangle]
     ) {
         let width = metrics.width * Int(span)
         let thickness = metrics.underlineThickness
@@ -763,6 +776,12 @@ final class TermiodStreamFrameBuilder {
         var underlineColor = foreground
         if style.underline_color.tag == GHOSTTY_STYLE_COLOR_RGB {
             underlineColor = style.underline_color.value.rgb
+        } else if style.underline_color.tag == GHOSTTY_STYLE_COLOR_PALETTE {
+            // The palette in effect now, OSC 4 changes included.
+            let index = Int(style.underline_color.value.palette)
+            underlineColor = withUnsafeBytes(of: colors.palette) { buffer in
+                buffer.bindMemory(to: GhosttyColorRgb.self)[index]
+            }
         }
         let position = metrics.underlinePosition
         switch Int32(style.underline) {

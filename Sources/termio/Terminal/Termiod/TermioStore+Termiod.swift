@@ -2145,7 +2145,7 @@ extension TermioStore {
         return TermiodStreamTerminal.Theme(
             foreground: foreground, background: ground,
             cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette,
-            cursorStyle: cursorStyle
+            cursorStyle: cursorStyle, cursorBlink: settings.cursorBlink
         )
     }
 

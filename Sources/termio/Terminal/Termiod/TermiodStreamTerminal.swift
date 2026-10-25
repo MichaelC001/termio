@@ -169,13 +169,15 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             // own shape: the terminal tells the two apart even after a decode.
             var cursorStyle = colors.cursorStyle
             try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cursorStyle), "ghostty_terminal_set(default cursor)")
+            var cursorBlink = colors.cursorBlink
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &cursorBlink), "ghostty_terminal_set(default blink)")
         }
     }
 
     struct Theme: Equatable {
         static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
-            return left.cursorStyle == right.cursorStyle
+            return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
                 && same(left.foreground, right.foreground) && same(left.background, right.background)
                 && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
                 && left.palette.count == right.palette.count
@@ -187,8 +189,9 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var cursor: GhosttyColorRgb?
         /// Exactly 256 entries.
         var palette: [GhosttyColorRgb]
-        /// The cursor-style setting.
+        /// The cursor settings, as the defaults a program's DECSCUSR can override.
         var cursorStyle: GhosttyTerminalCursorStyle
+        var cursorBlink: Bool
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so

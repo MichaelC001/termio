@@ -38,7 +38,8 @@ final class StreamRendererTests: XCTestCase {
         return TermiodStreamTerminal.Theme(
             foreground: GhosttyColorRgb(r: 230, g: 230, b: 230),
             background: GhosttyColorRgb(r: 20, g: 20, b: 20),
-            cursor: nil, palette: palette, cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK
+            cursor: nil, palette: palette, cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK,
+            cursorBlink: false
         )
     }
 
@@ -207,5 +208,34 @@ final class StreamRendererTests: XCTestCase {
                        "held: the decoded screen, not the redraw after it")
         terminal.write(Data("\u{1b}[?2026l".utf8))
         XCTAssertEqual(try builtFrame(terminal, builder, renderer.atlas).glyphs.count, 6)
+    }
+
+    /// The column a wrapped wide character left empty keeps its background;
+    /// a palette underline color is the palette's; a blinking cursor is drawn
+    /// only in the on half of its blink. The wrapped 中 puts `line` on row 2.
+    func testSpacersUnderlinesAndBlink() throws {
+        let terminal = try terminal()
+        try terminal.setTheme(colors())
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("\u{1b}[41m\(String(repeating: "a", count: 39))中\u{1b}[0m\r\n".utf8))
+        terminal.write(Data("\u{1b}[4;58;5;4mline\u{1b}[0m".utf8))
+        let frame = try builtFrame(terminal, builder, renderer.atlas)
+        XCTAssertNotNil(frame.rectangles.first { $0.cellX == 39 && $0.cellY == 0 && $0.r == 220 },
+                        "the empty last column is painted red")
+        XCTAssertFalse(frame.glyphs.contains { $0.cellX == 39 && $0.cellY == 0 })
+        XCTAssertNotNil(frame.rectangles.first { $0.cellY == 2 && $0.overText && $0.b == 220 },
+                        "the underline is palette 4")
+
+        terminal.write(Data("\u{1b}[1 q".utf8))
+        let state = { (on: Bool) -> [TermiodStreamRectangle] in
+            _ = try? terminal.withFrame { try builder.build(from: $0, atlas: renderer.atlas, focused: true, blinkOn: on) }
+            var rectangles: [TermiodStreamRectangle] = []
+            var glyphs: [TermiodStreamGlyph] = []
+            builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+            return rectangles.filter { $0.cellY == 2 && $0.cellX == 4 && $0.r == 230 && !$0.overText }
+        }
+        XCTAssertEqual(state(true).count, 1, "blink on: the block is drawn")
+        XCTAssertEqual(state(false).count, 0, "blink off: it is not")
     }
 }
