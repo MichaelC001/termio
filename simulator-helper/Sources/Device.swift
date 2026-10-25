@@ -671,7 +671,8 @@ final class Device: @unchecked Sendable {
 
     /// How long a just-launched app is given to start answering. Short,
     /// because a `tap --label` waits inline: touches from the pane queue behind
-    /// it, and one failed attempt alone can take five seconds.
+    /// it, and one failed attempt alone can take five seconds. An app that
+    /// never starts its accessibility server fails after this, not at once.
     private static let startupGrace: TimeInterval = 6
 
     /// Runs a read again while the app it lands on is still starting. An app
@@ -684,10 +685,14 @@ final class Device: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(Self.startupGrace)
         var pause: UInt64 = 300_000_000
         while true {
+            let started = Date()
             do {
                 return try await body()
             } catch where Self.isStarting(error)
-                && Date().addingTimeInterval(Double(pause) / 1_000_000_000) < deadline {
+                // Retried only if another attempt as long as this one still fits:
+                // a fast refusal is retried, a five-second timeout is not.
+                && Date().addingTimeInterval(Double(pause) / 1_000_000_000 + Date().timeIntervalSince(started))
+                    < deadline {
                 Wire.log("retrying a read while the app starts: \(error.localizedDescription)")
                 try await Task.sleep(nanoseconds: pause)
                 pause = min(pause * 2, 1_000_000_000)
