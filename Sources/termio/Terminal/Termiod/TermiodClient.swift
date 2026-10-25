@@ -1338,7 +1338,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var clientID: String?
     /// Keystrokes typed during the connect/attach window — flushed, in order,
     /// the moment the channel is writable so nothing the user typed is lost.
-    private var pendingInput = Data()
+    private var pendingInput: [PendingInput] = []
+    private enum PendingInput {
+        case bytes(Data)
+        case event(Termiod.InputEvent)
+    }
     /// This attachment's viewport: how much of a session this pane could show,
     /// measured from the pane's own geometry rather than read back off the
     /// surface. The two are not the same thing once the surface is laid out at a
@@ -1792,8 +1796,16 @@ final class TermiodSessionLink: @unchecked Sendable {
             // an observer's input would be rejected frame-by-frame by the
             // daemon. (This client always attaches `interact` today, so it is
             // normally the writer — this keeps it correct if observe is used.)
-            if isWriter, !pendingInput.isEmpty {
-                try sendDataLocked(pendingInput)
+            if isWriter {
+                for input in pendingInput {
+                    switch input {
+                    case .bytes(let data): try sendDataLocked(data)
+                    // Only the stream plane encodes events; a link that came
+                    // back on keyframes has no encoder at the far end.
+                    case .event(let event) where streamingNow: try sendEventLocked(event)
+                    case .event: break
+                    }
+                }
             }
             pendingInput.removeAll(keepingCapacity: false)
             startReader(channel.readDescriptor)
@@ -1843,7 +1855,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard !closed else { return }
             guard attached else {
-                pendingInput.append(data)
+                pendingInput.append(.bytes(data))
                 return
             }
             do {
@@ -1866,6 +1878,47 @@ final class TermiodSessionLink: @unchecked Sendable {
                 """)
             }
         }
+    }
+
+    /// Input on the `vt_stream` plane, as an event termiod encodes against its
+    /// own VT (`Termiod.InputEvent`). Typing claims the token as `send` does;
+    /// a focus change does not, and termiod reports only the writer's.
+    func sendInput(_ event: Termiod.InputEvent) {
+        let typing: Bool
+        if case .focus = event { typing = false } else { typing = true }
+        if typing {
+            inputLock.lock()
+            lastInputAtLocked = Date()
+            inputLock.unlock()
+        }
+        workQueue.async { [self] in
+            guard !closed else { return }
+            guard attached else {
+                if typing { pendingInput.append(.event(event)) }
+                return
+            }
+            guard streamingNow else { return }
+            do {
+                if typing, !isWriter { try claimWriterLocked() }
+                try sendEventLocked(event)
+            } catch {
+                Log.termiod.error("""
+                input event to \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
+    private var streamingNow: Bool {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return streamingLocked
+    }
+
+    private func sendEventLocked(_ event: Termiod.InputEvent) throws {
+        guard let transport else { return }
+        try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try event.payload())
     }
 
     /// Takes the write token for this attachment because its user is now here.

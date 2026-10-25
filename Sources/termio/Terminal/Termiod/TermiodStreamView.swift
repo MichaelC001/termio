@@ -19,9 +19,13 @@ final class TermiodStreamView: NSView {
     /// as the viewport declaration the daemon's size policy reads.
     var onViewport: (TerminalGrid) -> Void = { _ in }
     var onFocusChange: (Bool) -> Void = { _ in }
-    /// Writes input to the session — the link's `send`, which claims the
-    /// write token as typing in the embedded surface does.
+    /// Writes bytes to the session as typed — the link's `send`, which claims
+    /// the write token as typing in the embedded surface does. Only Ghostty's
+    /// editing bindings use it; they send fixed bytes in any mode.
     var send: (Data) -> Void = { _ in }
+    /// Sends a key, paste, mouse, wheel or focus event, which termiod encodes
+    /// against its own VT's modes (`Termiod.InputEvent`).
+    var sendInput: (Termiod.InputEvent) -> Void = { _ in }
     /// The session this pane shows, for app code that acts on the focused
     /// terminal (the paste interceptor).
     var sessionID: Session.ID?
@@ -37,24 +41,30 @@ final class TermiodStreamView: NSView {
             guard focused != oldValue else { return }
             needsFullDraw = true
             onFocusChange(focused)
-            if let terminal = terminal() { deliver(terminal.encodeFocus(focused)) }
+            if !focused { releaseHeldKeys() }
+            sendInput(.focus(focused))
         }
     }
 
     /// Input-method state: the text being composed, and the strings a key
     /// event inserted while `interpretKeyEvents` ran.
-    private var markedText = NSMutableAttributedString()
-    private var markedSelection = NSRange(location: 0, length: 0)
-    private var collectedText: [String]?
-    private var interpretedCommand = false
+    fileprivate var markedText = NSMutableAttributedString()
+    fileprivate var markedSelection = NSRange(location: 0, length: 0)
+    fileprivate var collectedText: [String]?
+    fileprivate var interpretedCommand = false
     /// Ghostty's handshake for Control and Command keys the menu did not take
     /// (`performKeyEquivalent`).
-    private var lastPerformKeyEvent: TimeInterval?
+    fileprivate var lastPerformKeyEvent: TimeInterval?
     /// Mouse buttons down that were reported to the program, so their
     /// releases are too, wherever the pointer is let go.
-    private var reportedButtons: Set<GhosttyMouseButton.RawValue> = []
-    private var scrollRemainder: CGFloat = 0
-    private var trackingArea: NSTrackingArea?
+    fileprivate var reportedButtons: Set<UInt8> = []
+    fileprivate var scrollRemainder = CGPoint.zero
+    /// Keys whose press the program saw, by keycode, so each gets its release
+    /// even when the pane loses the keyboard first.
+    fileprivate var heldKeys: [UInt16: Termiod.InputEvent.Key] = [:]
+    /// Keys an editing binding took, whose releases the program never sees.
+    fileprivate var consumedKeys: Set<UInt16> = []
+    fileprivate var trackingArea: NSTrackingArea?
     /// Off while the pane is not on screen: a hidden pane draws nothing, as
     /// `setSurfaceVisible` arranges for the embedded surface.
     var isShowing = true {
@@ -202,25 +212,25 @@ final class TermiodStreamView: NSView {
 // MARK: - Keyboard and input methods
 
 extension TermiodStreamView: @preconcurrency NSTextInputClient {
-    private func deliver(_ bytes: Data) {
-        guard !bytes.isEmpty else { return }
-        send(bytes)
-    }
-
     /// Ghostty's AppKit `keyDown`: the event goes through the input method
     /// first, and what it inserted, if anything, rides the key event as text.
     override func keyDown(with event: NSEvent) {
-        guard let terminal = terminal() else { return }
+        guard terminal() != nil else { return }
         if markedText.length == 0, let bytes = TermiodStreamKeyboard.naturalEditing(event) {
-            terminal.scrollToBottom()
-            deliver(bytes)
+            // A binding, not a key: its release must not reach the program.
+            consumedKeys.insert(event.keyCode)
+            terminal()?.scrollViewportToBottom()
+            send(bytes)
             return
         }
-        let action = event.isARepeat ? GHOSTTY_KEY_ACTION_REPEAT : GHOSTTY_KEY_ACTION_PRESS
+        let action: Termiod.InputEvent.Action = event.isARepeat ? .repeat : .press
         let composingBefore = markedText.length > 0
         let layoutBefore = composingBefore ? nil : Self.keyboardLayoutID
         collectedText = []
         interpretedCommand = false
+        // As the embedded surface does: a key equivalent that reached here is
+        // this key's own, so `doCommand` must not dispatch it a second time.
+        lastPerformKeyEvent = nil
         interpretKeyEvents([event])
         let collected = collectedText ?? []
         collectedText = nil
@@ -228,27 +238,34 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         if !composingBefore, layoutBefore != Self.keyboardLayoutID { return }
         if !collected.isEmpty {
             for text in collected {
-                deliver(terminal.encode(TermiodStreamKeyboard.input(for: event, action: action, text: text)))
+                pressKey(TermiodStreamKeyboard.input(for: event, action: action, text: text), keyCode: event.keyCode)
             }
             return
         }
-        // A key the input method took while composing encodes as composing,
-        // which sends nothing: Backspace edits the composition, not the line.
+        // A key the input method took while composing is sent as composing,
+        // which termiod encodes as nothing: Backspace edits the composition.
         let text = interpretedCommand ? nil : TermiodStreamKeyboard.typedText(of: event)
-        deliver(terminal.encode(TermiodStreamKeyboard.input(
+        pressKey(TermiodStreamKeyboard.input(
             for: event, action: action, text: text, composing: markedText.length > 0 || composingBefore
-        )))
+        ), keyCode: event.keyCode)
+    }
+
+    private func pressKey(_ key: Termiod.InputEvent.Key, keyCode: UInt16) {
+        terminal()?.scrollViewportToBottom()
+        heldKeys[keyCode] = key
+        sendInput(.key(key))
     }
 
     override func keyUp(with event: NSEvent) {
-        guard let terminal = terminal() else { return }
-        deliver(terminal.encode(TermiodStreamKeyboard.input(for: event, action: GHOSTTY_KEY_ACTION_RELEASE, text: nil)))
+        if consumedKeys.remove(event.keyCode) != nil { return }
+        guard heldKeys.removeValue(forKey: event.keyCode) != nil else { return }
+        sendInput(.key(TermiodStreamKeyboard.input(for: event, action: .release, text: nil)))
     }
 
     /// A modifier pressed or released alone, which the Kitty protocol can
     /// report. Its side decides which key it was.
     override func flagsChanged(with event: NSEvent) {
-        guard markedText.length == 0, let terminal = terminal() else { return }
+        guard markedText.length == 0, terminal() != nil else { return }
         let held: Bool
         switch Int(event.keyCode) {
         case kVK_CapsLock: held = event.modifierFlags.contains(.capsLock)
@@ -258,9 +275,26 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         case kVK_Command, kVK_RightCommand: held = Self.sideHeld(event, .command, right: NX_DEVICERCMDKEYMASK)
         default: return
         }
-        deliver(terminal.encode(TermiodStreamKeyboard.input(
-            for: event, action: held ? GHOSTTY_KEY_ACTION_PRESS : GHOSTTY_KEY_ACTION_RELEASE, text: nil
-        )))
+        let key = TermiodStreamKeyboard.input(for: event, action: held ? .press : .release, text: nil)
+        if held {
+            heldKeys[event.keyCode] = key
+        } else {
+            heldKeys.removeValue(forKey: event.keyCode)
+        }
+        sendInput(.key(key))
+    }
+
+    /// Releases every key the program saw go down, when the pane loses the
+    /// keyboard: their real releases go to whatever has it next.
+    func releaseHeldKeys() {
+        for (_, key) in heldKeys {
+            var release = key
+            release.action = .release
+            release.text = nil
+            sendInput(.key(release))
+        }
+        heldKeys.removeAll()
+        consumedKeys.removeAll()
     }
 
     /// Whether the modifier this event's key names is down: the flag alone
@@ -331,10 +365,10 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         unmarkText()
         if collectedText != nil {
             collectedText?.append(text)
-        } else if let terminal = terminal() {
+        } else if !text.isEmpty {
             // Text an input method commits outside a keystroke, as from the
             // character viewer, is text, not a key.
-            deliver(terminal.encodePaste(text))
+            sendInput(.paste(text))
         }
     }
 
@@ -404,19 +438,22 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     // MARK: - Paste
 
     /// Edit ▸ Paste. A clipboard holding only an image goes to the program as
-    /// Control-V, which agents answer by reading the image off the clipboard
-    /// themselves — the embedded surface's rule. Text is pasted as the
-    /// program's bracketed-paste mode asks.
+    /// Control-V, pressed and released, which agents answer by reading the
+    /// image off the clipboard themselves — the embedded surface's rule. Text
+    /// is pasted, and termiod brackets it as the program asked.
     @objc func paste(_ sender: Any?) {
-        guard let terminal = terminal() else { return }
+        guard terminal() != nil else { return }
         let pasteboard = NSPasteboard.general
         if let text = pasteboard.terminalPasteText() {
-            deliver(terminal.encodePaste(text))
+            terminal()?.scrollViewportToBottom()
+            sendInput(.paste(text))
         } else if pasteboard.canReadItem(withDataConformingToTypes: [UTType.image.identifier]) {
-            let controlV = TermiodStreamTerminal.KeyInput(
-                key: GHOSTTY_KEY_V, mods: GhosttyMods(GHOSTTY_MODS_CTRL), unshiftedCodepoint: 0x76
+            var controlV = Termiod.InputEvent.Key(
+                key: "v", mods: TermiodStreamKeyboard.control, unshifted: 0x76
             )
-            deliver(terminal.encode(controlV))
+            sendInput(.key(controlV))
+            controlV.action = .release
+            sendInput(.key(controlV))
         }
     }
 
@@ -432,81 +469,97 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         trackingArea = area
     }
 
-    private var pixelLayout: TermiodStreamTerminal.PixelLayout? {
+    /// The event's point in pixels from the grid's top-left corner, in the
+    /// cell size this pane draws.
+    private func pointer(_ event: NSEvent) -> Termiod.InputEvent.Pointer? {
         guard let renderer else { return nil }
-        let scale = metalLayer.contentsScale
-        return TermiodStreamTerminal.PixelLayout(
-            cellWidth: UInt32(renderer.atlas.metrics.width), cellHeight: UInt32(renderer.atlas.metrics.height),
-            paddingLeft: UInt32((renderer.appearance.paddingX * scale).rounded()),
-            paddingTop: UInt32((renderer.appearance.paddingY * scale).rounded())
-        )
-    }
-
-    private func mouseInput(
-        _ event: NSEvent, action: GhosttyMouseAction, button: GhosttyMouseButton?
-    ) -> TermiodStreamTerminal.MouseInput {
         let point = convert(event.locationInWindow, from: nil)
         let scale = metalLayer.contentsScale
-        return TermiodStreamTerminal.MouseInput(
-            action: action, button: button, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
-            x: Float(point.x * scale), y: Float((bounds.height - point.y) * scale),
-            anyButtonPressed: !reportedButtons.isEmpty
+        return Termiod.InputEvent.Pointer(
+            x: Float(point.x * scale - (renderer.appearance.paddingX * scale).rounded()),
+            y: Float((bounds.height - point.y) * scale - (renderer.appearance.paddingY * scale).rounded()),
+            cellWidth: UInt32(renderer.atlas.metrics.width), cellHeight: UInt32(renderer.atlas.metrics.height)
         )
     }
 
-    /// A press goes to a program tracking the mouse, unless Shift is held:
-    /// Ghostty keeps Shift-click for the terminal's own selection.
-    private func press(_ event: NSEvent, _ button: GhosttyMouseButton) {
+    private func onGrid(_ at: Termiod.InputEvent.Pointer) -> Bool {
+        guard let grid = terminal()?.grid else { return false }
+        return at.x >= 0 && at.y >= 0
+            && at.x < Float(UInt32(grid.cols) * at.cellWidth) && at.y < Float(UInt32(grid.rows) * at.cellHeight)
+    }
+
+    /// A press on the grid goes to a program tracking the mouse, unless Shift
+    /// is held: Ghostty keeps Shift-click for the terminal's own selection.
+    /// A program can ask Ghostty for Shift-clicks too (`XTSHIFTESCAPE`);
+    /// libghostty-vt does not say whether one did, so here Shift always stays
+    /// the terminal's.
+    private func press(_ event: NSEvent, _ button: UInt8) {
         window?.makeFirstResponder(self)
-        guard let terminal = terminal(), let layout = pixelLayout, terminal.tracksMouse,
-              !event.modifierFlags.contains(.shift)
+        guard let terminal = terminal(), terminal.tracksMouse, !event.modifierFlags.contains(.shift),
+              let at = pointer(event), onGrid(at)
         else { return }
-        reportedButtons.insert(button.rawValue)
-        deliver(terminal.encode(mouseInput(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: button), layout: layout))
+        reportedButtons.insert(button)
+        sendInput(.mouse(.init(action: .press, button: button, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
+                               at: at, buttonsHeld: true)))
     }
 
-    private func release(_ event: NSEvent, _ button: GhosttyMouseButton) {
-        guard reportedButtons.remove(button.rawValue) != nil,
-              let terminal = terminal(), let layout = pixelLayout
-        else { return }
-        deliver(terminal.encode(mouseInput(event, action: GHOSTTY_MOUSE_ACTION_RELEASE, button: button), layout: layout))
+    private func release(_ event: NSEvent, _ button: UInt8) {
+        guard reportedButtons.remove(button) != nil, let at = pointer(event) else { return }
+        sendInput(.mouse(.init(action: .release, button: button, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
+                               at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
 
-    private func motion(_ event: NSEvent, _ button: GhosttyMouseButton?) {
-        guard let terminal = terminal(), let layout = pixelLayout else { return }
-        let held = button.flatMap { reportedButtons.contains($0.rawValue) ? $0 : nil }
-        deliver(terminal.encode(mouseInput(event, action: GHOSTTY_MOUSE_ACTION_MOTION, button: held), layout: layout))
+    private func motion(_ event: NSEvent, _ button: UInt8?) {
+        guard let terminal = terminal(), terminal.tracksMouse, let at = pointer(event) else { return }
+        let held = button.flatMap { reportedButtons.contains($0) ? $0 : nil }
+        sendInput(.mouse(.init(action: .motion, button: held, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
+                               at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
 
-    override func mouseDown(with event: NSEvent) { press(event, GHOSTTY_MOUSE_BUTTON_LEFT) }
-    override func mouseUp(with event: NSEvent) { release(event, GHOSTTY_MOUSE_BUTTON_LEFT) }
-    override func rightMouseDown(with event: NSEvent) { press(event, GHOSTTY_MOUSE_BUTTON_RIGHT) }
-    override func rightMouseUp(with event: NSEvent) { release(event, GHOSTTY_MOUSE_BUTTON_RIGHT) }
-    override func otherMouseDown(with event: NSEvent) { press(event, GHOSTTY_MOUSE_BUTTON_MIDDLE) }
-    override func otherMouseUp(with event: NSEvent) { release(event, GHOSTTY_MOUSE_BUTTON_MIDDLE) }
+    override func mouseDown(with event: NSEvent) { press(event, 1) }
+    override func mouseUp(with event: NSEvent) { release(event, 1) }
+    override func rightMouseDown(with event: NSEvent) { press(event, 2) }
+    override func rightMouseUp(with event: NSEvent) { release(event, 2) }
+    override func otherMouseDown(with event: NSEvent) { press(event, 3) }
+    override func otherMouseUp(with event: NSEvent) { release(event, 3) }
     override func mouseMoved(with event: NSEvent) { motion(event, nil) }
-    override func mouseDragged(with event: NSEvent) { motion(event, GHOSTTY_MOUSE_BUTTON_LEFT) }
-    override func rightMouseDragged(with event: NSEvent) { motion(event, GHOSTTY_MOUSE_BUTTON_RIGHT) }
-    override func otherMouseDragged(with event: NSEvent) { motion(event, GHOSTTY_MOUSE_BUTTON_MIDDLE) }
+    override func mouseDragged(with event: NSEvent) { motion(event, 1) }
+    override func rightMouseDragged(with event: NSEvent) { motion(event, 2) }
+    override func otherMouseDragged(with event: NSEvent) { motion(event, 3) }
 
-    /// Rows to scroll, as Ghostty counts them: a trackpad's points add up to
-    /// whole cells, and a wheel's notch is three rows.
+    /// Rows and columns to scroll, as Ghostty counts them: a trackpad's points
+    /// add up to whole cells, and a wheel's notch is three, however small the
+    /// delta macOS reports for it.
     override func scrollWheel(with event: NSEvent) {
-        guard let terminal = terminal(), let layout = pixelLayout, let renderer else { return }
+        guard let terminal = terminal(), let renderer, let at = pointer(event) else { return }
         let rows: Int
+        let columns: Int
         if event.hasPreciseScrollingDeltas {
-            scrollRemainder += event.scrollingDeltaY
-            let cell = max(1, renderer.cellSize.height)
-            let whole = (scrollRemainder / cell).rounded(.towardZero)
-            scrollRemainder -= whole * cell
-            rows = -Int(whole)
+            func whole(_ delta: CGFloat, _ remainder: inout CGFloat, cell: CGFloat) -> Int {
+                remainder += delta
+                let cells = (remainder / max(1, cell)).rounded(.towardZero)
+                remainder -= cells * max(1, cell)
+                return Int(cells)
+            }
+            rows = -whole(event.scrollingDeltaY, &scrollRemainder.y, cell: renderer.cellSize.height)
+            columns = -whole(event.scrollingDeltaX, &scrollRemainder.x, cell: renderer.cellSize.width)
         } else {
-            rows = -Int((event.scrollingDeltaY * 3).rounded(.towardZero))
+            func notches(_ delta: CGFloat) -> Int {
+                guard delta != 0 else { return 0 }
+                let magnitude = max(1, abs(delta))
+                return Int((magnitude * 3).rounded(.towardZero)) * (delta < 0 ? -1 : 1)
+            }
+            rows = -notches(event.scrollingDeltaY)
+            columns = -notches(event.scrollingDeltaX)
         }
-        guard rows != 0 else { return }
-        let at = mouseInput(event, action: GHOSTTY_MOUSE_ACTION_PRESS, button: nil)
-        deliver(terminal.scroll(rows: rows, at: at, layout: layout))
-        needsFullDraw = true
+        guard rows != 0 || columns != 0 else { return }
+        if terminal.wheelGoesToProgram {
+            sendInput(.wheel(.init(rows: Int32(rows), columns: Int32(columns),
+                                   mods: TermiodStreamKeyboard.mods(event.modifierFlags), at: at)))
+        } else if rows != 0 {
+            terminal.scrollViewport(rows: rows)
+            needsFullDraw = true
+        }
     }
 }
 
@@ -544,6 +597,7 @@ struct TermiodStreamPane: NSViewRepresentable {
         let link = link
         view.terminal = { link.streamTerminal }
         view.send = { link.send($0) }
+        view.sendInput = { link.sendInput($0) }
         view.sessionID = sessionID
         view.onViewport = onViewport
         let onFocused = onFocused

@@ -5,6 +5,13 @@
 //! engine-neutral types so the wire protocol never depends on the engine's
 //! in-memory cell layout.
 
+mod input;
+
+pub use input::{
+    key_named, InputEncoder, InputModes, KeyAction, KeyInput, MouseAction, MouseInput, Pointer,
+    WheelInput,
+};
+
 use std::cell::RefCell;
 use std::fmt;
 use std::marker::PhantomData;

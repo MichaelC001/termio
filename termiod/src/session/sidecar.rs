@@ -131,6 +131,8 @@ pub(crate) enum SidecarResult {
     /// boundary is an edge, not something to sample once a second.
     Osc(Vec<crate::session::status::OscSignal>),
     Screen(ScreenTick),
+    /// The program just turned focus reports (mode 1004) on.
+    FocusReportsOn,
 }
 
 pub(crate) struct SidecarCapture {

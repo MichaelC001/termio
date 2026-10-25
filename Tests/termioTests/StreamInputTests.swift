@@ -1,12 +1,13 @@
 import AppKit
 import Carbon.HIToolbox
 import GhosttyVt
+import TermioShared
 import XCTest
 @testable import termio
 
-/// Input on the `vt_stream` plane: every key, click, wheel turn, paste and
-/// focus change is encoded against the modes the program negotiated, which
-/// only the client terminal still hears once a pane streams.
+/// Input on the `vt_stream` plane: the client turns keystrokes into events
+/// that termiod encodes against its own VT (termiod's `input` tests cover the
+/// bytes), draws the input method's text, and keeps Ghostty's editing keys.
 @MainActor
 final class StreamInputTests: XCTestCase {
     private func terminal(_ setup: String = "") throws -> TermiodStreamTerminal {
@@ -28,41 +29,6 @@ final class StreamInputTests: XCTestCase {
         String(decoding: bytes, as: UTF8.self)
     }
 
-    private func key(_ key: GhosttyKey, mods: GhosttyMods = 0, text: String? = nil,
-                     action: GhosttyKeyAction = GHOSTTY_KEY_ACTION_PRESS) -> TermiodStreamTerminal.KeyInput {
-        TermiodStreamTerminal.KeyInput(action: action, key: key, mods: mods, text: text)
-    }
-
-    func testKeysFollowTheModesTheProgramNegotiated() throws {
-        let terminal = try terminal()
-        XCTAssertEqual(string(terminal.encode(key(GHOSTTY_KEY_ARROW_UP))), "\u{1b}[A")
-        XCTAssertEqual(string(terminal.encode(key(GHOSTTY_KEY_A, text: "a"))), "a")
-        XCTAssertEqual(string(terminal.encode(key(GHOSTTY_KEY_C, mods: GhosttyMods(GHOSTTY_MODS_CTRL)))), "\u{03}")
-        XCTAssertEqual(terminal.encode(key(GHOSTTY_KEY_A, action: GHOSTTY_KEY_ACTION_RELEASE)), Data(),
-                       "a release sends nothing outside Kitty's event reporting")
-
-        terminal.write(Data("\u{1b}[?1h".utf8))
-        XCTAssertEqual(string(terminal.encode(key(GHOSTTY_KEY_ARROW_UP))), "\u{1b}OA", "application cursor keys")
-
-        terminal.write(Data("\u{1b}[>1u".utf8))
-        XCTAssertEqual(string(terminal.encode(key(GHOSTTY_KEY_C, mods: GhosttyMods(GHOSTTY_MODS_CTRL)))),
-                       "", "Kitty identifies a key by its unshifted character, which every real press carries")
-        var controlC = key(GHOSTTY_KEY_C, mods: GhosttyMods(GHOSTTY_MODS_CTRL))
-        controlC.unshiftedCodepoint = 0x63
-        XCTAssertEqual(string(terminal.encode(controlC)), "\u{1b}[99;5u", "Kitty's disambiguate flag")
-    }
-
-    /// `sessions send --key up` on a stream pane: the same encoder, so it is
-    /// `ESC O A` once the program asked for application cursor keys.
-    func testANamedKeyFromTheCommandLineUsesTheLiveModes() throws {
-        let terminal = try terminal("\u{1b}[?1h")
-        let press = try XCTUnwrap(SessionKeyPress.parse("up"))
-        let bytes = TermiodStreamKeyboard.inputs(for: press).map { terminal.encode($0) }
-        XCTAssertEqual(bytes.map(string), ["\u{1b}OA", ""], "a press, then a release that sends nothing")
-        let enter = TermiodStreamKeyboard.inputs(for: .return).map { terminal.encode($0) }
-        XCTAssertEqual(string(enter[0]), "\r")
-    }
-
     private func event(_ keycode: Int, _ characters: String, _ flags: NSEvent.ModifierFlags = [],
                        ignoring: String? = nil) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(
@@ -74,7 +40,7 @@ final class StreamInputTests: XCTestCase {
 
     func testAKeystrokeBecomesThePhysicalKeyAndTheTextItTyped() throws {
         let a = try event(kVK_ANSI_A, "a")
-        XCTAssertEqual(TermiodStreamKeyboard.key(forKeycode: a.keyCode), GHOSTTY_KEY_A)
+        XCTAssertEqual(TermiodStreamKeyboard.key(forKeycode: a.keyCode), "a")
         XCTAssertEqual(TermiodStreamKeyboard.typedText(of: a), "a")
         // Control turns c into ETX; the encoder wants the c.
         let controlC = try event(kVK_ANSI_C, "\u{03}", .control, ignoring: "c")
@@ -82,10 +48,11 @@ final class StreamInputTests: XCTestCase {
         // AppKit spells the arrows as private-use characters, which are no text.
         let up = try event(kVK_UpArrow, "\u{F700}")
         XCTAssertNil(TermiodStreamKeyboard.typedText(of: up))
-        XCTAssertEqual(TermiodStreamKeyboard.key(forKeycode: up.keyCode), GHOSTTY_KEY_ARROW_UP)
-        let input = TermiodStreamKeyboard.input(for: controlC, action: GHOSTTY_KEY_ACTION_PRESS, text: "c")
-        XCTAssertEqual(input.mods & GhosttyMods(GHOSTTY_MODS_CTRL), GhosttyMods(GHOSTTY_MODS_CTRL))
-        XCTAssertEqual(input.consumedMods & GhosttyMods(GHOSTTY_MODS_CTRL), 0, "Control stays the key's own")
+        XCTAssertEqual(TermiodStreamKeyboard.key(forKeycode: up.keyCode), "arrow_up")
+        let input = TermiodStreamKeyboard.input(for: controlC, action: .press, text: "c")
+        XCTAssertEqual(input.mods & TermiodStreamKeyboard.control, TermiodStreamKeyboard.control)
+        XCTAssertEqual(input.consumedMods & TermiodStreamKeyboard.control, 0, "Control stays the key's own")
+        XCTAssertEqual(input.unshifted, 0x63)
     }
 
     /// Ghostty's editing defaults send legacy bytes even under Kitty's
@@ -105,67 +72,41 @@ final class StreamInputTests: XCTestCase {
         XCTAssertNil(TermiodStreamKeyboard.naturalEditing(try event(kVK_LeftArrow, "\u{F702}", [.command, .shift])))
     }
 
-    private let layout = TermiodStreamTerminal.PixelLayout(cellWidth: 10, cellHeight: 20, paddingLeft: 4, paddingTop: 2)
-
-    private func mouse(_ action: GhosttyMouseAction, _ button: GhosttyMouseButton?, column: Float, row: Float,
-                       pressed: Bool = true) -> TermiodStreamTerminal.MouseInput {
-        TermiodStreamTerminal.MouseInput(
-            action: action, button: button, x: 4 + column * 10 + 5, y: 2 + row * 20 + 10, anyButtonPressed: pressed
-        )
+    /// `sessions send --key up` on a stream pane is a press and a release of
+    /// the named key; termiod picks the bytes.
+    func testANamedKeyFromTheCommandLineIsAPressAndARelease() throws {
+        let press = try XCTUnwrap(SessionKeyPress.parse("ctrl-c"))
+        let events = TermiodStreamKeyboard.inputs(for: press)
+        XCTAssertEqual(events.map(\.key), ["c", "c"])
+        XCTAssertEqual(events.map(\.action), [.press, .release])
+        XCTAssertEqual(events[0].mods, TermiodStreamKeyboard.control)
+        XCTAssertEqual(events[0].unshifted, 0x63)
     }
 
-    func testClicksAreReportedOnlyToAProgramThatAskedForThem() throws {
-        let terminal = try terminal()
-        XCTAssertFalse(terminal.tracksMouse)
-        XCTAssertEqual(terminal.encode(mouse(GHOSTTY_MOUSE_ACTION_PRESS, GHOSTTY_MOUSE_BUTTON_LEFT, column: 3, row: 2),
-                                       layout: layout), Data())
-
-        terminal.write(Data("\u{1b}[?1000h\u{1b}[?1006h".utf8))
-        XCTAssertTrue(terminal.tracksMouse)
-        XCTAssertEqual(string(terminal.encode(
-            mouse(GHOSTTY_MOUSE_ACTION_PRESS, GHOSTTY_MOUSE_BUTTON_LEFT, column: 3, row: 2), layout: layout)),
-            "\u{1b}[<0;4;3M")
-        XCTAssertEqual(string(terminal.encode(
-            mouse(GHOSTTY_MOUSE_ACTION_RELEASE, GHOSTTY_MOUSE_BUTTON_LEFT, column: 3, row: 2, pressed: false),
-            layout: layout)),
-            "\u{1b}[<0;4;3m")
-        // The grid is the session's 40 columns, not the pane's width: a click
-        // past it is outside the terminal.
-        XCTAssertEqual(terminal.encode(
-            mouse(GHOSTTY_MOUSE_ACTION_PRESS, GHOSTTY_MOUSE_BUTTON_LEFT, column: 45, row: 2), layout: layout), Data())
+    /// The wire shape termiod's `Event::Key`, `Mouse` and `Focus` decode.
+    func testInputEventsCarryTheFieldsTermiodReads() throws {
+        func json(_ event: Termiod.InputEvent) throws -> [String: Any] {
+            try XCTUnwrap(try JSONSerialization.jsonObject(with: try event.payload()) as? [String: Any])
+        }
+        let key = try json(.key(.init(action: .repeat, key: "arrow_up", mods: 2, text: nil)))
+        XCTAssertEqual(key["ev"] as? String, "key")
+        XCTAssertEqual(key["action"] as? String, "repeat")
+        XCTAssertEqual(key["key"] as? String, "arrow_up")
+        XCTAssertEqual(key["consumed_mods"] as? Int, 0)
+        let mouse = try json(.mouse(.init(action: .press, button: 1, mods: 0,
+                                          at: .init(x: 5, y: 10, cellWidth: 16, cellHeight: 32), buttonsHeld: true)))
+        XCTAssertEqual(mouse["ev"] as? String, "mouse")
+        XCTAssertEqual(mouse["cell_width"] as? Int, 16)
+        XCTAssertEqual(mouse["buttons_held"] as? Bool, true)
+        XCTAssertEqual(try json(.focus(false))["focused"] as? Bool, false)
+        XCTAssertEqual(try json(.paste("hi"))["text"] as? String, "hi")
     }
 
-    func testTheWheelGoesWhereGhosttySendsIt() throws {
-        let at = mouse(GHOSTTY_MOUSE_ACTION_PRESS, nil, column: 0, row: 0, pressed: false)
-        let primary = try terminal()
-        XCTAssertEqual(primary.scroll(rows: -2, at: at, layout: layout), Data(), "scrollback, nothing sent")
-
-        let alternate = try terminal("\u{1b}[?1049h\u{1b}[?1007h")
-        XCTAssertEqual(string(alternate.scroll(rows: -2, at: at, layout: layout)), "\u{1b}[A\u{1b}[A",
-                       "alternate scroll turns the wheel into arrow keys")
-        alternate.write(Data("\u{1b}[?1h".utf8))
-        XCTAssertEqual(string(alternate.scroll(rows: 1, at: at, layout: layout)), "\u{1b}OB")
-
-        let tracking = try terminal("\u{1b}[?1000h\u{1b}[?1006h")
-        XCTAssertEqual(string(tracking.scroll(rows: -1, at: at, layout: layout)), "\u{1b}[<64;1;1M")
-        XCTAssertEqual(string(tracking.scroll(rows: 2, at: at, layout: layout)), "\u{1b}[<65;1;1M\u{1b}[<65;1;1M")
-    }
-
-    func testAPasteIsBracketedOnlyWhenTheProgramAsked() throws {
-        let terminal = try terminal()
-        XCTAssertEqual(string(terminal.encodePaste("one\ntwo")), "one\rtwo", "unbracketed newlines are returns")
-        terminal.write(Data("\u{1b}[?2004h".utf8))
-        XCTAssertEqual(string(terminal.encodePaste("one\ntwo")), "\u{1b}[200~one\ntwo\u{1b}[201~")
-        XCTAssertEqual(string(terminal.encodePaste("a\u{1b}[201~b")), "\u{1b}[200~a [201~b\u{1b}[201~",
-                       "a pasted terminator cannot end the paste")
-    }
-
-    func testFocusIsReportedOnlyWhenAsked() throws {
-        let terminal = try terminal()
-        XCTAssertEqual(terminal.encodeFocus(true), Data())
-        terminal.write(Data("\u{1b}[?1004h".utf8))
-        XCTAssertEqual(string(terminal.encodeFocus(true)), "\u{1b}[I")
-        XCTAssertEqual(string(terminal.encodeFocus(false)), "\u{1b}[O")
+    func testTheWheelIsTheProgramsOnlyWhenGhosttyWouldSendIt() throws {
+        XCTAssertFalse(try terminal().wheelGoesToProgram, "scrollback")
+        XCTAssertTrue(try terminal("\u{1b}[?1049h\u{1b}[?1007h").wheelGoesToProgram, "alternate scroll")
+        XCTAssertFalse(try terminal("\u{1b}[?1049h\u{1b}[?1007l").wheelGoesToProgram)
+        XCTAssertTrue(try terminal("\u{1b}[?1000h").wheelGoesToProgram, "mouse tracking")
     }
 
     /// What `termio sessions read` reports for a stream pane.

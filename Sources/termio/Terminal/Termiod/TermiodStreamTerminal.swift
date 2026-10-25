@@ -54,12 +54,6 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// How long a program may hold the screen before the hold is ended for
     /// it, as libghostty's own example does.
     static let holdLimit: Duration = .seconds(1)
-    /// libghostty's input encoders, reused for every event and used only under
-    /// `lock`: they read the terminal's modes at the moment of encoding.
-    private let keyEncoder: GhosttyKeyEncoder
-    private let keyEvent: GhosttyKeyEvent
-    private let mouseEncoder: GhosttyMouseEncoder
-    private let mouseEvent: GhosttyMouseEvent
 
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
@@ -74,29 +68,6 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             throw Failure.engine("ghostty_render_state_new", GHOSTTY_OUT_OF_MEMORY)
         }
         renderState = state
-        var keyEncoder: GhosttyKeyEncoder?
-        var keyEvent: GhosttyKeyEvent?
-        var mouseEncoder: GhosttyMouseEncoder?
-        var mouseEvent: GhosttyMouseEvent?
-        _ = ghostty_key_encoder_new(nil, &keyEncoder)
-        _ = ghostty_key_event_new(nil, &keyEvent)
-        _ = ghostty_mouse_encoder_new(nil, &mouseEncoder)
-        _ = ghostty_mouse_event_new(nil, &mouseEvent)
-        guard let keyEncoder, let keyEvent, let mouseEncoder, let mouseEvent else {
-            ghostty_key_encoder_free(keyEncoder)
-            ghostty_key_event_free(keyEvent)
-            ghostty_mouse_encoder_free(mouseEncoder)
-            ghostty_mouse_event_free(mouseEvent)
-            ghostty_render_state_free(state)
-            ghostty_terminal_free(terminal)
-            throw Failure.engine("input encoders", GHOSTTY_OUT_OF_MEMORY)
-        }
-        self.keyEncoder = keyEncoder
-        self.keyEvent = keyEvent
-        self.mouseEncoder = mouseEncoder
-        self.mouseEvent = mouseEvent
-        var trackLastCell = true
-        ghostty_mouse_encoder_setopt(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &trackLastCell)
         self.onReply = onReply
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata), "ghostty_terminal_set(userdata)")
@@ -161,10 +132,6 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     deinit {
-        ghostty_key_encoder_free(keyEncoder)
-        ghostty_key_event_free(keyEvent)
-        ghostty_mouse_encoder_free(mouseEncoder)
-        ghostty_mouse_event_free(mouseEvent)
         ghostty_terminal_free(terminal)
         ghostty_render_state_free(renderState)
     }
@@ -283,78 +250,23 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return try body()
     }
 
-    /// One key event, in libghostty's terms. `text` is what the keyboard layout
-    /// typed, never a control character or a function key's private-use code:
-    /// the encoder derives those from `key` and `mods` itself.
-    struct KeyInput: Equatable {
-        var action: GhosttyKeyAction = GHOSTTY_KEY_ACTION_PRESS
-        var key: GhosttyKey
-        var mods: GhosttyMods = 0
-        var consumedMods: GhosttyMods = 0
-        var text: String?
-        var unshiftedCodepoint: UInt32 = 0
-        var composing = false
-    }
-
-    /// The bytes a key sends to the program, against the modes it negotiated
-    /// now: cursor and keypad application mode, the Kitty keyboard flags,
-    /// modifyOtherKeys. Empty when the key sends nothing, as a release does
-    /// outside Kitty's event reporting.
-    func encode(_ input: KeyInput) -> Data {
+    /// Where a wheel turn goes, as Ghostty routes it: to a program tracking
+    /// the mouse, or to one on the alternate screen with alternate scroll
+    /// (mode 1007), which termiod encodes; otherwise it moves this view
+    /// through scrollback. termiod decides again against its own modes and
+    /// sends nothing for a turn that is scrollback there.
+    var wheelGoesToProgram: Bool {
         locked {
-            let bytes = encodeLocked(input)
-            if !bytes.isEmpty, input.action != GHOSTTY_KEY_ACTION_RELEASE { scrollToBottomLocked() }
-            return bytes
+            var tracking = false
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+            guard !tracking else { return true }
+            var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+            return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && (try? mode(ghostty_mode_new(1007, false))) == true
         }
     }
 
-    private func encodeLocked(_ input: KeyInput) -> Data {
-        ghostty_key_encoder_setopt_from_terminal(keyEncoder, terminal)
-        // Option composes text on a Mac, as the embedded surface leaves it.
-        var optionAsAlt = GHOSTTY_OPTION_AS_ALT_FALSE
-        ghostty_key_encoder_setopt(keyEncoder, GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, &optionAsAlt)
-        ghostty_key_event_set_action(keyEvent, input.action)
-        ghostty_key_event_set_key(keyEvent, input.key)
-        ghostty_key_event_set_mods(keyEvent, input.mods)
-        ghostty_key_event_set_consumed_mods(keyEvent, input.consumedMods)
-        ghostty_key_event_set_unshifted_codepoint(keyEvent, input.unshiftedCodepoint)
-        ghostty_key_event_set_composing(keyEvent, input.composing)
-        // The event borrows the text, so it is cleared before the bytes go.
-        defer { ghostty_key_event_set_utf8(keyEvent, nil, 0) }
-        let text = Array((input.text ?? "").utf8)
-        return text.withUnsafeBufferPointer { utf8 in
-            utf8.withMemoryRebound(to: CChar.self) { utf8 in
-                ghostty_key_event_set_utf8(keyEvent, utf8.baseAddress, utf8.count)
-                return Self.encoded { buffer, capacity, length in
-                    ghostty_key_encoder_encode(keyEncoder, keyEvent, buffer, capacity, length)
-                }
-            }
-        }
-    }
-
-    /// One mouse event at a point in the pane, in pixels from its top-left.
-    struct MouseInput: Equatable {
-        var action: GhosttyMouseAction
-        var button: GhosttyMouseButton?
-        var mods: GhosttyMods = 0
-        var x: Float
-        var y: Float
-        /// Whether any button is down once this event has happened.
-        var anyButtonPressed: Bool
-    }
-
-    /// Where the grid sits in the pane, in pixels: the encoders turn a pane
-    /// position into a cell with it. The grid is the session's, not the
-    /// pane's, so a point past its last column is outside the terminal.
-    struct PixelLayout: Equatable {
-        var cellWidth: UInt32
-        var cellHeight: UInt32
-        var paddingLeft: UInt32
-        var paddingTop: UInt32
-    }
-
-    /// Whether the program asked for mouse reports, in which case clicks and
-    /// the wheel are its, not the pane's.
+    /// Whether the program asked for mouse reports, so a click is its.
     var tracksMouse: Bool {
         locked {
             var tracking = false
@@ -363,97 +275,25 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    /// The report a mouse event sends, in the format the program chose. Empty
-    /// when it asked for none, or for none of this kind.
-    func encode(_ input: MouseInput, layout: PixelLayout) -> Data {
-        locked { encodeLocked(input, layout: layout) }
-    }
-
-    private func encodeLocked(_ input: MouseInput, layout: PixelLayout) -> Data {
-        var rows: UInt16 = 0
-        var cols: UInt16 = 0
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
-        var size = GhosttyMouseEncoderSize()
-        size.size = MemoryLayout<GhosttyMouseEncoderSize>.size
-        size.screen_width = UInt32(cols) * layout.cellWidth + layout.paddingLeft
-        size.screen_height = UInt32(rows) * layout.cellHeight + layout.paddingTop
-        size.cell_width = max(1, layout.cellWidth)
-        size.cell_height = max(1, layout.cellHeight)
-        size.padding_left = layout.paddingLeft
-        size.padding_top = layout.paddingTop
-        ghostty_mouse_encoder_setopt_from_terminal(mouseEncoder, terminal)
-        ghostty_mouse_encoder_setopt(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
-        var pressed = input.anyButtonPressed
-        ghostty_mouse_encoder_setopt(mouseEncoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed)
-        ghostty_mouse_event_set_action(mouseEvent, input.action)
-        if let button = input.button {
-            ghostty_mouse_event_set_button(mouseEvent, button)
-        } else {
-            ghostty_mouse_event_clear_button(mouseEvent)
-        }
-        ghostty_mouse_event_set_mods(mouseEvent, input.mods)
-        ghostty_mouse_event_set_position(mouseEvent, GhosttyMousePosition(x: input.x, y: input.y))
-        return Self.encoded { buffer, capacity, length in
-            ghostty_mouse_encoder_encode(mouseEncoder, mouseEvent, buffer, capacity, length)
-        }
-    }
-
-    /// A wheel turned by `rows` (negative is up), the way Ghostty routes it: a
-    /// program tracking the mouse gets wheel buttons; one on the alternate
-    /// screen with alternate scroll (mode 1007) gets arrow keys; otherwise the
-    /// view moves through scrollback, and nothing is sent.
-    func scroll(rows: Int, at input: MouseInput, layout: PixelLayout) -> Data {
-        guard rows != 0 else { return Data() }
-        return locked {
-            var tracking = false
-            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
-            var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
-            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
-            var bytes = Data()
-            if tracking {
-                var wheel = input
-                wheel.action = GHOSTTY_MOUSE_ACTION_PRESS
-                wheel.button = rows < 0 ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE
-                for _ in 0 ..< abs(rows) { bytes += encodeLocked(wheel, layout: layout) }
-            } else if screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE,
-                      (try? mode(ghostty_mode_new(1007, false))) == true {
-                let arrow = KeyInput(key: rows < 0 ? GHOSTTY_KEY_ARROW_UP : GHOSTTY_KEY_ARROW_DOWN)
-                for _ in 0 ..< abs(rows) { bytes += encodeLocked(arrow) }
-            } else {
-                var behavior = GhosttyTerminalScrollViewport()
-                behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
-                behavior.value.delta = rows
-                ghostty_terminal_scroll_viewport(terminal, behavior)
-            }
-            return bytes
-        }
-    }
-
-    /// Pasted text as the program should receive it: wrapped when it asked for
-    /// bracketed paste (mode 2004), with newlines as returns when it did not,
-    /// and with control bytes that could end the paste early replaced.
-    func encodePaste(_ text: String) -> Data {
+    /// The grid's size in cells.
+    var grid: (rows: UInt16, cols: UInt16) {
         locked {
-            let bracketed = (try? mode(ghostty_mode_new(2004, false))) ?? false
-            var input = Array(text.utf8).map { CChar(bitPattern: $0) }
-            let bytes = input.withUnsafeMutableBufferPointer { input in
-                Self.encoded { buffer, capacity, length in
-                    ghostty_paste_encode(input.baseAddress, input.count, bracketed, buffer, capacity, length)
-                }
-            }
-            if !bytes.isEmpty { scrollToBottomLocked() }
-            return bytes
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            return (rows, cols)
         }
     }
 
-    /// The focus report, for a program that asked for one (mode 1004).
-    func encodeFocus(_ gained: Bool) -> Data {
+    /// Moves this view through scrollback by `rows`, negative up. Only the
+    /// client's view moves; the session is untouched.
+    func scrollViewport(rows: Int) {
         locked {
-            guard (try? mode(ghostty_mode_new(1004, false))) == true else { return Data() }
-            return Self.encoded { buffer, capacity, length in
-                ghostty_focus_encode(gained ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST, buffer, capacity, length)
-            }
+            var behavior = GhosttyTerminalScrollViewport()
+            behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+            behavior.value.delta = rows
+            ghostty_terminal_scroll_viewport(terminal, behavior)
         }
     }
 
@@ -494,7 +334,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Back to the live screen, as a keystroke does in Ghostty.
-    func scrollToBottom() {
+    func scrollViewportToBottom() {
         locked { scrollToBottomLocked() }
     }
 
@@ -514,28 +354,6 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var behavior = GhosttyTerminalScrollViewport()
         behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
         ghostty_terminal_scroll_viewport(terminal, behavior)
-    }
-
-    /// Runs an encoder that writes into a buffer and reports the length it
-    /// needed when the buffer was too small, as all of libghostty's do.
-    private static func encoded(
-        _ encode: (UnsafeMutablePointer<CChar>?, Int, UnsafeMutablePointer<Int>) -> GhosttyResult
-    ) -> Data {
-        var capacity = 128
-        while true {
-            var buffer = [CChar](repeating: 0, count: capacity)
-            var length = 0
-            let result = buffer.withUnsafeMutableBufferPointer { encode($0.baseAddress, capacity, &length) }
-            switch result {
-            case GHOSTTY_SUCCESS:
-                return Data(buffer.prefix(length).map { UInt8(bitPattern: $0) })
-            case GHOSTTY_OUT_OF_SPACE where length > capacity:
-                capacity = length
-            default:
-                Log.termiod.error("stream input encoding failed: \(result.rawValue, privacy: .public)")
-                return Data()
-            }
-        }
     }
 
     /// Applies an `E vt_resize` marker: the same operation the daemon's sidecar

@@ -1552,8 +1552,74 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         info: Option<Box<SessionInfo>>,
     },
+    /// Input from a `vt_stream` client, sent to the host, which encodes it
+    /// against its own VT's modes, as Rex's server does: the client's terminal
+    /// is a round trip behind the program. `key` is Ghostty's name for the
+    /// physical key (`arrow_up`); `mods` and `consumed_mods` are libghostty's
+    /// modifier bits; `text` is what the layout typed, never a control code.
+    Key {
+        action: InputAction,
+        key: String,
+        #[serde(default)]
+        mods: u16,
+        #[serde(default)]
+        consumed_mods: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default)]
+        unshifted: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        composing: bool,
+    },
+    /// Pasted text, which the host brackets as the program asked.
+    Paste { text: String },
+    /// A mouse event at a point in pixels from the grid's top-left corner, in
+    /// the client's cell size. `button` is 1 left, 2 right, 3 middle, 4 to 11
+    /// the rest, absent for plain motion; `buttons_held` is whether any is down
+    /// once this event has happened.
+    Mouse {
+        action: InputAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<u8>,
+        #[serde(default)]
+        mods: u16,
+        x: f32,
+        y: f32,
+        cell_width: u32,
+        cell_height: u32,
+        #[serde(default)]
+        buttons_held: bool,
+    },
+    /// A wheel turned by whole rows and columns, negative up and left. The host
+    /// sends wheel buttons or cursor keys as the program's modes say, or
+    /// nothing, when the turn is the client's own scrollback.
+    Wheel {
+        #[serde(default)]
+        rows: i32,
+        #[serde(default)]
+        columns: i32,
+        #[serde(default)]
+        mods: u16,
+        x: f32,
+        y: f32,
+        cell_width: u32,
+        cell_height: u32,
+    },
+    /// The client's pane gained or lost focus. Reported to a program that
+    /// asked (mode 1004), and remembered, so one that asks later is told.
+    Focus { focused: bool },
     #[serde(other)]
     Unknown,
+}
+
+/// What a key or mouse event did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputAction {
+    Press,
+    Release,
+    Repeat,
+    Motion,
 }
 
 /// A row in `termiod list`.

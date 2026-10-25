@@ -101,6 +101,13 @@ pub enum SessionMsg {
         id: ClientId,
         data: Vec<u8>,
     },
+    /// Input from a `vt_stream` attachment as an event, which the session
+    /// encodes against its own VT's modes. Only a `key`, `paste`, `mouse`,
+    /// `wheel` or `focus` event reaches here.
+    InputEvent {
+        id: ClientId,
+        event: crate::protocol::Event,
+    },
     /// One attachment's viewport changed, or it started or stopped rendering.
     /// The PTY's size is derived from the whole set (`apply_size_policy`); this
     /// message never sets it directly.
@@ -385,6 +392,12 @@ struct Session {
     pty: Arc<Pty>,
     /// A dedicated writer prevents blocked PTY writes from stalling reads.
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    /// The encoders `vt_stream` input goes through, which the sidecar keeps
+    /// at the modes of the last byte it parsed (`termiod_vt::InputEncoder`).
+    input: Arc<Mutex<termiod_vt::InputEncoder>>,
+    /// Whether the writer's pane has focus, as it last said: a program that
+    /// turns focus reports on later is told at once, as Ghostty tells it.
+    writer_focused: Option<bool>,
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
@@ -477,12 +490,21 @@ impl Session {
     }
 
     fn recompute_writer(&mut self) {
-        self.writer = self
+        let writer = self
             .clients
             .iter()
             .filter_map(|(id, entry)| entry.role.attach_seq().map(|seq| (id, seq)))
             .max_by_key(|(_, seq)| *seq)
             .map(|(id, _)| id.clone());
+        self.set_writer(writer);
+    }
+
+    /// Another writer's focus is not known until its pane says.
+    fn set_writer(&mut self, writer: Option<ClientId>) {
+        if writer != self.writer {
+            self.writer_focused = None;
+        }
+        self.writer = writer;
     }
 
     /// The write token only ever moves through here, and only ever onto a
@@ -495,8 +517,94 @@ impl Session {
         {
             return false;
         }
-        self.writer = Some(id.clone());
+        self.set_writer(Some(id.clone()));
         true
+    }
+
+    /// A `vt_stream` client's input event, encoded with the modes of the last
+    /// byte the sidecar parsed. Everything but focus is typing, and follows
+    /// `Input`'s rules: only the writer's lands, and it counts as use.
+    fn input_event(&mut self, id: &ClientId, event: crate::protocol::Event) {
+        use crate::protocol::{Event, InputAction};
+        use termiod_vt::{KeyAction, MouseAction, Pointer};
+        if self.writer.as_ref() != Some(id) {
+            // A pane that merely gained focus is not claiming the session; its
+            // report is the writer's to make.
+            if !matches!(event, Event::Focus { .. }) {
+                self.reject_not_writer(id);
+            }
+            return;
+        }
+        let Ok(mut encoder) = self.input.lock() else { return };
+        let bytes = match event {
+            Event::Key { action, key, mods, consumed_mods, text, unshifted, composing } => {
+                let action = match action {
+                    InputAction::Release => KeyAction::Release,
+                    InputAction::Repeat => KeyAction::Repeat,
+                    InputAction::Press | InputAction::Motion => KeyAction::Press,
+                };
+                encoder.key(&termiod_vt::KeyInput {
+                    action,
+                    key,
+                    mods,
+                    consumed_mods,
+                    text,
+                    unshifted,
+                    composing,
+                })
+            }
+            Event::Paste { text } => encoder.paste(&text),
+            Event::Mouse { action, button, mods, x, y, cell_width, cell_height, buttons_held } => {
+                let action = match action {
+                    InputAction::Press => MouseAction::Press,
+                    InputAction::Release => MouseAction::Release,
+                    InputAction::Motion | InputAction::Repeat => MouseAction::Motion,
+                };
+                encoder.mouse(&termiod_vt::MouseInput {
+                    action,
+                    button,
+                    mods,
+                    at: Pointer { x, y, cell_width, cell_height },
+                    buttons_held,
+                })
+            }
+            Event::Wheel { rows, columns, mods, x, y, cell_width, cell_height } => {
+                encoder.wheel(&termiod_vt::WheelInput {
+                    rows,
+                    columns,
+                    mods,
+                    at: Pointer { x, y, cell_width, cell_height },
+                })
+            }
+            Event::Focus { focused } => {
+                drop(encoder);
+                self.writer_focused = Some(focused);
+                self.report_writer_focus();
+                return;
+            }
+            _ => return,
+        };
+        drop(encoder);
+        if bytes.is_empty() {
+            return;
+        }
+        self.status_engine.note_user_input(std::time::Instant::now());
+        self.note_use(id);
+        self.apply_size_policy();
+        let _ = self.input_tx.send(bytes);
+    }
+
+    /// Tells the program whether the writer's pane has focus, if it asked for
+    /// focus reports and the writer has said.
+    fn report_writer_focus(&mut self) {
+        let Some(focused) = self.writer_focused else { return };
+        let bytes = match self.input.lock() {
+            Ok(encoder) => encoder.focus(focused),
+            Err(_) => return,
+        };
+        if !bytes.is_empty() {
+            let _ = self.input_tx.send(bytes);
+        }
     }
 
     fn allocate_snapshot_request(&mut self) -> u64 {
@@ -2007,7 +2115,10 @@ fn start(
         }
     });
 
-    let sidecar = spawn_sidecar(facts.rows, facts.cols)?;
+    let input = Arc::new(Mutex::new(
+        termiod_vt::InputEncoder::new().map_err(|error| anyhow::anyhow!("input encoders: {error}"))?,
+    ));
+    let sidecar = spawn_sidecar_sharing(facts.rows, facts.cols, input.clone())?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let termination_reason = Arc::new(Mutex::new(None));
@@ -2030,6 +2141,8 @@ fn start(
         workstream: facts.workstream,
         pty,
         input_tx,
+        input,
+        writer_focused: None,
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
@@ -2155,7 +2268,31 @@ fn screen_tick(
     }
 }
 
+#[cfg(test)]
 fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
+    let input = termiod_vt::InputEncoder::new()
+        .map_err(|error| anyhow::anyhow!("input encoders: {error}"))?;
+    spawn_sidecar_sharing(rows, cols, Arc::new(Mutex::new(input)))
+}
+
+/// Copies the VT's modes into the session's input encoders, and says when the
+/// program has just turned focus reports on.
+fn refresh_input(
+    input: &Mutex<termiod_vt::InputEncoder>,
+    terminal: Option<&termiod_vt::VtTerminal>,
+) -> bool {
+    let Some(terminal) = terminal else { return false };
+    let Ok(mut encoder) = input.lock() else { return false };
+    let before = encoder.modes().focus_reporting;
+    encoder.refresh(terminal);
+    !before && encoder.modes().focus_reporting
+}
+
+fn spawn_sidecar_sharing(
+    rows: u16,
+    cols: u16,
+    input: Arc<Mutex<termiod_vt::InputEncoder>>,
+) -> anyhow::Result<Sidecar> {
     // The channel itself stays unbounded and fire-and-forget — PTY delivery must
     // never wait for VT parsing. `SidecarQueue` is the budget instead: the
     // producer stops feeding the VT and declares it stale rather than blocking
@@ -2178,6 +2315,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
             let mut fault = terminal
                 .is_none()
                 .then(|| "VT sidecar initialization failed".to_string());
+            refresh_input(&input, terminal.as_ref());
             let mut pending = None;
             let mut grid_diff_wanted = false;
             let mut frame_seq = 0u32;
@@ -2259,6 +2397,11 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 Err(std_mpsc::TryRecvError::Disconnected) => return,
                             }
                         }
+                        if refresh_input(&input, terminal.as_ref())
+                            && result_tx.send(SidecarResult::FocusReportsOn).is_err()
+                        {
+                            break;
+                        }
                         if let Some(signal) = programs.take_signal() {
                             signals.push(signal);
                         }
@@ -2310,6 +2453,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
                                 }
+                                refresh_input(&input, Some(terminal));
                             }
                         }
                     }
@@ -2631,6 +2775,7 @@ async fn run(
                             }
                         }
                     }
+                    Some(SidecarResult::FocusReportsOn) => session.report_writer_focus(),
                     Some(SidecarResult::Screen(tick)) => {
                         let now = std::time::Instant::now();
                         if let Some(change) =
@@ -2972,6 +3117,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 session.reject_not_writer(&id);
             }
         }
+        SessionMsg::InputEvent { id, event } => session.input_event(&id, event),
         SessionMsg::Viewport {
             id,
             rows,
@@ -3324,6 +3470,8 @@ mod tests {
                 workstream: None,
                 pty,
                 input_tx,
+                input: Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap())),
+                writer_focused: None,
                 clients: HashMap::new(),
                 writer: None,
                 next_seq: 0,
@@ -3383,6 +3531,7 @@ mod tests {
             // snapshot FIFO's boundaries; the engine has its own tests, and
             // routing them here would put a wall clock in an ordering test.
             SidecarResult::Osc(_) | SidecarResult::Screen(_) => {}
+            SidecarResult::FocusReportsOn => session.report_writer_focus(),
         }
     }
 
@@ -3511,6 +3660,52 @@ mod tests {
     /// Attaching is what took the token before this verb existed, so the phone
     /// permanently muted the Mac the moment it looked at a session, and the Mac
     /// could only answer by tearing its attachment down and rebuilding it. The
+    /// `vt_stream` input arrives as events and is encoded here, against the
+    /// modes of the host's own VT (Rex's model): application cursor keys turn
+    /// Up into `ESC O A` with no help from the client. Only the writer types,
+    /// and a pane's focus report waits until the program asks for one.
+    #[tokio::test]
+    async fn input_events_are_encoded_with_the_host_vt_modes() {
+        use crate::protocol::{Event, InputAction};
+        let Sidecar { commands, results: _results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        session.input_tx = input_tx;
+        let mut vt = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        vt.vt_write(b"\x1b[?1h");
+        session.input.lock().unwrap().refresh(&vt);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        let _phone = attach_interactive_client(&mut session, "phone");
+        assert!(claim_writer(&mut session, "mac"));
+        let up = || Event::Key {
+            action: InputAction::Press,
+            key: "arrow_up".into(),
+            mods: 0,
+            consumed_mods: 0,
+            text: None,
+            unshifted: 0,
+            composing: false,
+        };
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: up() });
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1bOA");
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("phone"), event: up() });
+        assert!(input_rx.try_recv().is_err(), "an attachment without the token does not type");
+
+        let focus = |focused| Event::Focus { focused };
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: focus(true) });
+        assert!(input_rx.try_recv().is_err(), "nobody asked for focus reports");
+        vt.vt_write(b"\x1b[?1004h");
+        session.input.lock().unwrap().refresh(&vt);
+        session.report_writer_focus();
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I", "told at once when it asks");
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("phone"), event: focus(false) });
+        assert!(input_rx.try_recv().is_err(), "only the writer's pane reports focus");
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
     /// token travels by typing instead.
     #[tokio::test]
     async fn the_write_token_follows_the_device_being_used() {
@@ -4711,6 +4906,8 @@ mod tests {
             workstream: None,
             pty,
             input_tx,
+            input: Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap())),
+            writer_focused: None,
             clients: HashMap::from([(
                 ClientId::new("writer"),
                 ClientEntry {

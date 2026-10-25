@@ -1829,6 +1829,157 @@ public enum Termiod {
         try encodeControl(DetachOperation())
     }
 
+    /// Input a `vt_stream` client sends as an `E` event. termiod encodes it
+    /// against its own VT's modes, as Rex's server does, so the bytes match the
+    /// program even when it changed modes while the event was in flight. A
+    /// key is named by Ghostty (`arrow_up`), never by the C enum's number: a
+    /// remote daemon may run another engine release for a while.
+    public enum InputEvent: Equatable, Sendable {
+        case key(Key)
+        case paste(String)
+        case mouse(Mouse)
+        case wheel(Wheel)
+        case focus(Bool)
+
+        public enum Action: String, Encodable, Sendable {
+            case press, release, `repeat`, motion
+        }
+
+        public struct Key: Equatable, Sendable {
+            public var action: Action
+            public var key: String
+            /// libghostty's modifier bits.
+            public var mods: UInt16
+            public var consumedMods: UInt16
+            /// What the layout typed; never a control code or a function key.
+            public var text: String?
+            public var unshifted: UInt32
+            public var composing: Bool
+
+            public init(action: Action = .press, key: String, mods: UInt16 = 0, consumedMods: UInt16 = 0,
+                        text: String? = nil, unshifted: UInt32 = 0, composing: Bool = false) {
+                self.action = action
+                self.key = key
+                self.mods = mods
+                self.consumedMods = consumedMods
+                self.text = text
+                self.unshifted = unshifted
+                self.composing = composing
+            }
+        }
+
+        /// A point in pixels from the grid's top-left corner, in the cell size
+        /// the client draws.
+        public struct Pointer: Equatable, Sendable {
+            public var x: Float
+            public var y: Float
+            public var cellWidth: UInt32
+            public var cellHeight: UInt32
+
+            public init(x: Float, y: Float, cellWidth: UInt32, cellHeight: UInt32) {
+                self.x = x
+                self.y = y
+                self.cellWidth = cellWidth
+                self.cellHeight = cellHeight
+            }
+        }
+
+        public struct Mouse: Equatable, Sendable {
+            public var action: Action
+            /// 1 left, 2 right, 3 middle, 4 to 11 the rest; nil for plain motion.
+            public var button: UInt8?
+            public var mods: UInt16
+            public var at: Pointer
+            /// Whether any button is down once this event has happened.
+            public var buttonsHeld: Bool
+
+            public init(action: Action, button: UInt8?, mods: UInt16, at: Pointer, buttonsHeld: Bool) {
+                self.action = action
+                self.button = button
+                self.mods = mods
+                self.at = at
+                self.buttonsHeld = buttonsHeld
+            }
+        }
+
+        /// Whole rows and columns, negative up and left.
+        public struct Wheel: Equatable, Sendable {
+            public var rows: Int32
+            public var columns: Int32
+            public var mods: UInt16
+            public var at: Pointer
+
+            public init(rows: Int32, columns: Int32, mods: UInt16, at: Pointer) {
+                self.rows = rows
+                self.columns = columns
+                self.mods = mods
+                self.at = at
+            }
+        }
+
+        private struct Wire: Encodable {
+            let ev: String
+            var action: Action?
+            var key: String?
+            var mods: UInt16?
+            var consumedMods: UInt16?
+            var text: String?
+            var unshifted: UInt32?
+            var composing: Bool?
+            var button: UInt8?
+            var x: Float?
+            var y: Float?
+            var cellWidth: UInt32?
+            var cellHeight: UInt32?
+            var buttonsHeld: Bool?
+            var rows: Int32?
+            var columns: Int32?
+            var focused: Bool?
+        }
+
+        public func payload() throws -> Data {
+            var wire: Wire
+            switch self {
+            case .key(let key):
+                wire = Wire(ev: "key")
+                wire.action = key.action
+                wire.key = key.key
+                wire.mods = key.mods
+                wire.consumedMods = key.consumedMods
+                wire.text = key.text
+                wire.unshifted = key.unshifted
+                wire.composing = key.composing
+            case .paste(let text):
+                wire = Wire(ev: "paste")
+                wire.text = text
+            case .mouse(let mouse):
+                wire = Wire(ev: "mouse")
+                wire.action = mouse.action
+                wire.button = mouse.button
+                wire.mods = mouse.mods
+                wire.buttonsHeld = mouse.buttonsHeld
+                Self.place(mouse.at, in: &wire)
+            case .wheel(let wheel):
+                wire = Wire(ev: "wheel")
+                wire.rows = wheel.rows
+                wire.columns = wheel.columns
+                wire.mods = wheel.mods
+                Self.place(wheel.at, in: &wire)
+            case .focus(let focused):
+                wire = Wire(ev: "focus")
+                wire.focused = focused
+            }
+            return try encodeControl(wire)
+        }
+
+        private static func place(_ pointer: Pointer, in wire: inout Wire) {
+            wire.x = pointer.x
+            wire.y = pointer.y
+            wire.cellWidth = pointer.cellWidth
+            wire.cellHeight = pointer.cellHeight
+        }
+    }
+
     public static func claimWriterPayload() throws -> Data {
         try encodeControl(ClaimWriterOperation())
     }

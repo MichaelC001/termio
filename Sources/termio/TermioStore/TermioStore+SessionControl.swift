@@ -472,21 +472,18 @@ extension TermioStore {
         // not_live. (A session mounted even once stays mounted, so this only fires
         // on the very first drive.)
         //
+        //
         // A pane on the `vt_stream` plane never makes that surface; its keys go
-        // through the client terminal's encoder instead, which holds the modes
-        // the program negotiated (the surface stopped hearing them).
+        // to termiod as events, which it encodes against its own VT's modes.
         if state.surface == nil, streamTerminal(for: session.id) == nil { activateInBackground(session.id) }
         let attachDeadline = Date().addingTimeInterval(3)
         while state.surface == nil, streamTerminal(for: session.id) == nil, Date() < attachDeadline {
             try? await Task.sleep(for: .milliseconds(150))
         }
         let press: (SessionKeyPress) -> Void
-        if let link = runtimes[session.id]?.streamLink, let terminal = link.streamTerminal {
+        if let link = runtimes[session.id]?.streamLink, link.isStreaming {
             press = { key in
-                for input in TermiodStreamKeyboard.inputs(for: key) {
-                    let bytes = terminal.encode(input)
-                    if !bytes.isEmpty { link.send(bytes) }
-                }
+                for input in TermiodStreamKeyboard.inputs(for: key) { link.sendInput(.key(input)) }
             }
         } else if let surfaceHandle = Self.rawSurface(from: state) {
             press = { Self.pressKey($0, on: surfaceHandle) }
