@@ -1,0 +1,83 @@
+import AppKit
+import GhosttyVt
+import XCTest
+@testable import termio
+
+/// The stream renderer, drawn offscreen: no window, so it runs anywhere Metal
+/// does. Pixels are read back at cells whose color the screen fixes, and
+/// `TERMIO_RENDER_OUT=<file.png>` saves the frame to look at by eye.
+@MainActor
+final class StreamRendererTests: XCTestCase {
+    private let appearance = TermiodStreamRenderer.Appearance(
+        fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, cursorStyle: .block,
+        paddingX: 8, paddingY: 2, backgroundOpacity: 1
+    )
+
+    private func terminal() throws -> TermiodStreamTerminal {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "vt-stream-resize", withExtension: "txt", subdirectory: "Fixtures"))
+        let attach = try XCTUnwrap(
+            try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first { $0.hasPrefix("attach ") })
+        var native = Data()
+        var high: UInt8?
+        for character in attach.dropFirst("attach ".count).utf8 {
+            let nibble = try XCTUnwrap(UInt8(String(UnicodeScalar(character)), radix: 16))
+            if let first = high { native.append(first << 4 | nibble); high = nil } else { high = nibble }
+        }
+        let terminal = try TermiodStreamTerminal(nativeSnapshot: native)
+        // Finish the OSC the snapshot was taken inside, then start clean.
+        terminal.write(Data("\u{7}\u{1b}[2J\u{1b}[H".utf8))
+        try terminal.resize(rows: 10, cols: 40, reflow: true)
+        return terminal
+    }
+
+    private func colors() -> TermiodStreamTerminal.Colors {
+        var palette = [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 128, g: 128, b: 128), count: 256)
+        palette[1] = GhosttyColorRgb(r: 220, g: 40, b: 40)
+        palette[4] = GhosttyColorRgb(r: 40, g: 80, b: 220)
+        return TermiodStreamTerminal.Colors(
+            foreground: GhosttyColorRgb(r: 230, g: 230, b: 230),
+            background: GhosttyColorRgb(r: 20, g: 20, b: 20),
+            cursor: nil, palette: palette
+        )
+    }
+
+    func testAFrameDrawsTheThemeTheCellsAndTheText() throws {
+        let terminal = try terminal()
+        try terminal.setColors(colors())
+        let screen = [
+            "\u{1b}[41m  red  \u{1b}[0m \u{1b}[1mbold\u{1b}[0m \u{1b}[3mitalic\u{1b}[0m \u{1b}[2mfaint\u{1b}[0m",
+            "\u{1b}[4msingle\u{1b}[0m \u{1b}[4:2mdouble\u{1b}[0m \u{1b}[4:3mcurly\u{1b}[0m \u{1b}[9mstrike\u{1b}[0m",
+            "\u{1b}[38;2;255;160;0mtrue colour\u{1b}[0m \u{1b}[44;97m blue \u{1b}[0m \u{1b}[7minverse\u{1b}[0m",
+            "你好，世界 ┌──┐ 🚀✨ e\u{301}",
+            "$ ",
+        ].joined(separator: "\r\n")
+        terminal.write(Data(screen.utf8))
+
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let metrics = renderer.atlas.metrics
+        let width = Int(2 * appearance.paddingX) + metrics.width * 40
+        let height = Int(2 * appearance.paddingY * 2) + metrics.height * 10
+        let image = try renderer.image(of: terminal, width: width, height: height)
+        if let path = ProcessInfo.processInfo.environment["TERMIO_RENDER_OUT"] {
+            let representation = NSBitmapImageRep(cgImage: image)
+            try representation.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        }
+
+        // The texture's own bytes, BGRA: reading through NSColor would color-manage them.
+        let pixels = try XCTUnwrap(image.dataProvider?.data as Data?)
+        func color(column: Int, row: Int, dx: Int = 1, dy: Int = 1) -> (Int, Int, Int) {
+            let x = Int(appearance.paddingX * 2) + column * metrics.width + dx
+            let y = Int(appearance.paddingY * 2) + row * metrics.height + dy
+            let offset = y * image.bytesPerRow + x * 4
+            return (Int(pixels[offset + 2]), Int(pixels[offset + 1]), Int(pixels[offset]))
+        }
+        // The cell corner, where no glyph reaches: only the background shows.
+        XCTAssertEqual(color(column: 0, row: 0).0, 220, accuracy: 2, "red background cell")
+        XCTAssertEqual(color(column: 30, row: 6).2, 20, accuracy: 2, "theme background below the text")
+        // ` blue ` starts at column 12 of row 2.
+        XCTAssertEqual(color(column: 13, row: 2).2, 220, accuracy: 2, "palette blue background")
+        // The block cursor sits after `$ ` on row 4, drawn in the foreground.
+        XCTAssertEqual(color(column: 2, row: 4).0, 230, accuracy: 2, "block cursor")
+    }
+}

@@ -1,5 +1,6 @@
 import Foundation
 import GhosttyVt
+import os
 
 /// The client's own copy of a session's screen on the `vt_stream` plane: a
 /// libghostty-vt terminal that follows the daemon's byte for byte.
@@ -13,8 +14,10 @@ import GhosttyVt
 /// marker where its own VT changed size, so applying the same operation at the
 /// same byte leaves both screens identical, with no keyframe to wait for.
 ///
-/// Confined to the one thread that reads the stream.
-final class TermiodStreamTerminal {
+/// Two threads use it: the link's reader writes bytes and applies markers, and
+/// the renderer copies the screen out once a frame. One lock covers both, held
+/// by the renderer only for `ghostty_render_state_begin_update`.
+final class TermiodStreamTerminal: @unchecked Sendable {
     enum Failure: Error, Equatable {
         case engine(String, GhosttyResult)
     }
@@ -30,14 +33,34 @@ final class TermiodStreamTerminal {
     static let continuationLimit = 1 << 20
 
     private let terminal: GhosttyTerminal
+    private let lock = NSLock()
+    /// Raised by the renderer before it asks for `lock`. NSLock is not fair, and
+    /// a reader writing chunk after chunk re-takes it before a waiting renderer
+    /// wakes: the phase 1 spike measured frames starved for up to 34 ms.
+    private let rendererWaiting = OSAllocatedUnfairLock(initialState: false)
+    /// What the terminal answers a program's query with — a cursor position
+    /// report, a mode report. Called on the writing thread, inside `write`.
+    private let onReply: (Data) -> Void
 
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
     /// may survive into the new stream.
-    init(nativeSnapshot: Data) throws {
+    init(nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in }) throws {
         terminal = try nativeSnapshot.withUnsafeBytes { buffer in
             try Self.decode(buffer.bindMemory(to: UInt8.self))
         }
+        self.onReply = onReply
+        let userdata = Unmanaged.passUnretained(self).toOpaque()
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata), "ghostty_terminal_set(userdata)")
+        let reply: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
+            guard let userdata, let bytes, count > 0 else { return }
+            let owner = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue()
+            owner.onReply(Data(bytes: bytes, count: count))
+        }
+        try Self.check(
+            ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(reply, to: UnsafeRawPointer.self)),
+            "ghostty_terminal_set(write_pty)"
+        )
     }
 
     /// The decoder borrows `bytes` until it is freed, so everything from its
@@ -70,6 +93,11 @@ final class TermiodStreamTerminal {
     }
 
     func write(_ bytes: Data) {
+        locked { writeLocked(bytes) }
+        while rendererWaiting.withLock({ $0 }) { sched_yield() }
+    }
+
+    private func writeLocked(_ bytes: Data) {
         bytes.withUnsafeBytes { buffer in
             let bytes = buffer.bindMemory(to: UInt8.self)
             guard let base = bytes.baseAddress else { return }
@@ -77,15 +105,72 @@ final class TermiodStreamTerminal {
         }
     }
 
+    /// The theme: libghostty resolves "default foreground" and palette indices
+    /// against these, so a session drawn by two Macs follows each one's theme.
+    /// A decoded snapshot carries none of the daemon's, which never sets any.
+    func setColors(_ colors: Colors) throws {
+        try locked {
+            var foreground = colors.foreground
+            var background = colors.background
+            var palette = colors.palette
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground), "ghostty_terminal_set(foreground)")
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background), "ghostty_terminal_set(background)")
+            if var cursor = colors.cursor {
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor), "ghostty_terminal_set(cursor)")
+            } else {
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, nil), "ghostty_terminal_set(cursor)")
+            }
+            try palette.withUnsafeMutableBufferPointer { buffer in
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, buffer.baseAddress), "ghostty_terminal_set(palette)")
+            }
+        }
+    }
+
+    struct Colors: Equatable {
+        static func == (left: Colors, right: Colors) -> Bool {
+            func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
+            return same(left.foreground, right.foreground) && same(left.background, right.background)
+                && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
+                && left.palette.count == right.palette.count
+                && zip(left.palette, right.palette).allSatisfy(same)
+        }
+
+        var foreground: GhosttyColorRgb
+        var background: GhosttyColorRgb
+        var cursor: GhosttyColorRgb?
+        /// Exactly 256 entries.
+        var palette: [GhosttyColorRgb]
+    }
+
+    /// Copies the screen into `state` for a frame. The terminal is locked only
+    /// for the half of the update that reads it.
+    func capture(into state: GhosttyRenderState) throws {
+        rendererWaiting.withLock { $0 = true }
+        lock.lock()
+        rendererWaiting.withLock { $0 = false }
+        let began = ghostty_render_state_begin_update(state, terminal)
+        lock.unlock()
+        try Self.check(began, "ghostty_render_state_begin_update")
+        try Self.check(ghostty_render_state_end_update(state), "ghostty_render_state_end_update")
+    }
+
+    private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
     /// Applies an `E vt_resize` marker: the same operation the daemon's sidecar
     /// applied at this byte (`SidecarCommand::Resize` in `termiod/src/session.rs`).
     /// `reflow` is set when no shell held the terminal, and the screen rewraps;
     /// otherwise this is `resize_for_shell`.
     func resize(rows: UInt16, cols: UInt16, reflow: Bool) throws {
-        if reflow {
-            try resizeReflowing(rows: rows, cols: cols)
-        } else {
-            try resizeForShell(rows: rows, cols: cols)
+        try locked {
+            if reflow {
+                try resizeReflowing(rows: rows, cols: cols)
+            } else {
+                try resizeForShell(rows: rows, cols: cols)
+            }
         }
     }
 
@@ -105,6 +190,10 @@ final class TermiodStreamTerminal {
     }
 
     func screen() throws -> Screen {
+        try locked { try screenLocked() }
+    }
+
+    private func screenLocked() throws -> Screen {
         var rows: UInt16 = 0
         var cols: UInt16 = 0
         var widthPixels: UInt32 = 0
@@ -182,7 +271,7 @@ final class TermiodStreamTerminal {
             try resizeTruncating(rows: rows, cols: cols)
             return
         }
-        write(Data("\u{1b}7\u{1b}[\(UInt32(promptRow) + 1);1H\u{1b}[J\u{1b}8".utf8))
+        writeLocked(Data("\u{1b}7\u{1b}[\(UInt32(promptRow) + 1);1H\u{1b}[J\u{1b}8".utf8))
         try resizeReflowing(rows: rows, cols: cols)
     }
 

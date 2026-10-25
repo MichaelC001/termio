@@ -60,4 +60,7 @@ final class SessionRuntime {
     /// between them is not another viewer, it is a declaration that host will
     /// never answer. Pinning the surface to it freezes the terminal for good.
     var sizesByPolicy = false
+    /// Whether the session's link is on the `vt_stream` plane, where the pane
+    /// draws the link's own terminal instead of the embedded surface.
+    var streaming = false
 }
