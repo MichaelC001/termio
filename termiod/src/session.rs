@@ -81,6 +81,7 @@ pub enum SessionMsg {
         snapshot: bool,
         scrollback: bool,
         grid_diff: bool,
+        vt_stream: bool,
         reply: oneshot::Sender<AddClientReply>,
     },
     /// A client asks to be repainted: it lost bytes somewhere downstream and
@@ -257,6 +258,13 @@ enum ClientPlane {
     /// Negotiated `snapshot` + `grid_diff`: server-parsed cells and keyframes,
     /// never downstream PTY bytes.
     Grid(ClientDelivery),
+    /// Negotiated `snapshot` + `vt_stream`: the client keeps its own VT in step
+    /// with this one. `S` is libghostty's native snapshot, which it decodes
+    /// into a fresh terminal; after that it gets raw PTY bytes and a
+    /// `vt_resize` marker wherever this VT resized — no barrier, no keyframe.
+    /// A resize still re-snapshots it while its attach snapshot is pending,
+    /// because markers deferred behind a barrier would land after its data.
+    Stream(ClientDelivery),
 }
 
 impl ClientPlane {
@@ -268,19 +276,27 @@ impl ClientPlane {
         matches!(self, ClientPlane::Grid(_))
     }
 
+    fn is_stream(&self) -> bool {
+        matches!(self, ClientPlane::Stream(_))
+    }
+
     /// Where this attachment stands relative to its snapshot boundary. `None`
     /// for a raw attachment, which has no boundary and is live by construction.
     fn delivery(&self) -> Option<&ClientDelivery> {
         match self {
             ClientPlane::Raw => None,
-            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+            ClientPlane::Snapshot(delivery)
+            | ClientPlane::Grid(delivery)
+            | ClientPlane::Stream(delivery) => Some(delivery),
         }
     }
 
     fn delivery_mut(&mut self) -> Option<&mut ClientDelivery> {
         match self {
             ClientPlane::Raw => None,
-            ClientPlane::Snapshot(delivery) | ClientPlane::Grid(delivery) => Some(delivery),
+            ClientPlane::Snapshot(delivery)
+            | ClientPlane::Grid(delivery)
+            | ClientPlane::Stream(delivery) => Some(delivery),
         }
     }
 
@@ -549,6 +565,34 @@ impl Session {
         }
     }
 
+    /// Resize this session's VT, and put the same operation in every live
+    /// `vt_stream` client's stream at this exact byte position, so their VTs
+    /// make it too. Sent whether or not the sidecar is live: the clients' VTs
+    /// do not depend on it. A pending client gets no marker; its attach
+    /// snapshot is re-requested by the barrier instead.
+    fn resize_vt(&mut self, rows: u16, cols: u16, reflow: bool) {
+        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
+        let marker = Event::VtResize {
+            session: self.id.to_string(),
+            rows,
+            cols,
+            reflow,
+        };
+        let dead = self
+            .clients
+            .iter()
+            .filter(|(_, entry)| entry.plane.is_stream() && !entry.plane.is_pending())
+            .filter_map(|(id, entry)| {
+                entry
+                    .out
+                    .send(ClientEvent::Event(marker.clone()))
+                    .is_err()
+                    .then(|| id.clone())
+            })
+            .collect();
+        self.remove_dead(dead);
+    }
+
     fn send_sidecar(&mut self, command: SidecarCommand) -> bool {
         let was_live = self.vt.is_live();
         let sent = self.vt.send(command);
@@ -683,10 +727,16 @@ impl Session {
             self.finish_snapshot(&client_id, request_id, Err(reason));
             return;
         }
+        let native = self
+            .clients
+            .get(&client_id)
+            .is_some_and(|entry| entry.plane.is_stream());
         if !self.send_sidecar(SidecarCommand::Snapshot {
             client_id: client_id.clone(),
             request_id,
-            scrollback,
+            // The native snapshot already carries the scrollback.
+            scrollback: scrollback && !native,
+            native,
         }) {
             self.finish_snapshot(&client_id, request_id, Err(sidecar::UNAVAILABLE.to_string()));
         }
@@ -740,10 +790,14 @@ impl Session {
     /// output that scrolled past the top during the barrier keeps its place in
     /// the scrollback.
     fn begin_resize_snapshot_barrier(&mut self) {
+        // A live `vt_stream` client is not behind this barrier: it got the
+        // `vt_resize` marker in place and resizes its own VT.
         let snapshot_clients: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, entry)| entry.plane.snapshots())
+            .filter(|(_, entry)| {
+                entry.plane.snapshots() && !(entry.plane.is_stream() && !entry.plane.is_pending())
+            })
             .map(|(id, _)| id.clone())
             .collect();
         let mut requests = Vec::with_capacity(snapshot_clients.len());
@@ -1132,7 +1186,7 @@ impl Session {
         // repainted it: the session sat at a bare cursor (the "prompt
         // disappeared" report), because zsh may skip its redisplay for a
         // nudge that changes nothing.
-        self.send_sidecar(SidecarCommand::Resize { rows, cols, reflow });
+        self.resize_vt(rows, cols, reflow);
         let applied = match self.pty.resize(rows, cols) {
             Ok(applied) => applied,
             Err(error) => {
@@ -1144,11 +1198,7 @@ impl Session {
                     "termiod: resize of session {} to {rows}x{cols} failed: {error}",
                     self.id
                 );
-                self.send_sidecar(SidecarCommand::Resize {
-                    rows: self.rows,
-                    cols: self.cols,
-                    reflow: true,
-                });
+                self.resize_vt(self.rows, self.cols, true);
                 return;
             }
         };
@@ -1164,11 +1214,7 @@ impl Session {
             );
             // The VT already took the requested grid; align it with the one
             // the kernel actually kept.
-            self.send_sidecar(SidecarCommand::Resize {
-                rows: applied.0,
-                cols: applied.1,
-                reflow: true,
-            });
+            self.resize_vt(applied.0, applied.1, true);
         }
         let (rows, cols) = applied;
         // The kernel can have kept the size it already had, in which case the
@@ -1305,6 +1351,7 @@ impl Session {
         // colour (their theme, their palette, full SGR). Grid-diff clients are
         // server-state by design and need packed cells to seed the grid.
         let snapshot_vt = if entry.plane.is_grid() { None } else { capture.vt };
+        let native = if entry.plane.is_stream() { capture.native } else { None };
         if let Some(scrollback) = capture.scrollback {
             match scrollback {
                 Ok(scrollback) => {
@@ -1331,7 +1378,7 @@ impl Session {
                 ),
             }
         }
-        let snapshot = self.protocol_snapshot(engine, snapshot_vt);
+        let snapshot = self.protocol_snapshot(engine, snapshot_vt, native);
 
         if entry.out.send(ClientEvent::Snapshot(snapshot)).is_err()
             || entry
@@ -1372,8 +1419,14 @@ impl Session {
         history_pending
     }
 
-    fn protocol_snapshot(&self, engine: termiod_vt::Snapshot, vt: Option<Vec<u8>>) -> Snapshot {
+    fn protocol_snapshot(
+        &self,
+        engine: termiod_vt::Snapshot,
+        vt: Option<Vec<u8>>,
+        native: Option<Vec<u8>>,
+    ) -> Snapshot {
         Snapshot {
+            native,
             vt,
             rows: engine.rows,
             cols: engine.cols,
@@ -1394,7 +1447,7 @@ impl Session {
 
     fn fan_out_keyframe(&mut self, engine: termiod_vt::Snapshot) {
         // Keyframes only reach grid-diff clients, which want cells.
-        let snapshot = self.protocol_snapshot(engine, None);
+        let snapshot = self.protocol_snapshot(engine, None, None);
         let dead = self
             .clients
             .iter_mut()
@@ -1465,6 +1518,27 @@ impl Session {
             self.id
         );
         release_buffered(&entry.backlog, buffered);
+
+        // A `vt_stream` client replaces its terminal on every `S`. An empty one
+        // here gives it a blank terminal at the session's grid for the replay
+        // to land on, instead of its previous terminal's state.
+        if entry.plane.is_stream() {
+            let blank = Snapshot {
+                native: None,
+                vt: Some(Vec::new()),
+                rows: self.rows,
+                cols: self.cols,
+                cursor_x: 0,
+                cursor_y: 0,
+                alt_screen: false,
+                title: self.title.clone().unwrap_or_else(|| self.name.clone()),
+                cells: Vec::new(),
+            };
+            if entry.out.send(ClientEvent::Snapshot(blank)).is_err() {
+                self.remove_finished_client(client_id);
+                return;
+            }
+        }
 
         for replay in &self.ring {
             let Some(metered) = entry.backlog.reserve(replay.clone()) else {
@@ -2211,6 +2285,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                         client_id,
                         request_id,
                         scrollback,
+                        native,
                     } => {
                         let result = match (&fault, terminal.as_mut()) {
                             (Some(error), _) => Err(error.clone()),
@@ -2224,9 +2299,21 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                     // Captured at the same FIFO boundary as the
                                     // cell snapshot so both describe one screen.
                                     let vt = terminal.format_vt().ok();
+                                    let native = native
+                                        .then(|| match terminal.native_snapshot() {
+                                            Ok(bytes) => Some(bytes),
+                                            Err(error) => {
+                                                eprintln!(
+                                                    "termiod: native snapshot unavailable: {error}; sending the VT repaint"
+                                                );
+                                                None
+                                            }
+                                        })
+                                        .flatten();
                                     Ok(SidecarCapture {
                                         snapshot,
                                         vt,
+                                        native,
                                         scrollback: history,
                                     })
                                 }
@@ -2667,6 +2754,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             snapshot,
             scrollback,
             grid_diff,
+            vt_stream,
             reply,
         } => {
             // Only interactive attachments are numbered: the sequence exists
@@ -2718,6 +2806,8 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     };
                     if grid_diff {
                         ClientPlane::Grid(delivery)
+                    } else if vt_stream {
+                        ClientPlane::Stream(delivery)
                     } else {
                         ClientPlane::Snapshot(delivery)
                     }
@@ -3147,6 +3237,7 @@ mod tests {
                 client_id: ClientId::new("client"),
                 request_id: 1,
                 scrollback: false,
+                native: false,
             })
             .unwrap();
         sidecar
@@ -3310,6 +3401,7 @@ mod tests {
                 snapshot: false,
                 scrollback: false,
                 grid_diff: false,
+                vt_stream: false,
                 reply,
             },
         );
@@ -3375,6 +3467,7 @@ mod tests {
                 snapshot,
                 scrollback: false,
                 grid_diff: false,
+                vt_stream: false,
                 reply,
             },
         );
@@ -3891,6 +3984,145 @@ mod tests {
     /// Here the snapshot request is never answered, so the joining client sits
     /// in `SnapshotPending` for the whole test. Any stall the barrier imposed on
     /// the live client — for a moment or forever — is a missing `Data` below.
+    /// What a `vt_stream` client receives, with the marker's fields kept: the
+    /// order of bytes and markers is the whole contract.
+    #[derive(Debug, PartialEq)]
+    enum Streamed {
+        Data(Vec<u8>),
+        Snapshot { native: bool },
+        Ready,
+        VtResize { rows: u16, cols: u16, reflow: bool },
+        Resized { rows: u16, cols: u16 },
+    }
+
+    fn drain_stream(
+        client: &mut mpsc::UnboundedReceiver<ClientEvent>,
+    ) -> (Vec<Streamed>, Option<Vec<u8>>) {
+        let mut seen = Vec::new();
+        let mut native = None;
+        while let Ok(event) = client.try_recv() {
+            match event {
+                ClientEvent::Data(payload) => seen.push(Streamed::Data(payload.bytes.to_vec())),
+                ClientEvent::Snapshot(snapshot) => {
+                    seen.push(Streamed::Snapshot {
+                        native: snapshot.native.is_some(),
+                    });
+                    native = snapshot.native.or(native);
+                }
+                ClientEvent::Event(Event::Ready { .. }) => seen.push(Streamed::Ready),
+                ClientEvent::Event(Event::VtResize {
+                    rows, cols, reflow, ..
+                }) => seen.push(Streamed::VtResize { rows, cols, reflow }),
+                ClientEvent::Event(Event::Resized { rows, cols, .. }) => {
+                    seen.push(Streamed::Resized { rows, cols })
+                }
+                _ => {}
+            }
+        }
+        (seen, native)
+    }
+
+    /// The `vt_stream` plane end to end in the session actor: the attach `S`
+    /// is native and decodes to the host's screen, and a resize afterwards is a
+    /// marker in place between the bytes that straddle it — no barrier and no
+    /// keyframe. A `snapshot` client beside it still gets its barrier keyframe,
+    /// so the old plane is untouched.
+    #[tokio::test]
+    async fn a_stream_client_gets_a_marker_in_place_and_no_keyframe_on_resize() {
+        let Sidecar {
+            commands,
+            mut results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        // A real PTY, so the resize is applied rather than refused.
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let (stream_tx, mut stream) = mpsc::unbounded_channel();
+        let (reply, _reply_rx) = oneshot::channel();
+        handle_msg(
+            &mut session,
+            SessionMsg::AddClient {
+                id: ClientId::new("stream"),
+                interactive: true,
+                rows: 0,
+                cols: 0,
+                rendering: true,
+                out: stream_tx,
+                backlog: Arc::new(ClientBacklog::new()),
+                snapshot: true,
+                scrollback: true,
+                grid_diff: false,
+                vt_stream: true,
+                reply,
+            },
+        );
+        let (mut keyframed, _keyframed_backlog) = attach_snapshot_client(&mut session, "keyframed");
+        session.write_sidecar(Bytes::from_static(b"\x1b[1;32mhello\x1b[0m"));
+        session.fan_out(Bytes::from_static(b"\x1b[1;32mhello\x1b[0m"));
+        pump_sidecar(&mut session, &mut results, 2).await;
+
+        let (attach, native) = drain_stream(&mut stream);
+        assert_eq!(
+            attach[..2],
+            [Streamed::Snapshot { native: true }, Streamed::Ready],
+            "the attach S was not native"
+        );
+        let mut decoded =
+            termiod_vt::VtTerminal::from_native_snapshot(&native.expect("native bytes"))
+                .expect("the native snapshot did not decode");
+        // The S was captured where the attach landed in the VT's FIFO; bytes
+        // written after it follow it as data, and the client applies them.
+        for item in &attach[2..] {
+            match item {
+                Streamed::Data(bytes) => decoded.vt_write(bytes),
+                other => panic!("unexpected after the attach S: {other:?}"),
+            }
+        }
+        drain(&mut keyframed);
+
+        session.write_sidecar(Bytes::from_static(b"before"));
+        session.fan_out(Bytes::from_static(b"before"));
+        declare_viewport(&mut session, "stream", 10, 40, true);
+        session.write_sidecar(Bytes::from_static(b"after"));
+        session.fan_out(Bytes::from_static(b"after"));
+        pump_sidecar(&mut session, &mut results, 1).await;
+
+        let (streamed, _) = drain_stream(&mut stream);
+        assert_eq!(
+            streamed,
+            vec![
+                Streamed::Data(b"before".to_vec()),
+                Streamed::VtResize {
+                    rows: 10,
+                    cols: 40,
+                    reflow: false
+                },
+                Streamed::Resized { rows: 10, cols: 40 },
+                Streamed::Data(b"after".to_vec()),
+            ],
+            "the marker was not in place, or a keyframe was sent"
+        );
+        assert!(
+            drain(&mut keyframed).contains(&Received::Snapshot),
+            "the snapshot-plane client lost its barrier keyframe"
+        );
+
+        // The client applies the stream; its screen is the host's.
+        decoded.vt_write(b"before");
+        decoded.resize_for_shell(10, 40).unwrap();
+        decoded.vt_write(b"after");
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
+        let mut reference = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        reference.vt_write(b"\x1b[1;32mhello\x1b[0mbefore");
+        reference.resize_for_shell(10, 40).unwrap();
+        reference.vt_write(b"after");
+        assert_eq!(decoded.format_vt().unwrap(), reference.format_vt().unwrap());
+    }
+
     #[tokio::test]
     async fn a_pending_snapshot_never_holds_up_another_client() {
         let Sidecar {
@@ -4508,6 +4740,7 @@ mod tests {
             snapshot: true,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         answer.await.expect("attached");
@@ -4663,6 +4896,7 @@ mod tests {
             snapshot: true,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -4724,6 +4958,7 @@ mod tests {
             snapshot: false,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         answer.await.expect("attached");
@@ -4774,6 +5009,7 @@ mod tests {
             snapshot: false,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -4835,6 +5071,7 @@ mod tests {
             snapshot: false,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         answer.await.expect("attached");
@@ -4916,6 +5153,7 @@ mod tests {
             snapshot: false,
             scrollback: false,
             grid_diff: false,
+            vt_stream: false,
             reply,
         });
         let granted = answer.await.expect("attached");

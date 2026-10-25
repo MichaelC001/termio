@@ -2813,6 +2813,8 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
             subscriptions.contains("roster")
         }
         Event::Resized { .. } => false,
+        // A marker in one attachment's byte stream; meaningless anywhere else.
+        Event::VtResize { .. } => false,
         Event::Ready { .. } => false,
         // Both are addressed to one attachment's stream, not to the roster: a
         // resync is that client's own, and a stale VT only means anything to a
@@ -2860,6 +2862,8 @@ async fn run_attach(
             && connection.capabilities.contains("scrollback"),
         grid_diff: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("grid_diff"),
+        vt_stream: connection.capabilities.contains("snapshot")
+            && connection.capabilities.contains("vt_stream"),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
