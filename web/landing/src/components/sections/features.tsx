@@ -4,7 +4,7 @@ import { Section, Stage } from "@/components/section-label";
 import { cn } from "@/lib/utils";
 import { testflightUrl } from "@/lib/site";
 
-// Three panels after Cursor's feature sections: the text and the picture share
+// Four panels after Cursor's feature sections: the text and the picture share
 // one card, so the words sit against the thing they describe instead of
 // floating in the page. The text is anchored to the panel's bottom corner and
 // the sides swap panel by panel. Every picture is a silent loop rendered from
@@ -16,7 +16,14 @@ const rows = [
     blurb: "Every session shows working, done or waiting on you.",
     video: "session-status",
     label:
-      "Termio's sidebar: one agent turns orange because it needs you, three turn green as they finish",
+      "Termio's sidebar: one agent turns orange because it needs you, two turn green as they finish",
+  },
+  {
+    title: "Quit Termio. Agents keep going.",
+    blurb: "Sessions live in the background, so reopening brings back the same screen.",
+    video: "survive-quit",
+    label:
+      "Termio quits with Command-Q and reopens on the same session, where the agent has read further",
   },
   {
     title: "Every agent, one switch.",
