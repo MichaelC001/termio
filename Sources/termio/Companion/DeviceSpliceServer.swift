@@ -105,7 +105,7 @@ final class DeviceSpliceServer {
         let token = daemon.token
         websocket.setClientRequestHandler(handshakeQueue) { subprotocols, _ in
             // Read per handshake rather than once at start, the way the daemon
-            // reads it, so `termiod pair --rotate` signs phones out on their
+            // reads it, so `termio pair --rotate` signs phones out on their
             // next dial instead of on the app's next launch.
             guard let expected = token(),
                   let offered = subprotocols.first(where: {

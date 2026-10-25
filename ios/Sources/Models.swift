@@ -619,7 +619,7 @@ enum CompanionLink {
         }
     }
 
-    /// What `termiod pair` puts in a `termio://device` link. No display name:
+    /// What `termio pair` puts in a `termio://device` link. No display name:
     /// the host never supplies one, so `PairedMac.name` stands.
     struct DeviceInvite: Equatable {
         /// The dial URL, already resolved to `ws(s)://…/ws`.

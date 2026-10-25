@@ -583,7 +583,7 @@ async fn stop_helper(child: &mut Child, stdin: Option<tokio::process::ChildStdin
 }
 
 // ---------------------------------------------------------------------------
-// `termiod tailscale`
+// `termio server tailscale`
 // ---------------------------------------------------------------------------
 
 pub struct OnOptions {
@@ -637,7 +637,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
     // Connecting starts a daemon when none is running.
     crate::client::connect().await?;
     if options.no_wait {
-        println!("Built-in Tailscale is on. `termiod tailscale status` shows its progress.");
+        println!("Built-in Tailscale is on. `termio server tailscale status` shows its progress.");
         return Ok(());
     }
 
@@ -678,7 +678,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
             }
         }
         if std::time::Instant::now() > deadline {
-            bail!("still not signed in after 10 minutes. Built-in Tailscale stays on; `termiod tailscale status` shows the link.");
+            bail!("still not signed in after 10 minutes. Built-in Tailscale stays on; `termio server tailscale status` shows the link.");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -689,7 +689,7 @@ pub fn run_off() -> Result<()> {
     let mut config = read_config()?;
     config.enabled = false;
     write_config(&config)?;
-    println!("Built-in Tailscale is off. This box stays signed in; `termiod tailscale logout` signs it out.");
+    println!("Built-in Tailscale is off. This box stays signed in; `termio server tailscale logout` signs it out.");
     Ok(())
 }
 

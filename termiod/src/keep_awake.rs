@@ -14,7 +14,7 @@
 //! short-lived `caffeinate -i -t LEASE` process is renewed on a timer; when
 //! nothing is busy the last lease simply runs out, which is also the grace
 //! period. Nothing is ever released, so every exit path is covered by the same
-//! non-mechanism: a crash, `termiod stop`, and the `execve` handoff (which
+//! non-mechanism: a crash, `termio server stop`, and the `execve` handoff (which
 //! runs no destructors and would orphan any long-lived child this module kept)
 //! all leave at most one lease that expires on its own. `-i` limits the
 //! assertion to idle system sleep — the display still sleeps.

@@ -19,6 +19,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 const TOKEN: &str = "test-pairing-token-0123456789ab";
 
 // ---------------------------------------------------------------------------
@@ -119,8 +120,9 @@ fn start_daemon(tag: &str, token: Option<&str>, inherited: bool) -> Daemon {
 }
 
 fn create_session(daemon: &Daemon, name: &str, script: &str) {
-    let created = Command::new(BIN)
+    let created = Command::new(CLIENT)
         .args([
+            "server",
             "create", "--name", name, "--", "bash", "--norc", "-c", script,
         ])
         .env("TERMIOD_SOCK", &daemon.socket)
@@ -335,8 +337,8 @@ async fn framed_protocol_is_byte_identical_over_the_websocket() {
     );
 
     // Live bytes after the barrier reach both attachments identically.
-    let sent = Command::new(BIN)
-        .args(["send", "wsssession", "echo", "LIVE_MARK"])
+    let sent = Command::new(CLIENT)
+        .args(["server", "send", "wsssession", "echo", "LIVE_MARK"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .output()
         .expect("send");
@@ -429,7 +431,7 @@ fn an_explicit_bind_without_a_token_refuses_the_whole_start() {
     assert!(!output.status.success(), "serve started without a token");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("termiod pair"),
+        stderr.contains("termio pair"),
         "the refusal did not point at pairing: {stderr}"
     );
     assert!(
@@ -530,7 +532,7 @@ async fn rotating_the_token_drops_a_live_splice_without_killing_the_session() {
     let (kind, _) = client.read_frame().await;
     assert_eq!(kind, b'C', "no hello_ok before rotating");
 
-    let rotated = Command::new(BIN)
+    let rotated = Command::new(CLIENT)
         .args(["pair", "--rotate"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .output()
@@ -550,8 +552,8 @@ async fn rotating_the_token_drops_a_live_splice_without_killing_the_session() {
     };
     assert!(closed, "the splice survived a token rotation");
 
-    let listed = Command::new(BIN)
-        .args(["list", "--json"])
+    let listed = Command::new(CLIENT)
+        .args(["server", "list", "--json"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .output()
         .expect("list");
@@ -571,8 +573,8 @@ fn pair_mints_once_and_rotate_replaces() {
     let socket = dir.join("termiod.sock");
 
     let run = |args: &[&str]| {
-        Command::new(BIN)
-            .arg("pair")
+        Command::new(CLIENT)
+            .args(["pair"])
             .args(args)
             .env("TERMIOD_SOCK", &socket)
             .output()
@@ -619,7 +621,7 @@ fn pair_refuses_a_qr_with_no_reachable_url() {
     let socket = dir.join("termiod.sock");
 
     for flag in ["--qr", "--json"] {
-        let output = Command::new(BIN)
+        let output = Command::new(CLIENT)
             .args(["pair", flag])
             .env("TERMIOD_SOCK", &socket)
             .env_remove("TERMIOD_WSS_ORIGIN")
@@ -630,7 +632,7 @@ fn pair_refuses_a_qr_with_no_reachable_url() {
         assert!(stderr.contains("no reachable URL"), "pair {flag}: {stderr}");
     }
 
-    let output = Command::new(BIN)
+    let output = Command::new(CLIENT)
         .args(["pair", "--json", "--url", "https://box.example/termio/"])
         .env("TERMIOD_SOCK", &socket)
         .output()
@@ -662,7 +664,7 @@ fn wss_off_removes_the_durable_bind() {
         "an explicit --wss with a token did not persist the bind"
     );
 
-    let output = Command::new(BIN)
+    let output = Command::new(CLIENT)
         .args(["pair", "--wss-off"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .output()

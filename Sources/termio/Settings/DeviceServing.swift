@@ -42,7 +42,7 @@ final class PairingModel: ObservableObject {
     private var invitedBase: String?
     /// A mint is in flight. The tunnel reports `.starting` and then `.running`
     /// within a second or two, and each is a trigger — without this the pane
-    /// forks two `termiod pair` processes for one address.
+    /// forks two `termio pair` processes for one address.
     private var minting = false
     /// What a refresh asked for while a mint was in flight. Run when the mint
     /// ends: dropping it left the sheet on a spinner, or on the old address.
@@ -75,7 +75,7 @@ final class PairingModel: ObservableObject {
     }
 
     /// Re-reads everything that can change while the pane is closed. The invite
-    /// is minted again even for the same address: `termiod pair --rotate` run in
+    /// is minted again even for the same address: `termio pair --rotate` run in
     /// a terminal revokes the token it carries without moving the address.
     func refresh() {
         token = PairingToken.current
@@ -711,7 +711,7 @@ private func pairingFootnote(_ text: String) -> some View {
 /// Plain CoreImage QR (medium error correction), rendered nearest-neighbor so
 /// the modules stay sharp at display size. Shared by both arms of the pane:
 /// this Mac encodes its own `ws://…` address, a remote box encodes the
-/// `termio://device` invite its own `termiod pair` minted.
+/// `termio://device` invite its own `termio pair` minted.
 func pairingQRImage(for string: String) -> NSImage? {
     let filter = CIFilter(name: "CIQRCodeGenerator")
     filter?.setValue(Data(string.utf8), forKey: "inputMessage")

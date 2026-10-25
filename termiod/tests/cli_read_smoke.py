@@ -87,8 +87,8 @@ def main():
 
         name = "8D0FBEEF-0000-4000-8000-000000000001"
         code, out, err = run(
-            TERMIOD,
-            ["create", "--name", name, "--", "/bin/sh", "-c",
+            TERMIO,
+            ["server", "create", "--name", name, "--", "/bin/sh", "-c",
              "printf 'hello from the daemon screen\\n'; sleep 60"],
         )
         check("create", code == 0, f"    {code} {out!r} {err!r}")

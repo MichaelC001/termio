@@ -3,8 +3,8 @@ title: 问题排查
 description: 真正会出问题的那些事——状态点不动、Agent 起不来、重启之后会话不见了、一台机器不应答了、手机连不上——每一条都给一个去看而不是去猜的办法。
 x-i18n:
   source_path: troubleshooting.mdx
-  source_hash: cf19eb0361cc6db3c2091346474ab41538a89b2a4a145327779c02b472967bfc
-  generated_at: 2026-10-18
+  source_hash: c8dc1577913ec63bed6e13f7a889815f62a619227d6acdd7d188cb816813c7a1
+  generated_at: 2026-10-25
 ---
 
 几乎所有看起来像 Termio bug 的东西，都是下面这些情况之一，而每一条都有一个去查而不是去猜的
@@ -15,13 +15,13 @@ x-i18n:
 在任何机器、任何状态下，这三条能回答掉大部分问题：
 
 ```bash
-termiod status                 # 这里装了什么，有没有 daemon 在应答？
-termiod list                   # 它手上有哪些会话？
-termiod logs -n 200            # 没人看着的时候发生了什么
+termio server status           # 这里装了什么，有没有 daemon 在应答？
+termio server list             # 它手上有哪些会话？
+termio server logs -n 200      # 没人看着的时候发生了什么
 ```
 
-尤其是 `termiod status`，它终结了相当一部分「它坏了」的报告：它会说装的是哪个二进制、哪个
-版本，以及 socket 上到底有没有东西在听。想问另一台机器，`termiod list --host <box>` 会通过
+尤其是 `termio server status`，它终结了相当一部分「它坏了」的报告：它会说装的是哪个二进制、哪个
+版本，以及 socket 上到底有没有东西在听。想问另一台机器，`termio server -H <box> status` 会通过
 你自己的 SSH 配置去查那台机器上的 daemon。
 
 ## 状态点从来不变
@@ -84,8 +84,8 @@ shell——在软链存在之前就起的会话里，`PATH` 的缓存是旧的�
 没有服务的话，server 只活到你这次登录会话结束为止。装一个，它就能扛过登出、崩溃和重启：
 
 ```bash
-termiod service install
-termiod service status
+termio server service install
+termio server service status
 ```
 
 这是远程机器上最常见的意外——那上面根本没人交互式登录过。参见
@@ -98,8 +98,8 @@ termiod service status
 
 ```bash
 ssh mybox true                 # SSH 本身通不通？
-termiod list --host mybox      # 那边的 server 在应答吗？
-termiod deploy --host mybox    # 重装并校验一遍
+termio server -H mybox ls       # 那边的 server 在应答吗？
+termio server -H mybox deploy     # 重装并校验一遍
 ```
 
 `deploy` 是一次对账，所以对一台状态糟糕的机器跑它是安全的。密钥是到处都能用的那种凭据，
@@ -135,18 +135,18 @@ termiod deploy --host mybox    # 重装并校验一遍
 server 会记录没人附着时发生过什么——而那恰恰是 bug 最爱掉进去的那段窗口。
 
 ```bash
-termiod logs -n 200            # 最近的尾部
-termiod logs -f                # 实时跟着看
-termiod logs --path            # 文件本身，用来提 bug
+termio server logs -n 200      # 最近的尾部
+termio server logs -f          # 实时跟着看
+termio server logs --path      # 文件本身，用来提 bug
 ```
 
 <Callout type="tip">
-  在复现一个时有时无的问题？让 `termiod logs -f` 自己占一个窗格跑着。这份日志是唯一一份
+  在复现一个时有时无的问题？让 `termio server logs -f` 自己占一个窗格跑着。这份日志是唯一一份
   横跨了「你不在」那段时间的记录。
 </Callout>
 
 ## 还是卡住了
 
 去 [github.com/termio-sh/termio](https://github.com/termio-sh/termio/issues) 开一个
-issue，附上 `termiod status` 的输出和 `termiod logs` 的尾部。这两样回答了维护者本来要问的
+issue，附上 `termio server status` 的输出和 `termio server logs` 的尾部。这两样回答了维护者本来要问的
 大部分问题。再加上 macOS 版本、Termio 版本，以及会话是在本机还是在另一台机器上。

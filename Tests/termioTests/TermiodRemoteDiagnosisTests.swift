@@ -1,7 +1,7 @@
 import TermioShared
 import XCTest
 
-/// What the roster shows when `ssh <host> termiod stdio` dies before the
+/// What the roster shows when `ssh <host> termio stdio` dies before the
 /// handshake (issue #498): the diagnosis is ssh's own last word, never the
 /// narration around it, and a missing daemon is translated into the fix.
 final class TermiodRemoteDiagnosisTests: XCTestCase {

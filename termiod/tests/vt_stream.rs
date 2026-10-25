@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use termiod_vt::VtTerminal;
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 const QUIET: Duration = Duration::from_millis(800);
 
 const COMPOSER: &str = r#"
@@ -117,8 +118,8 @@ impl Drop for Client {
 }
 
 fn attach(socket: &str, session: &str, rows: u16, cols: u16, mode: &str) -> Client {
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -243,8 +244,9 @@ fn a_stream_client_holds_the_host_screen_through_resizes_with_no_keyframe() {
     let daemon = start_daemon("composer");
     let script = std::env::temp_dir().join(format!("vt-stream-composer-{}.py", std::process::id()));
     std::fs::write(&script, COMPOSER).unwrap();
-    let created = Command::new(BIN)
+    let created = Command::new(CLIENT)
         .args([
+            "server",
             "create",
             "--name",
             "composer",
@@ -296,8 +298,8 @@ fn a_stream_client_holds_the_host_screen_through_resizes_with_no_keyframe() {
 }
 
 fn granted(socket: &str, offered: &[&str]) -> Vec<String> {
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -339,8 +341,8 @@ fn vt_stream_and_grid_diff_are_never_granted_together() {
 #[test]
 fn vt_stream_is_not_granted_without_events() {
     let daemon = start_daemon("caps");
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -135,7 +135,7 @@ install_binaries() {
 # `status --json` is pretty-printed; squeezed flat, one grep reads it. Empty
 # when the binary could not answer at all.
 status_flat() {
-    out="$("$TERMIOD" status --json 2>/dev/null)" || return 1
+    out="$("$TERMIO" server status --json 2>/dev/null)" || return 1
     printf '%s' "$out" | tr -d ' \n\t'
 }
 
@@ -159,8 +159,8 @@ keep_running() {
         SERVICE_OK=1
         return 0
     fi
-    if ! "$TERMIOD" service install; then
-        say "    A Mac may have started termiod here over SSH. Run termiod stop once"
+    if ! "$TERMIO" server service install; then
+        say "    A Mac may have started termiod here over SSH. Run termio server stop once"
         say "    its sessions are done, then run this installer again."
         return 0
     fi
@@ -175,16 +175,16 @@ join_tailnet() {
     [ "$TAILNET" = 1 ] && [ "$SERVICE_OK" = 1 ] || return 0
     if [ -n "$AUTH_KEY_FILE" ]; then
         step "Joining your tailnet with the auth key"
-        "$TERMIOD" tailscale on --auth-key-file "$AUTH_KEY_FILE" && JOINED=1
+        "$TERMIO" server tailscale on --auth-key-file "$AUTH_KEY_FILE" && JOINED=1
         return 0
     fi
     if [ ! -t 1 ]; then
-        say "    Not run from a terminal, so the tailnet is left for later: $TERMIOD tailscale on"
+        say "    Not run from a terminal, so the tailnet is left for later: $TERMIO server tailscale on"
         return 0
     fi
     step "Joining your tailnet with built-in Tailscale"
     say "    Sign in with the Tailscale account your Mac and iPhone use. Only that account gets in."
-    "$TERMIOD" tailscale on && JOINED=1
+    "$TERMIO" server tailscale on && JOINED=1
     return 0
 }
 
@@ -197,6 +197,7 @@ main() {
     PREFIX="${TERMIO_PREFIX:-$HOME/.local}"
     BIN="$PREFIX/bin"
     TERMIOD="$BIN/termiod"
+    TERMIO="$BIN/termio"
     BINARIES="termiod termio termio-tailnet"
     VERSION=""
     SERVICE=1
@@ -231,9 +232,9 @@ main() {
     # pid, same PTYs, nothing in a session notices.
     if daemon_running; then
         step "Upgrading the running daemon in place"
-        if ! "$TERMIOD" handoff; then
+        if ! "$TERMIO" server handoff; then
             say "    The running daemon couldn't take the new build in place."
-            say "    It picks it up at its next start: termiod stop, once its sessions are done."
+            say "    It picks it up at its next start: termio server stop, once its sessions are done."
         fi
     fi
 
@@ -242,7 +243,7 @@ main() {
 
     say ""
     say "termio $VERSION is installed: $TERMIOD"
-    if [ "$JOINED" = 1 ] && "$TERMIOD" pair --qr > "$WORK/invite" 2>/dev/null; then
+    if [ "$JOINED" = 1 ] && "$TERMIO" pair --qr > "$WORK/invite" 2>/dev/null; then
         say ""
         say "To use this machine from a Mac, open Settings > Remote Hosts > + > Pair with a Device..."
         say "and paste this link. Scan the code with the iPhone app to pair a phone."
@@ -251,7 +252,7 @@ main() {
     else
         say "A Mac can reach it over SSH: Settings > Remote Hosts > + > Add SSH Host..."
         [ "$TAILNET" = 1 ] && [ "$SERVICE_OK" = 1 ] && [ "$JOINED" = 0 ] &&
-            say "To pair over your tailnet later: $TERMIOD tailscale on, then $TERMIOD pair --qr"
+            say "To pair over your tailnet later: $TERMIO server tailscale on, then $TERMIO pair --qr"
     fi
     return 0
 }

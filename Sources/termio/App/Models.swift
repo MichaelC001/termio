@@ -529,7 +529,7 @@ struct Session: Identifiable, Hashable, Codable {
     var isSSH: Bool { sshHost != nil }
 
     /// When set, this session runs **inside a `termiod` daemon on an SSH host**
-    /// rather than locally: the Mac attaches over `ssh <host> termiod stdio` and
+    /// rather than locally: the Mac attaches over `ssh <host> termio stdio` and
     /// the shell/agent lives on the remote box (see `TermioStore.addRemoteTerminal`).
     /// Unlike `sshHost` — which launches a plain `ssh <host>` in a *local* PTY —
     /// this is the durable termiod path, so detach-not-kill and snapshot repaint

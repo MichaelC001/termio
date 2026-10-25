@@ -6,7 +6,7 @@ import TermioShared
 /// Mac itself.
 ///
 /// The invite is minted **on the box**, by the `termiod` already deployed there:
-/// `termiod pair --json` prints the URL it is reachable at, the token it will
+/// `termio pair --json` prints the URL it is reachable at, the token it will
 /// demand, and its `host_id`. This Mac only carries the answer over the SSH it
 /// already has and draws the QR — it never invents a token, and it never decides
 /// where a remote box is reachable, because only the box knows either.
@@ -15,7 +15,7 @@ import TermioShared
 /// `--json` and pushes the invite; an operator sitting on the box runs `--qr`
 /// and scans the screen in front of them. This is the first rung, wired to a UI.
 enum RemotePairing {
-    /// What `termiod pair --json` prints. `host_id` is the box's identity, not a
+    /// What `termio pair --json` prints. `host_id` is the box's identity, not a
     /// name — the phone names the box itself (device architecture §4).
     struct Invite: Equatable {
         let url: String
@@ -51,7 +51,7 @@ enum RemotePairing {
     /// Asks `<alias>` for an invite. `rotate` issues a new token first, which
     /// signs out every phone already paired with that box.
     ///
-    /// The box's own answer, never an override. `termiod pair` takes a `--url`,
+    /// The box's own answer, never an override. `termio pair` takes a `--url`,
     /// and passing it here would be a trap: it changes only the address the
     /// invite *prints*, not the origins the daemon will accept, so the QR scans
     /// and the connection is then refused with a 403 the phone cannot explain.
@@ -72,7 +72,7 @@ enum RemotePairing {
     static func invite(from alias: String, rotate: Bool = false) async throws -> Invite {
         let environment = await RemoteTunnelService.listenerOrigin(of: alias)
             .map { "TERMIOD_WSS_ORIGIN=\(RemoteShell.quoted($0)) " } ?? ""
-        let command = "\(environment)\(Termiod.remoteBinary()) pair --json\(rotate ? " --rotate" : "")"
+        let command = "\(environment)\(Termiod.remoteClient()) pair --json\(rotate ? " --rotate" : "")"
         let result = try await run(alias: alias, command: command)
         guard result.status == 0 else {
             throw Failure(message: message(from: result))
@@ -149,24 +149,22 @@ enum RemotePairing {
         }
     }
 
-    /// The bundled `termiod`, run against this app's own channel so it reads the
-    /// state directory the running daemon uses. Without the variable a dev build
+    /// The bundled `termio`, run against this app's own channel so it reads the
+    /// state directory the running daemon uses. Without the channel a dev build
     /// would mint a pairing token for the release channel's daemon.
     private static func runLocally(arguments: [String]) async throws -> Result {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let binary = Termiod.daemonBinaryPath()
+                let binary = Termiod.clientBinaryPath()
                 guard FileManager.default.isExecutableFile(atPath: binary) else {
                     continuation.resume(throwing: Failure(
-                        message: localized("The termiod binary wasn't found at \(binary).")))
+                        message: localized("The termio binary wasn't found at \(binary).")))
                     return
                 }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: binary)
                 process.arguments = arguments
-                var environment = ProcessInfo.processInfo.environment
-                environment["TERMIO_CHANNEL"] = Termiod.channelName
-                process.environment = environment
+                process.environment = Termiod.clientEnvironment()
                 let out = Pipe()
                 let err = Pipe()
                 process.standardOutput = out
@@ -511,7 +509,7 @@ struct RemotePairingSection: View {
     /// Dials the box the way the phone will, before showing a QR that says it
     /// can be dialled.
     ///
-    /// `termiod pair` never contacts the daemon — it reads the token and the
+    /// `termio pair` never contacts the daemon — it reads the token and the
     /// origin off disk — so an invite proves only that the box has *opinions*
     /// about where it is reachable. The path from there to the phone crosses a
     /// relay, a fresh listener and an origin pin, and every one of them fails as

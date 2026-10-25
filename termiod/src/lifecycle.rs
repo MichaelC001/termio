@@ -230,7 +230,7 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
     }
 }
 
-// MARK: Node side — `termiod status`
+// MARK: Node side — `termio server status`
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStatus {
@@ -254,20 +254,6 @@ pub struct NodeStatus {
     /// and every attach, and the machine has already answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os: Option<String>,
-}
-
-impl NodeStatus {
-    /// Whether this machine takes a `termio` client from a deploy.
-    ///
-    /// The same rule `remote::target_takes_a_client` applies to a detected
-    /// target, answered from the machine's own report instead: a Mac links its
-    /// own client from its app bundle and is sent none. A build too old to name
-    /// its OS is treated as a box, which is what every machine this loop had
-    /// deployed to before Macs were reachable was — and the first upgrade makes
-    /// it answer for itself.
-    pub fn takes_a_client(&self) -> bool {
-        self.os.as_deref() != Some("macos")
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,13 +341,30 @@ pub enum Supervisor {
 /// one connection — this replaces `test -x`, two handshakes and a roster read
 /// as separate round trips over ssh.
 pub async fn status() -> Result<NodeStatus> {
+    match paired_daemon() {
+        Ok(daemon) => status_of(&daemon).await,
+        Err(_) => status_with(BinaryStatus {
+            version: String::new(),
+            path: String::new(),
+        })
+        .await,
+    }
+}
+
+/// [`status`] for a daemon binary named by the caller.
+pub async fn status_of(daemon: &Path) -> Result<NodeStatus> {
+    // The daemon is a separate file from the client answering here, so its
+    // build is asked of it rather than assumed to be this one: a staged daemon
+    // that does not answer `--version` is exactly what the loop must replace.
+    status_with(BinaryStatus {
+        version: binary_version(daemon).await.1.unwrap_or_default(),
+        path: daemon.display().to_string(),
+    })
+    .await
+}
+
+async fn status_with(binary: BinaryStatus) -> Result<NodeStatus> {
     let socket = paths::socket_path()?;
-    let binary = BinaryStatus {
-        version: BUILD_VERSION.to_string(),
-        path: std::env::current_exe()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default(),
-    };
     let client = client_beside_this_binary().await;
     let host_id = paths::stored_host_id();
     let mut daemon = DaemonStatus {
@@ -448,6 +451,61 @@ pub(crate) fn paired_client() -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// The `termiod` this process operates: `TERMIOD_BIN`, this process when it
+/// is the daemon, otherwise the daemon installed beside it. Every client verb
+/// that starts, supervises, upgrades or ships the daemon needs its path, and
+/// none of them may take `current_exe` for it now that the client is a
+/// different file.
+///
+/// The directory follows [`paired_client`]'s rule for the same reason: a
+/// client reached through a symlink pairs with the daemon beside the link,
+/// which is the one the control plane staged. The link's target directory is
+/// tried next, which is how `/usr/local/bin/termio` → the app bundle finds the
+/// bundled daemon.
+pub fn paired_daemon() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("TERMIOD_BIN").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(explicit));
+    }
+    let own = std::env::current_exe().context("resolving this executable")?;
+    // Any `termiod*` name is a daemon binary answering for itself: a renamed
+    // test daemon, or `termiod.prev` after a staged build renamed it aside.
+    if own
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("termiod"))
+    {
+        return Ok(own);
+    }
+    let invoked = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let mut directories: Vec<PathBuf> = Vec::new();
+    if let Some(directory) = invoked.as_deref().and_then(Path::parent) {
+        directories.push(directory.to_path_buf());
+    }
+    if let Some(directory) = own.parent() {
+        directories.push(directory.to_path_buf());
+    }
+    if let Some(directory) = own.canonicalize().ok().as_deref().and_then(Path::parent) {
+        directories.push(directory.to_path_buf());
+    }
+    if let Some(beside) = directories
+        .iter()
+        .map(|directory| directory.join("termiod"))
+        .find(|candidate| candidate.is_file())
+    {
+        return Ok(beside);
+    }
+    // The Mac's PATH link points at the app's support copy, which has no
+    // daemon beside it; the running app's bundle does. The channel's locator
+    // asks `lsappinfo` for that bundle, then tries the standalone install.
+    let channel = std::env::var("TERMIO_CHANNEL").unwrap_or_default();
+    let channel = crate::channel::Channel::named(if channel.is_empty() { "release" } else { &channel });
+    crate::channel::daemon_binary(&channel)
+        .with_context(|| format!("no termiod beside {} or in the running app", own.display()))
+}
+
 /// Which init owns the daemon, if any. This is what decides what "restart"
 /// means for a node: a supervised daemon is bounced by its supervisor, an
 /// unsupervised one is stopped and autostarted by the next client.
@@ -530,7 +588,7 @@ pub fn print_status(status: &NodeStatus) {
     }
 }
 
-// MARK: Node side — `termiod stop`
+// MARK: Node side — `termio server stop`
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StopOutcome {
@@ -690,7 +748,7 @@ async fn still_serving(socket: &Path, pid: i32, budget: Duration) -> bool {
     }
 }
 
-// MARK: Node side — `termiod handoff`
+// MARK: Node side — `termio server handoff`
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffOutcome {
@@ -708,14 +766,15 @@ pub const HANDOFF_CAPABILITY: &str = "handoff";
 
 /// Ask the daemon on the canonical socket to become `binary`.
 ///
-/// Defaults to this executable, which is the shape a control plane wants: stage
-/// the new build over the old path, then run the new build's own `handoff`. The
+/// Defaults to the daemon beside this client, which is the shape a control
+/// plane wants: stage the new build over the old path, then run the new
+/// build's own `termio server handoff`. The
 /// daemon vets the path before it takes a single session apart, so a refusal
 /// here costs nothing.
 pub async fn handoff(binary: Option<PathBuf>) -> Result<HandoffOutcome> {
     let binary = match binary {
         Some(path) => path,
-        None => std::env::current_exe().context("resolving this executable")?,
+        None => paired_daemon()?,
     };
     let binary = binary
         .canonicalize()
@@ -896,7 +955,7 @@ fn version_stamp(printed: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `termiod handoff` — the CLI around [`handoff`].
+/// `termio server handoff` — the CLI around [`handoff`].
 pub async fn run_handoff(json: bool, binary: Option<PathBuf>) -> Result<()> {
     let outcome = handoff(binary).await?;
     if json {
@@ -941,6 +1000,10 @@ pub trait Node {
     fn label(&self) -> String;
     /// The daemon binary's path, as the node's own shell should see it.
     fn binary(&self) -> String;
+    /// The `termio` that runs the loop's commands on the node — `server
+    /// status`, `server handoff`, `server stop` — as the node's shell sees it.
+    /// The daemon itself answers only `serve`.
+    fn control(&self) -> String;
     /// Run a shell command on the node.
     fn run(&self, command: &str) -> impl std::future::Future<Output = Result<Run>> + Send;
     /// Copy `local` to `<name>` beside the daemon binary on the node.
@@ -1252,12 +1315,9 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             // daemon would destroy `termiod.prev`, the box's one rollback
             // point, to repair a file the daemon plane never lost.
             Some(_) => {
-                // A machine that takes no client — a Mac, which links its own
-                // from its app bundle — is current by having none. Asked only of
-                // the node's own report, never of the network: planning a client
-                // pass for one meant a `uname` round trip on every deploy and
-                // every attach, to stage nothing and say so wrongly.
-                let takes_client = node.client_binary().is_some() && status.takes_a_client();
+                // Only this Mac, whose client ships inside the app, takes none
+                // from the loop.
+                let takes_client = node.client_binary().is_some();
                 // `>=`, the same line `verify_client` holds: a client newer than
                 // this build is one a newer plane installed, and restaging would
                 // downgrade what verification would have accepted. Reachable
@@ -1416,7 +1476,7 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
         // too old to replace its own image, and as what `--force` reaches for
         // when the handoff itself fails.
         eprintln!("[deploy] asking the daemon on {label} to take on the new binary…");
-        let handoff = node.run(&format!("{} handoff --json", node.binary())).await?;
+        let handoff = node.run(&format!("{} server handoff --json", node.control())).await?;
         if handoff.code == 0 {
             eprintln!("[deploy] {}", handoff_line(&handoff.stdout));
         } else {
@@ -1487,8 +1547,8 @@ async fn run_loop<N: Node>(node: &N, desired: &str, options: Options) -> Result<
             // as a `setsid` orphan.
             eprintln!("[deploy] asking the daemon on {label} to stop…");
             let command = format!(
-                "{} stop --json{}",
-                node.binary(),
+                "{} server stop --json{}",
+                node.control(),
                 if options.force { " --force" } else { "" }
             );
             let run = node.run(&command).await?;
@@ -1647,8 +1707,18 @@ fn describe_wait(wait: Duration) -> String {
 }
 
 async fn observe<N: Node>(node: &N) -> Result<Observed> {
+    // A box set up before the client took over the daemon's verbs has no
+    // `termio server` to ask — no client at all, or one too old to know the
+    // verb — but its daemon still answers `status` itself. That daemon is
+    // asked only so the box can be upgraded at all; once this pass stages a
+    // client, the first half answers. One command, so the verdicts below read
+    // the stderr of whichever half spoke last.
     let run = node
-        .run(&format!("{} status --json", node.binary()))
+        .run(&format!(
+            "{} server status --json 2>/dev/null || {} status --json",
+            node.control(),
+            node.binary()
+        ))
         .await?;
     if run.code == 0 {
         let status: NodeStatus = serde_json::from_str(run.stdout.trim())
@@ -1954,10 +2024,10 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan, staged: Staged) -> Re
     if prev.code != 0 {
         bail!("no previous binary to roll back to on {label}");
     }
-    // The previous build's own CLI drives the recovery: the staged binary just
-    // failed verification, so it is the last thing to trust with it.
+    // The daemon is asked to become the previous binary; the daemon, not the
+    // staged binary that just failed verification, is what carries it out.
     let handoff = node
-        .run(&format!("{source} handoff --binary {source} --json"))
+        .run(&format!("{} server handoff --binary {source} --json", node.control()))
         .await;
     match handoff {
         Ok(run) if run.code == 0 => {
@@ -1987,7 +2057,9 @@ async fn roll_back<N: Node>(node: &N, plan: &RollbackPlan, staged: Staged) -> Re
                 bail!("could not hand {label} back to the previous binary: {reason}");
             }
             eprintln!("[deploy] {label} could not hand back ({reason}); stopping it instead");
-            let _ = node.run(&format!("{binary} stop --force --json")).await;
+            let _ = node
+                .run(&format!("{} server stop --force --json", node.control()))
+                .await;
         }
     }
     if plan.restores_path {
@@ -2079,9 +2151,25 @@ impl Node for LocalNode {
     }
 
     fn binary(&self) -> String {
-        std::env::current_exe()
+        paired_daemon()
             .map(|path| shell_quote(&path.display().to_string()))
             .unwrap_or_else(|_| "termiod".to_string())
+    }
+
+    fn control(&self) -> String {
+        // `current_exe` resolves a `termio-dev` link to the file it names, and
+        // a client named `termio` takes its channel from
+        // `TERMIO_SESSION_CHANNEL`, so the channel this process resolved is
+        // handed to the commands it runs.
+        let client = std::env::current_exe()
+            .map(|path| shell_quote(&path.display().to_string()))
+            .unwrap_or_else(|_| "termio".to_string());
+        match std::env::var("TERMIO_CHANNEL") {
+            Ok(channel) if !channel.is_empty() => {
+                format!("TERMIO_SESSION_CHANNEL={} {client}", shell_quote(&channel))
+            }
+            _ => client,
+        }
     }
 
     async fn run(&self, command: &str) -> Result<Run> {
@@ -2354,6 +2442,9 @@ mod tests {
         fn binary(&self) -> String {
             "$HOME/.local/bin/termiod".to_string()
         }
+        fn control(&self) -> String {
+            "$HOME/.local/bin/termio".into()
+        }
         async fn run(&self, command: &str) -> Result<Run> {
             self.commands.borrow_mut().push(command.to_string());
             if command.ends_with("termio --version") {
@@ -2468,16 +2559,6 @@ mod tests {
             os: Some("linux".to_string()),
         })
         .expect("status serializes")
-    }
-
-    /// What a Mac reachable over ssh reports: it links its own client from its
-    /// app bundle, so it is sent none and is not missing one.
-    fn status_json_from_a_mac(binary: &str, daemon: Option<&str>) -> String {
-        let mut status: serde_json::Value =
-            serde_json::from_str(&status_json_with_client(binary, None, daemon, true, Vec::new()))
-                .expect("status parses");
-        status["os"] = "macos".into();
-        status.to_string()
     }
 
     /// A shell at its prompt with someone attached: alive, not busy — exactly
@@ -2801,7 +2882,7 @@ mod tests {
         assert!(matches!(report.outcome, Outcome::Unhealthy { rolled_back: true, .. }), "{report:?}");
         let commands = node.commands.borrow();
         assert!(
-            commands.iter().any(|command| command.contains("/state/termiod.prev handoff --binary /state/termiod.prev")),
+            commands.iter().any(|command| command.contains("server handoff --binary /state/termiod.prev")),
             "{commands:?}"
         );
         assert!(!commands.iter().any(|command| command.starts_with("mv")), "{commands:?}");
@@ -3589,6 +3670,9 @@ mod tests {
             fn binary(&self) -> String {
                 "$HOME/.local/bin/termiod".into()
             }
+            fn control(&self) -> String {
+                "$HOME/.local/bin/termio".into()
+            }
             async fn run(&self, command: &str) -> Result<Run> {
                 assert!(command.ends_with("status --json"), "unexpected command: {command}");
                 Ok(ok(&status_json_with_client(WANT, None, Some(WANT), true, Vec::new())))
@@ -3616,44 +3700,6 @@ mod tests {
             }
             other => panic!("expected current with a client note, got {other:?}"),
         }
-    }
-
-    /// A Mac reachable over ssh is current with no client of the deploy's: it
-    /// links its own from its app bundle. Nothing is staged, and — the point —
-    /// nothing is *asked*: planning a client pass for it meant a `uname` round
-    /// trip on every deploy and every attach, to ship nothing and say so
-    /// wrongly.
-    #[tokio::test]
-    async fn a_mac_box_is_current_without_a_client_and_without_asking() {
-        let node = FakeNode::new(
-            vec![ok(&status_json_from_a_mac(WANT, Some(WANT)))],
-            vec![hello(Some(WANT))],
-        );
-        let report = reconcile(&node, WANT, Options::default()).await;
-        assert!(matches!(report.outcome, Outcome::Current { client: None, .. }), "{report:?}");
-        assert!(node.puts.borrow().is_empty(), "{:?}", node.puts.borrow());
-        // One command: the status read. No artifact resolution, no client probe.
-        let commands = node.commands.borrow();
-        assert_eq!(commands.len(), 1, "{commands:?}");
-        assert!(commands[0].ends_with("status --json"), "{commands:?}");
-    }
-
-    /// A client already on the box answered for itself in the `status` this pass
-    /// read — that reading executes it — so nothing re-asks it over ssh before
-    /// every attach.
-    #[tokio::test]
-    async fn a_client_already_in_place_is_not_probed_again() {
-        let node = FakeNode::new(
-            vec![ok(&status_json(WANT, Some(WANT), true))],
-            vec![hello(Some(WANT))],
-        );
-        let report = reconcile(&node, WANT, Options::default()).await;
-        assert!(matches!(report.outcome, Outcome::Current { client: None, .. }), "{report:?}");
-        let commands = node.commands.borrow();
-        assert!(
-            !commands.iter().any(|command| command.ends_with("termio --version")),
-            "{commands:?}"
-        );
     }
 
     /// A build with no client in it deploys the daemon alone: nothing is put
@@ -3740,6 +3786,9 @@ mod tests {
             }
             fn binary(&self) -> String {
                 "termiod".into()
+            }
+            fn control(&self) -> String {
+                "termio".into()
             }
             async fn run(&self, _: &str) -> Result<Run> {
                 Err(Unreachable("ssh: connect to host vps port 22: Operation timed out".into()).into())

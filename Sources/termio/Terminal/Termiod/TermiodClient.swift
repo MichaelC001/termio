@@ -161,7 +161,7 @@ extension Termiod {
     /// never the session write token that arbitrates who may type.
     ///
     /// Read from disk on every call rather than cached, the way `wss.rs` reads
-    /// it per handshake: `termiod pair --rotate` has to sign paired phones out
+    /// it per handshake: `termio pair --rotate` has to sign paired phones out
     /// on their next dial, and a cached copy would keep letting them in until
     /// the app was relaunched. nil means nothing has ever paired with this
     /// daemon.
@@ -239,6 +239,31 @@ extension Termiod {
                 .appendingPathComponent("Contents/Resources/\(daemonBinaryName)").path
     }
 
+    /// The `termio` client beside `daemonBinaryPath()`. The daemon answers only
+    /// `serve`; deploy, pair and every other verb this app runs are the
+    /// client's. A dev bundle names it `termio-dev`, and a bundle holds one of
+    /// the two names.
+    static func clientBinaryPath() -> String {
+        let directory = URL(fileURLWithPath: daemonBinaryPath()).deletingLastPathComponent()
+        let candidates = [CommandLineTool.toolName, "termio"].map {
+            directory.appendingPathComponent($0).path
+        }
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+            ?? candidates[0]
+    }
+
+    /// The environment for running `clientBinaryPath()` against this app's own
+    /// channel. A client named `termio` takes its channel from
+    /// `TERMIO_SESSION_CHANNEL` and overwrites `TERMIO_CHANNEL`, so the session
+    /// variable is the one that keeps a probe-channel build off the release
+    /// daemon.
+    static func clientEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["TERMIO_CHANNEL"] = channelName
+        environment["TERMIO_SESSION_CHANNEL"] = channelName
+        return environment
+    }
+
     /// `termiod` builds inside the checkout the running binary sits in, nearest
     /// first, release before debug. The search walks up from `directory` looking
     /// for the marker that identifies the repo root — `termiod/Cargo.toml` —
@@ -310,12 +335,16 @@ extension Termiod {
         throw TermiodClientError.daemonUnreachable(socketPath())
     }
 
-    /// The remote `termiod` path invoked over SSH. Matches the CLI's deploy
-    /// target (`termiod remote deploy` installs to `~/.local/bin/termiod`);
-    /// overridable so a non-standard install still works.
-    static func remoteBinary() -> String {
-        ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"]
-            ?? "$HOME/.local/bin/termiod"
+    /// The remote `termio` invoked over SSH — `termio stdio`, `termio pair`,
+    /// `termio server …`; the daemon beside it answers only `serve`. Matches the
+    /// deploy target (`termio server --host … deploy` installs both to `~/.local/bin`).
+    /// `TERMIOD_REMOTE_BIN` moves the daemon, and the client is found beside it.
+    static func remoteClient() -> String {
+        guard let daemon = ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"] else {
+            return "$HOME/.local/bin/termio"
+        }
+        guard let slash = daemon.lastIndex(of: "/") else { return "$HOME/.local/bin/termio" }
+        return daemon[..<slash] + "/termio"
     }
 
     /// Every `-o` this app puts on its own `ssh`, resolved once per host. Two
@@ -490,7 +519,7 @@ extension Termiod {
 
     /// A bidirectional byte channel to a daemon. Local is one Unix-socket fd
     /// used for both directions; SSH is a pipe pair around an `ssh <host>
-    /// termiod stdio` child — the exact same framed protocol either way, which
+    /// termio stdio` child — the exact same framed protocol either way, which
     /// is the whole point of the stdio bridge. The frame helpers read from
     /// `readDescriptor` and write to `writeDescriptor`.
     final class Transport {
@@ -593,7 +622,7 @@ extension Termiod {
             }
         }
 
-        /// `ssh <host> termiod stdio`: the framed protocol rides the SSH pipe,
+        /// `ssh <host> termio stdio`: the framed protocol rides the SSH pipe,
         /// so the remote daemon (auto-starting on first contact) is reached
         /// with the identical messages. System OpenSSH is the trust plane; no
         /// keys or crypto live in termio.
@@ -634,7 +663,7 @@ extension Termiod {
             posix_spawn_file_actions_addclose(&fileActions, fromChild[0])
             posix_spawn_file_actions_addclose(&fileActions, errorPipe[0])
 
-            let command = "\(remoteBinary()) stdio"
+            let command = "\(remoteClient()) stdio"
             let arguments = ["ssh", "-o", "ServerAliveInterval=15"]
                 + sshArguments(host: host)
                 + [host, command]
@@ -822,7 +851,7 @@ extension Termiod {
     /// `POSIX_SPAWN_SETSID` detaches the session, not the parentage: the daemon
     /// stays this app's child, and a child nobody waits on becomes a zombie the
     /// moment it exits — one whose pid `kill(pid, 0)` keeps answering for. That
-    /// is what `termiod stop` used to read as a daemon refusing to leave (#571),
+    /// is what `termio server stop` used to read as a daemon refusing to leave (#571),
     /// and it lasted as long as the app did. The daemon this waits on outlives
     /// most launches, so the wait cannot be a parked thread.
     private static func reapWhenItExits(_ pid: pid_t) {
@@ -1023,7 +1052,7 @@ extension Termiod {
         }
     }
 
-    /// What `termiod deploy --json` left a machine as — the lifecycle loop's
+    /// What `termio server deploy --json` left a machine as — the lifecycle loop's
     /// report (`termiod/src/lifecycle.rs`), read rather than reconstructed.
     /// The daemon runs the loop; this side only says what the state means.
     struct LifecycleReport: Decodable, Sendable {

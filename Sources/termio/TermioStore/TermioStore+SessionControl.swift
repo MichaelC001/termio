@@ -149,7 +149,7 @@ extension TermioStore {
     }
 
     /// Opens a session deep link. The local form (`termio://session/<id>`)
-    /// focuses that session; an endpoint form belongs to the termiod attach
+    /// focuses that session; an endpoint form belongs to the termio server attach
     /// client and is ignored until that lands.
     func openSessionLink(_ url: URL) {
         guard let host = url.host?.lowercased() else { return }

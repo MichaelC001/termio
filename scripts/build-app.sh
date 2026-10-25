@@ -310,7 +310,7 @@ else
     done
     echo "==> Bundled $cli_name architectures: $cli_archs"
 
-    # The daemons that ship *to* a Linux box. `termiod remote deploy` used to
+    # The daemons that ship *to* a Linux box. `termio server --host … deploy` used to
     # cross-compile one on demand, which needs cargo, the musl target, and this
     # crate's source at the path baked into the binary — so remote sessions
     # worked for contributors and for nobody who installed the DMG. Shipping
@@ -359,7 +359,7 @@ fi
 # termiod runs beside itself, so it is built for every platform termiod ships
 # to. Pure Go with cgo off, so a cross build needs nothing but the Go toolchain.
 # A release needs it; a dev build without Go ships without built-in Tailscale,
-# and `termiod tailscale on` says so.
+# and `termio server tailscale on` says so.
 tailnet_name="termio-tailnet"
 if ! command -v go >/dev/null 2>&1; then
     if [[ "$channel" != "dev" ]]; then
