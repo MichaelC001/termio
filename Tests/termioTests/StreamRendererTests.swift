@@ -350,5 +350,7 @@ final class StreamRendererTests: XCTestCase {
         XCTAssertTrue(emoji.colored)
         XCTAssertLessThanOrEqual(Int(emoji.offset.y) + Int(emoji.size.y), atlas.metrics.height, "stays in its row")
         XCTAssertGreaterThanOrEqual(emoji.offset.y, 0)
+        let narrow = try XCTUnwrap(atlas.slot(graphemes: [0x1F600], bold: false, italic: false, cells: 1))
+        XCTAssertEqual(Int(narrow.size.x), atlas.metrics.width, "one cell: a sprite of its own, one cell wide")
     }
 }

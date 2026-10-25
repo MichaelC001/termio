@@ -335,6 +335,9 @@ final class TermiodGlyphAtlas {
         var graphemes: [UInt32]
         var bold: Bool
         var italic: Bool
+        /// One grapheme can be one cell or two (mode 2027 decides an emoji's
+        /// width), and an emoji's sprite is sized to its cells.
+        var cells: Int
     }
 
     /// Replaced, never rewritten, when the atlas is emptied: a frame still on
@@ -423,7 +426,7 @@ final class TermiodGlyphAtlas {
     /// The sprite for a grapheme, rasterized on first use. Nil for a grapheme
     /// with nothing to draw, or once the atlas is full.
     func slot(graphemes: [UInt32], bold: Bool, italic: Bool, cells: Int) -> Slot? {
-        let key = Key(graphemes: graphemes, bold: bold, italic: italic)
+        let key = Key(graphemes: graphemes, bold: bold, italic: italic, cells: cells)
         if let cached = slots[key] { return cached }
         var slot = rasterize(key, cells: cells)
         if slot == nil, exhausted, mayEmpty, let fresh = try? Self.makeTexture(device, size: size) {
