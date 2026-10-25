@@ -47,6 +47,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// a reader writing chunk after chunk re-takes it before a waiting renderer
     /// wakes: the phase 1 spike measured frames starved for up to 34 ms.
     private let rendererWaiting = OSAllocatedUnfairLock(initialState: false)
+    private let animationClock = ContinuousClock.now
     /// What the terminal answers a program's query with — a cursor position
     /// report, a mode report. Called on the writing thread, inside `write`.
     private let onReply: (Data) -> Void
@@ -412,6 +413,93 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// and a program that redraws hold after hold shows each finished frame in
     /// turn. A hold longer than `holdLimit` is ended for the program.
     func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
+        try withFrame { state, theme, _ in try body(state, theme) }
+    }
+
+    /// The image storage as a frame sees it. The render state says where each
+    /// image goes; only the pixels and the animation clock live in the
+    /// terminal, so they are read here, under the frame's lock.
+    struct FrameImages {
+        fileprivate let terminal: GhosttyTerminal
+
+        /// An image's pixels as straight-alpha RGBA, with the generation they
+        /// belong to, or nil while it has none.
+        func pixels(id: UInt32) -> ImagePixels? {
+            guard let graphics = storage(), let image = ghostty_kitty_graphics_image(graphics, id) else { return nil }
+            var width: UInt32 = 0
+            var height: UInt32 = 0
+            var format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA
+            var pointer: UnsafePointer<UInt8>?
+            var length = 0
+            var generation: UInt64 = 0
+            guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &format) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &pointer) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &length) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation)
+                    == GHOSTTY_SUCCESS,
+                  let pointer, width > 0, height > 0
+            else { return nil }
+            let channels: Int
+            switch format {
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: channels = 4
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGB: channels = 3
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA: channels = 2
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY: channels = 1
+            default: return nil
+            }
+            let count = Int(width) * Int(height) * channels
+            guard length >= count else { return nil }
+            // Only the copy happens under the lock; `rgba()` converts later.
+            return ImagePixels(
+                width: Int(width), height: Int(height), channels: channels, generation: generation,
+                bytes: Data(bytes: pointer, count: count)
+            )
+        }
+
+        private func storage() -> GhosttyKittyGraphics? {
+            var graphics: GhosttyKittyGraphics?
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) == GHOSTTY_SUCCESS
+            else { return nil }
+            return graphics
+        }
+    }
+
+    struct ImagePixels {
+        var width: Int
+        var height: Int
+        var channels: Int
+        var generation: UInt64
+        var bytes: Data
+
+        /// Premultiplied RGBA, which the image shader filters without the
+        /// colour of transparent pixels bleeding into the edges.
+        func rgba() -> [UInt8] {
+            let count = width * height
+            var rgba = [UInt8](repeating: 255, count: count * 4)
+            bytes.withUnsafeBytes { raw in
+                let source = raw.bindMemory(to: UInt8.self)
+                for index in 0 ..< count {
+                    let at = index * channels
+                    let alpha = channels == 4 ? source[at + 3] : channels == 2 ? source[at + 1] : 255
+                    let red = source[at]
+                    let green = channels >= 3 ? source[at + 1] : red
+                    let blue = channels >= 3 ? source[at + 2] : red
+                    func premultiplied(_ value: UInt8) -> UInt8 {
+                        UInt8((UInt16(value) * UInt16(alpha) + 127) / 255)
+                    }
+                    rgba[index * 4] = premultiplied(red)
+                    rgba[index * 4 + 1] = premultiplied(green)
+                    rgba[index * 4 + 2] = premultiplied(blue)
+                    rgba[index * 4 + 3] = alpha
+                }
+            }
+            return rgba
+        }
+    }
+
+    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?, FrameImages) throws -> Result) throws -> Result {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
@@ -423,9 +511,26 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             heldSince = nil
         }
         if heldSince == nil {
+            advanceAnimationsLocked()
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
         }
-        return try body(renderState, theme)
+        return try body(renderState, theme, FrameImages(terminal: terminal))
+    }
+
+    /// Shows each playing animation's frame for now, as Ghostty's renderer
+    /// drives it: the terminal keeps no clock of its own. It runs before the
+    /// update, so the image list names the frame the storage holds, and on
+    /// this terminal's own clock, which only moves forward while it lives.
+    private func advanceAnimationsLocked() {
+        var graphics: GhosttyKittyGraphics?
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) == GHOSTTY_SUCCESS,
+              let graphics
+        else { return }
+        let elapsed = ContinuousClock.now - animationClock
+        let milliseconds = UInt64(max(0, elapsed.components.seconds)) * 1000
+            + UInt64(max(0, elapsed.components.attoseconds) / 1_000_000_000_000_000)
+        var next: UInt64 = 0
+        _ = ghostty_kitty_graphics_animation_tick(graphics, milliseconds, &next)
     }
 
     private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {
