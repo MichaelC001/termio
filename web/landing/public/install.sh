@@ -146,9 +146,19 @@ tailnet_has_https() {
     tailscale status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"CertDomains":\["'
 }
 
-# The origin a drop-in already hands the daemon, whoever wrote it.
+# The origin the daemon is already handed, whoever set it and however they
+# spelled it: systemd's own reading of the unit first, the drop-in files when
+# the unit is not loaded yet.
 current_origin() {
-    sed -n 's/^Environment="TERMIOD_WSS_ORIGIN=\(.*\)"$/\1/p' "$DROPIN" 2>/dev/null | head -n1
+    shown="$(systemctl --user show termiod.service -p Environment --value 2>/dev/null || true)"
+    for word in $shown; do
+        word="${word#\"}"
+        case "$word" in
+            TERMIOD_WSS_ORIGIN=*) printf '%s\n' "${word#TERMIOD_WSS_ORIGIN=}" | tr -d '"'; return 0 ;;
+        esac
+    done
+    cat "$(dirname "$DROPIN")"/*.conf 2>/dev/null |
+        sed -n 's/^Environment="\{0,1\}TERMIOD_WSS_ORIGIN=\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' | tail -n1
 }
 
 # Decides, before anything starts, whether the daemon will listen for the
@@ -222,22 +232,12 @@ keep_running() {
     fi
 }
 
-# Whether anything accepts a connection on the listener's port. A WebSocket
-# listener hangs up on a plain request without replying, so only a refused or
-# timed-out connection means nothing is there.
+# Whether a socket is listening on 127.0.0.1:$PORT, read from the kernel's own
+# table: every Linux has it, and no client tool's exit codes have to be
+# interpreted. Address and port are hex there; 0A is LISTEN.
 listening() {
-    if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | grep -q "127.0.0.1:$PORT "
-        return
-    fi
-    code=0
-    if command -v curl >/dev/null 2>&1; then
-        curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/" || code=$?
-        [ "$code" -ne 7 ] && [ "$code" -ne 28 ]
-    else
-        wget -q -O /dev/null -T 2 -t 1 "http://127.0.0.1:$PORT/" 2>/dev/null || code=$?
-        [ "$code" -ne 4 ]
-    fi
+    entry="0100007F:$(printf '%04X' "$PORT") 00000000:0000 0A"
+    grep -q "$entry" /proc/net/tcp 2>/dev/null
 }
 
 # A daemon that was just started binds its socket before its listener.
