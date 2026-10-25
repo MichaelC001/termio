@@ -535,6 +535,12 @@ fn sweep_retired(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<String
             if let Some(spec) = copy.hooks.as_ref() {
                 let targets = [spec.file.as_deref(), spec.directory.as_deref()];
                 if targets.iter().flatten().all(|path| stays_inside(Path::new(path), &root)) {
+                    // The uninstallers log a failed write and carry on, so ask
+                    // first whether the write can happen at all: a locked or
+                    // read-only file keeps the folder queued for a later sync.
+                    if !targets.iter().flatten().all(|path| writable(Path::new(path))) {
+                        clean = false;
+                    }
                     uninstall_hooks(copy, spec);
                 }
             }
@@ -555,6 +561,27 @@ fn sweep_retired(catalog: &AgentCatalog, request: &InstallRequest) -> Vec<String
         }
     }
     settled
+}
+
+/// Whether termio could rewrite `path` now: the file itself opens for writing
+/// (a locked or read-only file does not), and the folder an atomic rename
+/// lands in accepts a new entry. A path that does not exist is trivially clean.
+fn writable(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    let folder = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+    if path.is_file() && std::fs::OpenOptions::new().append(true).open(path).is_err() {
+        return false;
+    }
+    let probe = folder.join(format!(".termio-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Whether `path`, symlinks followed, still lies inside `root`. An account
@@ -1708,6 +1735,15 @@ pub(super) mod tests {
         assert!(stays_inside(&account.join("settings.json"), &account));
         assert!(!stays_inside(&account.join("skills").join("termio"), &account));
         assert!(!stays_inside(&account.join("skills"), &account));
+
+        let settings = account.join("settings.json");
+        std::fs::write(&settings, "{}").unwrap();
+        assert!(writable(&settings));
+        let mut permissions = std::fs::metadata(&settings).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&settings, permissions).unwrap();
+        assert!(!writable(&settings));
+        assert!(writable(&account.join("absent.json")));
         let _ = std::fs::remove_dir_all(&root);
     }
 
