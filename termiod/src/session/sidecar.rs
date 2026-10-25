@@ -114,6 +114,11 @@ pub(crate) enum SidecarCommand {
     },
     SetGridDiff(bool),
     Shutdown,
+    /// The daemon is handing this session to its next image: answer with the
+    /// VT's native snapshot, taken after every byte sent before this, then
+    /// stop. The new image's VT starts from it, so the program's modes — the
+    /// ones input is encoded with — cross the `execve` intact.
+    Carry(std_mpsc::Sender<Option<Vec<u8>>>),
 }
 
 /// Snapshot replies and live grid updates share this single FIFO channel.

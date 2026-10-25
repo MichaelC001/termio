@@ -92,7 +92,16 @@ pub struct InputEncoder {
     mouse: mouse::Encoder<'static>,
     mouse_event: mouse::Event<'static>,
     modes: InputModes,
+    /// The size last given to the mouse encoder. Setting it clears the
+    /// encoder's motion deduplication, so it is set only when it changes.
+    mouse_size: Option<mouse::EncoderSize>,
 }
+
+/// The most rows or columns one wheel event may scroll. A real gesture is a
+/// few; this keeps one event from holding the session for billions.
+pub const WHEEL_LIMIT: i32 = 500;
+
+const ALT: u16 = 1 << 2;
 
 // SAFETY: the encoders and events are option holders that keep no pointer to
 // any terminal once `set_options_from_terminal` returns, and every use goes
@@ -114,6 +123,7 @@ impl InputEncoder {
             mouse,
             mouse_event: check(mouse::Event::new(), "mouse::Event::new")?,
             modes: InputModes::default(),
+            mouse_size: None,
         })
     }
 
@@ -148,6 +158,18 @@ impl InputEncoder {
         let Some(key) = key_named(&input.key) else {
             return Vec::new();
         };
+        // On a Mac, Option composes text, and libghostty built for macOS
+        // treats it so: no ESC prefix, and the text survives under Kitty. A
+        // daemon built for anything else takes Alt for a real modifier, so a
+        // German `@` (Option-L) would arrive as `ESC @`. When Option produced
+        // the text, the key is sent without it.
+        let mut mods = input.mods;
+        if cfg!(not(target_os = "macos"))
+            && mods & ALT != 0
+            && input.text.as_deref().is_some_and(|text| !text.is_empty())
+        {
+            mods &= !ALT;
+        }
         self.key_event
             .set_action(match input.action {
                 KeyAction::Press => key::Action::Press,
@@ -155,8 +177,8 @@ impl InputEncoder {
                 KeyAction::Repeat => key::Action::Repeat,
             })
             .set_key(key)
-            .set_mods(Mods::from_bits_truncate(input.mods))
-            .set_consumed_mods(Mods::from_bits_truncate(input.consumed_mods))
+            .set_mods(Mods::from_bits_truncate(mods))
+            .set_consumed_mods(Mods::from_bits_truncate(input.consumed_mods & (mods | !ALT)))
             .set_composing(input.composing)
             .set_utf8(input.text.clone())
             .set_unshifted_codepoint(char::from_u32(input.unshifted).unwrap_or('\0'));
@@ -199,6 +221,8 @@ impl InputEncoder {
     /// scrollback, and sends nothing.
     pub fn wheel(&mut self, input: &WheelInput) -> Vec<u8> {
         let mut bytes = Vec::new();
+        let rows = input.rows.clamp(-WHEEL_LIMIT, WHEEL_LIMIT);
+        let columns = input.columns.clamp(-WHEEL_LIMIT, WHEEL_LIMIT);
         if self.modes.mouse_tracking {
             let mut press = |button: u8, count: i32| {
                 for _ in 0..count.unsigned_abs() {
@@ -211,16 +235,16 @@ impl InputEncoder {
                     }));
                 }
             };
-            press(if input.rows < 0 { 4 } else { 5 }, input.rows);
-            press(if input.columns < 0 { 6 } else { 7 }, input.columns);
+            press(if rows < 0 { 4 } else { 5 }, rows);
+            press(if columns < 0 { 6 } else { 7 }, columns);
         } else if self.modes.alternate_screen && self.modes.alternate_scroll {
-            let arrow: &[u8] = match (input.rows < 0, self.modes.cursor_keys_application) {
+            let arrow: &[u8] = match (rows < 0, self.modes.cursor_keys_application) {
                 (true, false) => b"\x1b[A",
                 (true, true) => b"\x1bOA",
                 (false, false) => b"\x1b[B",
                 (false, true) => b"\x1bOB",
             };
-            for _ in 0..input.rows.unsigned_abs() {
+            for _ in 0..rows.unsigned_abs() {
                 bytes.extend_from_slice(arrow);
             }
         }
@@ -231,32 +255,36 @@ impl InputEncoder {
     /// newlines as returns when it did not, and with any control byte that
     /// could end the paste early replaced.
     pub fn paste(&self, text: &str) -> Vec<u8> {
+        self.paste_piece(text, self.modes.bracketed_paste, true, true)
+    }
+
+    /// One piece of a paste too large for one event. `bracketed` is decided
+    /// once, by the first piece; the wrapping opens on the first and closes on
+    /// the last, so the program sees one paste.
+    pub fn paste_piece(&self, text: &str, bracketed: bool, opens: bool, closes: bool) -> Vec<u8> {
+        const START: &[u8] = b"\x1b[200~";
+        const END: &[u8] = b"\x1b[201~";
         let mut data = text.as_bytes().to_vec();
-        let mut out = vec![0; data.len() + 16];
-        match libghostty_vt::paste::encode(&mut data, self.modes.bracketed_paste, &mut out) {
+        let mut out = vec![0; data.len() + START.len() + END.len()];
+        let mut encoded = match libghostty_vt::paste::encode(&mut data, bracketed, &mut out) {
             Ok(written) => {
                 out.truncate(written);
                 out
             }
-            Err(libghostty_vt::Error::OutOfSpace { required }) => {
-                let mut data = text.as_bytes().to_vec();
-                let mut out = vec![0; required];
-                match libghostty_vt::paste::encode(&mut data, self.modes.bracketed_paste, &mut out) {
-                    Ok(written) => {
-                        out.truncate(written);
-                        out
-                    }
-                    Err(error) => {
-                        eprintln!("termiod: paste not encoded: {error}");
-                        Vec::new()
-                    }
-                }
-            }
             Err(error) => {
                 eprintln!("termiod: paste not encoded: {error}");
-                Vec::new()
+                return Vec::new();
+            }
+        };
+        if bracketed {
+            if !closes && encoded.ends_with(END) {
+                encoded.truncate(encoded.len() - END.len());
+            }
+            if !opens && encoded.starts_with(START) {
+                encoded.drain(..START.len());
             }
         }
+        encoded
     }
 
     /// The focus report, for a program that asked for one (mode 1004).
@@ -290,7 +318,7 @@ impl InputEncoder {
     fn set_size(&mut self, at: Pointer) {
         let cell_width = at.cell_width.max(1);
         let cell_height = at.cell_height.max(1);
-        self.mouse.set_size(mouse::EncoderSize {
+        let size = mouse::EncoderSize {
             screen_width: u32::from(self.modes.cols) * cell_width,
             screen_height: u32::from(self.modes.rows) * cell_height,
             cell_width,
@@ -299,7 +327,11 @@ impl InputEncoder {
             padding_bottom: 0,
             padding_right: 0,
             padding_left: 0,
-        });
+        };
+        if self.mouse_size != Some(size) {
+            self.mouse.set_size(size);
+            self.mouse_size = Some(size);
+        }
     }
 }
 
@@ -590,6 +622,41 @@ mod tests {
         let mut tracking = encoder(&mut vt, b"\x1b[?1000h\x1b[?1006h");
         assert_eq!(tracking.wheel(&wheel(-1, 0)), b"\x1b[<64;1;1M");
         assert_eq!(tracking.wheel(&wheel(0, 1)), b"\x1b[<67;1;1M", "sideways is buttons six and seven");
+        assert_eq!(
+            alternate.wheel(&wheel(i32::MAX, 0)).len(),
+            3 * WHEEL_LIMIT as usize,
+            "one event scrolls at most the limit"
+        );
+    }
+
+    #[test]
+    fn motion_within_one_cell_is_reported_once() {
+        let mut vt = VtTerminal::new(10, 40).unwrap();
+        let mut any = encoder(&mut vt, b"\x1b[?1003h\x1b[?1006h");
+        let moved = |x| MouseInput {
+            action: MouseAction::Motion,
+            button: None,
+            mods: 0,
+            at: Pointer { x, y: 10.0, cell_width: 10, cell_height: 20 },
+            buttons_held: false,
+        };
+        assert!(!any.mouse(&moved(12.0)).is_empty());
+        assert!(any.mouse(&moved(15.0)).is_empty(), "the same cell again");
+        assert!(!any.mouse(&moved(25.0)).is_empty());
+    }
+
+    /// Option-L types `@` on a German Mac. It must arrive as `@`, as it does
+    /// from a daemon built for macOS, not as Alt-@.
+    #[test]
+    fn option_composed_text_arrives_as_text() {
+        let mut vt = VtTerminal::new(10, 40).unwrap();
+        let mut plain = encoder(&mut vt, b"");
+        let mut at = key("l");
+        at.mods = ALT;
+        at.consumed_mods = ALT;
+        at.text = Some("@".into());
+        at.unshifted = u32::from('l');
+        assert_eq!(plain.key(&at), b"@");
     }
 
     #[test]
@@ -602,5 +669,12 @@ mod tests {
         assert_eq!(asked.paste("a\x1b[201~b"), b"\x1b[200~a [201~b\x1b[201~");
         assert_eq!(asked.focus(true), b"\x1b[I");
         assert_eq!(asked.focus(false), b"\x1b[O");
+        let pieces = [
+            asked.paste_piece("one\n", true, true, false),
+            asked.paste_piece("two\n", true, false, false),
+            asked.paste_piece("three", true, false, true),
+        ]
+        .concat();
+        assert_eq!(pieces, b"\x1b[200~one\ntwo\nthree\x1b[201~", "one paste in three pieces");
     }
 }

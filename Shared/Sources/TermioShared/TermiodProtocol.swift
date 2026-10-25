@@ -60,6 +60,10 @@ public enum Termiod {
     /// `E vt_resize` at the byte where the daemon's VT changed size instead of
     /// a keyframe. Offered on top of `attachCapabilities`, never instead.
     public static let streamCapability = "vt_stream"
+    /// Input as events termiod encodes (`InputEvent`). A client streams only
+    /// from a daemon that grants it as well: one with `vt_stream` alone drops
+    /// every event, which is a pane that cannot be typed into.
+    public static let inputCapability = "vt_input"
     /// The error a daemon sends when it cannot give this client an exact
     /// screen to follow; the client attaches again without `vt_stream`.
     public static let streamUnavailableCode = "vt_stream_unavailable"
@@ -1416,6 +1420,9 @@ public enum Termiod {
         case resized(ResizedPayload)
         /// Only on the `vt_stream` plane: apply this resize before the next byte.
         case vtResize(VtResizePayload)
+        /// The host's VT stopped parsing: it can no longer snapshot, and the
+        /// modes it encodes input with are frozen.
+        case vtStale
         case roster(RosterPayload)
         case sessionExited(SessionExitedPayload)
         /// One batch of `fs.search` hits, streamed to the connection that asked
@@ -1695,6 +1702,8 @@ public enum Termiod {
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
         case "vt_resize":
             return .vtResize(try decoder.decode(VtResizePayload.self, from: payload))
+        case "vt_stale":
+            return .vtStale
         case "roster":
             return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":
@@ -1836,7 +1845,9 @@ public enum Termiod {
     /// remote daemon may run another engine release for a while.
     public enum InputEvent: Equatable, Sendable {
         case key(Key)
-        case paste(String)
+        /// Pasted text. `more` marks a piece of a paste too large for one
+        /// frame that has pieces after it; termiod makes them one paste.
+        case paste(String, more: Bool = false)
         case mouse(Mouse)
         case wheel(Wheel)
         case focus(Bool)
@@ -1935,6 +1946,7 @@ public enum Termiod {
             var rows: Int32?
             var columns: Int32?
             var focused: Bool?
+            var more: Bool?
         }
 
         public func payload() throws -> Data {
@@ -1949,9 +1961,10 @@ public enum Termiod {
                 wire.text = key.text
                 wire.unshifted = key.unshifted
                 wire.composing = key.composing
-            case .paste(let text):
+            case .paste(let text, let more):
                 wire = Wire(ev: "paste")
                 wire.text = text
+                wire.more = more ? true : nil
             case .mouse(let mouse):
                 wire = Wire(ev: "mouse")
                 wire.action = mouse.action
@@ -1970,6 +1983,31 @@ public enum Termiod {
                 wire.focused = focused
             }
             return try encodeControl(wire)
+        }
+
+        /// The largest piece of a paste one event carries. JSON can grow text
+        /// sixfold (`\\u0001`), and a frame holds 16 MiB.
+        public static let pastePieceBytes = 1 << 20
+
+        /// The events that carry `text`, split on character boundaries into
+        /// pieces no larger than `pastePieceBytes`.
+        public static func pastePieces(_ text: String) -> [InputEvent] {
+            guard text.utf8.count > pastePieceBytes else { return [.paste(text)] }
+            var pieces: [String] = []
+            var current = ""
+            var size = 0
+            for character in text {
+                let length = character.utf8.count
+                if size + length > pastePieceBytes, !current.isEmpty {
+                    pieces.append(current)
+                    current = ""
+                    size = 0
+                }
+                current.append(character)
+                size += length
+            }
+            if !current.isEmpty { pieces.append(current) }
+            return pieces.enumerated().map { index, piece in .paste(piece, more: index < pieces.count - 1) }
         }
 
         private static func place(_ pointer: Pointer, in wire: inout Wire) {

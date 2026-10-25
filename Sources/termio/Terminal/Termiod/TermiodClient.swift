@@ -1711,8 +1711,23 @@ final class TermiodSessionLink: @unchecked Sendable {
             let offering = offersStream && !streamRefused
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
-                caps: Termiod.attachCapabilities + (offering ? [Termiod.streamCapability] : []))
+                caps: Termiod.attachCapabilities
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : []))
             clientID = handshake.clientID
+            // A daemon that streams but does not take input events has already
+            // put this connection on the stream plane, so the link cannot
+            // pretend otherwise: it attaches again, on keyframes.
+            if offering, handshake.capabilities.contains(Termiod.streamCapability),
+               !handshake.capabilities.contains(Termiod.inputCapability) {
+                Log.termiod.info("""
+                \(self.sessionName, privacy: .public): host streams without input events; \
+                attaching on keyframes
+                """)
+                streamRefused = true
+                teardownLocked()
+                attemptAttachLocked()
+                return
+            }
             // Published only once the attach succeeds: a refused start has no
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
@@ -1884,6 +1899,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// own VT (`Termiod.InputEvent`). Typing claims the token as `send` does;
     /// a focus change does not, and termiod reports only the writer's.
     func sendInput(_ event: Termiod.InputEvent) {
+        if case .paste(let text, false) = event, text.utf8.count > Termiod.InputEvent.pastePieceBytes {
+            for piece in Termiod.InputEvent.pastePieces(text) { sendInput(piece) }
+            return
+        }
         let typing: Bool
         if case .focus = event { typing = false } else { typing = true }
         if typing {
@@ -2719,6 +2738,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(String(describing: error), privacy: .public)
                 """)
             }
+        case .vtStale:
+            // termiod encodes this pane's input with its VT's modes, and those
+            // just stopped following the program. The embedded surface encodes
+            // for itself, so the pane goes back to it.
+            if isStreaming { abandonStream() }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.

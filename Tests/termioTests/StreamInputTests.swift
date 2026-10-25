@@ -102,6 +102,25 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(try json(.paste("hi"))["text"] as? String, "hi")
     }
 
+    /// A paste past one frame's room goes as pieces, each but the last marked
+    /// `more`, split between characters, never inside one.
+    func testALargePasteGoesInPiecesTermiodJoins() throws {
+        let text = String(repeating: "中", count: Termiod.InputEvent.pastePieceBytes / 3 + 10)
+        let pieces = Termiod.InputEvent.pastePieces(text)
+        XCTAssertEqual(pieces.count, 2)
+        var joined = ""
+        for (index, piece) in pieces.enumerated() {
+            guard case .paste(let part, let more) = piece else { return XCTFail("not a paste") }
+            XCTAssertLessThanOrEqual(part.utf8.count, Termiod.InputEvent.pastePieceBytes)
+            XCTAssertEqual(more, index == 0)
+            joined += part
+        }
+        XCTAssertEqual(joined, text)
+        let first = try XCTUnwrap(JSONSerialization.jsonObject(with: try pieces[0].payload()) as? [String: Any])
+        XCTAssertEqual(first["more"] as? Bool, true)
+        XCTAssertEqual(Termiod.InputEvent.pastePieces("short"), [.paste("short")])
+    }
+
     func testTheWheelIsTheProgramsOnlyWhenGhosttyWouldSendIt() throws {
         XCTAssertFalse(try terminal().wheelGoesToProgram, "scrollback")
         XCTAssertTrue(try terminal("\u{1b}[?1049h\u{1b}[?1007h").wheelGoesToProgram, "alternate scroll")

@@ -49,6 +49,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "viewport",
     "spawn_command",
     "vt_stream",
+    // Input as `key`/`paste`/`mouse`/`wheel`/`focus` events, encoded here. Its
+    // own name because a daemon with `vt_stream` alone drops those events: a
+    // client streams only from a daemon that grants both.
+    "vt_input",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -1571,8 +1575,14 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "is_false")]
         composing: bool,
     },
-    /// Pasted text, which the host brackets as the program asked.
-    Paste { text: String },
+    /// Pasted text, which the host brackets as the program asked. A paste
+    /// too large for one frame comes as pieces in order, every one but the
+    /// last with `more` set; the program sees one paste.
+    Paste {
+        text: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        more: bool,
+    },
     /// A mouse event at a point in pixels from the grid's top-left corner, in
     /// the client's cell size. `button` is 1 left, 2 right, 3 middle, 4 to 11
     /// the rest, absent for plain motion; `buttons_held` is whether any is down

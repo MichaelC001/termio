@@ -1375,6 +1375,10 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             {
                 negotiated_caps.retain(|cap| cap != "vt_stream");
             }
+            // Input events are the stream plane's; any other plane types bytes.
+            if !negotiated_caps.iter().any(|cap| cap == "vt_stream") {
+                negotiated_caps.retain(|cap| cap != "vt_input");
+            }
             // The two are different planes and an attachment reads one. The
             // exact one wins; grid_diff is a degrade for bad networks.
             if negotiated_caps.iter().any(|cap| cap == "vt_stream") {
@@ -2910,7 +2914,9 @@ async fn run_attach(
     let supports_snapshot = connection.capabilities.contains("snapshot");
     // Input as events is the `vt_stream` plane's, as Rex's is (design doc,
     // daemon item 6); any other attachment types bytes.
-    let takes_input_events = supports_snapshot && connection.capabilities.contains("vt_stream");
+    let takes_input_events = supports_snapshot
+        && connection.capabilities.contains("vt_stream")
+        && connection.capabilities.contains("vt_input");
     let supports_scrollback = supports_snapshot && connection.capabilities.contains("scrollback");
     let supports_grid_diff = supports_snapshot && connection.capabilities.contains("grid_diff");
     let negotiated = connection.negotiated;

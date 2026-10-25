@@ -537,7 +537,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         if event.hasPreciseScrollingDeltas {
             func whole(_ delta: CGFloat, _ remainder: inout CGFloat, cell: CGFloat) -> Int {
                 remainder += delta
-                let cells = (remainder / max(1, cell)).rounded(.towardZero)
+                let cells = min(max((remainder / max(1, cell)).rounded(.towardZero), -500), 500)
                 remainder -= cells * max(1, cell)
                 return Int(cells)
             }
@@ -546,18 +546,22 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         } else {
             func notches(_ delta: CGFloat) -> Int {
                 guard delta != 0 else { return 0 }
-                let magnitude = max(1, abs(delta))
+                let magnitude = min(max(1, abs(delta)), 500)
                 return Int((magnitude * 3).rounded(.towardZero)) * (delta < 0 ? -1 : 1)
             }
             rows = -notches(event.scrollingDeltaY)
             columns = -notches(event.scrollingDeltaX)
         }
         guard rows != 0 || columns != 0 else { return }
+        // termiod bounds a turn as well; this keeps the conversion from trapping.
+        let limit = 500
+        let clampedRows = min(max(rows, -limit), limit)
+        let clampedColumns = min(max(columns, -limit), limit)
         if terminal.wheelGoesToProgram {
-            sendInput(.wheel(.init(rows: Int32(rows), columns: Int32(columns),
+            sendInput(.wheel(.init(rows: Int32(clampedRows), columns: Int32(clampedColumns),
                                    mods: TermiodStreamKeyboard.mods(event.modifierFlags), at: at)))
-        } else if rows != 0 {
-            terminal.scrollViewport(rows: rows)
+        } else if clampedRows != 0 {
+            terminal.scrollViewport(rows: clampedRows)
             needsFullDraw = true
         }
     }
