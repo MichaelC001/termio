@@ -1,0 +1,239 @@
+#!/bin/sh
+# Termio server for Linux.
+#
+#   curl -fsSL https://www.termio.sh/install | sh
+#
+# Puts termiod (the session host) and termio (its CLI) in ~/.local/bin,
+# checked against the release's SHA256SUMS, and keeps the daemon running under
+# systemd --user. No root: everything is your own account's. Running it again
+# upgrades in place; live sessions survive the upgrade.
+#
+# With Tailscale signed in and HTTPS on for the tailnet, it also publishes the
+# daemon on the tailnet and prints a pairing link for Settings > Remote Hosts >
+# + > Pair with a Device... on a Mac.
+#
+# Options:
+#   --version X.Y.Z   install that release instead of the latest
+#   --no-service      install the binaries only
+#   --no-tailscale    do not publish on the tailnet
+#   --dry-run         print what would be done, change nothing
+#
+# Environment:
+#   TERMIO_DOWNLOAD_BASE   where releases live (default https://downloads.termio.sh)
+#   TERMIO_PREFIX          install prefix (default ~/.local)
+
+set -eu
+
+BASE="${TERMIO_DOWNLOAD_BASE:-https://downloads.termio.sh}"
+PREFIX="${TERMIO_PREFIX:-$HOME/.local}"
+BIN="$PREFIX/bin"
+PORT=8790
+VERSION=""
+SERVICE=1
+TAILNET=1
+DRY_RUN=0
+
+usage() {
+    cat <<'USAGE'
+Install the Termio server (termiod and termio) into ~/.local/bin.
+
+  curl -fsSL https://www.termio.sh/install | sh
+  curl -fsSL https://www.termio.sh/install | sh -s -- [options]
+
+Options:
+  --version X.Y.Z   install that release instead of the latest
+  --no-service      install the binaries only
+  --no-tailscale    do not publish on the tailnet
+  --dry-run         print what would be done, change nothing
+USAGE
+}
+
+say() { printf '%s\n' "$*"; }
+step() { printf '==> %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+run() {
+    if [ "$DRY_RUN" = 1 ]; then
+        printf '    would run: %s\n' "$*"
+    else
+        "$@"
+    fi
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) [ $# -ge 2 ] || fail "--version needs a value"; VERSION="${2#v}"; shift 2 ;;
+        --version=*) VERSION="${1#--version=}"; VERSION="${VERSION#v}"; shift ;;
+        --no-service) SERVICE=0; shift ;;
+        --no-tailscale) TAILNET=0; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unknown option: $1 (see --help)" ;;
+    esac
+done
+
+[ "$(uname -s)" = Linux ] || fail "this installs the Linux server. On a Mac, install the app from https://www.termio.sh."
+
+case "$(uname -m)" in
+    x86_64|amd64) TARGET=x86_64-unknown-linux-musl ;;
+    aarch64|arm64) TARGET=aarch64-unknown-linux-musl ;;
+    *) fail "no build for $(uname -m); termio ships x86_64 and aarch64." ;;
+esac
+
+if command -v curl >/dev/null 2>&1; then
+    fetch() { curl -fsSL --retry 2 -o "$2" "$1"; }
+    fetch_text() { curl -fsSL --retry 2 "$1"; }
+elif command -v wget >/dev/null 2>&1; then
+    fetch() { wget -q -O "$2" "$1"; }
+    fetch_text() { wget -q -O - "$1"; }
+else
+    fail "needs curl or wget."
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    digest() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+    digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+    fail "needs sha256sum or shasum to check the download."
+fi
+
+if [ -z "$VERSION" ]; then
+    VERSION="$(fetch_text "$BASE/linux/latest" 2>/dev/null | tr -d ' \r\n')" ||
+        fail "couldn't read the latest version from $BASE/linux/latest."
+    [ -n "$VERSION" ] || fail "no Linux build is published at $BASE yet."
+fi
+RELEASE="$BASE/v$VERSION/linux"
+
+# --- download and check ------------------------------------------------------
+
+WORK="$(mktemp -d 2>/dev/null || mktemp -d -t termio)"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+step "Downloading termio $VERSION for $TARGET"
+fetch "$RELEASE/SHA256SUMS" "$WORK/SHA256SUMS" ||
+    fail "termio $VERSION has no Linux build at $RELEASE."
+for name in termiod termio; do
+    file="$name-$TARGET"
+    fetch "$RELEASE/$file" "$WORK/$file" || fail "couldn't download $RELEASE/$file."
+    want="$(awk -v f="$file" '$2 == f || $2 == "*"f { print $1 }' "$WORK/SHA256SUMS")"
+    [ -n "$want" ] || fail "SHA256SUMS lists no $file."
+    got="$(digest "$WORK/$file")"
+    [ "$got" = "$want" ] || fail "$file failed its checksum (got $got, want $want)."
+done
+say "    checksums match"
+
+# --- install -----------------------------------------------------------------
+
+# Renamed into place, never written over: a running daemon keeps the file it
+# was started from, and `handoff` below moves it onto the new one.
+step "Installing into $BIN"
+run mkdir -p "$BIN"
+for name in termiod termio; do
+    run install -m 755 "$WORK/$name-$TARGET" "$BIN/.$name.new"
+    run mv -f "$BIN/.$name.new" "$BIN/$name"
+done
+
+TERMIOD="$BIN/termiod"
+
+case ":$PATH:" in
+    *":$BIN:"*) ;;
+    *) say "    $BIN is not on your PATH. Add it to run termiod and termio by name." ;;
+esac
+
+[ "$DRY_RUN" = 1 ] && { say "Dry run: nothing was changed."; exit 0; }
+
+# `status --json` is pretty-printed; squeezed flat, one grep reads it.
+status_flat() { "$TERMIOD" status --json 2>/dev/null | tr -d ' \n\t'; }
+daemon_running() { status_flat | grep -q '"daemon":{"running":true'; }
+live_sessions() { status_flat | grep -o '"alive":true' | wc -l | tr -d ' '; }
+
+# A daemon from an earlier install becomes the new build in place: same pid,
+# same PTYs, nothing in a session notices.
+if daemon_running; then
+    step "Upgrading the running daemon in place"
+    if ! "$TERMIOD" handoff; then
+        say "    The running daemon couldn't take the new build in place."
+        say "    It picks it up at its next start: termiod stop, once its sessions are done."
+    fi
+fi
+
+# --- keep it running ---------------------------------------------------------
+
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_OK=0
+if [ "$SERVICE" = 1 ]; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+        step "Keeping termiod running with systemd --user"
+        if "$TERMIOD" service install; then
+            SERVICE_OK=1
+        else
+            say "    A Mac may have started termiod here over SSH. Run termiod stop once"
+            say "    its sessions are done, then run this installer again."
+        fi
+    else
+        say "    No systemd --user session here. Start the daemon yourself with: $TERMIOD serve"
+    fi
+fi
+
+# --- publish on the tailnet --------------------------------------------------
+
+# The daemon's listener only ever binds loopback; TLS and reachability come
+# from Tailscale Serve in front of it, which needs HTTPS on for the tailnet.
+tailnet_name() {
+    tailscale status --json --peers=false 2>/dev/null |
+        grep -m1 '"DNSName"' | sed 's/.*"DNSName": *"\([^"]*\)".*/\1/; s/\.$//'
+}
+tailnet_has_https() {
+    tailscale status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"CertDomains":\["'
+}
+
+URL=""
+if [ "$TAILNET" = 1 ] && [ "$SERVICE_OK" = 1 ] && command -v tailscale >/dev/null 2>&1; then
+    NAME="$(tailnet_name)"
+    if [ -z "$NAME" ]; then
+        say "    Tailscale is installed but not signed in; skipping the tailnet."
+    elif ! tailnet_has_https; then
+        say "    Your tailnet has HTTPS off, which Tailscale Serve needs. Turn it on in the"
+        say "    admin console under DNS > HTTPS Certificates, then run this installer again."
+    else
+        step "Publishing on your tailnet as https://$NAME"
+        URL="https://$NAME"
+        DROPIN_DIR="$UNIT_DIR/termiod.service.d"
+        DROPIN="$DROPIN_DIR/listener.conf"
+        WANT="$(printf '[Service]\nEnvironment="TERMIOD_WSS=127.0.0.1:%s"\nEnvironment="TERMIOD_WSS_ORIGIN=%s"\n' "$PORT" "$URL")"
+        if [ "$(cat "$DROPIN" 2>/dev/null)" != "$WANT" ]; then
+            mkdir -p "$DROPIN_DIR"
+            printf '%s\n' "$WANT" > "$DROPIN.new" && mv -f "$DROPIN.new" "$DROPIN"
+            systemctl --user daemon-reload
+            # The listener is read at start. A restart ends running sessions, so
+            # it happens here only when there are none.
+            if [ "$(live_sessions)" = 0 ]; then
+                systemctl --user restart termiod.service
+            else
+                say "    The listener turns on at the daemon's next start. Restarting now would end"
+                say "    $(live_sessions) running session(s): systemctl --user restart termiod"
+            fi
+        fi
+        "$TERMIOD" pair >/dev/null
+        if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
+            say "    Tailscale Serve needs permission. Run once:"
+            say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
+            say "    or allow it for your user with: sudo tailscale set --operator=$USER"
+        fi
+    fi
+fi
+
+# --- pair --------------------------------------------------------------------
+
+say ""
+say "termio $VERSION is installed: $TERMIOD"
+if [ -n "$URL" ]; then
+    say ""
+    say "To use this machine from a Mac, open Settings > Remote Hosts > + > Pair with a Device..."
+    say "and paste this link. Scan the code with the iPhone app to pair a phone."
+    say ""
+    "$TERMIOD" pair --url "$URL" --qr
+else
+    say "A Mac can reach it over SSH: Settings > Remote Hosts > + > Add SSH Host..."
+fi

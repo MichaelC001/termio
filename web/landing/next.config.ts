@@ -37,6 +37,8 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return [
+      // `curl -fsSL https://www.termio.sh/install | sh` installs the Linux server.
+      { source: "/install", destination: "/install.sh" },
       { source: "/docs/:slug.md", destination: "/docs-md/:slug" },
       { source: "/:lang/docs/:slug.md", destination: "/docs-md/:lang/:slug" },
     ];
