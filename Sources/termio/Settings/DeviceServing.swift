@@ -44,6 +44,9 @@ final class PairingModel: ObservableObject {
     /// within a second or two, and each is a trigger — without this the pane
     /// forks two `termiod pair` processes for one address.
     private var minting = false
+    /// What a refresh asked for while a mint was in flight. Run when the mint
+    /// ends: dropping it left the sheet on a spinner, or on the old address.
+    private var queuedRefresh: (rotate: Bool, force: Bool)?
     private let tunnel = TunnelManager.shared
     private let mobile = MobileAccess.shared
     private var observers: Set<AnyCancellable> = []
@@ -70,10 +73,13 @@ final class PairingModel: ObservableObject {
             .store(in: &observers)
     }
 
-    /// Re-reads everything that can change while the pane is closed.
+    /// Re-reads everything that can change while the pane is closed. The invite
+    /// is minted again even for the same address: `termiod pair --rotate` run in
+    /// a terminal revokes the token it carries without moving the address.
     func refresh() {
+        token = PairingToken.current
         refreshHosts()
-        refreshInvite()
+        refreshInvite(force: true)
         Task {
             tailnetAddress = await Tailnet.ownAddress()
             tailnetRead = true
@@ -148,23 +154,28 @@ final class PairingModel: ObservableObject {
     ///
     /// `rotate` mints a fresh pairing token first, which is what Rotate Token
     /// does on this side.
-    private func refreshInvite(rotate: Bool = false) {
+    private func refreshInvite(rotate: Bool = false, force: Bool = false) {
         guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
             invite = nil
             inviteFailure = nil
             invitedBase = nil
             return
         }
-        guard !minting else { return }
-        guard rotate || base != invitedBase || invite == nil else { return }
+        guard !minting else {
+            let queued = queuedRefresh
+            queuedRefresh = (rotate || queued?.rotate == true, force || queued?.force == true)
+            return
+        }
+        guard rotate || force || base != invitedBase || invite == nil else { return }
         invitedBase = base
         minting = true
         Task {
             defer {
                 minting = false
-                // A change that arrived mid-mint was dropped by the guard above,
-                // and nothing else will ask again for the address it moved to.
-                if mobile.isEnabled, mobile.attachesDirectly, directBase != base { refreshInvite() }
+                if let queued = queuedRefresh {
+                    queuedRefresh = nil
+                    refreshInvite(rotate: queued.rotate, force: queued.force)
+                }
             }
             do {
                 let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
