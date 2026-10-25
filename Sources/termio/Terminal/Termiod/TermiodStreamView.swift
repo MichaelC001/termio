@@ -771,13 +771,15 @@ struct TermiodStreamPane: NSViewRepresentable {
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
-        // Only on the way in: this runs on every store change, and taking the
-        // keyboard each time would pull it out of a field the user is typing
-        // in, such as a sidebar rename. A view not yet in a window takes it
-        // in `viewDidMoveToWindow`.
+        // This runs on every store change. Taking the keyboard each time would
+        // pull it out of a field the user is typing in, such as a sidebar
+        // rename, so it is taken on the way in, or when nothing holds it — the
+        // embedded surface's orphan repair, after that field went away. A view
+        // not yet in a window takes it in `viewDidMoveToWindow`.
         let gained = takesKeyboard && !view.claimsFocus
         view.claimsFocus = takesKeyboard
-        if gained, let window = view.window, window.firstResponder !== view {
+        if takesKeyboard, let window = view.window, window.firstResponder !== view,
+           gained || window.firstResponder == nil || window.firstResponder === window {
             DispatchQueue.main.async { [weak view] in
                 guard let view, view.claimsFocus, view.window === window else { return }
                 window.makeFirstResponder(view)

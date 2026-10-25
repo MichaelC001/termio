@@ -532,6 +532,12 @@ struct TerminalPane: View {
     /// windowed, and explicitly resign the previously focused surface before moving.
     private func requestTerminalFocus(for id: Session.ID, reason: TerminalFocusReason) {
         guard let session = store.session(id) else { return }
+        // A stream pane has no embedded view for the driver to find, and would
+        // be retried forever; its own view is focused directly instead.
+        if store.runtime(for: id).streamLink != nil {
+            focusStreamPane(id, reason: reason)
+            return
+        }
         let state = store.surface(for: session)
         focusDriver.moveFocus(
             to: state,
@@ -542,6 +548,22 @@ struct TerminalPane: View {
                 return Self.terminalMayTakeKeyboard(id, store: store)
             }
         )
+    }
+
+    /// The driver's rule for a stream pane: a repair takes the keyboard only from
+    /// nothing or the window itself, never from a field; the other reasons
+    /// replace whatever holds it. A pane not mounted yet takes it when its view
+    /// enters the window.
+    private func focusStreamPane(_ id: Session.ID, reason: TerminalFocusReason) {
+        guard Self.terminalMayTakeKeyboard(id, store: store),
+              let root = AppDelegate.mainWindow?.contentView,
+              let view = streamView(for: id, under: root),
+              let window = view.window
+        else { return }
+        let current = window.firstResponder
+        guard current !== view else { return }
+        if !reason.replacesCurrentResponder, current != nil, current !== window { return }
+        window.makeFirstResponder(view)
     }
 
     /// Whether the session's terminal may take the keyboard now: the embedded
@@ -927,6 +949,16 @@ private func applySurfaceVisibility(_ visible: Bool, for state: TerminalViewStat
           let view = terminalView(matching: state, under: root)
     else { return }
     view.setSurfaceVisible(visible)
+}
+
+/// The stream view mounted for a session, if its pane is on screen.
+@MainActor
+private func streamView(for id: Session.ID, under root: NSView) -> TermiodStreamView? {
+    if let view = root as? TermiodStreamView, view.sessionID == id { return view }
+    for child in root.subviews {
+        if let match = streamView(for: id, under: child) { return match }
+    }
+    return nil
 }
 
 /// The AppKit terminal view a `TerminalViewState` is mounted in. SwiftUI hands the
