@@ -2,27 +2,31 @@
 // auto-updates — no account, no license keys, no payment backend.
 
 // The agents Termio ships a manifest for, in the order the app itself lists
-// them (`Sources/termio/Resources/agents/*.json`, the `order` field). The hero
-// marquee and the FAQ answer read this list; the agent showcase draws a panel
-// for the subset of it we have a capture of, and its names are checked against
-// this type so the two can't drift apart again. The app bundles a few more
+// them (`Sources/termio/Resources/agents/*.json`, the `order` field). Command
+// and install link are copied from each manifest. The app bundles a few more
 // manifests than this — an agent joins the list once it has a brand mark and
 // someone has run it.
 export const supportedAgents = [
-  "Claude Code",
-  "Codex",
-  "OpenCode",
-  "Pi",
-  "Amp",
-  "Cursor",
-  "Copilot",
-  "Kimi",
-  "Antigravity",
-  "Crush",
-  "Grok",
+  { name: "Claude Code", command: "claude", href: "https://claude.com/claude-code" },
+  { name: "Codex", command: "codex", href: "https://developers.openai.com/codex/cli" },
+  { name: "OpenCode", command: "opencode", href: "https://opencode.ai" },
+  { name: "Pi", command: "pi", href: "https://pi.dev" },
+  { name: "Amp", command: "amp", href: "https://ampcode.com/manual" },
+  { name: "Cursor", command: "cursor-agent", href: "https://cursor.com/docs/cli" },
+  {
+    name: "Copilot",
+    command: "copilot",
+    href: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+  },
+  { name: "Kimi", command: "kimi", href: "https://moonshotai.github.io/kimi-code" },
+  {
+    name: "Antigravity",
+    command: "agy",
+    href: "https://antigravity.google/product/antigravity-cli",
+  },
+  { name: "Crush", command: "crush", href: "https://github.com/charmbracelet/crush" },
+  { name: "Grok", command: "grok", href: "https://x.ai/cli" },
 ] as const;
-
-export type SupportedAgent = (typeof supportedAgents)[number];
 
 export const navLinks = [
   { label: "Docs", href: "/docs" },
@@ -60,22 +64,27 @@ export const testflightUrl = "https://testflight.apple.com/join/1Arf1UKR";
 export const heroSlides = [
   {
     src: "/screenshots/hero1.png?v=20261017",
+    label: "Agents",
     alt: "Codex and Claude Code above a running development server in Atom One Dark.",
   },
   {
     src: "/screenshots/hero2.png?v=20261017",
+    label: "Editor",
     alt: "SplitTree.swift open in the editor beside a Claude Code walkthrough.",
   },
   {
     src: "/screenshots/hero3.png?v=20261017",
+    label: "Search",
     alt: "Project search showing SplitBranch matches grouped by file beside Claude Code.",
   },
   {
     src: "/screenshots/hero4.png?v=20261017",
+    label: "Diff",
     alt: "A unified diff with red and green changes beside Claude Code.",
   },
   {
     src: "/screenshots/hero5.png?v=20261017",
+    label: "History",
     alt: "Recent commits in the History panel beside a Claude Code session.",
   },
 ].map((slide) => ({ ...slide, width: 2584, height: 1714 }));

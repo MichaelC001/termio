@@ -225,7 +225,7 @@ final class CompanionServer {
     private var liveness = LinkLiveness()
 
     /// The one port everything agrees on: the app serves here, dev-run.sh
-    /// points the phone here, and the Settings ▸ Mobile QR encodes it. A dev-channel
+    /// points the phone here, and the Settings ▸ Server QR encodes it. A dev-channel
     /// build serves on 8788 (see `AppChannel`) so it can run beside a release build.
     nonisolated static var defaultPort: UInt16 { AppChannel.companionPort }
 
@@ -356,7 +356,7 @@ final class CompanionServer {
                 guard let self, self.connections.contains(id),
                       self.authenticatedWireByConnection[id] == nil else { return }
                 self.refuse(
-                    connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile",
+                    connection, message: "unauthorized — scan the QR code in Settings ▸ Server",
                     code: WireRefusal.unauthorized)
             }
         }
@@ -439,7 +439,7 @@ final class CompanionServer {
         }
         guard authenticatedWireByConnection[id] != nil else {
             refuse(
-                connection, message: "unauthorized — scan the QR code in Settings ▸ Mobile",
+                connection, message: "unauthorized — scan the QR code in Settings ▸ Server",
                 code: WireRefusal.unauthorized)
             return
         }

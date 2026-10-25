@@ -119,7 +119,8 @@ struct RemoteHostsSettingsTab: View {
                     },
                     onConnect: onConnect,
                     onSetUpKey: onSetUpKey,
-                    onEditConfig: { presentEditor(for: host(for: machine)) }
+                    onEditConfig: { presentEditor(for: host(for: machine)) },
+                    pairsPhones: DeviceRoster.known(in: store).contains { $0.alias == machine.alias }
                 )
                 .id(route.key)
                 .navigationTitle(machine.name)

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { FullSearchTrigger } from "fumadocs-ui/layouts/shared/slots/search-trigger";
 import { Logo } from "@/components/logo";
 import { GitHubMark } from "@/components/section-label";
-import { ThemeSwitch } from "@/components/docs/theme-switch";
+import { ThemeSwitch } from "@/components/theme-switch";
 import { source } from "@/lib/source";
 import { docsChrome } from "@/lib/docs-ui";
 import type { DocsLanguage } from "@/lib/i18n";
@@ -43,7 +43,7 @@ export function DocsHeader({ lang }: { lang: DocsLanguage }) {
           className="docs-header-search"
         />
         <div className="flex items-center gap-2 justify-self-end">
-          <ThemeSwitch chrome={chrome} />
+          <ThemeSwitch labels={chrome} />
           <span
             className="hidden h-5 w-px bg-border sm:block"
             aria-hidden="true"

@@ -17,6 +17,24 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.62.0",
+    date: "2026-10-24",
+    title: "Several accounts per agent",
+    changes: {
+      new: [
+        "Accounts: Settings ▸ Usage lists every Claude Code and Codex account you sign in to, each with its own 5-hour and weekly limits.",
+        "Add Account signs in to another account from Settings, and Use for New Sessions picks the account new sessions run on.",
+      ],
+      improved: [
+        "Usage totals tokens for this Mac across all your accounts: today, the last 7 days and the last 30 days.",
+        "Phone pairing moved from Settings ▸ Mobile to Settings ▸ Server, and into each remote host's pane.",
+      ],
+      fixed: [
+        "Agent input boxes no longer come back scrambled after updating or restarting Termio.",
+      ],
+    },
+  },
+  {
     version: "0.61.0",
     date: "2026-10-24",
     title: "A calmer Settings window",

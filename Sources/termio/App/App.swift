@@ -957,18 +957,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// — Safari, Xcode), falling back to the first tab on a fresh install;
     /// deep-linked opens (`openSettings(initialTab:)`) still pick their own.
     @objc func showSettings(_ sender: Any?) {
+        // "mobile" was a tab of its own; its controls now live in Server.
         let remembered = UserDefaults.standard.string(forKey: SettingsTab.lastOpenKey)
-            .flatMap(SettingsTab.init(rawValue:))
+            .flatMap { $0 == "mobile" ? .server : SettingsTab(rawValue: $0) }
         openSettings(initialTab: remembered ?? .general)
     }
 
-    /// Opens the pairing QR (RFC §D9).
-    ///
-    /// One hop now rather than three: Mobile renders the serving this Mac does
-    /// instead of standing a machine roster in front of it, so the tab itself is
-    /// the destination and there is no pane to seed underneath.
+    /// Opens the pairing QR (RFC §D9), which is a section of this Mac's Server
+    /// pane: what a phone attaches to is the port this Mac serves.
     @objc func pairPhone(_ sender: Any?) {
-        openSettings(initialTab: .mobile)
+        openSettings(initialTab: .server)
     }
 
     /// Opens (or refocuses) the preferences window on a specific tab. The content
@@ -1027,6 +1025,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.store.addKeyInstallSession(host: host, publicKey: publicKey)
                 // Same reason as above, and more so: this session opens on a
                 // password prompt waiting to be answered.
+                self.window.makeKeyAndOrderFront(nil)
+            },
+            onSignIn: { [weak self] title, command in
+                guard let self else { return }
+                self.store.addOneShotSession(title: title, command: command)
+                // The login waits on the user in that terminal; Settings keeps
+                // its sheet open and notices the new sign-in on its own.
                 self.window.makeKeyAndOrderFront(nil)
             }
         ).frame(minWidth: 640, minHeight: 480))

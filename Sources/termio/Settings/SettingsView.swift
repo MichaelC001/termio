@@ -25,6 +25,9 @@ struct SettingsView: View {
     /// window — injected for the same reason as `onSSHConnect`, since it is also a
     /// terminal launch rather than something this window can do.
     let onSetUpKey: (String, String) -> Void
+    /// Opens a terminal running an agent CLI's login (title, command line) in the
+    /// main window — the Usage tab's Sign In, injected for the same reason.
+    let onSignIn: (String, String) -> Void
     @State private var selection: SettingsTab
     /// The detail column's push stack, which a tab drills into (Agents pushes one
     /// agent's pane). Owned here so switching tabs can empty it: a pushed pane
@@ -42,13 +45,15 @@ struct SettingsView: View {
         store: TermioStore,
         initialTab: SettingsTab = .general,
         onSSHConnect: @escaping (String) -> Void,
-        onSetUpKey: @escaping (String, String) -> Void
+        onSetUpKey: @escaping (String, String) -> Void,
+        onSignIn: @escaping (String, String) -> Void
     ) {
         self.settings = settings
         self.usage = usage
         self.store = store
         self.onSSHConnect = onSSHConnect
         self.onSetUpKey = onSetUpKey
+        self.onSignIn = onSignIn
         _selection = State(initialValue: initialTab)
     }
 
@@ -146,8 +151,8 @@ struct SettingsView: View {
     /// fill covers the whole row — including the group gap the first row of a
     /// group carries.
     ///
-    /// The pill is a grey wash, not the accent: Termio marks state with ink, and a
-    /// solid blue bar was the loudest thing in a window whose job is to be calm.
+    /// The pill is the main sidebar's selection glass, not the accent: Termio marks
+    /// state with ink, and the same "this one" in both sidebars reads as one app.
     /// The selected row keeps the full-strength label and takes a medium weight.
     private func row(for tab: SettingsTab) -> some View {
         let isSelected = selection == tab
@@ -173,10 +178,11 @@ struct SettingsView: View {
         .foregroundStyle(Color.primary)
         .padding(.horizontal, settingsSidebarPillPadding)
         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.primary.opacity(0.07) : Color.clear)
-        )
+        .background {
+            if isSelected {
+                SelectionGlass(shape: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
         // Applied *after* the pill so the pill widens with the row rather than
         // sliding out from under it, and last so nothing downstream re-insets it.
         .padding(.leading, settingsSidebarPillInset - settingsSidebarBaseIndent)
@@ -198,8 +204,7 @@ struct SettingsView: View {
         case .keyboard: KeybindingsSettingsTab()
         case .agents:
             AgentSettingsTab(settings: settings, store: store, onOpenMachine: open)
-        case .usage: UsageSettingsTab(settings: settings, usage: usage)
-        case .mobile: MobileSettingsTab(store: store)
+        case .usage: UsageSettingsTab(settings: settings, usage: usage, onSignIn: onSignIn)
         case .community: CommunitySettingsTab()
         }
     }

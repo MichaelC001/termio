@@ -23,6 +23,13 @@ function DiscordMark({ className }: { className?: string }) {
 export function SiteNav() {
   return (
     <header className="fixed inset-x-0 top-0 z-50 pt-4">
+      {/* A blurred band behind the whole bar, fading out downward, so text
+          scrolling under the wordmark and the pill blurs instead of colliding
+          with them. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-24 bg-gradient-to-b from-background/80 to-transparent backdrop-blur-md [mask-image:linear-gradient(to_bottom,black_40%,transparent)]"
+      />
       <div className="relative mx-auto flex w-full max-w-6xl items-center justify-center px-5 sm:px-8">
         <Link
           href="/"

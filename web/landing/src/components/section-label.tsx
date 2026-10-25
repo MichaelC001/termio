@@ -37,6 +37,41 @@ export function SectionLabel({
   );
 }
 
+// The landing's one section shell: the same width, gutter and vertical rhythm for
+// every block, so the gaps between sections are equal by construction.
+export function Section({
+  id,
+  className,
+  children,
+  ...props
+}: React.ComponentProps<"section">) {
+  return (
+    <section
+      id={id}
+      className={cn("scroll-mt-24 py-16 sm:py-24", className)}
+      {...props}
+    >
+      <div className="mx-auto w-full max-w-6xl px-5 sm:px-8">{children}</div>
+    </section>
+  );
+}
+
+// The painted stage a real screenshot sits on (`.stage` in globals.css): the
+// hero aurora's palette, so every product view on the page shares one
+// backdrop, the way VS Code puts each of its screenshots on the same blue.
+// `dark` keeps anything drawn on it light in either appearance.
+export function Stage({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("dark stage rounded-2xl", className)}>{children}</div>
+  );
+}
+
 // Apple logo glyph for the "Download for Mac" pills — the single most recognizable
 // cue that this is a native Mac app.
 export function AppleMark({ className }: { className?: string }) {
