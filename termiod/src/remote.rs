@@ -493,10 +493,13 @@ impl Node for SshNode {
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
+        // The daemon's own `stdio`, not the client's: this verifies the
+        // daemon, and a client repair may just have taken a broken client
+        // back off the box.
         let mut child = self
             .ssh()
             .arg(&self.host)
-            .arg(format!("{} stdio", remote_control_bin()))
+            .arg(format!("{} stdio", remote_bin()))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

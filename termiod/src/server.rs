@@ -317,9 +317,14 @@ fn verb_words_of(argv: &[String]) -> Result<Vec<String>> {
             // the `H` on is the host. No other short flag of `server` takes a
             // value that could contain an `H`, except `-n`, which takes digits.
             _ if !word.starts_with("--") && word.starts_with('-') && word[1..].contains('H') => {
-                let flags = &word[..word.find('H').unwrap_or(word.len())];
+                let at = word.find('H').unwrap_or(word.len());
+                let flags = &word[..at];
                 if flags.len() > 1 {
                     words.push(flags.to_string());
+                }
+                // `-fH box`: the host is the next word.
+                if at + 1 == word.len() {
+                    rest.next();
                 }
             }
             _ => words.push(word.clone()),
@@ -661,6 +666,7 @@ mod tests {
         assert_eq!(words("termio server --host=box ls"), ["ls"]);
         assert_eq!(words("termio server -Hbox logs -n 5"), ["logs", "-n", "5"]);
         assert_eq!(words("termio server logs -fHbox"), ["logs", "-f"]);
+        assert_eq!(words("termio server logs -fH box -n 5"), ["logs", "-f", "-n", "5"]);
         assert_eq!(
             words("termio server -H box send server -- -H x"),
             ["send", "server", "--", "-H", "x"]

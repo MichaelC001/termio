@@ -467,7 +467,13 @@ pub fn paired_daemon() -> Result<PathBuf> {
         return Ok(PathBuf::from(explicit));
     }
     let own = std::env::current_exe().context("resolving this executable")?;
-    if own.file_name().is_some_and(|name| name == "termiod") {
+    // Any `termiod*` name is a daemon binary answering for itself: a renamed
+    // test daemon, or `termiod.prev` after a staged build renamed it aside.
+    if own
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("termiod"))
+    {
         return Ok(own);
     }
     let invoked = std::env::args_os()
