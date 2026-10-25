@@ -88,9 +88,12 @@ final class UsageMonitor: ObservableObject {
     func accounts(for agent: AgentPreset) -> [UsageAccount] {
         guard let provider = Self.providers.first(where: { $0.agent == agent }) else { return [] }
         let defaultHome = provider.defaultHome.standardizedFileURL
+        // Two spellings of one folder (a symlink) would scan the same logs twice
+        // and double every total, so folders are told apart by where they lead.
+        var seen: Set<String> = [defaultHome.resolvingSymlinksInPath().path]
         let added = settings.usageAccountFolders(for: agent)
             .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .filter { $0 != defaultHome }
+            .filter { seen.insert($0.resolvingSymlinksInPath().path).inserted }
             .map { UsageAccount(agent: agent, home: $0, isDefault: false) }
         return [UsageAccount(agent: agent, home: defaultHome, isDefault: true)] + added
     }
@@ -119,7 +122,9 @@ final class UsageMonitor: ObservableObject {
     func signInCommand(for account: UsageAccount) -> String? {
         guard let type = Self.providerType(for: account.agent),
               let login = type.loginArguments,
-              let command = account.agent.command else { return nil }
+              let command = settings.commandPath(for: account.agent, on: .thisMac)
+                .flatMap({ $0.isEmpty ? nil : $0 }) ?? account.agent.command
+        else { return nil }
         if account.isDefault { return "\(command) \(login)" }
         do {
             try FileManager.default.createDirectory(
@@ -129,7 +134,20 @@ final class UsageMonitor: ObservableObject {
             Log.app.error("usage: could not create \(account.home.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
-        return "\(type.homeEnvironment)=\(TermioStore.shellQuoted(account.home.path)) \(command) \(login)"
+        return TermioStore.exporting(type.homeEnvironment, account.home.path, before: "\(command) \(login)")
+    }
+
+    /// Whether `folder` is one termio can integrate as an account: beside the
+    /// agent's default folder and named after it (`~/.claude-work`). termiod
+    /// installs status hooks only into folders of that shape, so any other
+    /// would run sessions that report no status.
+    static func isAccountFolder(_ folder: URL, for agent: AgentPreset) -> Bool {
+        guard let base = providerType(for: agent)?.defaultHome.standardizedFileURL else { return false }
+        let folder = folder.standardizedFileURL
+        guard folder.deletingLastPathComponent() == base.deletingLastPathComponent(),
+              folder.lastPathComponent.hasPrefix(base.lastPathComponent + "-") else { return false }
+        let suffix = folder.lastPathComponent.dropFirst(base.lastPathComponent.count + 1)
+        return !suffix.isEmpty && suffix.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }
     }
 
     /// Whether `account`'s folder holds a login yet, and whose. Reads files and

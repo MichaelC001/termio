@@ -306,6 +306,8 @@
 	<string>检查中…</string>
 	<key>Choose a different name.</key>
 	<string>请选取其他名称。</string>
+	<key>Choose a folder named like “%@-work”</key>
+	<string>请选择名称类似“%@-work”的文件夹</string>
 	<key>Choose a name for this workspace.</key>
 	<string>为这个工作区取个名字。</string>
 	<key>Choose a project folder on %@.</key>
@@ -1454,6 +1456,8 @@
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio 是开源软件：欢迎给仓库加星标、报告 bug 和提出功能请求。</string>
+	<key>Termio keeps each account in a folder beside %@ so its sessions can report their status.</key>
+	<string>Termio 把每个账户放在 %@ 旁边的文件夹里，这样它的会话才能报告状态。</string>
 	<key>Termio notifies you about the agents above, wherever they run.</key>
 	<string>无论上面的 Agent 在哪里运行，Termio 都会通知你。</string>
 	<key>Termio opens a terminal where %@ signs you in. Your other accounts stay signed in.</key>

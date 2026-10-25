@@ -489,6 +489,17 @@ fn accepted_home(home: &crate::agent::manifest::ConfigHome, folder: &str) -> Opt
 fn accepted_home_beside(default: &Path, folder: &str) -> Option<String> {
     let name = default.file_name()?.to_str()?;
     let candidate = PathBuf::from(folder);
+    // Only a path that is already in normal form: a trailing `/` would make the
+    // `lstat` below follow a symlink to a directory anywhere, and `.`/`..`
+    // components would make the sibling check below describe a different
+    // folder from the one written into.
+    let normal: PathBuf = candidate.components().collect();
+    let plain = candidate.components().all(|part| {
+        matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_))
+    });
+    if !plain || normal.as_os_str() != candidate.as_os_str() {
+        return None;
+    }
     if !candidate.is_absolute() || candidate.parent() != default.parent() {
         return None;
     }
@@ -1592,6 +1603,16 @@ pub(super) mod tests {
         assert_eq!(accepted_home_beside(&default, &at("nested/.claude-3")), None);
         assert_eq!(accepted_home_beside(&default, &at(".claude-missing")), None);
         assert_eq!(accepted_home_beside(&default, ".claude-2"), None);
+        assert_eq!(accepted_home_beside(&default, &format!("{}/", at(".claude-2"))), None);
+        assert_eq!(accepted_home_beside(&default, &at("nested/../.claude-2")), None);
+        assert_eq!(accepted_home_beside(&default, &at("./.claude-2")), None);
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+            std::os::unix::fs::symlink(root.join("elsewhere"), root.join(".claude-link")).unwrap();
+            assert_eq!(accepted_home_beside(&default, &at(".claude-link")), None);
+            assert_eq!(accepted_home_beside(&default, &format!("{}/", at(".claude-link"))), None);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

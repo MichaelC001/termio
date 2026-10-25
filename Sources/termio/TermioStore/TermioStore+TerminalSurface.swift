@@ -367,7 +367,12 @@ extension TermioStore {
         // (no second shell), and `recordLaunch` is idempotent — running it a turn later
         // is harmless. (`surfaces`/`monitors` are plain, non-`@Published` caches, so
         // writing them here is fine; only the `projects` write must be deferred.)
-        DispatchQueue.main.async { [self] in recordLaunch(session.id, resumeID: launch.resumeID) }
+        // The account is read once, here, with the command it shaped: reading the
+        // setting again a turn later could record a different one than launched.
+        let launchedAccount = accountHome(for: session)
+        DispatchQueue.main.async { [self] in
+            recordLaunch(session.id, resumeID: launch.resumeID, account: launchedAccount)
+        }
         return state
     }
 
@@ -509,7 +514,7 @@ extension TermioStore {
         // both read the folder the agent actually writes.
         let account = accountHome(for: session)
         let command = account.flatMap { home in
-            agent.configHome.map { "\($0.env)=\(Self.shellQuoted(home)) \(base)" }
+            agent.configHome.map { Self.exporting($0.env, home, before: base) }
         } ?? base
         let resumeID: String?
         if agent.usesPinnedResumeID {
@@ -549,20 +554,27 @@ extension TermioStore {
     /// Persists that a session has launched and, for the id-pinning agents, the id it
     /// was pinned to. Writes only when something actually changed, so re-opening an
     /// already-launched session doesn't churn the state file or re-sync watched folders.
-    private func recordLaunch(_ id: Session.ID, resumeID: String?) {
+    private func recordLaunch(_ id: Session.ID, resumeID: String?, account: String?) {
         guard var session = session(id) else { return }
         let firstLaunch = !session.launched
         let needsResumeID = resumeID != nil && session.resumeID == nil
         guard firstLaunch || needsResumeID else { return }
         if needsResumeID { session.resumeID = resumeID }
         if firstLaunch {
-            session.accountHome = accountHome(for: session)
+            session.accountHome = account
             session.launched = true
             // Stamp the launch moment so a later run can correlate Codex/OpenCode's own
             // session record back to this session by creation time (see `resolveLaunch`).
             session.launchedAt = Date()
         }
         updateSession(id) { $0 = session }
+    }
+
+    /// `command` with `variable` exported for the whole line. A bare `VAR=x`
+    /// prefix binds to the first simple command only, so an authored
+    /// `prepare && claude` would run the agent on the default account.
+    static func exporting(_ variable: String, _ value: String, before command: String) -> String {
+        "export \(variable)=\(shellQuoted(value)); \(command)"
     }
 
     /// The account folder `session` runs on: the one it was started on, or —
@@ -649,7 +661,8 @@ extension TermioStore {
         guard let spawnedAt = processSpawnedAt[id] else { return }
         guard soleAgentSession(session.agent, in: directory, is: id) else { return }
         guard let found = AgentSessionStore.rediscover(
-            agent: session.agent, directory: directory, after: spawnedAt)
+            agent: session.agent, directory: directory, after: spawnedAt,
+            account: session.accountHome)
         else { return }
         if adoptConversationID(found.id, for: id) {
             transcriptPaths[id] = found.transcriptPath

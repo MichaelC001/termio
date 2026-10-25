@@ -188,7 +188,9 @@ extension TermioStore {
     func noteForegroundAgent(_ detected: AgentDefinition?, for id: Session.ID) {
         guard let home = locate(id) else { return }
         var session = self[home]
-        guard !session.isSSH else { return }
+        // A sign-in terminal runs an agent CLI's login, not the agent: promoting it
+        // would persist an agent identity that relaunches as a full session.
+        guard !session.isSSH, session.oneShotCommand == nil else { return }
         if let detected {
             // Promote a plain terminal only: an already-promoted row seeing its own
             // agent is the idempotent no-op, and a *different* foreground under a
@@ -248,12 +250,19 @@ extension TermioStore {
     /// `nil` until a matching transcript exists on disk.
     func resolveTranscriptPath(for id: Session.ID) -> String? {
         guard let session = session(id), session.launched else { return nil }
-        if let store = session.agent.resumeSpec.store, !store.isDirectory,
+        // A session on an extra account keeps its conversations in that folder.
+        let account = session.accountHome
+        let store = session.agent.resumeSpec.store.map { store -> AgentDefinition.ResumeSpec.Store in
+            var moved = store
+            moved.root = session.agent.path(store.root, inAccount: account)
+            return moved
+        }
+        if let store, !store.isDirectory,
            let resumeID = session.resumeID,
            let path = SessionStore.locate(store, id: resumeID) {
             return path
         }
-        if let store = session.agent.resumeSpec.store, store.isDirectory,
+        if let store, store.isDirectory,
            let resumeID = session.resumeID,
            let dirPath = SessionStore.locate(store, id: resumeID) {
             // Directory-based store: the session is a directory of files. Prefer the
@@ -268,11 +277,11 @@ extension TermioStore {
             return soleJSONLFile(in: dirPath)
         }
         if session.agent.resumeSpec.discover != nil, let resumeID = session.resumeID {
-            return AgentSessionStore.transcript(agent: session.agent, id: resumeID)
+            return AgentSessionStore.transcript(agent: session.agent, id: resumeID, account: account)
         }
         guard let directory = session.worktreePath ?? project(for: id)?.path else { return nil }
         return AgentSessionStore.discoverTranscript(
-            agent: session.agent, directory: directory, after: session.launchedAt)
+            agent: session.agent, directory: directory, after: session.launchedAt, account: account)
     }
 
     /// Returns the path to a named file inside a directory, or `nil` if it doesn't exist.

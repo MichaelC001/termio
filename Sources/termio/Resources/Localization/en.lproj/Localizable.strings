@@ -306,6 +306,8 @@
 	<string>Checking…</string>
 	<key>Choose a different name.</key>
 	<string>Choose a different name.</string>
+	<key>Choose a folder named like “%@-work”</key>
+	<string>Choose a folder named like “%@-work”</string>
 	<key>Choose a name for this workspace.</key>
 	<string>Choose a name for this workspace.</string>
 	<key>Choose a project folder on %@.</key>
@@ -1454,6 +1456,8 @@
 	<string>Termio for iPhone is in beta</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
 	<string>Termio is open source — star the repo, report bugs, and request features.</string>
+	<key>Termio keeps each account in a folder beside %@ so its sessions can report their status.</key>
+	<string>Termio keeps each account in a folder beside %@ so its sessions can report their status.</string>
 	<key>Termio notifies you about the agents above, wherever they run.</key>
 	<string>Termio notifies you about the agents above, wherever they run.</string>
 	<key>Termio opens a terminal where %@ signs you in. Your other accounts stay signed in.</key>

@@ -28,9 +28,11 @@ enum AgentSessionStore {
     /// the agent's session log itself (Codex's rollout file), so the Info pane can
     /// render a trace from it; a `json` record is metadata only (OpenCode). Returns the
     /// file path, or `nil` when none matches (yet) or the record isn't a transcript.
-    static func discoverTranscript(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
+    static func discoverTranscript(
+        agent: AgentPreset, directory: String, after launchedAt: Date?, account: String? = nil
+    ) -> String? {
         guard agent.resumeSpec.discover?.format == .jsonl else { return nil }
-        return match(agent: agent, directory: directory, after: launchedAt)?.url.path
+        return match(agent: agent, directory: directory, after: launchedAt, account: account)?.url.path
     }
 
     /// The transcript for a *known* conversation id: the record whose id field matches,
@@ -38,9 +40,9 @@ enum AgentSessionStore {
     /// the trace must follow that exact conversation, not whichever record a time-based
     /// match happens to find. Returns the first hit (ids are unique in every agent's
     /// store), and only for `jsonl` records, which double as the transcript.
-    static func transcript(agent: AgentPreset, id: String) -> String? {
+    static func transcript(agent: AgentPreset, id: String, account: String? = nil) -> String? {
         guard let spec = agent.resumeSpec.discover, spec.format == .jsonl else { return nil }
-        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(spec.root))
+        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(agent.path(spec.root, inAccount: account)))
         let keys: [URLResourceKey] = [.isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys) else { return nil }
@@ -61,9 +63,11 @@ enum AgentSessionStore {
     /// follows the agent through an in-process rotation (`/new`) that minted a newer
     /// one. Returns the id plus the record path when the record doubles as the
     /// transcript (`jsonl`).
-    static func rediscover(agent: AgentPreset, directory: String, after launchedAt: Date?)
-        -> (id: String, transcriptPath: String?)? {
-        guard let hit = match(agent: agent, directory: directory, after: launchedAt, newest: true)
+    static func rediscover(
+        agent: AgentPreset, directory: String, after launchedAt: Date?, account: String? = nil
+    ) -> (id: String, transcriptPath: String?)? {
+        guard let hit = match(agent: agent, directory: directory, after: launchedAt, newest: true,
+                              account: account)
         else { return nil }
         let isTranscript = agent.resumeSpec.discover?.format == .jsonl
         return (hit.id, isTranscript ? hit.url.path : nil)

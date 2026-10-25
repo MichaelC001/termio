@@ -33,7 +33,7 @@ final class UsageAccountTests: XCTestCase {
         let account = UsageAccount(agent: .claudeCode, home: home, isDefault: false)
         XCTAssertEqual(
             monitor.signInCommand(for: account),
-            "CLAUDE_CONFIG_DIR='\(home.path)' claude auth login")
+            "export CLAUDE_CONFIG_DIR='\(home.path)'; claude auth login")
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.path))
     }
 
@@ -72,6 +72,26 @@ final class UsageAccountTests: XCTestCase {
 
         settings.removeUsageAccountFolder(folder.path, for: .claudeCode)
         XCTAssertNil(settings.usageActiveAccounts[AgentPreset.claudeCode.rawValue])
+    }
+
+    /// The export must cover the whole authored line, or `prepare && claude`
+    /// runs the agent on the default account.
+    @MainActor
+    func testAccountExportCoversACompoundCommand() {
+        XCTAssertEqual(
+            TermioStore.exporting("CODEX_HOME", "/Users/u/.codex-2", before: "prepare && codex"),
+            "export CODEX_HOME='/Users/u/.codex-2'; prepare && codex")
+    }
+
+    /// Only folders termiod will install hooks into may be added by hand.
+    @MainActor
+    func testAccountFoldersMustSitBesideTheDefaultFolder() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let named = { (name: String) in home.appendingPathComponent(name) }
+        XCTAssertTrue(UsageMonitor.isAccountFolder(named(".codex-work"), for: .codex))
+        XCTAssertFalse(UsageMonitor.isAccountFolder(named(".codex"), for: .codex))
+        XCTAssertFalse(UsageMonitor.isAccountFolder(named(".codexwork"), for: .codex))
+        XCTAssertFalse(UsageMonitor.isAccountFolder(named("work/.codex-2"), for: .codex))
     }
 
     func testAccountTotalsSumAcrossFolders() {

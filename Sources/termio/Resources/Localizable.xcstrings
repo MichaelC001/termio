@@ -8934,6 +8934,26 @@
           }
         }
       }
+    },
+    "Choose a folder named like “%@-work”": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择名称类似“%@-work”的文件夹"
+          }
+        }
+      }
+    },
+    "Termio keeps each account in a folder beside %@ so its sessions can report their status.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 把每个账户放在 %@ 旁边的文件夹里，这样它的会话才能报告状态。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

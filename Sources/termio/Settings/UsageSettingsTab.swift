@@ -78,8 +78,10 @@ private struct UsageSignIn: Identifiable {
     enum Phase: Equatable {
         /// Only for a new account: the one question, "sign in now?".
         case ask
-        /// The terminal is open; the sheet polls the folder for the login.
-        case waiting
+        /// The terminal is open; the sheet polls the folder for a login. After a
+        /// duplicate, the old login is still in the folder until the new one
+        /// replaces it, so the poll waits past that email.
+        case waiting(ignoring: String?)
         /// The login landed, but it is an account that is already listed.
         case duplicate(String)
     }
@@ -236,7 +238,7 @@ private struct UsageAgentDetail: View {
             return
         }
         run(account)
-        signIn = UsageSignIn(account: account, isNew: false, phase: .waiting)
+        signIn = UsageSignIn(account: account, isNew: false, phase: .waiting(ignoring: nil))
     }
 
     private func beginAdding() {
@@ -270,8 +272,20 @@ private struct UsageAgentDetail: View {
         panel.prompt = localized("Add Account")
         panel.message = localized("Choose the folder \(agent.displayName) signed in to.")
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard UsageMonitor.isAccountFolder(url, for: agent) else {
+            let alert = NSAlert()
+            alert.messageText = localized("Choose a folder named like “\(defaultFolderName)-work”")
+            alert.informativeText = localized("Termio keeps each account in a folder beside \(defaultFolderName) so its sessions can report their status.")
+            alert.runModal()
+            return
+        }
         settings.addUsageAccountFolder(url.standardizedFileURL.path, for: agent)
         usage.forceRefresh()
+    }
+
+    /// The default folder's name, `.claude`, for the folder-naming hint.
+    private var defaultFolderName: String {
+        accounts.first { $0.isDefault }?.home.lastPathComponent ?? ""
     }
 
     private func remove(_ account: UsageAccount) {
@@ -313,7 +327,7 @@ private struct UsageSignInSheet: View {
                         .keyboardShortcut(.cancelAction)
                     Button(localized("Sign In…")) {
                         onSignIn()
-                        onPhase(.waiting)
+                        onPhase(.waiting(ignoring: nil))
                     }
                     .keyboardShortcut(.defaultAction)
                 }
@@ -343,7 +357,7 @@ private struct UsageSignInSheet: View {
                         .keyboardShortcut(.cancelAction)
                     Button(localized("Try Again")) {
                         onSignIn()
-                        onPhase(.waiting)
+                        onPhase(.waiting(ignoring: email))
                     }
                     .keyboardShortcut(.defaultAction)
                 }
@@ -358,12 +372,12 @@ private struct UsageSignInSheet: View {
     /// attributes only — no secret is read, so this can never raise a prompt.
     /// The task ends with the sheet or the phase.
     private func watch() async {
-        guard flow.phase == .waiting else { return }
+        guard case .waiting(let ignored) = flow.phase else { return }
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled else { return }
             let state = usage.signInState(of: flow.account)
-            guard state.signedIn else { continue }
+            guard state.signedIn, ignored == nil || state.email != ignored else { continue }
             if let email = state.email, existingEmails.contains(email) {
                 onPhase(.duplicate(email))
             } else {

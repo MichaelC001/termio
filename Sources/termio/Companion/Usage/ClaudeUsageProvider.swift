@@ -32,13 +32,34 @@ struct ClaudeUsageProvider: UsageProvider {
     /// `Claude Code-credentials`, plus `-<first 8 hex of SHA-256 of the
     /// NFC-normalized CLAUDE_CONFIG_DIR>` whenever that variable is set (read
     /// from the 2.1.308 binary). The hash is over the string as exported, so a
-    /// folder exported through a symlink or with a trailing slash won't match.
-    var keychainService: String {
+    /// folder exported through a symlink won't match.
+    var keychainService: String { keychainServices[0] }
+
+    /// Every spelling of the folder a user plausibly exported: as stored, and
+    /// with the trailing slash shell completion adds. Claude hashes the string
+    /// verbatim, so each spelling is a different item.
+    var keychainServices: [String] {
         let base = "Claude Code-credentials"
-        guard !isUnmovedHome else { return base }
-        let digest = SHA256.hash(data: Data(home.path.precomposedStringWithCanonicalMapping.utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return "\(base)-\(hex.prefix(8))"
+        guard !isUnmovedHome else { return [base] }
+        return [home.path, home.path + "/"].map { spelling in
+            let digest = SHA256.hash(data: Data(spelling.precomposedStringWithCanonicalMapping.utf8))
+            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            return "\(base)-\(hex.prefix(8))"
+        }
+    }
+
+    /// The first spelling whose item exists. An attributes-only query reads no
+    /// secret, so finding it never raises the macOS prompt.
+    private var existingKeychainService: String? {
+        keychainServices.first { service in
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+        }
     }
 
     /// The signed-in account lives in the global config: `~/.claude.json` for
@@ -86,8 +107,8 @@ struct ClaudeUsageProvider: UsageProvider {
     private func accessToken(allowKeychain: Bool) -> Credential {
         let file = home.appendingPathComponent(".credentials.json")
         if let credential = jsonObject(at: file).flatMap(parseToken) { return credential }
-        guard allowKeychain else { return .unavailable }
-        switch keychainPassword(service: keychainService) {
+        guard allowKeychain, let service = existingKeychainService else { return .unavailable }
+        switch keychainPassword(service: service) {
         case .success(let data):
             guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let credential = parseToken(root) else { return .unavailable }
@@ -99,19 +120,10 @@ struct ClaudeUsageProvider: UsageProvider {
         }
     }
 
-    /// The plain-file credential, or the Keychain item's mere existence: an
-    /// attributes-only query reads no secret, so macOS never prompts for it.
+    /// The plain-file credential, or the Keychain item's mere existence.
     func hasCredential() -> Bool {
-        if jsonObject(at: home.appendingPathComponent(".credentials.json")).flatMap(parseToken) != nil {
-            return true
-        }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+        jsonObject(at: home.appendingPathComponent(".credentials.json")).flatMap(parseToken) != nil
+            || existingKeychainService != nil
     }
 
     private func parseToken(_ root: [String: Any]) -> Credential? {
