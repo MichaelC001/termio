@@ -156,8 +156,8 @@ final class TermiodStreamRenderer {
         if force { builder.invalidate() }
         // Ghostty's blink: 600 ms on, 600 ms off.
         let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
-        return try terminal.withFrame { state in
-            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn)
+        return try terminal.withFrame { state, theme in
+            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme)
         }
     }
 
@@ -442,7 +442,69 @@ final class TermiodGlyphAtlas {
         return slot
     }
 
+    /// Box drawing, block elements and the powerline arrows meet their
+    /// neighbours only when they fill the cell exactly; drawn at the font's
+    /// own size they stop short of the line spacing and leave gaps.
+    private static func fillsCell(_ graphemes: [UInt32]) -> Bool {
+        guard graphemes.count == 1, let codepoint = graphemes.first else { return false }
+        return (0x2500...0x259F).contains(codepoint) || (0xE0B0...0xE0B3).contains(codepoint)
+    }
+
+    private func rasterizeFillingCell(_ key: Key) -> Slot? {
+        guard let scalar = key.graphemes.first.flatMap(Unicode.Scalar.init) else { return nil }
+        var font = fonts[key.bold ? 1 : 0]
+        let utf16 = Array(String(scalar).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+        if !CTFontGetGlyphsForCharacters(font, utf16, &glyphs, utf16.count) {
+            font = CTFontCreateForString(font, String(scalar) as CFString, CFRange(location: 0, length: utf16.count))
+            guard CTFontGetGlyphsForCharacters(font, utf16, &glyphs, utf16.count) else { return nil }
+        }
+        var glyph = glyphs[0]
+        // The face's own full block is the box every block and line glyph is
+        // drawn against; the font's ascent sits above it, so it cannot be.
+        var blockCharacter: UniChar = 0x2588
+        var block = CGGlyph(0)
+        var box = CGRect.zero
+        if CTFontGetGlyphsForCharacters(font, &blockCharacter, &block, 1) {
+            box = CTFontGetBoundingRectsForGlyphs(font, .horizontal, &block, nil, 1)
+        }
+        if box.width <= 0 || box.height <= 0 {
+            var advance = CGSize.zero
+            CTFontGetAdvancesForGlyphs(font, .horizontal, &glyph, &advance, 1)
+            box = CGRect(x: 0, y: -CTFontGetDescent(font), width: advance.width,
+                         height: CTFontGetAscent(font) + CTFontGetDescent(font))
+        }
+        guard box.width > 0, box.height > 0 else { return nil }
+        let width = metrics.width
+        let height = metrics.height
+        guard let origin = allocate(width: width, height: height) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return false }
+            context.setShouldAntialias(true)
+            context.setFillColor(gray: 1, alpha: 1)
+            context.scaleBy(x: CGFloat(width) / box.width, y: CGFloat(height) / box.height)
+            var position = CGPoint(x: -box.minX, y: -box.minY)
+            CTFontDrawGlyphs(font, &glyph, &position, 1, context)
+            return true
+        }
+        guard drawn else { return nil }
+        texture.replace(
+            region: MTLRegionMake2D(origin.x, origin.y, width, height),
+            mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4
+        )
+        return Slot(
+            origin: SIMD2(UInt16(origin.x), UInt16(origin.y)),
+            size: SIMD2(UInt16(width), UInt16(height)), offset: SIMD2(0, 0), colored: false
+        )
+    }
+
     private func rasterize(_ key: Key, cells: Int) -> Slot? {
+        if Self.fillsCell(key.graphemes) { return rasterizeFillingCell(key) }
         var text = String.UnicodeScalarView()
         for codepoint in key.graphemes {
             guard let scalar = Unicode.Scalar(codepoint) else { return nil }
@@ -541,6 +603,8 @@ final class TermiodStreamFrameBuilder {
     /// The columns where a wide character starts, per row, so a cursor on one
     /// covers both of its cells.
     private var rowWideStarts: [Set<UInt16>] = []
+    private var minimumContrast: Double = 1
+    private var cursorText: GhosttyColorRgb?
     private var cursor: [TermiodStreamRectangle] = []
     private var cursorGlyph: TermiodStreamGlyph?
     private var cursorCell: (x: UInt16, y: UInt16)?
@@ -568,8 +632,15 @@ final class TermiodStreamFrameBuilder {
 
     /// Returns false when nothing changed since the last build.
     func build(
-        from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true
+        from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true,
+        theme: TermiodStreamTerminal.Theme? = nil
     ) throws -> Bool {
+        let contrast = theme?.minimumContrast ?? 1
+        if contrast != minimumContrast {
+            minimumContrast = contrast
+            stale = true
+        }
+        cursorText = theme?.cursorText
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         var rows: UInt16 = 0
@@ -602,7 +673,8 @@ final class TermiodStreamFrameBuilder {
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
-        let cursorState = CursorState(state, colors: colors, focused: focused, blinkOn: blinkOn)
+        var cursorState = CursorState(state, colors: colors, focused: focused, blinkOn: blinkOn)
+        cursorState.text = cursorText.map { [$0.r, $0.g, $0.b] }
         if changed || cursorState != lastCursorState {
             lastCursorState = cursorState
             buildCursor(cursorState, colors: colors, atlas: atlas)
@@ -636,6 +708,8 @@ final class TermiodStreamFrameBuilder {
         var red: UInt8 = 0
         var green: UInt8 = 0
         var blue: UInt8 = 0
+        /// The theme's cursor-text color, which only the drawing reads.
+        var text: [UInt8]?
 
         /// `blinkOn` is the blink phase now; a cursor that blinks is drawn
         /// only in the on half, and a pane out of focus never blinks.
@@ -744,6 +818,9 @@ final class TermiodStreamFrameBuilder {
             if grapheme == [0x20] { continue }
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {
                 continue
+            }
+            if minimumContrast > 1, !slot.colored {
+                foreground = Self.contrasted(foreground, against: background, minimum: minimumContrast)
             }
             glyphs.append(TermiodStreamGlyph(
                 cellX: x, cellY: UInt16(y),
@@ -858,6 +935,26 @@ final class TermiodStreamFrameBuilder {
 
     private var cursorBackground = GhosttyColorRgb(r: 0, g: 0, b: 0)
 
+    /// Ghostty's `minimum-contrast`: a glyph below the ratio against its own
+    /// background is drawn in black or white, whichever reads better.
+    static func contrasted(_ color: GhosttyColorRgb, against background: GhosttyColorRgb, minimum: Double) -> GhosttyColorRgb {
+        func luminance(_ color: GhosttyColorRgb) -> Double {
+            func channel(_ value: UInt8) -> Double {
+                let c = Double(value) / 255
+                return c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        func ratio(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Double {
+            let (x, y) = (luminance(a), luminance(b))
+            return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+        }
+        guard ratio(color, background) < minimum else { return color }
+        let white = GhosttyColorRgb(r: 255, g: 255, b: 255)
+        let black = GhosttyColorRgb(r: 0, g: 0, b: 0)
+        return ratio(white, background) > ratio(black, background) ? white : black
+    }
+
     func flatten(rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph]) {
         rectangles.removeAll(keepingCapacity: true)
         glyphs.removeAll(keepingCapacity: true)
@@ -869,9 +966,10 @@ final class TermiodStreamFrameBuilder {
                 // Text under a block cursor is drawn in the background color,
                 // so the character stays readable through it.
                 if let cell = cursorCell, Int(cell.y) == index, glyph.cellX == cell.x, glyph.colored == 0 {
-                    glyph.r = cursorBackground.r
-                    glyph.g = cursorBackground.g
-                    glyph.b = cursorBackground.b
+                    let text = cursorText ?? cursorBackground
+                    glyph.r = text.r
+                    glyph.g = text.g
+                    glyph.b = text.b
                 }
                 glyphs.append(glyph)
             }

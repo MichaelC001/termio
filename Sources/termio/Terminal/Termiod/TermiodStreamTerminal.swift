@@ -48,6 +48,9 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// When the program began synchronized output (mode 2026), set by the
     /// render-hold callback under `lock`. Nil while nothing is held.
     private var heldSince: ContinuousClock.Instant?
+    /// The theme last set, under `lock`; the renderer reads the parts of it
+    /// libghostty does not hold (cursor text, the contrast floor).
+    private var theme: Theme?
     /// How long a program may hold the screen before the hold is ended for
     /// it, as libghostty's own example does.
     static let holdLimit: Duration = .seconds(1)
@@ -167,10 +170,25 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             // The default a program's DECSCUSR 0 returns to — and what a cursor
             // nobody styled shows. One the program chose explicitly keeps its
             // own shape: the terminal tells the two apart even after a decode.
-            var cursorStyle = colors.cursorStyle
-            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cursorStyle), "ghostty_terminal_set(default cursor)")
-            var cursorBlink = colors.cursorBlink
-            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &cursorBlink), "ghostty_terminal_set(default blink)")
+            //
+            // Setting either default rewrites the blink mode, so each is set
+            // only when its setting changes. The first theme skips the blink
+            // default when the decoded screen already blinks: the daemon's
+            // own default is off, so that blink is the program's.
+            let programBlinks = theme == nil ? try mode(ghostty_mode_new(12, false)) : false
+            if theme?.cursorStyle != colors.cursorStyle {
+                var cursorStyle = colors.cursorStyle
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cursorStyle), "ghostty_terminal_set(default cursor)")
+                if programBlinks {
+                    var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(12, false), value: true)
+                    try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode), "ghostty_terminal_set(blink mode)")
+                }
+            }
+            if theme?.cursorBlink != colors.cursorBlink, !programBlinks {
+                var cursorBlink = colors.cursorBlink
+                try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &cursorBlink), "ghostty_terminal_set(default blink)")
+            }
+            theme = colors
         }
     }
 
@@ -178,6 +196,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
             return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
+                && left.minimumContrast == right.minimumContrast
+                && left.cursorText.map { text in right.cursorText.map { same(text, $0) } ?? false } ?? (right.cursorText == nil)
                 && same(left.foreground, right.foreground) && same(left.background, right.background)
                 && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
                 && left.palette.count == right.palette.count
@@ -192,6 +212,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         /// The cursor settings, as the defaults a program's DECSCUSR can override.
         var cursorStyle: GhosttyTerminalCursorStyle
         var cursorBlink: Bool
+        /// The color of a character under a block cursor; nil is the background.
+        var cursorText: GhosttyColorRgb? = nil
+        /// The WCAG ratio a glyph keeps against its own background, 1 for none.
+        var minimumContrast: Double = 1
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so
@@ -201,7 +225,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// output (mode 2026): then it keeps the frame copied when the hold began,
     /// and a program that redraws hold after hold shows each finished frame in
     /// turn. A hold longer than `holdLimit` is ended for the program.
-    func withFrame<Result>(_ body: (GhosttyRenderState) throws -> Result) throws -> Result {
+    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
@@ -215,7 +239,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         if heldSince == nil {
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
         }
-        return try body(renderState)
+        return try body(renderState, theme)
     }
 
     private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {

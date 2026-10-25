@@ -2113,7 +2113,6 @@ extension TermioStore {
     /// The theme for one appearance as the colors a client terminal resolves
     /// against. The same choice `makeTheme` hands the embedded surface: the
     /// picked theme, else Afterglow in dark and termio's Alabaster in light.
-    /// The light theme's contrast floor is not applied here yet.
     func streamTheme(dark: Bool) -> TermiodStreamTerminal.Theme? {
         let name = dark ? settings.darkThemeName : settings.lightThemeName
         var overrides: [Int: String] = [:]
@@ -2145,7 +2144,10 @@ extension TermioStore {
         return TermiodStreamTerminal.Theme(
             foreground: foreground, background: ground,
             cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette,
-            cursorStyle: cursorStyle, cursorBlink: settings.cursorBlink
+            cursorStyle: cursorStyle, cursorBlink: settings.cursorBlink,
+            cursorText: definition.cursorText.flatMap(Self.rgb),
+            // `themeConfiguration`'s floor, for the same themes.
+            minimumContrast: definition.isDark ? 1 : Self.lightContrastFloor
         )
     }
 

@@ -85,7 +85,7 @@ final class StreamRendererTests: XCTestCase {
     private func builtFrame(
         _ terminal: TermiodStreamTerminal, _ builder: TermiodStreamFrameBuilder, _ atlas: TermiodGlyphAtlas
     ) throws -> (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]) {
-        let changed = try terminal.withFrame { state in
+        let changed = try terminal.withFrame { state, _ in
             try builder.build(from: state, atlas: atlas, focused: true)
         }
         var rectangles: [TermiodStreamRectangle] = []
@@ -229,7 +229,7 @@ final class StreamRendererTests: XCTestCase {
 
         terminal.write(Data("\u{1b}[1 q".utf8))
         let state = { (on: Bool) -> [TermiodStreamRectangle] in
-            _ = try? terminal.withFrame { try builder.build(from: $0, atlas: renderer.atlas, focused: true, blinkOn: on) }
+            _ = try? terminal.withFrame { state, _ in try builder.build(from: state, atlas: renderer.atlas, focused: true, blinkOn: on) }
             var rectangles: [TermiodStreamRectangle] = []
             var glyphs: [TermiodStreamGlyph] = []
             builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
@@ -237,5 +237,68 @@ final class StreamRendererTests: XCTestCase {
         }
         XCTAssertEqual(state(true).count, 1, "blink on: the block is drawn")
         XCTAssertEqual(state(false).count, 0, "blink off: it is not")
+    }
+
+    private func blinking(_ terminal: TermiodStreamTerminal) throws -> Bool {
+        try terminal.withFrame { state, _ in
+            var blinking = false
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blinking)
+            return blinking
+        }
+    }
+
+    /// The Blink setting is a default: a program that turned blinking off
+    /// keeps it off when the theme is applied again.
+    func testReapplyingTheThemeKeepsTheProgramsBlinkMode() throws {
+        let terminal = try terminal()
+        var theme = colors()
+        theme.cursorBlink = true
+        try terminal.setTheme(theme)
+        XCTAssertTrue(try blinking(terminal), "the setting blinks a cursor nobody styled")
+        terminal.write(Data("\u{1b}[?12l".utf8))
+        XCTAssertFalse(try blinking(terminal))
+        theme.palette[1] = GhosttyColorRgb(r: 1, g: 2, b: 3)
+        try terminal.setTheme(theme)
+        XCTAssertFalse(try blinking(terminal), "a theme change leaves the program's choice alone")
+    }
+
+    /// Block elements fill their cells, so a column of them is one solid bar.
+    func testBlockElementsMeetAcrossRows() throws {
+        let terminal = try terminal()
+        try terminal.setTheme(colors())
+        terminal.write(Data("\u{2588}\r\n\u{2588}\r\n\u{1b}[?25l".utf8))
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let metrics = renderer.atlas.metrics
+        let image = try renderer.image(of: terminal, width: 200, height: 200)
+        let pixels = try XCTUnwrap(image.dataProvider?.data as Data?)
+        let x = Int(appearance.paddingX * 2) + metrics.width / 2
+        for y in Int(appearance.paddingY * 2)..<(Int(appearance.paddingY * 2) + 2 * metrics.height) {
+            XCTAssertEqual(Int(pixels[y * image.bytesPerRow + x * 4 + 2]), 230, accuracy: 30, "gap at y=\(y)")
+        }
+    }
+
+    /// The character under a block cursor takes the theme's cursor-text color,
+    /// and a light theme's contrast floor rescues text the theme would lose.
+    func testCursorTextAndTheContrastFloor() throws {
+        let terminal = try terminal()
+        var theme = colors()
+        theme.background = GhosttyColorRgb(r: 255, g: 255, b: 255)
+        theme.cursorText = GhosttyColorRgb(r: 9, g: 99, b: 199)
+        theme.minimumContrast = 1.5
+        try terminal.setTheme(theme)
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("\u{1b}[38;2;250;250;250mwhite\u{1b}[0mX\u{1b}[D".utf8))
+        let frame = try terminal.withFrame { state, theme in
+            try builder.build(from: state, atlas: renderer.atlas, focused: true, theme: theme)
+        }
+        XCTAssertTrue(frame)
+        var rectangles: [TermiodStreamRectangle] = []
+        var glyphs: [TermiodStreamGlyph] = []
+        builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+        let white = try XCTUnwrap(glyphs.first { $0.cellX == 0 })
+        XCTAssertEqual([white.r, white.g, white.b], [0, 0, 0], "near-white on white is drawn black")
+        let underCursor = try XCTUnwrap(glyphs.first { $0.cellX == 5 })
+        XCTAssertEqual([underCursor.r, underCursor.g, underCursor.b], [9, 99, 199])
     }
 }
