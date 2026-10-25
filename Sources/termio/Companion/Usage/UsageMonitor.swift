@@ -126,7 +126,14 @@ final class UsageMonitor: ObservableObject {
               let command = settings.commandPath(for: account.agent, on: .thisMac)
                 .flatMap({ $0.isEmpty ? nil : $0 }) ?? account.agent.command
         else { return nil }
-        if account.isDefault { return "\(command) \(login)" }
+        if account.isDefault {
+            // termio's own environment may carry the variable (launched from a
+            // shell): export the folder in the one spelling the reader hashes.
+            guard ProcessInfo.processInfo.environment[type.homeEnvironment] != nil else {
+                return "\(command) \(login)"
+            }
+            return TermioStore.exporting(type.homeEnvironment, account.home.path, before: "\(command) \(login)")
+        }
         do {
             try FileManager.default.createDirectory(
                 at: account.home, withIntermediateDirectories: true,
@@ -145,7 +152,11 @@ final class UsageMonitor: ObservableObject {
     static func isAccountFolder(_ folder: URL, for agent: AgentPreset) -> Bool {
         guard let base = providerType(for: agent)?.defaultHome.standardizedFileURL else { return false }
         let folder = folder.standardizedFileURL
-        guard folder.deletingLastPathComponent() == base.deletingLastPathComponent(),
+        // termiod refuses a symlink here (it could lead anywhere), so the app
+        // refuses it too rather than add an account that gets no hooks.
+        let isSymlink = (try? folder.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+        guard !isSymlink,
+              folder.deletingLastPathComponent() == base.deletingLastPathComponent(),
               folder.lastPathComponent.hasPrefix(base.lastPathComponent + "-") else { return false }
         let suffix = folder.lastPathComponent.dropFirst(base.lastPathComponent.count + 1)
         return !suffix.isEmpty && suffix.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }
