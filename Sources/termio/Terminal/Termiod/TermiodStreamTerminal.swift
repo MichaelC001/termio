@@ -412,6 +412,91 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// and a program that redraws hold after hold shows each finished frame in
     /// turn. A hold longer than `holdLimit` is ended for the program.
     func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
+        try withFrame { state, theme, _ in try body(state, theme) }
+    }
+
+    /// The image storage as a frame sees it. The render state says where each
+    /// image goes; only the pixels and the animation clock live in the
+    /// terminal, so they are read here, under the frame's lock.
+    struct FrameImages {
+        fileprivate let terminal: GhosttyTerminal
+
+        /// An image's pixels as straight-alpha RGBA, with the generation they
+        /// belong to, or nil while it has none.
+        func pixels(id: UInt32) -> ImagePixels? {
+            guard let graphics = storage(), let image = ghostty_kitty_graphics_image(graphics, id) else { return nil }
+            var width: UInt32 = 0
+            var height: UInt32 = 0
+            var format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA
+            var pointer: UnsafePointer<UInt8>?
+            var length = 0
+            var generation: UInt64 = 0
+            guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &format) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &pointer) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &length) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation)
+                    == GHOSTTY_SUCCESS,
+                  let pointer, width > 0, height > 0
+            else { return nil }
+            let channels: Int
+            switch format {
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: channels = 4
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGB: channels = 3
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA: channels = 2
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY: channels = 1
+            default: return nil
+            }
+            let count = Int(width) * Int(height)
+            guard length >= count * channels else { return nil }
+            let source = UnsafeBufferPointer(start: pointer, count: count * channels)
+            var rgba = [UInt8](repeating: 255, count: count * 4)
+            switch channels {
+            case 4:
+                rgba = Array(source)
+            case 3:
+                for index in 0 ..< count {
+                    rgba[index * 4] = source[index * 3]
+                    rgba[index * 4 + 1] = source[index * 3 + 1]
+                    rgba[index * 4 + 2] = source[index * 3 + 2]
+                }
+            default:
+                for index in 0 ..< count {
+                    let gray = source[index * channels]
+                    rgba[index * 4] = gray
+                    rgba[index * 4 + 1] = gray
+                    rgba[index * 4 + 2] = gray
+                    if channels == 2 { rgba[index * 4 + 3] = source[index * 2 + 1] }
+                }
+            }
+            return ImagePixels(width: Int(width), height: Int(height), generation: generation, rgba: rgba)
+        }
+
+        /// Shows each playing animation's frame for `now`, as Ghostty's
+        /// renderer drives it: the terminal keeps no clock of its own.
+        func advanceAnimations(nowMilliseconds now: UInt64) {
+            guard let graphics = storage() else { return }
+            var next: UInt64 = 0
+            _ = ghostty_kitty_graphics_animation_tick(graphics, now, &next)
+        }
+
+        private func storage() -> GhosttyKittyGraphics? {
+            var graphics: GhosttyKittyGraphics?
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) == GHOSTTY_SUCCESS
+            else { return nil }
+            return graphics
+        }
+    }
+
+    struct ImagePixels {
+        var width: Int
+        var height: Int
+        var generation: UInt64
+        var rgba: [UInt8]
+    }
+
+    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?, FrameImages) throws -> Result) throws -> Result {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
@@ -425,7 +510,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         if heldSince == nil {
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
         }
-        return try body(renderState, theme)
+        return try body(renderState, theme, FrameImages(terminal: terminal))
     }
 
     private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {

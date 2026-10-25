@@ -45,7 +45,9 @@ final class TermiodStreamRenderer {
     private let queue: MTLCommandQueue
     private let rectanglePipeline: MTLRenderPipelineState
     private let glyphPipeline: MTLRenderPipelineState
+    private let imagePipeline: MTLRenderPipelineState
     private let builder: TermiodStreamFrameBuilder
+    private let images: TermiodStreamImages
     private(set) var atlas: TermiodGlyphAtlas
     private(set) var appearance: Appearance
     private var scale: CGFloat
@@ -66,7 +68,9 @@ final class TermiodStreamRenderer {
         let library = try device.makeLibrary(source: streamShaderSource, options: nil)
         rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
         glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
+        imagePipeline = try Self.pipeline(device, library, "image_vertex", "image_fragment")
         builder = try TermiodStreamFrameBuilder()
+        images = try TermiodStreamImages()
         atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
     }
 
@@ -163,11 +167,15 @@ final class TermiodStreamRenderer {
         if force { builder.invalidate() }
         // Ghostty's blink: 600 ms on, 600 ms off.
         let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
-        return try terminal.withFrame { state, theme in
-            try builder.build(
+        let changed = try terminal.withFrame { state, theme, storage in
+            let text = try builder.build(
                 from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit, link: link
             )
+            let pictures = images.read(state, storage: storage, force: force)
+            return text || pictures
         }
+        images.upload(device: device)
+        return changed
     }
 
     private func encode(into buffer: MTLCommandBuffer, texture: MTLTexture) -> Bool {
@@ -190,9 +198,24 @@ final class TermiodStreamRenderer {
             origin: SIMD2(Float(appearance.paddingX * scale).rounded(), Float(appearance.paddingY * scale).rounded())
         )
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<TermiodStreamUniforms>.stride, index: 1)
+        // Images are drawn in Ghostty's three layers around the text, at the
+        // renderer's cell size: the terminal places them on cells of
+        // `TermiodStreamTerminal.cellWidth` by `cellHeight` pixels, the pair
+        // termiod's VT shares, so a program's layout is the same on both.
+        let images = self.images
+        let layout = TermiodStreamImages.Layout(
+            origin: uniforms.origin, cell: uniforms.cell,
+            textureWidth: texture.width, textureHeight: texture.height
+        )
+        func drawImages(_ layer: GhosttyRenderStateImageLayer) {
+            images.encode(layer, layout: layout, encoder: encoder, pipeline: imagePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<TermiodStreamUniforms>.stride, index: 1)
+        }
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND)
         // Rectangles carry their own pass order: backgrounds and the block
         // cursor go under the text, decorations and the thin cursors over it.
         drawRectangles(rectangles.filter { !$0.overText }, encoder: encoder)
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT)
         if !glyphs.isEmpty,
            let data = device.makeBuffer(bytes: glyphs, length: glyphs.count * MemoryLayout<TermiodStreamGlyph>.stride) {
             encoder.setRenderPipelineState(glyphPipeline)
@@ -200,6 +223,7 @@ final class TermiodStreamRenderer {
             encoder.setFragmentTexture(atlas.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: glyphs.count)
         }
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT)
         drawRectangles(rectangles.filter(\.overText), encoder: encoder)
         encoder.endEncoding()
         return true
@@ -308,6 +332,23 @@ vertex VertexOut glyph_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
     return out;
 }
 
+struct Image { float2 origin; float2 size; float2 uvOrigin; float2 uvSize; };
+struct ImageOut { float4 position [[position]]; float2 uv; };
+
+vertex ImageOut image_vertex(uint vid [[vertex_id]], constant Image& image [[buffer(0)]],
+                             constant Uniforms& u [[buffer(1)]]) {
+    ImageOut out;
+    out.position = clip(image.origin + corners[vid] * image.size, u.viewport);
+    out.uv = image.uvOrigin + corners[vid] * image.uvSize;
+    return out;
+}
+
+fragment float4 image_fragment(ImageOut in [[stage_in]], texture2d<float> pixels [[texture(0)]]) {
+    constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);
+    float4 texel = pixels.sample(s, in.uv);
+    return float4(texel.rgb * texel.a, texel.a);
+}
+
 fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::nearest);
     float4 texel = atlas.sample(s, in.uv);
@@ -316,6 +357,222 @@ fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas
     return float4(in.color.rgb * coverage, coverage);
 }
 """
+
+/// The Kitty images on screen: the placements the render state lists, and a
+/// texture for each image generation they show. The list is read again only
+/// when its generation moves, and pixels only for a generation not yet held.
+final class TermiodStreamImages {
+    struct Placement: Equatable {
+        var id: UInt32
+        var generation: UInt64
+        var layer: GhosttyRenderStateImageLayer
+        var z: Int32
+        var column: Int32
+        var row: Int32
+        var offsetX: UInt32
+        var offsetY: UInt32
+        var width: UInt32
+        var height: UInt32
+        var sourceX: UInt32
+        var sourceY: UInt32
+        var sourceWidth: UInt32
+        var sourceHeight: UInt32
+    }
+
+    struct Key: Hashable {
+        var id: UInt32
+        var generation: UInt64
+    }
+
+    struct Layout {
+        var origin: SIMD2<Float>
+        var cell: SIMD2<Float>
+        var textureWidth: Int
+        var textureHeight: Int
+    }
+
+    private struct Quad {
+        var origin: SIMD2<Float>
+        var size: SIMD2<Float>
+        var uvOrigin: SIMD2<Float>
+        var uvSize: SIMD2<Float>
+    }
+
+    nonisolated(unsafe) private var iterator: GhosttyRenderStateImageIterator?
+    private(set) var placements: [Placement] = []
+    private var listGeneration: UInt64?
+    private var columns: UInt16 = 0
+    private var rows: UInt16 = 0
+    private var textures: [Key: MTLTexture] = [:]
+    private var sizes: [Key: (width: Int, height: Int)] = [:]
+    private var pending: [Key: TermiodStreamTerminal.ImagePixels] = [:]
+    /// A placement whose pixels have not arrived: looked for every frame.
+    private var missing = false
+    private let started = ContinuousClock.now
+
+    init() throws {
+        guard ghostty_render_state_image_iterator_new(nil, &iterator) == GHOSTTY_SUCCESS else {
+            throw TermiodStreamRenderer.Failure.metal("render state image iterator")
+        }
+    }
+
+    deinit {
+        ghostty_render_state_image_iterator_free(iterator)
+    }
+
+    /// Under the frame's lock: plays animations, rereads the list if it
+    /// moved, and copies pixels the textures lack. Returns whether the
+    /// frame must be drawn for the images' sake.
+    func read(_ state: GhosttyRenderState, storage: TermiodStreamTerminal.FrameImages, force: Bool) -> Bool {
+        if !placements.isEmpty {
+            let elapsed = ContinuousClock.now - started
+            storage.advanceAnimations(nowMilliseconds: UInt64(max(0, elapsed.components.seconds)) * 1000
+                + UInt64(elapsed.components.attoseconds / 1_000_000_000_000_000))
+        }
+        var generation: UInt64 = 0
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
+        guard force || missing || generation != listGeneration else { return false }
+        let moved = force || generation != listGeneration
+        listGeneration = generation
+        if moved {
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLS, &columns)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows)
+            placements = list(state)
+        }
+        missing = false
+        for key in Set(placements.map { Key(id: $0.id, generation: $0.generation) })
+        where textures[key] == nil && pending[key] == nil {
+            // An image's pixels move to a new generation together, so a read
+            // that finds another generation is the next frame's to draw.
+            if let pixels = storage.pixels(id: key.id), pixels.generation == key.generation {
+                pending[key] = pixels
+            } else {
+                missing = true
+            }
+        }
+        return moved
+    }
+
+    private func list(_ state: GhosttyRenderState) -> [Placement] {
+        guard ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &iterator) == GHOSTTY_SUCCESS
+        else { return [] }
+        var placements: [Placement] = []
+        while ghostty_render_state_image_iterator_next(iterator) {
+            var kind = GHOSTTY_IMAGE_PROTOCOL_KITTY
+            guard ghostty_render_state_image_get(iterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &kind)
+                    == GHOSTTY_SUCCESS,
+                  kind == GHOSTTY_IMAGE_PROTOCOL_KITTY
+            else { continue }
+            var placement = Placement(
+                id: 0, generation: 0, layer: GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT, z: 0, column: 0, row: 0,
+                offsetX: 0, offsetY: 0, width: 0, height: 0, sourceX: 0, sourceY: 0, sourceWidth: 0, sourceHeight: 0
+            )
+            func read<Value>(_ key: GhosttyRenderStateImageData, _ value: inout Value) -> Bool {
+                ghostty_render_state_image_get(iterator, key, &value) == GHOSTTY_SUCCESS
+            }
+            guard read(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &placement.id),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &placement.generation),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &placement.layer),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &placement.z),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &placement.column),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &placement.row),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X, &placement.offsetX),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y, &placement.offsetY),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH, &placement.width),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT, &placement.height),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X, &placement.sourceX),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y, &placement.sourceY),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH, &placement.sourceWidth),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT, &placement.sourceHeight),
+                  placement.width > 0, placement.height > 0
+            else { continue }
+            placements.append(placement)
+        }
+        // Iteration order is not drawing order: lower z first within a layer.
+        return placements.enumerated()
+            .sorted { $0.element.z != $1.element.z ? $0.element.z < $1.element.z : $0.offset < $1.offset }
+            .map(\.element)
+    }
+
+    /// Outside the lock: turns copied pixels into textures, and lets go of
+    /// textures no placement shows any more.
+    func upload(device: MTLDevice) {
+        for (key, pixels) in pending {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm, width: pixels.width, height: pixels.height, mipmapped: false
+            )
+            descriptor.usage = .shaderRead
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                Log.termiod.error("image texture \(pixels.width)x\(pixels.height) failed")
+                continue
+            }
+            pixels.rgba.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                texture.replace(
+                    region: MTLRegionMake2D(0, 0, pixels.width, pixels.height), mipmapLevel: 0,
+                    withBytes: base, bytesPerRow: pixels.width * 4
+                )
+            }
+            textures[key] = texture
+            sizes[key] = (pixels.width, pixels.height)
+        }
+        pending.removeAll()
+        let shown = Set(placements.map { Key(id: $0.id, generation: $0.generation) })
+        for key in textures.keys where !shown.contains(key) {
+            textures[key] = nil
+            sizes[key] = nil
+        }
+    }
+
+    /// The quads of one layer, in pixels of the drawable, clipped to the grid.
+    func quads(_ layer: GhosttyRenderStateImageLayer, layout: Layout) -> [(Key, SIMD4<Float>, SIMD4<Float>)] {
+        let scale = SIMD2(
+            layout.cell.x / Float(TermiodStreamTerminal.cellWidth),
+            layout.cell.y / Float(TermiodStreamTerminal.cellHeight)
+        )
+        return placements.compactMap { placement in
+            let key = Key(id: placement.id, generation: placement.generation)
+            guard placement.layer == layer, let size = sizes[key], size.width > 0, size.height > 0 else { return nil }
+            let origin = layout.origin + SIMD2(Float(placement.column), Float(placement.row)) * layout.cell
+                + SIMD2(Float(placement.offsetX), Float(placement.offsetY)) * scale
+            let extent = SIMD2(Float(placement.width), Float(placement.height)) * scale
+            let image = SIMD2(Float(size.width), Float(size.height))
+            let uv = SIMD4(
+                Float(placement.sourceX) / image.x, Float(placement.sourceY) / image.y,
+                Float(placement.sourceWidth) / image.x, Float(placement.sourceHeight) / image.y
+            )
+            return (key, SIMD4(origin.x, origin.y, extent.x, extent.y), uv)
+        }
+    }
+
+    func encode(
+        _ layer: GhosttyRenderStateImageLayer, layout: Layout, encoder: MTLRenderCommandEncoder,
+        pipeline: MTLRenderPipelineState
+    ) {
+        let quads = quads(layer, layout: layout)
+        guard !quads.isEmpty else { return }
+        // A placement is reported at its full size even when part of it is
+        // off the grid; the scissor keeps it to the cells.
+        let left = max(0, Int(layout.origin.x))
+        let top = max(0, Int(layout.origin.y))
+        let width = min(layout.textureWidth - left, Int(Float(columns) * layout.cell.x))
+        let height = min(layout.textureHeight - top, Int(Float(rows) * layout.cell.y))
+        guard width > 0, height > 0 else { return }
+        encoder.setScissorRect(MTLScissorRect(x: left, y: top, width: width, height: height))
+        encoder.setRenderPipelineState(pipeline)
+        for (key, rectangle, uv) in quads {
+            guard let texture = textures[key] else { continue }
+            var quad = Quad(
+                origin: SIMD2(rectangle.x, rectangle.y), size: SIMD2(rectangle.z, rectangle.w),
+                uvOrigin: SIMD2(uv.x, uv.y), uvSize: SIMD2(uv.z, uv.w)
+            )
+            encoder.setVertexBytes(&quad, length: MemoryLayout<Quad>.stride, index: 0)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: layout.textureWidth, height: layout.textureHeight))
+    }
+}
 
 /// The pixel size of one cell and where the baseline and decorations sit in it.
 struct TermiodCellMetrics: Equatable {

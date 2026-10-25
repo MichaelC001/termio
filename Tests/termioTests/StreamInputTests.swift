@@ -600,6 +600,33 @@ final class StreamInputTests: XCTestCase {
         XCTAssertTrue(try underlines(nil).isEmpty, "gone when ⌘ is let go")
     }
 
+    /// A Kitty image is drawn over the cells the terminal placed it on, at
+    /// the renderer's cell size, and goes when the program deletes it.
+    func testAKittyImageIsDrawnOnItsCells() throws {
+        let terminal = try terminal()
+        // termiod's cell size, which image placement needs.
+        try terminal.resize(rows: 10, cols: 40, reflow: true)
+        let red = Data(Array(repeating: [UInt8]([0xFF, 0x00, 0x00, 0xFF]), count: 16 * 32).flatMap { $0 })
+        // 16 by 32 pixels: two cells by two rows of 8 by 16, from the first cell.
+        terminal.write(Data("\u{1b}_Ga=T,f=32,s=16,v=32,q=2;\(red.base64EncodedString())\u{1b}\\".utf8))
+        let appearance = TermiodStreamRenderer.Appearance(
+            fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, paddingX: 0, paddingY: 0, backgroundOpacity: 1
+        )
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let cell = renderer.atlas.metrics
+        func pixel(_ x: Int, _ y: Int) throws -> [UInt8] {
+            let image = try renderer.image(of: terminal, width: cell.width * 40, height: cell.height * 10, focused: false)
+            let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+            let offset = y * image.bytesPerRow + x * 4
+            // BGRA, premultiplied.
+            return [data[offset + 2], data[offset + 1], data[offset]]
+        }
+        XCTAssertEqual(try pixel(cell.width + cell.width / 2, cell.height + cell.height / 2), [0xFF, 0, 0], "the image's last cell")
+        XCTAssertNotEqual(try pixel(cell.width * 2 + cell.width / 2, cell.height / 2), [0xFF, 0, 0], "past its two columns")
+        terminal.write(Data("\u{1b}_Ga=d,d=A,q=2\u{1b}\\".utf8))
+        XCTAssertNotEqual(try pixel(cell.width / 2, cell.height / 2), [0xFF, 0, 0], "deleted")
+    }
+
     /// What `termio sessions read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")
