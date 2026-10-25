@@ -40,11 +40,11 @@ pub const SOCKET_MARKER: &str = "agent-status.sock";
 /// contract.
 pub const CLI_MARKER: &str = "agent report";
 
-/// The same role for a hook on a box, which has no `termio` and no app to report
-/// to and instead names the daemon's own session id. Spelled with the
-/// environment variable so it cannot match a user's own tool that happens to
-/// have a `set-status` verb — without a fingerprint a reinstall appends a
-/// duplicate of every entry instead of replacing it, as the SSH arm did.
+/// The fingerprint of a hook written before every hook reported through
+/// `termio agent report`: it ran the daemon's own `set-status`, which no
+/// longer exists. Still recognized so a reinstall replaces those hooks instead
+/// of appending beside them. Spelled with the environment variable so it
+/// cannot match a user's own tool that happens to have a `set-status` verb.
 pub const DAEMON_MARKER: &str = "set-status \"$TERMIOD_SESSION_ID\"";
 
 /// Fingerprints of third-party status hooks that full-replace the shared `hooks`
@@ -168,7 +168,7 @@ impl InstallRequest {
         reporter: Reporter,
         commands: HashMap<String, String>,
     ) -> InstallRequest {
-        let binary = machine::daemon_binary();
+        let binary = machine::client_binary();
         InstallRequest {
             agents,
             hooks,
@@ -854,7 +854,7 @@ pub fn report_command(
     request: &InstallRequest,
 ) -> String {
     let mut command = format!(
-        "{} set-status \"$TERMIOD_SESSION_ID\" {state}",
+        "{} agent report {state}",
         shell_quote_path(request.binary())
     );
     // The agent's stdin blob is mined by the binary the hook invokes, which is
@@ -1923,12 +1923,12 @@ pub(super) mod tests {
             "done",
             &StdinMining::of(&spec),
             HookDialect::ClaudeNested,
-            &local_request("/opt/termiod"),
+            &local_request("/opt/termio"),
         );
         assert_eq!(
             mac,
             format!(
-                "'/opt/termiod' set-status \"$TERMIOD_SESSION_ID\" done --transcript \
+                "'/opt/termio' agent report done --transcript \
                  --tool-from tool_name 2>/dev/null || true \
                  {HOOK_VERSION_MARKER}{HOOK_SCHEMA_VERSION}"
             )
@@ -1940,7 +1940,7 @@ pub(super) mod tests {
             "done",
             &StdinMining::of(&spec),
             HookDialect::ClaudeNested,
-            &device_request("/opt/termiod"),
+            &device_request("/opt/termio"),
         );
         assert_eq!(mac, device);
         assert!(is_ours(&mac));
@@ -1967,7 +1967,7 @@ pub(super) mod tests {
             "working",
             &StdinMining::of(&spec),
             HookDialect::ClaudeNested,
-            &device_request("/home/u/.local/bin/termiod"),
+            &device_request("/home/u/.local/bin/termio"),
         );
         for flag in [
             "--transcript",
@@ -1977,7 +1977,7 @@ pub(super) mod tests {
         ] {
             assert!(command.contains(flag), "a device hook must carry {flag}: {command}");
         }
-        assert!(command.contains("set-status \"$TERMIOD_SESSION_ID\" working"));
+        assert!(command.contains("agent report working"));
         // And it is recognizable as ours, so a reinstall replaces it instead of
         // appending a second copy.
         assert!(is_ours(&command));
@@ -2083,11 +2083,10 @@ pub(super) mod tests {
         assert!(hooks.is_empty());
     }
 
-    /// The mining flags reach the daemon binary as the hook writes them. Pinned
-    /// because the flag names are a contract in three places at once — this
-    /// generator, `termiod set-status`'s parser, and the public
-    /// `termio agent report` that forwards to it — and a rename in one is a
-    /// silent no-op in the others.
+    /// The mining flags reach the client as the hook writes them. Pinned
+    /// because the flag names are a contract in two places at once — this
+    /// generator and the public `termio agent report` parser — and a rename in
+    /// one is a silent no-op in the other.
     #[test]
     fn the_mining_flags_survive_the_round_trip_to_the_parser() {
         let spec = spec_of(
@@ -2100,14 +2099,14 @@ pub(super) mod tests {
             "done",
             &StdinMining::of(&spec),
             HookDialect::ClaudeNested,
-            &device_request("/opt/termiod"),
+            &device_request("/opt/termio"),
         );
         // Parsed by the very argument parser the hook will hand this to.
         let argv: Vec<&str> = command
             .split(' ')
             .take_while(|token| *token != "2>/dev/null")
             .collect();
-        assert_eq!(argv[1], "set-status");
+        assert_eq!(argv[1..3], ["agent", "report"]);
         for pair in [
             ["--conversation-from", "session_id"],
             ["--tool-from", "tool_name"],

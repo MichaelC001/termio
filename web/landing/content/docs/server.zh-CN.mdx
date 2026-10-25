@@ -3,7 +3,7 @@ title: Termio server
 description: 一台机器上跑着什么，才让会话比应用活得久——termiod 怎么装、怎么保活、怎么原地升级，以及出问题时怎么查。
 x-i18n:
   source_path: server.mdx
-  source_hash: 23cfa6162f0143265827985c95982c687564f3566cea6bcb04ecb30419c82ea8
+  source_hash: 2eb929e7250432daddc08a314bc3df296d7569889dbe8a276c23dca060a671f0
   generated_at: 2026-10-25
 ---
 
@@ -56,18 +56,21 @@ curl -fsSL https://www.termio.sh/install | sh
 在**设置 ▸ 远程主机**里添加一台机器并按**设置**，就会通过 SSH 把二进制复制过去并启动它。
 
 ```bash
-termiod deploy                      # 在本机安装或更新，然后校验
-termiod deploy --host mybox         # 同样的事，走你自己的 SSH 配置
+termio server deploy           # 在本机安装或更新，然后校验
+termio server -H mybox deploy  # 同样的事，走你自己的 SSH 配置
 ```
 
 `deploy` 是一次调和：无论机器处于什么状态，跑完都落到同一个状态。Termio 读
 `~/.ssh/config` 找主机，所以一台你已经能 `ssh` 上去的机器不需要任何新配置。参见
 [设备](/docs/devices)。
 
+`-H`（`--host`）对每一条 `termio server` 命令都有效，不只是 `deploy`：
+`termio server -H mybox status`、`termio server -H mybox attach api`。
+
 ## 让它一直活着
 
 ```bash
-termiod service install    # macOS 用 launchd，Linux 用 systemd --user
+termio server service install    # macOS 用 launchd，Linux 用 systemd --user
 ```
 
 没有 service 时，server 只活到你这次登录结束。装上之后，它会在崩溃后和重启后自己回来——
@@ -79,8 +82,8 @@ server 可以用内置的 Tailscale 作为一台独立设备加入你的 tailnet
 不需要装 Tailscale。
 
 ```bash
-termiod tailscale on       # 第一次会打印登录链接
-termiod pair --qr          # 连上之后，打印配对链接和二维码
+termio server tailscale on  # 第一次会打印登录链接
+termio pair --qr            # 连上之后，打印配对链接和二维码
 ```
 
 只有登录它的那个 Tailscale 账号能连进来，而且每台 Mac 或 iPhone 仍然需要配对链接。这个设置在
@@ -91,18 +94,18 @@ termiod pair --qr          # 连上之后，打印配对链接和二维码
 
 | 命令 | 作用 |
 | --- | --- |
-| `termiod tailscale on --hostname NAME` | 换一个设备名。 |
-| `termiod tailscale on --auth-key-file FILE` | 用一次性的 auth key 登录，不走浏览器。 |
-| `termiod tailscale status` | 显示是否已连上，以及客户端从哪里访问它。 |
-| `termiod tailscale off` | 离开 tailnet，直到再次 `on`。设备保持登录。 |
-| `termiod tailscale logout` | 让设备退出 Tailscale 登录，并关闭内置 Tailscale。 |
+| `termio server tailscale on --hostname NAME` | 换一个设备名。 |
+| `termio server tailscale on --auth-key-file FILE` | 用一次性的 auth key 登录，不走浏览器。 |
+| `termio server tailscale status` | 显示是否已连上，以及客户端从哪里访问它。 |
+| `termio server tailscale off` | 离开 tailnet，直到再次 `on`。设备保持登录。 |
+| `termio server tailscale logout` | 让设备退出 Tailscale 登录，并关闭内置 Tailscale。 |
 
 ## 升级而不丢会话
 
 新版本会**原地**替换正在运行的那个：进程保留自己的 pid 和 PTY，会话完全察觉不到。
 
 ```bash
-termiod handoff
+termio server handoff
 ```
 
 应用自我更新时走的也是这条路——这就是 Termio 更新不会让你损失正在跑的 Agent 的原因。
@@ -114,9 +117,9 @@ termiod handoff
 
 | 命令 | 它告诉你什么 |
 | --- | --- |
-| `termiod status` | 这台机器上有什么：二进制、它的版本，以及 socket 上是否真的有守护进程在应答。 |
-| `termiod list` | 宿主正持有的会话——加 `--host <box>` 可以问另一台机器。 |
-| `termiod logs` | 没有观察者连着的时候，server 记下了什么。`-f` 跟随输出，`--path` 打印文件路径，方便附进 bug 报告。 |
+| `termio server status` | 这台机器上有什么：二进制、它的版本，以及 socket 上是否真的有守护进程在应答。 |
+| `termio server list` | 宿主正持有的会话——加 `--host <box>` 可以问另一台机器。 |
+| `termio server logs` | 没有观察者连着的时候，server 记下了什么。`-f` 跟随输出，`--path` 打印文件路径，方便附进 bug 报告。 |
 
 <Callout type="note">
   `termiod` 是 server 自己的命令，和应用替你安装的
@@ -127,7 +130,7 @@ termiod handoff
 ## 停掉它
 
 ```bash
-termiod stop
+termio server stop
 ```
 
 当还有命令在跑、或还有观察者连着时，它会拒绝，所以一次手滑的 `stop` 不会连带毁掉 Agent

@@ -60,18 +60,21 @@ Adding a box under **Settings ▸ Remote Hosts** and pressing **Set Up** copies 
 binary over SSH and starts it.
 
 ```bash
-termiod deploy                      # install or update it here, then verify
-termiod deploy --host mybox         # same, over your own SSH config
+termio server deploy           # install or update it here, then verify
+termio server -H mybox deploy  # same, over your own SSH config
 ```
 
 `deploy` is a reconcile: run it against a box in any state and it ends in the
 same one. Termio reads `~/.ssh/config` to find the host, so a machine you can
 already `ssh` to needs nothing new. See [Devices](/docs/devices).
 
+`-H` (`--host`) works with every `termio server` command, not only `deploy`:
+`termio server -H mybox status`, `termio server -H mybox attach api`.
+
 ## Keeping it running
 
 ```bash
-termiod service install    # launchd on macOS, systemd --user on Linux
+termio server service install      # launchd on macOS, systemd --user on Linux
 ```
 
 Without a service the server lives as long as your login session. With one it
@@ -84,8 +87,8 @@ The server can join your tailnet as a device of its own, named `termio`, with
 Tailscale built in. The machine doesn't need Tailscale installed.
 
 ```bash
-termiod tailscale on       # prints a sign-in link the first time
-termiod pair --qr          # the pairing link and QR code, once it's connected
+termio server tailscale on  # prints a sign-in link the first time
+termio pair --qr            # the pairing link and QR code, once it's connected
 ```
 
 Only the Tailscale account that signed it in gets in, and each Mac or iPhone
@@ -97,11 +100,11 @@ If your tailnet has HTTPS certificates turned on, clients reach the server at
 
 | Command | What it does |
 | --- | --- |
-| `termiod tailscale on --hostname NAME` | Uses another device name. |
-| `termiod tailscale on --auth-key-file FILE` | Signs in with a one-time auth key instead of a browser. |
-| `termiod tailscale status` | Shows whether it's connected, and where clients reach it. |
-| `termiod tailscale off` | Leaves the tailnet until `on`. The device stays signed in. |
-| `termiod tailscale logout` | Signs the device out of Tailscale and turns it off. |
+| `termio server tailscale on --hostname NAME` | Uses another device name. |
+| `termio server tailscale on --auth-key-file FILE` | Signs in with a one-time auth key instead of a browser. |
+| `termio server tailscale status` | Shows whether it's connected, and where clients reach it. |
+| `termio server tailscale off` | Leaves the tailnet until `on`. The device stays signed in. |
+| `termio server tailscale logout` | Signs the device out of Tailscale and turns it off. |
 
 ## Updating without dropping sessions
 
@@ -109,7 +112,7 @@ A new build replaces the running one **in place**: the process keeps its id and
 its PTYs, and the sessions never notice.
 
 ```bash
-termiod handoff
+termio server handoff
 ```
 
 That is also what happens when the app updates itself — the reason a Termio
@@ -123,9 +126,9 @@ Three commands answer nearly every "is it me or is it Termio" question:
 
 | Command | What it tells you |
 | --- | --- |
-| `termiod status` | What this machine has: the binary, its version, and whether a daemon is answering on the socket. |
-| `termiod list` | The sessions the host is holding — add `--host <box>` to ask another machine. |
-| `termiod logs` | What the server recorded while nobody was attached. `-f` follows it; `--path` prints the file for a bug report. |
+| `termio server status` | What this machine has: the binary, its version, and whether a daemon is answering on the socket. |
+| `termio server list` | The sessions the host is holding. `termio server -H <box> ls` asks another machine. |
+| `termio server logs` | What the server recorded while nobody was attached. `-f` follows it; `--path` prints the file for a bug report. |
 
 <Callout type="note">
   `termiod` is the server's own command, and separate from the
@@ -137,7 +140,7 @@ Three commands answer nearly every "is it me or is it Termio" question:
 ## Stopping it
 
 ```bash
-termiod stop
+termio server stop
 ```
 
 It declines while a command is still running or a viewer is attached, so a stray

@@ -13,7 +13,7 @@ enum TermiodRoute: Hashable, Codable, CustomStringConvertible {
     /// This Mac's own daemon, over its Unix socket. There is exactly one — the
     /// socket path is derived, not chosen (`Termiod.socketPath()`).
     case local
-    /// A `~/.ssh/config` alias, reached with `ssh <alias> termiod stdio`.
+    /// A `~/.ssh/config` alias, reached with `ssh <alias> termio stdio`.
     case ssh(String)
 
     var description: String {

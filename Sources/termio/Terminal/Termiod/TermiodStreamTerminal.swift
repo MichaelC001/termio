@@ -45,6 +45,29 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// What the terminal answers a program's query with — a cursor position
     /// report, a mode report. Called on the writing thread, inside `write`.
     private let onReply: (Data) -> Void
+    /// What the program tells the terminal that the app acts on, as the
+    /// embedded surface publishes it: the title, the working directory, the
+    /// bell, a desktop notification, a clipboard write. Called on the writing
+    /// thread, inside `write`, with `lock` held.
+    private let onSignal: (Signal) -> Void
+    /// The text a program reading the clipboard (OSC 52 `?`) is given, which
+    /// reaches it through `onReply`, so only the writer's answer is sent.
+    private let readClipboard: () -> String?
+    /// The mouse selection's state machine and its reusable events, used only
+    /// under `lock`: Ghostty's own click, double-click and drag rules.
+    private let gesture: GhosttySelectionGesture
+    private let pressEvent: GhosttySelectionGestureEvent
+    private let dragEvent: GhosttySelectionGestureEvent
+    private let releaseEvent: GhosttySelectionGestureEvent
+
+    enum Signal: Equatable {
+        case title(String)
+        case workingDirectory(String)
+        case bell
+        case notification(title: String, body: String)
+        /// Text a program copied with OSC 52 to the standard clipboard.
+        case clipboard(String)
+    }
     /// When the program began synchronized output (mode 2026), set by the
     /// render-hold callback under `lock`. Nil while nothing is held.
     private var heldSince: ContinuousClock.Instant?
@@ -58,7 +81,11 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
     /// may survive into the new stream.
-    init(nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in }) throws {
+    init(
+        nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in },
+        onSignal: @escaping (Signal) -> Void = { _ in },
+        readClipboard: @escaping () -> String? = { nil }
+    ) throws {
         terminal = try nativeSnapshot.withUnsafeBytes { buffer in
             try Self.decode(buffer.bindMemory(to: UInt8.self))
         }
@@ -68,7 +95,30 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             throw Failure.engine("ghostty_render_state_new", GHOSTTY_OUT_OF_MEMORY)
         }
         renderState = state
+        var gesture: GhosttySelectionGesture?
+        var press: GhosttySelectionGestureEvent?
+        var drag: GhosttySelectionGestureEvent?
+        var release: GhosttySelectionGestureEvent?
+        _ = ghostty_selection_gesture_new(nil, &gesture)
+        _ = ghostty_selection_gesture_event_new(nil, &press, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS)
+        _ = ghostty_selection_gesture_event_new(nil, &drag, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG)
+        _ = ghostty_selection_gesture_event_new(nil, &release, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE)
+        guard let gesture, let press, let drag, let release else {
+            ghostty_selection_gesture_event_free(press)
+            ghostty_selection_gesture_event_free(drag)
+            ghostty_selection_gesture_event_free(release)
+            ghostty_selection_gesture_free(gesture, terminal)
+            ghostty_render_state_free(state)
+            ghostty_terminal_free(terminal)
+            throw Failure.engine("selection gesture", GHOSTTY_OUT_OF_MEMORY)
+        }
+        self.gesture = gesture
+        pressEvent = press
+        dragEvent = drag
+        releaseEvent = release
         self.onReply = onReply
+        self.onSignal = onSignal
+        self.readClipboard = readClipboard
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata), "ghostty_terminal_set(userdata)")
         let reply: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
@@ -104,6 +154,122 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
             heldSince = ContinuousClock.now
         }
+        try installSignals()
+        // The snapshot's directory is reported, since it is a fact about the
+        // session. Its title is not: the embedded surface never learns a title
+        // from an attach, and one a conversation rotation cleared would come
+        // back on every relaunch.
+        if let directory = workingDirectoryLocked() { onSignal(.workingDirectory(directory)) }
+    }
+
+    private func installSignals() throws {
+        func owner(_ userdata: UnsafeMutableRawPointer?) -> TermiodStreamTerminal? {
+            userdata.map { Unmanaged<TermiodStreamTerminal>.fromOpaque($0).takeUnretainedValue() }
+        }
+        let title: GhosttyTerminalTitleChangedFn = { _, userdata in
+            guard let owner = owner(userdata) else { return }
+            owner.onSignal(.title(owner.string(GHOSTTY_TERMINAL_DATA_TITLE) ?? ""))
+        }
+        let directory: GhosttyTerminalPwdChangedFn = { _, userdata in
+            guard let owner = owner(userdata), let path = owner.workingDirectoryLocked() else { return }
+            owner.onSignal(.workingDirectory(path))
+        }
+        let bell: GhosttyTerminalBellFn = { _, userdata in
+            owner(userdata)?.onSignal(.bell)
+        }
+        let notification: GhosttyTerminalDesktopNotificationFn = { _, userdata, notification in
+            guard let owner = owner(userdata), let notification else { return }
+            owner.onSignal(.notification(
+                title: TermiodStreamTerminal.text(notification.pointee.title), body: TermiodStreamTerminal.text(notification.pointee.body)
+            ))
+        }
+        // Written as the embedded surface writes it: the text, with no prompt.
+        // The reply must come before this returns.
+        let clipboard: GhosttyTerminalClipboardWriteFn = { _, userdata, write in
+            guard let write else { return }
+            var reply = GhosttyClipboardWriteReply()
+            reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
+            reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
+            defer { withUnsafePointer(to: &reply) { write.pointee.reply(write, $0) } }
+            // Every location is the one pasteboard, as the embedded surface
+            // treats them: macOS has no selection clipboard.
+            guard let owner = owner(userdata), let contents = write.pointee.contents else { return }
+            let entries = UnsafeBufferPointer(start: contents, count: write.pointee.contents_len)
+            guard let text = entries.first(where: { TermiodStreamTerminal.text($0.mime).hasPrefix("text/plain") }) else { return }
+            owner.onSignal(.clipboard(TermiodStreamTerminal.text(text.data)))
+        }
+        let clipboardRead: GhosttyTerminalClipboardReadFn = { _, userdata, read in
+            guard let read else { return }
+            var reply = GhosttyClipboardReadReply()
+            reply.size = MemoryLayout<GhosttyClipboardReadReply>.size
+            guard let owner = owner(userdata), let text = owner.readClipboard() else {
+                reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_UNSUPPORTED
+                withUnsafePointer(to: &reply) { read.pointee.reply(read, $0) }
+                return
+            }
+            let mime = Array("text/plain".utf8)
+            let data = Array(text.utf8)
+            mime.withUnsafeBufferPointer { mime in
+                data.withUnsafeBufferPointer { data in
+                    var content = GhosttyClipboardContent(
+                        mime: GhosttyString(ptr: mime.baseAddress, len: mime.count),
+                        data: GhosttyString(ptr: data.baseAddress, len: data.count)
+                    )
+                    withUnsafePointer(to: &content) { content in
+                        reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS
+                        reply.contents = content
+                        reply.contents_len = 1
+                        withUnsafePointer(to: &reply) { read.pointee.reply(read, $0) }
+                    }
+                }
+            }
+        }
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ, unsafeBitCast(clipboardRead, to: UnsafeRawPointer.self)), "ghostty_terminal_set(clipboard read)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(title, to: UnsafeRawPointer.self)), "ghostty_terminal_set(title)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, unsafeBitCast(directory, to: UnsafeRawPointer.self)), "ghostty_terminal_set(pwd)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self)), "ghostty_terminal_set(bell)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, unsafeBitCast(notification, to: UnsafeRawPointer.self)), "ghostty_terminal_set(notification)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(clipboard, to: UnsafeRawPointer.self)), "ghostty_terminal_set(clipboard write)")
+    }
+
+    private static func text(_ string: GhosttyString) -> String {
+        guard let pointer = string.ptr, string.len > 0 else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: pointer, count: string.len), as: UTF8.self)
+    }
+
+    /// A borrowed string the terminal holds; read with `lock` held.
+    private func string(_ data: GhosttyTerminalData) -> String? {
+        var value = GhosttyString()
+        guard ghostty_terminal_get(terminal, data, &value) == GHOSTTY_SUCCESS else { return nil }
+        return Self.text(value)
+    }
+
+    private func workingDirectoryLocked() -> String? {
+        string(GHOSTTY_TERMINAL_DATA_PWD).flatMap { Self.workingDirectory(fromOSC7: $0, localHost: Self.localHost) }
+    }
+
+    /// Ghostty's own rule for OSC 7 (`StreamHandler.reportPwd`), which
+    /// libghostty-vt leaves to the embedder: a `file` or `kitty-shell-cwd` URL
+    /// naming this machine. A shell on a box reached with ssh reports a path
+    /// that does not exist here, and is ignored, as the embedded surface does.
+    static func workingDirectory(fromOSC7 reported: String, localHost: String) -> String? {
+        let raw = reported.hasPrefix("kitty-shell-cwd://")
+        guard raw || reported.hasPrefix("file://") else { return nil }
+        let rest = reported.dropFirst(raw ? "kitty-shell-cwd://".count : "file://".count)
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let host = String(rest[..<slash])
+        guard !host.isEmpty, host == "localhost" || host == localHost else { return nil }
+        let path = String(rest[slash...])
+        // kitty sends the path as it is; a file URL percent-encodes it.
+        return raw ? path : path.removingPercentEncoding
+    }
+
+    /// Asked at every report, as Ghostty does: a Mac's name can change while
+    /// the app runs, as when it joins another network.
+    private static var localHost: String {
+        var buffer = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+        guard gethostname(&buffer, buffer.count - 1) == 0 else { return "" }
+        return String(cString: buffer)
     }
 
     /// The decoder borrows `bytes` until it is freed, so everything from its
@@ -132,6 +298,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     deinit {
+        ghostty_selection_gesture_event_free(pressEvent)
+        ghostty_selection_gesture_event_free(dragEvent)
+        ghostty_selection_gesture_event_free(releaseEvent)
+        ghostty_selection_gesture_free(gesture, terminal)
         ghostty_terminal_free(terminal)
         ghostty_render_state_free(renderState)
     }
@@ -199,6 +369,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
             return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
                 && left.minimumContrast == right.minimumContrast
+                && left.selectionBackground.map { color in right.selectionBackground.map { same(color, $0) } ?? false }
+                    ?? (right.selectionBackground == nil)
+                && left.selectionForeground.map { color in right.selectionForeground.map { same(color, $0) } ?? false }
+                    ?? (right.selectionForeground == nil)
                 && left.cursorText.map { text in right.cursorText.map { same(text, $0) } ?? false } ?? (right.cursorText == nil)
                 && same(left.foreground, right.foreground) && same(left.background, right.background)
                 && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
@@ -218,6 +392,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var cursorText: GhosttyColorRgb? = nil
         /// The WCAG ratio a glyph keeps against its own background, 1 for none.
         var minimumContrast: Double = 1
+        /// The theme's selection colors; nil is Ghostty's default, the
+        /// default foreground behind the default background.
+        var selectionBackground: GhosttyColorRgb? = nil
+        var selectionForeground: GhosttyColorRgb? = nil
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so
@@ -248,6 +426,293 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return try body()
+    }
+
+    /// Where a wheel turn goes, as Ghostty routes it: to a program tracking
+    /// the mouse, or to one on the alternate screen with alternate scroll
+    /// (mode 1007), which termiod encodes; otherwise it moves this view
+    /// through scrollback. termiod decides again against its own modes and
+    /// sends nothing for a turn that is scrollback there.
+    var wheelGoesToProgram: Bool {
+        locked {
+            var tracking = false
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+            guard !tracking else { return true }
+            var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+            return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && (try? mode(ghostty_mode_new(1007, false))) == true
+        }
+    }
+
+    /// Whether the program asked for mouse reports, so a click is its.
+    var tracksMouse: Bool {
+        locked {
+            var tracking = false
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+            return tracking
+        }
+    }
+
+    /// The grid's size in cells.
+    var grid: (rows: UInt16, cols: UInt16) {
+        locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            return (rows, cols)
+        }
+    }
+
+    /// Moves this view through scrollback by `rows`, negative up. Only the
+    /// client's view moves; the session is untouched.
+    func scrollViewport(rows: Int) {
+        locked {
+            var behavior = GhosttyTerminalScrollViewport()
+            behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+            behavior.value.delta = rows
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+        }
+    }
+
+    /// The active screen as plain text, one line per row, whatever part of
+    /// scrollback the view shows: what `termio sessions read` reports.
+    func activeText() throws -> String {
+        try locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            try get(GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            try get(GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            guard rows > 0, cols > 0 else { return "" }
+            func reference(_ x: UInt16, _ y: UInt16) throws -> GhosttyGridRef {
+                var point = GhosttyPoint()
+                point.tag = GHOSTTY_POINT_TAG_ACTIVE
+                point.value.coordinate = GhosttyPointCoordinate(x: x, y: UInt32(y))
+                var reference = GhosttyGridRef()
+                reference.size = MemoryLayout<GhosttyGridRef>.size
+                try Self.check(ghostty_terminal_grid_ref(terminal, point, &reference), "ghostty_terminal_grid_ref")
+                return reference
+            }
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            selection.start = try reference(0, 0)
+            selection.end = try reference(cols - 1, rows - 1)
+            return try withUnsafePointer(to: &selection) { selection in
+                var options = GhosttyFormatterTerminalOptions()
+                options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
+                options.extra.size = MemoryLayout<GhosttyFormatterTerminalExtra>.size
+                options.extra.screen.size = MemoryLayout<GhosttyFormatterScreenExtra>.size
+                options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+                options.unwrap = false
+                options.trim = true
+                options.selection = selection
+                return String(decoding: try format(options), as: UTF8.self)
+            }
+        }
+    }
+
+    /// Where the pointer is, for a selection: the viewport cell under it and
+    /// its position in the pane, in pixels.
+    struct SelectionPoint: Equatable {
+        var column: UInt16
+        var row: UInt16
+        var x: Double
+        var y: Double
+    }
+
+    /// What a drag needs to tell which cell the pointer is over at the edges.
+    struct SelectionGeometry: Equatable {
+        var cellWidth: UInt32
+        var paddingLeft: UInt32
+        var screenHeight: UInt32
+    }
+
+    /// A mouse press starting or extending a selection. `time` is monotonic
+    /// nanoseconds, which double- and triple-click are told from; `interval`
+    /// is the system's double-click interval.
+    func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64, distance: Double) {
+        locked {
+            guard var reference = viewportReference(point) else { return }
+            var position = GhosttySurfacePosition(x: point.x, y: point.y)
+            var time = time
+            var interval = interval
+            // How far a second click may land from the first, as Ghostty
+            // allows: a cell's width.
+            var distance = distance
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE, &distance)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &time)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS, &interval)
+            // A single click selects nothing and clears what was selected; a
+            // double or triple click selects the word or the line at once.
+            applyGesture(pressEvent)
+        }
+    }
+
+    func dragSelection(to point: SelectionPoint, geometry: SelectionGeometry, rectangle: Bool) {
+        locked {
+            guard var reference = viewportReference(point) else { return }
+            var position = GhosttySurfacePosition(x: point.x, y: point.y)
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            var shape = GhosttySelectionGestureGeometry(
+                columns: UInt32(max(1, cols)), cell_width: max(1, geometry.cellWidth),
+                padding_left: geometry.paddingLeft, screen_height: max(1, geometry.screenHeight)
+            )
+            var rectangle = rectangle
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &shape)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_RECTANGLE, &rectangle)
+            applyGesture(dragEvent)
+        }
+    }
+
+    func releaseSelection(at point: SelectionPoint?) {
+        locked {
+            if let point, var reference = viewportReference(point) {
+                _ = ghostty_selection_gesture_event_set(releaseEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            } else {
+                _ = ghostty_selection_gesture_event_set(releaseEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, nil)
+            }
+            _ = ghostty_selection_gesture_event(gesture, terminal, releaseEvent, nil)
+        }
+    }
+
+    /// Installs what a gesture event produced as the terminal's selection, or
+    /// clears it when the event produced none.
+    private func applyGesture(_ event: GhosttySelectionGestureEvent) {
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        if ghostty_selection_gesture_event(gesture, terminal, event, &selection) == GHOSTTY_SUCCESS {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection)
+        } else {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        }
+    }
+
+    func selectAll() {
+        locked {
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            if ghostty_terminal_select_all(terminal, &selection) == GHOSTTY_SUCCESS {
+                _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection)
+            }
+        }
+    }
+
+    func clearSelection() {
+        locked {
+            ghostty_selection_gesture_reset(gesture, terminal)
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        }
+    }
+
+    var hasSelection: Bool {
+        locked {
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            return ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS
+        }
+    }
+
+    /// The selection as Ghostty copies it (`Screen.selectionString`): plain
+    /// text, soft wraps joined, trailing whitespace trimmed. Nil when nothing
+    /// is selected.
+    var selectedText: String? {
+        locked {
+            var options = GhosttyTerminalSelectionFormatOptions()
+            options.size = MemoryLayout<GhosttyTerminalSelectionFormatOptions>.size
+            options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+            options.unwrap = true
+            options.trim = true
+            var length = 0
+            let sizing = ghostty_terminal_selection_format_buf(terminal, options, nil, 0, &length)
+            guard sizing == GHOSTTY_OUT_OF_SPACE || sizing == GHOSTTY_SUCCESS else { return nil }
+            guard length > 0 else { return sizing == GHOSTTY_SUCCESS ? "" : nil }
+            var bytes = [UInt8](repeating: 0, count: length)
+            var written = 0
+            let result = bytes.withUnsafeMutableBufferPointer {
+                ghostty_terminal_selection_format_buf(terminal, options, $0.baseAddress, length, &written)
+            }
+            guard result == GHOSTTY_SUCCESS else { return nil }
+            return String(decoding: bytes.prefix(written), as: UTF8.self)
+        }
+    }
+
+    /// The cell under a pointer, in viewport coordinates, clamped to the grid.
+    private func viewportReference(_ point: SelectionPoint) -> GhosttyGridRef? {
+        var rows: UInt16 = 0
+        var cols: UInt16 = 0
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+        guard rows > 0, cols > 0 else { return nil }
+        var target = GhosttyPoint()
+        target.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        target.value.coordinate = GhosttyPointCoordinate(
+            x: min(point.column, cols - 1), y: UInt32(min(point.row, rows - 1))
+        )
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        guard ghostty_terminal_grid_ref(terminal, target, &reference) == GHOSTTY_SUCCESS else { return nil }
+        return reference
+    }
+
+    /// Where Ghostty's scrolling bindings move the view.
+    enum ViewportMove: Equatable {
+        case top, bottom, pageUp, pageDown, previousPrompt, nextPrompt
+    }
+
+    func moveViewport(_ move: ViewportMove) {
+        locked {
+            var rows: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            var behavior = GhosttyTerminalScrollViewport()
+            switch move {
+            case .top: behavior.tag = GHOSTTY_SCROLL_VIEWPORT_TOP
+            case .bottom: behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+            case .pageUp, .pageDown:
+                behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+                behavior.value.delta = (move == .pageUp ? -1 : 1) * Int(max(1, rows))
+            case .previousPrompt, .nextPrompt:
+                behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT
+                behavior.value.delta_prompt = move == .previousPrompt ? -1 : 1
+            }
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+        }
+    }
+
+    /// Whether the view follows the live screen, rather than showing history.
+    var followsLiveScreen: Bool {
+        locked {
+            var active = true
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &active)
+            return active
+        }
+    }
+
+    /// Back to the live screen, as a keystroke does in Ghostty.
+    func scrollViewportToBottom() {
+        locked { scrollToBottomLocked() }
+    }
+
+    /// The cursor's cell on the active screen.
+    var cursorPosition: (x: UInt16, y: UInt16)? {
+        locked {
+            var x: UInt16 = 0
+            var y: UInt16 = 0
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_CURSOR_X, &x) == GHOSTTY_SUCCESS,
+                  ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &y) == GHOSTTY_SUCCESS
+            else { return nil }
+            return (x, y)
+        }
+    }
+
+    private func scrollToBottomLocked() {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+        ghostty_terminal_scroll_viewport(terminal, behavior)
     }
 
     /// Applies an `E vt_resize` marker: the same operation the daemon's sidecar
@@ -327,6 +792,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         options.extra.screen.protection = true
         options.extra.screen.kitty_keyboard = true
         options.extra.screen.charsets = true
+        return try format(options)
+    }
+
+    private func format(_ options: GhosttyFormatterTerminalOptions) throws -> Data {
         var formatter: GhosttyFormatter?
         try Self.check(ghostty_formatter_terminal_new(nil, &formatter, terminal, options), "ghostty_formatter_terminal_new")
         guard let formatter else {

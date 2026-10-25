@@ -15,7 +15,7 @@ import TermioShared
 /// canonicalises the root and confines every path under it
 /// (`termiod/src/files.rs`), `fs.read` answers one `fs_file` header followed by
 /// `F` chunks, and neither is a subscription — but latency does. A channel per
-/// request meant `ssh <host> termiod stdio` per folder expand, which measured at
+/// request meant `ssh <host> termio stdio` per folder expand, which measured at
 /// 32 ms median and 260 ms at p90 on a link whose round trip is 8 ms.
 ///
 /// Live change notification is `ResourceWatch` below: the `fs:` resource

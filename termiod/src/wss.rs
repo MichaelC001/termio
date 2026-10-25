@@ -6,7 +6,7 @@
 //! - **Loopback only.** TLS lives in Tailscale Serve or Caddy in front; termiod
 //!   never grows a TLS stack, ships a CA, or pins a certificate.
 //! - **It is a splice, not a second protocol.** After the Upgrade this copies
-//!   bytes onto a connected `UnixStream` the way `termiod stdio` does. One
+//!   bytes onto a connected `UnixStream` the way `termio stdio` does. One
 //!   WebSocket message is *not* one protocol frame, or a recorded Unix-socket
 //!   transcript would no longer replay.
 //! - **The pairing token authenticates the pipe**, and is never the session
@@ -300,7 +300,7 @@ pub fn resolve(
     if paths::read_pair_token()?.is_none() {
         if explicit {
             bail!(
-                "--wss {addr} has no pairing token to authenticate with — run `termiod pair` first.\n\
+                "--wss {addr} has no pairing token to authenticate with — run `termio pair` first.\n\
                  Nothing was written; the daemon did not start."
             );
         }
@@ -786,7 +786,7 @@ pub struct PairOptions {
     pub url: Option<String>,
 }
 
-/// `termiod pair` — the enrollment ladder's bottom two rungs. A Mac that
+/// `termio pair` — the enrollment ladder's bottom two rungs. A Mac that
 /// already has SSH runs `--json` and pushes the invite; an operator sitting in
 /// a terminal on the box runs `--qr` and scans the screen in front of them.
 pub fn run_pair(options: PairOptions) -> Result<()> {
@@ -820,7 +820,7 @@ pub fn run_pair(options: PairOptions) -> Result<()> {
         let Some(url) = url.as_deref() else {
             bail!(
                 "no reachable URL for this box, so there is nothing to pair against.\n\
-                 Run `termiod tailscale on`, pass `--url https://<host>/termio/`, \
+                 Run `termio server tailscale on`, pass `--url https://<host>/termio/`, \
                  or start the daemon with `--wss-origin https://<host>`."
             );
         };

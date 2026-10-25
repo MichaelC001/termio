@@ -3,7 +3,7 @@ title: What ten years of docker/dockerd teach the termio/termiod split
 status: active
 type: rfc
 created: 2026-08-31
-updated: 2026-09-09
+updated: 2026-10-25
 related:
   - 20260730-termiod-session-protocol.md
   - 20260819-unify-server-plane.md
@@ -100,12 +100,13 @@ map this RFC proposes:
 | today | destination | notes |
 | --- | --- | --- |
 | `termio sessions …`, `open`, `notify`, `agent report` | stays `termio` | contract frozen; see §4 for which socket serves it when |
-| `termiod remote …` and top-level `--host` twins | `termio remote …`, one spelling | the duplicate top-level forms retire with a deprecation notice, not silently |
-| `termiod create/list/kill/send/attach/watch/status/logs` | `termio …` everywhere — boxes get the client too (§1.2, amended 2026-09-09); the `termiod` spellings keep working | see §1.2 |
-| `termiod pair/serve/service/deploy` | stays `termiod` | operator plumbing for the box itself |
-| `termiod stop` | stays `termiod`, on-box only | stops the daemon under it; destructive enough that it should require being on the box, like `systemctl stop` |
-| `termiod handoff`, `termiod stdio`, `termiod set-status` | stays `termiod`, frozen | machine-invoked: the upgrade path, the SSH exec target (its name is in the wire path), and the hook target (hooks exec it by absolute path) |
-| `termiod agent install/uninstall` | stays `termiod` | host integration, written by the deploy loop; a person runs it only to repair a box |
+| `termiod remote …` and top-level `--host` twins | `termio server --host <host> …` (amended 2026-10-25; was `termio remote …`) | one option on every server verb instead of a second namespace with four of them, as Rex's `--server` does |
+| `termiod create/list/kill/send/attach/watch` | `termio server …` (amended 2026-10-25) | the daemon's own session table, across projects; `termio sessions` stays the project-scoped app API |
+| `termiod pair` | `termio pair` (amended 2026-10-25) | a person types it to pair a phone |
+| `termiod status/logs/stop/deploy/service/handoff/tailscale` | `termio server …` (amended 2026-10-25) | this machine by default; `--host` runs the same verb on another machine over `ssh`, and `deploy --host` runs its loop from here |
+| `termiod serve` | stays `termiod` | the daemon itself, like `dockerd`, and the only verb it keeps |
+| `termiod stdio`, `termiod set-status`, `termiod handoff --probe` | `termio stdio`, `termio agent report`; `termiod handoff --probe` stays (amended 2026-10-25) | machine-invoked; moved, with `termiod stdio`, `termiod status` and `termiod handoff --probe` kept hidden — see the amendment below |
+| `termiod agent install/uninstall` | `termio agent install/uninstall` (amended 2026-10-25) | host integration, written by the deploy loop |
 
 ### 1.2 Where each command exists
 
@@ -138,9 +139,27 @@ socket — §4's single-API policy applied to our own client. Session verbs
 `focus`) have no daemon meaning and fail with one line naming the
 reason — no app on this host — rather than pretending.
 
-Hooks are untouched: they keep exec'ing `termiod` by absolute path, the
-frozen machine contract in §1.1. `termiod pair/serve/handoff/stop` stay
-daemon-spelled operator plumbing, exactly like `dockerd`. The curl
+Amended 2026-10-25: `termiod` answers only `serve`. The original text
+froze `stdio`, `set-status` and `handoff` on the daemon and kept `pair`
+and `stop` there as plumbing, but `dockerd` has no verb anyone types, and
+the iOS app and the docs were telling people to type `termiod pair`. Every
+verb now lives on `termio`, machine-invoked ones included: hooks run
+`termio agent report`, SSH runs `termio stdio`, and the deploy loop runs
+`termio server status/handoff/stop`. Every machine — a remote Mac too —
+now takes a client from the deploy, because the daemon alone answers
+nothing but `serve`.
+
+Three entry points stay on `termiod`, hidden from its help, because code
+calls the daemon binary itself: `termiod stdio`, which released apps open
+over SSH; `termiod handoff --probe`, which every daemon, old or new, asks a
+binary before handing off to it; and `termiod status`, which the deploy loop
+reads when the client beside the daemon cannot answer — a box from before
+the change, or a staged client that is broken. With them, an older app
+still reaches an upgraded box, every upgrade and rollback can hand off in
+place, and a broken client is repaired instead of misread. The cost that
+remains: hooks written before the change call `termiod set-status` and
+report nothing until the next install rewrites them (it recognizes and
+replaces them). The curl
 installer stays deferred (§7): the Mac's reconcile loop reaches every
 box the user has, so no second install path exists and the single-writer
 invariant holds.

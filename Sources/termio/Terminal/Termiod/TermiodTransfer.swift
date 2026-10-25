@@ -370,9 +370,10 @@ final class TermiodPasteInterceptor: NSObject {
     /// surface cache — the view and its cached state share a controller.
     private func focusedTerminalSessionID() -> Session.ID? {
         guard let window = NSApp.keyWindow,
-              window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName,
-              let surface = window.firstResponder as? TerminalView
+              window.frameAutosaveName == AppDelegate.mainWindowFrameAutosaveName
         else { return nil }
+        if let stream = window.firstResponder as? TermiodStreamView { return stream.sessionID }
+        guard let surface = window.firstResponder as? TerminalView else { return nil }
         return store?.surfaces.first { $0.value.controller === surface.controller }?.key
     }
 }

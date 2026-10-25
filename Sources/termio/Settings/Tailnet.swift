@@ -359,14 +359,14 @@ enum Tailnet {
 }
 
 /// This Mac's session host on the tailnet as a device of its own, the way a
-/// Linux box joins with `termiod tailscale on`. The daemon owns it: it runs
+/// Linux box joins with `termio server tailscale on`. The daemon owns it: it runs
 /// `termio-tailnet` beside itself and keeps it up across restarts, so this only
-/// asks it, through the same `termiod tailscale` a terminal would use.
+/// asks it, through the same `termio server tailscale` a terminal would use.
 @MainActor
 final class BuiltInTailscale: ObservableObject {
     static let shared = BuiltInTailscale()
 
-    /// What `termiod tailscale status --json` last said. nil before the first
+    /// What `termio server tailscale status --json` last said. nil before the first
     /// answer.
     @Published private(set) var report: Report?
     /// A command is running; the switch waits for it.
@@ -478,7 +478,7 @@ final class BuiltInTailscale: ObservableObject {
     /// paired to the node has saved.
     func setEnabled(_ on: Bool, naming: Bool = true) {
         requested = on
-        var arguments = on ? ["tailscale", "on", "--no-wait"] : ["tailscale", "off"]
+        var arguments = on ? ["server", "tailscale", "on", "--no-wait"] : ["server", "tailscale", "off"]
         // Named only while the node still has the default name. Renaming one
         // that has its own would move the address a paired phone has saved.
         if on, naming, report?.hostname == nil || report?.hostname == "termio" {
@@ -488,7 +488,7 @@ final class BuiltInTailscale: ObservableObject {
     }
 
     func signOut() {
-        perform(["tailscale", "logout"])
+        perform(["server", "tailscale", "logout"])
     }
 
     /// A command asked for while one runs, such as Allow Paired Devices going
@@ -526,7 +526,7 @@ final class BuiltInTailscale: ObservableObject {
     private func read() async {
         started &+= 1
         let mine = started
-        guard let result = try? await RemotePairing.runLocally(arguments: ["tailscale", "status", "--json"]),
+        guard let result = try? await RemotePairing.runLocally(arguments: ["server", "tailscale", "status", "--json"]),
               mine == started,
               result.status == 0,
               let data = result.stdout.data(using: .utf8),

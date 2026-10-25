@@ -3,8 +3,8 @@ title: 什么会留下来
 description: 会话属于设备，而不属于窗口——所以关闭、退出、更新、断线都是脱离而不是杀掉。这里是每种情况下究竟有什么留了下来，以及当进程真的消失时代价是什么。
 x-i18n:
   source_path: persistence.mdx
-  source_hash: 07a635c93cea124055d7519d6c0674bdc028cab886e8e4f7aaa11b580751561b
-  generated_at: 2026-09-19
+  source_hash: 0df28455f59af0605798bf40399c05ac8a7820ea29f856bbbdf6ed81da0d36bd
+  generated_at: 2026-10-25
 ---
 
 Termio 在结构上只有一个承诺：会话活得比你用来看它的那个东西更久。关掉窗口、退出应用、
@@ -29,7 +29,7 @@ Termio 在结构上只有一个承诺：会话活得比你用来看它的那个�
 | 退出 Termio（`⌘Q`）再重新打开 | 是 | 是 | 是 | 是 |
 | Termio 自我更新 | 是 | 是 | 是 | 是 |
 | 连到远程设备的 SSH 断了 | 是 | 是 | 是 | 是 |
-| `termiod handoff`（server 原地更新） | 是 | 是 | 是 | 是 |
+| `termio server handoff`（server 原地更新） | 是 | 是 | 是 | 是 |
 | server 停止，或者机器重启 | 否 | 是 | 否 | 本机上、且 Agent 支持[恢复](/zh-CN/docs/atp#resume)时才会；另一台机器上永远不会 |
 | **关闭会话**（`⌘W`） | 否 | —— | —— | —— |
 
@@ -58,7 +58,7 @@ Wi-Fi——每一样都是脱离。下次启动会重新附着到还在那里的
 
 ## 当进程真的消失时 [#when-the-process-really-does-go-away]
 
-一个停掉的 server——重启、一次 `termiod stop`、一台断电的机器——会把它的 PTY 一起带走。
+一个停掉的 server——重启、一次 `termio server stop`、一台断电的机器——会把它的 PTY 一起带走。
 这没有绕过去的办法；进程就是进程。Termio 能做的是让回来变得便宜：
 
 - **树会被恢复。** 项目、worktree、工作区、拆分编组，以及你在每个工作区最后停留的会话都会
@@ -79,8 +79,8 @@ Wi-Fi——每一样都是脱离。下次启动会重新附着到还在那里的
 只通过 SSH 连的机器上就几乎从来不行——那上面根本没人交互式登录过。
 
 ```bash
-termiod service install    # macOS 上是 launchd，Linux 上是 systemd --user
-termiod service status
+termio server service install    # macOS 上是 launchd，Linux 上是 systemd --user
+termio server service status
 ```
 
 装上服务之后，server 会在崩溃后被拉起来，也会在重启后于登录时再次启动。在 Linux 上，想让
@@ -112,7 +112,7 @@ unit 会跟着你的会话一起停。
 察觉。
 
 ```bash
-termiod handoff
+termio server handoff
 ```
 
 应用自我更新时走的也是这条路，所以一次 Termio 更新不会让你赔上正在跑的 Agent。从**设置 ▸

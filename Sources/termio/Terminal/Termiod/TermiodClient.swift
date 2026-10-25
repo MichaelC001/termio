@@ -161,7 +161,7 @@ extension Termiod {
     /// never the session write token that arbitrates who may type.
     ///
     /// Read from disk on every call rather than cached, the way `wss.rs` reads
-    /// it per handshake: `termiod pair --rotate` has to sign paired phones out
+    /// it per handshake: `termio pair --rotate` has to sign paired phones out
     /// on their next dial, and a cached copy would keep letting them in until
     /// the app was relaunched. nil means nothing has ever paired with this
     /// daemon.
@@ -239,6 +239,31 @@ extension Termiod {
                 .appendingPathComponent("Contents/Resources/\(daemonBinaryName)").path
     }
 
+    /// The `termio` client beside `daemonBinaryPath()`. The daemon answers only
+    /// `serve`; deploy, pair and every other verb this app runs are the
+    /// client's. A dev bundle names it `termio-dev`, and a bundle holds one of
+    /// the two names.
+    static func clientBinaryPath() -> String {
+        let directory = URL(fileURLWithPath: daemonBinaryPath()).deletingLastPathComponent()
+        let candidates = [CommandLineTool.toolName, "termio"].map {
+            directory.appendingPathComponent($0).path
+        }
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+            ?? candidates[0]
+    }
+
+    /// The environment for running `clientBinaryPath()` against this app's own
+    /// channel. A client named `termio` takes its channel from
+    /// `TERMIO_SESSION_CHANNEL` and overwrites `TERMIO_CHANNEL`, so the session
+    /// variable is the one that keeps a probe-channel build off the release
+    /// daemon.
+    static func clientEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["TERMIO_CHANNEL"] = channelName
+        environment["TERMIO_SESSION_CHANNEL"] = channelName
+        return environment
+    }
+
     /// `termiod` builds inside the checkout the running binary sits in, nearest
     /// first, release before debug. The search walks up from `directory` looking
     /// for the marker that identifies the repo root — `termiod/Cargo.toml` —
@@ -310,12 +335,16 @@ extension Termiod {
         throw TermiodClientError.daemonUnreachable(socketPath())
     }
 
-    /// The remote `termiod` path invoked over SSH. Matches the CLI's deploy
-    /// target (`termiod remote deploy` installs to `~/.local/bin/termiod`);
-    /// overridable so a non-standard install still works.
-    static func remoteBinary() -> String {
-        ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"]
-            ?? "$HOME/.local/bin/termiod"
+    /// The remote `termio` invoked over SSH — `termio stdio`, `termio pair`,
+    /// `termio server …`; the daemon beside it answers only `serve`. Matches the
+    /// deploy target (`termio server --host … deploy` installs both to `~/.local/bin`).
+    /// `TERMIOD_REMOTE_BIN` moves the daemon, and the client is found beside it.
+    static func remoteClient() -> String {
+        guard let daemon = ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"] else {
+            return "$HOME/.local/bin/termio"
+        }
+        guard let slash = daemon.lastIndex(of: "/") else { return "$HOME/.local/bin/termio" }
+        return daemon[..<slash] + "/termio"
     }
 
     /// Every `-o` this app puts on its own `ssh`, resolved once per host. Two
@@ -490,7 +519,7 @@ extension Termiod {
 
     /// A bidirectional byte channel to a daemon. Local is one Unix-socket fd
     /// used for both directions; SSH is a pipe pair around an `ssh <host>
-    /// termiod stdio` child — the exact same framed protocol either way, which
+    /// termio stdio` child — the exact same framed protocol either way, which
     /// is the whole point of the stdio bridge. The frame helpers read from
     /// `readDescriptor` and write to `writeDescriptor`.
     final class Transport {
@@ -593,7 +622,7 @@ extension Termiod {
             }
         }
 
-        /// `ssh <host> termiod stdio`: the framed protocol rides the SSH pipe,
+        /// `ssh <host> termio stdio`: the framed protocol rides the SSH pipe,
         /// so the remote daemon (auto-starting on first contact) is reached
         /// with the identical messages. System OpenSSH is the trust plane; no
         /// keys or crypto live in termio.
@@ -634,7 +663,7 @@ extension Termiod {
             posix_spawn_file_actions_addclose(&fileActions, fromChild[0])
             posix_spawn_file_actions_addclose(&fileActions, errorPipe[0])
 
-            let command = "\(remoteBinary()) stdio"
+            let command = "\(remoteClient()) stdio"
             let arguments = ["ssh", "-o", "ServerAliveInterval=15"]
                 + sshArguments(host: host)
                 + [host, command]
@@ -822,7 +851,7 @@ extension Termiod {
     /// `POSIX_SPAWN_SETSID` detaches the session, not the parentage: the daemon
     /// stays this app's child, and a child nobody waits on becomes a zombie the
     /// moment it exits — one whose pid `kill(pid, 0)` keeps answering for. That
-    /// is what `termiod stop` used to read as a daemon refusing to leave (#571),
+    /// is what `termio server stop` used to read as a daemon refusing to leave (#571),
     /// and it lasted as long as the app did. The daemon this waits on outlives
     /// most launches, so the wait cannot be a parked thread.
     private static func reapWhenItExits(_ pid: pid_t) {
@@ -1023,7 +1052,7 @@ extension Termiod {
         }
     }
 
-    /// What `termiod deploy --json` left a machine as — the lifecycle loop's
+    /// What `termio server deploy --json` left a machine as — the lifecycle loop's
     /// report (`termiod/src/lifecycle.rs`), read rather than reconstructed.
     /// The daemon runs the loop; this side only says what the state means.
     struct LifecycleReport: Decodable, Sendable {
@@ -1338,7 +1367,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var clientID: String?
     /// Keystrokes typed during the connect/attach window — flushed, in order,
     /// the moment the channel is writable so nothing the user typed is lost.
-    private var pendingInput = Data()
+    private var pendingInput: [PendingInput] = []
+    /// The pane's focus as it last said, resent on every stream attach.
+    private var lastFocusLocked: Bool?
+    private enum PendingInput {
+        case bytes(Data)
+        case event(Termiod.InputEvent)
+    }
     /// This attachment's viewport: how much of a session this pane could show,
     /// measured from the pane's own geometry rather than read back off the
     /// surface. The two are not the same thing once the surface is laid out at a
@@ -1558,6 +1593,50 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
     var onStreaming: ((Bool) -> Void)?
+    /// What the program told the stream pane's terminal that the app acts on
+    /// (`TermiodStreamTerminal.Signal`), on the main thread: what the embedded
+    /// surface publishes for a pane that is not streaming.
+    var onStreamSignal: ((TermiodStreamTerminal.Signal) -> Void)?
+    /// The title and directory last reported, kept across attaches: a new
+    /// terminal reports what its snapshot carries, and only a change is news,
+    /// as the embedded surface's `removeDuplicates` makes it.
+    private var reportedTitle: String?
+    private var reportedDirectory: String?
+    /// An OSC 52 copy on its way to the pasteboard, which a read that
+    /// follows it in the stream must already see.
+    private var unwrittenCopy: String?
+    private let signalLock = NSLock()
+
+    private func pendingCopy() -> String? {
+        signalLock.withLock { unwrittenCopy }
+    }
+
+    /// Called on the reader thread, from inside the terminal's `write`.
+    private func deliverStreamSignal(_ signal: TermiodStreamTerminal.Signal) {
+        let news: Bool = signalLock.withLock {
+            switch signal {
+            case .title(let title):
+                guard reportedTitle != title else { return false }
+                reportedTitle = title
+            case .workingDirectory(let path):
+                guard reportedDirectory != path else { return false }
+                reportedDirectory = path
+            case .clipboard(let text):
+                unwrittenCopy = text
+            case .bell, .notification:
+                break
+            }
+            return true
+        }
+        guard news else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            onStreamSignal?(signal)
+            if case .clipboard(let text) = signal {
+                signalLock.withLock { if unwrittenCopy == text { unwrittenCopy = nil } }
+            }
+        }
+    }
 
     var streamTerminal: TermiodStreamTerminal? {
         streamLock.lock()
@@ -1625,11 +1704,22 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the connection is being replaced, and nothing more it reads may land.
     private func receiveStreamSnapshot(_ native: Data) -> Bool {
         do {
-            let terminal = try TermiodStreamTerminal(nativeSnapshot: native) { [weak self] reply in
-                // Answering is the writer's job alone (`TerminalDeviceReport`),
-                // which `sendDeviceReport` enforces.
-                self?.sendDeviceReport(reply)
-            }
+            let terminal = try TermiodStreamTerminal(
+                nativeSnapshot: native,
+                onReply: { [weak self] reply in
+                    // Answering is the writer's job alone (`TerminalDeviceReport`),
+                    // which `sendDeviceReport` enforces.
+                    self?.sendDeviceReport(reply)
+                },
+                onSignal: { [weak self] signal in self?.deliverStreamSignal(signal) },
+                // What the embedded surface serves: a copied file is its path.
+                // A copy the program made a moment ago that the main thread has
+                // not written yet is what it reads back, in stream order.
+                readClipboard: { [weak self] in
+                    if let copy = self?.pendingCopy() { return copy }
+                    return NSPasteboard.general.terminalPasteText()
+                }
+            )
             streamLock.lock()
             defer { streamLock.unlock() }
             if let colors = streamThemeLocked { try terminal.setTheme(colors) }
@@ -1707,8 +1797,23 @@ final class TermiodSessionLink: @unchecked Sendable {
             let offering = offersStream && !streamRefused
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
-                caps: Termiod.attachCapabilities + (offering ? [Termiod.streamCapability] : []))
+                caps: Termiod.attachCapabilities
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : []))
             clientID = handshake.clientID
+            // A daemon that streams but does not take input events has already
+            // put this connection on the stream plane, so the link cannot
+            // pretend otherwise: it attaches again, on keyframes.
+            if offering, handshake.capabilities.contains(Termiod.streamCapability),
+               !handshake.capabilities.contains(Termiod.inputCapability) {
+                Log.termiod.info("""
+                \(self.sessionName, privacy: .public): host streams without input events; \
+                attaching on keyframes
+                """)
+                streamRefused = true
+                teardownLocked()
+                attemptAttachLocked()
+                return
+            }
             // Published only once the attach succeeds: a refused start has no
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
@@ -1792,8 +1897,25 @@ final class TermiodSessionLink: @unchecked Sendable {
             // an observer's input would be rejected frame-by-frame by the
             // daemon. (This client always attaches `interact` today, so it is
             // normally the writer — this keeps it correct if observe is used.)
-            if isWriter, !pendingInput.isEmpty {
-                try sendDataLocked(pendingInput)
+            if isWriter {
+                for input in pendingInput {
+                    switch input {
+                    case .bytes(let data): try sendDataLocked(data)
+                    // Only the stream plane encodes events; a link that came
+                    // back on keyframes has no encoder at the far end.
+                    case .event(let event) where streamingNow: try sendEventLocked(event)
+                    case .event:
+                        // Typed into a stream pane while it fell back to
+                        // keyframes: the embedded surface encodes for itself,
+                        // and this event names a key, not bytes.
+                        Log.termiod.info("\(self.sessionName, privacy: .public): dropped an input event typed during a fallback to keyframes")
+                    }
+                }
+            }
+            // Whether or not this attachment holds the token: termiod keeps a
+            // non-writer's focus and reports it when that pane takes over.
+            if streamingNow, let focused = lastFocusLocked {
+                try sendEventLocked(.focus(focused))
             }
             pendingInput.removeAll(keepingCapacity: false)
             startReader(channel.readDescriptor)
@@ -1843,7 +1965,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard !closed else { return }
             guard attached else {
-                pendingInput.append(data)
+                pendingInput.append(.bytes(data))
                 return
             }
             do {
@@ -1866,6 +1988,63 @@ final class TermiodSessionLink: @unchecked Sendable {
                 """)
             }
         }
+    }
+
+    /// Input on the `vt_stream` plane, as an event termiod encodes against its
+    /// own VT (`Termiod.InputEvent`). Typing claims the token as `send` does;
+    /// a focus change does not, and termiod reports only the writer's.
+    func sendInput(_ event: Termiod.InputEvent) {
+        if case .paste(let text, false) = event, text.utf8.count > Termiod.InputEvent.pastePieceBytes {
+            // Each piece fits, so none comes back here.
+            for piece in Termiod.InputEvent.pastePieces(text) { sendInputEvent(piece) }
+            return
+        }
+        sendInputEvent(event)
+    }
+
+    private func sendInputEvent(_ event: Termiod.InputEvent) {
+        let typing = event.claimsWriter
+        if typing {
+            inputLock.lock()
+            lastInputAtLocked = Date()
+            inputLock.unlock()
+        }
+        workQueue.async { [self] in
+            // Kept for every attach, even between them: a pane that already
+            // has focus says so once, and a program that asks after a
+            // reconnect must hear the pane's focus as it is now.
+            if case .focus(let focused) = event { lastFocusLocked = focused }
+            guard !closed else { return }
+            guard attached else {
+                if case .focus = event { return }
+                pendingInput.append(.event(event))
+                return
+            }
+            guard streamingNow else { return }
+            do {
+                // As `send` claims only for bytes: a modifier pressed on its
+                // way to a shortcut, a release or a composing key moves
+                // nothing, and termiod drops those from a non-writer.
+                if typing, !isWriter { try claimWriterLocked() }
+                try sendEventLocked(event)
+            } catch {
+                Log.termiod.error("""
+                input event to \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
+    private var streamingNow: Bool {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return streamingLocked
+    }
+
+    private func sendEventLocked(_ event: Termiod.InputEvent) throws {
+        guard let transport else { return }
+        try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try event.payload())
     }
 
     /// Takes the write token for this attachment because its user is now here.
@@ -2666,6 +2845,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(String(describing: error), privacy: .public)
                 """)
             }
+        case .vtStale:
+            // termiod encodes this pane's input with its VT's modes, and those
+            // just stopped following the program. The embedded surface encodes
+            // for itself, so the pane goes back to it.
+            if isStreaming { abandonStream() }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.

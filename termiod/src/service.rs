@@ -144,7 +144,7 @@ pub fn plist(
 /// The binary launchd should run. Resolved to an absolute path at install time
 /// so the agent does not depend on a `PATH` it will not inherit.
 fn resolved_binary() -> Result<String> {
-    let binary = std::env::current_exe().context("resolving this binary's path")?;
+    let binary = crate::lifecycle::paired_daemon().context("resolving the daemon's path")?;
     let binary = binary.canonicalize().unwrap_or(binary);
     Ok(binary.to_string_lossy().into_owned())
 }
@@ -174,7 +174,7 @@ pub fn run(cmd: ServiceCmd) -> Result<()> {
             ServiceCmd::Status => systemd::status(),
         }
     } else {
-        bail!("`termiod service` needs launchd (macOS) or systemd (Linux) to supervise the daemon");
+        bail!("`termio server service` needs launchd (macOS) or systemd (Linux) to supervise the daemon");
     }
 }
 
@@ -389,7 +389,7 @@ mod systemd {
     /// systemd starts the daemon from the manager's environment, not the
     /// shell's, so an unpinned dev unit would serve the release socket.
     ///
-    /// `Restart=on-failure`, not `always`: `termiod stop` sends `SIGTERM` and
+    /// `Restart=on-failure`, not `always`: `termio server stop` sends `SIGTERM` and
     /// waits for the socket to stay gone, and a unit that restarted on a clean
     /// exit would race that drain. The next client contact starts the unit
     /// again (`client::spawn_daemon`), which is the bounce path an update
@@ -475,7 +475,7 @@ mod systemd {
         // the user's call: it declines while sessions are busy.
         if socket_answers() && !is_active(&name)? {
             bail!(
-                "a daemon is already running unsupervised on {}; run `termiod stop` first, then install again",
+                "a daemon is already running unsupervised on {}; run `termio server stop` first, then install again",
                 paths::socket_path()?.display()
             );
         }
@@ -691,7 +691,7 @@ mod tests {
 
     /// The two lines that make the unit a *supervised* daemon rather than a
     /// one-shot: come back after a crash, and start when the user's manager
-    /// does. `on-failure` and not `always`, so a clean `termiod stop` stays
+    /// does. `on-failure` and not `always`, so a clean `termio server stop` stays
     /// stopped.
     #[test]
     fn the_unit_starts_at_login_and_restarts_after_a_crash() {

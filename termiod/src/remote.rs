@@ -1,10 +1,10 @@
 //! Remote sessions over **system SSH only** — no custom transport, no public
 //! listener. The remote `termiod` owns the PTY; SSH is the transport and the
-//! ACL. This covers issue #171 (deploy + attach) and #172 (`remote open`).
+//! ACL. This covers issue #171 (deploy + attach) for `termio server --host`.
 //!
 //! The trick that makes this ~200 lines instead of a network stack: the daemon
 //! auto-starts (detached via `setsid`) on the first client op. So
-//! `ssh host termiod attach <id>` runs the *client* on the remote host, whose
+//! `ssh host termio server attach <id>` runs the *client* on the remote host, whose
 //! stdin/stdout are the SSH channel; the daemon it starts survives the SSH
 //! disconnect because it is in its own session. Detach ≠ kill, remotely, free.
 //!
@@ -13,7 +13,6 @@
 //! the artifact selection: which of the bundled daemons a host gets.
 
 use anyhow::{bail, Context, Result};
-use clap::Subcommand;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -33,6 +32,24 @@ pub fn remote_bin() -> String {
 /// `None` when the override renamed the daemon, which pairs with no client.
 pub fn remote_client_bin() -> Option<String> {
     client_bin_beside(&remote_bin())
+}
+
+/// The `termio` that runs commands on the remote host: the client beside the
+/// daemon, or, when `TERMIOD_REMOTE_BIN` renamed the daemon, a `termio` in the
+/// same directory. The second is only ever executed, never installed over, so
+/// the rename's protection of a box's real client still holds.
+pub fn remote_control_bin() -> String {
+    if let Some(client) = remote_client_bin() {
+        return client;
+    }
+    // A renamed daemon is not the one the client would pair with by itself,
+    // so the client is told which one it is.
+    let binary = remote_bin();
+    let client = match binary.rsplit_once('/') {
+        Some((directory, _)) if !directory.is_empty() => format!("{directory}/termio"),
+        _ => "$HOME/.local/bin/termio".to_string(),
+    };
+    format!("TERMIOD_BIN={binary} {client}")
 }
 
 /// The client that belongs to a daemon at `daemon`, or `None` when nothing on
@@ -106,148 +123,35 @@ fn batch_args() -> Vec<String> {
     args
 }
 
-#[derive(Subcommand)]
-pub enum RemoteCmd {
-    /// Install or update `termiod` on a host over SSH.
-    Deploy {
-        /// SSH host alias from `~/.ssh/config` (or user@host).
-        host: String,
-        /// Use this prebuilt binary instead of the bundled or cross-compiled one.
-        #[arg(long)]
-        bin: Option<String>,
-        /// Force a Rust target triple instead of auto-detecting from `uname`.
-        #[arg(long)]
-        target: Option<String>,
-        /// Stop the old daemon even while its sessions have work in progress.
-        #[arg(long)]
-        force: bool,
-        /// Emit the outcome as one JSON document on stdout.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// List sessions on a remote host.
-    List {
-        host: String,
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Attach to (or create) a session on a remote host.
-    Attach {
-        host: String,
-        /// Session id or name.
-        target: String,
-        /// Stream output without allocating an SSH tty or accepting input.
-        #[arg(long)]
-        observe: bool,
-        /// Program + args if created. Put after `--`.
-        #[arg(last = true)]
-        argv: Vec<String>,
-    },
-
-    /// One-shot: ensure deployed, create a durable session, then attach (#172).
-    Open {
-        /// SSH host alias from `~/.ssh/config`.
-        host: String,
-        /// Remote working directory (default: `~`).
-        #[arg(long)]
-        cwd: Option<String>,
-        /// Agent/shell to launch: `shell` (default), `claude`, `codex`, …
-        #[arg(long, default_value = "shell")]
-        agent: String,
-        /// Session name (default: derived from agent).
-        #[arg(long)]
-        name: Option<String>,
-        /// Skip the deploy check (assume `termiod` is already installed).
-        #[arg(long)]
-        no_deploy: bool,
-    },
+/// `termio server --host <host> deploy`: the lifecycle loop against a host,
+/// sending this build, or a prebuilt `--bin` daemon with the `termio` beside it.
+pub async fn deploy(
+    host: String,
+    bin: Option<PathBuf>,
+    target: Option<String>,
+    options: Options,
+) -> Result<Report> {
+    let mut node = SshNode::new(host);
+    if let Some(daemon) = bin {
+        // Resolved before anything is sent: a stale pair is caught by a local
+        // `--version`, not by a failed verify and a daemon bounce on the box.
+        node.prebuilt_client = Some(client_beside(&daemon).await?);
+        node.prebuilt = Some(daemon);
+    }
+    node.target = target;
+    Ok(reconcile(&node, options).await)
 }
 
-pub async fn run(cmd: RemoteCmd) -> Result<()> {
-    match cmd {
-        RemoteCmd::Deploy {
-            host,
-            bin,
-            target,
-            force,
-            json,
-        } => {
-            let mut node = SshNode::new(host);
-            if let Some(bin) = bin {
-                let daemon = PathBuf::from(bin);
-                // Only a machine that takes a client is paired with one, and
-                // only when this deploy named it: `artifact` sends none
-                // otherwise. Pairing first meant a daemon/client build mismatch
-                // refused the whole deploy over an artifact that was never going
-                // to ship — a `--target aarch64-apple-darwin` run, say, where a
-                // Mac must be sent no client at all.
-                if target.as_deref().is_some_and(target_takes_a_client) {
-                    // Resolved before anything is sent: a stale pair is caught by
-                    // a local `--version`, not by a failed verify and a daemon
-                    // bounce on the box.
-                    node.prebuilt_client = client_beside(&daemon).await?;
-                } else if target.is_none() {
-                    eprintln!(
-                        "[deploy] deploying the daemon only; name the machine with --target to \
-                         send the client beside it too"
-                    );
-                }
-                node.prebuilt = Some(daemon);
-            }
-            node.target = target;
-            let report = reconcile(
-                &node,
-                Options {
-                    force,
-                    ..Options::default()
-                },
-            )
-            .await;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!("{}", report.describe());
-            }
-            let code = report.exit_code();
-            if code != 0 {
-                std::process::exit(code);
-            }
-            Ok(())
-        }
-        RemoteCmd::Open {
-            host,
-            cwd,
-            agent,
-            name,
-            no_deploy,
-        } => {
-            if !no_deploy {
-                // The same loop the app runs before an attach. A daemon left
-                // staged behind busy sessions is still a working daemon, so
-                // that is a note rather than a stop.
-                let report = reconcile(&SshNode::new(host.clone()), Options::default()).await;
-                match report.outcome {
-                    // A client that did not verify leaves the box attachable, so
-                    // it is a note here rather than a refusal — but a note it
-                    // must be: the same outcome exits non-zero for `deploy` and
-                    // is logged as an error by the app, and someone reaching a
-                    // box this way would otherwise get no word that the `termio`
-                    // inside its sessions is broken.
-                    lifecycle::Outcome::Current { client: Some(_), .. }
-                    | lifecycle::Outcome::Staged { .. } => eprintln!("{}", report.describe()),
-                    lifecycle::Outcome::Current { .. } => {}
-                    _ => bail!("{}", report.describe()),
-                }
-            }
-            tokio::task::spawn_blocking(move || open(&host, cwd.as_deref(), &agent, name.as_deref()))
-                .await?
-        }
-        // These shell out to ssh; run them on a blocking thread so the async
-        // runtime stays free.
-        other => tokio::task::spawn_blocking(move || run_blocking(other)).await?,
+/// `termio server --host <host> <verb>…`: the same words, run by the host's
+/// own `termio`. `tty` asks ssh for a terminal, which only an interactive
+/// attach needs. Returns the remote command's exit status.
+pub fn run_server_verb(host: &str, tty: bool, words: &[String]) -> Result<i32> {
+    let mut command = format!("{} server", remote_control_bin());
+    for word in words {
+        command.push(' ');
+        command.push_str(&shell_quote(word));
     }
+    ssh_interactive(host, tty, &command)
 }
 
 /// The lifecycle loop against a host, for the build this binary is.
@@ -394,80 +298,6 @@ fn iso8601_utc_now() -> String {
     )
 }
 
-fn run_blocking(cmd: RemoteCmd) -> Result<()> {
-    match cmd {
-        RemoteCmd::List { host, json } => {
-            let bin = remote_bin();
-            let flag = if json { " --json" } else { "" };
-            let status = ssh_interactive(&host, false, &format!("{bin} list{flag}"))?;
-            std::process::exit(status);
-        }
-        RemoteCmd::Attach {
-            host,
-            target,
-            observe,
-            argv,
-        } => {
-            let remote = build_attach_cmd(&target, observe, &argv);
-            let status = ssh_interactive(&host, !observe, &remote)?;
-            std::process::exit(status);
-        }
-        RemoteCmd::Deploy { .. } | RemoteCmd::Open { .. } => {
-            unreachable!("handled on the async path")
-        }
-    }
-}
-
-/// Build the remote `termiod attach` command line.
-fn build_attach_cmd(target: &str, observe: bool, argv: &[String]) -> String {
-    let bin = remote_bin();
-    let mut s = format!("{bin} attach {}", shell_quote(target));
-    if observe {
-        s.push_str(" --observe");
-    }
-    if !argv.is_empty() {
-        s.push_str(" --");
-        for a in argv {
-            s.push(' ');
-            s.push_str(&shell_quote(a));
-        }
-    }
-    s
-}
-
-fn open(host: &str, cwd: Option<&str>, agent: &str, name: Option<&str>) -> Result<()> {
-    let bin = remote_bin();
-    let argv: Vec<String> = match agent {
-        "shell" | "" => Vec::new(),
-        other => vec![other.to_string()],
-    };
-    let session_name = name.unwrap_or(if argv.is_empty() { "shell" } else { agent });
-
-    // Create the durable session on the remote host.
-    let mut create = format!("{bin} create --name {}", shell_quote(session_name));
-    if let Some(dir) = cwd {
-        create.push_str(&format!(" --cwd {}", shell_quote(dir)));
-    }
-    if !argv.is_empty() {
-        create.push_str(" --");
-        for a in &argv {
-            create.push(' ');
-            create.push_str(&shell_quote(a));
-        }
-    }
-    let id = ssh_capture(host, &create)?.trim().to_string();
-    if id.is_empty() {
-        bail!("remote create returned no session id");
-    }
-    eprintln!("[remote {host}] created session {id} ({session_name}); attaching…");
-
-    let remote = format!("{bin} attach {}", shell_quote(&id));
-    let status = ssh_interactive(host, true, &remote)?;
-    std::process::exit(status);
-}
-
-// MARK: The ssh arm of the lifecycle loop
-
 /// A machine reached with the user's own `ssh`, as `~/.ssh/config` defines it.
 /// The daemon installed is whichever of the bundled builds matches the box's
 /// `uname`, or this very binary for another Mac.
@@ -524,6 +354,10 @@ impl Node for SshNode {
 
     fn binary(&self) -> String {
         remote_bin()
+    }
+
+    fn control(&self) -> String {
+        remote_control_bin()
     }
 
     async fn run(&self, command: &str) -> Result<Run> {
@@ -584,14 +418,9 @@ impl Node for SshNode {
         // that worked without detection and failed it with "pass --target
         // explicitly", and charged every other `--bin` deploy a round trip.
         if let Some(prebuilt) = &self.prebuilt {
-            // Unknown means no client. The host is not asked what it is on this
-            // path, and guessing "it takes one" plants a `~/.local/bin/termio`
-            // on a Mac that manages its own — shadowing the app's copy with one
-            // frozen at this build, which no later pass refreshes or removes.
-            let ships_client = self.target.as_deref().is_some_and(target_takes_a_client);
             return Ok(Artifacts {
                 daemon: prebuilt.clone(),
-                client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
+                client: self.prebuilt_client.clone(),
                 tailnet: None,
             });
         }
@@ -605,15 +434,13 @@ impl Node for SshNode {
                 target_for_uname(uname.stdout.trim())?
             }
         };
-        let ships_client = target_takes_a_client(&target);
         if let Some(path) = shipped_binary(&target) {
             eprintln!("[deploy] using the bundled {target} binaries");
             let daemon = PathBuf::from(path);
-            let client = match ships_client {
-                true => Some(shipped_client(&target, &daemon)?),
-                false => None,
-            };
-            let tailnet = ships_client
+            let client = Some(shipped_client(&target, &daemon)?);
+            // The tailnet helper is built for Linux boxes only; a Mac joins
+            // its tailnet through the app.
+            let tailnet = (!target.contains("apple-darwin"))
                 .then(|| daemon.parent().map(|d| d.join(format!("termio-tailnet-{target}"))))
                 .flatten()
                 .filter(|path| path.is_file());
@@ -639,11 +466,6 @@ impl Node for SshNode {
     }
 
     fn client_binary(&self) -> Option<String> {
-        // A `--bin` override with no client beside it deploys the daemon
-        // alone; every other artifact source carries both binaries.
-        if self.prebuilt.is_some() && self.prebuilt_client.is_none() {
-            return None;
-        }
         remote_client_bin()
     }
 
@@ -671,10 +493,19 @@ impl Node for SshNode {
     }
 
     async fn hello(&self) -> Result<DaemonHello> {
+        // The daemon's own `stdio`, not the client's: this verifies the
+        // daemon, and a client repair may just have taken a broken client
+        // back off the box. A renamed daemon is named to itself, so the
+        // daemon its autostart spawns is this one and not a sibling.
+        let daemon = remote_bin();
+        let command = match remote_client_bin() {
+            Some(_) => format!("{daemon} stdio"),
+            None => format!("TERMIOD_BIN={daemon} {daemon} stdio"),
+        };
         let mut child = self
             .ssh()
             .arg(&self.host)
-            .arg(format!("{} stdio", remote_bin()))
+            .arg(command)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -735,7 +566,7 @@ fn last_line(text: &str) -> String {
 /// DMG has. `scripts/build-app.sh` puts both Linux binaries in `Contents/Resources`
 /// next to the daemon that reads this, so the common case is a copy.
 ///
-/// A Mac takes the daemon that is *already* there — the one running this code. It
+/// A Mac takes the daemon that is *already* there — the one beside this client. It
 /// is built universal for the same reason the app is, so one file serves both
 /// architectures and there is nothing per-target to ship. Sent as a plain copy:
 /// `scp` sets no quarantine attribute, so a Developer-ID-signed binary landing on
@@ -747,38 +578,30 @@ fn last_line(text: &str) -> String {
 /// repo puts no siblings there, so a contributor still gets `cross_compile` — the
 /// path that proves the source tree actually cross-builds.
 fn shipped_binary(target: &str) -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
+    let daemon = lifecycle::paired_daemon().ok()?;
     if target.contains("apple-darwin") {
-        return exe.to_str().map(str::to_owned);
+        return daemon.to_str().map(str::to_owned);
     }
-    let candidate = exe.parent()?.join(format!("termiod-{target}"));
+    let candidate = daemon.parent()?.join(format!("termiod-{target}"));
     candidate
         .is_file()
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
-/// Whether a machine of this target takes a `termio` client from a deploy.
-///
-/// Every Linux box does: nothing else puts one there. No Mac does. A Mac owns
-/// its client already — its app bundle links one into `/usr/local/bin` — and
-/// `session::client_path_directory` returns `None` on macOS, so a copy planted
-/// in `~/.local/bin` would never be reached deliberately. It would only shadow
-/// the app's own wherever `~/.local/bin` comes first on `PATH`, frozen at
-/// whatever build this deploy left while that Mac's own client moves on with
-/// its app.
-fn target_takes_a_client(target: &str) -> bool {
-    !target.contains("apple-darwin")
-}
-
-/// The `termio` client that ships beside this executable for `target`,
-/// mirroring [`shipped_binary`]. Only ever asked for a target that takes one,
-/// which is every Linux box and no Mac (see [`SshNode::artifact`]).
+/// The `termio` client that ships with the daemon for `target`, mirroring
+/// [`shipped_binary`]. Every machine takes one, a Mac included: the daemon
+/// answers only `serve`, so `ssh <host> termio stdio` and every command the
+/// deploy loop runs there need the client. A Mac gets this very client, which
+/// is built universal like the daemon beside it.
 ///
 /// Missing is an error rather than a smaller deploy: these slices exist only
 /// because `scripts/build-app.sh` put them in a bundle's Resources, so absence
 /// means a broken bundle, and shipping half a build from one would recreate the
 /// skew §1.2 rules out.
 fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
+    if target.contains("apple-darwin") {
+        return std::env::current_exe().context("resolving this executable");
+    }
     let directory = daemon
         .parent()
         .with_context(|| format!("{} has no directory", daemon.display()))?;
@@ -793,27 +616,25 @@ fn shipped_client(target: &str, daemon: &Path) -> Result<PathBuf> {
 }
 
 /// The client that pairs with a developer-supplied `--bin` daemon: the
-/// `termio` beside it, when there is one of the same build.
+/// `termio` beside it, of the same build.
 ///
-/// `None` — a daemon-only deploy, with a note — rather than an error when
-/// the file is absent: `cargo build --bin termiod` legitimately produces no
-/// client, and the box keeps whatever client it has. But a client that *is*
+/// Absent is an error: the daemon answers only `serve`, so a box sent one
+/// without its client cannot be reached or upgraded. A client that is
 /// there and answers `--version` as another build is refused here, before a
 /// byte ships: sending it would fail verification on the box and bounce the
 /// daemon over a skew a local check already saw. A pair that cannot answer
 /// locally — cross-built for another machine — ships as found, and the box's
 /// own verify judges it.
-async fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
+async fn client_beside(daemon: &Path) -> Result<PathBuf> {
     let candidate = daemon
         .parent()
         .map(|directory| directory.join("termio"))
         .filter(|path| path.is_file());
     let Some(client) = candidate else {
-        eprintln!(
-            "[deploy] no termio client beside {}; deploying the daemon only",
+        bail!(
+            "no termio client beside {}; build both binaries (`cargo build --bins`)",
             daemon.display()
         );
-        return Ok(None);
     };
     let (daemon_stamp, daemon_text) = lifecycle::binary_version(daemon).await;
     let (client_stamp, client_text) = lifecycle::binary_version(&client).await;
@@ -827,7 +648,7 @@ async fn client_beside(daemon: &Path) -> Result<Option<PathBuf>> {
             );
         }
     }
-    Ok(Some(client))
+    Ok(client)
 }
 
 /// The `uname -sm` half of target detection, split out so the mapping can be
@@ -894,7 +715,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
         bail!(
             "cross-compiling for {target} needs cargo, and there is none on this machine.\n  \
              • install Rust: https://rustup.rs\n  \
-             • or build on the host and deploy with: termiod remote deploy <host> --bin <path>"
+             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
         );
     };
     // Checked before cargo runs rather than left to the build script's panic:
@@ -906,7 +727,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
             "cross-compiling for {target} needs zig — the terminal engine termiod embeds\n\
              is built by it.\n  \
              • brew install zig\n  \
-             • or build on the host and deploy with: termiod remote deploy <host> --bin <path>"
+             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
         );
     }
     eprintln!("[deploy] cross-compiling for {target}…");
@@ -936,7 +757,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
              The target's std is usually the missing piece — the link itself needs no\n\
              external toolchain (termiod/.cargo/config.toml uses the bundled rust-lld):\n  \
              • rustup target add {target}\n  \
-             • or build on the host and deploy with: termiod remote deploy <host> --bin <path>"
+             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
         );
     }
     let dir = env!("CARGO_MANIFEST_DIR");
@@ -973,42 +794,6 @@ fn ssh_interactive(host: &str, tty: bool, remote_cmd: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// One host's session table, for the cross-host view. Failure is returned per
-/// host rather than aborting the sweep — a cloud fleet always has one box
-/// that is rebooting, and that must not blank the other rows.
-pub async fn list_json(host: &str) -> (String, Result<Vec<crate::protocol::SessionInfo>>) {
-    let owned = host.to_string();
-    let probe = owned.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let out = ssh_capture(&probe, &format!("{} list --json", remote_bin()))?;
-        serde_json::from_str::<Vec<crate::protocol::SessionInfo>>(&out)
-            .context("parsing remote session list")
-    })
-    .await;
-    match result {
-        Ok(inner) => (owned, inner),
-        Err(e) => (owned, Err(anyhow::anyhow!("{e}"))),
-    }
-}
-
-/// Run an SSH command and capture stdout (for create/list probes).
-fn ssh_capture(host: &str, remote_cmd: &str) -> Result<String> {
-    let mut cmd = Command::new("ssh");
-    cmd.args(batch_args());
-    let out = cmd
-        .args([host, remote_cmd])
-        .output()
-        .context("spawning ssh")?;
-    if !out.status.success() {
-        bail!(
-            "ssh {host} '{remote_cmd}' failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-/// Minimal single-quote shell escaping for remote command args.
 fn shell_quote(s: &str) -> String {
     lifecycle::shell_quote(s)
 }
@@ -1045,31 +830,9 @@ mod tests {
         // quietly cost a round trip.
         let artifacts = node.artifact(false).await.expect("a prebuilt needs no target");
         assert_eq!(artifacts.daemon, PathBuf::from("/builds/termiod"));
-        // And no client, because nothing here knows what the machine is: sending
-        // one to a Mac plants a copy that shadows the app's own for good. Naming
-        // the target with `--target` is what asks for it.
-        assert_eq!(artifacts.client, None);
-    }
-
-    /// …and an explicit `--target` decides it, either way.
-    #[tokio::test]
-    async fn a_prebuilt_binary_sends_no_client_to_a_named_mac() {
-        let mut node = SshNode::new("mac".into());
-        node.prebuilt = Some(PathBuf::from("/builds/termiod"));
-        node.prebuilt_client = Some(PathBuf::from("/builds/termio"));
-        node.target = Some("aarch64-apple-darwin".into());
-        let artifacts = node.artifact(false).await.expect("a prebuilt needs no uname");
-        assert_eq!(artifacts.client, None);
-    }
-
-    /// A Linux box gets its client from the deploy; a Mac never does, whichever
-    /// way its target was arrived at.
-    #[test]
-    fn only_a_box_that_owns_no_client_is_sent_one() {
-        assert!(target_takes_a_client("x86_64-unknown-linux-musl"));
-        assert!(target_takes_a_client("aarch64-unknown-linux-musl"));
-        assert!(!target_takes_a_client("aarch64-apple-darwin"));
-        assert!(!target_takes_a_client("x86_64-apple-darwin"));
+        // The client goes with it whatever the machine is: the daemon answers
+        // only `serve`, so a box without its client cannot be reached.
+        assert_eq!(artifacts.client, Some(PathBuf::from("/builds/termio")));
     }
 
     /// A daemon the override renamed pairs with no client: deploying one would
@@ -1100,15 +863,6 @@ mod tests {
 
         let system = target_for_uname("FreeBSD amd64").unwrap_err().to_string();
         assert!(system.contains("neither Linux nor macOS"), "{system}");
-    }
-
-    /// The Mac case takes the daemon that is already running this code rather
-    /// than a per-target sibling, because it is built universal.
-    #[test]
-    fn a_mac_is_served_by_the_running_daemon_itself() {
-        let running = std::env::current_exe().ok().and_then(|p| p.to_str().map(str::to_owned));
-        assert_eq!(shipped_binary("aarch64-apple-darwin"), running);
-        assert_eq!(shipped_binary("x86_64-apple-darwin"), running);
     }
 
     /// scp does not expand `$HOME`; the default install path has to reach it

@@ -11,15 +11,15 @@ each one has a way to check rather than guess. Start here before filing anything
 On any machine, in any state, these answer most of the question:
 
 ```bash
-termiod status                 # what's installed here, and is a daemon answering?
-termiod list                   # what sessions is it holding?
-termiod logs -n 200            # what happened while nobody was watching
+termio server status           # what's installed here, and is a daemon answering?
+termio server list             # what sessions is it holding?
+termio server logs -n 200      # what happened while nobody was watching
 ```
 
-`termiod status` in particular ends a surprising share of “it broke” reports: it
+`termio server status` in particular ends a surprising share of “it broke” reports: it
 says which binary is installed, which version, and whether anything is actually
-listening on the socket. To ask about another machine, `termiod list --host
-<box>` queries that box's daemon over your own SSH config.
+listening on the socket. To ask about another machine, `termio server -H <box> status`
+asks that box's daemon over your own SSH config.
 
 ## A status dot never changes
 
@@ -93,8 +93,8 @@ Without a service, the server lives as long as your login session. Install one
 and it survives logouts, crashes and reboots:
 
 ```bash
-termiod service install
-termiod service status
+termio server service install
+termio server service status
 ```
 
 This is the usual surprise on a remote box, where nobody logs in interactively.
@@ -107,8 +107,8 @@ own `~/.ssh/config` and never carries its own credentials.
 
 ```bash
 ssh mybox true                 # does SSH itself work?
-termiod list --host mybox      # is the server answering there?
-termiod deploy --host mybox    # reinstall and verify it
+termio server -H mybox ls       # is the server answering there?
+termio server -H mybox deploy     # reinstall and verify it
 ```
 
 `deploy` is a reconcile, so running it against a box in a bad state is safe. A key
@@ -151,13 +151,13 @@ The server keeps a log of what happened while nobody was attached — which is
 exactly the window a bug tends to fall into.
 
 ```bash
-termiod logs -n 200            # the recent tail
-termiod logs -f                # follow it live
-termiod logs --path            # the file itself, for a bug report
+termio server logs -n 200      # the recent tail
+termio server logs -f          # follow it live
+termio server logs --path      # the file itself, for a bug report
 ```
 
 <Callout type="tip">
-  Reproducing something intermittent? Leave `termiod logs -f` running in a pane of
+  Reproducing something intermittent? Leave `termio server logs -f` running in a pane of
   its own. The log is the one record that spans the moment you weren’t attached.
 </Callout>
 
@@ -165,7 +165,7 @@ termiod logs --path            # the file itself, for a bug report
 
 Open an issue at
 [github.com/termio-sh/termio](https://github.com/termio-sh/termio/issues) with
-the output of `termiod status` and the tail of `termiod logs`. Those two answer
+the output of `termio server status` and the tail of `termio server logs`. Those two answer
 most of the questions a maintainer would otherwise have to ask. Add the macOS
 version, the Termio version, and whether the session was local or on another
 machine.

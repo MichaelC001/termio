@@ -1,4 +1,4 @@
-//! §C.9 acceptance for the `termiod stdio` bridge: a client speaking the framed
+//! §C.9 acceptance for the `termio stdio` bridge: a client speaking the framed
 //! protocol over the bridge's stdin/stdout gets byte-identical results to a
 //! local Unix-socket client. Driven with blocking std pipes so the exchange is
 //! deterministic (no async-stdin harness races).
@@ -8,6 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 
 fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) {
     let mut header = [0u8; 5];
@@ -40,7 +41,11 @@ impl Drop for Daemon {
 }
 
 fn start_daemon(tag: &str) -> Daemon {
-    let socket = format!("/tmp/termiod-bridge-test-{tag}.sock");
+    // A directory per daemon: the serve lock lives beside the socket, so two
+    // tests sharing `/tmp` would have the second daemon refuse to start.
+    let directory = format!("/tmp/termiod-bridge-test-{tag}");
+    let _ = std::fs::create_dir_all(&directory);
+    let socket = format!("{directory}/d.sock");
     let _ = std::fs::remove_file(&socket);
     let child = Command::new(BIN)
         .arg("serve")
@@ -64,8 +69,9 @@ fn framed_protocol_is_byte_identical_over_the_stdio_bridge() {
 
     // A session emitting a known marker after a short delay, so live D follows
     // the snapshot boundary.
-    let created = Command::new(BIN)
+    let created = Command::new(CLIENT)
         .args([
+            "server",
             "create",
             "--name",
             "bridgesession",
@@ -80,8 +86,8 @@ fn framed_protocol_is_byte_identical_over_the_stdio_bridge() {
         .expect("create");
     assert!(created.status.success(), "create failed");
 
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", &daemon.socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -141,4 +147,34 @@ fn framed_protocol_is_byte_identical_over_the_stdio_bridge() {
     assert!(saw_snapshot, "no S snapshot over the bridge");
     assert!(saw_ready, "no ready event over the bridge");
     assert!(saw_marker, "live D marker never arrived over the bridge");
+}
+
+/// Released apps open `ssh <host> termiod stdio`. The daemon binary keeps that
+/// entry point, hidden, so an older app still reaches a box a newer app has
+/// upgraded.
+#[test]
+fn the_old_termiod_stdio_entry_point_still_bridges() {
+    let daemon = start_daemon("legacy");
+    let mut bridge = Command::new(BIN)
+        .args(["stdio"])
+        .env("TERMIOD_SOCK", &daemon.socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn termiod stdio");
+    let mut to_bridge = bridge.stdin.take().unwrap();
+    let mut from_bridge = bridge.stdout.take().unwrap();
+    let hello = br#"{"op":"hello","proto":1,"min_proto":1,"role":"attach","caps":[],"client":"legacy-test"}"#;
+    write_frame(&mut to_bridge, b'C', hello);
+    let (kind, payload) = read_frame(&mut from_bridge);
+    assert_eq!(kind, b'C');
+    assert!(
+        String::from_utf8_lossy(&payload).contains("\"op\":\"hello_ok\""),
+        "expected hello_ok, got {}",
+        String::from_utf8_lossy(&payload)
+    );
+    drop(to_bridge);
+    let _ = bridge.kill();
+    let _ = bridge.wait();
 }

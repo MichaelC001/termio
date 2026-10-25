@@ -40,21 +40,23 @@ default; off-loopback binds are refused at flag parse, and TLS belongs to
 Tailscale Serve or Caddy in front. See [DEPLOY.md](DEPLOY.md).
 
 ```sh
-termiod pair                                       # mint and print the token
+termio pair                                       # mint and print the token
 termiod serve --wss 127.0.0.1:8790 --wss-origin https://box.tailnet.ts.net
 ```
 
 ## Clients (local)
 
+`termiod` only runs the host (`termiod serve`, usually auto-started). Every
+client verb is `termio`'s.
+
 ```sh
-termiod attach demo                    # create-on-missing; Ctrl-\ detaches
-termiod attach build -- npm run dev
-termiod list
-termiod list --json
-termiod create --name api --cwd ~/proj -- bash
-termiod send api "npm test"            # inject without attach
-termiod set-status api needs_you --title "Review requested"
-termiod kill api
+termio server attach demo              # create-on-missing; Ctrl-\ detaches
+termio server attach build -- npm run dev
+termio server list
+termio server list --json
+termio server create --name api --cwd ~/proj -- bash
+termio server send api "npm test"      # inject without attach
+termio server kill api
 ```
 
 Multi-client: several `attach` to the same session — output fans out. There
@@ -100,10 +102,9 @@ host (zmx lesson).
 Transport is **system OpenSSH** only — no public listener. The **host still runs on the VPS**; SSH only reaches it.
 
 ```sh
-termiod deploy --host my-vps           # install or update ~/.local/bin/termiod, verify it
-termiod remote list my-vps
-termiod remote attach my-vps demo -- bash
-termiod remote open my-vps --cwd '~/proj' --agent shell
+termio server -H my-vps deploy           # install or update ~/.local/bin/termiod, verify it
+termio server -H my-vps ls
+termio server -H my-vps attach demo -- bash
 ```
 
 `deploy` is one loop for every state a box can be in — nothing installed, an
@@ -114,8 +115,8 @@ the recovery from any outcome.
 
 Taking it on is an **`execve`**, not a restart: the daemon replaces its own
 image while keeping its pid, its children and every PTY master, so upgrading a
-box does not cost the work running on it. On the box itself, `termiod handoff`
-is that verb by hand, `termiod status` says what is there, and `termiod stop`
+box does not cost the work running on it. On the box itself, `termio server handoff`
+is that verb by hand, `termio server status` says what is there, and `termio server stop`
 asks the daemon to leave — declined, with the sessions named, while a command is
 running or an agent is mid-task. Stopping is now only the fallback for a daemon
 too old to replace itself.

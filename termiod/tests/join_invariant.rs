@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_termiod");
+const CLIENT: &str = env!("CARGO_BIN_EXE_termio");
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
 /// Lines the late client must observe past the boundary before the sequence is
@@ -58,7 +59,11 @@ impl Drop for Daemon {
 }
 
 fn start_daemon(tag: &str) -> Daemon {
-    let socket = format!("/tmp/termiod-join-test-{tag}.sock");
+    // A directory per daemon: the serve lock lives beside the socket, so two
+    // daemons sharing `/tmp` would have the second refuse to start.
+    let directory = format!("/tmp/termiod-join-test-{tag}");
+    let _ = std::fs::create_dir_all(&directory);
+    let socket = format!("{directory}/d.sock");
     let _ = std::fs::remove_file(&socket);
     let child = Command::new(BIN)
         .arg("serve")
@@ -77,8 +82,8 @@ fn start_daemon(tag: &str) -> Daemon {
 }
 
 fn spawn_bridge(socket: &str) -> (Child, std::process::ChildStdin, std::process::ChildStdout) {
-    let mut bridge = Command::new(BIN)
-        .arg("stdio")
+    let mut bridge = Command::new(CLIENT)
+        .args(["stdio"])
         .env("TERMIOD_SOCK", socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -277,8 +282,9 @@ fn attaching_mid_flood_joins_the_stream_exactly_once() {
     // barrier. Bounded well under the 4 MiB per-client backlog.
     let flood = "i=0; while [ $i -lt 200000 ]; do i=$((i+1)); printf 'JOIN %d\\r\\n' $i; \
                  done; sleep 5";
-    let created = Command::new(BIN)
+    let created = Command::new(CLIENT)
         .args([
+            "server",
             "create",
             "--name",
             "joinsession",

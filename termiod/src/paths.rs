@@ -391,7 +391,7 @@ fn is_already_exists(error: &anyhow::Error) -> bool {
 /// `write_new_secret` alone is not enough for a file other processes read by
 /// name. `create_new` publishes the name before the contents, so a concurrent
 /// reader that opens it in between finds it empty — which `read_pair_token`
-/// rejects, correctly, as an empty secret. Two `termiod pair` invocations
+/// rejects, correctly, as an empty secret. Two `termio pair` invocations
 /// racing each other is exactly that: one mints while the other reads.
 ///
 /// Staging the contents and publishing them with `link` closes the window. The
@@ -445,7 +445,7 @@ pub fn read_pair_token() -> Result<Option<String>> {
     }
 }
 
-/// Read the pairing token, minting one on first use. Only `termiod pair` calls
+/// Read the pairing token, minting one on first use. Only `termio pair` calls
 /// this.
 pub fn load_or_create_pair_token() -> Result<String> {
     if let Some(existing) = read_pair_token()? {
@@ -694,7 +694,7 @@ mod tests {
 
     /// A secret is published whole or not at all. `create_new` followed by a
     /// write leaves the name visible and empty in between, and a reader that
-    /// lands there — a second `termiod pair`, which is what
+    /// lands there — a second `termio pair`, which is what
     /// `wss_off_wins_against_a_concurrent_adopter` runs — rejects it as an
     /// empty pairing token.
     #[test]

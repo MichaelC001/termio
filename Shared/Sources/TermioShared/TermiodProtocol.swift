@@ -7,7 +7,7 @@ import CoreGraphics
 /// knows how the bytes get to a daemon.
 ///
 /// It lives beside `WireProtocol.swift` for the same reason that one does: the
-/// Mac reaches a daemon over a Unix socket or an `ssh … termiod stdio` pipe, the
+/// Mac reaches a daemon over a Unix socket or an `ssh … termio stdio` pipe, the
 /// phone will reach one over a WebSocket, and a second Swift copy of this format
 /// would drift from the first without anything failing to build. Everything a
 /// route needs — sockets, `ssh -G`, spawning the daemon — stays in the app's
@@ -60,6 +60,10 @@ public enum Termiod {
     /// `E vt_resize` at the byte where the daemon's VT changed size instead of
     /// a keyframe. Offered on top of `attachCapabilities`, never instead.
     public static let streamCapability = "vt_stream"
+    /// Input as events termiod encodes (`InputEvent`). A client streams only
+    /// from a daemon that grants it as well: one with `vt_stream` alone drops
+    /// every event, which is a pane that cannot be typed into.
+    public static let inputCapability = "vt_input"
     /// The error a daemon sends when it cannot give this client an exact
     /// screen to follow; the client attaches again without `vt_stream`.
     public static let streamUnavailableCode = "vt_stream_unavailable"
@@ -962,7 +966,7 @@ public enum Termiod {
         }
     }
 
-    /// One row of `termiod list` — a session as the **device** describes it.
+    /// One row of `termio server list` — a session as the **device** describes it.
     ///
     /// This carries enough to draw a row without consulting anything on the
     /// viewer, which is the point: a session the app never opened (started from
@@ -1416,6 +1420,9 @@ public enum Termiod {
         case resized(ResizedPayload)
         /// Only on the `vt_stream` plane: apply this resize before the next byte.
         case vtResize(VtResizePayload)
+        /// The host's VT stopped parsing: it can no longer snapshot, and the
+        /// modes it encodes input with are frozen.
+        case vtStale
         case roster(RosterPayload)
         case sessionExited(SessionExitedPayload)
         /// One batch of `fs.search` hits, streamed to the connection that asked
@@ -1695,6 +1702,8 @@ public enum Termiod {
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
         case "vt_resize":
             return .vtResize(try decoder.decode(VtResizePayload.self, from: payload))
+        case "vt_stale":
+            return .vtStale
         case "roster":
             return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":
@@ -1827,6 +1836,210 @@ public enum Termiod {
 
     public static func detachPayload() throws -> Data {
         try encodeControl(DetachOperation())
+    }
+
+    /// Input a `vt_stream` client sends as an `E` event. termiod encodes it
+    /// against its own VT's modes, as Rex's server does, so the bytes match the
+    /// program even when it changed modes while the event was in flight. A
+    /// key is named by Ghostty (`arrow_up`), never by the C enum's number: a
+    /// remote daemon may run another engine release for a while.
+    public enum InputEvent: Equatable, Sendable {
+        case key(Key)
+        /// Pasted text. `more` marks a piece of a paste too large for one
+        /// frame that has pieces after it; termiod makes them one paste.
+        case paste(String, more: Bool = false)
+        case mouse(Mouse)
+        case wheel(Wheel)
+        case focus(Bool)
+
+        public enum Action: String, Encodable, Sendable {
+            case press, release, `repeat`, motion
+        }
+
+        public struct Key: Equatable, Sendable {
+            public var action: Action
+            public var key: String
+            /// libghostty's modifier bits.
+            public var mods: UInt16
+            public var consumedMods: UInt16
+            /// What the layout typed; never a control code or a function key.
+            public var text: String?
+            public var unshifted: UInt32
+            public var composing: Bool
+
+            public init(action: Action = .press, key: String, mods: UInt16 = 0, consumedMods: UInt16 = 0,
+                        text: String? = nil, unshifted: UInt32 = 0, composing: Bool = false) {
+                self.action = action
+                self.key = key
+                self.mods = mods
+                self.consumedMods = consumedMods
+                self.text = text
+                self.unshifted = unshifted
+                self.composing = composing
+            }
+        }
+
+        /// A point in pixels from the grid's top-left corner, in the cell size
+        /// the client draws.
+        public struct Pointer: Equatable, Sendable {
+            public var x: Float
+            public var y: Float
+            public var cellWidth: UInt32
+            public var cellHeight: UInt32
+
+            public init(x: Float, y: Float, cellWidth: UInt32, cellHeight: UInt32) {
+                self.x = x
+                self.y = y
+                self.cellWidth = cellWidth
+                self.cellHeight = cellHeight
+            }
+        }
+
+        public struct Mouse: Equatable, Sendable {
+            public var action: Action
+            /// 1 left, 2 right, 3 middle, 4 to 11 the rest; nil for plain motion.
+            public var button: UInt8?
+            public var mods: UInt16
+            public var at: Pointer
+            /// Whether any button is down once this event has happened.
+            public var buttonsHeld: Bool
+
+            public init(action: Action, button: UInt8?, mods: UInt16, at: Pointer, buttonsHeld: Bool) {
+                self.action = action
+                self.button = button
+                self.mods = mods
+                self.at = at
+                self.buttonsHeld = buttonsHeld
+            }
+        }
+
+        /// Whole rows and columns, negative up and left.
+        public struct Wheel: Equatable, Sendable {
+            public var rows: Int32
+            public var columns: Int32
+            public var mods: UInt16
+            public var at: Pointer
+
+            public init(rows: Int32, columns: Int32, mods: UInt16, at: Pointer) {
+                self.rows = rows
+                self.columns = columns
+                self.mods = mods
+                self.at = at
+            }
+        }
+
+        /// Whether sending this is typing, which takes the write token as
+        /// typing into the embedded surface does. Not a modifier pressed on its
+        /// own, a release, a key the input method is composing, plain motion,
+        /// or a focus change: none of them sends the program a byte.
+        public var claimsWriter: Bool {
+            switch self {
+            case .key(let key):
+                return key.action != .release && !key.composing && !Self.modifierKeys.contains(key.key)
+            case .paste, .wheel:
+                return true
+            case .mouse(let mouse):
+                return mouse.action == .press
+            case .focus:
+                return false
+            }
+        }
+
+        private static let modifierKeys: Set<String> = [
+            "shift_left", "shift_right", "control_left", "control_right", "alt_left", "alt_right",
+            "meta_left", "meta_right", "caps_lock", "fn", "fn_lock",
+        ]
+
+        private struct Wire: Encodable {
+            let ev: String
+            var action: Action?
+            var key: String?
+            var mods: UInt16?
+            var consumedMods: UInt16?
+            var text: String?
+            var unshifted: UInt32?
+            var composing: Bool?
+            var button: UInt8?
+            var x: Float?
+            var y: Float?
+            var cellWidth: UInt32?
+            var cellHeight: UInt32?
+            var buttonsHeld: Bool?
+            var rows: Int32?
+            var columns: Int32?
+            var focused: Bool?
+            var more: Bool?
+        }
+
+        public func payload() throws -> Data {
+            var wire: Wire
+            switch self {
+            case .key(let key):
+                wire = Wire(ev: "key")
+                wire.action = key.action
+                wire.key = key.key
+                wire.mods = key.mods
+                wire.consumedMods = key.consumedMods
+                wire.text = key.text
+                wire.unshifted = key.unshifted
+                wire.composing = key.composing
+            case .paste(let text, let more):
+                wire = Wire(ev: "paste")
+                wire.text = text
+                wire.more = more ? true : nil
+            case .mouse(let mouse):
+                wire = Wire(ev: "mouse")
+                wire.action = mouse.action
+                wire.button = mouse.button
+                wire.mods = mouse.mods
+                wire.buttonsHeld = mouse.buttonsHeld
+                Self.place(mouse.at, in: &wire)
+            case .wheel(let wheel):
+                wire = Wire(ev: "wheel")
+                wire.rows = wheel.rows
+                wire.columns = wheel.columns
+                wire.mods = wheel.mods
+                Self.place(wheel.at, in: &wire)
+            case .focus(let focused):
+                wire = Wire(ev: "focus")
+                wire.focused = focused
+            }
+            return try encodeControl(wire)
+        }
+
+        /// The largest piece of a paste one event carries. JSON can grow text
+        /// sixfold (`\\u0001`), and a frame holds 16 MiB.
+        public static let pastePieceBytes = 1 << 20
+
+        /// The events that carry `text`, in pieces no larger than
+        /// `pastePieceBytes`. Split between Unicode scalars, which termiod
+        /// joins back into one byte stream: a grapheme has no size limit, so
+        /// splitting only between characters could leave a piece too large.
+        public static func pastePieces(_ text: String) -> [InputEvent] {
+            guard text.utf8.count > pastePieceBytes else { return [.paste(text)] }
+            var pieces: [String] = []
+            var current = String.UnicodeScalarView()
+            var size = 0
+            for scalar in text.unicodeScalars {
+                let length = String(scalar).utf8.count
+                if size + length > pastePieceBytes {
+                    pieces.append(String(current))
+                    current = String.UnicodeScalarView()
+                    size = 0
+                }
+                current.append(scalar)
+                size += length
+            }
+            if !current.isEmpty { pieces.append(String(current)) }
+            return pieces.enumerated().map { index, piece in .paste(piece, more: index < pieces.count - 1) }
+        }
+
+        private static func place(_ pointer: Pointer, in wire: inout Wire) {
+            wire.x = pointer.x
+            wire.y = pointer.y
+            wire.cellWidth = pointer.cellWidth
+            wire.cellHeight = pointer.cellHeight
+        }
     }
 
     public static func claimWriterPayload() throws -> Data {
