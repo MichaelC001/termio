@@ -628,6 +628,7 @@ final class TermiodStreamFrameBuilder {
     /// covers both of its cells.
     private var rowWideStarts: [Set<UInt16>] = []
     private var minimumContrast: Double = 1
+    private var selectionColors: (background: GhosttyColorRgb?, foreground: GhosttyColorRgb?) = (nil, nil)
     private var cursorText: GhosttyColorRgb?
     private var cursor: [TermiodStreamRectangle] = []
     private var cursorGlyph: TermiodStreamGlyph?
@@ -667,6 +668,14 @@ final class TermiodStreamFrameBuilder {
         let contrast = theme?.minimumContrast ?? 1
         if contrast != minimumContrast {
             minimumContrast = contrast
+            stale = true
+        }
+        let selection = (theme?.selectionBackground, theme?.selectionForeground)
+        func same(_ a: GhosttyColorRgb?, _ b: GhosttyColorRgb?) -> Bool {
+            a.map { a in b.map { a.r == $0.r && a.g == $0.g && a.b == $0.b } ?? false } ?? (b == nil)
+        }
+        if !same(selection.0, selectionColors.background) || !same(selection.1, selectionColors.foreground) {
+            selectionColors = selection
             stale = true
         }
         cursorText = theme?.cursorText
@@ -862,6 +871,13 @@ final class TermiodStreamFrameBuilder {
         var wideStarts: Set<UInt16> = []
         let metrics = atlas.metrics
         _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells)
+        // Ghostty draws every selected cell alike: the theme's selection
+        // colors, or the default foreground behind the default background.
+        var selected = GhosttyRenderStateRowSelection()
+        selected.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+        let selection: ClosedRange<UInt16>? =
+            ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selected) == GHOSTTY_SUCCESS
+            ? selected.start_x ... max(selected.start_x, selected.end_x) : nil
         var x: UInt16 = 0
         while ghostty_render_state_row_cells_next(cells) {
             defer { x &+= 1 }
@@ -897,6 +913,11 @@ final class TermiodStreamFrameBuilder {
             }
             if style.inverse {
                 swap(&foreground, &background)
+                paintsBackground = true
+            }
+            if let selection, selection.contains(x) {
+                background = selectionColors.background ?? colors.foreground
+                foreground = selectionColors.foreground ?? colors.background
                 paintsBackground = true
             }
             if paintsBackground {

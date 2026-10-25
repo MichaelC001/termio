@@ -249,6 +249,131 @@ final class StreamInputTests: XCTestCase {
         XCTAssertTrue(reply.contains("52;c;aGVsbG8="), reply.debugDescription)
     }
 
+    /// Ghostty counts half cells: a selection starts at a cell pressed in its
+    /// left half and takes in a cell dragged past its middle, so presses sit
+    /// at 2 of 10 pixels and drags at 8.
+    private func point(_ column: UInt16, _ row: UInt16, at offset: Double = 2) -> TermiodStreamTerminal.SelectionPoint {
+        .init(column: column, row: row, x: Double(column) * 10 + offset, y: Double(row) * 20 + 10)
+    }
+
+    /// Ghostty's mouse selection, on the stream pane's own terminal: a drag
+    /// selects cells, a double click a word, and copying joins soft wraps.
+    func testTheMouseSelectsAsGhosttyDoes() throws {
+        let terminal = try terminal("hello world\r\nsecond line")
+        let geometry = TermiodStreamTerminal.SelectionGeometry(cellWidth: 10, paddingLeft: 0, screenHeight: 200)
+        XCTAssertNil(terminal.selectedText)
+
+        terminal.pressSelection(at: point(0, 0), time: 1_000, interval: 500_000_000, distance: 10)
+        terminal.dragSelection(to: point(4, 0, at: 8), geometry: geometry, rectangle: false)
+        terminal.releaseSelection(at: point(4, 0, at: 8))
+        XCTAssertEqual(terminal.selectedText, "hello")
+
+        // Two presses within the interval: the word under the pointer.
+        terminal.pressSelection(at: point(7, 0), time: 2_000_000_000, interval: 500_000_000, distance: 10)
+        terminal.releaseSelection(at: point(7, 0))
+        terminal.pressSelection(at: point(7, 0), time: 2_100_000_000, interval: 500_000_000, distance: 10)
+        terminal.releaseSelection(at: point(7, 0))
+        XCTAssertEqual(terminal.selectedText, "world")
+
+        // A second click a few pixels off is still a double click.
+        terminal.pressSelection(at: point(1, 1), time: 4_000_000_000, interval: 500_000_000, distance: 10)
+        terminal.releaseSelection(at: point(1, 1))
+        terminal.pressSelection(at: point(1, 1, at: 7), time: 4_100_000_000, interval: 500_000_000, distance: 10)
+        terminal.releaseSelection(at: point(1, 1, at: 7))
+        XCTAssertEqual(terminal.selectedText, "second")
+
+        // A single click later clears it.
+        terminal.pressSelection(at: point(1, 1), time: 9_000_000_000, interval: 500_000_000, distance: 10)
+        terminal.releaseSelection(at: point(1, 1))
+        XCTAssertFalse(terminal.hasSelection)
+
+        terminal.selectAll()
+        XCTAssertEqual(terminal.selectedText, "hello world\nsecond line")
+        terminal.clearSelection()
+        XCTAssertNil(terminal.selectedText)
+    }
+
+    /// Ghostty's scrolling bindings move this pane's view through history.
+    func testTheViewMovesThroughScrollback() throws {
+        let terminal = try terminal((1...40).map { "line \($0)" }.joined(separator: "\r\n"))
+        XCTAssertTrue(terminal.followsLiveScreen)
+        terminal.moveViewport(.top)
+        XCTAssertFalse(terminal.followsLiveScreen)
+        terminal.moveViewport(.pageDown)
+        terminal.moveViewport(.pageDown)
+        terminal.moveViewport(.pageDown)
+        XCTAssertTrue(terminal.followsLiveScreen, "three pages of ten rows reach the 40 lines' end")
+        terminal.moveViewport(.pageUp)
+        XCTAssertFalse(terminal.followsLiveScreen)
+        terminal.moveViewport(.bottom)
+        XCTAssertTrue(terminal.followsLiveScreen)
+    }
+
+    /// Every selected cell is drawn alike, inverse or not: the theme's
+    /// selection colors, or the default foreground behind the default
+    /// background, as Ghostty's renderer does.
+    func testSelectedCellsTakeTheSelectionColors() throws {
+        let terminal = try terminal("a\u{1b}[7mb\u{1b}[0mc")
+        var palette = [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 1, g: 1, b: 1), count: 256)
+        palette[0] = GhosttyColorRgb(r: 0, g: 0, b: 0)
+        var theme = TermiodStreamTerminal.Theme(
+            foreground: GhosttyColorRgb(r: 200, g: 200, b: 200), background: GhosttyColorRgb(r: 10, g: 10, b: 10),
+            cursor: nil, palette: palette, cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BAR, cursorBlink: false
+        )
+        try terminal.setTheme(theme)
+        let appearance = TermiodStreamRenderer.Appearance(
+            fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, paddingX: 0, paddingY: 0, backgroundOpacity: 1
+        )
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        func colors() throws -> [[UInt8]] {
+            builder.invalidate()
+            _ = try terminal.withFrame { state, theme in
+                try builder.build(from: state, atlas: renderer.atlas, focused: false, theme: theme)
+            }
+            var rectangles: [TermiodStreamRectangle] = []
+            var glyphs: [TermiodStreamGlyph] = []
+            builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+            return (0 ..< 3).map { column in
+                glyphs.first { $0.cellX == column && $0.cellY == 0 }.map { [$0.r, $0.g, $0.b] } ?? []
+            }
+        }
+        terminal.selectAll()
+        XCTAssertEqual(try colors(), Array(repeating: [10, 10, 10], count: 3), "the inverse b too")
+        theme.selectionForeground = GhosttyColorRgb(r: 50, g: 60, b: 70)
+        try terminal.setTheme(theme)
+        XCTAssertEqual(try colors(), Array(repeating: [50, 60, 70], count: 3), "the theme's selection color")
+    }
+
+    /// A selected cell is drawn with its colors swapped.
+    func testASelectionIsDrawnWithTheColorsSwapped() throws {
+        let terminal = try terminal("abc")
+        let appearance = TermiodStreamRenderer.Appearance(
+            fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, paddingX: 0, paddingY: 0, backgroundOpacity: 1
+        )
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        func glyph(at column: UInt16) throws -> TermiodStreamGlyph {
+            builder.invalidate()
+            _ = try terminal.withFrame { state, theme in
+                try builder.build(from: state, atlas: renderer.atlas, focused: false, theme: theme)
+            }
+            var rectangles: [TermiodStreamRectangle] = []
+            var glyphs: [TermiodStreamGlyph] = []
+            builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+            return try XCTUnwrap(glyphs.first { $0.cellX == column && $0.cellY == 0 })
+        }
+        let plain = try glyph(at: 1)
+        terminal.pressSelection(at: point(0, 0), time: 1, interval: 1, distance: 10)
+        terminal.dragSelection(
+            to: point(1, 0, at: 8), geometry: .init(cellWidth: 10, paddingLeft: 0, screenHeight: 200), rectangle: false
+        )
+        let selected = try glyph(at: 1)
+        XCTAssertNotEqual([plain.r, plain.g, plain.b], [selected.r, selected.g, selected.b],
+                          "the selected b is drawn in the background color")
+        XCTAssertEqual([try glyph(at: 2).r], [plain.r], "c is outside the selection")
+    }
+
     /// What `termio sessions read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")

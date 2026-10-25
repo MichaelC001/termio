@@ -147,7 +147,7 @@ must reach parity before it can be the default:
 
 - text: CoreText shaping, ligatures, wide and combining characters, emoji,
   bold and italic faces, the font-size shortcuts;
-- cursor styles and blinking, selection and copy, ⌘F search;
+- cursor styles and blinking, selection and copy;
 - IME preedit and its candidate-window position;
 - mouse reporting, scroll and the alternate-scroll mode;
 - links: hover detection, ⌘-click, path clicks inside mouse-capturing TUIs;
@@ -194,7 +194,9 @@ Each phase ends at a gate. A failed gate stops the work.
    - M4a, what the program tells the terminal that the app acts on: the
      title, the working directory, the bell, desktop notifications, and OSC 52
      clipboard writes and reads.
-   - M4b, selection and copy, the scrollback view, search.
+   - M4b, selection and copy, the scrollback view and Ghostty's scrolling
+     keys. Search is not part of it: the embedded surface offers no ⌘F in
+     termio today, so there is nothing to match yet.
    - M4c, links: OSC 8 hyperlinks, detected URLs and paths, hover and ⌘-click.
    - M4d, Kitty images.
 
