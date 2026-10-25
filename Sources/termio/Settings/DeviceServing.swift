@@ -293,13 +293,14 @@ final class PairingModel: ObservableObject {
             }
             do {
                 let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
+                // The token was rotated whatever address the pane is on now.
+                if rotate { rotationFailure = nil }
                 // The pane may have moved to another address while the daemon
                 // was answering; a QR for the previous one would scan and then
                 // reach nothing.
                 guard base == invitedBase else { return }
                 invite = minted
                 inviteFailure = nil
-                if rotate { rotationFailure = nil }
             } catch let failure as RemotePairing.Failure {
                 // Said whether or not the pane moved on: the token was not
                 // revoked either way.
