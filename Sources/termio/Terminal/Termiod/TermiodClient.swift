@@ -1901,7 +1901,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             }
             let (paint, painted) = hold.surfaceReached(size)
             for chunk in paint { onOutput?(chunk) }
+            let holding = hold.isHolding
             outputLock.unlock()
+            let firstReport = surfaceGrid == nil
             let changed = surfaceGrid != size
             surfaceGrid = size
             if changed {
@@ -1918,6 +1920,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 // go and fetch a round trip later, so there is nothing left to
                 // ask for and nothing to repair.
                 repaintPending = false
+            } else if firstReport, repaintPending, !holding {
+                // A repair owed from before the surface had a grid — a keyframe
+                // painted blind, or a flood that abandoned one. The arming that
+                // was deferred for want of a grid happens now, backstop included,
+                // so a first report a column off the session is still repaired.
+                armRepaintLocked()
             } else if authoritativeGrid != size {
                 repaintPending = true
             } else if repaintPending {
@@ -2052,6 +2060,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Must run on `workQueue`.
     private func armRepaintLocked() {
         guard !closed, attached else { return }
+        // A surface with no grid yet cannot take the repair, and asking for it
+        // anyway only queues the answer behind the same unknown: a flood on a
+        // surface nobody mounts turned that into a resync every 500ms. The debt
+        // is kept, and `noteSurfaceGrid` pays it on the first report.
+        guard surfaceGrid != nil else {
+            repaintPending = true
+            return
+        }
         if authoritativeGrid == surfaceGrid {
             repaintPending = false
             requestResyncLocked()
