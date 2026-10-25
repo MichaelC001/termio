@@ -122,6 +122,7 @@ extension InstallOutcome {
         self.init()
         let results = reply.results
         coveredIDs = reply.present.isEmpty ? nil : reply.present.sorted()
+        retiredCleaned = Set(reply.retired)
         var seen: [String: Bool] = [:]
         var order: [String] = []
         for result in results {

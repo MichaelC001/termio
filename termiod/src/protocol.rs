@@ -1238,6 +1238,10 @@ pub enum Control {
         /// than as "none".
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         present: Vec<String>,
+        /// The `retired_homes` folders now clean of termio's wiring. Absent from
+        /// an older daemon, which cleaned none — so the client keeps them queued.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retired: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },

@@ -2426,6 +2426,7 @@ async fn process_control(
                         Ok(report) => Control::AgentsInstalled {
                             results: report.results,
                             present: report.present,
+                            retired: report.retired,
                             re: seq,
                         },
                         Err(e) => error(seq, ErrorCode::Internal, e.to_string(), true),

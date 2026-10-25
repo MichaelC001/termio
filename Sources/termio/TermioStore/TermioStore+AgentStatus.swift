@@ -107,8 +107,13 @@ extension TermioStore {
             let outcome = await AgentIntegrationInstaller.sync(
                 hooks: hooks, skills: skills, commands: commands, homes: homes,
                 retiredHomes: retired)
-            if outcome.failure == nil, !retired.isEmpty {
-                settings.forgetRetiredAccountFolders(retired)
+            // Only what the daemon says it cleaned: an older one ignores the
+            // request, and a failed removal must be retried next time.
+            let cleaned = retired
+                .mapValues { $0.filter(outcome.retiredCleaned.contains) }
+                .filter { !$0.value.isEmpty }
+            if !cleaned.isEmpty {
+                settings.forgetRetiredAccountFolders(cleaned)
             }
             // Stamped for the same reason a machine's pane stamps after its own
             // install: the stamp is what "Not installed on This Mac" reads, and

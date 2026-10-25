@@ -1507,18 +1507,23 @@ public enum Termiod {
         /// daemon too old to report it — which reads as *unknown*, never as
         /// "none", or a machine would record covering nothing.
         public let present: [String]
+        /// The removed account folders that box cleaned. Empty from a daemon
+        /// too old to clean any, so nothing is forgotten that was not cleaned.
+        public let retired: [String]
 
-        public init(results: [AgentInstallResult], present: [String] = []) {
+        public init(results: [AgentInstallResult], present: [String] = [], retired: [String] = []) {
             self.results = results
             self.present = present
+            self.retired = retired
         }
 
-        private enum CodingKeys: String, CodingKey { case results, present }
+        private enum CodingKeys: String, CodingKey { case results, present, retired }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             results = try container.decode([AgentInstallResult].self, forKey: .results)
             present = try container.decodeIfPresent([String].self, forKey: .present) ?? []
+            retired = try container.decodeIfPresent([String].self, forKey: .retired) ?? []
         }
     }
 
