@@ -311,30 +311,43 @@ final class Device: @unchecked Sendable {
         return turn
     }
 
-    /// Reads the device's orientation — from the simulator where it can report
-    /// it, else from the record of this helper's own last turn — then works out
-    /// the interface's turn, and reports a change as a `rotated` event.
-    @discardableResult
     /// Forgets what belongs to a boot when the device has booted again since
     /// it was last asked — including a reboot made outside Termio, which no
     /// detach announces. A boot starts portrait, with a new HID service and
     /// accessibility bridge; the old connection would send input nowhere.
     private func noteBoot() {
         let current = boot
-        lock.withLock {
-            guard current != knownBoot else { return }
-            if knownBoot != nil {
-                orientation = .portrait
-                interface = .upright
-                hid = nil
-                readers.removeAll()
-                strokeEdge = nil
-                generation += 1
-            }
-            knownBoot = current
+        let wasTurned = lock.withLock { () -> Bool in
+            guard current != knownBoot else { return false }
+            defer { knownBoot = current }
+            guard knownBoot != nil else { return false }
+            let turned = interface != .upright
+            orientation = .portrait
+            interface = .upright
+            hid = nil
+            readers.removeAll()
+            strokeEdge = nil
+            generation += 1
+            // An attached display is checked every few seconds and rebinds on
+            // its own; one only screenshots read would keep the old boot's.
+            if attachment == nil { framebuffer = nil }
+            return turned
+        }
+        // The pane draws and maps touches by the last turn it was told of;
+        // a reset it isn't told of would leave it landscape on a portrait boot.
+        if wasTurned {
+            let size = Turn.upright.interfaceSize(panel: pointSize)
+            Wire.event("rotated", [
+                "stream": stream, "rotation": Turn.upright.rawValue,
+                "pointWidth": size.width, "pointHeight": size.height,
+            ])
         }
     }
 
+    /// Reads the device's orientation — from the simulator where it can report
+    /// it, else from the record of this helper's own last turn — then works out
+    /// the interface's turn, and reports a change as a `rotated` event.
+    @discardableResult
     func refreshOrientation() async -> SimulatorDeviceOrientation {
         noteBoot()
         var read: SimulatorDeviceOrientation?
