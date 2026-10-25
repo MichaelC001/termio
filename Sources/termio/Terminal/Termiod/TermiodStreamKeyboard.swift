@@ -108,15 +108,16 @@ enum TermiodStreamKeyboard {
     /// program nothing. Nil for every other key, and one the app claims.
     @MainActor
     static func viewportMove(_ event: NSEvent) -> TermiodStreamTerminal.ViewportMove? {
-        guard event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command else { return nil }
+        let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let move: TermiodStreamTerminal.ViewportMove
-        switch Int(event.keyCode) {
-        case kVK_Home: move = .top
-        case kVK_End: move = .bottom
-        case kVK_PageUp: move = .pageUp
-        case kVK_PageDown: move = .pageDown
-        case kVK_UpArrow: move = .previousPrompt
-        case kVK_DownArrow: move = .nextPrompt
+        switch (flags, Int(event.keyCode)) {
+        case (.command, kVK_Home): move = .top
+        case (.command, kVK_End): move = .bottom
+        case (.command, kVK_PageUp): move = .pageUp
+        case (.command, kVK_PageDown): move = .pageDown
+        // Ghostty binds the prompt jumps with Shift as well.
+        case (.command, kVK_UpArrow), ([.command, .shift], kVK_UpArrow): move = .previousPrompt
+        case (.command, kVK_DownArrow), ([.command, .shift], kVK_DownArrow): move = .nextPrompt
         default: return nil
         }
         if let shortcut = Shortcut(event: event),

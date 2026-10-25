@@ -369,6 +369,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
             return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
                 && left.minimumContrast == right.minimumContrast
+                && left.selectionBackground.map { color in right.selectionBackground.map { same(color, $0) } ?? false }
+                    ?? (right.selectionBackground == nil)
+                && left.selectionForeground.map { color in right.selectionForeground.map { same(color, $0) } ?? false }
+                    ?? (right.selectionForeground == nil)
                 && left.cursorText.map { text in right.cursorText.map { same(text, $0) } ?? false } ?? (right.cursorText == nil)
                 && same(left.foreground, right.foreground) && same(left.background, right.background)
                 && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
@@ -388,6 +392,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var cursorText: GhosttyColorRgb? = nil
         /// The WCAG ratio a glyph keeps against its own background, 1 for none.
         var minimumContrast: Double = 1
+        /// The theme's selection colors; nil is Ghostty's default, the
+        /// default foreground behind the default background.
+        var selectionBackground: GhosttyColorRgb? = nil
+        var selectionForeground: GhosttyColorRgb? = nil
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so
@@ -522,12 +530,16 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// A mouse press starting or extending a selection. `time` is monotonic
     /// nanoseconds, which double- and triple-click are told from; `interval`
     /// is the system's double-click interval.
-    func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64) {
+    func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64, distance: Double) {
         locked {
             guard var reference = viewportReference(point) else { return }
             var position = GhosttySurfacePosition(x: point.x, y: point.y)
             var time = time
             var interval = interval
+            // How far a second click may land from the first, as Ghostty
+            // allows: a cell's width.
+            var distance = distance
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE, &distance)
             _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
             _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position)
             _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &time)

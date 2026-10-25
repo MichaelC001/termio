@@ -532,7 +532,10 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         guard let terminal = terminal(), let point = selectionPoint(event) else { return }
         selecting = true
         let time = UInt64(max(0, event.timestamp) * 1_000_000_000)
-        terminal.pressSelection(at: point, time: time, interval: UInt64(NSEvent.doubleClickInterval * 1_000_000_000))
+        terminal.pressSelection(
+            at: point, time: time, interval: UInt64(NSEvent.doubleClickInterval * 1_000_000_000),
+            distance: Double(renderer?.atlas.metrics.width ?? 1)
+        )
         needsFullDraw = true
     }
 
@@ -608,7 +611,17 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     // The left button selects, as in Ghostty, unless the program tracks the
     // mouse and Shift is not held.
     override func mouseDown(with event: NSEvent) {
-        if selects(event) { pressSelection(event) } else { press(event, 1) }
+        if selects(event) {
+            pressSelection(event)
+        } else {
+            // A click the program takes ends the terminal's selection, as in
+            // Ghostty, so ⌘C cannot copy a highlight the program drew over.
+            if terminal()?.hasSelection == true {
+                terminal()?.clearSelection()
+                needsFullDraw = true
+            }
+            press(event, 1)
+        }
     }
     override func mouseUp(with event: NSEvent) {
         if selecting { releaseSelection(event) } else { release(event, 1) }
