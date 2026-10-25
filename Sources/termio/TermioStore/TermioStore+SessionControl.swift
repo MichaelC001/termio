@@ -4,7 +4,7 @@ import GhosttyKit
 import GhosttyTerminal
 import os
 
-/// Handles `termio sessions …` requests from `SessionControlListener`. Every
+/// Handles `termio session …` requests from `SessionControlListener`. Every
 /// operation is scoped to the caller's own project (resolved from the caller's
 /// `TERMIO_SESSION` or, failing that, its working directory) so an agent can only
 /// see and drive its siblings, never sessions in unrelated projects — unpeel's
@@ -260,14 +260,14 @@ extension TermioStore {
             // that hasn't drawn yet. Keys address a session that already exists.
             guard keys.isEmpty else {
                 return controlError(request, "no_target",
-                    "--key needs a session to press it in — run `termio sessions list`.")
+                    "--key needs a session to press it in — run `termio session list`.")
             }
             // A bare `send` addresses nobody: it starts a fresh agent session for
             // the prompt. `answer` has no such reading — a menu choice without its
             // session is a mistake, never a spawn.
             guard request.op == "send" else {
                 return controlError(request, "no_target",
-                    "answer needs a session address — run `termio sessions list`.")
+                    "answer needs a session address — run `termio session list`.")
             }
             return await spawnAndSend(request, in: scope, payload: payload)
         }
@@ -391,7 +391,7 @@ extension TermioStore {
                 FileHandle.standardError.write(Data((
                     "termio: the prompt for \(link) was written but the screen did not change — "
                     + "the agent is probably still on a startup prompt and swallowed it. "
-                    + "Check the pane, then resend with `termio sessions send`.\n").utf8))
+                    + "Check the pane, then resend with `termio session send`.\n").utf8))
             }
         }
         return spawnQueuedReply(request, fresh)
@@ -413,9 +413,9 @@ extension TermioStore {
         return """
         [termio] You were spawned by the sibling agent session \(callerLink). \
         If you hit a question only they can answer, ask it mid-task with: \
-        termio sessions send \(callerLink) "QUESTION: <your question>" — and when \
+        termio session send \(callerLink) "QUESTION: <your question>" — and when \
         you finish you may send at most one line: \
-        termio sessions send \(callerLink) "DONE: <one line>". \
+        termio session send \(callerLink) "DONE: <one line>". \
         Use this channel for nothing else: no conversation, no status updates, and \
         never delegate tasks back to them. They read your actual results from your \
         transcript, so put everything that matters in your normal replies. \
@@ -960,10 +960,10 @@ extension TermioStore {
         let text: String
         if effectiveAgent(for: session).isShell {
             text = "started \(link) — command queued; use this address for follow-ups"
-                + "\n  (read its output with `termio sessions read \(link)`)"
+                + "\n  (read its output with `termio session read \(link)`)"
         } else {
             text = "started \(link) — prompt queued; use this address for follow-ups"
-                + "\n  (transcript path appears in `termio sessions list --json` once the agent reports it)"
+                + "\n  (transcript path appears in `termio session list --json` once the agent reports it)"
         }
         return control(request, ok: true, text: text, json: json)
     }
@@ -1101,7 +1101,7 @@ extension TermioStore {
         }
     }
 
-    /// What one `termio sessions` call can see: the caller's own roster.
+    /// What one `termio session` call can see: the caller's own roster.
     ///
     /// A caller inside a project sees that project's sessions; a caller in a loose
     /// shell or chat sees the other rows in its workspace's same section. Both are
@@ -1191,7 +1191,7 @@ extension TermioStore {
                     """
             }
         }
-        return "No session '\(raw)' in this project. Run `termio sessions list` to see the links."
+        return "No session '\(raw)' in this project. Run `termio session list` to see the links."
     }
 
     func control(_ request: ControlRequest, ok: Bool, text: String, json: [String: Any]) -> Data {

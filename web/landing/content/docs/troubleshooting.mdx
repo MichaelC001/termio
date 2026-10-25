@@ -12,13 +12,13 @@ On any machine, in any state, these answer most of the question:
 
 ```bash
 termio server status           # what's installed here, and is a daemon answering?
-termio server list             # what sessions is it holding?
+termio session ls --all             # what sessions is it holding?
 termio server logs -n 200      # what happened while nobody was watching
 ```
 
 `termio server status` in particular ends a surprising share of “it broke” reports: it
 says which binary is installed, which version, and whether anything is actually
-listening on the socket. To ask about another machine, `termio server -H <box> status`
+listening on the socket. To ask about another machine, `termio -H <box> server status`
 asks that box's daemon over your own SSH config.
 
 ## A status dot never changes
@@ -70,7 +70,7 @@ the front, so on this Mac it usually heals by itself. That sweep is local only:
 another machine keeps whatever is on it until you repair it there, with
 **Reinstall Hooks and Skill** on that machine’s **Agents** page.
 
-## `termio sessions` says `disabled`
+## `termio session` says `disabled`
 
 The orchestration API is opt-in. Turn on **Settings ▸ Agents ▸ Session control**,
 which also installs the `termio` skill that teaches agents the commands exist.
@@ -107,8 +107,8 @@ own `~/.ssh/config` and never carries its own credentials.
 
 ```bash
 ssh mybox true                 # does SSH itself work?
-termio server -H mybox ls       # is the server answering there?
-termio server -H mybox deploy     # reinstall and verify it
+termio -H mybox session ls --all       # is the server answering there?
+termio -H mybox server deploy     # reinstall and verify it
 ```
 
 `deploy` is a reconcile, so running it against a box in a bad state is safe. A key

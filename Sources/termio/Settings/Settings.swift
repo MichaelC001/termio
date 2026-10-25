@@ -462,7 +462,7 @@ final class AppSettings: ObservableObject {
         didSet { store.set(agentHooksEnabled, forKey: Key.agentHooksEnabled) }
     }
 
-    /// When on, termio runs a local control socket the `termio sessions` CLI talks
+    /// When on, termio runs a local control socket the `termio session` CLI talks
     /// to, letting one agent see and drive its sibling sessions in the same project
     /// (list / send a prompt / answer a menu / start / stop). Opt-in, since it lets
     /// an agent act on other sessions and writes a small awareness note into the

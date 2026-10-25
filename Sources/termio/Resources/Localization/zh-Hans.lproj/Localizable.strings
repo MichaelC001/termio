@@ -834,10 +834,10 @@
 	<string>留空则按 %@ 的登录 shell 的方式启动该 Agent。要显示哪些 Agent 在“设置 ▸ Agents”中设定。</string>
 	<key>Let your agents coordinate?</key>
 	<string>让你的 Agent 相互协作？</string>
-	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
-	<string>让 Agent 通过 `termio sessions` 命令查看并驱动本项目中的同级会话。</string>
-	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</key>
-	<string>允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio session` command.</key>
+	<string>让 Agent 通过 `termio session` 命令查看并驱动本项目中的同级会话。</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio session` command. Installs the termio skill into each agent's skills folder.</key>
+	<string>允许 Agent 通过 `termio session` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。</string>
 	<key>Light</key>
 	<string>浅色</string>
 	<key>Limits need Keychain access.</key>
@@ -2002,10 +2002,10 @@
 	<string>为自定义中继设置命令和 URL 模式</string>
 	<key>ssh unavailable</key>
 	<string>ssh 不可用</string>
-	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
+	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio session` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</key>
-	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。
+	<string>termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio session` 命令，让它们在项目中查看、驱动并读取彼此的会话。
 
 启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。</string>
 	<key>termio couldn’t read “%@”, so it was not removed.</key>

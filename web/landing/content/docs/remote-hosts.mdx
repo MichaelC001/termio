@@ -114,9 +114,9 @@ axis. Opening it gives you:
   hand-editing one, or when a status dot stops moving.
 
   The skill a box gets is not the one this Mac gets. Agents here learn
-  `termio sessions`, scoped to their own project; agents on a machine learn
-  `termio server list`, `create`, `send` and `kill`, scoped to that whole machine —
-  because that is the command that exists there.
+  `termio session`, scoped to their own project; agents on a machine learn
+  `termio session ls --all`, `read`, `send`, `create` and `close`, scoped to that
+  whole machine — because those are the commands that work there.
 
 *Can’t check* is a third answer on purpose, and it’s never a defect in the agent:
 it means Termio couldn’t reach the machine to ask. Reporting that as “not
@@ -146,7 +146,7 @@ or an agent mid-task does.
 From the command line the same reconcile is one verb:
 
 ```bash
-termio server -H mybox deploy
+termio -H mybox server deploy
 ```
 
 It ends in the same state whatever state it started in, so running it against a
@@ -158,8 +158,8 @@ Work from the outside in — `ssh` first, then the daemon, then Termio:
 
 ```bash
 ssh mybox true                # does SSH itself work?
-termio server -H mybox ls      # is the server answering there?
-termio server -H mybox deploy    # reinstall and verify it
+termio -H mybox session ls --all      # is the server answering there?
+termio -H mybox server deploy    # reinstall and verify it
 ```
 
 A dropped connection detaches you; it doesn’t kill anything. The sessions are on

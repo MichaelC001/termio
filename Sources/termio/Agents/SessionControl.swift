@@ -112,7 +112,7 @@ enum LocalSocket {
     }
 }
 
-/// One request from the `termio sessions …` CLI, sent as a single JSON object
+/// One request from the `termio session …` CLI, sent as a single JSON object
 /// over `AppSocketListener`'s local socket. Where an agent's hook *reports* ("this
 /// session is now working", via `termio agent report`), a request here *acts on* a
 /// sibling session — listing them, sending a prompt, answering a menu, closing or
@@ -318,7 +318,7 @@ final class AppSocketListener: @unchecked Sendable {
         // EADDRINUSE, so it has to go — but only once we know nobody is behind it.
         // An unconditional unlink lets a second instance steal the path from a
         // *healthy* app, which then keeps listening on an inode no client can
-        // reach and never learns it went deaf: every `termio sessions` call dies
+        // reach and never learns it went deaf: every `termio session` call dies
         // with ECONNREFUSED while the app looks perfectly fine. The usual thief is
         // a bare SwiftPM binary — no bundle id means `AppChannel.suffix` is empty,
         // so `swift run` during development lands on the *release* channel.
@@ -518,7 +518,7 @@ final class AppSocketListener: @unchecked Sendable {
     }
 }
 
-/// One status transition, pushed to every `termio sessions watch` client scoped to
+/// One status transition, pushed to every `termio session watch` client scoped to
 /// the session's project and interested in the new state. Built on the main actor
 /// (where `setStatus` lives) and handed to `SessionWatchHub`, which does the socket
 /// writes off the main thread.
@@ -715,7 +715,7 @@ private extension SessionWatchEvent {
 
 /// Installs and audits the `termio` command-line tool — the bundled script the
 /// app symlinks onto the user's PATH so any shell (and any agent's shell tool)
-/// can run `termio sessions …` and `termio .`. Modeled on VS Code's `code` tool,
+/// can run `termio session …` and `termio .`. Modeled on VS Code's `code` tool,
 /// with one twist: the symlink (and every agent hook) points at a channel-stable
 /// *copy* under Application Support, not into the bundle, because the bundle's
 /// location is transient — a dev build launched from a since-deleted git worktree

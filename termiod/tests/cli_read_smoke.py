@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The daemon half of `termio sessions read` against a real termiod.
+"""The daemon half of `termio session read` against a real termiod.
 
 Spawns a pinned-socket daemon, creates a session no window has ever opened,
 and reads its screen through the Rust client with no app socket anywhere —
@@ -134,12 +134,12 @@ def main():
             f"    {code} {out!r} {err!r}",
         )
 
-        # A target the daemon does not own falls through to the app socket,
-        # and with no app anywhere that is the app-missing error.
+        # With no app anywhere, every target is the daemon's to answer, so one
+        # it does not hold is "no session matches", not "the app is down".
         code, out, err = run(TERMIO, ["sessions", "read", "ffffffff"])
         check(
-            "unowned target falls through to the app path",
-            code == 1 and "app is not running" in err,
+            "unowned target with no app is not found on the daemon",
+            code == 1 and "no session matches 'ffffffff'" in out,
             f"    {code} {out!r} {err!r}",
         )
     finally:

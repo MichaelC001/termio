@@ -374,7 +374,7 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual([try glyph(at: 2).r], [plain.r], "c is outside the selection")
     }
 
-    /// What `termio sessions read` reports for a stream pane.
+    /// What `termio session read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")
         let lines = try terminal.activeText().components(separatedBy: "\n")

@@ -127,7 +127,7 @@ enum TermiodStreamKeyboard {
         return move
     }
 
-    /// A `termio sessions send --key` press and its release, as the embedded
+    /// A `termio session send --key` press and its release, as the embedded
     /// surface's `pressKey` sends them.
     static func inputs(for press: SessionKeyPress) -> [Termiod.InputEvent.Key] {
         var mods: UInt16 = 0

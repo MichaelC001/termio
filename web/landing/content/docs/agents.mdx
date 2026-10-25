@@ -169,14 +169,14 @@ setup step. See [Git worktrees](/docs/worktrees).
 ## Letting agents drive each other
 
 Once a fleet is normal, the next thing you want is for one agent to run the
-fleet. `termio sessions` is that API: an agent can list its siblings, spawn new
+fleet. `termio session` is that API: an agent can list its siblings, spawn new
 ones on a prompt, answer a session that’s blocked, and block until a turn
 settles — all over a local socket, scoped to its own project.
 
 ```bash
-termio sessions list
-termio sessions spawn "update the changelog for 0.54" --agent codex
-termio sessions watch
+termio session list
+termio session spawn "update the changelog for 0.54" --agent codex
+termio session watch
 ```
 
 It’s opt-in, and turning it on also installs a small skill that teaches your
@@ -191,6 +191,6 @@ reference and [Session control](/docs/session-control) for the switch.
     What happens to a running agent when you close, quit, or reboot.
   </Card>
   <Card href="/docs/cli" title="Command-line tool">
-    The `termio sessions` orchestration API, verb by verb.
+    The `termio session` orchestration API, verb by verb.
   </Card>
 </Cards>

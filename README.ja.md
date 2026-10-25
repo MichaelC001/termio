@@ -42,7 +42,7 @@ Termio はエージェントが動く環境そのものです。セッション�
 | | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
 | --- | --- | --- | --- | --- | --- | --- |
 | エージェント監視 | ✓ フック | – | ✓ | ✓ | – | ✓ タブのバッジ |
-| エージェント操作 API | ✓ `termio sessions` | – | ✓ CLI とソケット API | ✓ ソケット API | – | – |
+| エージェント操作 API | ✓ `termio session` | – | ✓ CLI とソケット API | ✓ ソケット API | – | – |
 | エージェント通知 | ✓ メニューバー | – | ✓ | ✓ トースト・システム通知・音 | – | – |
 | マルチプレクサ | ✓ デーモンが PTY を持つ | – | 再起動時に復元 | ✓ サーバーが PTY を持つ | ✓ サーバーが PTY を持つ | 再起動時に復元 |
 | リモートの Linux | ✓ ネイティブ対応 | – | ✓ SSH ワークスペース | ✓ SSH でアタッチ | ✓ ネイティブ対応 | – |
@@ -98,7 +98,7 @@ brew install --cask termio-sh/tap/termio
 <td width="62%"><img alt="Codex と Claude Code の横に表示されたセッション種別と状態" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>ひと目でわかるステータス</h3>
-<p>作業中、アイドル、完了、<em>要対応</em> — すべての行にマークが付きます。同じ一覧が <code>termio sessions list</code> です。</p>
+<p>作業中、アイドル、完了、<em>要対応</em> — すべての行にマークが付きます。同じ一覧が <code>termio session list</code> です。</p>
 </td>
 </tr>
 <tr>
@@ -137,21 +137,21 @@ brew install --cask termio-sh/tap/termio
 
 ```sh
 termio .                                    # カレントディレクトリをプロジェクトとして開く
-termio sessions list                        # 作業中・アイドル・あなた待ちの一覧
-termio sessions spawn "fix the flaky test"  # プロンプトを渡して新しいエージェントセッションを開始
-termio sessions run "pnpm test --watch"     # コマンドを渡して通常のターミナルセッションを開始
-termio sessions send ab12cd34 "1"           # 兄弟セッションの権限確認に答える
-termio sessions read ab12cd34 --lines 40    # セッションの画面の内容を出力
-termio sessions watch                       # ステータスの変化をストリームで受け取る
-termio sessions focus ab12cd34              # アプリでそのセッションを前面に出す
-termio sessions close ab12cd34              # 閉じる
+termio session list                        # 作業中・アイドル・あなた待ちの一覧
+termio session spawn "fix the flaky test"  # プロンプトを渡して新しいエージェントセッションを開始
+termio session run "pnpm test --watch"     # コマンドを渡して通常のターミナルセッションを開始
+termio session send ab12cd34 "1"           # 兄弟セッションの権限確認に答える
+termio session read ab12cd34 --lines 40    # セッションの画面の内容を出力
+termio session watch                       # ステータスの変化をストリームで受け取る
+termio session focus ab12cd34              # アプリでそのセッションを前面に出す
+termio session close ab12cd34              # 閉じる
 termio notify "the migration finished"      # macOS の通知を送る
 ```
 
 `--wait` はそのターンが落ち着くまで待ち、最終ステータスと読むべきトランスクリプトの範囲を返します。`--json` はどの `sessions` コマンドも機械可読にします。`--agent` は `spawn` が起動するエージェントを選びます。`--direction` / `--ratio` は新しいペインの位置と大きさを決めます。
 
 ```sh
-termio sessions spawn "run the migration" --agent codex --wait
+termio session spawn "run the migration" --agent codex --wait
 ```
 
 セッション制御は各エージェントのスキルフォルダ（`~/.claude/skills`、`~/.codex/skills`）に `termio` [エージェントスキル](https://termio.sh/skill.md)をインストールし、起動のたびに最新に保ちます。ほかのエージェントも、このリポジトリから同じスキルを入れられます:

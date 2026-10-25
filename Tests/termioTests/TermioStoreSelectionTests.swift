@@ -76,7 +76,7 @@ final class TermioStoreSelectionTests: XCTestCase {
     /// Which sessions have a screen in front of them, which is what a surface
     /// declares to the daemon as its viewport when it is made. Surfaces are
     /// made lazily on first render, so this is usually "yes" — but the phone
-    /// and `termio sessions send` both make one for a session no pane is
+    /// and `termio session send` both make one for a session no pane is
     /// showing, and that one has no viewport to declare
     /// (`docs/design/20260901-pty-size-is-not-the-write-token.md` §5.1).
     func testOnlyTheSessionsAPaneIsShowingHaveAScreen() {

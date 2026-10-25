@@ -315,7 +315,7 @@ sentence, a label, or a commit message is always wrong.
 - **Curly quotes and apostrophes** in user-facing strings. Straight quotes only
   inside code, paths, and identifiers.
 - **Backticks** in UI copy for literal commands, flags, and paths the user could
-  type: `--agent`, `~/.ssh/config`, `termio sessions`.
+  type: `--agent`, `~/.ssh/config`, `termio session`.
 - **Contractions** are preferred: "won't", "doesn't", "couldn't".
 - **Numerals** in UI: "2 sessions", not "two sessions".
 - **No trailing periods** on labels, buttons, or table cells. Full sentences in

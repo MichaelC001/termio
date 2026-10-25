@@ -192,7 +192,7 @@ enum RemoteTunnelProvider: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// The Linux architectures we ship tunnel binaries for, as `uname -m` reports
-/// them. The same two `termio server --host … deploy` already cross-compiles for.
+/// them. The same two `termio --host … server deploy` already cross-compiles for.
 enum RemoteArchitecture: String, Sendable {
     case arm64
     case amd64
@@ -420,7 +420,7 @@ enum RemoteTunnelService {
             throw Failure(message: localized("\(name) isn’t installed on \(alias), and Termio doesn’t ship a build of it. Install it there, then try again."))
         }
         // Downloaded beside the target and renamed over it — atomic, and safe to
-        // repeat, the same shape `termio server --host … deploy` uses.
+        // repeat, the same shape `termio --host … server deploy` uses.
         let install = """
             mkdir -p \(RemoteTunnelPaths.binaryDirectory) && \
             curl -fsSL -o \(RemoteTunnelPaths.binaryDirectory)/\(name).new \(RemoteShell.quoted(url)) && \

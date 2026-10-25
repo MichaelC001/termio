@@ -323,7 +323,10 @@ def main():
             expect_script=["sessions", "send", "8de0b387", "--force"])
 
     print("== error taxonomy ==")
-    compare("no socket at all", ["sessions", "list"], no_server=True)
+    # `focus` is a verb only the app answers. `list` with no app lists the
+    # daemon's sessions instead (tests/session_routing.rs), so the socket
+    # errors are held on `focus`.
+    compare("no socket at all", ["sessions", "focus", "8de0b387"], no_server=True)
     # Reversed from the shell client on purpose: argv is now diagnosed before
     # the app is contacted, so a malformed flag reports itself rather than
     # reporting that the app is down.
@@ -340,7 +343,7 @@ def main():
     # A plain file where the socket should be: the -S pre-check refuses.
     with open(SOCK, "w") as handle:
         handle.write("")
-    compare("socket is a plain file", ["sessions", "list"], no_server=True)
+    compare("socket is a plain file", ["sessions", "focus", "8de0b387"], no_server=True)
     os.unlink(SOCK)
     # An app older than the socket rename: both clients fall back to the name it
     # binds, and both must name the same path when what sits there is not a socket.
@@ -351,7 +354,8 @@ def main():
     os.unlink(LEGACY_SOCK)
     with open(LEGACY_SOCK, "w") as handle:
         handle.write("")
-    compare("pre-rename plain file is not an older app", ["sessions", "list"], no_server=True)
+    compare("pre-rename plain file is not an older app", ["sessions", "focus", "8de0b387"],
+            no_server=True)
     os.unlink(LEGACY_SOCK)
     # A socket file whose listener is gone: connect refused.
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -404,31 +408,36 @@ def main():
         check(name, code == 0 and usage in out, f"    exit={code} out={out[:200]!r} stderr={err!r}")
 
     print("== help ==")
-    # The per-verb prose is the shell client's, carried as clap `long_about`;
-    # the frame around it (Usage, Options) is clap's. Assert the prose, not the
-    # frame.
+    # The per-verb help is this client's own; the frame around it (Usage,
+    # Options) is clap's. Assert one phrase of the prose and the usage line.
+    # `sessions` is the old name of `session` and must still parse.
     for name, args, needle, usage in [
-        ("usage", ["--help"], "sessions", "Usage: termio"),
-        ("usage via help", ["help"], "sessions", "Usage: termio"),
-        ("sessions usage", ["sessions", "--help"], "spawn", "Usage: termio sessions"),
-        ("list help", ["sessions", "list", "--help"], "live status",
-         "Usage: termio sessions list"),
-        ("watch help", ["sessions", "watch", "--help"], "unattended-runaway pattern",
-         "Usage: termio sessions watch"),
-        ("spawn help", ["sessions", "spawn", "--help"], "prompt_undelivered",
-         "Usage: termio sessions spawn"),
-        ("run help", ["sessions", "run", "--help"], "no LLM involved",
-         "Usage: termio sessions run"),
-        ("send help", ["sessions", "send", "--help"], "application mode",
-         "Usage: termio sessions send"),
-        ("answer help", ["sessions", "answer", "--help"], "application mode",
-         "Usage: termio sessions answer"),
-        ("read help", ["sessions", "read", "--help"], "Scrollback is not included",
-         "Usage: termio sessions read [OPTIONS] <SESSION>"),
-        ("close help", ["sessions", "close", "--help"], "its own attempt and reply",
-         "Usage: termio sessions close [OPTIONS] <SESSION>..."),
-        ("focus help", ["sessions", "focus", "--help"], "bring termio to the front",
-         "Usage: termio sessions focus [OPTIONS] <SESSION>"),
+        ("usage", ["--help"], "session", "Usage: termio"),
+        ("usage via help", ["help"], "session", "Usage: termio"),
+        ("session usage", ["session", "--help"], "spawn", "Usage: termio session"),
+        ("sessions alias usage", ["sessions", "--help"], "spawn", "Usage: termio session"),
+        ("list help", ["session", "list", "--help"], "--all lists every session",
+         "Usage: termio session list"),
+        ("watch help", ["session", "watch", "--help"], "no repository change",
+         "Usage: termio session watch"),
+        ("spawn help", ["session", "spawn", "--help"], "prompt_undelivered",
+         "Usage: termio session spawn"),
+        ("run help", ["session", "run", "--help"], "A plain command has no transcript",
+         "Usage: termio session run"),
+        ("create help", ["session", "create", "--help"], "no app window shows",
+         "Usage: termio session create"),
+        ("attach help", ["session", "attach", "--help"], "Detach with Ctrl-\\",
+         "Usage: termio session attach"),
+        ("send help", ["session", "send", "--help"], "Option and Command",
+         "Usage: termio session send"),
+        ("answer help", ["sessions", "answer", "--help"], "Option and Command",
+         "Usage: termio session answer"),
+        ("read help", ["session", "read", "--help"], "without the scrollback",
+         "Usage: termio session read [OPTIONS] <SESSION>"),
+        ("close help", ["session", "close", "--help"], "its own attempt and",
+         "Usage: termio session close [OPTIONS] <SESSION>..."),
+        ("focus help", ["session", "focus", "--help"], "bring Termio to the front",
+         "Usage: termio session focus [OPTIONS] <SESSION>"),
         ("notify help", ["notify", "--help"], "need a decision",
          "Usage: termio notify"),
         ("version flag names the channel", ["--version"], "(release)", None),

@@ -580,7 +580,7 @@ async fn open_ssh_attach_link(
         Ok(Some(Frame::Control(Control::HelloErr { code, supported }))) => {
             bail!("{host}: protocol negotiation failed ({code:?}); host supports {supported:?}")
         }
-        _ => bail!("{host}: no protocol reply — is termiod deployed there? try `termio server -H {host} deploy`"),
+        _ => bail!("{host}: no protocol reply — is termiod deployed there? try `termio -H {host} server deploy`"),
     };
     Ok((rd, wr, child, client_id))
 }

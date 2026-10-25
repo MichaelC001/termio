@@ -310,7 +310,7 @@ else
     done
     echo "==> Bundled $cli_name architectures: $cli_archs"
 
-    # The daemons that ship *to* a Linux box. `termio server --host … deploy` used to
+    # The daemons that ship *to* a Linux box. `termio --host … server deploy` used to
     # cross-compile one on demand, which needs cargo, the musl target, and this
     # crate's source at the path baked into the binary — so remote sessions
     # worked for contributors and for nobody who installed the DMG. Shipping

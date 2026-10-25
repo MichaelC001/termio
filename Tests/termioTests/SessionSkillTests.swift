@@ -34,16 +34,16 @@ final class SessionSkillTests: XCTestCase {
         }
     }
 
-    /// A device gets a different document, not the Mac's: this one teaches
-    /// `termio server`, because a box has no app for `termio sessions` to
-    /// reach. Installing the Mac's there would name commands that fail there.
+    /// A device gets a different document, not the Mac's: a box has no app,
+    /// so this one teaches only the `termio session` verbs termiod answers.
+    /// Installing the Mac's there would name commands that fail there.
     func testDeviceSkillTeachesTheDaemonCLI() throws {
         let mac = try read("Sources/termio/Resources/skills/termio/SKILL.md")
         let device = try read("Sources/termio/Resources/skills/termio-device/SKILL.md")
         XCTAssertTrue(device.hasPrefix("---\nname: termio\n"))
         XCTAssertTrue(device.contains("TERMIOD_SESSION_ID"))
-        XCTAssertTrue(device.contains("termio server list"))
-        XCTAssertFalse(device.contains("termio sessions"))
+        XCTAssertTrue(device.contains("termio session ls --all"))
+        XCTAssertFalse(device.contains("termio session spawn"))
         XCTAssertNotEqual(device, mac)
     }
 

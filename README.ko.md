@@ -55,7 +55,7 @@ Termio는 에이전트가 그 안에서 도는 환경이에요. 세션은 머신
 | | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
 | --- | --- | --- | --- | --- | --- | --- |
 | 에이전트 모니터 | ✓ 훅 | – | ✓ | ✓ | – | ✓ 탭 배지 |
-| 에이전트 오케스트레이션 API | ✓ `termio sessions` | – | ✓ CLI와 소켓 API | ✓ 소켓 API | – | – |
+| 에이전트 오케스트레이션 API | ✓ `termio session` | – | ✓ CLI와 소켓 API | ✓ 소켓 API | – | – |
 | 에이전트 알림 | ✓ 메뉴 막대 | – | ✓ | ✓ 토스트, 시스템 알림, 소리 | – | – |
 | 멀티플렉서 | ✓ 데몬이 PTY를 들고 있음 | – | 다시 열 때 복원 | ✓ 서버가 PTY를 들고 있음 | ✓ 서버가 PTY를 들고 있음 | 다시 열 때 복원 |
 | 원격 Linux | ✓ 네이티브 지원 | – | ✓ SSH 워크스페이스 | ✓ SSH로 붙기 | ✓ 네이티브 지원 | – |
@@ -115,7 +115,7 @@ brew install --cask termio-sh/tap/termio
 <td width="62%"><img alt="Codex와 Claude Code 옆에 표시된 세션 유형과 상태" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>한눈에 보이는 상태</h3>
-<p>작업 중, 유휴, 완료, <em>당신이 필요함</em> — 줄마다 표시가 붙어요. 같은 목록이 <code>termio sessions list</code>예요.</p>
+<p>작업 중, 유휴, 완료, <em>당신이 필요함</em> — 줄마다 표시가 붙어요. 같은 목록이 <code>termio session list</code>예요.</p>
 </td>
 </tr>
 <tr>
@@ -155,14 +155,14 @@ brew install --cask termio-sh/tap/termio
 
 ```sh
 termio .                                    # 현재 디렉터리를 프로젝트로 열기
-termio sessions list                        # 누가 작업 중이고, 대기 중이고, 당신을 기다리는지
-termio sessions spawn "fix the flaky test"  # 프롬프트로 새 에이전트 세션 시작
-termio sessions run "pnpm test --watch"     # 명령 하나로 일반 터미널 세션 시작
-termio sessions send ab12cd34 "1"           # 형제 세션의 권한 프롬프트에 답하기
-termio sessions read ab12cd34 --lines 40    # 그 세션의 현재 화면 출력
-termio sessions watch                       # 상태 변화를 실시간으로 스트리밍
-termio sessions focus ab12cd34              # 앱에서 그 세션을 앞으로 가져오기
-termio sessions close ab12cd34              # 닫기
+termio session list                        # 누가 작업 중이고, 대기 중이고, 당신을 기다리는지
+termio session spawn "fix the flaky test"  # 프롬프트로 새 에이전트 세션 시작
+termio session run "pnpm test --watch"     # 명령 하나로 일반 터미널 세션 시작
+termio session send ab12cd34 "1"           # 형제 세션의 권한 프롬프트에 답하기
+termio session read ab12cd34 --lines 40    # 그 세션의 현재 화면 출력
+termio session watch                       # 상태 변화를 실시간으로 스트리밍
+termio session focus ab12cd34              # 앱에서 그 세션을 앞으로 가져오기
+termio session close ab12cd34              # 닫기
 termio notify "the migration finished"      # macOS 알림 보내기
 ```
 
@@ -172,7 +172,7 @@ termio notify "the migration finished"      # macOS 알림 보내기
 어디에 얼마나 크게 놓일지 정해요.
 
 ```sh
-termio sessions spawn "run the migration" --agent codex --wait
+termio session spawn "run the migration" --agent codex --wait
 ```
 
 세션 제어는 각 에이전트의 스킬 폴더(`~/.claude/skills`, `~/.codex/skills`)에

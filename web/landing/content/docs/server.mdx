@@ -61,15 +61,15 @@ binary over SSH and starts it.
 
 ```bash
 termio server deploy           # install or update it here, then verify
-termio server -H mybox deploy  # same, over your own SSH config
+termio -H mybox server deploy  # same, over your own SSH config
 ```
 
 `deploy` is a reconcile: run it against a box in any state and it ends in the
 same one. Termio reads `~/.ssh/config` to find the host, so a machine you can
 already `ssh` to needs nothing new. See [Devices](/docs/devices).
 
-`-H` (`--host`) works with every `termio server` command, not only `deploy`:
-`termio server -H mybox status`, `termio server -H mybox attach api`.
+`-H` (`--host`) works with every `termio` command, not only `deploy`:
+`termio -H mybox server status`, `termio -H mybox session attach api`.
 
 ## Keeping it running
 
@@ -127,14 +127,13 @@ Three commands answer nearly every "is it me or is it Termio" question:
 | Command | What it tells you |
 | --- | --- |
 | `termio server status` | What this machine has: the binary, its version, and whether a daemon is answering on the socket. |
-| `termio server list` | The sessions the host is holding. `termio server -H <box> ls` asks another machine. |
+| `termio session ls --all` | The sessions the host is holding. `termio -H <box> session ls --all` asks another machine. |
 | `termio server logs` | What the server recorded while nobody was attached. `-f` follows it; `--path` prints the file for a bug report. |
 
 <Callout type="note">
-  `termiod` is the server's own command, and separate from the
-  [`termio` command-line tool](/docs/cli) the app installs for you. You rarely
-  need `termiod` by hand — the app runs these for you — but it is there when a
-  box is misbehaving and you want to look rather than guess.
+  `termiod` is the server process itself, and it only runs. Every command on this
+  page belongs to the [`termio` command-line tool](/docs/cli), which the app and
+  the installer put on your `PATH`.
 </Callout>
 
 ## Stopping it

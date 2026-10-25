@@ -3850,22 +3850,22 @@
         }
       }
     },
-    "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.": {
+    "Lets an agent see and drive its sibling sessions in this project via the `termio session` command.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "让 Agent 通过 `termio sessions` 命令查看并驱动本项目中的同级会话。"
+            "value": "让 Agent 通过 `termio session` 命令查看并驱动本项目中的同级会话。"
           }
         }
       }
     },
-    "Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.": {
+    "Lets an agent see and drive its sibling sessions in this project via the `termio session` command. Installs the termio skill into each agent's skills folder.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "允许 Agent 通过 `termio sessions` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。"
+            "value": "允许 Agent 通过 `termio session` 命令查看并驱动本项目中的其他会话。会将 termio 技能安装到各 Agent 的技能文件夹中。"
           }
         }
       }
@@ -8631,12 +8631,12 @@
         }
       }
     },
-    "termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.\n\nEnabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.": {
+    "termio can teach the agents you run (Claude Code, Codex, …) a `termio session` command so they can see, drive, and read each other's sessions in a project.\n\nEnabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio sessions` 命令，让它们在项目中查看、驱动并读取彼此的会话。\n\n启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。"
+            "value": "termio 可以教你运行的 Agent（Claude Code、Codex 等）使用 `termio session` 命令，让它们在项目中查看、驱动并读取彼此的会话。\n\n启用后会在你的 ~/.claude/CLAUDE.md 中添加一段简短说明并安装状态 hooks。你可以随时在“设置 ▸ Agents”中将其关闭。"
           }
         }
       }

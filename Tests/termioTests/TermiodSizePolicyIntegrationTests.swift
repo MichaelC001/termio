@@ -255,7 +255,7 @@ final class TermiodSizePolicyIntegrationTests: XCTestCase {
     /// A surface made for a pane that is not on screen must not take the size.
     ///
     /// The Mac makes one whenever something other than a pane asks for a
-    /// session — a phone opening one this Mac never showed, `termio sessions
+    /// session — a phone opening one this Mac never showed, `termio session
     /// send` addressing a background session. That attachment arrived declaring
     /// the *window's* grid and the daemon counted every arrival as rendering, so
     /// it was instantly the newest-used candidate: the PTY moved to a width no

@@ -337,7 +337,7 @@ extension Termiod {
 
     /// The remote `termio` invoked over SSH — `termio stdio`, `termio pair`,
     /// `termio server …`; the daemon beside it answers only `serve`. Matches the
-    /// deploy target (`termio server --host … deploy` installs both to `~/.local/bin`).
+    /// deploy target (`termio --host … server deploy` installs both to `~/.local/bin`).
     /// `TERMIOD_REMOTE_BIN` moves the daemon, and the client is found beside it.
     static func remoteClient() -> String {
         guard let daemon = ProcessInfo.processInfo.environment["TERMIOD_REMOTE_BIN"] else {
@@ -803,7 +803,7 @@ extension Termiod {
         // CLOEXEC_DEFAULT matters as much as SETSID: without it the daemon
         // inherits every open descriptor of the app — including its listening
         // control sockets, which then stay half-alive after the app quits and
-        // wedge the next binding (observed: `termio sessions` hanging against
+        // wedge the next binding (observed: `termio session` hanging against
         // a socket the long-lived daemon still held open).
         posix_spawnattr_setflags(
             &attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))

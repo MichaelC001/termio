@@ -3,8 +3,8 @@ title: 状态 hooks 与会话控制
 description: 侧栏实时状态背后的两个可选开关——让 Agent 汇报自己在做什么的 hooks，以及教它们驱动兄弟会话的技能。
 x-i18n:
   source_path: session-control.mdx
-  source_hash: c9b47131617d7550ff722488b02c48c6e42076c238b34b6a035c96957120eabf
-  generated_at: 2026-10-17
+  source_hash: b3dbac650659ae5d2dba5ecf164a43273cc9c6b0cd03ffd346ff38297f43ca70
+  generated_at: 2026-10-25
 ---
 
 你在侧栏看到的实时状态背后，是两个相关的可选开关：让 Agent 汇报自己在做什么的**状态
@@ -27,7 +27,7 @@ Cursor 以及基于插件的那些）。当 Agent 开始工作、完成，或者
 
 ## 会话控制
 
-**设置 ▸ Agents ▸ 会话控制** 打开下面这套 `termio sessions` 编排 API，并通过往每个 Agent 的
+**设置 ▸ Agents ▸ 会话控制** 打开下面这套 `termio session` 编排 API，并通过往每个 Agent 的
 技能文件夹（`~/.claude/skills`、`~/.codex/skills`）里安装一个 `termio` **Agent 技能**，
 来告诉你的 Agent 它存在。技能按需加载——Agent 平时只带着那一行描述，直到某个任务真的需要
 驱动同伴会话——而 Termio 每次启动都会重新确认它，因此应用更新会自动传播，手改过的内容也会

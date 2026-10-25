@@ -77,7 +77,7 @@ pub const HOOK_VERSION_MARKER: &str = "# termio-hooks v";
 pub const HOOK_SCHEMA_VERSION: u32 = 1;
 
 /// The Mac's skill, and a box's. They are different documents, not two spellings
-/// of one: the Mac's teaches the `termio sessions` CLI and gates on
+/// of one: the Mac's teaches the `termio session` CLI and gates on
 /// `TERMIO_SESSION`, and a box has neither — shipping it there would teach an
 /// agent to run a binary that is not installed.
 const MAC_SKILL: &str = include_str!("../../../Sources/termio/Resources/skills/termio/SKILL.md");

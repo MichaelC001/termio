@@ -1286,7 +1286,7 @@ extension TermioStore {
     /// asks first in the one case that loses something with no other record — a plain
     /// shell with a command running in front of it. Only the interactive entry points
     /// (the sidebar row, the terminal's context menu) route through here — a session
-    /// whose process already exited, the `termio sessions close` CLI, and the phone's
+    /// whose process already exited, the `termio session close` CLI, and the phone's
     /// stop button all closed deliberately and call `closeSession` directly.
     func requestCloseSession(_ id: Session.ID) {
         guard let session = session(id) else { return }
