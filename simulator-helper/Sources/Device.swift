@@ -534,15 +534,24 @@ final class Device: @unchecked Sendable {
               var elements = document["elements"] as? [[String: Any]]
         else { return data }
         var changed = false
+        // One failed host read gives up on the rest: an app too busy to answer
+        // one field will not answer the next, and each wait is seconds long.
+        var failed = false
         func note(_ elements: inout [[String: Any]]) async {
             for index in elements.indices {
-                if Self.textTypes.contains(elements[index]["type"] as? String ?? ""),
+                if !failed, Self.textTypes.contains(elements[index]["type"] as? String ?? ""),
                    let value = elements[index]["value"] as? String, !value.isEmpty,
-                   let frame = Self.rect(elements[index]["frame"]),
-                   let placeholder = await placeholder(of: frame) {
-                    elements[index]["placeholder"] = placeholder
-                    if value == placeholder { elements[index]["value"] = NSNull() }
-                    changed = true
+                   let frame = Self.rect(elements[index]["frame"]) {
+                    do {
+                        if let placeholder = try await placeholder(of: frame) {
+                            elements[index]["placeholder"] = placeholder
+                            if value == placeholder { elements[index]["value"] = NSNull() }
+                            changed = true
+                        }
+                    } catch {
+                        Wire.log("reading a placeholder at \(frame) failed: \(error.localizedDescription)")
+                        failed = true
+                    }
                 }
                 if var children = elements[index]["children"] as? [[String: Any]], !children.isEmpty {
                     await note(&children)
@@ -556,33 +565,29 @@ final class Device: @unchecked Sendable {
         return (try? JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])) ?? data
     }
 
-    private static let textTypes: Set<String> = ["TextField", "SecureTextField", "SearchField", "TextView"]
+    /// The fields UIKit gives a placeholder. A text view has none.
+    private static let textTypes: Set<String> = ["TextField", "SecureTextField", "SearchField"]
 
     /// The placeholder of the text field at `frame`, read by the host's reader
     /// at its centre; nil when that lands on anything but the same field.
-    private func placeholder(of frame: CGRect) async -> String? {
-        do {
-            let reader = try lock.withLock { () throws -> any UIAutomation in
-                if let hostReader { return hostReader }
-                let created = try simulator.uiAutomation(backend: .accessibility)
-                hostReader = created
-                return created
-            }
-            let options = AccessibilityRequestOptions(format: .complete, keys: [.frame, .frameDict, .type, .placeholder])
-            guard let response = try await reader.hitTest(at: CGPoint(x: frame.midX, y: frame.midY), options: options),
-                  let data = try? JSONEncoder().encode(response.document),
-                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let element = (object["elements"] as? [[String: Any]])?.first,
-                  let found = Self.rect(element["frame"]),
-                  abs(found.minX - frame.minX) <= 1, abs(found.minY - frame.minY) <= 1,
-                  abs(found.width - frame.width) <= 1, abs(found.height - frame.height) <= 1,
-                  let placeholder = element["placeholder"] as? String, !placeholder.isEmpty
-            else { return nil }
-            return placeholder
-        } catch {
-            Wire.log("reading a placeholder at \(frame) failed: \(error.localizedDescription)")
-            return nil
+    private func placeholder(of frame: CGRect) async throws -> String? {
+        let reader = try lock.withLock { () throws -> any UIAutomation in
+            if let hostReader { return hostReader }
+            let created = try simulator.uiAutomation(backend: .accessibility)
+            hostReader = created
+            return created
         }
+        let options = AccessibilityRequestOptions(format: .complete, keys: [.frame, .frameDict, .type, .placeholder])
+        guard let response = try await reader.hitTest(at: CGPoint(x: frame.midX, y: frame.midY), options: options),
+              let data = try? JSONEncoder().encode(response.document),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let element = (object["elements"] as? [[String: Any]])?.first,
+              let found = Self.rect(element["frame"]),
+              abs(found.minX - frame.minX) <= 1, abs(found.minY - frame.minY) <= 1,
+              abs(found.width - frame.width) <= 1, abs(found.height - frame.height) <= 1,
+              let placeholder = element["placeholder"] as? String, !placeholder.isEmpty
+        else { return nil }
+        return placeholder
     }
 
     /// Taps the centre of the element whose label contains `label`, and returns
@@ -664,9 +669,10 @@ final class Device: @unchecked Sendable {
     }
 
 
-    /// How long after a read first fails that a just-launched app is given to
-    /// start answering.
-    private static let startupGrace: TimeInterval = 15
+    /// How long a just-launched app is given to start answering. Short,
+    /// because a `tap --label` waits inline: touches from the pane queue behind
+    /// it, and one failed attempt alone can take five seconds.
+    private static let startupGrace: TimeInterval = 6
 
     /// Runs a read again while the app it lands on is still starting. An app
     /// launched a moment ago can miss its first accessibility request, or have
@@ -680,7 +686,8 @@ final class Device: @unchecked Sendable {
         while true {
             do {
                 return try await body()
-            } catch where Self.isStarting(error) && Date() < deadline {
+            } catch where Self.isStarting(error)
+                && Date().addingTimeInterval(Double(pause) / 1_000_000_000) < deadline {
                 Wire.log("retrying a read while the app starts: \(error.localizedDescription)")
                 try await Task.sleep(nanoseconds: pause)
                 pause = min(pause * 2, 1_000_000_000)
