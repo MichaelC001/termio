@@ -94,6 +94,28 @@ final class UsageAccountTests: XCTestCase {
         XCTAssertFalse(UsageMonitor.isAccountFolder(named("work/.codex-2"), for: .codex))
     }
 
+    /// A removed account's folder stays queued for cleanup until a sync sweeps
+    /// it, and adding the folder back takes it off the queue.
+    @MainActor
+    func testRemovedAccountFoldersQueueForCleanup() throws {
+        let suite = "UsageAccountTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        let key = AgentPreset.claudeCode.rawValue
+
+        settings.addUsageAccountFolder("/Users/u/.claude-2", for: .claudeCode)
+        settings.removeUsageAccountFolder("/Users/u/.claude-2", for: .claudeCode)
+        XCTAssertEqual(settings.usageRetiredAccountFolders[key], ["/Users/u/.claude-2"])
+
+        settings.addUsageAccountFolder("/Users/u/.claude-2", for: .claudeCode)
+        XCTAssertEqual(settings.usageRetiredAccountFolders[key], [])
+
+        settings.removeUsageAccountFolder("/Users/u/.claude-2", for: .claudeCode)
+        settings.forgetRetiredAccountFolders([key: ["/Users/u/.claude-2"]])
+        XCTAssertNil(settings.usageRetiredAccountFolders[key])
+    }
+
     func testAccountTotalsSumAcrossFolders() {
         let day = Date(timeIntervalSince1970: 0)
         var first = AgentTokenUsage()

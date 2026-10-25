@@ -991,6 +991,11 @@ pub enum Control {
         /// clients, which install into the default home only.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         homes: std::collections::HashMap<String, Vec<String>>,
+        /// Account folders the user removed, by agent id, to take termio's hooks
+        /// and skill out of — only those folders, whatever the two halves say.
+        /// Held to the same shape as `homes`.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        retired_homes: std::collections::HashMap<String, Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

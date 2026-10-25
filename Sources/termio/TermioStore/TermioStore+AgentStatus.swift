@@ -96,9 +96,20 @@ extension TermioStore {
         // status at all.
         let homes = settings.usageAccountFolders
         installedAccountFolders = homes
+        // A removed account's folder is cleaned once no session still runs on
+        // it: those sessions keep the account on purpose, and need its hooks
+        // to keep reporting status. The rest wait for a later sync.
+        let inUse = Set(allSessions.compactMap(\.accountHome))
+        let retired = settings.usageRetiredAccountFolders
+            .mapValues { $0.filter { !inUse.contains($0) } }
+            .filter { !$0.value.isEmpty }
         Task {
             let outcome = await AgentIntegrationInstaller.sync(
-                hooks: hooks, skills: skills, commands: commands, homes: homes)
+                hooks: hooks, skills: skills, commands: commands, homes: homes,
+                retiredHomes: retired)
+            if outcome.failure == nil, !retired.isEmpty {
+                settings.forgetRetiredAccountFolders(retired)
+            }
             // Stamped for the same reason a machine's pane stamps after its own
             // install: the stamp is what "Not installed on This Mac" reads, and
             // this is the only thing that ever puts the files here. Unstamped, the

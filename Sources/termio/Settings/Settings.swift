@@ -165,6 +165,7 @@ final class AppSettings: ObservableObject {
         static let claudeKeychainDeclined = "usage.claudeKeychainDeclined"
         static let usageAccountFolders = "usage.accountFolders"
         static let usageActiveAccounts = "usage.activeAccounts"
+        static let usageRetiredAccountFolders = "usage.retiredAccountFolders"
         static let githubIntegrationEnabled = "github.integrationEnabled"
         static let notifyTaskCompletion = "notifications.taskCompletion"
         static let notificationSound = "notifications.sound"
@@ -513,6 +514,14 @@ final class AppSettings: ObservableObject {
     /// The added folder each agent's new sessions run on, by agent `rawValue`.
     /// Absent means the default folder. Running sessions keep the account they
     /// started on (`Session.accountHome`).
+    /// Account folders the user removed whose termio hooks and skill have not
+    /// been cleaned out yet, by agent `rawValue`. Kept until a sync confirms
+    /// the sweep, so a removal made while the daemon was unreachable still
+    /// cleans up later.
+    @Published var usageRetiredAccountFolders: [String: [String]] {
+        didSet { defaults.set(usageRetiredAccountFolders, forKey: Key.usageRetiredAccountFolders) }
+    }
+
     @Published var usageActiveAccounts: [String: String] {
         didSet { defaults.set(usageActiveAccounts, forKey: Key.usageActiveAccounts) }
     }
@@ -704,6 +713,8 @@ final class AppSettings: ObservableObject {
             as? [String: [String]] ?? [:]
         usageActiveAccounts = defaults.dictionary(forKey: Key.usageActiveAccounts)
             as? [String: String] ?? [:]
+        usageRetiredAccountFolders = defaults.dictionary(forKey: Key.usageRetiredAccountFolders)
+            as? [String: [String]] ?? [:]
         notifyOnTaskCompletion = store.bool(Key.notifyTaskCompletion)
         notificationSoundEnabled = store.bool(Key.notificationSound)
         analyticsEnabled = store.bool(Key.analyticsEnabled)
@@ -848,12 +859,26 @@ final class AppSettings: ObservableObject {
 
     func addUsageAccountFolder(_ path: String, for agent: AgentPreset) {
         guard !usageAccountFolders(for: agent).contains(path) else { return }
+        usageRetiredAccountFolders[agent.rawValue]?.removeAll { $0 == path }
         usageAccountFolders[agent.rawValue, default: []].append(path)
     }
 
     func removeUsageAccountFolder(_ path: String, for agent: AgentPreset) {
         usageAccountFolders[agent.rawValue]?.removeAll { $0 == path }
         if usageActiveAccounts[agent.rawValue] == path { usageActiveAccounts[agent.rawValue] = nil }
+        if usageRetiredAccountFolders[agent.rawValue]?.contains(path) != true {
+            usageRetiredAccountFolders[agent.rawValue, default: []].append(path)
+        }
+    }
+
+    /// Forgets retired folders a sync has swept.
+    func forgetRetiredAccountFolders(_ swept: [String: [String]]) {
+        for (agent, folders) in swept {
+            usageRetiredAccountFolders[agent]?.removeAll { folders.contains($0) }
+            if usageRetiredAccountFolders[agent]?.isEmpty == true {
+                usageRetiredAccountFolders[agent] = nil
+            }
+        }
     }
 
     /// The folder new sessions of `agent` start on, or `nil` for the default

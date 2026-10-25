@@ -1713,7 +1713,8 @@ public enum Termiod {
         skills: AgentHalfAction,
         reporter: AgentHookReporter,
         commands: [String: String] = [:],
-        homes: [String: [String]] = [:]
+        homes: [String: [String]] = [:],
+        retiredHomes: [String: [String]] = [:]
     ) throws -> Data {
         try encodeControl(InstallAgentsOperation(
             op: "install_agents",
@@ -1723,6 +1724,7 @@ public enum Termiod {
             reporter: InstallAgentsOperation.Reporter(reporter),
             commands: commands,
             homes: homes.isEmpty ? nil : homes,
+            retiredHomes: retiredHomes.isEmpty ? nil : retiredHomes,
             seq: 1
         ))
     }
@@ -1744,6 +1746,8 @@ public enum Termiod {
         /// Extra account config folders by agent id. Left out when empty, so a
         /// daemon that predates the field never sees it.
         let homes: [String: [String]]?
+        /// Removed account folders to clean, same shape and same omission.
+        let retiredHomes: [String: [String]]?
         let seq: Int
 
         /// Internally tagged the way the daemon spells it: `{"kind": …}`.

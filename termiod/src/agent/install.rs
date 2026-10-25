@@ -155,6 +155,9 @@ pub struct InstallRequest {
     /// Extra config folders by agent id, one per extra account. Each is checked
     /// by `accepted_home` before anything is written there.
     pub homes: HashMap<String, Vec<String>>,
+    /// Removed account folders by agent id, swept on every request. See
+    /// `sweep_retired`.
+    pub retired_homes: HashMap<String, Vec<String>>,
 }
 
 impl InstallRequest {
@@ -174,7 +177,13 @@ impl InstallRequest {
             binary,
             commands,
             homes: HashMap::new(),
+            retired_homes: HashMap::new(),
         }
+    }
+
+    pub fn with_retired_homes(mut self, homes: HashMap<String, Vec<String>>) -> InstallRequest {
+        self.retired_homes = homes;
+        self
     }
 
     pub fn with_homes(mut self, homes: HashMap<String, Vec<String>>) -> InstallRequest {
@@ -347,6 +356,7 @@ fn run_against_shell(request: &InstallRequest) -> InstallReport {
     if request.skills != HalfAction::Leave {
         results.extend(sync_skills(&catalog, request, &present));
     }
+    sweep_retired(&catalog, request);
     let mut reported: Vec<String> = present.into_iter().collect();
     reported.sort();
     InstallReport { results, present: reported }
@@ -443,8 +453,11 @@ fn rehomed_all<'a>(
 }
 
 fn rehomed(agent: &AgentDefinition, request: &InstallRequest) -> Vec<AgentDefinition> {
-    let (Some(home), Some(folders)) = (agent.config_home.as_ref(), request.homes.get(&agent.id))
-    else {
+    rehomed_into(agent, request.homes.get(&agent.id))
+}
+
+fn rehomed_into(agent: &AgentDefinition, folders: Option<&Vec<String>>) -> Vec<AgentDefinition> {
+    let (Some(home), Some(folders)) = (agent.config_home.as_ref(), folders) else {
         return Vec::new();
     };
     folders
@@ -475,6 +488,33 @@ fn rehomed(agent: &AgentDefinition, request: &InstallRequest) -> Vec<AgentDefini
             Some(copy)
         })
         .collect()
+}
+
+/// Takes termio's hooks and skill out of the account folders the user removed —
+/// and nothing else. The two halves' own sweep removes everything termio ever
+/// installed, which is right for "turn integration off" but wrong here: other
+/// accounts still in use must keep theirs. Each folder passes `accepted_home`
+/// first, like every other client-named path.
+fn sweep_retired(catalog: &AgentCatalog, request: &InstallRequest) {
+    for agent in &catalog.all {
+        for copy in rehomed_into(agent, request.retired_homes.get(&agent.id)) {
+            if let Some(spec) = copy.hooks.as_ref() {
+                uninstall_hooks(&copy, spec);
+            }
+            let Some(directory) = copy.skill_dir.as_deref() else {
+                continue;
+            };
+            let Ok(folder) = resolved(&copy, &format!("{directory}/termio")) else {
+                continue;
+            };
+            let folder = PathBuf::from(folder);
+            if folder.exists() {
+                if let Err(error) = std::fs::remove_dir_all(&folder) {
+                    log(&format!("could not remove {}: {error}", folder.display()));
+                }
+            }
+        }
+    }
 }
 
 /// The one shape of client-named folder this box writes into: an existing

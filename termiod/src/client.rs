@@ -378,6 +378,7 @@ pub async fn install_agents(
         reporter: request.reporter,
         commands: request.commands,
         homes: request.homes,
+        retired_homes: request.retired_homes,
         seq: Some(1),
     };
     match request_with_capabilities(&control, &["agents"]).await? {
