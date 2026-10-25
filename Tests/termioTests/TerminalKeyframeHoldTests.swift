@@ -69,6 +69,15 @@ final class TerminalKeyframeHoldTests: XCTestCase {
         XCTAssertTrue(arrived.painted)
     }
 
+    /// A grid reported between connections still counts: libghostty does not
+    /// repeat an unchanged one, so the next attach's keyframe must find it.
+    func testAGridRecordedBetweenConnectionsLetsTheNextKeyframePaint() {
+        var hold = TerminalKeyframeHold()
+        hold.record(new)
+        XCTAssertEqual(joined(hold.receive(keyframe: bytes("repaint"), at: new)), "repaint")
+        XCTAssertFalse(hold.isHolding)
+    }
+
     /// `painted` is what stands down the resync. Reporting it for a grid nobody
     /// was waiting on would suppress the repair the degraded path depends on.
     func testOnlyTheGridThatWasWaitedOnReportsPainted() {
