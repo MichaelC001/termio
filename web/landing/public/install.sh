@@ -127,14 +127,14 @@ status_flat() {
 
 daemon_running() { status_flat | grep -q '"daemon":{"running":true'; }
 
-# The live session count, printed only when the daemon itself answered: on a
-# timeout `status` still reports a daemon, with no version and no sessions,
-# and "no sessions" from a daemon that never replied is not a reason to
-# restart it.
+# The live session count, or a failure when it cannot be known. `status`
+# reports an empty roster whenever its own request fails, so the count comes
+# from `list`, which fails loudly instead. `list` also starts a daemon when
+# none answers, so it is asked only of one that `status` saw running.
 verified_live_sessions() {
-    flat="$(status_flat)" || return 1
-    printf '%s' "$flat" | grep -q '"daemon":{"running":true,"version":"' || return 1
-    printf '%s' "$flat" | grep -o '"alive":true' | wc -l | tr -d ' '
+    daemon_running || return 1
+    roster="$("$TERMIOD" list --json 2>/dev/null)" || return 1
+    printf '%s' "$roster" | tr -d ' \n\t' | grep -o '"alive":true' | wc -l | tr -d ' '
 }
 
 tailnet_name() {
@@ -159,6 +159,7 @@ current_origin() {
 plan_tailnet() {
     URL=""
     LISTENER_CHANGED=0
+    LISTENER_WANTED=0
     [ "$TAILNET" = 1 ] && [ "$SERVICE" = 1 ] || return 0
     command -v tailscale >/dev/null 2>&1 || return 0
     name="$(tailnet_name)"
@@ -180,6 +181,7 @@ plan_tailnet() {
     fi
     URL="$want_origin"
     step "Publishing on your tailnet as $URL"
+    LISTENER_WANTED=1
     # The listener refuses to start without a pairing token, so it exists first.
     "$TERMIOD" pair >/dev/null
     if [ "$existing" != "$want_origin" ]; then
@@ -206,22 +208,47 @@ keep_running() {
         return 0
     fi
     SERVICE_OK=1
-    # A unit that was already running read its environment when it started.
-    # Restarting ends its sessions, so it happens only when the daemon itself
-    # said it holds none.
-    if [ "$LISTENER_CHANGED" = 1 ] && ! listening; then
-        if [ "$(verified_live_sessions || echo unknown)" = 0 ]; then
-            systemctl --user restart termiod.service
-        else
-            say "    The tailnet listener turns on at the daemon's next start. Restarting now"
-            say "    would end its running sessions: systemctl --user restart termiod"
-        fi
+    # A unit that was already running read its environment when it started,
+    # this run's or an earlier one's that had to wait. Restarting ends its
+    # sessions, so it happens only when the daemon said it holds none.
+    [ "$LISTENER_WANTED" = 1 ] || return 0
+    wait_for_listener && return 0
+    if [ "$(verified_live_sessions || echo unknown)" = 0 ]; then
+        systemctl --user restart termiod.service
+        wait_for_listener || say "    termiod didn't open its tailnet listener. See: termiod logs"
+    else
+        say "    The tailnet listener turns on at the daemon's next start. Restarting now"
+        say "    would end its running sessions: systemctl --user restart termiod"
     fi
 }
 
+# Whether anything accepts a connection on the listener's port. A WebSocket
+# listener hangs up on a plain request without replying, so only a refused or
+# timed-out connection means nothing is there.
 listening() {
-    command -v ss >/dev/null 2>&1 || return 1
-    ss -ltn 2>/dev/null | grep -q "127.0.0.1:$PORT "
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | grep -q "127.0.0.1:$PORT "
+        return
+    fi
+    code=0
+    if command -v curl >/dev/null 2>&1; then
+        curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/" || code=$?
+        [ "$code" -ne 7 ] && [ "$code" -ne 28 ]
+    else
+        wget -q -O /dev/null -T 2 -t 1 "http://127.0.0.1:$PORT/" 2>/dev/null || code=$?
+        [ "$code" -ne 4 ]
+    fi
+}
+
+# A daemon that was just started binds its socket before its listener.
+wait_for_listener() {
+    tries=0
+    while [ "$tries" -lt 10 ]; do
+        listening && return 0
+        tries=$((tries + 1))
+        sleep 0.5
+    done
+    return 1
 }
 
 serve_on_tailnet() {
@@ -229,11 +256,15 @@ serve_on_tailnet() {
     if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
         say "    Tailscale Serve needs permission. Run once:"
         say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
-        say "    or allow it for your user with: sudo tailscale set --operator=$USER"
+        say "    or allow it for your user with: sudo tailscale set --operator=$(id -un)"
     fi
 }
 
 main() {
+    # `set -u` is on, and a bare `su`, cron or `docker exec` leaves some of the
+    # login environment unset; the ones read below get a value or a clear stop.
+    [ -n "${HOME:-}" ] || fail "HOME is not set."
+    PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}"
     BASE="${TERMIO_DOWNLOAD_BASE:-https://downloads.termio.sh}"
     PREFIX="${TERMIO_PREFIX:-$HOME/.local}"
     BIN="$PREFIX/bin"
@@ -246,6 +277,7 @@ main() {
     DRY_RUN=0
     URL=""
     LISTENER_CHANGED=0
+    LISTENER_WANTED=0
     SERVICE_OK=0
 
     parse_arguments "$@"
@@ -285,7 +317,7 @@ main() {
 
     say ""
     say "termio $VERSION is installed: $TERMIOD"
-    if [ -n "$URL" ] && [ "$SERVICE_OK" = 1 ]; then
+    if [ -n "$URL" ] && [ "$SERVICE_OK" = 1 ] && listening; then
         say ""
         say "To use this machine from a Mac, open Settings > Remote Hosts > + > Pair with a Device..."
         say "and paste this link. Scan the code with the iPhone app to pair a phone."
