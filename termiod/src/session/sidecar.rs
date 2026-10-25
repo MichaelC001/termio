@@ -109,6 +109,8 @@ pub(crate) enum SidecarCommand {
         client_id: ClientId,
         request_id: u64,
         scrollback: bool,
+        /// Also capture libghostty's native snapshot, for a `vt_stream` client.
+        native: bool,
     },
     SetGridDiff(bool),
     Shutdown,
@@ -136,6 +138,9 @@ pub(crate) struct SidecarCapture {
     /// The same screen serialised back to VT sequences. `None` only if the
     /// formatter failed, in which case delivery falls back to packed cells.
     pub(crate) vt: Option<Vec<u8>>,
+    /// libghostty's native snapshot, when asked for. `None` if encoding failed
+    /// — mid-sequence past `CONTINUATION_LIMIT` — and delivery falls back to `vt`.
+    pub(crate) native: Option<Vec<u8>>,
     pub(crate) scrollback: Option<Result<termiod_vt::Scrollback, String>>,
 }
 

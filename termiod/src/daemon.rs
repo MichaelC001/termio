@@ -1364,6 +1364,19 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             {
                 negotiated_caps.retain(|cap| cap != "grid_diff");
             }
+            // vt_stream bootstraps through S and resizes through an event, so
+            // it means nothing without both.
+            if negotiated_caps.iter().any(|cap| cap == "vt_stream")
+                && !(negotiated_caps.iter().any(|cap| cap == "snapshot")
+                    && negotiated_caps.iter().any(|cap| cap == "events"))
+            {
+                negotiated_caps.retain(|cap| cap != "vt_stream");
+            }
+            // The two are different planes and an attachment reads one. The
+            // exact one wins; grid_diff is a degrade for bad networks.
+            if negotiated_caps.iter().any(|cap| cap == "vt_stream") {
+                negotiated_caps.retain(|cap| cap != "grid_diff");
+            }
             write_control(
                 &mut wr,
                 &Control::HelloOk {
@@ -2813,6 +2826,8 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
             subscriptions.contains("roster")
         }
         Event::Resized { .. } => false,
+        // A marker in one attachment's byte stream; meaningless anywhere else.
+        Event::VtResize { .. } => false,
         Event::Ready { .. } => false,
         // Both are addressed to one attachment's stream, not to the roster: a
         // resync is that client's own, and a stale VT only means anything to a
@@ -2860,6 +2875,8 @@ async fn run_attach(
             && connection.capabilities.contains("scrollback"),
         grid_diff: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("grid_diff"),
+        vt_stream: connection.capabilities.contains("snapshot")
+            && connection.capabilities.contains("vt_stream"),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -2923,6 +2940,13 @@ async fn run_attach(
                     }
                 }
                 ClientEvent::Control(_) => {}
+                // Part of the stream itself, not the event plane: dropping one
+                // leaves the client's VT at the wrong size.
+                ClientEvent::Event(event @ Event::VtResize { .. }) => {
+                    if event_out.send(Outbound::Event(event)).is_err() {
+                        break;
+                    }
+                }
                 ClientEvent::Event(event @ Event::Ready { .. }) if supports_snapshot => {
                     if event_out.send(Outbound::Event(event)).is_err() {
                         break;

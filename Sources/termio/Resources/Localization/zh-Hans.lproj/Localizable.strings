@@ -210,6 +210,8 @@
 	<string>对“%@”的所有更改都将丢失。此操作无法撤销。</string>
 	<key>Allow</key>
 	<string>允许</string>
+	<key>Allow Paired Devices</key>
+	<string>允许已配对设备</string>
 	<key>Allow Usage Access</key>
 	<string>允许访问用量</string>
 	<key>Allow agents to use %@?</key>
@@ -432,6 +434,8 @@
 	<string>已连接</string>
 	<key>Connected and authenticated</key>
 	<string>已连接并通过认证</string>
+	<key>Connected · %@</key>
+	<string>已连接 · %@</string>
 	<key>Connection failed</key>
 	<string>连接失败</string>
 	<key>Connection refused</key>
@@ -854,6 +858,8 @@
 	<string>Agent 实时状态已关闭</string>
 	<key>Local</key>
 	<string>本地</string>
+	<key>Local Network</key>
+	<string>局域网</string>
 	<key>Lock</key>
 	<string>锁定</string>
 	<key>Login shell</key>
@@ -866,6 +872,8 @@
 	<string>设备</string>
 	<key>Machines</key>
 	<string>设备</string>
+	<key>Machines signed in to Tailscale. Choose one to fill in its address.</key>
+	<string>已登录 Tailscale 的机器。选择一台即可填入它的地址。</string>
 	<key>Match Case</key>
 	<string>区分大小写</string>
 	<key>Match Whole Word</key>
@@ -878,10 +886,6 @@
 	<string>%lld 台设备上缺失</string>
 	<key>Missing on %lld machines</key>
 	<string>%lld 台设备上缺失</string>
-	<key>Mobile</key>
-	<string>手机</string>
-	<key>Mobile Access</key>
-	<string>移动访问</string>
 	<key>More</key>
 	<string>更多</string>
 	<key>Move Down</key>
@@ -912,6 +916,8 @@
 	<string>需要上面的“实时 Agent 状态”：没有它，就没有东西告诉 Termio 一个 Agent 完成了。</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
 	<string>需要先在那台机器上运行 `ngrok config add-authtoken`。免费版的地址每次重启都会变。</string>
+	<key>Network</key>
+	<string>网络</string>
 	<key>New</key>
 	<string>新建</string>
 	<key>New %@ Session</key>
@@ -1050,6 +1056,8 @@
 	<string>未找到</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
+	<key>Not Connected</key>
+	<string>未连接</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
 	<key>Not a Git Repository</key>
@@ -1086,18 +1094,16 @@
 	<string>Termio 的通知已在“系统设置”中关闭。</string>
 	<key>OK</key>
 	<string>好</string>
-	<key>Off — LAN only</key>
-	<string>关闭 — 仅局域网</string>
 	<key>Off — SSH only</key>
 	<string>关闭 — 仅 SSH</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
-	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。</string>
+	<key>Offline · %@</key>
+	<string>离线 · %@</string>
+	<key>On Your Tailnet</key>
+	<string>你的 tailnet 上</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code.</key>
+	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
 	<string>在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
-	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
-	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。</string>
 	<key>Only regular files can be previewed.</key>
 	<string>只能预览普通文件。</string>
 	<key>Only text can be pasted into the simulator.</key>
@@ -1118,6 +1124,8 @@
 	<string>快速打开…</string>
 	<key>Open System Settings</key>
 	<string>打开“系统设置”</string>
+	<key>Open Tailscale</key>
+	<string>打开 Tailscale</string>
 	<key>Open Themes Folder…</key>
 	<string>打开主题文件夹…</string>
 	<key>Open Xcode</key>
@@ -1162,10 +1170,14 @@
 	<string>页面</string>
 	<key>Pair</key>
 	<string>配对</string>
-	<key>Pair a Phone…</key>
-	<string>配对手机…</string>
+	<key>Pair iPhone</key>
+	<string>配对 iPhone</string>
+	<key>Pair iPhone…</key>
+	<string>配对 iPhone…</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>切换后，已配对的 iPhone 需要重新扫码。</string>
+	<key>Pairing</key>
+	<string>配对</string>
 	<key>Pairing Token</key>
 	<string>配对 Token</string>
 	<key>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</key>
@@ -1474,6 +1486,8 @@
 	<string>显示原身</string>
 	<key>Show Project Files</key>
 	<string>显示项目文件</string>
+	<key>Show QR Code…</key>
+	<string>显示二维码…</string>
 	<key>Show Replace</key>
 	<string>显示替换</string>
 	<key>Show another file in this diff</key>
@@ -1578,6 +1592,8 @@
 	<string>系统等宽字体</string>
 	<key>Tabs</key>
 	<string>标签页</string>
+	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
+	<string>这台 Mac 上的 Tailscale 未连接。连接后重新打开此面板。</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>将 %@ 从新建会话菜单中移除，其设置会保留。</string>
 	<key>Takes effect after Termio relaunches.</key>
@@ -1688,6 +1704,8 @@
 	<string>模拟器辅助程序发回了 Termio 无法读取的回复。</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
+	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
+	<string>隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>The working tree is clean.</key>
 	<string>工作树中没有任何更改。</string>
 	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
@@ -1788,14 +1806,20 @@
 	<string>切换项目文件</string>
 	<key>Toggle Sidebar</key>
 	<string>切换侧栏</string>
+	<key>Traffic crosses the relay you run yourself — no third party in the path.</key>
+	<string>流量经由你自己运行的中继，路径中没有第三方。</string>
 	<key>Try Again</key>
 	<string>重试</string>
 	<key>Try another search term.</key>
 	<string>请尝试其他搜索词。</string>
 	<key>Tunnel</key>
 	<string>隧道</string>
+	<key>Turn On</key>
+	<string>打开</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>关闭后 iPhone 将断开连接；配对会保留。</string>
+	<key>Turn on Allow Paired Devices to pair an iPhone.</key>
+	<string>打开“允许已配对设备”后才能配对 iPhone。</string>
 	<key>Turned off in Settings ▸ Agents, so Termio removes it from %@.</key>
 	<string>已在“设置 ▸ Agents”中关闭，因此 Termio 会把它从 %@ 上移除。</string>
 	<key>Turned off in Settings ▸ Agents, so Termio removes them from %@.</key>
@@ -1890,6 +1914,8 @@
 	<string>窗口</string>
 	<key>Working Directory</key>
 	<string>工作目录</string>
+	<key>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
+	<string>两台设备都连接 Tailscale 时，可在任意网络使用。流量只经过你的 tailnet。</string>
 	<key>Workspace</key>
 	<string>工作区</string>
 	<key>Workspace Settings…</key>
@@ -1912,6 +1938,8 @@
 	<string>可以从废纸篓恢复它。</string>
 	<key>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</key>
 	<string>来自 ~/.ssh/config 的 Host 条目，与 `ssh` 解析的别名一致。右键点按主机即可连接。</string>
+	<key>Your iPhone must be on the same network as this Mac.</key>
+	<string>iPhone 须与这台 Mac 处于同一网络。</string>
 	<key>Your themes</key>
 	<string>你的主题</string>
 	<key>Zoom</key>

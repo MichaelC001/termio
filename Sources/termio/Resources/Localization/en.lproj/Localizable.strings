@@ -210,6 +210,8 @@
 	<string>All changes to “%@” will be lost. This cannot be undone.</string>
 	<key>Allow</key>
 	<string>Allow</string>
+	<key>Allow Paired Devices</key>
+	<string>Allow Paired Devices</string>
 	<key>Allow Usage Access</key>
 	<string>Allow Usage Access</string>
 	<key>Allow agents to use %@?</key>
@@ -432,6 +434,8 @@
 	<string>Connected</string>
 	<key>Connected and authenticated</key>
 	<string>Connected and authenticated</string>
+	<key>Connected · %@</key>
+	<string>Connected · %@</string>
 	<key>Connection failed</key>
 	<string>Connection failed</string>
 	<key>Connection refused</key>
@@ -854,6 +858,8 @@
 	<string>Live agent status is off</string>
 	<key>Local</key>
 	<string>Local</string>
+	<key>Local Network</key>
+	<string>Local Network</string>
 	<key>Lock</key>
 	<string>Lock</string>
 	<key>Login shell</key>
@@ -866,6 +872,8 @@
 	<string>Machine</string>
 	<key>Machines</key>
 	<string>Machines</string>
+	<key>Machines signed in to Tailscale. Choose one to fill in its address.</key>
+	<string>Machines signed in to Tailscale. Choose one to fill in its address.</string>
 	<key>Match Case</key>
 	<string>Match Case</string>
 	<key>Match Whole Word</key>
@@ -878,10 +886,6 @@
 	<string>Missing on %lld devices</string>
 	<key>Missing on %lld machines</key>
 	<string>Missing on %lld machines</string>
-	<key>Mobile</key>
-	<string>Mobile</string>
-	<key>Mobile Access</key>
-	<string>Mobile Access</string>
 	<key>More</key>
 	<string>More</string>
 	<key>Move Down</key>
@@ -912,6 +916,8 @@
 	<string>Needs Live agent status above: without it, nothing tells Termio an agent finished.</string>
 	<key>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</key>
 	<string>Needs `ngrok config add-authtoken` on that machine first. The free address changes on every restart.</string>
+	<key>Network</key>
+	<string>Network</string>
 	<key>New</key>
 	<string>New</string>
 	<key>New %@ Session</key>
@@ -1050,6 +1056,8 @@
 	<string>None found</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
+	<key>Not Connected</key>
+	<string>Not Connected</string>
 	<key>Not Now</key>
 	<string>Not Now</string>
 	<key>Not a Git Repository</key>
@@ -1086,18 +1094,16 @@
 	<string>Notifications for Termio are turned off in System Settings.</string>
 	<key>OK</key>
 	<string>OK</string>
-	<key>Off — LAN only</key>
-	<string>Off — LAN only</string>
 	<key>Off — SSH only</key>
 	<string>Off — SSH only</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</key>
-	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.</string>
+	<key>Offline · %@</key>
+	<string>Offline · %@</string>
+	<key>On Your Tailnet</key>
+	<string>On Your Tailnet</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code.</key>
+	<string>On iPhone, tap the Mac pill ▸ Scan QR Code.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
-	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
-	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
-	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
 	<key>Only regular files can be previewed.</key>
 	<string>Only regular files can be previewed.</string>
 	<key>Only text can be pasted into the simulator.</key>
@@ -1118,6 +1124,8 @@
 	<string>Open Quickly…</string>
 	<key>Open System Settings</key>
 	<string>Open System Settings</string>
+	<key>Open Tailscale</key>
+	<string>Open Tailscale</string>
 	<key>Open Themes Folder…</key>
 	<string>Open Themes Folder…</string>
 	<key>Open Xcode</key>
@@ -1162,10 +1170,14 @@
 	<string>Pages</string>
 	<key>Pair</key>
 	<string>Pair</string>
-	<key>Pair a Phone…</key>
-	<string>Pair a Phone…</string>
+	<key>Pair iPhone</key>
+	<string>Pair iPhone</string>
+	<key>Pair iPhone…</key>
+	<string>Pair iPhone…</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>Paired iPhones must scan the code again after switching.</string>
+	<key>Pairing</key>
+	<string>Pairing</string>
 	<key>Pairing Token</key>
 	<string>Pairing Token</string>
 	<key>Pairs your iPhone straight to this Mac's session host. Projects with nothing running don't appear yet.</key>
@@ -1474,6 +1486,8 @@
 	<string>Show Original</string>
 	<key>Show Project Files</key>
 	<string>Show Project Files</string>
+	<key>Show QR Code…</key>
+	<string>Show QR Code…</string>
 	<key>Show Replace</key>
 	<string>Show Replace</string>
 	<key>Show another file in this diff</key>
@@ -1578,6 +1592,8 @@
 	<string>System monospace</string>
 	<key>Tabs</key>
 	<string>Tabs</string>
+	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
+	<string>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>Takes %@ out of the new-session menu. Its settings are kept.</string>
 	<key>Takes effect after Termio relaunches.</key>
@@ -1688,6 +1704,8 @@
 	<string>The simulator helper sent a reply Termio couldn’t read.</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
+	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
+	<string>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>The working tree is clean.</key>
 	<string>The working tree is clean.</string>
 	<key>The workspace is empty. Projects and sessions you open later go to another workspace.</key>
@@ -1788,14 +1806,20 @@
 	<string>Toggle Project Files</string>
 	<key>Toggle Sidebar</key>
 	<string>Toggle Sidebar</string>
+	<key>Traffic crosses the relay you run yourself — no third party in the path.</key>
+	<string>Traffic crosses the relay you run yourself — no third party in the path.</string>
 	<key>Try Again</key>
 	<string>Try Again</string>
 	<key>Try another search term.</key>
 	<string>Try another search term.</string>
 	<key>Tunnel</key>
 	<string>Tunnel</string>
+	<key>Turn On</key>
+	<string>Turn On</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>Turn off to disconnect your iPhone; pairing is kept.</string>
+	<key>Turn on Allow Paired Devices to pair an iPhone.</key>
+	<string>Turn on Allow Paired Devices to pair an iPhone.</string>
 	<key>Turned off in Settings ▸ Agents, so Termio removes it from %@.</key>
 	<string>Turned off in Settings ▸ Agents, so Termio removes it from %@.</string>
 	<key>Turned off in Settings ▸ Agents, so Termio removes them from %@.</key>
@@ -1890,6 +1914,8 @@
 	<string>Window</string>
 	<key>Working Directory</key>
 	<string>Working Directory</string>
+	<key>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
+	<string>Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</string>
 	<key>Workspace</key>
 	<string>Workspace</string>
 	<key>Workspace Settings…</key>
@@ -1912,6 +1938,8 @@
 	<string>You can restore it from the Trash.</string>
 	<key>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</key>
 	<string>Your Host entries from ~/.ssh/config — the same aliases `ssh` resolves. Right-click a host to connect.</string>
+	<key>Your iPhone must be on the same network as this Mac.</key>
+	<string>Your iPhone must be on the same network as this Mac.</string>
 	<key>Your themes</key>
 	<string>Your themes</string>
 	<key>Zoom</key>

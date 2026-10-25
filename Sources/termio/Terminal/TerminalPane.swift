@@ -1689,7 +1689,11 @@ private struct PaneCardChrome: View {
                 .allowsHitTesting(isSelected)
             // The inspector reads the focused session, so only the focused card opens it.
             if isSelected {
+                // Pulled in so its glyph sits as far from the zoom glyph as the split glyphs sit
+                // from each other: the menu pads its glyph by 6 where an icon button's 24pt frame
+                // leaves 4.5, and the header's 6pt spacing is wider than the buttons' 2.
                 InspectorPaneMenu()
+                    .padding(.leading, -5.5)
             }
         }
         .padding(.leading, leadingPadding)
@@ -1707,6 +1711,14 @@ private struct PaneCardChrome: View {
             }
             ChromeIconButton(icon: .layoutRows, help: localized("Split Down")) {
                 splitting(.vertical)
+            }
+            // Zoom only means something inside a split, as in the palette and ⌘⇧↩.
+            if store.splitRoot != nil {
+                ChromeIconButton(icon: store.isPaneZoomed ? .collapse : .expand,
+                                 help: localized("Zoom Split"), isOn: store.isPaneZoomed) {
+                    store.selectedSessionID = session.id
+                    store.toggleSelectedPaneZoom()
+                }
             }
         }
     }

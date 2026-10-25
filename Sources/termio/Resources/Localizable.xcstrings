@@ -1,12 +1,34 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Allow Paired Devices": {
+      "comment": "Master switch in Settings ▸ Server ▸ Pairing: whether paired iPhones may connect to this Mac.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许已配对设备"
+          }
+        }
+      }
+    },
     "Close Panel": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "关闭面板"
+          }
+        }
+      }
+    },
+    "Connected · %@": {
+      "comment": "Tailscale status in Settings ▸ Server ▸ Pairing; %@ is this Mac's Tailscale IP address.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接 · %@"
           }
         }
       }
@@ -31,6 +53,91 @@
         }
       }
     },
+    "Local Network": {
+      "comment": "Picker entry in Settings ▸ Server ▸ Pairing: no tunnel, reach this Mac over the LAN.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网"
+          }
+        }
+      }
+    },
+    "Machines signed in to Tailscale. Choose one to fill in its address.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已登录 Tailscale 的机器。选择一台即可填入它的地址。"
+          }
+        }
+      }
+    },
+    "Network": {
+      "comment": "Picker in Settings ▸ Server ▸ Pairing: which network the iPhone reaches this Mac over (local network, Tailscale, or a tunnel).",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网络"
+          }
+        }
+      }
+    },
+    "Not Connected": {
+      "comment": "Tailscale status in Settings ▸ Server ▸ Pairing when this Mac is not on a running tailnet.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未连接"
+          }
+        }
+      }
+    },
+    "Offline · %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "离线 · %@"
+          }
+        }
+      }
+    },
+    "On Your Tailnet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你的 tailnet 上"
+          }
+        }
+      }
+    },
+    "On iPhone, tap the Mac pill ▸ Scan QR Code.": {
+      "comment": "“Mac pill” is a control in the iPhone app and ▸ separates steps in a menu path.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。"
+          }
+        }
+      }
+    },
+    "Open Tailscale": {
+      "comment": "Button that opens the Tailscale app when it is not connected.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开 Tailscale"
+          }
+        }
+      }
+    },
     "Open a panel": {
       "localizations": {
         "zh-Hans": {
@@ -41,12 +148,111 @@
         }
       }
     },
+    "Pair iPhone": {
+      "comment": "Row title in Settings ▸ Server ▸ Pairing, and the title of the QR code sheet.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对 iPhone"
+          }
+        }
+      }
+    },
+    "Pair iPhone…": {
+      "comment": "Menu bar menu item and command palette action that open the pairing QR code.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对 iPhone…"
+          }
+        }
+      }
+    },
+    "Pairing": {
+      "comment": "Section header in Settings ▸ Server: pairing an iPhone with this machine.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对"
+          }
+        }
+      }
+    },
+    "Show QR Code…": {
+      "comment": "Button in Settings ▸ Server ▸ Pairing that opens the pairing QR code.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示二维码…"
+          }
+        }
+      }
+    },
     "Tabs": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "标签页"
+          }
+        }
+      }
+    },
+    "Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.": {
+      "comment": "Footer under Settings ▸ Server ▸ Mobile when Tailscale is chosen but this Mac is not on a running tailnet.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 上的 Tailscale 未连接。连接后重新打开此面板。"
+          }
+        }
+      }
+    },
+    "The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.": {
+      "comment": "Footer in Settings ▸ Server ▸ Pairing when a bundled third-party tunnel is selected. “Custom” names another entry in the same picker — translate it identically.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。"
+          }
+        }
+      }
+    },
+    "Traffic crosses the relay you run yourself — no third party in the path.": {
+      "comment": "Footer in Settings ▸ Server ▸ Pairing when the user runs their own relay.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "流量经由你自己运行的中继，路径中没有第三方。"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "comment": "Button in the pairing QR sheet that turns on Allow Paired Devices.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开"
+          }
+        }
+      }
+    },
+    "Turn on Allow Paired Devices to pair an iPhone.": {
+      "comment": "Shown in the QR sheet when serving is off. “Allow Paired Devices” names the switch — translate it identically.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开“允许已配对设备”后才能配对 iPhone。"
           }
         }
       }
@@ -3854,26 +4060,6 @@
         }
       }
     },
-    "Mobile": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "手机"
-          }
-        }
-      }
-    },
-    "Mobile Access": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "移动访问"
-          }
-        }
-      }
-    },
     "Move Down": {
       "localizations": {
         "zh-Hans": {
@@ -4775,16 +4961,6 @@
         }
       }
     },
-    "Off — LAN only": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关闭 — 仅局域网"
-          }
-        }
-      }
-    },
     "Off — SSH only": {
       "localizations": {
         "zh-Hans": {
@@ -4795,44 +4971,12 @@
         }
       }
     },
-    "On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备须处于同一局域网。"
-          }
-        }
-      }
-    },
     "On iPhone, tap the Mac pill ▸ Scan QR Code. The token is minted on %@ and demanded on every connection.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。"
-          }
-        }
-      }
-    },
-    "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.": {
-      "comment": "Footer under Settings ▸ Server ▸ Mobile when a bundled third-party tunnel is selected. “Custom” names another entry in the same picker — translate it identically.",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。"
-          }
-        }
-      }
-    },
-    "On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.": {
-      "comment": "Footer under Settings ▸ Server ▸ Mobile when the user runs their own relay. “Mac pill” is a control in the iPhone app and ▸ separates steps in a menu path.",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。"
           }
         }
       }
@@ -5103,16 +5247,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对"
-          }
-        }
-      }
-    },
-    "Pair a Phone…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "配对手机…"
           }
         }
       }
@@ -8149,6 +8283,17 @@
         }
       }
     },
+    "Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.": {
+      "comment": "Footer in Settings ▸ Server ▸ Pairing when Tailscale is chosen. “tailnet” is Tailscale's name for the user's private network.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两台设备都连接 Tailscale 时，可在任意网络使用。流量只经过你的 tailnet。"
+          }
+        }
+      }
+    },
     "Workspace": {
       "localizations": {
         "zh-Hans": {
@@ -8225,6 +8370,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "来自 ~/.ssh/config 的 Host 条目，与 `ssh` 解析的别名一致。右键点按主机即可连接。"
+          }
+        }
+      }
+    },
+    "Your iPhone must be on the same network as this Mac.": {
+      "comment": "Footer in Settings ▸ Server ▸ Pairing when no tunnel is chosen.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iPhone 须与这台 Mac 处于同一网络。"
           }
         }
       }
