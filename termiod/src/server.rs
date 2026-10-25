@@ -22,9 +22,10 @@ use crate::{agent, client, lifecycle, log, remote, service, tailnet, wss};
 #[derive(Args)]
 #[command(after_help = SERVER_EXAMPLES)]
 pub struct ServerArgs {
-    /// The root's `-H`, also accepted here because shipped apps run
+    /// The root's `-H`, also accepted anywhere among `server`'s words, as it
+    /// was before it moved to the root: shipped apps run
     /// `termio server --host <host> deploy`.
-    #[arg(short = 'H', long, value_name = "HOST", hide = true)]
+    #[arg(short = 'H', long, value_name = "HOST", global = true, hide = true)]
     pub host: Option<String>,
 
     #[command(subcommand)]
@@ -270,41 +271,69 @@ pub fn run_on_host(host: &str, tty: bool) -> Result<()> {
 /// rather than rebuilt from the parsed command, so no flag can be dropped on
 /// the way.
 ///
-/// `-H` is a flag of the root and of `server` only, so it is removed only
-/// among the flags before the first command word and among those right after
-/// `server`. Anywhere else it is a value, such as text that starts with `-H`.
+/// `-H` is removed only where it is a flag: among the root's flags, before
+/// the command word, and anywhere among `server`'s words before `--`, where
+/// it has been global since `termio server --host` was introduced. After any
+/// other command word it is the verb's text, such as a prompt that starts
+/// with `-H`.
 ///
 /// `session` goes out as `sessions`, its old name, which every build parses:
 /// a host still on an older build then answers with its own error for the
 /// verb, not by opening a project called `session`.
 fn verb_words_of(argv: &[String]) -> Vec<String> {
+    #[derive(PartialEq)]
+    enum Place {
+        Root,
+        Server,
+        Verbatim,
+    }
     let mut words = Vec::new();
-    let mut rest = argv.iter().skip(1).peekable();
-    // 0: before the first command word; 1: after `server`, before its verb;
-    // 2: anywhere else.
-    let mut position = 0;
+    let mut rest = argv.iter().skip(1);
+    let mut place = Place::Root;
     while let Some(word) = rest.next() {
-        if position == 2 {
+        if place == Place::Verbatim {
             words.push(word.clone());
             continue;
         }
         match word.as_str() {
+            "--" => {
+                place = Place::Verbatim;
+                words.push(word.clone());
+            }
             "-H" | "--host" => {
                 rest.next();
             }
             _ if word.starts_with("--host=") => {}
             _ if word.starts_with("-H") => {}
-            _ if word.starts_with('-') => words.push(word.clone()),
-            "server" if position == 0 => {
-                position = 1;
+            // Short flags combined into one word, `-fHbox`: everything from
+            // the `H` on is the host. No other short flag of `server` takes
+            // a value that could contain an `H`, except `-n`, which takes
+            // digits.
+            _ if place == Place::Server
+                && !word.starts_with("--")
+                && word.starts_with('-')
+                && word[1..].contains('H') =>
+            {
+                let at = word.find('H').unwrap_or(word.len());
+                if at > 1 {
+                    words.push(word[..at].to_string());
+                }
+                // `-fH box`: the host is the next word.
+                if at + 1 == word.len() {
+                    rest.next();
+                }
+            }
+            _ if word.starts_with('-') || place == Place::Server => words.push(word.clone()),
+            "server" => {
+                place = Place::Server;
                 words.push(word.clone());
             }
-            "session" if position == 0 => {
-                position = 2;
+            "session" => {
+                place = Place::Verbatim;
                 words.push("sessions".to_string());
             }
             _ => {
-                position = 2;
+                place = Place::Verbatim;
                 words.push(word.clone());
             }
         }
@@ -801,9 +830,21 @@ mod tests {
             words("termio -H box session send 8de0b387 -Hello"),
             ["sessions", "send", "8de0b387", "-Hello"]
         );
+    }
+
+    /// Within `server` the host is global, as it was before it moved to the
+    /// root, so every spelling and position still goes.
+    #[test]
+    fn a_server_host_goes_from_any_position() {
+        assert_eq!(words("termio server attach rmt --host box"), ["server", "attach", "rmt"]);
+        assert_eq!(words("termio server logs -fHbox"), ["server", "logs", "-f"]);
         assert_eq!(
-            words("termio -H box server logs -H"),
-            ["server", "logs", "-H"]
+            words("termio server logs -fH box -n 5"),
+            ["server", "logs", "-f", "-n", "5"]
+        );
+        assert_eq!(
+            words("termio server -H box send x -- -H y"),
+            ["server", "send", "x", "--", "-H", "y"]
         );
     }
 

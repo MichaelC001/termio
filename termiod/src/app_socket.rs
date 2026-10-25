@@ -198,11 +198,23 @@ pub fn request_once(
     finish(reply, format, extra)
 }
 
+/// What came back from one request to the app.
+pub enum Reply {
+    /// The app's reply, unprinted.
+    Answered(String),
+    /// Nothing listens on the socket: there is no file, or the app that made
+    /// it has quit. The request reached no one, so another owner may act
+    /// instead. Unprinted; `finish` reports it.
+    NoApp(PathBuf, std::io::ErrorKind),
+    /// Any other failure, already reported on stderr.
+    Failed,
+}
+
 /// Whether the app's reply says it has no such session — the one error after
 /// which the app has done nothing, so another owner may still answer. The
 /// text form is the app's own wording (`targetNotFoundMessage`).
-pub fn is_not_found(reply: &Option<String>, format: &str) -> bool {
-    let Some(reply) = reply else { return false };
+pub fn is_not_found(reply: &Reply, format: &str) -> bool {
+    let Reply::Answered(reply) = reply else { return false };
     if format == "json" {
         reply.contains("\"error\":\"not_found\"")
     } else {
@@ -210,8 +222,8 @@ pub fn is_not_found(reply: &Option<String>, format: &str) -> bool {
     }
 }
 
-/// The app's reply, unprinted, or `None` after a failure this prints itself:
-/// no listener, a refused connection, an empty reply.
+/// One request to the app. Failures other than an absent app are reported
+/// here, on stderr.
 pub fn request_reply(
     channel: &Channel,
     timeout_seconds: u64,
@@ -221,12 +233,21 @@ pub fn request_reply(
     agent: &str,
     text: &str,
     extra: &str,
-) -> Option<String> {
+) -> Reply {
     let socket = socket_path(channel);
     let request = build_request(op, format, target, agent, text, extra);
     let response = exchange(&socket, &request, timeout_seconds);
     let response = match response {
         Ok(bytes) => bytes,
+        // Only a connect fails these ways, so the request reached no one.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Reply::NoApp(socket, error.kind());
+        }
         Err(error) => {
             // A refused connect and a live-but-silent app are different
             // failures with different fixes: EPERM is a sandbox denying this
@@ -237,19 +258,12 @@ pub fn request_reply(
                     "termio: the OS denied the connection to {} — this process is likely sandboxed (Codex workspace-write blocks unix sockets); termio itself is fine and restarting it will not help — run the command outside the sandbox",
                     socket.display()
                 ),
-                std::io::ErrorKind::NotFound => eprintln!(
-                    "termio: no socket at {} — termio isn't running; start it first",
-                    socket.display()
-                ),
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => eprintln!(
                     "termio: no reply from the app within {timeout_seconds}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT"
                 ),
-                _ => eprintln!(
-                    "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
-                    socket.display()
-                ),
+                _ => eprintln!("termio: the app's socket at {} failed: {error}", socket.display()),
             }
-            return None;
+            return Reply::Failed;
         }
     };
     let response = String::from_utf8_lossy(&response);
@@ -258,16 +272,28 @@ pub fn request_reply(
         eprintln!(
             "termio: no reply from the app within {timeout_seconds}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT"
         );
-        return None;
+        return Reply::Failed;
     }
-    Some(response.to_string())
+    Reply::Answered(response.to_string())
 }
 
 /// Prints a reply from `request_reply` and turns it into the outcome the exit
 /// code reports.
-pub fn finish(reply: Option<String>, format: &str, extra: &str) -> Outcome {
-    let Some(response) = reply else {
-        return Outcome::Error;
+pub fn finish(reply: Reply, format: &str, extra: &str) -> Outcome {
+    let response = match reply {
+        Reply::Answered(response) => response,
+        Reply::NoApp(socket, std::io::ErrorKind::NotFound) => {
+            eprintln!("termio: app is not running (no control socket at {})", socket.display());
+            return Outcome::Error;
+        }
+        Reply::NoApp(socket, _) => {
+            eprintln!(
+                "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
+                socket.display()
+            );
+            return Outcome::Error;
+        }
+        Reply::Failed => return Outcome::Error,
     };
     println!("{response}");
     if response.starts_with("error:") || response.contains("\"ok\":false") {

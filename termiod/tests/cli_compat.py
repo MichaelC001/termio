@@ -350,7 +350,7 @@ def main():
     legacy = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     legacy.bind(LEGACY_SOCK)
     legacy.close()
-    compare("falls back to the pre-rename socket", ["sessions", "list"], no_server=True)
+    compare("falls back to the pre-rename socket", ["sessions", "focus", "8de0b387"], no_server=True)
     os.unlink(LEGACY_SOCK)
     with open(LEGACY_SOCK, "w") as handle:
         handle.write("")
@@ -361,7 +361,7 @@ def main():
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stale.bind(SOCK)
     stale.close()
-    compare("stale socket refused", ["sessions", "list"], no_server=True)
+    compare("stale socket refused", ["sessions", "focus", "8de0b387"], no_server=True)
     os.unlink(SOCK)
     compare(
         "silent app times out",
