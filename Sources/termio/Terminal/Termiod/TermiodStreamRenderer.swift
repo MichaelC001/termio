@@ -862,6 +862,13 @@ final class TermiodStreamFrameBuilder {
         var wideStarts: Set<UInt16> = []
         let metrics = atlas.metrics
         _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells)
+        // Ghostty draws a selection with the colors swapped, unless a theme
+        // sets its own selection colors.
+        var selected = GhosttyRenderStateRowSelection()
+        selected.size = MemoryLayout<GhosttyRenderStateRowSelection>.size
+        let selection: ClosedRange<UInt16>? =
+            ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION, &selected) == GHOSTTY_SUCCESS
+            ? selected.start_x ... max(selected.start_x, selected.end_x) : nil
         var x: UInt16 = 0
         while ghostty_render_state_row_cells_next(cells) {
             defer { x &+= 1 }
@@ -896,6 +903,10 @@ final class TermiodStreamFrameBuilder {
                 paintsBackground = true
             }
             if style.inverse {
+                swap(&foreground, &background)
+                paintsBackground = true
+            }
+            if let selection, selection.contains(x) {
                 swap(&foreground, &background)
                 paintsBackground = true
             }

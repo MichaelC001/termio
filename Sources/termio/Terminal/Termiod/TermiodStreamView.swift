@@ -62,6 +62,10 @@ final class TermiodStreamView: NSView {
     /// Keys whose press the program saw, by keycode, so each gets its release
     /// even when the pane loses the keyboard first.
     fileprivate var heldKeys: [UInt16: Termiod.InputEvent.Key] = [:]
+    /// A left-button selection is in progress.
+    fileprivate var selecting = false
+    /// Settings ▸ Copy on select.
+    var copyOnSelect = false
     /// Keys an editing binding took, whose releases the program never sees.
     fileprivate var consumedKeys: Set<UInt16> = []
     fileprivate var trackingArea: NSTrackingArea?
@@ -252,6 +256,11 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
 
     private func pressKey(_ key: Termiod.InputEvent.Key, keyCode: UInt16) {
         terminal()?.scrollViewportToBottom()
+        // Typing clears the selection, Ghostty's `selection-clear-on-typing`.
+        if Termiod.InputEvent.key(key).claimsWriter, terminal()?.hasSelection == true {
+            terminal()?.clearSelection()
+            needsFullDraw = true
+        }
         heldKeys[keyCode] = key
         sendInput(.key(key))
     }
@@ -311,6 +320,12 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// program receives when the menu has no item for them.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, window?.firstResponder === self, terminal() != nil else { return false }
+        if markedText.length == 0, let move = TermiodStreamKeyboard.viewportMove(event) {
+            terminal()?.moveViewport(move)
+            needsFullDraw = true
+            consumedKeys.insert(event.keyCode)
+            return true
+        }
         if TermiodStreamKeyboard.naturalEditing(event) != nil, markedText.length == 0 {
             keyDown(with: event)
             return true
@@ -488,6 +503,80 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
             && at.x < Float(UInt32(grid.cols) * at.cellWidth) && at.y < Float(UInt32(grid.rows) * at.cellHeight)
     }
 
+    private func selects(_ event: NSEvent) -> Bool {
+        guard let terminal = terminal() else { return false }
+        return !terminal.tracksMouse || event.modifierFlags.contains(.shift)
+    }
+
+    /// The pointer as a selection sees it: the viewport cell under it, and
+    /// where it is in the pane in pixels.
+    private func selectionPoint(_ event: NSEvent) -> TermiodStreamTerminal.SelectionPoint? {
+        guard let renderer else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let scale = metalLayer.contentsScale
+        let x = point.x * scale
+        let y = (bounds.height - point.y) * scale
+        let left = (renderer.appearance.paddingX * scale).rounded()
+        let top = (renderer.appearance.paddingY * scale).rounded()
+        let width = CGFloat(max(1, renderer.atlas.metrics.width))
+        let height = CGFloat(max(1, renderer.atlas.metrics.height))
+        return TermiodStreamTerminal.SelectionPoint(
+            column: UInt16(clamping: Int(max(0, (x - left) / width))),
+            row: UInt16(clamping: Int(max(0, (y - top) / height))),
+            x: Double(x), y: Double(y)
+        )
+    }
+
+    private func pressSelection(_ event: NSEvent) {
+        window?.makeFirstResponder(self)
+        guard let terminal = terminal(), let point = selectionPoint(event) else { return }
+        selecting = true
+        let time = UInt64(max(0, event.timestamp) * 1_000_000_000)
+        terminal.pressSelection(at: point, time: time, interval: UInt64(NSEvent.doubleClickInterval * 1_000_000_000))
+        needsFullDraw = true
+    }
+
+    private func dragSelection(_ event: NSEvent) {
+        guard let terminal = terminal(), let renderer, let point = selectionPoint(event) else { return }
+        let scale = metalLayer.contentsScale
+        terminal.dragSelection(
+            to: point,
+            geometry: .init(
+                cellWidth: UInt32(max(1, renderer.atlas.metrics.width)),
+                paddingLeft: UInt32((renderer.appearance.paddingX * scale).rounded()),
+                screenHeight: UInt32(max(1, bounds.height * scale))
+            ),
+            // ⌥-drag selects a block, as in Ghostty.
+            rectangle: event.modifierFlags.contains(.option)
+        )
+        needsFullDraw = true
+    }
+
+    private func releaseSelection(_ event: NSEvent) {
+        selecting = false
+        guard let terminal = terminal() else { return }
+        terminal.releaseSelection(at: selectionPoint(event))
+        if copyOnSelect, let text = terminal.selectedText, !text.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        needsFullDraw = true
+    }
+
+    // MARK: - Copy
+
+    /// Edit ▸ Copy: the selection as Ghostty copies it.
+    @objc func copy(_ sender: Any?) {
+        guard let text = terminal()?.selectedText, !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc override func selectAll(_ sender: Any?) {
+        terminal()?.selectAll()
+        needsFullDraw = true
+    }
+
     /// A press on the grid goes to a program tracking the mouse, unless Shift
     /// is held: Ghostty keeps Shift-click for the terminal's own selection.
     /// A program can ask Ghostty for Shift-clicks too (`XTSHIFTESCAPE`);
@@ -516,8 +605,14 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
                                at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
 
-    override func mouseDown(with event: NSEvent) { press(event, 1) }
-    override func mouseUp(with event: NSEvent) { release(event, 1) }
+    // The left button selects, as in Ghostty, unless the program tracks the
+    // mouse and Shift is not held.
+    override func mouseDown(with event: NSEvent) {
+        if selects(event) { pressSelection(event) } else { press(event, 1) }
+    }
+    override func mouseUp(with event: NSEvent) {
+        if selecting { releaseSelection(event) } else { release(event, 1) }
+    }
     override func rightMouseDown(with event: NSEvent) { press(event, 2) }
     override func rightMouseUp(with event: NSEvent) { release(event, 2) }
     override func otherMouseDown(with event: NSEvent) {
@@ -527,7 +622,9 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         if let button = Self.otherButton(event) { release(event, button) }
     }
     override func mouseMoved(with event: NSEvent) { motion(event, nil) }
-    override func mouseDragged(with event: NSEvent) { motion(event, 1) }
+    override func mouseDragged(with event: NSEvent) {
+        if selecting { dragSelection(event) } else { motion(event, 1) }
+    }
     override func rightMouseDragged(with event: NSEvent) { motion(event, 2) }
     override func otherMouseDragged(with event: NSEvent) { motion(event, Self.otherButton(event)) }
 
@@ -600,6 +697,7 @@ struct TermiodStreamPane: NSViewRepresentable {
     let colors: TermiodStreamTerminal.Theme?
     let isSelected: Bool
     let isVisible: Bool
+    let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
     let onVisibility: (Bool) -> Void
     let onFocused: () -> Void
@@ -624,6 +722,7 @@ struct TermiodStreamPane: NSViewRepresentable {
         view.terminal = { link.streamTerminal }
         view.send = { link.send($0) }
         view.sendInput = { link.sendInput($0) }
+        view.copyOnSelect = copyOnSelect
         view.sessionID = sessionID
         view.onViewport = onViewport
         let onFocused = onFocused

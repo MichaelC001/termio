@@ -102,6 +102,30 @@ enum TermiodStreamKeyboard {
         return Data(bytes.utf8)
     }
 
+    /// Ghostty's macOS scrolling defaults (`Config.zig`): ⌘Home and ⌘End to
+    /// the top and the bottom, ⌘PageUp and ⌘PageDown by a page, ⌘↑ and ⌘↓ to
+    /// the previous and next prompt. They move this pane's view and send the
+    /// program nothing. Nil for every other key, and one the app claims.
+    @MainActor
+    static func viewportMove(_ event: NSEvent) -> TermiodStreamTerminal.ViewportMove? {
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command else { return nil }
+        let move: TermiodStreamTerminal.ViewportMove
+        switch Int(event.keyCode) {
+        case kVK_Home: move = .top
+        case kVK_End: move = .bottom
+        case kVK_PageUp: move = .pageUp
+        case kVK_PageDown: move = .pageDown
+        case kVK_UpArrow: move = .previousPrompt
+        case kVK_DownArrow: move = .nextPrompt
+        default: return nil
+        }
+        if let shortcut = Shortcut(event: event),
+           KeybindingStore.shared.surfaceUnbindTriggers.contains(shortcut.ghosttyTrigger) {
+            return nil
+        }
+        return move
+    }
+
     /// A `termio sessions send --key` press and its release, as the embedded
     /// surface's `pressKey` sends them.
     static func inputs(for press: SessionKeyPress) -> [Termiod.InputEvent.Key] {

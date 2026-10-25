@@ -205,6 +205,7 @@ struct TerminalPane: View {
                         colors: store.streamTheme(dark: colorScheme == .dark),
                         isSelected: isSelected,
                         isVisible: isVisible,
+                        copyOnSelect: settings.copyOnSelect,
                         onViewport: { grid in store.reportViewport(grid, for: id) },
                         onVisibility: { store.reportRendering($0, for: id) },
                         onFocused: { selectFocusedSurface(id) }

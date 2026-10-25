@@ -53,6 +53,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The text a program reading the clipboard (OSC 52 `?`) is given, which
     /// reaches it through `onReply`, so only the writer's answer is sent.
     private let readClipboard: () -> String?
+    /// The mouse selection's state machine and its reusable events, used only
+    /// under `lock`: Ghostty's own click, double-click and drag rules.
+    private let gesture: GhosttySelectionGesture
+    private let pressEvent: GhosttySelectionGestureEvent
+    private let dragEvent: GhosttySelectionGestureEvent
+    private let releaseEvent: GhosttySelectionGestureEvent
 
     enum Signal: Equatable {
         case title(String)
@@ -89,6 +95,27 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             throw Failure.engine("ghostty_render_state_new", GHOSTTY_OUT_OF_MEMORY)
         }
         renderState = state
+        var gesture: GhosttySelectionGesture?
+        var press: GhosttySelectionGestureEvent?
+        var drag: GhosttySelectionGestureEvent?
+        var release: GhosttySelectionGestureEvent?
+        _ = ghostty_selection_gesture_new(nil, &gesture)
+        _ = ghostty_selection_gesture_event_new(nil, &press, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS)
+        _ = ghostty_selection_gesture_event_new(nil, &drag, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG)
+        _ = ghostty_selection_gesture_event_new(nil, &release, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE)
+        guard let gesture, let press, let drag, let release else {
+            ghostty_selection_gesture_event_free(press)
+            ghostty_selection_gesture_event_free(drag)
+            ghostty_selection_gesture_event_free(release)
+            ghostty_selection_gesture_free(gesture, terminal)
+            ghostty_render_state_free(state)
+            ghostty_terminal_free(terminal)
+            throw Failure.engine("selection gesture", GHOSTTY_OUT_OF_MEMORY)
+        }
+        self.gesture = gesture
+        pressEvent = press
+        dragEvent = drag
+        releaseEvent = release
         self.onReply = onReply
         self.onSignal = onSignal
         self.readClipboard = readClipboard
@@ -271,6 +298,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     deinit {
+        ghostty_selection_gesture_event_free(pressEvent)
+        ghostty_selection_gesture_event_free(dragEvent)
+        ghostty_selection_gesture_event_free(releaseEvent)
+        ghostty_selection_gesture_free(gesture, terminal)
         ghostty_terminal_free(terminal)
         ghostty_render_state_free(renderState)
     }
@@ -469,6 +500,183 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 options.selection = selection
                 return String(decoding: try format(options), as: UTF8.self)
             }
+        }
+    }
+
+    /// Where the pointer is, for a selection: the viewport cell under it and
+    /// its position in the pane, in pixels.
+    struct SelectionPoint: Equatable {
+        var column: UInt16
+        var row: UInt16
+        var x: Double
+        var y: Double
+    }
+
+    /// What a drag needs to tell which cell the pointer is over at the edges.
+    struct SelectionGeometry: Equatable {
+        var cellWidth: UInt32
+        var paddingLeft: UInt32
+        var screenHeight: UInt32
+    }
+
+    /// A mouse press starting or extending a selection. `time` is monotonic
+    /// nanoseconds, which double- and triple-click are told from; `interval`
+    /// is the system's double-click interval.
+    func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64) {
+        locked {
+            guard var reference = viewportReference(point) else { return }
+            var position = GhosttySurfacePosition(x: point.x, y: point.y)
+            var time = time
+            var interval = interval
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &time)
+            _ = ghostty_selection_gesture_event_set(pressEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS, &interval)
+            // A single click selects nothing and clears what was selected; a
+            // double or triple click selects the word or the line at once.
+            applyGesture(pressEvent)
+        }
+    }
+
+    func dragSelection(to point: SelectionPoint, geometry: SelectionGeometry, rectangle: Bool) {
+        locked {
+            guard var reference = viewportReference(point) else { return }
+            var position = GhosttySurfacePosition(x: point.x, y: point.y)
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            var shape = GhosttySelectionGestureGeometry(
+                columns: UInt32(max(1, cols)), cell_width: max(1, geometry.cellWidth),
+                padding_left: geometry.paddingLeft, screen_height: max(1, geometry.screenHeight)
+            )
+            var rectangle = rectangle
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &shape)
+            _ = ghostty_selection_gesture_event_set(dragEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_RECTANGLE, &rectangle)
+            applyGesture(dragEvent)
+        }
+    }
+
+    func releaseSelection(at point: SelectionPoint?) {
+        locked {
+            if let point, var reference = viewportReference(point) {
+                _ = ghostty_selection_gesture_event_set(releaseEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
+            } else {
+                _ = ghostty_selection_gesture_event_set(releaseEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, nil)
+            }
+            _ = ghostty_selection_gesture_event(gesture, terminal, releaseEvent, nil)
+        }
+    }
+
+    /// Installs what a gesture event produced as the terminal's selection, or
+    /// clears it when the event produced none.
+    private func applyGesture(_ event: GhosttySelectionGestureEvent) {
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        if ghostty_selection_gesture_event(gesture, terminal, event, &selection) == GHOSTTY_SUCCESS {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection)
+        } else {
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        }
+    }
+
+    func selectAll() {
+        locked {
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            if ghostty_terminal_select_all(terminal, &selection) == GHOSTTY_SUCCESS {
+                _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection)
+            }
+        }
+    }
+
+    func clearSelection() {
+        locked {
+            ghostty_selection_gesture_reset(gesture, terminal)
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        }
+    }
+
+    var hasSelection: Bool {
+        locked {
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            return ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS
+        }
+    }
+
+    /// The selection as Ghostty copies it (`Screen.selectionString`): plain
+    /// text, soft wraps joined, trailing whitespace trimmed. Nil when nothing
+    /// is selected.
+    var selectedText: String? {
+        locked {
+            var options = GhosttyTerminalSelectionFormatOptions()
+            options.size = MemoryLayout<GhosttyTerminalSelectionFormatOptions>.size
+            options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+            options.unwrap = true
+            options.trim = true
+            var length = 0
+            let sizing = ghostty_terminal_selection_format_buf(terminal, options, nil, 0, &length)
+            guard sizing == GHOSTTY_OUT_OF_SPACE || sizing == GHOSTTY_SUCCESS else { return nil }
+            guard length > 0 else { return sizing == GHOSTTY_SUCCESS ? "" : nil }
+            var bytes = [UInt8](repeating: 0, count: length)
+            var written = 0
+            let result = bytes.withUnsafeMutableBufferPointer {
+                ghostty_terminal_selection_format_buf(terminal, options, $0.baseAddress, length, &written)
+            }
+            guard result == GHOSTTY_SUCCESS else { return nil }
+            return String(decoding: bytes.prefix(written), as: UTF8.self)
+        }
+    }
+
+    /// The cell under a pointer, in viewport coordinates, clamped to the grid.
+    private func viewportReference(_ point: SelectionPoint) -> GhosttyGridRef? {
+        var rows: UInt16 = 0
+        var cols: UInt16 = 0
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+        guard rows > 0, cols > 0 else { return nil }
+        var target = GhosttyPoint()
+        target.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        target.value.coordinate = GhosttyPointCoordinate(
+            x: min(point.column, cols - 1), y: UInt32(min(point.row, rows - 1))
+        )
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        guard ghostty_terminal_grid_ref(terminal, target, &reference) == GHOSTTY_SUCCESS else { return nil }
+        return reference
+    }
+
+    /// Where Ghostty's scrolling bindings move the view.
+    enum ViewportMove: Equatable {
+        case top, bottom, pageUp, pageDown, previousPrompt, nextPrompt
+    }
+
+    func moveViewport(_ move: ViewportMove) {
+        locked {
+            var rows: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            var behavior = GhosttyTerminalScrollViewport()
+            switch move {
+            case .top: behavior.tag = GHOSTTY_SCROLL_VIEWPORT_TOP
+            case .bottom: behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+            case .pageUp, .pageDown:
+                behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+                behavior.value.delta = (move == .pageUp ? -1 : 1) * Int(max(1, rows))
+            case .previousPrompt, .nextPrompt:
+                behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT
+                behavior.value.delta_prompt = move == .previousPrompt ? -1 : 1
+            }
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+        }
+    }
+
+    /// Whether the view follows the live screen, rather than showing history.
+    var followsLiveScreen: Bool {
+        locked {
+            var active = true
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &active)
+            return active
         }
     }
 
