@@ -2392,6 +2392,7 @@ async fn process_control(
             skills,
             reporter,
             commands,
+            homes,
             seq,
         } => {
             if !connection.capabilities.contains("agents") {
@@ -2409,7 +2410,8 @@ async fn process_control(
                     skills,
                     reporter,
                     commands,
-                );
+                )
+                .with_homes(homes);
                 // A dozen agents is a few dozen small reads, merges and renames.
                 // That is blocking work, and it must not sit on the runtime that
                 // is also carrying somebody's keystrokes.

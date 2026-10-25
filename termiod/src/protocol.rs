@@ -983,6 +983,14 @@ pub enum Control {
         /// own command, which is what every older client sends.
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         commands: std::collections::HashMap<String, String>,
+        /// Extra config folders per agent id — one per signed-in account the
+        /// user keeps beside the default (`~/.claude-2`). The one place a client
+        /// names a path, so the box still decides what it accepts: only an
+        /// existing sibling of the agent's own config home named
+        /// `<home>-<suffix>`; anything else is ignored. Absent from older
+        /// clients, which install into the default home only.
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        homes: std::collections::HashMap<String, Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

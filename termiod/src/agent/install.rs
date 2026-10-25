@@ -152,6 +152,9 @@ pub struct InstallRequest {
     /// than the manifest — the path the user authored in Settings. Empty from a
     /// client that does not send it.
     pub commands: HashMap<String, String>,
+    /// Extra config folders by agent id, one per extra account. Each is checked
+    /// by `accepted_home` before anything is written there.
+    pub homes: HashMap<String, Vec<String>>,
 }
 
 impl InstallRequest {
@@ -170,7 +173,13 @@ impl InstallRequest {
             reporter,
             binary,
             commands,
+            homes: HashMap::new(),
         }
+    }
+
+    pub fn with_homes(mut self, homes: HashMap<String, Vec<String>>) -> InstallRequest {
+        self.homes = homes;
+        self
     }
 
     pub(super) fn binary(&self) -> &str {
@@ -376,8 +385,9 @@ fn sync_hooks(
         // Sweep everything termio has ever installed, bundled declarations
         // included, so a shipped hook a user override removed or redirected is
         // cleaned too.
+        let copies = rehomed_all(catalog.all.iter(), request);
         let mut seen: Vec<&HookSpec> = Vec::new();
-        for agent in catalog.bundled.iter().chain(catalog.all.iter()) {
+        for agent in catalog.bundled.iter().chain(catalog.all.iter()).chain(copies.iter()) {
             let Some(spec) = agent.hooks.as_ref() else {
                 continue;
             };
@@ -395,8 +405,10 @@ fn sync_hooks(
         uninstall_hooks(&agent, &spec);
     }
 
+    let copies = rehomed_all(selected(catalog, request).into_iter(), request);
     selected(catalog, request)
         .into_iter()
+        .chain(copies.iter())
         .filter_map(|agent| {
             let spec = agent.hooks.as_ref()?;
             // The same rule the skill half has always followed: a hook is a
@@ -417,6 +429,76 @@ fn sync_hooks(
             Some(install_hooks(agent, spec, request))
         })
         .collect()
+}
+
+/// A copy of each agent for every extra account folder the request names for
+/// it, with every manifest path moved under that folder — so the install and
+/// sweep loops treat an account folder exactly like another agent, and no
+/// installer has to know accounts exist.
+fn rehomed_all<'a>(
+    agents: impl Iterator<Item = &'a AgentDefinition>,
+    request: &InstallRequest,
+) -> Vec<AgentDefinition> {
+    agents.flat_map(|agent| rehomed(agent, request)).collect()
+}
+
+fn rehomed(agent: &AgentDefinition, request: &InstallRequest) -> Vec<AgentDefinition> {
+    let (Some(home), Some(folders)) = (agent.config_home.as_ref(), request.homes.get(&agent.id))
+    else {
+        return Vec::new();
+    };
+    folders
+        .iter()
+        .filter_map(|folder| {
+            let folder = accepted_home(home, folder)?;
+            let moved = |path: &str| -> Option<String> {
+                if !crate::agent::manifest::is_under(path, &home.path) {
+                    return None;
+                }
+                let tail = path[home.path.len()..].trim_start_matches('/');
+                Some(if tail.is_empty() { folder.clone() } else { format!("{folder}/{tail}") })
+            };
+            let mut copy = agent.clone();
+            if let Some(spec) = copy.hooks.as_mut() {
+                if let Some(file) = spec.file.as_deref() {
+                    spec.file = Some(moved(file)?);
+                }
+                if let Some(directory) = spec.directory.as_deref() {
+                    spec.directory = Some(moved(directory)?);
+                }
+            }
+            if let Some(directory) = copy.skill_dir.as_deref() {
+                copy.skill_dir = Some(moved(directory)?);
+            }
+            // The paths are absolute now; the variable must not move them again.
+            copy.config_home = None;
+            Some(copy)
+        })
+        .collect()
+}
+
+/// The one shape of client-named folder this box writes into: an existing
+/// directory beside the agent's own config home, named `<home>-<suffix>`
+/// (`~/.claude-2`, `~/.codex-work`). It keeps the write surface the box's to
+/// fix — a client can choose among the account folders, never name `/etc` or
+/// a project checkout.
+fn accepted_home(home: &crate::agent::manifest::ConfigHome, folder: &str) -> Option<String> {
+    accepted_home_beside(&machine::resolve(&home.path, None).ok()?, folder)
+}
+
+fn accepted_home_beside(default: &Path, folder: &str) -> Option<String> {
+    let name = default.file_name()?.to_str()?;
+    let candidate = PathBuf::from(folder);
+    if !candidate.is_absolute() || candidate.parent() != default.parent() {
+        return None;
+    }
+    let suffix = candidate.file_name()?.to_str()?.strip_prefix(name)?.strip_prefix('-')?;
+    let well_formed = !suffix.is_empty()
+        && suffix.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let is_directory = std::fs::symlink_metadata(&candidate)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    (well_formed && is_directory).then(|| candidate.display().to_string())
 }
 
 /// Where a manifest path lands on this box, honouring the agent's own
@@ -1319,8 +1401,9 @@ fn sync_skills(
         // Every skills directory termio has ever installed into — bundled
         // declarations plus the live catalog — so a shipped dir a user override
         // removed or redirected is swept too.
+        let copies = rehomed_all(catalog.all.iter(), request);
         let mut seen = HashSet::new();
-        for agent in catalog.bundled.iter().chain(catalog.all.iter()) {
+        for agent in catalog.bundled.iter().chain(catalog.all.iter()).chain(copies.iter()) {
             let Some(directory) = agent.skill_dir.as_deref() else {
                 continue;
             };
@@ -1343,8 +1426,10 @@ fn sync_skills(
 
     let skill = request.reporter.skill();
     let mut seen = HashSet::new();
+    let copies = rehomed_all(selected(catalog, request).into_iter(), request);
     selected(catalog, request)
         .into_iter()
+        .chain(copies.iter())
         .filter_map(|agent| {
             let directory = agent.skill_dir.as_deref()?;
             // Install only for agents whose CLI is actually here, so a box
@@ -1490,6 +1575,26 @@ pub(super) mod tests {
     /// A request whose binary is stated rather than resolved, so a test can
     /// assert generated output byte for byte without depending on where the
     /// test binary happens to sit.
+    /// The one place a client names a path: only an existing `<home>-<suffix>`
+    /// sibling of the agent's own folder may be written into.
+    #[test]
+    fn an_account_folder_must_be_a_named_sibling_of_the_config_home() {
+        let root = std::env::temp_dir().join(format!("termiod-homes-{}", std::process::id()));
+        let default = root.join(".claude");
+        for name in [".claude-2", ".claudex-2", "nested/.claude-3"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let at = |name: &str| root.join(name).display().to_string();
+
+        assert_eq!(accepted_home_beside(&default, &at(".claude-2")), Some(at(".claude-2")));
+        assert_eq!(accepted_home_beside(&default, &at(".claude")), None);
+        assert_eq!(accepted_home_beside(&default, &at(".claudex-2")), None);
+        assert_eq!(accepted_home_beside(&default, &at("nested/.claude-3")), None);
+        assert_eq!(accepted_home_beside(&default, &at(".claude-missing")), None);
+        assert_eq!(accepted_home_beside(&default, ".claude-2"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn request(reporter: Reporter, binary: &str) -> InstallRequest {
         let mut request = InstallRequest::new(
             None,

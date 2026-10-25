@@ -55,6 +55,13 @@ extension TermioStore {
         syncSessionControlInstallation()
     }
 
+    /// Re-installs when an account folder is added or removed, so a sign-in in
+    /// a fresh folder gets termio's hooks before its first session starts.
+    func syncAccountFoldersIfNeeded() {
+        guard installedAccountFolders != settings.usageAccountFolders else { return }
+        syncAgentIntegration()
+    }
+
     func syncSessionControlInstallationIfNeeded() {
         guard installedSessionControlEnabled != settings.sessionControlEnabled else { return }
         installedSessionControlEnabled = settings.sessionControlEnabled
@@ -84,9 +91,14 @@ extension TermioStore {
         // observable object from inside the task is the kind of re-entrancy that
         // only shows up later, somewhere else.
         let commands = settings.authoredCommands()
+        // Every extra account folder gets the same hooks and skill as the
+        // default one; a session signed in there would otherwise report no
+        // status at all.
+        let homes = settings.usageAccountFolders
+        installedAccountFolders = homes
         Task {
             let outcome = await AgentIntegrationInstaller.sync(
-                hooks: hooks, skills: skills, commands: commands)
+                hooks: hooks, skills: skills, commands: commands, homes: homes)
             // Stamped for the same reason a machine's pane stamps after its own
             // install: the stamp is what "Not installed on This Mac" reads, and
             // this is the only thing that ever puts the files here. Unstamped, the

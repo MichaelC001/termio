@@ -965,7 +965,8 @@ extension Termiod {
         hooks: Termiod.AgentHalfAction,
         skills: Termiod.AgentHalfAction,
         reporter: Termiod.AgentHookReporter,
-        commands: [String: String]
+        commands: [String: String],
+        homes: [String: [String]] = [:]
     ) throws -> Termiod.AgentsInstalledPayload {
         try withControlChannel(route: route, caps: [agentCapability]) { transport, handshake in
             guard handshake.capabilities.contains(agentCapability) else {
@@ -976,7 +977,7 @@ extension Termiod {
                 transport.writeDescriptor, kind: .control,
                 payload: installAgentsPayload(
                     agents: agents, hooks: hooks, skills: skills,
-                    reporter: reporter, commands: commands))
+                    reporter: reporter, commands: commands, homes: homes))
             while true {
                 let frame = try readFrame(transport.readDescriptor)
                 guard frame.kind == .control else { continue }
