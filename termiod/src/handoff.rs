@@ -141,10 +141,11 @@ pub struct CarriedSession {
     /// reads its rings and ignores the rest.
     #[serde(default)]
     pub native_len: u64,
-    /// The session was between the pieces of a bracketed paste, which the
-    /// next image ends before anything else reaches the program.
+    /// The session's input encoders had lost the program's modes in an
+    /// earlier handoff. A snapshot of that VT carries the loss, so the next
+    /// image must not trust it either.
     #[serde(default)]
-    pub paste_open: bool,
+    pub input_modes_unknown: bool,
     /// The snapshot itself, which travels in the blob, not the header.
     #[serde(skip)]
     pub native: Vec<u8>,
@@ -680,7 +681,7 @@ mod tests {
             ring_reconstructs_screen: true,
             status_clocks: None,
             native_len: 0,
-            paste_open: false,
+            input_modes_unknown: false,
             native: Vec::new(),
         }
     }

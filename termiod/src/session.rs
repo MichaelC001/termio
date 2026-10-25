@@ -526,7 +526,7 @@ impl Session {
     /// or sent something else — so the program does not stay in a paste.
     fn close_open_paste(&mut self) {
         if let Some((_, true)) = self.paste_in_progress.take() {
-            let _ = self.input_tx.send(b"\x1b[201~".to_vec());
+            let _ = self.input_tx.send(PASTE_END.to_vec());
         }
     }
 
@@ -692,7 +692,7 @@ impl Session {
                 ring_len: self.ring_bytes as u64,
                 ring_reconstructs_screen: self.ring_reconstructs_screen,
                 status_clocks: self.status_engine.carried_clocks(std::time::Instant::now()),
-                paste_open: matches!(self.paste_in_progress, Some((_, true))),
+                input_modes_unknown: !self.input_modes_known,
                 native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
                 native: native.unwrap_or_default(),
             },
@@ -2058,7 +2058,7 @@ pub fn adopt(
         } else {
             vec![Bytes::from(ring)]
         },
-        paste_open: carried.paste_open,
+        input_modes_unknown: carried.input_modes_unknown,
         native: (!carried.native.is_empty()).then_some(carried.native),
         faithful: carried.ring_reconstructs_screen,
     };
@@ -2112,6 +2112,13 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
 /// Output this session has already produced, for an actor that is taking over
 /// rather than starting: the bytes, and whether replaying them still draws the
 /// screen they drew the first time.
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// How long a handoff waits for queued input to reach the PTY. With the
+/// snapshot wait, well inside `handoff::CARRY_TIMEOUT`.
+const INPUT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// How long a handoff waits for the VT to finish what it was fed and
 /// snapshot it. Past it the session still crosses, on ring replay. Well inside
 /// `handoff::CARRY_TIMEOUT`, which this actor must answer within or the session
@@ -2120,8 +2127,8 @@ const CARRY_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_mi
 
 struct Replay {
     chunks: Vec<Bytes>,
-    /// The previous image was in the middle of a bracketed paste.
-    paste_open: bool,
+    /// The previous image no longer knew the program's input modes.
+    input_modes_unknown: bool,
     /// The previous image's VT, as a native snapshot. When present the new VT
     /// starts from it and the chunks only refill the ring.
     native: Option<Vec<u8>>,
@@ -2135,7 +2142,7 @@ impl Replay {
     fn none() -> Replay {
         Replay {
             chunks: Vec::new(),
-            paste_open: false,
+            input_modes_unknown: false,
             native: None,
             faithful: true,
         }
@@ -2174,11 +2181,25 @@ fn start(
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let writer_pty = pty.clone();
-    tokio::spawn(async move {
+    // It knows what reached the program, so it is the one that ends a paste
+    // left open when the session's sender goes away: a handoff drops it after
+    // the last byte this image will write.
+    let input_writer = tokio::spawn(async move {
+        let mut paste_open = false;
         while let Some(bytes) = input_rx.recv().await {
             if writer_pty.write_all(&bytes).await.is_err() {
-                break;
+                return;
             }
+            let last = |marker: &[u8]| bytes.windows(marker.len()).rposition(|window| window == marker);
+            match (last(PASTE_START), last(PASTE_END)) {
+                (Some(start), Some(end)) => paste_open = start > end,
+                (Some(_), None) => paste_open = true,
+                (None, Some(_)) => paste_open = false,
+                (None, None) => {}
+            }
+        }
+        if paste_open {
+            let _ = writer_pty.write_all(PASTE_END).await;
         }
     });
 
@@ -2199,7 +2220,8 @@ fn start(
             }
         });
     let starts_from_snapshot = native.is_some();
-    let paste_open = replay.paste_open;
+    let input_modes_unknown = replay.input_modes_unknown;
+
     let sidecar = spawn_sidecar_sharing(facts.rows, facts.cols, input.clone(), native)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
@@ -2269,11 +2291,10 @@ fn start(
     // `push_ring` may have set this itself, if what was carried no longer fits
     // the cap; either way the previous actor's verdict still applies.
     session.ring_reconstructs_screen &= replay.faithful;
-    session.input_modes_known = starts_from_snapshot || session.ring_reconstructs_screen;
-    if paste_open {
-        // The previous image was between the pieces of a paste.
-        let _ = session.input_tx.send(b"\x1b[201~".to_vec());
-    }
+    // A snapshot of a VT that had already lost the program's modes carries
+    // the loss, so the previous image's verdict travels too.
+    session.input_modes_known = !input_modes_unknown && (starts_from_snapshot || session.ring_reconstructs_screen);
+
     if !session.ring_reconstructs_screen {
         // The VT this actor started is blank plus a replay that does not draw
         // the screen the program believes it is looking at — output older than
@@ -2301,6 +2322,7 @@ fn start(
         on_exit,
         sidecar.results,
         sidecar.thread,
+        input_writer,
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
@@ -2656,6 +2678,7 @@ async fn run(
     on_exit: mpsc::UnboundedSender<SessionEnded>,
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
+    input_writer: tokio::task::JoinHandle<()>,
     termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -2824,7 +2847,12 @@ async fn run(
                         Some(Ok(native)) => native,
                         _ => None,
                     };
+                    // Consuming the session closes the input channel: the
+                    // writer puts what is queued on the PTY, ends a paste the
+                    // program is still inside, and stops, so nothing typed
+                    // into this image is lost in the exec or left open.
                     let carried = session.into_carried(native);
+                    let _ = tokio::time::timeout(INPUT_FLUSH_TIMEOUT, input_writer).await;
                     // The parser is a few kilobytes of grid and a thread that
                     // has already stopped; joining it costs a scheduler turn,
                     // and skipping it would leave the thread running into the

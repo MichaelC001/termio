@@ -95,9 +95,13 @@ pub struct InputEncoder {
     /// The size last given to the mouse encoder. Setting it clears the
     /// encoder's motion deduplication, so it is set only when it changes.
     mouse_size: Option<mouse::EncoderSize>,
-    /// The mouse modes last copied in. Copying them clears the encoder's
-    /// motion deduplication too, so they are copied only when they change.
-    mouse_modes: Option<[bool; 8]>,
+    /// The cell the last mouse report named. The engine's own deduplication
+    /// is cleared each time the terminal's options are copied in, which is
+    /// after every parsed batch, so motion is deduplicated here instead.
+    last_cell: Option<(i64, i64)>,
+    /// SGR-Pixels (mode 1016) reports every pixel, so its motion is never
+    /// deduplicated by cell.
+    pixel_reports: bool,
     /// Keys whose press went out without Alt because Option typed text with
     /// them, so their repeats and release go out the same way.
     option_text_keys: std::collections::HashSet<String>,
@@ -122,7 +126,7 @@ fn check<T>(result: libghostty_vt::error::Result<T>, call: &str) -> Result<T> {
 impl InputEncoder {
     pub fn new() -> Result<Self> {
         let mut mouse = check(mouse::Encoder::new(), "mouse::Encoder::new")?;
-        mouse.set_track_last_cell(true);
+        mouse.set_track_last_cell(false);
         Ok(Self {
             key: check(key::Encoder::new(), "key::Encoder::new")?,
             key_event: check(key::Event::new(), "key::Event::new")?,
@@ -130,7 +134,8 @@ impl InputEncoder {
             mouse_event: check(mouse::Event::new(), "mouse::Event::new")?,
             modes: InputModes::default(),
             mouse_size: None,
-            mouse_modes: None,
+            last_cell: None,
+            pixel_reports: false,
             option_text_keys: std::collections::HashSet::new(),
         })
     }
@@ -143,21 +148,10 @@ impl InputEncoder {
         // Option composes text on a Mac, as Ghostty leaves it by default.
         self.key.set_macos_option_as_alt(OptionAsAlt::False);
         let mode = |mode| terminal.mode(mode).unwrap_or(false);
-        let mouse_modes = [
-            Mode::X10_MOUSE,
-            Mode::NORMAL_MOUSE,
-            Mode::BUTTON_MOUSE,
-            Mode::ANY_MOUSE,
-            Mode::UTF8_MOUSE,
-            Mode::SGR_MOUSE,
-            Mode::URXVT_MOUSE,
-            Mode::SGR_PIXELS_MOUSE,
-        ]
-        .map(mode);
-        if self.mouse_modes != Some(mouse_modes) {
-            self.mouse.set_options_from_terminal(terminal);
-            self.mouse_modes = Some(mouse_modes);
-        }
+        // Every time: which format wins depends on the order the program set
+        // them in, which only the terminal knows.
+        self.mouse.set_options_from_terminal(terminal);
+        self.pixel_reports = mode(Mode::SGR_PIXELS_MOUSE);
         self.modes = InputModes {
             rows: terminal.rows().unwrap_or(0),
             cols: terminal.cols().unwrap_or(0),
@@ -231,6 +225,13 @@ impl InputEncoder {
         if input.action == MouseAction::Press && !self.on_grid(input.at) {
             return Vec::new();
         }
+        let cell = (
+            (f64::from(input.at.x) / f64::from(input.at.cell_width.max(1))).floor() as i64,
+            (f64::from(input.at.y) / f64::from(input.at.cell_height.max(1))).floor() as i64,
+        );
+        if input.action == MouseAction::Motion && !self.pixel_reports && self.last_cell == Some(cell) {
+            return Vec::new();
+        }
         self.set_size(input.at);
         self.mouse.set_any_button_pressed(input.buttons_held);
         self.mouse_event
@@ -245,6 +246,9 @@ impl InputEncoder {
         let mut bytes = Vec::new();
         if let Err(error) = self.mouse.encode_to_vec(&self.mouse_event, &mut bytes) {
             eprintln!("termiod: mouse event not encoded: {error}");
+        }
+        if !bytes.is_empty() {
+            self.last_cell = Some(cell);
         }
         bytes
     }
@@ -682,6 +686,25 @@ mod tests {
         vt.vt_write(b"x");
         any.refresh(&vt);
         assert!(any.mouse(&moved(26.0)).is_empty(), "still the same cell after output");
+    }
+
+    /// The format is the one the program set last, even when it reasserts a
+    /// mode that was already on.
+    #[test]
+    fn the_mouse_format_follows_the_order_modes_were_set() {
+        let mut vt = VtTerminal::new(10, 40).unwrap();
+        let mut encoder = encoder(&mut vt, b"\x1b[?1000h\x1b[?1015h\x1b[?1006h");
+        let click = MouseInput {
+            action: MouseAction::Press,
+            button: Some(1),
+            mods: 0,
+            at: Pointer { x: 15.0, y: 10.0, cell_width: 10, cell_height: 20 },
+            buttons_held: true,
+        };
+        assert_eq!(encoder.mouse(&click), b"\x1b[<0;2;1M", "SGR, set last");
+        vt.vt_write(b"\x1b[?1015h");
+        encoder.refresh(&vt);
+        assert_eq!(encoder.mouse(&click), b"\x1b[32;2;1M", "urxvt, set again");
     }
 
     /// Option-L types `@` on a German Mac. It must arrive as `@`, as it does
