@@ -683,6 +683,125 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
+    /// A link under the pointer: what it opens and the cells it covers on its
+    /// row, for the underline.
+    struct Link: Equatable {
+        var url: String
+        var row: UInt16
+        var columns: ClosedRange<UInt16>
+    }
+
+    /// The link at a viewport cell, as Ghostty finds it: an OSC 8 hyperlink
+    /// first, then a URL or a path its default pattern (`config/url.zig`)
+    /// matches in the row's text.
+    func link(at point: SelectionPoint) -> Link? {
+        locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            guard point.row < rows, point.column < cols else { return nil }
+            if let uri = hyperlink(column: point.column, row: point.row) {
+                var first = point.column
+                var last = point.column
+                while first > 0, hyperlink(column: first - 1, row: point.row) == uri { first -= 1 }
+                while last + 1 < cols, hyperlink(column: last + 1, row: point.row) == uri { last += 1 }
+                return Link(url: uri, row: point.row, columns: first ... last)
+            }
+            // The row's text, with the column each character came from.
+            var text = ""
+            var columnAt: [UInt16] = []
+            var buffer = [UInt32](repeating: 0, count: 16)
+            for column in 0 ..< cols {
+                guard var reference = cellReference(column: column, row: point.row) else { return nil }
+                var length = 0
+                let result = buffer.withUnsafeMutableBufferPointer {
+                    ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
+                }
+                var cell = ""
+                if result == GHOSTTY_SUCCESS, length > 0 {
+                    for scalar in buffer.prefix(length).compactMap(Unicode.Scalar.init) {
+                        cell.unicodeScalars.append(scalar)
+                    }
+                }
+                if cell.isEmpty {
+                    // A wide character's second half adds no text.
+                    var raw: GhosttyCell = 0
+                    var wide = GHOSTTY_CELL_WIDE_NARROW
+                    if ghostty_grid_ref_cell(&reference, &raw) == GHOSTTY_SUCCESS {
+                        _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+                    }
+                    if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { continue }
+                    cell = " "
+                }
+                text += cell
+                columnAt += Array(repeating: column, count: cell.utf16.count)
+            }
+            guard let pattern = Self.linkPattern else { return nil }
+            let range = NSRange(location: 0, length: (text as NSString).length)
+            for match in pattern.matches(in: text, range: range) {
+                let start = columnAt[match.range.location]
+                let end = columnAt[match.range.location + match.range.length - 1]
+                guard (start ... end).contains(point.column) else { continue }
+                return Link(url: (text as NSString).substring(with: match.range), row: point.row, columns: start ... end)
+            }
+            return nil
+        }
+    }
+
+    private func cellReference(column: UInt16, row: UInt16) -> GhosttyGridRef? {
+        var target = GhosttyPoint()
+        target.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        target.value.coordinate = GhosttyPointCoordinate(x: column, y: UInt32(row))
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        guard ghostty_terminal_grid_ref(terminal, target, &reference) == GHOSTTY_SUCCESS else { return nil }
+        return reference
+    }
+
+    private func hyperlink(column: UInt16, row: UInt16) -> String? {
+        guard var reference = cellReference(column: column, row: row) else { return nil }
+        var length = 0
+        guard ghostty_grid_ref_hyperlink_uri(&reference, nil, 0, &length) == GHOSTTY_OUT_OF_SPACE, length > 0 else {
+            return nil
+        }
+        var bytes = [UInt8](repeating: 0, count: length)
+        guard bytes.withUnsafeMutableBufferPointer({
+            ghostty_grid_ref_hyperlink_uri(&reference, $0.baseAddress, length, &length)
+        }) == GHOSTTY_SUCCESS else { return nil }
+        return String(decoding: bytes.prefix(length), as: UTF8.self)
+    }
+
+    /// Ghostty's default URL and path pattern (`src/config/url.zig`), with
+    /// one change ICU needs: its lookbehind must be bounded, so `\$\d*`
+    /// becomes `\$\d{0,9}`.
+    static let linkPattern: NSRegularExpression? = {
+        let schemes = #"https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:"#
+        let ipv6 = #"(?:\[[:0-9a-fA-F]+(?:[:0-9a-fA-F]*)+\](?::[0-9]+)?)"#
+        let schemeCharacters = #"[\w\-.~:/?#@!$&*+,;=%]"#
+        let pathCharacters = #"[\w\-.~:\/?#@!$&*+;=%]"#
+        let bracketedSuffix = #"(?:[\(\[]\w*[\)\]])?"#
+        let noTrailingPunctuation = #"(?<![,.])"#
+        let noTrailingColon = #"(?<!:)"#
+        let dottedLookahead = #"(?=[\w\-.~:\/?#@!$&*+;=%]*\.)"#
+        let undottedLookahead = #"(?![\w\-.~:\/?#@!$&*+;=%]*\.)"#
+        let dottedSpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]*[\/.])*"#
+        let anySpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]+)*"#
+        let scheme = "(?:" + schemes + ")(?:" + ipv6 + "|" + schemeCharacters + "+" + bracketedSuffix + ")+" + noTrailingPunctuation
+        let rootedPrefix = #"(?:\.\.\/|\.\/|(?<!\w)~\/|(?:[\w][\w\-.]*\/)*(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))"#
+        let rooted = rootedPrefix + "(?:" + dottedLookahead + pathCharacters + "+" + dottedSpaceSegments + noTrailingColon
+            + "|" + undottedLookahead + pathCharacters + "+" + anySpaceSegments + noTrailingColon + ")"
+        let barePrefix = #"(?<!\$\d{0,9})(?<!\w)[\w][\w\-.]*\/"#
+        let bare = dottedLookahead + barePrefix + pathCharacters + "+" + noTrailingColon
+        do {
+            return try NSRegularExpression(pattern: scheme + "|" + rooted + "|" + bare)
+        } catch {
+            // Only detected links go; OSC 8 hyperlinks still work.
+            Log.termiod.error("link pattern does not compile: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }()
+
     /// Whether the view follows the live screen, rather than showing history.
     var followsLiveScreen: Bool {
         locked {
