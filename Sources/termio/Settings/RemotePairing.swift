@@ -297,7 +297,7 @@ struct RemotePairingSection: View {
                 unpublished(message)
             }
         } header: {
-            SectionHeaderLabel(title: localized("Mobile"))
+            SectionHeaderLabel(title: localized("Pairing"))
         } footer: {
             Text(footnote)
                 .font(.settingsDetail)

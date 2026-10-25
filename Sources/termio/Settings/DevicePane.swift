@@ -55,6 +55,8 @@ struct DevicePane: View {
         _model = StateObject(wrappedValue: DevicePaneModel(device: machine, settings: settings))
     }
 
+    @ObservedObject private var pairing = PairingModel.shared
+
     var body: some View {
         Form {
             Section { hero }
@@ -87,6 +89,12 @@ struct DevicePane: View {
         .formStyle(.grouped)
         .navigationDestination(for: MachineAgentsRoute.self) { _ in
             MachineAgentsPane(machine: machine, settings: settings, model: model)
+        }
+        // On the Form, not the Pairing section: the section is the last row of a
+        // lazy list, and the menu bar's Pair iPhone… must open the sheet before
+        // anyone has scrolled to it. Only this Mac's pane presents it.
+        .sheet(isPresented: machine.isLocal ? $pairing.showsSheet : .constant(false)) {
+            PairingSheet()
         }
     }
 
