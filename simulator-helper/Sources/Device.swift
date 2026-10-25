@@ -30,8 +30,11 @@ final class Device: @unchecked Sendable {
     private var surfaceID: IOSurfaceID?
     private var currentSurface: IOSurface?
     private var lastSurfaceCheckFailure: String?
-    /// Bumped by `detach`; what was being made before it is not cached after.
+    /// Bumped by `detach` and by a new boot; what was being made before it is
+    /// not cached after.
     private var generation = 0
+    /// The boot the cached state belongs to, by its marker.
+    private var knownBoot: String?
     /// The screen edge the finger now down on the pane went down on, held for
     /// its whole stroke: iOS reads a swipe from an edge as a system gesture
     /// only when every report of it names that edge.
@@ -255,7 +258,9 @@ final class Device: @unchecked Sendable {
     /// device renders three pixels per point, and a caller measuring in the
     /// image then tapping that number would land three times too far.
     func screenshot(to path: String) async throws -> [String: Any] {
-        let panelImage = try await SimulatorImage(framebuffer: currentFramebuffer(), logger: nil).image()
+        // Under the lock, as attach and detach write the same cache.
+        let framebuffer = try lock.withLock { try currentFramebuffer() }
+        let panelImage = try await SimulatorImage(framebuffer: framebuffer, logger: nil).image()
         // The framebuffer is the panel; a rotated interface is turned upright so
         // the image matches the points `inspect` and `tap` speak.
         let image = panelImage.flatMap { upright($0, turn: turn) }
@@ -310,7 +315,28 @@ final class Device: @unchecked Sendable {
     /// it, else from the record of this helper's own last turn — then works out
     /// the interface's turn, and reports a change as a `rotated` event.
     @discardableResult
+    /// Forgets what belongs to a boot when the device has booted again since
+    /// it was last asked — including a reboot made outside Termio, which no
+    /// detach announces. A boot starts portrait, with a new HID service and
+    /// accessibility bridge; the old connection would send input nowhere.
+    private func noteBoot() {
+        let current = boot
+        lock.withLock {
+            guard current != knownBoot else { return }
+            if knownBoot != nil {
+                orientation = .portrait
+                interface = .upright
+                hid = nil
+                readers.removeAll()
+                strokeEdge = nil
+                generation += 1
+            }
+            knownBoot = current
+        }
+    }
+
     func refreshOrientation() async -> SimulatorDeviceOrientation {
+        noteBoot()
         var read: SimulatorDeviceOrientation?
         if Self.coreDeviceReportsDisplays {
             read = try? await simulator.orientation.current()
@@ -443,10 +469,17 @@ final class Device: @unchecked Sendable {
     }
 
     private func connectedHID() async throws -> SimulatorHID {
+        noteBoot()
         let (cached, started) = lock.withLock { (self.hid, generation) }
         if let cached { return cached }
         let connected = try await simulator.hid.connect()
-        lock.withLock { if generation == started { self.hid = connected } }
+        // Made across a detach: it reaches the boot left behind, where input
+        // is lost, so the call fails where it can be retried.
+        guard lock.withLock({ () -> Bool in
+            guard generation == started else { return false }
+            self.hid = connected
+            return true
+        }) else { throw HelperError.restarted(simulator.udid) }
         return connected
     }
 
@@ -546,11 +579,16 @@ final class Device: @unchecked Sendable {
 
     private func automation(_ method: AXBridgeFrontmostMethod? = nil) throws -> any UIAutomation {
         let method = method ?? lock.withLock { frontmostMethod }
+        noteBoot()
         let (cached, started) = lock.withLock { (readers[method], generation) }
         if let cached { return cached }
         let created = try simulator.uiAutomation(
             backend: UIAutomationBackend(resolvedName: .axBridgeExclusive, frontmostMethod: method))
-        lock.withLock { if generation == started { readers[method] = created } }
+        guard lock.withLock({ () -> Bool in
+            guard generation == started else { return false }
+            readers[method] = created
+            return true
+        }) else { throw HelperError.restarted(simulator.udid) }
         return created
     }
 }

@@ -107,6 +107,7 @@ struct Request {
 enum HelperError: LocalizedError {
     case missing(String)
     case outOfRange(String, Double)
+    case restarted(String)
     case unknownOperation(String)
     case noSuchDevice(String)
     case notBooted(String, String)
@@ -120,6 +121,7 @@ enum HelperError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missing(let key): "missing parameter '\(key)'"
+        case .restarted(let udid): "simulator \(udid) was detached or restarted while this ran; try again"
         case .outOfRange(let key, let limit): "'\(key)' must be a finite number no larger than \(Int(limit))"
         case .unknownOperation(let op): "unknown op '\(op)'"
         case .noSuchDevice(let udid): "no simulator with UDID \(udid)"

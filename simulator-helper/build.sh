@@ -82,6 +82,7 @@ echo "==> Compiling termio-sim"
 mkdir -p "$out_dir/Simulator"
 # The swiftmodules are binary, so the helper must be compiled by the same Swift
 # that built idb — which is the case whenever both come from this script.
+rm -f "$out_dir/termio-sim"
 xcrun swiftc -O -target arm64-apple-macos15 \
     -I "$release" \
     -I "$idb/FBControlCoreObjC/include" \
@@ -93,6 +94,10 @@ xcrun swiftc -O -target arm64-apple-macos15 \
     -Xlinker "$idb/PrivateHeaders/AccessibilityPlatformTranslation/AccessibilityPlatformTranslation.tbd" \
     -o "$out_dir/termio-sim"
 
+# A fresh file, never written over the old one: the kernel keeps a signed
+# binary's code signature cached against the file, and a rebuild copied on top
+# of it is refused when the simulator spawns it ("Codesigning issue").
+rm -f "$out_dir/Simulator/SimulatorFrameworkBridge-iOS"
 cp "$bridge" "$out_dir/Simulator/SimulatorFrameworkBridge-iOS"
 cp "$idb/LICENSE" "$out_dir/Simulator/LICENSE-idb"
 echo "==> termio-sim ready in $out_dir"
