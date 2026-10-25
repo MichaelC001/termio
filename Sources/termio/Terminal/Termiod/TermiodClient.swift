@@ -1159,8 +1159,12 @@ extension Termiod {
 /// is pinned by tests.
 struct TerminalKeyframeHold {
     var surfaceReadyAfter: DispatchTime = .now()
-    /// The grid libghostty last reported this surface laid out at.
-    private(set) var surfaceGrid: TerminalGrid
+    /// The grid libghostty last reported this surface laid out at, or nil
+    /// until it has reported one. Nil is not a guess to be filled in: a surface
+    /// made before its first layout pass sits at the frame it was created with
+    /// (traced at 15x40 under a 35x68 pane on relaunch), and a keyframe painted
+    /// there is wrapped at that width before the pane ever reflows it.
+    private(set) var surfaceGrid: TerminalGrid?
     /// Bumped whenever a hold opens or closes, so a deadline armed for an older
     /// keyframe does nothing when it fires.
     private(set) var epoch: UInt64 = 0
@@ -1181,7 +1185,7 @@ struct TerminalKeyframeHold {
         painting = true
     }
 
-    init(surfaceGrid: TerminalGrid) {
+    init(surfaceGrid: TerminalGrid? = nil) {
         self.surfaceGrid = surfaceGrid
     }
 
@@ -1196,7 +1200,10 @@ struct TerminalKeyframeHold {
         epoch &+= 1
         let asked = painting
         painting = false
-        if DispatchTime.now() >= surfaceReadyAfter, grid == surfaceGrid || asked {
+        // Not even a repaint this client asked for goes through before the
+        // surface has a grid: there is no right width to paint it at yet.
+        if let surfaceGrid, DispatchTime.now() >= surfaceReadyAfter,
+           grid == surfaceGrid || asked {
             keyframe = nil
             keyframeGrid = nil
             return [repaint]
@@ -1220,6 +1227,13 @@ struct TerminalKeyframeHold {
     /// The surface reached a grid. Answers what to paint, and whether the
     /// keyframe painted was the one waiting for exactly this grid — which the
     /// caller reads as "the repaint has happened, ask for nothing".
+    /// The surface reported a grid while there was nowhere to paint: the link
+    /// is between connections. It is still the surface's grid, and libghostty
+    /// does not repeat an unchanged one.
+    mutating func record(_ grid: TerminalGrid) {
+        surfaceGrid = grid
+    }
+
     mutating func surfaceReached(_ grid: TerminalGrid) -> (paint: [Data], painted: Bool) {
         surfaceGrid = grid
         guard keyframe != nil, keyframeGrid == grid else { return ([], false) }
@@ -1275,9 +1289,11 @@ struct TerminalKeyframeHold {
         queued.removeAll(keepingCapacity: false)
     }
 
-    /// Stop waiting and paint. Only teardown ends here — a surface that is going
+    /// Stop waiting and paint. Teardown ends here — a surface that is going
     /// away has no repair coming, so an imperfectly wrapped final frame beats a
-    /// blank one. Every other ending goes through `abandon`.
+    /// blank one — and so does a surface that never reported a grid at all,
+    /// whose repair comes from its first report. Every other ending goes
+    /// through `abandon`.
     mutating func release() -> [Data] {
         guard let repaint = keyframe else { return [] }
         keyframe = nil
@@ -1341,9 +1357,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether the viewport now pending was measured while a person was
     /// dragging geometry. See `setViewport`.
     private var viewportIsUserDriven = false
-    /// The grid libghostty says this surface is actually laid out at. Read only
-    /// by the repaint arming below — it is never what goes on the wire.
-    private var surfaceGrid: TerminalGrid
+    /// The grid libghostty says this surface is actually laid out at, nil until
+    /// it first says. Read only by the repaint arming below — it is never what
+    /// goes on the wire.
+    private var surfaceGrid: TerminalGrid?
     /// A local viewport growth that has not reached the daemon yet. While this
     /// is true the surface may widen with the pane instead of letterboxing at
     /// the old session grid; shrinking never takes this path.
@@ -1538,8 +1555,13 @@ final class TermiodSessionLink: @unchecked Sendable {
         self.rendering = rendering
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
-        surfaceGrid = grid
-        hold = TerminalKeyframeHold(surfaceGrid: grid)
+        // `rows`/`cols` are the size this attachment asks for, not one the
+        // surface has been laid out at. Seeding the hold with them let the
+        // attach keyframe paint into a surface still at its creation frame
+        // whenever the guess matched the session, which on every relaunch it
+        // does — and a matching guess also meant no repaint was ever armed.
+        surfaceGrid = nil
+        hold = TerminalKeyframeHold()
     }
 
     /// Kicks off connect → hello → attach in the background. The caller wires
@@ -1867,13 +1889,24 @@ final class TermiodSessionLink: @unchecked Sendable {
         outputLock.unlock()
         workQueue.asyncAfter(deadline: readyAfter) { [self] in
             outputLock.lock()
-            guard !closed, hold.surfaceReadyAfter == readyAfter else {
+            guard hold.surfaceReadyAfter == readyAfter else {
                 outputLock.unlock()
+                return
+            }
+            // Dropping a report made between connections left the next attach
+            // waiting on a grid nobody would report again: a pane that does not
+            // move is not re-measured, and its keyframe stayed held.
+            guard !closed else {
+                hold.record(size)
+                outputLock.unlock()
+                surfaceGrid = size
                 return
             }
             let (paint, painted) = hold.surfaceReached(size)
             for chunk in paint { onOutput?(chunk) }
+            let holding = hold.isHolding
             outputLock.unlock()
+            let firstReport = surfaceGrid == nil
             let changed = surfaceGrid != size
             surfaceGrid = size
             if changed {
@@ -1890,6 +1923,12 @@ final class TermiodSessionLink: @unchecked Sendable {
                 // go and fetch a round trip later, so there is nothing left to
                 // ask for and nothing to repair.
                 repaintPending = false
+            } else if firstReport, repaintPending, !holding {
+                // A repair owed from before the surface had a grid — a keyframe
+                // painted blind, or a flood that abandoned one. The arming that
+                // was deferred for want of a grid happens now, backstop included,
+                // so a first report a column off the session is still repaired.
+                armRepaintLocked()
             } else if authoritativeGrid != size {
                 repaintPending = true
             } else if repaintPending {
@@ -1909,6 +1948,11 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// a resync round trip and nothing else: the keyframe is dropped rather than
     /// painted through the wrong grid.
     private static let keyframeHoldDeadline = DispatchTimeInterval.milliseconds(250)
+
+    /// The further wait for a surface that has not reported any grid yet. A
+    /// mounted pane reports within its first layout pass; this bounds the wait
+    /// for one that never will.
+    private static let unreportedSurfaceGrace = DispatchTimeInterval.milliseconds(1750)
 
     /// How much output may queue behind a held keyframe before the wait is not
     /// worth it. A program that floods through a resize would otherwise grow
@@ -1954,10 +1998,37 @@ final class TermiodSessionLink: @unchecked Sendable {
         let epoch = hold.epoch
         outputLock.unlock()
         guard waiting else { return }
-        workQueue.asyncAfter(deadline: .now() + Self.keyframeHoldDeadline) { [self] in
+        armKeyframeDeadline(for: epoch)
+    }
+
+    private func armKeyframeDeadline(for epoch: UInt64, surfaceUnreported: Bool = false) {
+        let delay = surfaceUnreported ? Self.unreportedSurfaceGrace : Self.keyframeHoldDeadline
+        workQueue.asyncAfter(deadline: .now() + delay) { [self] in
             outputLock.lock()
             guard epoch == hold.epoch else {
                 outputLock.unlock()
+                return
+            }
+            // A surface that has never reported is usually one about to be laid
+            // out — the launch case — and giving up would only ask for a repaint
+            // with no grid to land on either, so it gets one longer wait. Past
+            // that it is a surface nobody mounts (a session surfaced for the
+            // phone or the CLI) or a bridge whose phone never sent a size, and
+            // the keyframe is painted the way it always was: the screen stays
+            // readable, and the surface's first report finds `repaintPending`
+            // and asks for the repair.
+            guard hold.surfaceGrid != nil else {
+                guard surfaceUnreported else {
+                    outputLock.unlock()
+                    armKeyframeDeadline(for: epoch, surfaceUnreported: true)
+                    return
+                }
+                for chunk in hold.release() { onOutput?(chunk) }
+                outputLock.unlock()
+                repaintPending = true
+                Log.termiod.info("""
+                resize-trace \(self.sessionName.prefix(8), privacy: .public) keyframe-unreported-surface
+                """)
                 return
             }
             hold.discard()
@@ -1992,6 +2063,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Must run on `workQueue`.
     private func armRepaintLocked() {
         guard !closed, attached else { return }
+        // A surface with no grid yet cannot take the repair, and asking for it
+        // anyway only queues the answer behind the same unknown: a flood on a
+        // surface nobody mounts turned that into a resync every 500ms. The debt
+        // is kept, and `noteSurfaceGrid` pays it on the first report.
+        guard surfaceGrid != nil else {
+            repaintPending = true
+            return
+        }
         if authoritativeGrid == surfaceGrid {
             repaintPending = false
             requestResyncLocked()
