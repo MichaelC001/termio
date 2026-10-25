@@ -194,6 +194,34 @@ pub fn request_once(
     text: &str,
     extra: &str,
 ) -> Outcome {
+    let reply = request_reply(channel, timeout_seconds, op, format, target, agent, text, extra);
+    finish(reply, format, extra)
+}
+
+/// Whether the app's reply says it has no such session — the one error after
+/// which the app has done nothing, so another owner may still answer. The
+/// text form is the app's own wording (`targetNotFoundMessage`).
+pub fn is_not_found(reply: &Option<String>, format: &str) -> bool {
+    let Some(reply) = reply else { return false };
+    if format == "json" {
+        reply.contains("\"error\":\"not_found\"")
+    } else {
+        reply.starts_with("error: No session '")
+    }
+}
+
+/// The app's reply, unprinted, or `None` after a failure this prints itself:
+/// no listener, a refused connection, an empty reply.
+pub fn request_reply(
+    channel: &Channel,
+    timeout_seconds: u64,
+    op: &str,
+    format: &str,
+    target: &str,
+    agent: &str,
+    text: &str,
+    extra: &str,
+) -> Option<String> {
     let socket = socket_path(channel);
     let request = build_request(op, format, target, agent, text, extra);
     let response = exchange(&socket, &request, timeout_seconds);
@@ -221,7 +249,7 @@ pub fn request_once(
                     socket.display()
                 ),
             }
-            return Outcome::Error;
+            return None;
         }
     };
     let response = String::from_utf8_lossy(&response);
@@ -230,8 +258,17 @@ pub fn request_once(
         eprintln!(
             "termio: no reply from the app within {timeout_seconds}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT"
         );
-        return Outcome::Error;
+        return None;
     }
+    Some(response.to_string())
+}
+
+/// Prints a reply from `request_reply` and turns it into the outcome the exit
+/// code reports.
+pub fn finish(reply: Option<String>, format: &str, extra: &str) -> Outcome {
+    let Some(response) = reply else {
+        return Outcome::Error;
+    };
     println!("{response}");
     if response.starts_with("error:") || response.contains("\"ok\":false") {
         return Outcome::Error;

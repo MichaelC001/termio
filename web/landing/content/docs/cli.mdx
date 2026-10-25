@@ -210,13 +210,15 @@ Every session runs on a [Termio server](/docs/server), and the app is only one
 way to see it. So `termio session` works with no app at all:
 
 - With the app running, a command acts on the sessions of your project, as
-  above.
-- A session the app did not make goes to the Termio server directly. The app
-  names its sessions by UUID, so a session with another name, from `create` or
-  `attach`, is the server’s alone.
+  above. When the app answers that it has no such session, such as one
+  `create` made from another project, the command goes to the Termio server.
 - With no app running, every command goes to the Termio server. `list` shows
   every session on the machine, and `run` starts its command in a new session
-  there.
+  there, under a shell that stays after the command exits.
+
+With the app running, `send` reads a first word that is not a link or id as
+prompt text and starts an agent with it, so address a server session by its id
+there.
 
 `list --all` shows every session on the machine even when the app is running.
 `create` and `attach` always act on the server:
@@ -234,7 +236,7 @@ What only the app has: `spawn`, `watch`, `focus`, pane placement, `--key` and
 
 `-H <host>` (`--host`) runs any command on another machine, over your own SSH,
 with that machine’s own `termio`. The host is an alias from `~/.ssh/config`,
-or `user@host`. `-H` can stand anywhere on the line.
+or `user@host`. `-H` goes before the command.
 
 ```bash
 termio -H mybox session ls

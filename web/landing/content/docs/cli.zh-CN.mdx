@@ -3,7 +3,7 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: c1ba717ffc5128f84124855fd60b12222509d9e8387f21cef40840e721f56904
+  source_hash: bc59f027684c3a9c1a93e383b47c157012e71d9d007f212a811eb87d93b681c5
   generated_at: 2026-10-25
 ---
 
@@ -172,11 +172,13 @@ termio session spawn "summarize the failing CI job" --wait --timeout 120000
 每个会话都运行在 [Termio server](/docs/server) 上，应用只是看到它的一种方式。所以
 `termio session` 完全不依赖应用：
 
-- 应用在运行时，命令作用于你所在项目的会话，如上文所述。
-- 不是应用创建的会话直接交给 Termio server。应用用 UUID 给自己的会话命名，所以名字不是
-  UUID 的会话（来自 `create` 或 `attach`）只属于 server。
+- 应用在运行时，命令作用于你所在项目的会话，如上文所述。当应用回答它没有这个会话时（比如
+  从另一个项目用 `create` 建的会话），命令交给 Termio server。
 - 没有应用在运行时，所有命令都交给 Termio server。`list` 列出这台设备上的全部会话，`run`
-  在那里的一个新会话里运行命令。
+  在那里的一个新会话里运行命令，命令结束后会话里的 shell 仍然保留。
+
+应用在运行时，`send` 会把不是链接或 id 的第一个词当成提示文本，并用它启动一个 Agent，所以
+这时请用 id 来指定 server 上的会话。
 
 即使应用在运行，`list --all` 也会列出这台设备上的全部会话。`create` 和 `attach` 总是作用于
 server：
@@ -193,7 +195,7 @@ termio session read build --lines 20
 ## 另一台设备：`-H`
 
 `-H <host>`（`--host`）通过你自己的 SSH、用那台设备自己的 `termio`，在另一台设备上运行任意
-命令。主机是 `~/.ssh/config` 里的别名，或者 `user@host`。`-H` 可以出现在命令行的任何位置。
+命令。主机是 `~/.ssh/config` 里的别名，或者 `user@host`。`-H` 写在命令之前。
 
 ```bash
 termio -H mybox session ls

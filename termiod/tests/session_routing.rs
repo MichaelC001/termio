@@ -120,14 +120,20 @@ fn without_the_app_every_session_verb_goes_to_termiod() {
 #[test]
 fn run_without_the_app_starts_a_session_on_termiod() {
     let daemon = start_daemon("run");
-    let ran = termio(&daemon, &["session", "run", "--json", "echo ran-on-termiod; cat"]);
+    let ran = termio(&daemon, &["session", "run", "--json", "echo ran-on-termiod"]);
     assert!(ran.status.success(), "run failed: {ran:?}");
     let reply: serde_json::Value = serde_json::from_slice(&ran.stdout).expect("run --json");
     let id = reply["id"].as_str().expect("an id").to_string();
+    // The command has exited; its output is still there to read, under a
+    // shell, the way the app's `run` leaves it.
     assert!(screen_shows(&daemon, &id, "ran-on-termiod"));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(screen_shows(&daemon, &id, "ran-on-termiod"), "the session ended with its command");
 
-    let placed = termio(&daemon, &["session", "run", "--direction", "down", "true"]);
+    let placed = termio(&daemon, &["session", "run", "--direction", "down", "--json", "true"]);
     assert!(!placed.status.success(), "placing a pane needs the app");
+    let refusal: serde_json::Value = serde_json::from_slice(&placed.stdout).expect("a JSON refusal");
+    assert_eq!(refusal["error"], "needs_app");
 }
 
 /// The old names still parse: shipped hooks, skills and apps run them.
@@ -170,14 +176,24 @@ fn host_runs_the_same_words_on_the_host() {
         stdout(&output)
     };
 
+    // `session` goes out under its old name, which every build parses.
     let remote = run(&["-H", "box", "session", "ls", "--all"]);
     let lines: Vec<&str> = remote.lines().collect();
     assert!(lines.contains(&"box"), "ssh host: {remote}");
     let command = lines.last().expect("a remote command");
-    assert!(command.ends_with(" session ls --all"), "remote command: {command}");
+    assert!(command.ends_with(" sessions ls --all"), "remote command: {command}");
 
     let remote = run(&["server", "--host", "box", "status", "--json"]);
     assert!(remote.trim_end().ends_with(" server status --json"), "remote command: {remote}");
+
+    // After the command word, `-H` is the verb's text, never a host.
+    let text = Command::new(CLIENT)
+        .args(["session", "send", "8de0b387", "-Hello"])
+        .env("HOME", &daemon.home)
+        .env("PATH", &path)
+        .output()
+        .expect("run termio");
+    assert_eq!(text.status.code(), Some(2), "`-Hello` must not become a host: {text:?}");
 
     let refused = Command::new(CLIENT)
         .args(["-H", "box", "open"])
@@ -188,8 +204,9 @@ fn host_runs_the_same_words_on_the_host() {
     assert!(!refused.status.success(), "`open` with --host must refuse");
 }
 
-/// A stand-in for the app's control socket that answers every request with
-/// success and counts them.
+/// A stand-in for the app's control socket. It knows one session, `8de0b387`,
+/// answers "not found" for any other target the way the app words it, and
+/// counts the requests it receives.
 fn fake_app(home: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -202,41 +219,111 @@ fn fake_app(home: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let mut request = [0u8; 4096];
-            let _ = stream.read(&mut request);
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            // `app_running` connects and closes without a request.
+            if read == 0 {
+                continue;
+            }
             counted.fetch_add(1, Ordering::SeqCst);
-            let _ = stream.write_all(b"{\"ok\":true}\n");
+            let request: serde_json::Value =
+                serde_json::from_slice(&buffer[..read]).unwrap_or_default();
+            let target = request["target"].as_str().unwrap_or("");
+            let reply = if target.is_empty() || target == "8de0b387" {
+                "{\"ok\":true}\n".to_string()
+            } else if request["format"] == "json" {
+                "{\"error\":\"not_found\",\"message\":\"x\",\"ok\":false,\"schema_version\":1}\n"
+                    .to_string()
+            } else {
+                format!("error: No session '{target}' in this project.\n")
+            };
+            let _ = stream.write_all(reply.as_bytes());
         }
     });
     requests
 }
 
-/// With the app running, a session the app made (a UUID name) is the app's to
-/// drive, and a session only termiod holds by another name is termiod's.
+/// With the app running, the app answers first. A session it does not know
+/// goes to termiod only after the app says so, and a bare name in `send` stays
+/// prompt text for the app, as it always was.
 #[test]
-fn with_the_app_a_session_it_did_not_make_goes_to_termiod() {
+fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
     use std::sync::atomic::Ordering;
     let daemon = start_daemon("app");
-    let created = termio(&daemon, &["session", "create", "--name", "headless", "--", "/bin/cat"]);
+    let created = termio(&daemon, &["session", "create", "--name", "headless", "--json", "--", "/bin/cat"]);
     assert!(created.status.success(), "create failed: {created:?}");
+    let reply: serde_json::Value = serde_json::from_slice(&created.stdout).expect("create --json");
+    let id = reply["id"].as_str().expect("an id").to_string();
     let app = fake_app(&daemon.home);
 
-    let sent = termio(&daemon, &["session", "send", "headless", "to-the-daemon"]);
+    let sent = termio(&daemon, &["session", "send", &id, "to-the-daemon"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
-    assert_eq!(app.load(Ordering::SeqCst), 0, "a termiod-only session reached the app");
-    assert!(screen_shows(&daemon, "headless", "to-the-daemon"));
+    assert_eq!(app.load(Ordering::SeqCst), 1, "the app was not asked first");
+    assert!(screen_shows(&daemon, &id, "to-the-daemon"));
 
     let sent = termio(&daemon, &["session", "send", "8de0b387", "to-the-app"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
-    assert_eq!(app.load(Ordering::SeqCst), 1, "an app session did not reach the app");
+    let after_app_send = app.load(Ordering::SeqCst);
 
-    let listed = termio(&daemon, &["session", "ls"]);
-    assert!(listed.status.success(), "ls failed: {listed:?}");
-    assert_eq!(app.load(Ordering::SeqCst), 2, "`ls` with the app running asks the app");
+    // A name is prompt text when the app runs: it starts an agent there.
+    let spawned = termio(&daemon, &["session", "send", "headless", "the-prompt"]);
+    assert!(spawned.status.success(), "send failed: {spawned:?}");
+    assert_eq!(app.load(Ordering::SeqCst), after_app_send + 1);
+    let read = termio(&daemon, &["session", "read", &id]);
+    assert!(!stdout(&read).contains("the-prompt"), "a prompt reached termiod: {read:?}");
+
+    let wait = termio(&daemon, &["session", "send", &id, "x", "--wait", "--json"]);
+    assert!(!wait.status.success(), "--wait on a termiod-only session must refuse");
+    let refusal: serde_json::Value = serde_json::from_slice(&wait.stdout).expect("a JSON refusal");
+    assert_eq!(refusal["error"], "needs_app");
 
     let closed = termio(&daemon, &["session", "close", "headless"]);
     assert!(closed.status.success(), "close failed: {closed:?}");
-    assert_eq!(app.load(Ordering::SeqCst), 2, "closing a termiod-only session reached the app");
+    let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
+    let reply: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("ls --json");
+    assert_eq!(reply["sessions"].as_array().map(Vec::len), Some(0), "close left: {reply}");
+}
+
+/// The app leaves its socket file behind when it quits. A file with no
+/// listener is no app.
+#[test]
+fn a_socket_file_with_no_listener_is_no_app() {
+    let daemon = start_daemon("stale");
+    let directory = daemon.home.join("Library/Application Support/termio");
+    std::fs::create_dir_all(&directory).expect("the app's support directory");
+    drop(std::os::unix::net::UnixListener::bind(directory.join("app.sock")).expect("bind"));
+    let created = termio(&daemon, &["session", "create", "--name", "left", "--", "/bin/cat"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let listed = termio(&daemon, &["session", "ls"]);
+    assert!(listed.status.success(), "ls failed: {listed:?}");
+    assert!(stdout(&listed).contains("left"), "ls: {listed:?}");
+}
+
+/// A lookup that finds nothing must not start a daemon to find it.
+#[test]
+fn a_failed_lookup_starts_no_daemon() {
+    let home = PathBuf::from(format!("/tmp/termio-routing-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("a home directory");
+    let socket = home.join("d.sock");
+    for args in [
+        &["session", "read", "nosuch"][..],
+        &["session", "close", "nosuch"][..],
+        &["session", "send", "nosuch", "x"][..],
+    ] {
+        let output = Command::new(CLIENT)
+            .args(args)
+            .env("HOME", &home)
+            .env("TERMIOD_SOCK", &socket)
+            .env_remove("TERMIO_SESSION")
+            .env_remove("TERMIO_SESSION_CHANNEL")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run termio");
+        assert!(!output.status.success(), "{args:?} must fail: {output:?}");
+        assert!(!socket.exists(), "{args:?} started a daemon");
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 fn make_executable(path: &Path) {

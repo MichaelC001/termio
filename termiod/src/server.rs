@@ -22,6 +22,11 @@ use crate::{agent, client, lifecycle, log, remote, service, tailnet, wss};
 #[derive(Args)]
 #[command(after_help = SERVER_EXAMPLES)]
 pub struct ServerArgs {
+    /// The root's `-H`, also accepted here because shipped apps run
+    /// `termio server --host <host> deploy`.
+    #[arg(short = 'H', long, value_name = "HOST", hide = true)]
+    pub host: Option<String>,
+
     #[command(subcommand)]
     pub cmd: ServerCmd,
 }
@@ -264,40 +269,44 @@ pub fn run_on_host(host: &str, tty: bool) -> Result<()> {
 /// them — which is what the host's own `termio` should parse. Taken from argv
 /// rather than rebuilt from the parsed command, so no flag can be dropped on
 /// the way.
+///
+/// `-H` is a flag of the root and of `server` only, so it is removed only
+/// among the flags before the first command word and among those right after
+/// `server`. Anywhere else it is a value, such as text that starts with `-H`.
+///
+/// `session` goes out as `sessions`, its old name, which every build parses:
+/// a host still on an older build then answers with its own error for the
+/// verb, not by opening a project called `session`.
 fn verb_words_of(argv: &[String]) -> Vec<String> {
     let mut words = Vec::new();
-    let mut rest = argv.iter().skip(1);
-    let mut verbatim = false;
+    let mut rest = argv.iter().skip(1).peekable();
+    // 0: before the first command word; 1: after `server`, before its verb;
+    // 2: anywhere else.
+    let mut position = 0;
     while let Some(word) = rest.next() {
-        if verbatim {
+        if position == 2 {
             words.push(word.clone());
             continue;
         }
         match word.as_str() {
-            "--" => {
-                verbatim = true;
-                words.push(word.clone());
-            }
             "-H" | "--host" => {
                 rest.next();
             }
             _ if word.starts_with("--host=") => {}
-            _ if word.starts_with("-H") && word.len() > 2 && !word.starts_with("--") => {}
-            // Short flags combined into one word, `-fHbox`: everything from
-            // the `H` on is the host. No other short flag takes a value that
-            // could contain an `H`, except `-n`, which takes digits.
-            _ if !word.starts_with("--") && word.starts_with('-') && word[1..].contains('H') => {
-                let at = word.find('H').unwrap_or(word.len());
-                let flags = &word[..at];
-                if flags.len() > 1 {
-                    words.push(flags.to_string());
-                }
-                // `-fH box`: the host is the next word.
-                if at + 1 == word.len() {
-                    rest.next();
-                }
+            _ if word.starts_with("-H") => {}
+            _ if word.starts_with('-') => words.push(word.clone()),
+            "server" if position == 0 => {
+                position = 1;
+                words.push(word.clone());
             }
-            _ => words.push(word.clone()),
+            "session" if position == 0 => {
+                position = 2;
+                words.push("sessions".to_string());
+            }
+            _ => {
+                position = 2;
+                words.push(word.clone());
+            }
         }
     }
     words
@@ -542,7 +551,7 @@ pub async fn attach_session(args: AttachArgs) -> Result<()> {
 
 /// Ends a session and its process group.
 pub async fn close_session(target: &str, json: bool) -> Result<()> {
-    let id = resolve_or_fail(target).await?;
+    let id = resolve_running_or_fail(target).await?;
     client::kill(&id).await?;
     if json {
         println!("{}", serde_json::json!({ "ok": true, "schema_version": 1, "id": id }));
@@ -556,7 +565,7 @@ pub async fn close_session(target: &str, json: bool) -> Result<()> {
 /// The bytes go as they are: the daemon's one-shot `send` has no key encoder,
 /// so named keys and `--wait` belong to the app.
 pub async fn send_to_session(target: &str, text: &str, enter: bool, json: bool) -> Result<()> {
-    let id = resolve_or_fail(target).await?;
+    let id = resolve_running_or_fail(target).await?;
     let mut data = text.as_bytes().to_vec();
     if enter {
         data.push(b'\r');
@@ -568,10 +577,19 @@ pub async fn send_to_session(target: &str, text: &str, enter: bool, json: bool) 
     Ok(())
 }
 
-async fn resolve_or_fail(target: &str) -> Result<String> {
-    match resolve(target).await? {
+async fn resolve_running_or_fail(target: &str) -> Result<String> {
+    match resolve_running(target).await? {
         Some(info) => Ok(info.id),
         None => bail!("no session matches '{target}'"),
+    }
+}
+
+/// `resolve` against a daemon that is already running. No daemon is no
+/// session, so a lookup that finds nothing never leaves a daemon behind.
+pub async fn resolve_running(target: &str) -> Result<Option<SessionInfo>> {
+    match client::sessions_of_running_daemon().await? {
+        Some(sessions) => resolve_in(&sessions, target),
+        None => Ok(None),
     }
 }
 
@@ -767,17 +785,25 @@ mod tests {
     #[test]
     fn the_host_is_the_only_thing_removed() {
         assert_eq!(words("termio -H box server status --json"), ["server", "status", "--json"]);
-        assert_eq!(words("termio server status --host box"), ["server", "status"]);
-        assert_eq!(words("termio --host=box session ls"), ["session", "ls"]);
+        assert_eq!(words("termio server --host box deploy --json"), ["server", "deploy", "--json"]);
+        assert_eq!(words("termio --host=box session ls"), ["sessions", "ls"]);
         assert_eq!(words("termio -Hbox server logs -n 5"), ["server", "logs", "-n", "5"]);
-        assert_eq!(words("termio server logs -fHbox"), ["server", "logs", "-f"]);
-        assert_eq!(
-            words("termio server logs -fH box -n 5"),
-            ["server", "logs", "-f", "-n", "5"]
-        );
         assert_eq!(
             words("termio -H box session create -- sh -c -H"),
-            ["session", "create", "--", "sh", "-c", "-H"]
+            ["sessions", "create", "--", "sh", "-c", "-H"]
+        );
+    }
+
+    /// Past the command word, `-H` is text the verb owns.
+    #[test]
+    fn a_later_dash_h_is_left_alone() {
+        assert_eq!(
+            words("termio -H box session send 8de0b387 -Hello"),
+            ["sessions", "send", "8de0b387", "-Hello"]
+        );
+        assert_eq!(
+            words("termio -H box server logs -H"),
+            ["server", "logs", "-H"]
         );
     }
 
