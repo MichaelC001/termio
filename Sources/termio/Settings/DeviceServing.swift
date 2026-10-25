@@ -210,15 +210,15 @@ struct DeviceServingSection: View {
     }
 
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
-    /// name, so it reaches the screen untranslated — right for the three brands
-    /// (Tunelo, Cloudflare, ngrok are proper nouns everywhere), wrong for the
+    /// name, so it reaches the screen untranslated — right for the two brands
+    /// (Cloudflare and ngrok are proper nouns everywhere), wrong for the
     /// two entries that are ordinary words. Those go through the catalog, which
     /// already carries "Custom" for the theme picker.
     private static func pickerLabel(_ provider: TunnelManager.Provider) -> String {
         switch provider {
         case .off: return localized("Off — LAN only")
         case .custom: return localized("Custom")
-        case .tunelo, .cloudflared, .ngrok: return provider.label
+        case .cloudflared, .ngrok: return provider.label
         }
     }
 
