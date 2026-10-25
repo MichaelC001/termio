@@ -951,6 +951,14 @@ mod tests {
             Bytes(b"\x1b[?1049l\r\n\x1b]133;A\x07$ \x1b]133;B\x07"),
             Resize { rows: 9, cols: 50, reflow: false },
             Bytes(b"done \xf0\x9f\x9a\x80\r\n"),
+            // An empty prompt answered with Enter, and below it a command
+            // typed long enough to wrap: the resize lands with the cursor on
+            // a continuation row, so only a walk that climbs to the second
+            // prompt's first row, and no further, clears the right rows.
+            Bytes(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n"),
+            Bytes(b"\x1b]133;A\x07$ \x1b]133;B\x07a typed command long enough to wrap twice at fifty columns wide"),
+            Resize { rows: 9, cols: 30, reflow: false },
+            Bytes(b"\x1b[1;4mstyled\x1b[0m"),
         ]
     }
 
@@ -1015,19 +1023,32 @@ mod tests {
         }
     }
 
-    /// The whole terminal as plain text, scrollback included, for comparing a
-    /// client written in another language against this one.
-    fn plain(terminal: &VtTerminal) -> Vec<u8> {
+    /// The screen as the formatter writes it with `format_vt`'s options, minus
+    /// the prologue and fixups that method adds, for comparing a client written
+    /// in another language against this one.
+    fn formatted(terminal: &VtTerminal) -> Vec<u8> {
         let options = super::FormatterOptions::new()
-            .with_format(super::Format::Plain)
+            .with_format(super::Format::Vt)
             .with_unwrap(false)
-            .with_trim(false);
+            .with_trim(false)
+            .with_palette(false)
+            .with_modes(true)
+            .with_scrolling_region(true)
+            .with_tabstops(false)
+            .with_pwd(true)
+            .with_keyboard(true)
+            .with_cursor(true)
+            .with_style(true)
+            .with_hyperlink(true)
+            .with_protection(true)
+            .with_kitty_keyboard(true)
+            .with_charsets(true);
         let mut formatter =
-            super::Formatter::new(&terminal.terminal, options).expect("plain formatter");
+            super::Formatter::new(&terminal.terminal, options).expect("formatter");
         // A blank screen formats to nothing, which `format_alloc` and
         // `format_len` both report as an error.
         let mut text = vec![0; 1 << 16];
-        let length = formatter.format_buf(&mut text).expect("plain text");
+        let length = formatter.format_buf(&mut text).expect("formatted screen");
         text.truncate(length);
         text
     }
@@ -1076,14 +1097,16 @@ mod tests {
                 }
             }
             let screen = daemon.snapshot().expect("daemon cells");
+            let width = daemon.terminal.width_px().expect("width");
+            let height = daemon.terminal.height_px().expect("height");
             fixture += &format!(
-                "screen {} {} {} {} {} {}\n",
+                "screen {} {} {width} {height} {} {} {} {}\n",
                 screen.rows,
                 screen.cols,
                 screen.cursor_x,
                 screen.cursor_y,
                 u8::from(screen.alt_screen),
-                hex(&plain(&daemon))
+                hex(&formatted(&daemon))
             );
         }
 

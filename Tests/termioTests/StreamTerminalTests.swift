@@ -9,8 +9,10 @@ import XCTest
 /// `Fixtures/vt-stream-resize.txt` is written by termiod's
 /// `the_client_resize_fixture_matches_the_daemon`, which also fails when the
 /// file no longer matches the daemon. It attaches inside an OSC sequence, and
-/// its resizes cover a shell prompt being blanked before the reflow, a
-/// truncating resize, and the alternate screen.
+/// its resizes cover a shell prompt being blanked before the reflow, one
+/// blanked from a continuation row, a truncating resize, and the alternate
+/// screen. Screens compare as VT, so styles and modes count, and pixel sizes
+/// are compared too.
 final class StreamTerminalTests: XCTestCase {
     func testTheClientTerminalTracksTheDaemonThroughEveryResize() throws {
         let url = try XCTUnwrap(
@@ -36,18 +38,20 @@ final class StreamTerminalTests: XCTestCase {
                 let expected = TermiodStreamTerminal.Screen(
                     rows: try XCTUnwrap(UInt16(fields[1])),
                     cols: try XCTUnwrap(UInt16(fields[2])),
-                    cursorX: try XCTUnwrap(UInt16(fields[3])),
-                    cursorY: try XCTUnwrap(UInt16(fields[4])),
-                    alternate: fields[5] == "1",
-                    text: try Self.hex(fields[6])
+                    widthPixels: try XCTUnwrap(UInt32(fields[3])),
+                    heightPixels: try XCTUnwrap(UInt32(fields[4])),
+                    cursorX: try XCTUnwrap(UInt16(fields[5])),
+                    cursorY: try XCTUnwrap(UInt16(fields[6])),
+                    alternate: fields[7] == "1",
+                    vt: try Self.hex(fields[8])
                 )
                 let actual = try XCTUnwrap(terminal).screen()
                 XCTAssertEqual(
                     actual, expected,
                     """
                     diverged at fixture line \(number + 1):
-                    client \(String(decoding: actual.text, as: UTF8.self).debugDescription)
-                    daemon \(String(decoding: expected.text, as: UTF8.self).debugDescription)
+                    client \(String(decoding: actual.vt, as: UTF8.self).debugDescription)
+                    daemon \(String(decoding: expected.vt, as: UTF8.self).debugDescription)
                     """
                 )
                 screens += 1

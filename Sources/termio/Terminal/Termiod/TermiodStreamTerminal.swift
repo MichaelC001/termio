@@ -35,29 +35,34 @@ final class TermiodStreamTerminal {
     /// An attach always builds a fresh one: nothing the previous terminal held
     /// may survive into the new stream.
     init(nativeSnapshot: Data) throws {
-        var decoder: GhosttySnapshotDecoder?
-        try nativeSnapshot.withUnsafeBytes { buffer in
-            let bytes = buffer.bindMemory(to: UInt8.self)
-            try Self.check(
-                ghostty_snapshot_decoder_new_buf(nil, &decoder, bytes.baseAddress, bytes.count),
-                "ghostty_snapshot_decoder_new_buf"
-            )
+        terminal = try nativeSnapshot.withUnsafeBytes { buffer in
+            try Self.decode(buffer.bindMemory(to: UInt8.self))
         }
+    }
+
+    /// The decoder borrows `bytes` until it is freed, so everything from its
+    /// creation to its release stays inside the caller's `withUnsafeBytes`.
+    private static func decode(_ bytes: UnsafeBufferPointer<UInt8>) throws -> GhosttyTerminal {
+        var decoder: GhosttySnapshotDecoder?
+        try check(
+            ghostty_snapshot_decoder_new_buf(nil, &decoder, bytes.baseAddress, bytes.count),
+            "ghostty_snapshot_decoder_new_buf"
+        )
         guard let decoder else {
             throw Failure.engine("ghostty_snapshot_decoder_new_buf", GHOSTTY_INVALID_VALUE)
         }
         defer { ghostty_snapshot_decoder_free(decoder) }
-        var limit = Self.continuationLimit
-        try Self.check(
+        var limit = continuationLimit
+        try check(
             ghostty_snapshot_decoder_set(decoder, GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES, &limit),
             "ghostty_snapshot_decoder_set(max continuation)"
         )
         var decoded: GhosttyTerminal?
-        try Self.check(ghostty_snapshot_decoder_decode(decoder, &decoded), "ghostty_snapshot_decoder_decode")
+        try check(ghostty_snapshot_decoder_decode(decoder, &decoded), "ghostty_snapshot_decoder_decode")
         guard let decoded else {
             throw Failure.engine("ghostty_snapshot_decoder_decode", GHOSTTY_INVALID_VALUE)
         }
-        terminal = decoded
+        return decoded
     }
 
     deinit {
@@ -85,42 +90,64 @@ final class TermiodStreamTerminal {
     }
 
     /// What the terminal holds, in a form two engines can be compared by: the
-    /// grid, the cursor, the active screen and the whole text, scrollback
-    /// included. The parity test reads it against what termiod's VT recorded.
+    /// grid and its pixel size, the cursor, the active screen, and the screen
+    /// serialised as VT with styles, modes, charsets and keyboard state. The
+    /// parity test reads it against what termiod's VT recorded.
     struct Screen: Equatable {
         var rows: UInt16
         var cols: UInt16
+        var widthPixels: UInt32
+        var heightPixels: UInt32
         var cursorX: UInt16
         var cursorY: UInt16
         var alternate: Bool
-        var text: Data
+        var vt: Data
     }
 
     func screen() throws -> Screen {
         var rows: UInt16 = 0
         var cols: UInt16 = 0
+        var widthPixels: UInt32 = 0
+        var heightPixels: UInt32 = 0
         var cursorX: UInt16 = 0
         var cursorY: UInt16 = 0
         var active = GHOSTTY_TERMINAL_SCREEN_PRIMARY
         try get(GHOSTTY_TERMINAL_DATA_ROWS, &rows)
         try get(GHOSTTY_TERMINAL_DATA_COLS, &cols)
+        try get(GHOSTTY_TERMINAL_DATA_WIDTH_PX, &widthPixels)
+        try get(GHOSTTY_TERMINAL_DATA_HEIGHT_PX, &heightPixels)
         try get(GHOSTTY_TERMINAL_DATA_CURSOR_X, &cursorX)
         try get(GHOSTTY_TERMINAL_DATA_CURSOR_Y, &cursorY)
         try get(GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &active)
         return Screen(
-            rows: rows, cols: cols, cursorX: cursorX, cursorY: cursorY,
-            alternate: active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE, text: try plainText()
+            rows: rows, cols: cols, widthPixels: widthPixels, heightPixels: heightPixels,
+            cursorX: cursorX, cursorY: cursorY,
+            alternate: active == GHOSTTY_TERMINAL_SCREEN_ALTERNATE, vt: try formattedVT()
         )
     }
 
-    private func plainText() throws -> Data {
+    /// The options `VtTerminal::format_vt` formats with, so the two engines'
+    /// output can be compared byte for byte.
+    private func formattedVT() throws -> Data {
         var options = GhosttyFormatterTerminalOptions()
         options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
         options.extra.size = MemoryLayout<GhosttyFormatterTerminalExtra>.size
         options.extra.screen.size = MemoryLayout<GhosttyFormatterScreenExtra>.size
-        options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+        options.emit = GHOSTTY_FORMATTER_FORMAT_VT
         options.unwrap = false
         options.trim = false
+        options.extra.palette = false
+        options.extra.modes = true
+        options.extra.scrolling_region = true
+        options.extra.tabstops = false
+        options.extra.pwd = true
+        options.extra.keyboard = true
+        options.extra.screen.cursor = true
+        options.extra.screen.style = true
+        options.extra.screen.hyperlink = true
+        options.extra.screen.protection = true
+        options.extra.screen.kitty_keyboard = true
+        options.extra.screen.charsets = true
         var formatter: GhosttyFormatter?
         try Self.check(ghostty_formatter_terminal_new(nil, &formatter, terminal, options), "ghostty_formatter_terminal_new")
         guard let formatter else {
