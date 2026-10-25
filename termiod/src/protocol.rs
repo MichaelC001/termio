@@ -48,6 +48,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "handoff",
     "viewport",
     "spawn_command",
+    "vt_stream",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -65,6 +66,12 @@ pub const SNAPSHOT_FORMAT_VERSION: u8 = 3;
 /// whole model is server-side state and which need cells to seed their grid,
 /// and as the fallback when the formatter itself fails.
 pub const SNAPSHOT_FORMAT_VT: u8 = 2;
+/// Snapshot payload carrying libghostty's **native** snapshot, for the
+/// `vt_stream` plane: the client decodes it into a fresh terminal of its own,
+/// so modes, scrollback and an unfinished escape sequence all carry over and
+/// nothing its previous terminal held survives the attach. Only a client that
+/// negotiated `vt_stream` is ever sent it.
+pub const SNAPSHOT_FORMAT_NATIVE: u8 = 4;
 pub const SNAPSHOT_CELL_SIZE: usize = 16;
 pub const HISTORY_FORMAT_VERSION: u8 = 2;
 pub const HISTORY_HEADER_SIZE: usize = 9;
@@ -187,6 +194,9 @@ pub struct WireCell {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// libghostty's native snapshot (format v4). When set, `vt` and `cells`
+    /// are empty and the client decodes it into a fresh terminal.
+    pub native: Option<Vec<u8>>,
     /// VT-sequence repaint (format v2). When set, `cells` is empty and the
     /// client feeds these bytes straight into its own terminal.
     pub vt: Option<Vec<u8>>,
@@ -478,6 +488,10 @@ pub enum ErrorCode {
     /// the writer read it. Its own code because a client shows it as a question
     /// (overwrite, or not) rather than as a failure.
     Conflict,
+    /// This `vt_stream` attachment cannot be given an exact copy of the host's
+    /// VT — it is stale, mid-sequence past the tracking limit, or too large
+    /// for one frame. The client attaches again without `vt_stream`.
+    VtStreamUnavailable,
     #[default]
     Internal,
 }
@@ -1395,6 +1409,19 @@ pub enum Event {
         rows: u16,
         cols: u16,
     },
+    /// A resize of the host's VT, sent only on the `vt_stream` plane and at
+    /// the exact position in the byte stream where the host's VT took it:
+    /// bytes before it were parsed at the old grid, bytes after it at the new.
+    /// The client applies the same operation to its own terminal — a plain
+    /// reflow when `reflow` is true, `resize_for_shell` otherwise — so the two
+    /// stay identical with no keyframe. One per VT resize, so a resize the
+    /// kernel trimmed arrives as two.
+    VtResize {
+        session: String,
+        rows: u16,
+        cols: u16,
+        reflow: bool,
+    },
     SessionExited {
         session: String,
         status: i32,
@@ -1767,9 +1794,16 @@ pub fn decode_file_chunk(payload: &[u8]) -> Result<FileChunk> {
 /// codepoint:u32be, foreground colour (4), background colour (4),
 /// attributes:u16be, and two reserved zero bytes.
 pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
-    let vt = snapshot.vt.as_deref();
+    let native = snapshot.native.as_deref();
+    // A native payload stands alone: the client decodes it and has no use
+    // for a repaint of the same screen.
+    let vt = if native.is_some() {
+        None
+    } else {
+        snapshot.vt.as_deref()
+    };
     let expected_cells = usize::from(snapshot.rows) * usize::from(snapshot.cols);
-    if vt.is_none() && snapshot.cells.len() != expected_cells {
+    if native.is_none() && vt.is_none() && snapshot.cells.len() != expected_cells {
         bail!(
             "snapshot has {} cells, expected {expected_cells}",
             snapshot.cells.len()
@@ -1778,7 +1812,7 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     let title = snapshot.title.as_bytes();
     let title_len =
         u16::try_from(title.len()).map_err(|_| anyhow::anyhow!("snapshot title too long"))?;
-    let body_len = match vt {
+    let body_len = match native.or(vt) {
         Some(bytes) => 4 + bytes.len(),
         None => expected_cells * SNAPSHOT_CELL_SIZE,
     };
@@ -1791,7 +1825,9 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     }
 
     let mut payload = Vec::with_capacity(payload_len);
-    payload.push(if vt.is_some() {
+    payload.push(if native.is_some() {
+        SNAPSHOT_FORMAT_NATIVE
+    } else if vt.is_some() {
         SNAPSHOT_FORMAT_VT
     } else {
         SNAPSHOT_FORMAT_VERSION
@@ -1803,7 +1839,7 @@ pub fn encode_snapshot_payload(snapshot: &Snapshot) -> Result<Vec<u8>> {
     payload.push(u8::from(snapshot.alt_screen));
     payload.extend_from_slice(&title_len.to_be_bytes());
     payload.extend_from_slice(title);
-    match vt {
+    match native.or(vt) {
         Some(bytes) => {
             let len = u32::try_from(bytes.len())
                 .map_err(|_| anyhow::anyhow!("snapshot vt payload too long"))?;
@@ -1819,9 +1855,10 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
     if payload.len() < 12 {
         bail!("malformed snapshot header");
     }
-    let is_vt = match payload[0] {
-        SNAPSHOT_FORMAT_VERSION => false,
-        SNAPSHOT_FORMAT_VT => true,
+    let (is_vt, is_native) = match payload[0] {
+        SNAPSHOT_FORMAT_VERSION => (false, false),
+        SNAPSHOT_FORMAT_VT => (true, false),
+        SNAPSHOT_FORMAT_NATIVE => (false, true),
         other => bail!("unsupported snapshot payload version {other}"),
     };
     let rows = u16::from_be_bytes([payload[1], payload[2]]);
@@ -1843,7 +1880,7 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
     let title = std::str::from_utf8(&payload[12..cells_offset])
         .map_err(|error| anyhow::anyhow!("snapshot title is not UTF-8: {error}"))?
         .to_string();
-    if is_vt {
+    if is_vt || is_native {
         let body = &payload[cells_offset..];
         if body.len() < 4 {
             bail!("malformed snapshot vt length");
@@ -1856,6 +1893,12 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
                 vt_len
             );
         }
+        let body = body[4..].to_vec();
+        let (native, vt) = if is_native {
+            (Some(body), None)
+        } else {
+            (None, Some(body))
+        };
         return Ok(Snapshot {
             rows,
             cols,
@@ -1864,7 +1907,8 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
             alt_screen,
             title,
             cells: Vec::new(),
-            vt: Some(body[4..].to_vec()),
+            native,
+            vt,
         });
     }
 
@@ -1888,6 +1932,7 @@ pub fn decode_snapshot_payload(payload: &[u8]) -> Result<Snapshot> {
         alt_screen,
         title,
         cells,
+        native: None,
         vt: None,
     })
 }
@@ -2329,6 +2374,7 @@ mod tests {
     #[test]
     fn snapshot_payload_round_trip() {
         let snapshot = Snapshot {
+            native: None,
             vt: None,
             rows: 1,
             cols: 2,
@@ -2400,9 +2446,43 @@ mod tests {
         assert_eq!(cells[0].background, WireColor::Rgb([1, 2, 3]));
     }
 
+    /// Format v4 carries libghostty's native snapshot opaquely, and nothing
+    /// else: a native payload wins over a VT repaint of the same screen.
+    #[test]
+    fn native_snapshot_payload_round_trips_and_drops_the_repaint() {
+        let native: Vec<u8> = (0..=255).collect();
+        let snapshot = Snapshot {
+            native: Some(native.clone()),
+            vt: Some(b"ignored".to_vec()),
+            rows: 6,
+            cols: 20,
+            cursor_x: 3,
+            cursor_y: 1,
+            alt_screen: false,
+            title: "stream".to_string(),
+            cells: Vec::new(),
+        };
+        let payload = encode_snapshot_payload(&snapshot).unwrap();
+        assert_eq!(payload[0], super::SNAPSHOT_FORMAT_NATIVE);
+        let decoded = decode_snapshot_payload(&payload).unwrap();
+        assert_eq!(decoded.native, Some(native));
+        assert_eq!(decoded.vt, None);
+        assert_eq!(
+            (
+                decoded.rows,
+                decoded.cols,
+                decoded.cursor_x,
+                decoded.cursor_y
+            ),
+            (6, 20, 3, 1)
+        );
+        assert_eq!(decoded.title, "stream");
+    }
+
     #[test]
     fn snapshot_payload_rejects_wrong_cell_count() {
         let snapshot = Snapshot {
+            native: None,
             vt: None,
             rows: 1,
             cols: 1,

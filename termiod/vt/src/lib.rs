@@ -252,6 +252,12 @@ fn listen(
     Ok(())
 }
 
+/// The longest unfinished escape sequence or UTF-8 codepoint the VT carries
+/// across writes, so a native snapshot can be taken at any byte boundary
+/// (`native_snapshot`). A Kitty graphics APC can run past it; a snapshot taken
+/// inside one then fails and the attach falls back to the VT-bytes keyframe.
+pub const CONTINUATION_LIMIT: usize = 1 << 20;
+
 impl VtTerminal {
     pub fn new(rows: u16, cols: u16) -> Result<Self> {
         let mut terminal = check(
@@ -262,6 +268,25 @@ impl VtTerminal {
             }),
             "Terminal::new",
         )?;
+        // Before any input: tracking only covers bytes written after it is on.
+        check(
+            terminal.set_continuation_limit(CONTINUATION_LIMIT),
+            "Terminal::set_continuation_limit",
+        )?;
+        Self::wrap(terminal)
+    }
+
+    /// A terminal decoded from `native_snapshot`, as a client attaching on the
+    /// `vt_stream` plane builds its own.
+    pub fn from_native_snapshot(snapshot: &[u8]) -> Result<Self> {
+        let terminal = check(
+            Terminal::decode_snapshot(snapshot, CONTINUATION_LIMIT),
+            "Terminal::decode_snapshot",
+        )?;
+        Self::wrap(terminal)
+    }
+
+    fn wrap(mut terminal: Terminal<'static, 'static>) -> Result<Self> {
         let events = Rc::new(RefCell::new(Vec::new()));
         listen(&mut terminal, &events)?;
         Ok(Self {
@@ -272,6 +297,15 @@ impl VtTerminal {
             events,
             _thread_confined: PhantomData,
         })
+    }
+
+    /// The whole terminal in libghostty's own snapshot format: both screens,
+    /// scrollback, modes, Kitty keyboard flags, and any unfinished input. A
+    /// `vt_stream` client decodes it into a fresh terminal, so nothing the
+    /// client's previous terminal held can survive an attach.
+    pub fn native_snapshot(&self) -> Result<Vec<u8>> {
+        let bytes = check(self.terminal.encode_snapshot(), "Terminal::encode_snapshot")?;
+        Ok(bytes.to_vec())
     }
 
     pub fn vt_write(&mut self, bytes: &[u8]) {
@@ -883,6 +917,103 @@ fn style_color(color: StyleColor) -> Color {
 #[cfg(test)]
 mod tests {
     use super::{Color, ProgramState, Rgb, VtEvent, VtTerminal};
+
+    /// One thing the daemon does to its VT, in stream order: bytes, or a resize
+    /// with the `reflow` flag a `vt_stream` client receives in its marker.
+    enum Step {
+        Bytes(&'static [u8]),
+        Resize { rows: u16, cols: u16, reflow: bool },
+    }
+
+    fn apply(terminal: &mut VtTerminal, rows: u16, cols: u16, reflow: bool) {
+        let resized = if reflow {
+            terminal.resize_reflowing(rows, cols)
+        } else {
+            terminal.resize_for_shell(rows, cols)
+        };
+        resized.expect("resize");
+    }
+
+    fn session_script() -> Vec<Step> {
+        use Step::{Bytes, Resize};
+        vec![
+            Bytes(b"\x1b]133;A\x07\x1b[32m~/repo\x1b[0m $ \x1b]133;B\x07"),
+            Bytes(b"echo a long command that wraps past the edge of a narrow terminal"),
+            Bytes(b"\r\n\x1b]133;C\x07\x1b[1;31mred\x1b[0m \x1b[3mitalic\x1b[0m \xe4\xbd\xa0\xe5\xa5\xbd\r\n"),
+            Resize { rows: 8, cols: 24, reflow: false },
+            Bytes(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07typed"),
+            Resize { rows: 8, cols: 40, reflow: false },
+            Bytes(b"\r\n\x1b[?1049h\x1b[H\x1b[2J\x1b[?7l"),
+            Bytes(b"\x1b[1;1H\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x80\xe2\x94\x90\x1b[2;1H\xe2\x94\x82\x1b[7mtui\x1b[0m\xe2\x94\x82"),
+            Resize { rows: 10, cols: 30, reflow: true },
+            Bytes(b"\x1b[3;1H\x1b[38;2;255;128;0mtrue colour\x1b[0m\x1b[?7h"),
+            Resize { rows: 6, cols: 16, reflow: true },
+            Bytes(b"\x1b[?1049l\r\n\x1b]133;A\x07$ \x1b]133;B\x07"),
+            Resize { rows: 9, cols: 50, reflow: false },
+            Bytes(b"done \xf0\x9f\x9a\x80\r\n"),
+        ]
+    }
+
+    /// The `vt_stream` contract: a client that decodes the native snapshot at
+    /// any byte boundary, then applies the same bytes and resize markers, holds
+    /// the daemon's screen exactly. Every boundary is tried, including inside
+    /// escape sequences and UTF-8 codepoints, and the screens are compared
+    /// after every step that follows the attach.
+    #[test]
+    fn a_client_decoding_the_native_snapshot_tracks_the_daemon_through_resizes() {
+        let script = session_script();
+        let boundaries: usize = script
+            .iter()
+            .map(|step| match step {
+                Step::Bytes(bytes) => bytes.len(),
+                Step::Resize { .. } => 0,
+            })
+            .sum();
+        for attach_at in 0..=boundaries {
+            let mut daemon = VtTerminal::new(6, 20).expect("daemon terminal");
+            let mut client: Option<VtTerminal> = None;
+            let mut written = 0usize;
+            for (index, step) in script.iter().enumerate() {
+                match step {
+                    Step::Bytes(bytes) => {
+                        let mut rest: &[u8] = bytes;
+                        if client.is_none() && written + rest.len() >= attach_at {
+                            let (before, after) = rest.split_at(attach_at - written);
+                            daemon.vt_write(before);
+                            written += before.len();
+                            let snapshot = daemon.native_snapshot().expect("native snapshot");
+                            client =
+                                Some(VtTerminal::from_native_snapshot(&snapshot).expect("decode"));
+                            rest = after;
+                        }
+                        daemon.vt_write(rest);
+                        written += rest.len();
+                        if let Some(client) = client.as_mut() {
+                            client.vt_write(rest);
+                        }
+                    }
+                    Step::Resize { rows, cols, reflow } => {
+                        apply(&mut daemon, *rows, *cols, *reflow);
+                        if let Some(client) = client.as_mut() {
+                            apply(client, *rows, *cols, *reflow);
+                        }
+                    }
+                }
+                if let Some(client) = client.as_mut() {
+                    assert_eq!(
+                        client.snapshot().expect("client cells"),
+                        daemon.snapshot().expect("daemon cells"),
+                        "cells diverged attaching at byte {attach_at}, after step {index}"
+                    );
+                    assert_eq!(
+                        client.format_vt().expect("client vt"),
+                        daemon.format_vt().expect("daemon vt"),
+                        "screens diverged attaching at byte {attach_at}, after step {index}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The events arrive in the order the bytes did. A query is not one of
     /// them: the read path answers it.

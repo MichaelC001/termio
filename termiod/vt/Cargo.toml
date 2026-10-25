@@ -34,4 +34,4 @@ publish = false
 # match here. Since ghostty#13759 dropped iOS from the full build, that release
 # also carries a patch putting iOS back, so the two forks move together.
 [dependencies]
-libghostty-vt = { git = "https://github.com/termio-sh/libghostty-rs", rev = "b9cf61603ab6bc1822ec85975b3c3dd2eb56f5ae" }
+libghostty-vt = { git = "https://github.com/termio-sh/libghostty-rs", rev = "6424b77efd0356ce20bba7f993de1a425637edd9" }
