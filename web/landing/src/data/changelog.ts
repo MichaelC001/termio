@@ -17,6 +17,16 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.64.1",
+    date: "2026-10-25",
+    title: "The panel divider, on the line",
+    changes: {
+      fixed: [
+        "The drag line between a terminal and its side panel now sits on the split line and runs the full height of the card.",
+      ],
+    },
+  },
+  {
     version: "0.64.0",
     date: "2026-10-25",
     title: "Termio server on Linux in one line",
