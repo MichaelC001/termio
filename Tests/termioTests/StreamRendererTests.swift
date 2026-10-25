@@ -191,6 +191,35 @@ final class StreamRendererTests: XCTestCase {
         XCTAssertEqual(SIMD2(first.atlasX, first.atlasY), slot.origin, "the glyph names the sprite's new place")
     }
 
+    /// Composed text drawn after the rows can be what fills the atlas; the
+    /// frame it lands in must not draw rows from the emptied one.
+    func testComposedTextThatEmptiesTheAtlasRebuildsTheRows() throws {
+        let terminal = try terminal()
+        try terminal.setTheme(colors())
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let atlas = try TermiodGlyphAtlas(device: renderer.device, appearance: appearance, scale: 2, size: 128)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("abc".utf8))
+        XCTAssertTrue(try builtFrame(terminal, builder, atlas).changed)
+        // Fill it to the brim without emptying it, the way earlier frames would.
+        atlas.mayEmpty = false
+        var codepoint = UInt32(0x4E00)
+        while atlas.slot(graphemes: [codepoint], bold: false, italic: false, cells: 2) != nil { codepoint += 1 }
+        atlas.mayEmpty = true
+        let generation = atlas.generation
+
+        _ = try terminal.withFrame { state, theme in
+            try builder.build(from: state, atlas: atlas, focused: true, theme: theme, preedit: "龘")
+        }
+        var rectangles: [TermiodStreamRectangle] = []
+        var glyphs: [TermiodStreamGlyph] = []
+        builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+        XCTAssertGreaterThan(atlas.generation, generation, "the composed text emptied the atlas")
+        let slot = try XCTUnwrap(atlas.slot(graphemes: [0x61], bold: false, italic: false, cells: 1))
+        let first = try XCTUnwrap(glyphs.first { $0.cellX == 0 && $0.cellY == 0 })
+        XCTAssertEqual(SIMD2(first.atlasX, first.atlasY), slot.origin, "the row names the sprite's place in this atlas")
+    }
+
     private func cursorWidth(_ frame: (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]),
                              at x: UInt16) -> UInt16? {
         // The cursor is the last rectangle laid at its cell with the foreground color.

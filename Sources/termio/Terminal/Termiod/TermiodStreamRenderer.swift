@@ -223,6 +223,10 @@ final class TermiodStreamRenderResources {
     /// Weak, so an atlas goes when the last pane using that font closes or
     /// moves on to another one.
     private var atlases: [AtlasKey: WeakAtlas] = [:]
+    /// The atlas handed out last, held strongly: a pane is mounted only while
+    /// it shows, so switching to a session that is not a stream pane would
+    /// otherwise drop the atlas and rasterize every glyph again on the way back.
+    private var current: TermiodGlyphAtlas?
 
     init() throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
@@ -242,10 +246,14 @@ final class TermiodStreamRenderResources {
             fontFamily: appearance.fontFamily, fallbackFamilies: appearance.fallbackFamilies,
             fontSize: appearance.fontSize, scale: scale
         )
-        if let atlas = atlases[key]?.atlas { return atlas }
+        if let atlas = atlases[key]?.atlas {
+            current = atlas
+            return atlas
+        }
         atlases = atlases.filter { $0.value.atlas != nil }
         let atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
         atlases[key] = WeakAtlas(atlas: atlas)
+        current = atlas
         return atlas
     }
 
@@ -765,6 +773,15 @@ final class TermiodStreamFrameBuilder {
             lastPreedit = preeditState
             buildPreedit(preeditState, atlas: atlas)
             changed = true
+            // The composed text can empty the atlas after the rows were built
+            // from it; this frame is encoded against the emptied one.
+            if atlas.generation != builtGeneration {
+                atlas.mayEmpty = false
+                rebuildRows(state, full: true, colors: colors, atlas: atlas)
+                buildPreedit(preeditState, atlas: atlas)
+                atlas.mayEmpty = true
+                builtGeneration = atlas.generation
+            }
         }
         // Ghostty draws no cursor while there is text being composed.
         var cursorState = preeditState.text.isEmpty

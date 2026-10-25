@@ -198,7 +198,8 @@ struct TerminalPane: View {
                 if let link = store.runtime(for: id).streamLink {
                     // Stays mounted while the view comes and goes, so the link
                     // hears a hidden pane stop counting toward the session's size.
-                    StreamRenderingReport(isVisible: isVisible) { store.reportRendering($0, for: id) }
+                    StreamLinkReport(isVisible: isVisible, colors: store.streamTheme(dark: colorScheme == .dark),
+                                     link: link) { store.reportRendering($0, for: id) }
                         .id(ObjectIdentifier(link))
                     // Unlike the embedded surface, which owns its terminal and so
                     // stays mounted at zero opacity, the stream view is mounted
@@ -211,8 +212,7 @@ struct TerminalPane: View {
                             link: link,
                             sessionID: id,
                             appearance: store.streamAppearance(),
-                            colors: store.streamTheme(dark: colorScheme == .dark),
-                            isSelected: isSelected,
+                            takesKeyboard: Self.terminalMayTakeKeyboard(id, store: store),
                             copyOnSelect: settings.copyOnSelect,
                             onViewport: { grid in store.reportViewport(grid, for: id) },
                             onFocused: { selectFocusedSurface(id) }
@@ -539,16 +539,22 @@ struct TerminalPane: View {
             reason: reason,
             canFocus: { [weak store] in
                 guard let store else { return false }
-                // An open detail keeps the keyboard while it is on screen: in its panel, or
-                // maximized over the window, which shows it whether the panel is open or not.
-                let hasDetail = store.openFileURL != nil || store.openingRemoteFile != nil || store.openDiff != nil
-                let detailShown = hasDetail && (store.inspectorVisible || store.inspectorMaximized)
-                return store.selectedSessionID == id
-                    && store.visiblePaneIDs.contains(id)
-                    && !detailShown
-                    && store.paletteMode == nil
+                return Self.terminalMayTakeKeyboard(id, store: store)
             }
         )
+    }
+
+    /// Whether the session's terminal may take the keyboard now: the embedded
+    /// surface's focus driver and the stream view ask the same question.
+    static func terminalMayTakeKeyboard(_ id: Session.ID, store: TermioStore) -> Bool {
+        // An open detail keeps the keyboard while it is on screen: in its panel, or
+        // maximized over the window, which shows it whether the panel is open or not.
+        let hasDetail = store.openFileURL != nil || store.openingRemoteFile != nil || store.openDiff != nil
+        let detailShown = hasDetail && (store.inspectorVisible || store.inspectorMaximized)
+        return store.selectedSessionID == id
+            && store.visiblePaneIDs.contains(id)
+            && !detailShown
+            && store.paletteMode == nil
     }
 
     private func injectTerminalFocusOrphan() {
@@ -818,10 +824,14 @@ private struct SharedGridLetterbox<Content: View>: View {
     }
 }
 
-/// Tells a stream pane's link whether the pane is on screen, from a view that
-/// stays mounted while the pane's own view is mounted only when it shows.
-private struct StreamRenderingReport: View {
+/// Keeps a stream pane's link told whether the pane is on screen and which
+/// colors to use, from a view that stays mounted while the pane's own view is
+/// mounted only when it shows: a hidden pane's terminal still answers color
+/// queries from a program running in it.
+private struct StreamLinkReport: View {
     let isVisible: Bool
+    let colors: TermiodStreamTerminal.Theme?
+    let link: TermiodSessionLink
     let report: (Bool) -> Void
 
     var body: some View {
@@ -829,6 +839,9 @@ private struct StreamRenderingReport: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .onChange(of: isVisible, initial: true) { _, visible in report(visible) }
+            .onChange(of: colors, initial: true) { _, colors in
+                if let colors { link.setStreamTheme(colors) }
+            }
     }
 }
 

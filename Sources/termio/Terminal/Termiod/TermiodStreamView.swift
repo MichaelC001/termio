@@ -58,6 +58,9 @@ final class TermiodStreamView: NSView {
     /// Mouse buttons down that were reported to the program, so their
     /// releases are too, wherever the pointer is let go.
     fileprivate var reportedButtons: Set<UInt8> = []
+    /// Where the program last saw the pointer, for releasing buttons the view
+    /// never gets a mouse-up for.
+    fileprivate var lastPointer: Termiod.InputEvent.Pointer?
     fileprivate var scrollRemainder = CGPoint.zero
     /// Keys whose press the program saw, by keycode, so each gets its release
     /// even when the pane loses the keyboard first.
@@ -69,8 +72,8 @@ final class TermiodStreamView: NSView {
     /// Keys an editing binding took, whose releases the program never sees.
     fileprivate var consumedKeys: Set<UInt16> = []
     fileprivate var trackingArea: NSTrackingArea?
-    /// The pane is the selected one, so a view mounted for it takes the
-    /// keyboard as soon as it is in a window.
+    /// The pane may take the keyboard, so a view mounted for it does as soon
+    /// as it is in a window.
     var claimsFocus = false
 
     init(appearance: TermiodStreamRenderer.Appearance) {
@@ -142,6 +145,8 @@ final class TermiodStreamView: NSView {
                 unmarkText()
             }
             focused = false
+            releaseHeldButtons()
+            if selecting { releaseSelection(nil) }
         }
         super.viewWillMove(toWindow: newWindow)
     }
@@ -570,10 +575,10 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         needsFullDraw = true
     }
 
-    private func releaseSelection(_ event: NSEvent) {
+    private func releaseSelection(_ event: NSEvent?) {
         selecting = false
         guard let terminal = terminal() else { return }
-        terminal.releaseSelection(at: selectionPoint(event))
+        terminal.releaseSelection(at: event.flatMap(selectionPoint))
         if copyOnSelect, let text = terminal.selectedText, !text.isEmpty {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -606,6 +611,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
               let at = pointer(event), onGrid(at)
         else { return }
         reportedButtons.insert(button)
+        lastPointer = at
         sendInput(.mouse(.init(action: .press, button: button, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
                                at: at, buttonsHeld: true)))
     }
@@ -616,9 +622,24 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
                                at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
 
+    /// Releases every button the program saw go down, where it last saw the
+    /// pointer: the view is leaving, so their mouse-ups will never reach it.
+    private func releaseHeldButtons() {
+        guard let at = lastPointer else {
+            reportedButtons.removeAll()
+            return
+        }
+        for button in reportedButtons.sorted() {
+            reportedButtons.remove(button)
+            sendInput(.mouse(.init(action: .release, button: button, mods: 0, at: at,
+                                   buttonsHeld: !reportedButtons.isEmpty)))
+        }
+    }
+
     private func motion(_ event: NSEvent, _ button: UInt8?) {
         guard let terminal = terminal(), terminal.tracksMouse, let at = pointer(event) else { return }
         let held = button.flatMap { reportedButtons.contains($0) ? $0 : nil }
+        lastPointer = at
         sendInput(.mouse(.init(action: .motion, button: held, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
                                at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
@@ -724,17 +745,12 @@ struct TermiodStreamPane: NSViewRepresentable {
     let link: TermiodSessionLink
     let sessionID: Session.ID
     let appearance: TermiodStreamRenderer.Appearance
-    let colors: TermiodStreamTerminal.Theme?
-    let isSelected: Bool
+    /// The session is selected and nothing else holds the keyboard: no open
+    /// detail, no palette.
+    let takesKeyboard: Bool
     let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
     let onFocused: () -> Void
-
-    final class Coordinator {
-        var themeApplied: TermiodStreamTerminal.Theme?
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> TermiodStreamView {
         let view = TermiodStreamView(appearance: appearance)
@@ -755,12 +771,8 @@ struct TermiodStreamPane: NSViewRepresentable {
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
-        view.claimsFocus = isSelected
-        if let colors, context.coordinator.themeApplied != colors {
-            context.coordinator.themeApplied = colors
-            link.setStreamTheme(colors)
-        }
-        if isSelected, let window = view.window, window.firstResponder !== view {
+        view.claimsFocus = takesKeyboard
+        if takesKeyboard, let window = view.window, window.firstResponder !== view {
             DispatchQueue.main.async { window.makeFirstResponder(view) }
         }
     }
