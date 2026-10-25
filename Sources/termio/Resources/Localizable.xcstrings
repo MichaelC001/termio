@@ -85,6 +85,17 @@
         }
       }
     },
+    "Not Connected": {
+      "comment": "Tailscale status in Settings ▸ Server ▸ Pairing when this Mac is not on a running tailnet.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未连接"
+          }
+        }
+      }
+    },
     "Offline · %@": {
       "localizations": {
         "zh-Hans": {

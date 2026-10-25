@@ -970,6 +970,8 @@
 	<string>None found</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>None of this project’s remotes point at github.com, so there is no issue tracker to show.</string>
+	<key>Not Connected</key>
+	<string>Not Connected</string>
 	<key>Not Now</key>
 	<string>Not Now</string>
 	<key>Not a Git Repository</key>

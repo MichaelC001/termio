@@ -312,15 +312,19 @@ struct DeviceServingSection: View {
                 Text(localized("Connected · \(tailnetAddress)"))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+            } else if tailnetRead, FileManager.default.fileExists(atPath: Self.tailscaleApp.path) {
+                Button(localized("Open Tailscale")) { NSWorkspace.shared.open(Self.tailscaleApp) }
             } else if tailnetRead {
-                Button(localized("Open Tailscale")) {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Tailscale.app"))
-                }
+                // A Homebrew install has no app to open; `tailscale up` is its own.
+                Text(localized("Not Connected"))
+                    .foregroundStyle(.secondary)
             } else {
                 ProgressView().controlSize(.small)
             }
         }
     }
+
+    private static let tailscaleApp = URL(fileURLWithPath: "/Applications/Tailscale.app")
 
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
     /// name, so it reaches the screen untranslated — right for the three brands

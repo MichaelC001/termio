@@ -970,6 +970,8 @@
 	<string>未找到</string>
 	<key>None of this project’s remotes point at github.com, so there is no issue tracker to show.</key>
 	<string>该项目的远程仓库都未指向 github.com，因此没有可显示的 issue 跟踪器。</string>
+	<key>Not Connected</key>
+	<string>未连接</string>
 	<key>Not Now</key>
 	<string>以后再说</string>
 	<key>Not a Git Repository</key>
