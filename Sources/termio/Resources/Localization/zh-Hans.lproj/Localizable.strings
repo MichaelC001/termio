@@ -1014,6 +1014,8 @@
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
 	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。流量经由你自己运行的中继，路径中没有第三方。</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
+	<string>在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备都连接 Tailscale 时，可在任意网络使用。流量只经过你的 tailnet。</string>
 	<key>Only regular files can be previewed.</key>
 	<string>只能预览普通文件。</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
@@ -1436,6 +1438,8 @@
 	<string>系统等宽字体</string>
 	<key>Tabs</key>
 	<string>标签页</string>
+	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
+	<string>这台 Mac 上的 Tailscale 未连接。连接后重新打开此面板。</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>将 %@ 从新建会话菜单中移除，其设置会保留。</string>
 	<key>Takes effect after Termio relaunches.</key>

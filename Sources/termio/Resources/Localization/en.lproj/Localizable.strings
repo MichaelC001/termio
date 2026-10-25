@@ -1014,6 +1014,8 @@
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</key>
 	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.</string>
+	<key>On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</key>
+	<string>On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.</string>
 	<key>Only regular files can be previewed.</key>
 	<string>Only regular files can be previewed.</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
@@ -1436,6 +1438,8 @@
 	<string>System monospace</string>
 	<key>Tabs</key>
 	<string>Tabs</string>
+	<key>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</key>
+	<string>Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.</string>
 	<key>Takes %@ out of the new-session menu. Its settings are kept.</key>
 	<string>Takes %@ out of the new-session menu. Its settings are kept.</string>
 	<key>Takes effect after Termio relaunches.</key>

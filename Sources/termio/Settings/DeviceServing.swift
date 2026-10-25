@@ -37,10 +37,49 @@ struct DeviceServingSection: View {
     /// within a second or two, and each is a trigger — without this the pane
     /// forks two `termiod pair` processes for one address.
     @State private var minting = false
+    /// Where the tailnet reaches this Mac, read when the pane opens. nil off a
+    /// tailnet, which keeps Tailscale out of the picker.
+    @State private var tailnetAddress: String?
+    @State private var tailnetRead = false
+    /// The phone reaches this Mac across the user's tailnet. Not a tunnel
+    /// provider: nothing is spawned, because both listeners already take every
+    /// interface, so only the address in the QR changes.
+    @AppStorage("companion.servesTailnet") private var servesTailnet = false
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
     private var onTunnel: Bool { tunnel.provider != .off }
+
+    /// The host the QR names when no tunnel is up: this Mac's tailnet address, or
+    /// the LAN address picked below.
+    private var servedHost: String {
+        guard servesTailnet else { return selectedHost }
+        guard let tailnetAddress else { return "" }
+        return tailnetAddress.contains(":") ? "[\(tailnetAddress)]" : tailnetAddress
+    }
+
+    /// One picker for every way the phone reaches this Mac, so Tailscale sits
+    /// beside the tunnels it replaces.
+    private enum Reach: Hashable {
+        case tailnet
+        case tunnel(TunnelManager.Provider)
+    }
+
+    private var reach: Binding<Reach> {
+        Binding(
+            get: { servesTailnet && !onTunnel ? .tailnet : .tunnel(tunnel.provider) },
+            set: { choice in
+                switch choice {
+                case .tailnet:
+                    tunnel.setProvider(.off)
+                    servesTailnet = true
+                case .tunnel(let provider):
+                    servesTailnet = false
+                    tunnel.setProvider(provider)
+                }
+            }
+        )
+    }
 
     /// What the QR encodes: over the companion wire the socket address itself,
     /// carrying the token as the query the server reads; over the session
@@ -64,7 +103,7 @@ struct DeviceServingSection: View {
             let host = publicURL.absoluteString.replacingOccurrences(of: "https://", with: "wss://")
             return "\(host)/?t=\(token)"
         }
-        return "ws://\(selectedHost):\(CompanionServer.defaultPort)/?t=\(token)"
+        return "ws://\(servedHost):\(CompanionServer.defaultPort)/?t=\(token)"
     }
 
     /// Where a phone would reach this Mac's session host: the public URL while a
@@ -74,8 +113,8 @@ struct DeviceServingSection: View {
         if case .running(let publicURL) = tunnel.status {
             return publicURL.absoluteString
         }
-        guard !selectedHost.isEmpty else { return nil }
-        return "http://\(selectedHost):\(AppChannel.devicePort)"
+        guard !servedHost.isEmpty else { return nil }
+        return "http://\(servedHost):\(AppChannel.devicePort)"
     }
 
     private var tunnelRunning: Bool {
@@ -113,7 +152,16 @@ struct DeviceServingSection: View {
                 // consequence of one particular flip.
                 footnote(localized("Paired iPhones must scan the code again after switching."))
 
-                if hosts.isEmpty, !tunnelRunning {
+                if servesTailnet, !onTunnel, tailnetAddress == nil {
+                    if tailnetRead {
+                        footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                } else if !servesTailnet, hosts.isEmpty, !tunnelRunning {
                     footnote(localized("No network address found. Join a network, then reopen this pane."))
                 } else if mobile.attachesDirectly, let inviteFailure {
                     footnote(inviteFailure)
@@ -131,19 +179,21 @@ struct DeviceServingSection: View {
                 }
 
                 // One precise control: where the companion is reachable —
-                // LAN only, or fronted by a named tunnel.
-                Picker(localized("Tunnel"), selection: Binding(
-                    get: { tunnel.provider },
-                    set: { tunnel.setProvider($0) }
-                )) {
+                // LAN only, the user's tailnet, or fronted by a named tunnel.
+                Picker(localized("Tunnel"), selection: reach) {
                     ForEach(TunnelManager.Provider.allCases) { provider in
-                        Text(Self.pickerLabel(provider)).tag(provider)
+                        Text(Self.pickerLabel(provider)).tag(Reach.tunnel(provider))
+                        // Offered only on a tailnet, but kept while chosen so
+                        // the picker never shows a selection it has no row for.
+                        if provider == .off, tailnetAddress != nil || servesTailnet {
+                            Text(verbatim: "Tailscale").tag(Reach.tailnet)
+                        }
                     }
                 }
                 // The custom-relay editor: shown only when Custom is picked,
                 // so the common third-party path stays uncluttered.
                 if tunnel.provider == .custom { customTunnelEditor }
-                if !onTunnel, hosts.count > 1 {
+                if !onTunnel, !servesTailnet, hosts.count > 1 {
                     Picker(localized("Address"), selection: $selectedHost) {
                         ForEach(hosts, id: \.self) { host in
                             Text(host).tag(host)
@@ -201,11 +251,17 @@ struct DeviceServingSection: View {
             customURLPattern = custom.urlPattern
             refreshInvite()
         }
+        .task {
+            tailnetAddress = await Tailnet.ownAddress()
+            tailnetRead = true
+        }
         // The invite names one address, so it is re-minted whenever that address
-        // could have changed: the switch, the picked LAN host, and the tunnel
-        // coming up or going away.
+        // could have changed: the switch, the picked host, and the tunnel coming
+        // up or going away.
         .onChange(of: mobile.attachesDirectly) { refreshInvite() }
         .onChange(of: selectedHost) { refreshInvite() }
+        .onChange(of: tailnetAddress) { refreshInvite() }
+        .onChange(of: servesTailnet) { refreshInvite() }
         .onChange(of: tunnel.status) { refreshInvite() }
     }
 
@@ -231,6 +287,9 @@ struct DeviceServingSection: View {
         }
         if onTunnel {
             return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
+        }
+        if servesTailnet {
+            return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
         }
         return localized("On iPhone, tap the Mac pill ▸ Scan QR Code. Both devices must share a LAN.")
     }

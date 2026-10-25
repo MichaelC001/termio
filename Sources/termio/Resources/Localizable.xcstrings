@@ -61,6 +61,17 @@
         }
       }
     },
+    "On iPhone, tap the Mac pill ▸ Scan QR Code. Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.": {
+      "comment": "Footer under Settings ▸ Server ▸ Mobile when Tailscale is chosen. “tailnet” is Tailscale's name for the user's private network.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 iPhone 上轻点 Mac 胶囊按钮 ▸ 扫描二维码。两台设备都连接 Tailscale 时，可在任意网络使用。流量只经过你的 tailnet。"
+          }
+        }
+      }
+    },
     "Open a panel": {
       "localizations": {
         "zh-Hans": {
@@ -77,6 +88,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "标签页"
+          }
+        }
+      }
+    },
+    "Tailscale isn’t connected on this Mac. Connect it, then reopen this pane.": {
+      "comment": "Footer under Settings ▸ Server ▸ Mobile when Tailscale is chosen but this Mac is not on a running tailnet.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 上的 Tailscale 未连接。连接后重新打开此面板。"
           }
         }
       }

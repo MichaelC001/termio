@@ -72,6 +72,26 @@ final class TailnetTests: XCTestCase {
         XCTAssertTrue(Tailnet.hostPeers(fromStatus: Data("not json".utf8), namesResolve: true).isEmpty)
     }
 
+    // MARK: This Mac's own address
+
+    func testThisMacIsReachedByItsMagicDNSName() {
+        XCTAssertEqual(Tailnet.ownAddress(fromStatus: status(peers: mini), namesResolve: true),
+                       "laptop.tail1.ts.net")
+    }
+
+    func testThisMacFallsBackToItsIPv4WhereNamesDoNotResolve() {
+        let data = Data("""
+            {"BackendState": "Running",
+             "Self": {"ID": "self", "HostName": "laptop", "DNSName": "laptop.tail1.ts.net.", "OS": "macOS",
+                      "TailscaleIPs": ["fd7a:115c:a1e0::1", "100.64.0.1"]}}
+            """.utf8)
+        XCTAssertEqual(Tailnet.ownAddress(fromStatus: data, namesResolve: false), "100.64.0.1")
+    }
+
+    func testAStoppedClientGivesThisMacNoAddress() {
+        XCTAssertNil(Tailnet.ownAddress(fromStatus: status(backend: "Stopped", peers: mini), namesResolve: true))
+    }
+
     // MARK: Running the CLI
 
     private func fakeCLI(_ script: String) throws -> String {

@@ -53,14 +53,48 @@ enum Tailnet {
     }
 
     static func hostPeers(cli: String?) async -> [TailnetPeer] {
+        guard let (status, namesResolve) = await read(cli: cli) else { return [] }
+        return hostPeers(in: status, namesResolve: namesResolve)
+    }
+
+    /// Where another device on the tailnet reaches this Mac, picked by the same
+    /// rule as a peer's address. nil when this Mac is not on a running tailnet.
+    static func ownAddress() async -> String? {
+        await ownAddress(cli: cliPath())
+    }
+
+    static func ownAddress(cli: String?) async -> String? {
+        guard let (status, namesResolve) = await read(cli: cli) else { return nil }
+        return ownAddress(in: status, namesResolve: namesResolve)
+    }
+
+    static func ownAddress(fromStatus data: Data, namesResolve: Bool) -> String? {
+        decode(data).flatMap { ownAddress(in: $0, namesResolve: namesResolve) }
+    }
+
+    private static func ownAddress(in status: Status, namesResolve: Bool) -> String? {
+        guard status.backendState == "Running", let node = status.selfNode else { return nil }
+        return address(of: node, namesResolve: namesResolve)
+    }
+
+    private static func read(cli: String?) async -> (Status, Bool)? {
         guard let cli, let output = await StatusRead.run(cli: cli),
-              let status = decode(output) else { return [] }
+              let status = decode(output) else { return nil }
         // The tailnet reporting a MagicDNS name is not this Mac resolving it: with
         // `--accept-dns=false` every name is there and none of them works. This
         // Mac's own name stands for all of them, since one resolver serves them all.
         let ownName = status.selfNode?.dnsName.map(trimmingRoot) ?? ""
-        let namesResolve = await resolves(ownName, within: resolveTimeout)
-        return hostPeers(in: status, namesResolve: namesResolve)
+        return (status, await resolves(ownName, within: resolveTimeout))
+    }
+
+    /// The MagicDNS name where names resolve, else the first Tailscale address.
+    /// IPv4 first: it is the one every resolver-less path accepts as typed.
+    private static func address(of node: Node, namesResolve: Bool) -> String? {
+        let dnsName = node.dnsName.map(trimmingRoot) ?? ""
+        if namesResolve, !dnsName.isEmpty { return dnsName }
+        let ips = node.tailscaleIPs ?? []
+        let ip = ips.first { !$0.contains(":") } ?? ips.first
+        return ip.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// MagicDNS answers from this Mac itself, in well under this. A name that takes
@@ -81,12 +115,9 @@ enum Tailnet {
         let ownUser = status.selfNode?.userID
         let peers = (status.peer ?? [:]).values.compactMap { node -> TailnetPeer? in
             guard let os = node.os, hostOperatingSystems.contains(os) else { return nil }
+            guard let address = address(of: node, namesResolve: namesResolve) else { return nil }
             let dnsName = node.dnsName.map(trimmingRoot) ?? ""
             let ips = node.tailscaleIPs ?? []
-            // IPv4 first: it is the one every resolver-less path accepts as typed.
-            let ip = ips.first { !$0.contains(":") } ?? ips.first
-            guard let address = namesResolve && !dnsName.isEmpty ? dnsName : ip,
-                  !address.isEmpty else { return nil }
             // Names count only where they resolve here. The short name is one too:
             // MagicDNS's search domain resolves it, which is how a block with no
             // `HostName` of its own reaches the machine. It is the DNS name's first
