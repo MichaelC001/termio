@@ -353,8 +353,9 @@ impl InputEncoder {
         }
     }
 
-    /// Encodes one press to see which format won: in SGR-Pixels the point
-    /// (15, 25) in 10×20 cells reports as pixels, otherwise as cell (2, 2).
+    /// Encodes one press to see which format won: the point (5, 10) in 10×20
+    /// cells is cell (1, 1) on any grid, even one cell, so any report not
+    /// naming that cell names pixels.
     fn encodes_pixels(&mut self) -> bool {
         self.mouse_size = None;
         self.set_size(Pointer { x: 0.0, y: 0.0, cell_width: 10, cell_height: 20 });
@@ -363,12 +364,12 @@ impl InputEncoder {
             .set_action(mouse::Action::Press)
             .set_button(Some(mouse::Button::Left))
             .set_mods(Mods::empty())
-            .set_position(mouse::Position { x: 15.0, y: 25.0 });
+            .set_position(mouse::Position { x: 5.0, y: 10.0 });
         let mut bytes = Vec::new();
         let _ = self.mouse.encode_to_vec(&self.mouse_event, &mut bytes);
         // The next real event sets its own size.
         self.mouse_size = None;
-        bytes.starts_with(b"\x1b[<") && !bytes.ends_with(b"2;2M")
+        bytes.starts_with(b"\x1b[<") && !bytes.ends_with(b";1;1M")
     }
 
     fn on_grid(&self, at: Pointer) -> bool {
@@ -750,6 +751,13 @@ mod tests {
         assert!(!any.mouse(&drag(1.0)).is_empty());
         assert!(any.mouse(&drag(-11.0)).is_empty(), "left of the grid is still column one");
         assert!(any.mouse(&drag(-21.0)).is_empty());
+
+        // One row, one column: cell SGR is still told from pixels.
+        let mut tiny = VtTerminal::new(1, 1).unwrap();
+        let mut one = encoder(&mut tiny, b"\x1b[?1003h\x1b[?1016h\x1b[?1006h");
+        assert!(!one.pixel_reports, "cell SGR on a one-cell grid");
+        let mut pixels = encoder(&mut tiny, b"\x1b[?1006h\x1b[?1016h");
+        assert!(pixels.pixel_reports, "SGR-Pixels set last");
     }
 
     /// Option-L types `@` on a German Mac. It must arrive as `@`, as it does

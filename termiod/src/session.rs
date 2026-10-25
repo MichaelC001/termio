@@ -693,8 +693,9 @@ impl Session {
                 ring_reconstructs_screen: self.ring_reconstructs_screen,
                 status_clocks: self.status_engine.carried_clocks(std::time::Instant::now()),
                 input_modes_unknown: !self.input_modes_known,
-                // Filled in once the PTY writer has stopped, which knows.
-                paste_open: false,
+                paste_open: matches!(self.paste_in_progress, Some((_, true))),
+                pending_len: 0,
+                pending_input: Vec::new(),
                 native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
                 native: native.unwrap_or_default(),
             },
@@ -2062,6 +2063,7 @@ pub fn adopt(
         },
         input_modes_unknown: carried.input_modes_unknown,
         paste_open: carried.paste_open,
+        pending_input: carried.pending_input,
         native: (!carried.native.is_empty()).then_some(carried.native),
         faithful: carried.ring_reconstructs_screen,
     };
@@ -2115,12 +2117,7 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
 /// Output this session has already produced, for an actor that is taking over
 /// rather than starting: the bytes, and whether replaying them still draws the
 /// screen they drew the first time.
-const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
-
-/// How long a handoff waits for queued input to reach the PTY. With the
-/// snapshot wait, well inside `handoff::CARRY_TIMEOUT`.
-const INPUT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// How long a handoff waits for the VT to finish what it was fed and
 /// snapshot it. Past it the session still crosses, on ring replay. Well inside
@@ -2134,6 +2131,8 @@ struct Replay {
     input_modes_unknown: bool,
     /// The previous image left the program inside a paste.
     paste_open: bool,
+    /// Input the previous image accepted and had not written.
+    pending_input: Vec<u8>,
     /// The previous image's VT, as a native snapshot. When present the new VT
     /// starts from it and the chunks only refill the ring.
     native: Option<Vec<u8>>,
@@ -2149,6 +2148,7 @@ impl Replay {
             chunks: Vec::new(),
             input_modes_unknown: false,
             paste_open: false,
+            pending_input: Vec::new(),
             native: None,
             faithful: true,
         }
@@ -2190,31 +2190,43 @@ fn start(
     // It knows what reached the program, so it is the one that ends a paste
     // left open when the session's sender goes away: a handoff drops it after
     // the last byte this image will write.
-    let paste_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let writer_paste_open = paste_open.clone();
+    // Input accepted but not yet on the PTY, which the writer hands back
+    // when it is stopped: a handoff carries it to the next image instead of
+    // losing it in the exec, and a handoff that fails puts it back.
+    let unwritten = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let writer_unwritten = unwritten.clone();
+    let (stop_writer, mut writer_stopped) = tokio::sync::oneshot::channel::<()>();
     let input_writer = tokio::spawn(async move {
-        use std::sync::atomic::Ordering;
-        // The marker can straddle two writes (`D` arrives in reads of any
-        // size), so the end of the previous write is searched with this one.
-        let mut tail: Vec<u8> = Vec::new();
-        while let Some(bytes) = input_rx.recv().await {
-            if writer_pty.write_all(&bytes).await.is_err() {
-                return;
+        let mut current: Vec<u8> = Vec::new();
+        let mut offset = 0;
+        loop {
+            if offset == current.len() {
+                current.clear();
+                offset = 0;
+                tokio::select! {
+                    next = input_rx.recv() => match next {
+                        Some(bytes) => current = bytes,
+                        None => return,
+                    },
+                    _ = &mut writer_stopped => break,
+                }
             }
-            let mut seen = std::mem::take(&mut tail);
-            seen.extend_from_slice(&bytes);
-            let last = |marker: &[u8]| seen.windows(marker.len()).rposition(|window| window == marker);
-            match (last(PASTE_START), last(PASTE_END)) {
-                (Some(start), Some(end)) => writer_paste_open.store(start > end, Ordering::Relaxed),
-                (Some(_), None) => writer_paste_open.store(true, Ordering::Relaxed),
-                (None, Some(_)) => writer_paste_open.store(false, Ordering::Relaxed),
-                (None, None) => {}
+            // `write_some` writes or does not, with nothing awaited after a
+            // write, so stopping here never loses a byte it took.
+            tokio::select! {
+                written = writer_pty.write_some(&current[offset..]) => match written {
+                    Ok(count) => offset += count,
+                    Err(_) => return,
+                },
+                _ = &mut writer_stopped => break,
             }
-            let keep = seen.len().min(PASTE_END.len() - 1);
-            tail = seen.split_off(seen.len() - keep);
         }
-        if writer_paste_open.load(Ordering::Relaxed) && writer_pty.write_all(PASTE_END).await.is_ok() {
-            writer_paste_open.store(false, Ordering::Relaxed);
+        let mut rest = current.split_off(offset);
+        while let Ok(bytes) = input_rx.try_recv() {
+            rest.extend_from_slice(&bytes);
+        }
+        if let Ok(mut unwritten) = writer_unwritten.lock() {
+            *unwritten = rest;
         }
     });
 
@@ -2237,6 +2249,7 @@ fn start(
     let starts_from_snapshot = native.is_some();
     let input_modes_unknown = replay.input_modes_unknown;
     let paste_was_open = replay.paste_open;
+    let pending_input = std::mem::take(&mut replay.pending_input);
 
     let sidecar = spawn_sidecar_sharing(facts.rows, facts.cols, input.clone(), native)?;
 
@@ -2310,8 +2323,12 @@ fn start(
     // A snapshot of a VT that had already lost the program's modes carries
     // the loss, so the previous image's verdict travels too.
     session.input_modes_known = !input_modes_unknown && (starts_from_snapshot || session.ring_reconstructs_screen);
+    // What the previous image accepted and never wrote goes first, then the
+    // end of a paste whose remaining pieces went to that image's connection.
+    if !pending_input.is_empty() {
+        let _ = session.input_tx.send(pending_input);
+    }
     if paste_was_open {
-        // The previous image could not finish a paste before the exec.
         let _ = session.input_tx.send(PASTE_END.to_vec());
     }
 
@@ -2343,7 +2360,8 @@ fn start(
         sidecar.results,
         sidecar.thread,
         input_writer,
-        paste_open,
+        stop_writer,
+        unwritten,
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
@@ -2700,7 +2718,8 @@ async fn run(
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
     input_writer: tokio::task::JoinHandle<()>,
-    paste_open: Arc<std::sync::atomic::AtomicBool>,
+    stop_writer: tokio::sync::oneshot::Sender<()>,
+    unwritten: Arc<Mutex<Vec<u8>>>,
     termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -2869,21 +2888,16 @@ async fn run(
                         Some(Ok(native)) => native,
                         _ => None,
                     };
-                    // Consuming the session closes the input channel: the
-                    // writer puts what is queued on the PTY, ends a paste the
-                    // program is still inside, and stops, so nothing typed
-                    // into this image is lost in the exec or left open.
-                    let mut carried = session.into_carried(native);
-                    let mut input_writer = input_writer;
-                    if tokio::time::timeout(INPUT_FLUSH_TIMEOUT, &mut input_writer).await.is_err() {
-                        // The program stopped reading. What it has not taken
-                        // is lost, as at any exec, but the writer must not
-                        // finish it later beside the next writer, and a paste
-                        // it opened is the next image's to end.
-                        input_writer.abort();
-                    }
+                    // The PTY writer stops at once and hands back what it
+                    // had not written, which crosses with the session.
+                    let carried = session.into_carried(native);
+                    let _ = stop_writer.send(());
+                    let _ = input_writer.await;
+                    let mut carried = carried;
                     if let Ok(carried) = carried.as_mut() {
-                        carried.info.paste_open = paste_open.load(std::sync::atomic::Ordering::Relaxed);
+                        carried.info.pending_input =
+                            unwritten.lock().map(|mut bytes| std::mem::take(&mut *bytes)).unwrap_or_default();
+                        carried.info.pending_len = carried.info.pending_input.len() as u64;
                     }
                     // The parser is a few kilobytes of grid and a thread that
                     // has already stopped; joining it costs a scheduler turn,

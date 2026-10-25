@@ -146,11 +146,16 @@ pub struct CarriedSession {
     /// image must not trust it either.
     #[serde(default)]
     pub input_modes_unknown: bool,
-    /// The PTY writer stopped with the program inside a bracketed paste, its
-    /// end unwritten. The next image ends it first. An image that predates the
-    /// field leaves it open, as every image did before.
+    /// A paste was arriving in pieces, and the rest went to this image's
+    /// connection. The next image ends it after `pending_input`.
     #[serde(default)]
     pub paste_open: bool,
+    /// How many bytes of input this image accepted and had not written to the
+    /// PTY. They follow every snapshot; the next image writes them first.
+    #[serde(default)]
+    pub pending_len: u64,
+    #[serde(skip)]
+    pub pending_input: Vec<u8>,
     /// The snapshot itself, which travels in the blob, not the header.
     #[serde(skip)]
     pub native: Vec<u8>,
@@ -444,6 +449,9 @@ fn write_blob(
     for (info, _, _) in sessions {
         file.write_all(&info.native)?;
     }
+    for (info, _, _) in sessions {
+        file.write_all(&info.pending_input)?;
+    }
     file.flush()?;
     // The bytes have to be on the file, not in this process's buffers: the
     // reader is a different program image and shares nothing with this one but
@@ -492,6 +500,12 @@ pub fn unpack(fd: RawFd) -> Result<(Blob, Vec<Vec<u8>>)> {
         file.read_exact(&mut native)
             .with_context(|| format!("reading the VT snapshot for session {}", session.id))?;
         session.native = native;
+    }
+    for session in &mut blob.sessions {
+        let mut pending = vec![0u8; session.pending_len as usize];
+        file.read_exact(&mut pending)
+            .with_context(|| format!("reading the unwritten input for session {}", session.id))?;
+        session.pending_input = pending;
     }
     Ok((blob, rings))
 }
@@ -598,6 +612,8 @@ mod tests {
         let mut b = session("b", 5);
         b.native = b"VT".to_vec();
         b.native_len = 2;
+        b.pending_input = b"typed".to_vec();
+        b.pending_len = 5;
         let sessions = vec![
             (session("a", 3), devnull(), vec![Bytes::from_static(b"abc")]),
             (
@@ -618,6 +634,7 @@ mod tests {
         assert_eq!(read_rings, vec![b"abc".to_vec(), b"defgh".to_vec()]);
         let natives: Vec<&[u8]> = read_back.sessions.iter().map(|session| session.native.as_slice()).collect();
         assert_eq!(natives, vec![&b""[..], &b"VT"[..]]);
+        assert_eq!(read_back.sessions[1].pending_input, b"typed");
         // The numbers were assigned at pack time, from the descriptors handed
         // over — never the placeholder the caller built the header with.
         for carried in &read_back.sessions {
@@ -688,6 +705,8 @@ mod tests {
             native_len: 0,
             input_modes_unknown: false,
             paste_open: false,
+            pending_len: 0,
+            pending_input: Vec::new(),
             native: Vec::new(),
         }
     }
