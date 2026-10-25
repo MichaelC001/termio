@@ -9110,6 +9110,976 @@
           }
         }
       }
+    },
+    "%@ isn’t an .app bundle.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不是 .app 包。"
+          }
+        }
+      }
+    },
+    "9:41": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "9:41"
+          }
+        }
+      }
+    },
+    "9:41, Full Signal and Battery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "9:41，满格信号和电量"
+          }
+        }
+      }
+    },
+    "Accept the Xcode License": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接受 Xcode 许可协议"
+          }
+        }
+      }
+    },
+    "Agents in Termio will control this simulator and take screenshots of its entire screen. Don’t sign in to real accounts on it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 中的 Agent 将控制这台模拟器，并截取它的整个屏幕。不要在上面登录真实账户。"
+          }
+        }
+      }
+    },
+    "Allow": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许"
+          }
+        }
+      }
+    },
+    "Allow agents to use %@?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许 Agent 使用“%@”吗？"
+          }
+        }
+      }
+    },
+    "Annotate": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标注"
+          }
+        }
+      }
+    },
+    "App Logs": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 日志"
+          }
+        }
+      }
+    },
+    "Arrow": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "箭头"
+          }
+        }
+      }
+    },
+    "Booting %@…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启动 %@…"
+          }
+        }
+      }
+    },
+    "Choose Xcode": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 Xcode"
+          }
+        }
+      }
+    },
+    "Choose a Simulator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选取模拟器"
+          }
+        }
+      }
+    },
+    "Choose a device above to boot it.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在上方选取一台设备以启动它。"
+          }
+        }
+      }
+    },
+    "Choose an App": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选取 App"
+          }
+        }
+      }
+    },
+    "Copy Command": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝命令"
+          }
+        }
+      }
+    },
+    "Couldn’t copy the capture.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法拷贝截取内容。"
+          }
+        }
+      }
+    },
+    "Couldn’t draw the annotations onto the screenshot.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法把标注画到截屏上。"
+          }
+        }
+      }
+    },
+    "Couldn’t find the caches folder.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到缓存文件夹。"
+          }
+        }
+      }
+    },
+    "Couldn’t read %@’s executable name.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取 %@ 的可执行文件名。"
+          }
+        }
+      }
+    },
+    "Couldn’t read the bundle identifier from %@.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法从 %@ 读取 bundle identifier。"
+          }
+        }
+      }
+    },
+    "Couldn’t read the screenshot.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取截屏。"
+          }
+        }
+      }
+    },
+    "Don’t Allow": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不允许"
+          }
+        }
+      }
+    },
+    "Download the iOS Platform": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 iOS 平台"
+          }
+        }
+      }
+    },
+    "Erase": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "抹掉"
+          }
+        }
+      }
+    },
+    "Erase All Content and Settings…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "抹掉所有内容和设置…"
+          }
+        }
+      }
+    },
+    "Erase all content and settings on %@?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要抹掉“%@”上的所有内容和设置吗？"
+          }
+        }
+      }
+    },
+    "FPS: %lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FPS：%lld"
+          }
+        }
+      }
+    },
+    "FPS: idle": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FPS：空闲"
+          }
+        }
+      }
+    },
+    "Finish Setting Up Xcode": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成 Xcode 设置"
+          }
+        }
+      }
+    },
+    "Fit to Pane": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "适合窗格"
+          }
+        }
+      }
+    },
+    "Home": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主屏幕"
+          }
+        }
+      }
+    },
+    "Install Xcode": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装 Xcode"
+          }
+        }
+      }
+    },
+    "Its apps, data and settings are removed, as on a new device. It restarts when the erase is done.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "它的 App、数据和设置都会被移除，就像一台新设备。抹掉完成后它会重新启动。"
+          }
+        }
+      }
+    },
+    "Live": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实时"
+          }
+        }
+      }
+    },
+    "Lock": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锁定"
+          }
+        }
+      }
+    },
+    "New Simulator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建模拟器"
+          }
+        }
+      }
+    },
+    "No Simulator Running": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有正在运行的模拟器"
+          }
+        }
+      }
+    },
+    "No apps are installed on this simulator.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台模拟器上没有安装 App。"
+          }
+        }
+      }
+    },
+    "No element there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "那里没有元素。"
+          }
+        }
+      }
+    },
+    "No iOS runtimes are installed in Xcode.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xcode 中没有安装 iOS 运行时。"
+          }
+        }
+      }
+    },
+    "No iOS simulator is downloaded. Get one in Xcode ▸ Settings ▸ Components, or in Terminal.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未下载 iOS 模拟器。请在 Xcode ▸ Settings ▸ Components 中获取，或在终端中下载。"
+          }
+        }
+      }
+    },
+    "No simulator is booted. Boot one with `xcrun simctl boot <device>`, or pick one in the Simulator pane.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已启动的模拟器。请用 `xcrun simctl boot <device>` 启动一台，或在模拟器窗格中选取一台。"
+          }
+        }
+      }
+    },
+    "Nothing logged yet.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无日志。"
+          }
+        }
+      }
+    },
+    "Nothing was selected to copy.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有选中可拷贝的内容。"
+          }
+        }
+      }
+    },
+    "Only text can be pasted into the simulator.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只能把文本粘贴到模拟器中。"
+          }
+        }
+      }
+    },
+    "Open Xcode": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开 Xcode"
+          }
+        }
+      }
+    },
+    "Open the App Store": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开 App Store"
+          }
+        }
+      }
+    },
+    "Pen": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "笔"
+          }
+        }
+      }
+    },
+    "Physical Size": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "物理尺寸"
+          }
+        }
+      }
+    },
+    "Record Screen": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录制屏幕"
+          }
+        }
+      }
+    },
+    "Record Screen to Desktop": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录制屏幕到桌面"
+          }
+        }
+      }
+    },
+    "Recording Saved": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "录制已存储"
+          }
+        }
+      }
+    },
+    "Rectangle": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "矩形"
+          }
+        }
+      }
+    },
+    "Rename Simulator": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名模拟器"
+          }
+        }
+      }
+    },
+    "Restart": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新启动"
+          }
+        }
+      }
+    },
+    "Rotate Left": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向左旋转"
+          }
+        }
+      }
+    },
+    "Rotate Right": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向右旋转"
+          }
+        }
+      }
+    },
+    "Save Screenshot": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储截屏"
+          }
+        }
+      }
+    },
+    "Save Screenshot to Desktop": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存储截屏到桌面"
+          }
+        }
+      }
+    },
+    "Screenshot Saved": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "截屏已存储"
+          }
+        }
+      }
+    },
+    "Select Element": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择元素"
+          }
+        }
+      }
+    },
+    "Select a session to add this to.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择一个会话再添加。"
+          }
+        }
+      }
+    },
+    "Shake": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "摇动"
+          }
+        }
+      }
+    },
+    "Show Frame Rate": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示帧率"
+          }
+        }
+      }
+    },
+    "Show On-Screen Keyboard": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示屏幕键盘"
+          }
+        }
+      }
+    },
+    "Show in Finder": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在访达中显示"
+          }
+        }
+      }
+    },
+    "Shut Down": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关机"
+          }
+        }
+      }
+    },
+    "Side Button": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "侧边按钮"
+          }
+        }
+      }
+    },
+    "Simulator Unavailable": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器不可用"
+          }
+        }
+      }
+    },
+    "Slow Animations": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "慢速动画"
+          }
+        }
+      }
+    },
+    "Status Bar": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状态栏"
+          }
+        }
+      }
+    },
+    "Stop Recording": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止录制"
+          }
+        }
+      }
+    },
+    "Stop Selecting": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止选择"
+          }
+        }
+      }
+    },
+    "Termio couldn’t open a channel for the simulator’s screen.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termio 无法为模拟器的屏幕打开通道。"
+          }
+        }
+      }
+    },
+    "The Simulator pane needs a Mac with Apple silicon.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器窗格需要搭载 Apple 芯片的 Mac。"
+          }
+        }
+      }
+    },
+    "The Simulator pane needs macOS 15 or later.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器窗格需要 macOS 15 或更高版本。"
+          }
+        }
+      }
+    },
+    "The iOS Simulator comes with Xcode. Install it from the App Store, then open it once.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS 模拟器随 Xcode 提供。请从 App Store 安装 Xcode，然后打开一次。"
+          }
+        }
+      }
+    },
+    "The iOS Simulator isn’t available on this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 上无法使用 iOS 模拟器。"
+          }
+        }
+      }
+    },
+    "The recording couldn’t be saved.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法存储录制内容。"
+          }
+        }
+      }
+    },
+    "The simulator and everything on it are removed from this Mac.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台模拟器及其中的所有内容都会从这台 Mac 上移除。"
+          }
+        }
+      }
+    },
+    "The simulator didn’t finish booting.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器没有完成启动。"
+          }
+        }
+      }
+    },
+    "The simulator helper keeps quitting. Pick the device again to retry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器辅助程序反复退出。请重新选取设备以重试。"
+          }
+        }
+      }
+    },
+    "The simulator helper quit. Try again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器辅助程序已退出。请重试。"
+          }
+        }
+      }
+    },
+    "The simulator helper reported an error.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器辅助程序报告了一个错误。"
+          }
+        }
+      }
+    },
+    "The simulator helper sent a reply Termio couldn’t read.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模拟器辅助程序发回了 Termio 无法读取的回复。"
+          }
+        }
+      }
+    },
+    "This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 正在使用 Command Line Tools，其中没有模拟器。请在终端中切换到 Xcode。"
+          }
+        }
+      }
+    },
+    "This build of Termio doesn’t include the simulator helper.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此版本的 Termio 不包含模拟器辅助程序。"
+          }
+        }
+      }
+    },
+    "Toggle Appearance": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "切换外观"
+          }
+        }
+      }
+    },
+    "Undo": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
+          }
+        }
+      }
+    },
+    "Volume Down": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调低音量"
+          }
+        }
+      }
+    },
+    "Volume Up": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "调高音量"
+          }
+        }
+      }
+    },
+    "Xcode hasn’t finished installing its components. Open Xcode once, or finish in Terminal.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Xcode 尚未装完组件。请打开 Xcode 一次，或在终端中完成。"
+          }
+        }
+      }
+    },
+    "Xcode needs its license accepted before the simulator runs. Open Xcode, or accept it in Terminal.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要先接受 Xcode 许可协议，模拟器才能运行。请打开 Xcode，或在终端中接受。"
+          }
+        }
+      }
+    },
+    "Zoom In": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放大"
+          }
+        }
+      }
+    },
+    "Zoom Out": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缩小"
+          }
+        }
+      }
+    },
+    "open-url doesn’t open %@: URLs.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "open-url 不会打开 %@: URL。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

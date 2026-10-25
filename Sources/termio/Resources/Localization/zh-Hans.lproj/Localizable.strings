@@ -44,6 +44,8 @@
 	<string>%@ 已就绪。</string>
 	<key>%@ isn’t a UTF-8 text file.</key>
 	<string>%@ 不是 UTF-8 文本文件。</string>
+	<key>%@ isn’t an .app bundle.</key>
+	<string>%@ 不是 .app 包。</string>
 	<key>%@ isn’t available on this device yet.</key>
 	<string>%@ 暂不支持这台设备。</string>
 	<key>%@ isn’t available on this machine yet.</key>
@@ -114,6 +116,10 @@
 	<string>%lld 周</string>
 	<key>1 result</key>
 	<string>1 个结果</string>
+	<key>9:41</key>
+	<string>9:41</string>
+	<key>9:41, Full Signal and Battery</key>
+	<string>9:41，满格信号和电量</string>
 	<key>A box can only be paired with once its termiod is running and reachable from outside — a tunnel, or a proxy in front of it.</key>
 	<string>只有当机器上的 termiod 正在运行、并且可以从外部访问时才能配对——需要隧道，或在它前面加一层代理。</string>
 	<key>A different `%@` already exists at %@. Remove it first — Termio won’t overwrite a file it didn’t create.</key>
@@ -134,6 +140,8 @@
 	<string>端口是 1 到 65535 之间的数字。</string>
 	<key>A workspace scopes the sidebar to the projects and sessions filed under it, on the machine it belongs to.</key>
 	<string>工作区把侧栏限定在归入它的项目和会话上，都在它所属的那台机器上。</string>
+	<key>Accept the Xcode License</key>
+	<string>接受 Xcode 许可协议</string>
 	<key>Accounts</key>
 	<string>账户</string>
 	<key>Add</key>
@@ -174,6 +182,8 @@
 	<string>Agent 技能</string>
 	<key>Agents</key>
 	<string>Agent</string>
+	<key>Agents in Termio will control this simulator and take screenshots of its entire screen. Don’t sign in to real accounts on it.</key>
+	<string>Termio 中的 Agent 将控制这台模拟器，并截取它的整个屏幕。不要在上面登录真实账户。</string>
 	<key>Agents on %@</key>
 	<string>%@ 上的 Agent</string>
 	<key>Agents on %@ can run, and report their status back here.</key>
@@ -198,16 +208,24 @@
 %@%@</string>
 	<key>All changes to “%@” will be lost. This cannot be undone.</key>
 	<string>对“%@”的所有更改都将丢失。此操作无法撤销。</string>
+	<key>Allow</key>
+	<string>允许</string>
 	<key>Allow Paired Devices</key>
 	<string>允许已配对设备</string>
 	<key>Allow Usage Access</key>
 	<string>允许访问用量</string>
+	<key>Allow agents to use %@?</key>
+	<string>允许 Agent 使用“%@”吗？</string>
 	<key>Allow…</key>
 	<string>允许…</string>
 	<key>An older install points at %@. Update it to this version of Termio.</key>
 	<string>旧的安装指向 %@。请将其更新到此版本的 Termio。</string>
+	<key>Annotate</key>
+	<string>标注</string>
 	<key>Anyone</key>
 	<string>任何人</string>
+	<key>App Logs</key>
+	<string>App 日志</string>
 	<key>App language</key>
 	<string>应用语言</string>
 	<key>Appearance</key>
@@ -218,6 +236,8 @@
 	<string>应用</string>
 	<key>Arguments</key>
 	<string>参数</string>
+	<key>Arrow</key>
+	<string>箭头</string>
 	<key>Asking %@ what it has.</key>
 	<string>正在询问 %@ 上有什么。</string>
 	<key>Asking %@…</key>
@@ -250,6 +270,8 @@
 	<string>蓝色</string>
 	<key>Blur</key>
 	<string>模糊</string>
+	<key>Booting %@…</key>
+	<string>正在启动 %@…</string>
 	<key>Branch</key>
 	<string>分支</string>
 	<key>Bring All to Front</key>
@@ -306,6 +328,12 @@
 	<string>正在检查设备…</string>
 	<key>Checking…</key>
 	<string>检查中…</string>
+	<key>Choose Xcode</key>
+	<string>选择 Xcode</string>
+	<key>Choose a Simulator</key>
+	<string>选取模拟器</string>
+	<key>Choose a device above to boot it.</key>
+	<string>在上方选取一台设备以启动它。</string>
 	<key>Choose a different name.</key>
 	<string>请选取其他名称。</string>
 	<key>Choose a folder named like “%@-work”</key>
@@ -316,6 +344,8 @@
 	<string>选取 %@ 上的项目文件夹。</string>
 	<key>Choose a project folder to open in Termio.</key>
 	<string>选取要在 Termio 中打开的项目文件夹。</string>
+	<key>Choose an App</key>
+	<string>选取 App</string>
 	<key>Choose another branch to compare with.</key>
 	<string>请另选一个用于对比的分支。</string>
 	<key>Choose how projects are ordered</key>
@@ -418,6 +448,8 @@
 	<string>已拷贝</string>
 	<key>Copy</key>
 	<string>拷贝</string>
+	<key>Copy Command</key>
+	<string>拷贝命令</string>
 	<key>Copy Diff</key>
 	<string>拷贝差异</string>
 	<key>Copy Image</key>
@@ -446,10 +478,16 @@
 	<string>无法读取套餐限额。</string>
 	<key>Couldn’t change the Themes folder</key>
 	<string>无法修改主题文件夹</string>
+	<key>Couldn’t copy the capture.</key>
+	<string>无法拷贝截取内容。</string>
 	<key>Couldn’t create the worktrees folder: %@</key>
 	<string>无法创建 worktrees 文件夹：%@</string>
 	<key>Couldn’t create worktree session</key>
 	<string>无法创建 worktree 会话</string>
+	<key>Couldn’t draw the annotations onto the screenshot.</key>
+	<string>无法把标注画到截屏上。</string>
+	<key>Couldn’t find the caches folder.</key>
+	<string>找不到缓存文件夹。</string>
 	<key>Couldn’t inspect worktree</key>
 	<string>无法检查 worktree</string>
 	<key>Couldn’t install %@ on %@.
@@ -462,6 +500,12 @@
 	<string>无法载入</string>
 	<key>Couldn’t open a pull request page</key>
 	<string>无法打开 Pull Request 页面</string>
+	<key>Couldn’t read %@’s executable name.</key>
+	<string>无法读取 %@ 的可执行文件名。</string>
+	<key>Couldn’t read the bundle identifier from %@.</key>
+	<string>无法从 %@ 读取 bundle identifier。</string>
+	<key>Couldn’t read the screenshot.</key>
+	<string>无法读取截屏。</string>
 	<key>Couldn’t remove %@.</key>
 	<string>无法移除 %@。</string>
 	<key>Couldn’t remove worktree</key>
@@ -546,8 +590,12 @@
 	<string>Discord</string>
 	<key>Done</key>
 	<string>完成</string>
+	<key>Don’t Allow</key>
+	<string>不允许</string>
 	<key>Don’t Compare</key>
 	<string>不对比</string>
+	<key>Download the iOS Platform</key>
+	<string>下载 iOS 平台</string>
 	<key>Draft</key>
 	<string>草稿</string>
 	<key>Drag an agent onto another to reorder.</key>
@@ -586,6 +634,12 @@
 	<string>请输入以“/”开头的路径。等 %@ 报出主目录之后，“~/”也可以用。</string>
 	<key>Enter an absolute path</key>
 	<string>请输入绝对路径</string>
+	<key>Erase</key>
+	<string>抹掉</string>
+	<key>Erase All Content and Settings…</key>
+	<string>抹掉所有内容和设置…</string>
+	<key>Erase all content and settings on %@?</key>
+	<string>要抹掉“%@”上的所有内容和设置吗？</string>
 	<key>Every %@ session on this Mac, from all accounts.%@</key>
 	<string>本机上所有账户的 %1$@ 会话。%2$@</string>
 	<key>Every iPhone paired with %@ is signed out and must re-scan the new QR to reconnect.</key>
@@ -596,6 +650,10 @@
 	<string>退出状态 %lld。</string>
 	<key>Expand Results</key>
 	<string>展开结果</string>
+	<key>FPS: %lld</key>
+	<string>FPS：%lld</string>
+	<key>FPS: idle</key>
+	<string>FPS：空闲</string>
 	<key>Family</key>
 	<string>系列</string>
 	<key>File</key>
@@ -616,10 +674,14 @@
 	<string>查找上一个</string>
 	<key>Find…</key>
 	<string>查找…</string>
+	<key>Finish Setting Up Xcode</key>
+	<string>完成 Xcode 设置</string>
 	<key>Finish signing in in the terminal</key>
 	<string>请在终端里完成登录</string>
 	<key>Finish updating Termio’s session host?</key>
 	<string>要完成 Termio server 的更新吗？</string>
+	<key>Fit to Pane</key>
+	<string>适合窗格</string>
 	<key>Focus Pane Down</key>
 	<string>聚焦下方窗格</string>
 	<key>Focus Pane Left</key>
@@ -672,6 +734,8 @@
 	<string>标注</string>
 	<key>History</key>
 	<string>历史</string>
+	<key>Home</key>
+	<string>主屏幕</string>
 	<key>Hooks</key>
 	<string>Hooks</string>
 	<key>Hooks and skill installed</key>
@@ -712,6 +776,8 @@
 	<string>安装 %@</string>
 	<key>Install Page</key>
 	<string>安装页面</string>
+	<key>Install Xcode</key>
+	<string>安装 Xcode</string>
 	<key>Install on %@</key>
 	<string>安装到 %@</string>
 	<key>Installed</key>
@@ -736,6 +802,8 @@
 	<string>Issues</string>
 	<key>Issues a new token and revokes every paired iPhone.</key>
 	<string>签发新的 Token 并撤销所有已配对的 iPhone。</string>
+	<key>Its apps, data and settings are removed, as on a new device. It restarts when the erase is done.</key>
+	<string>它的 App、数据和设置都会被移除，就像一台新设备。抹掉完成后它会重新启动。</string>
 	<key>Join</key>
 	<string>加入</string>
 	<key>Jump to session, project, or file…</key>
@@ -782,6 +850,8 @@
 	<string>行高应用于文件编辑器和差异对比；终端保持字体自身的行高。此处未设置的字体与主题项将沿用你的 Ghostty 配置。</string>
 	<key>Links `%@` into /usr/local/bin so you (and agents) can run `%@ sessions …` from any shell.</key>
 	<string>将 `%@` 链接到 /usr/local/bin，让你（和 Agent）可在任意 shell 中运行 `%@ sessions …`。</string>
+	<key>Live</key>
+	<string>实时</string>
 	<key>Live agent status</key>
 	<string>Agent 实时状态</string>
 	<key>Live agent status is off</key>
@@ -790,6 +860,8 @@
 	<string>本地</string>
 	<key>Local Network</key>
 	<string>局域网</string>
+	<key>Lock</key>
+	<string>锁定</string>
 	<key>Login shell</key>
 	<string>登录 shell</string>
 	<key>Looking for agent CLIs…</key>
@@ -870,6 +942,8 @@
 	<string>新建 SSH 连接…</string>
 	<key>New Session</key>
 	<string>新建会话</string>
+	<key>New Simulator</key>
+	<string>新建模拟器</string>
 	<key>New Terminal</key>
 	<string>新建终端</string>
 	<key>New Terminal at Home</key>
@@ -924,8 +998,12 @@
 	<string>没有 PR</string>
 	<key>No Session</key>
 	<string>没有会话</string>
+	<key>No Simulator Running</key>
+	<string>没有正在运行的模拟器</string>
 	<key>No agent CLIs on %@ yet. Install one there and it shows up here.</key>
 	<string>%@ 上还没有 Agent 命令行工具。在那台机器上装一个，这里就会显示。</string>
+	<key>No apps are installed on this simulator.</key>
+	<string>这台模拟器上没有安装 App。</string>
 	<key>No bundled tool to install from.</key>
 	<string>应用包中没有可安装的工具。</string>
 	<key>No command to run.</key>
@@ -934,12 +1012,18 @@
 	<string>没有目录</string>
 	<key>No description provided.</key>
 	<string>未提供描述。</string>
+	<key>No element there.</key>
+	<string>那里没有元素。</string>
 	<key>No file changes</key>
 	<string>没有文件更改</string>
 	<key>No highlights</key>
 	<string>没有标注</string>
 	<key>No hosts yet — add one, or write a Host block in ~/.ssh/config.</key>
 	<string>暂无主机——添加一个，或在 ~/.ssh/config 中写入 Host 块。</string>
+	<key>No iOS runtimes are installed in Xcode.</key>
+	<string>Xcode 中没有安装 iOS 运行时。</string>
+	<key>No iOS simulator is downloaded. Get one in Xcode ▸ Settings ▸ Components, or in Terminal.</key>
+	<string>尚未下载 iOS 模拟器。请在 Xcode ▸ Settings ▸ Components 中获取，或在终端中下载。</string>
 	<key>No issues found.</key>
 	<string>未找到 issues。</string>
 	<key>No matches</key>
@@ -958,6 +1042,8 @@
 	<string>无法到达主机</string>
 	<key>No sessions on this Mac yet.</key>
 	<string>本机上还没有会话。</string>
+	<key>No simulator is booted. Boot one with `xcrun simctl boot &lt;device&gt;`, or pick one in the Simulator pane.</key>
+	<string>没有已启动的模拟器。请用 `xcrun simctl boot &lt;device&gt;` 启动一台，或在模拟器窗格中选取一台。</string>
 	<key>No textual changes to show.</key>
 	<string>没有可显示的文本更改。</string>
 	<key>No theme matches “%@”</key>
@@ -992,12 +1078,16 @@
 	<string>尚未运行。会话会启动它，并在你退出 Termio 后继续运行。</string>
 	<key>Not set up yet</key>
 	<string>尚未设置</string>
+	<key>Nothing logged yet.</key>
+	<string>尚无日志。</string>
 	<key>Nothing to Compare</key>
 	<string>没有可对比的分支</string>
 	<key>Nothing to install.</key>
 	<string>没有可安装的内容。</string>
 	<key>Nothing to reach — this is the machine you’re on.</key>
 	<string>无需连接 — 这就是你正在使用的设备。</string>
+	<key>Nothing was selected to copy.</key>
+	<string>没有选中可拷贝的内容。</string>
 	<key>Notifications</key>
 	<string>通知</string>
 	<key>Notifications for Termio are turned off in System Settings.</key>
@@ -1016,6 +1106,8 @@
 	<string>在 iPhone 上，点按 Mac 药丸 ▸ 扫描二维码。Token 在 %@ 上生成，每次连接都会验证。</string>
 	<key>Only regular files can be previewed.</key>
 	<string>只能预览普通文件。</string>
+	<key>Only text can be pasted into the simulator.</key>
+	<string>只能把文本粘贴到模拟器中。</string>
 	<key>Only the first %lld items are shown — update termio on this device to list them all.</key>
 	<string>仅显示前 %lld 项——请更新此设备上的 termio 以列出全部。</string>
 	<key>Opacity</key>
@@ -1036,6 +1128,8 @@
 	<string>打开 Tailscale</string>
 	<key>Open Themes Folder…</key>
 	<string>打开主题文件夹…</string>
+	<key>Open Xcode</key>
+	<string>打开 Xcode</string>
 	<key>Open a Folder</key>
 	<string>打开文件夹</string>
 	<key>Open a Project on %@</key>
@@ -1054,6 +1148,8 @@
 	<string>在 GitHub 上打开</string>
 	<key>Open one to see how it is reached and what it runs.</key>
 	<string>打开一台可查看它的连接方式和运行内容。</string>
+	<key>Open the App Store</key>
+	<string>打开 App Store</string>
 	<key>Open the invite on your iPhone to install it with TestFlight.</key>
 	<string>在 iPhone 上打开邀请链接，用 TestFlight 安装。</string>
 	<key>Opened outside Termio on this device</key>
@@ -1096,8 +1192,12 @@
 	<string>粘贴</string>
 	<key>Path</key>
 	<string>路径</string>
+	<key>Pen</key>
+	<string>笔</string>
 	<key>Permissions</key>
 	<string>权限</string>
+	<key>Physical Size</key>
+	<string>物理尺寸</string>
 	<key>Pick a file on the left to see its changes.</key>
 	<string>在左侧选择一个文件以查看其更改。</string>
 	<key>Pick how %@ is reached from outside. Termio runs it there over SSH and reads the address back — you never type one.</key>
@@ -1176,8 +1276,16 @@
 	<string>重新连接以使用其他账户登录，或授予 Termio 访问拥有该仓库的组织的权限。</string>
 	<key>Reconnecting…</key>
 	<string>正在重连…</string>
+	<key>Record Screen</key>
+	<string>录制屏幕</string>
+	<key>Record Screen to Desktop</key>
+	<string>录制屏幕到桌面</string>
 	<key>Record Shortcut</key>
 	<string>录制快捷键</string>
+	<key>Recording Saved</key>
+	<string>录制已存储</string>
+	<key>Rectangle</key>
+	<string>矩形</string>
 	<key>Refresh</key>
 	<string>刷新</string>
 	<key>Reinstall</key>
@@ -1226,6 +1334,8 @@
 	<string>重命名</string>
 	<key>Rename Session</key>
 	<string>重命名会话</string>
+	<key>Rename Simulator</key>
+	<string>重命名模拟器</string>
 	<key>Rename Workspace</key>
 	<string>重命名工作区</string>
 	<key>Rename “%@”</key>
@@ -1248,12 +1358,18 @@
 	<string>%@后重置</string>
 	<key>Resetting</key>
 	<string>正在重置</string>
+	<key>Restart</key>
+	<string>重新启动</string>
 	<key>Restarting the tunnel changes the address, and every paired iPhone has to scan again.</key>
 	<string>重启隧道会更换地址，所有已配对的 iPhone 都需要重新扫码。</string>
 	<key>Restore Defaults</key>
 	<string>恢复默认</string>
 	<key>Reveal in Finder</key>
 	<string>在“访达”中显示</string>
+	<key>Rotate Left</key>
+	<string>向左旋转</string>
+	<key>Rotate Right</key>
+	<string>向右旋转</string>
 	<key>Rotate Token</key>
 	<string>更换 Token</string>
 	<key>Rotate Token…</key>
@@ -1284,12 +1400,18 @@
 	<string>存储</string>
 	<key>Save Highlights into PDF</key>
 	<string>将标注存入 PDF</string>
+	<key>Save Screenshot</key>
+	<string>存储截屏</string>
+	<key>Save Screenshot to Desktop</key>
+	<string>存储截屏到桌面</string>
 	<key>Save failed: %@</key>
 	<string>存储失败：%@</string>
 	<key>Saving to %@…</key>
 	<string>正在保存到 %@…</string>
 	<key>Scan the QR code with WeChat to join the Chinese community group.</key>
 	<string>用微信扫描二维码加入中文社区群。</string>
+	<key>Screenshot Saved</key>
+	<string>截屏已存储</string>
 	<key>Scrollback</key>
 	<string>回滚</string>
 	<key>Search</key>
@@ -1310,6 +1432,10 @@
 	<string>正在搜索…</string>
 	<key>Select All</key>
 	<string>全选</string>
+	<key>Select Element</key>
+	<string>选择元素</string>
+	<key>Select a session to add this to.</key>
+	<string>请先选择一个会话再添加。</string>
 	<key>Select a session to browse its files.</key>
 	<string>选择一个会话以浏览其文件。</string>
 	<key>Select a session to see its info.</key>
@@ -1344,12 +1470,18 @@
 	<string>设置</string>
 	<key>Settings…</key>
 	<string>设置…</string>
+	<key>Shake</key>
+	<string>摇动</string>
 	<key>Shortcuts must include ⌘ so they can’t shadow a key an agent or the shell needs. While recording, press ⌫ to remove a shortcut, or esc to cancel.</key>
 	<string>快捷键必须包含 ⌘，以免遮蔽 Agent 或 shell 所需的按键。录制时按 ⌫ 可移除快捷键，按 esc 取消。</string>
 	<key>Show</key>
 	<string>显示</string>
 	<key>Show All</key>
 	<string>全部显示</string>
+	<key>Show Frame Rate</key>
+	<string>显示帧率</string>
+	<key>Show On-Screen Keyboard</key>
+	<string>显示屏幕键盘</string>
 	<key>Show Original</key>
 	<string>显示原身</string>
 	<key>Show Project Files</key>
@@ -1360,6 +1492,8 @@
 	<string>显示替换</string>
 	<key>Show another file in this diff</key>
 	<string>在此差异中显示另一个文件</string>
+	<key>Show in Finder</key>
+	<string>在访达中显示</string>
 	<key>Show one column (inline diff)</key>
 	<string>显示单栏（行内差异）</string>
 	<key>Show two columns (side-by-side diff)</key>
@@ -1372,6 +1506,10 @@
 	<string>显示 Agent 正在工作还是在等你 — 侧栏的转圈和菜单栏的脉冲。</string>
 	<key>Shows when an agent is working or waiting on you — the sidebar spinner and menu-bar pulse. Installs Termio’s hooks into each agent’s config.</key>
 	<string>显示 Agent 正在工作还是在等待你：侧栏的转圈指示和菜单栏的脉冲。会将 Termio 的 hooks 安装到各 Agent 的配置中。</string>
+	<key>Shut Down</key>
+	<string>关机</string>
+	<key>Side Button</key>
+	<string>侧边按钮</string>
 	<key>Sidebar</key>
 	<string>侧栏</string>
 	<key>Sign In…</key>
@@ -1386,6 +1524,8 @@
 	<string>使用 %@ 登录</string>
 	<key>Signs in with the keys ssh offers by default.</key>
 	<string>使用 ssh 默认提供的密钥登录。</string>
+	<key>Simulator Unavailable</key>
+	<string>模拟器不可用</string>
 	<key>Size</key>
 	<string>大小</string>
 	<key>Skill</key>
@@ -1396,6 +1536,8 @@
 	<string>技能已重新安装</string>
 	<key>Skip permission prompts</key>
 	<string>跳过权限确认</string>
+	<key>Slow Animations</key>
+	<string>慢速动画</string>
 	<key>Somebody else wrote this file after you opened it. Overwriting replaces their version.</key>
 	<string>在你打开之后，有人写入了这个文件。覆盖会替换掉对方的版本。</string>
 	<key>Something else already owns %@.</key>
@@ -1430,8 +1572,14 @@
 	<string>状态</string>
 	<key>Status</key>
 	<string>状态</string>
+	<key>Status Bar</key>
+	<string>状态栏</string>
 	<key>Stop Reading %@ Data</key>
 	<string>停止读取 %@ 数据</string>
+	<key>Stop Recording</key>
+	<string>停止录制</string>
+	<key>Stop Selecting</key>
+	<string>停止选择</string>
 	<key>Style</key>
 	<string>样式</string>
 	<key>Switch between project files, search, changes, and info</key>
@@ -1468,6 +1616,8 @@
 	<string>Termio 可通过读取 %@ 的本地会话日志及登录钥匙串中的登录信息，显示其 token 用量和套餐限额。在你允许之前不会读取任何内容；macOS 会就钥匙串询问一次。</string>
 	<key>Termio could not append to the repository’s .gitignore. Check its permissions and try again.</key>
 	<string>Termio 无法将内容追加到该仓库的 .gitignore。请检查其权限后重试。</string>
+	<key>Termio couldn’t open a channel for the simulator’s screen.</key>
+	<string>Termio 无法为模拟器的屏幕打开通道。</string>
 	<key>Termio for iPhone is in beta</key>
 	<string>Termio for iPhone 正在测试中</string>
 	<key>Termio is open source — star the repo, report bugs, and request features.</key>
@@ -1484,6 +1634,10 @@
 	<string>测试</string>
 	<key>Test Connection</key>
 	<string>测试连接</string>
+	<key>The Simulator pane needs a Mac with Apple silicon.</key>
+	<string>模拟器窗格需要搭载 Apple 芯片的 Mac。</string>
+	<key>The Simulator pane needs macOS 15 or later.</key>
+	<string>模拟器窗格需要 macOS 15 或更高版本。</string>
 	<key>The agent New Chat (⌘N) starts. “Last used” follows whichever agent you most recently chatted with.</key>
 	<string>新建聊天（⌘N）启动的 Agent。“上次使用”跟随你最近一次聊天所用的 Agent。</string>
 	<key>The base branch has commits this branch doesn’t have, as of the last fetch.</key>
@@ -1496,6 +1650,10 @@
 	<string>该设备无法读取这个对比。</string>
 	<key>The devices in your ~/.ssh/config, and the keys that reach them</key>
 	<string>~/.ssh/config 里的设备，以及连上它们的密钥</string>
+	<key>The iOS Simulator comes with Xcode. Install it from the App Store, then open it once.</key>
+	<string>iOS 模拟器随 Xcode 提供。请从 App Store 安装 Xcode，然后打开一次。</string>
+	<key>The iOS Simulator isn’t available on this Mac.</key>
+	<string>这台 Mac 上无法使用 iOS 模拟器。</string>
 	<key>The ignore rule couldn’t be added.</key>
 	<string>无法添加忽略规则。</string>
 	<key>The install page — the same one whichever machine you are installing on.</key>
@@ -1518,6 +1676,8 @@
 	<string>~/.ssh 中的公钥。可拷贝一个粘贴到服务器的 authorized_keys——私钥永远不会被读取。</string>
 	<key>The read failed.</key>
 	<string>读取失败。</string>
+	<key>The recording couldn’t be saved.</key>
+	<string>无法存储录制内容。</string>
 	<key>The search failed.</key>
 	<string>搜索失败。</string>
 	<key>The session host answered, but not with a pairing invite.</key>
@@ -1530,6 +1690,18 @@
 	<string>Termio server 消失了</string>
 	<key>The sidebar shows this workspace</key>
 	<string>侧栏显示的是这个工作区</string>
+	<key>The simulator and everything on it are removed from this Mac.</key>
+	<string>这台模拟器及其中的所有内容都会从这台 Mac 上移除。</string>
+	<key>The simulator didn’t finish booting.</key>
+	<string>模拟器没有完成启动。</string>
+	<key>The simulator helper keeps quitting. Pick the device again to retry.</key>
+	<string>模拟器辅助程序反复退出。请重新选取设备以重试。</string>
+	<key>The simulator helper quit. Try again.</key>
+	<string>模拟器辅助程序已退出。请重试。</string>
+	<key>The simulator helper reported an error.</key>
+	<string>模拟器辅助程序报告了一个错误。</string>
+	<key>The simulator helper sent a reply Termio couldn’t read.</key>
+	<string>模拟器辅助程序发回了 Termio 无法读取的回复。</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
 	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
@@ -1548,6 +1720,8 @@
 	<string>本机</string>
 	<key>This Mac and the machines you reach from it</key>
 	<string>本机以及你能连接的设备</string>
+	<key>This Mac uses the Command Line Tools, which have no simulator. Switch to Xcode in Terminal.</key>
+	<string>这台 Mac 正在使用 Command Line Tools，其中没有模拟器。请在终端中切换到 Xcode。</string>
 	<key>This Mac…</key>
 	<string>本机…</string>
 	<key>This PDF carries no table of contents.</key>
@@ -1562,6 +1736,8 @@
 	<string>此分支还没有提交。</string>
 	<key>This branch has nothing the base branch doesn’t already have.</key>
 	<string>这个分支没有基础分支尚未包含的内容。</string>
+	<key>This build of Termio doesn’t include the simulator helper.</key>
+	<string>此版本的 Termio 不包含模拟器辅助程序。</string>
 	<key>This checkout has no other branch to compare with.</key>
 	<string>这个检出没有其他分支可以对比。</string>
 	<key>This closes by itself once %@ is signed in.</key>
@@ -1622,6 +1798,8 @@
 	<string>连接超时</string>
 	<key>Today</key>
 	<string>今天</string>
+	<key>Toggle Appearance</key>
+	<string>切换外观</string>
 	<key>Toggle Full Screen</key>
 	<string>切换全屏幕</string>
 	<key>Toggle Project Files</key>
@@ -1652,6 +1830,8 @@
 	<string>URL 模式</string>
 	<key>Underline</key>
 	<string>下划线</string>
+	<key>Undo</key>
+	<string>撤销</string>
 	<key>Ungroup</key>
 	<string>取消编组</string>
 	<key>Unlock “%@” (git worktree unlock) before removing it.</key>
@@ -1696,6 +1876,10 @@
 	<string>显示</string>
 	<key>View on %@</key>
 	<string>在 %@ 上查看</string>
+	<key>Volume Down</key>
+	<string>调低音量</string>
+	<key>Volume Up</key>
+	<string>调高音量</string>
 	<key>Waiting for the agent’s first status report.</key>
 	<string>正在等待 Agent 的首次状态报告。</string>
 	<key>Wants a password</key>
@@ -1744,6 +1928,10 @@
 	<string>Worktree 存在更改</string>
 	<key>Worktree is locked</key>
 	<string>Worktree 已锁定</string>
+	<key>Xcode hasn’t finished installing its components. Open Xcode once, or finish in Terminal.</key>
+	<string>Xcode 尚未装完组件。请打开 Xcode 一次，或在终端中完成。</string>
+	<key>Xcode needs its license accepted before the simulator runs. Open Xcode, or accept it in Terminal.</key>
+	<string>需要先接受 Xcode 许可协议，模拟器才能运行。请打开 Xcode，或在终端中接受。</string>
 	<key>Yellow</key>
 	<string>黄色</string>
 	<key>You can restore it from the Trash.</key>
@@ -1756,6 +1944,10 @@
 	<string>你的主题</string>
 	<key>Zoom</key>
 	<string>缩放</string>
+	<key>Zoom In</key>
+	<string>放大</string>
+	<key>Zoom Out</key>
+	<string>缩小</string>
 	<key>Zoom Split</key>
 	<string>缩放拆分</string>
 	<key>`%@` is on your PATH. Run `%@ sessions …` to drive sibling sessions, or `%@ .` to open a folder.</key>
@@ -1800,6 +1992,8 @@
 	<string>台设备</string>
 	<key>nothing</key>
 	<string>无</string>
+	<key>open-url doesn’t open %@: URLs.</key>
+	<string>open-url 不会打开 %@: URL。</string>
 	<key>optional</key>
 	<string>可选</string>
 	<key>optional — ~/.ssh/id_ed25519</key>

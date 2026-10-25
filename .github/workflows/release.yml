@@ -96,6 +96,19 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
           echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
 
+      # The Simulator pane's helper links idb's simulator libraries, which build
+      # from XcodeGen projects. simulator-helper/build.sh builds them once per
+      # pinned idb commit into this cache; the key carries the Xcode too, because
+      # their Swift modules are binary and only the compiler that made them reads them.
+      - name: Install XcodeGen (for the simulator helper)
+        run: brew install xcodegen
+
+      - name: Restore the idb build
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/termio/idb
+          key: idb-${{ hashFiles('simulator-helper/build.sh') }}-${{ env.DEVELOPER_DIR }}
+
       # build-app.sh embeds + signs Sparkle, builds and signs termiod into
       # Contents/Resources, and Developer-ID-signs the bundle with the hardened
       # runtime, so the output is ready to notarize.

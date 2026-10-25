@@ -36,6 +36,10 @@ extension TermioStore {
             return controlError(request, "disabled",
                 "Session control is off. Enable it in Termio ▸ Settings ▸ Agents.")
         }
+        // The simulator is the app's, not a project's: one device, shown in one
+        // pane, whichever session asks. So `sim` needs session control on and
+        // nothing more.
+        if request.op == "sim" { return await simulator(request) }
         guard let scope = callerScope(session: request.callerSession, cwd: request.callerCwd) else {
             return controlError(request, "no_scope",
                 "Couldn’t tell which project you’re in. Run this from inside a Termio session.")
@@ -1169,7 +1173,7 @@ extension TermioStore {
         return "No session '\(raw)' in this project. Run `termio sessions list` to see the links."
     }
 
-    private func control(_ request: ControlRequest, ok: Bool, text: String, json: [String: Any]) -> Data {
+    func control(_ request: ControlRequest, ok: Bool, text: String, json: [String: Any]) -> Data {
         if request.wantsJSON {
             var object = json
             object["ok"] = ok
@@ -1183,7 +1187,7 @@ extension TermioStore {
         return Data((text.hasSuffix("\n") ? text : text + "\n").utf8)
     }
 
-    private func controlError(_ request: ControlRequest, _ code: String, _ message: String) -> Data {
+    func controlError(_ request: ControlRequest, _ code: String, _ message: String) -> Data {
         control(request, ok: false, text: "error: \(message)", json: ["error": code, "message": message])
     }
 

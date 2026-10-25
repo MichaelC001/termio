@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - Inspector pane menu
 
-/// The inspector's panes (Files / Search / Changes / Issues / Info), behind one button in the
+/// The inspector's panes (Files / Search / Changes / Issues / Info / Simulator), behind one button in the
 /// focused card's header. It is also the inspector's only toggle: choosing a pane opens the
 /// inspector on it, and the menu's last row closes it.
 ///
@@ -37,6 +37,7 @@ struct InspectorPaneMenu: View {
         (.changes, .gitBranch, "Changes", "Changes"),
         (.issues, .github, "Issues", "Issues"),
         (.info, .infoCircle, "Info", "Info"),
+        (.simulator, .smartPhone, "iOS Simulator", "Simulator"),
     ]
 
     /// Two panes exist only where they have something to show, rather than leading
@@ -47,6 +48,9 @@ struct InspectorPaneMenu: View {
             switch pane.tab {
             case .issues: settings.githubIntegrationEnabled && hasGitHubRemote
             case .changes: isRepository
+            // Hidden where the helper cannot run (Intel, macOS 14, a build
+            // without it), rather than leading to a pane that only says so.
+            case .simulator: SimulatorHost.shared.unavailableReason == nil
             default: true
             }
         }

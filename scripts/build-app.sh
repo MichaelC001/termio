@@ -355,6 +355,19 @@ else
     fi
 fi
 
+# The Simulator pane's helper (simulator-helper/), which links idb's simulator
+# libraries and so builds arm64-only, for macOS 15+, with XcodeGen. Like the
+# daemon, a release needs it and a dev build without the prerequisites ships
+# without the pane; the app hides the pane wherever the helper is absent.
+simulator_status=0
+simulator-helper/build.sh "$resources_dir" || simulator_status=$?
+if [[ "$simulator_status" -eq 3 && "$channel" != "dev" ]]; then
+    echo "error: a release must ship the simulator helper (see the reason above)." >&2
+    exit 1
+elif [[ "$simulator_status" -ne 0 && "$simulator_status" -ne 3 ]]; then
+    exit "$simulator_status"
+fi
+
 # Stamp version / build number when the release workflow supplies them. The
 # binary's rpath already resolves @rpath/Sparkle.framework via @executable_path
 # below, so embedding is purely a copy + one rpath entry.
@@ -444,6 +457,15 @@ codesign "${sign_args[@]}" "$sparkle"
 # outer app for the same reason — and with the same hardened runtime, because
 # notarization rejects any executable inside the bundle that lacks it.
 [[ -e "$daemon_dest" ]] && codesign "${sign_args[@]}" "$daemon_dest"
+# The simulator helper and its in-simulator guest are nested Mach-Os too, and
+# notarization wants the hardened runtime on both. idb says to ship the guest as
+# built, but re-signed with the runtime it dies on launch inside the simulator
+# (SIGABRT before it binds its socket) unless it may take the DYLD_* variables
+# the simulator's launchd hands it — hence its own entitlement.
+[[ -e "$resources_dir/termio-sim" ]] && codesign "${sign_args[@]}" "$resources_dir/termio-sim"
+simulator_guest="$resources_dir/Simulator/SimulatorFrameworkBridge-iOS"
+[[ -e "$simulator_guest" ]] && codesign "${sign_args[@]}" \
+    --entitlements "$repo_root/simulator-helper/bridge.entitlements" "$simulator_guest"
 # The Rust client is the same shape when it shipped (the shell-script fallback
 # is covered by the outer seal like any other resource file).
 if [[ -e "$resources_dir/$cli_name" ]] && file "$resources_dir/$cli_name" | grep -q "Mach-O"; then

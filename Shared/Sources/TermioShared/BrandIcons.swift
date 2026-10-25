@@ -232,6 +232,8 @@ public enum HugeIcon: Hashable, Sendable {
     case voice
     case close
     case collapse
+    case smartPhone
+    case home
 
     /// Side length of the source SVG's square viewBox (Hugeicons uses 24).
     public var viewBox: CGFloat { 24 }
@@ -468,6 +470,14 @@ public enum HugeIcon: Hashable, Sendable {
             // The inward mirror of `.expand`, on the same 3.5–20.5 reach so the two read as a pair:
             // two corner arrows drawn toward the centre — restores a maximized detail to the inspector.
             return "M20.5 3.5L14.5 9.5 M14.5 9.5L18.5 9.5 M14.5 9.5L14.5 5.5 M3.5 20.5L9.5 14.5 M9.5 14.5L5.5 14.5 M9.5 14.5L9.5 18.5"
+        case .smartPhone:
+            // Hugeicons "smart-phone-01": a phone body with its top notch and a
+            // home bar — the Simulator pane, which is a phone and nothing else.
+            return "M5 9C5 5.70017 5 4.05025 6.02513 3.02513C7.05025 2 8.70017 2 12 2C15.2998 2 16.9497 2 17.9749 3.02513C19 4.05025 19 5.70017 19 9V15C19 18.2998 19 19.9497 17.9749 20.9749C16.9497 22 15.2998 22 12 22C8.70017 22 7.05025 22 6.02513 20.9749C5 19.9497 5 18.2998 5 15V9Z M11 19H13 M9 2L9.089 2.53402C9.28188 3.69129 9.37832 4.26993 9.77519 4.62204C10.1892 4.98934 10.7761 5 12 5C13.2239 5 13.8108 4.98934 14.2248 4.62204C14.6217 4.26993 14.7181 3.69129 14.911 2.53402L15 2"
+        case .home:
+            // Hugeicons "home-01": a roofed house with a door — the Simulator's
+            // Home button.
+            return "M15 22V18C15 16.5858 15 15.8787 14.5607 15.4393C14.1213 15 13.4142 15 12 15C10.5858 15 9.87868 15 9.43934 15.4393C9 15.8787 9 16.5858 9 18V22 M2 10L10.1259 3.33435C11.2152 2.44478 12.7848 2.44478 13.8741 3.33435L22 10 M4 8.5V15.5C4 18.3284 4 19.7426 4.87868 20.6213C5.75736 21.5 7.17157 21.5 10 21.5H14C16.8284 21.5 18.2426 21.5 19.1213 20.6213C20 19.7426 20 18.3284 20 15.5V8.5"
         }
     }
 
