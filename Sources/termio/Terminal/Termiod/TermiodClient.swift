@@ -1339,6 +1339,8 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Keystrokes typed during the connect/attach window — flushed, in order,
     /// the moment the channel is writable so nothing the user typed is lost.
     private var pendingInput: [PendingInput] = []
+    /// The pane's focus as it last said, resent on every stream attach.
+    private var lastFocusLocked: Bool?
     private enum PendingInput {
         case bytes(Data)
         case event(Termiod.InputEvent)
@@ -1818,8 +1820,15 @@ final class TermiodSessionLink: @unchecked Sendable {
                     // Only the stream plane encodes events; a link that came
                     // back on keyframes has no encoder at the far end.
                     case .event(let event) where streamingNow: try sendEventLocked(event)
-                    case .event: break
+                    case .event:
+                        // Typed into a stream pane while it fell back to
+                        // keyframes: the embedded surface encodes for itself,
+                        // and this event names a key, not bytes.
+                        Log.termiod.info("\(self.sessionName, privacy: .public): dropped an input event typed during a fallback to keyframes")
                     }
+                }
+                if streamingNow, let focused = lastFocusLocked {
+                    try sendEventLocked(.focus(focused))
                 }
             }
             pendingInput.removeAll(keepingCapacity: false)
@@ -1908,8 +1917,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     }
 
     private func sendInputEvent(_ event: Termiod.InputEvent) {
-        let typing: Bool
-        if case .focus = event { typing = false } else { typing = true }
+        let typing = event.claimsWriter
         if typing {
             inputLock.lock()
             lastInputAtLocked = Date()
@@ -1917,12 +1925,19 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
         workQueue.async { [self] in
             guard !closed else { return }
+            // Kept for every attach: a pane that already has focus says so
+            // once, and a program that asks after a reconnect must hear it.
+            if case .focus(let focused) = event { lastFocusLocked = focused }
             guard attached else {
-                if typing { pendingInput.append(.event(event)) }
+                if case .focus = event { return }
+                pendingInput.append(.event(event))
                 return
             }
             guard streamingNow else { return }
             do {
+                // As `send` claims only for bytes: a modifier pressed on its
+                // way to a shortcut, a release or a composing key moves
+                // nothing, and termiod drops those from a non-writer.
                 if typing, !isWriter { try claimWriterLocked() }
                 try sendEventLocked(event)
             } catch {

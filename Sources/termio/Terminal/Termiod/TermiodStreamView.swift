@@ -520,12 +520,27 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     override func mouseUp(with event: NSEvent) { release(event, 1) }
     override func rightMouseDown(with event: NSEvent) { press(event, 2) }
     override func rightMouseUp(with event: NSEvent) { release(event, 2) }
-    override func otherMouseDown(with event: NSEvent) { press(event, 3) }
-    override func otherMouseUp(with event: NSEvent) { release(event, 3) }
+    override func otherMouseDown(with event: NSEvent) {
+        if let button = Self.otherButton(event) { press(event, button) }
+    }
+    override func otherMouseUp(with event: NSEvent) {
+        if let button = Self.otherButton(event) { release(event, button) }
+    }
     override func mouseMoved(with event: NSEvent) { motion(event, nil) }
     override func mouseDragged(with event: NSEvent) { motion(event, 1) }
     override func rightMouseDragged(with event: NSEvent) { motion(event, 2) }
-    override func otherMouseDragged(with event: NSEvent) { motion(event, 3) }
+    override func otherMouseDragged(with event: NSEvent) { motion(event, Self.otherButton(event)) }
+
+    /// Ghostty's numbering for the buttons past the first two: AppKit's 2 is
+    /// the middle button, 3 and 4 are back and forward (buttons eight and
+    /// nine), and so on to eleven.
+    static func otherButton(_ event: NSEvent) -> UInt8? {
+        switch event.buttonNumber {
+        case 2: return 3
+        case 3 ... 6: return UInt8(event.buttonNumber + 5)
+        default: return nil
+        }
+    }
 
     /// Rows and columns to scroll, as Ghostty counts them: a trackpad's points
     /// add up to whole cells, and a wheel's notch is three, however small the

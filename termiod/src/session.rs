@@ -569,7 +569,16 @@ impl Session {
             return;
         }
         if self.writer.as_ref() != Some(id) {
-            self.reject_not_writer(id);
+            // A release, plain motion or a composing key does not claim the
+            // token, so from a non-writer it is dropped without a complaint.
+            let typing = match &event {
+                Event::Key { action, composing, .. } => *action != InputAction::Release && !*composing,
+                Event::Mouse { action, .. } => *action == InputAction::Press,
+                _ => true,
+            };
+            if typing {
+                self.reject_not_writer(id);
+            }
             return;
         }
         let continues_paste = matches!(event, Event::Paste { .. })

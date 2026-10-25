@@ -1928,6 +1928,28 @@ public enum Termiod {
             }
         }
 
+        /// Whether sending this is typing, which takes the write token as
+        /// typing into the embedded surface does. Not a modifier pressed on its
+        /// own, a release, a key the input method is composing, plain motion,
+        /// or a focus change: none of them sends the program a byte.
+        public var claimsWriter: Bool {
+            switch self {
+            case .key(let key):
+                return key.action != .release && !key.composing && !Self.modifierKeys.contains(key.key)
+            case .paste, .wheel:
+                return true
+            case .mouse(let mouse):
+                return mouse.action == .press
+            case .focus:
+                return false
+            }
+        }
+
+        private static let modifierKeys: Set<String> = [
+            "shift_left", "shift_right", "control_left", "control_right", "alt_left", "alt_right",
+            "meta_left", "meta_right", "caps_lock", "fn", "fn_lock",
+        ]
+
         private struct Wire: Encodable {
             let ev: String
             var action: Action?

@@ -135,6 +135,38 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(rejoined.utf8.count, huge.utf8.count)
     }
 
+    /// Only typing takes the write token: a modifier pressed on the way to a
+    /// shortcut, a release, a composing key, motion and focus send no byte.
+    func testOnlyTypingClaimsTheWriteToken() {
+        XCTAssertTrue(Termiod.InputEvent.key(.init(key: "a", text: "a")).claimsWriter)
+        XCTAssertFalse(Termiod.InputEvent.key(.init(key: "meta_left")).claimsWriter)
+        XCTAssertFalse(Termiod.InputEvent.key(.init(action: .release, key: "a")).claimsWriter)
+        XCTAssertFalse(Termiod.InputEvent.key(.init(key: "a", composing: true)).claimsWriter)
+        XCTAssertTrue(Termiod.InputEvent.paste("x").claimsWriter)
+        let at = Termiod.InputEvent.Pointer(x: 0, y: 0, cellWidth: 8, cellHeight: 16)
+        XCTAssertTrue(Termiod.InputEvent.mouse(.init(action: .press, button: 1, mods: 0, at: at, buttonsHeld: true)).claimsWriter)
+        XCTAssertFalse(Termiod.InputEvent.mouse(.init(action: .motion, button: nil, mods: 0, at: at, buttonsHeld: false)).claimsWriter)
+        XCTAssertFalse(Termiod.InputEvent.focus(true).claimsWriter)
+    }
+
+    /// Back and forward are buttons eight and nine, as Ghostty numbers them.
+    func testExtraMouseButtonsKeepTheirNumbers() throws {
+        func other(_ number: Int) throws -> UInt8? {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: .otherMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            ))
+            // `buttonNumber` is not settable on a synthesized event; go through CGEvent.
+            let cg = try XCTUnwrap(event.cgEvent)
+            cg.setIntegerValueField(.mouseEventButtonNumber, value: Int64(number))
+            return TermiodStreamView.otherButton(try XCTUnwrap(NSEvent(cgEvent: cg)))
+        }
+        XCTAssertEqual(try other(2), 3, "middle")
+        XCTAssertEqual(try other(3), 8, "back")
+        XCTAssertEqual(try other(4), 9, "forward")
+        XCTAssertNil(try other(9))
+    }
+
     func testTheWheelIsTheProgramsOnlyWhenGhosttyWouldSendIt() throws {
         XCTAssertFalse(try terminal().wheelGoesToProgram, "scrollback")
         XCTAssertTrue(try terminal("\u{1b}[?1049h\u{1b}[?1007h").wheelGoesToProgram, "alternate scroll")
