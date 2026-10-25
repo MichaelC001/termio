@@ -1212,6 +1212,8 @@
 	<string>粉色</string>
 	<key>Pinned</key>
 	<string>已固定</string>
+	<key>Placeholder: %@</key>
+	<string>占位符：%@</string>
 	<key>Play sound</key>
 	<string>播放声音</string>
 	<key>Pointing termiod at %@…</key>

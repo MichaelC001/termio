@@ -1212,6 +1212,8 @@
 	<string>Pink</string>
 	<key>Pinned</key>
 	<string>Pinned</string>
+	<key>Placeholder: %@</key>
+	<string>Placeholder: %@</string>
 	<key>Play sound</key>
 	<string>Play sound</string>
 	<key>Pointing termiod at %@…</key>
