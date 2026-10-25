@@ -48,9 +48,6 @@ export async function CtaBand() {
             >
               Stop babysitting terminals.
             </h2>
-            <p className="mt-5 max-w-md text-pretty text-lg text-white/70">
-              Free and open source under the MIT license. No account, no card.
-            </p>
             <div className="mt-9 flex flex-wrap justify-center gap-3">
               <a
                 href={downloadUrl}
