@@ -97,8 +97,10 @@ final class TermiodStreamRenderer {
 
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
-    func draw(_ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool) throws {
-        let changed = try prepare(terminal, focused: focused, force: force)
+    func draw(
+        _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil
+    ) throws {
+        let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit)
         guard changed || force else { return }
         // A frame the GPU cannot take yet is dropped, not queued: the next
         // tick draws the newer screen anyway.
@@ -123,8 +125,10 @@ final class TermiodStreamRenderer {
 
     /// The whole screen drawn into an image of the given pixel size, for
     /// looking at a frame without a window — the renderer's own tests.
-    func image(of terminal: TermiodStreamTerminal, width: Int, height: Int, focused: Bool = true) throws -> CGImage {
-        _ = try prepare(terminal, focused: focused, force: true)
+    func image(
+        of terminal: TermiodStreamTerminal, width: Int, height: Int, focused: Bool = true, preedit: String? = nil
+    ) throws -> CGImage {
+        _ = try prepare(terminal, focused: focused, force: true, preedit: preedit)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
@@ -150,14 +154,14 @@ final class TermiodStreamRenderer {
         return image
     }
 
-    private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool) throws -> Bool {
+    private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool, preedit: String?) throws -> Bool {
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
         // Ghostty's blink: 600 ms on, 600 ms off.
         let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
         return try terminal.withFrame { state, theme in
-            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme)
+            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit)
         }
     }
 
@@ -628,6 +632,11 @@ final class TermiodStreamFrameBuilder {
     private var cursor: [TermiodStreamRectangle] = []
     private var cursorGlyph: TermiodStreamGlyph?
     private var cursorCell: (x: UInt16, y: UInt16)?
+    /// The input method's unfinished text, drawn over the cells it covers.
+    private var preeditRectangles: [TermiodStreamRectangle] = []
+    private var preeditGlyphs: [TermiodStreamGlyph] = []
+    private var preeditCells: (y: UInt16, first: UInt16, last: UInt16)?
+    private var lastPreedit: PreeditState?
     nonisolated(unsafe) private var rowIterator: GhosttyRenderStateRowIterator?
     nonisolated(unsafe) private var cells: GhosttyRenderStateRowCells?
     private var codepoints = [UInt32](repeating: 0, count: 32)
@@ -653,7 +662,7 @@ final class TermiodStreamFrameBuilder {
     /// Returns false when nothing changed since the last build.
     func build(
         from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true,
-        theme: TermiodStreamTerminal.Theme? = nil
+        theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil
     ) throws -> Bool {
         let contrast = theme?.minimumContrast ?? 1
         if contrast != minimumContrast {
@@ -693,7 +702,16 @@ final class TermiodStreamFrameBuilder {
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
-        var cursorState = CursorState(state, colors: colors, focused: focused, blinkOn: blinkOn)
+        let preeditState = PreeditState(state, text: preedit, colors: colors)
+        if changed || preeditState != lastPreedit {
+            lastPreedit = preeditState
+            buildPreedit(preeditState, atlas: atlas)
+            changed = true
+        }
+        // Ghostty draws no cursor while there is text being composed.
+        var cursorState = preeditState.text.isEmpty
+            ? CursorState(state, colors: colors, focused: focused, blinkOn: blinkOn)
+            : CursorState()
         cursorState.text = cursorText.map { [$0.r, $0.g, $0.b] }
         if changed || cursorState != lastCursorState {
             lastCursorState = cursorState
@@ -731,6 +749,8 @@ final class TermiodStreamFrameBuilder {
         /// The theme's cursor-text color, which only the drawing reads.
         var text: [UInt8]?
 
+        init() {}
+
         /// `blinkOn` is the blink phase now; a cursor that blinks is drawn
         /// only in the on half, and a pane out of focus never blinks.
         init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool, blinkOn: Bool) {
@@ -767,6 +787,74 @@ final class TermiodStreamFrameBuilder {
     }
 
     private var lastCursorState: CursorState?
+
+    /// Everything the composed text's drawing depends on.
+    private struct PreeditState: Equatable {
+        var text = ""
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        var cols: UInt16 = 0
+        var red: UInt8 = 0
+        var green: UInt8 = 0
+        var blue: UInt8 = 0
+
+        init(_ state: GhosttyRenderState, text: String?, colors: GhosttyRenderStateColors) {
+            var hasValue = false
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
+            guard let text, !text.isEmpty, hasValue else { return }
+            self.text = text
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLS, &cols)
+            red = colors.foreground.r
+            green = colors.foreground.g
+            blue = colors.foreground.b
+        }
+    }
+
+    /// Ghostty's preedit: the text from the cursor on in the foreground color,
+    /// underlined, over whatever those cells held. Text wider than the row
+    /// shifts left, and keeps its end when it cannot fit at all.
+    private func buildPreedit(_ state: PreeditState, atlas: TermiodGlyphAtlas) {
+        preeditRectangles = []
+        preeditGlyphs = []
+        preeditCells = nil
+        guard !state.text.isEmpty, state.cols > 0 else { return }
+        var graphemes: [(codepoints: [UInt32], cells: Int)] = state.text.map { character in
+            let codepoints = character.unicodeScalars.map(\.value)
+            let width = codepoints.first.map { Int(ghostty_unicode_codepoint_width($0)) } ?? 1
+            return (codepoints, min(2, max(1, width)))
+        }
+        let cols = Int(state.cols)
+        var total = graphemes.reduce(0) { $0 + $1.cells }
+        while total > cols, !graphemes.isEmpty {
+            total -= graphemes.removeFirst().cells
+        }
+        guard !graphemes.isEmpty else { return }
+        var x = min(Int(state.x), cols - total)
+        let first = x
+        let metrics = atlas.metrics
+        for grapheme in graphemes {
+            if let slot = atlas.slot(graphemes: grapheme.codepoints, bold: false, italic: false, cells: grapheme.cells) {
+                preeditGlyphs.append(TermiodStreamGlyph(
+                    cellX: UInt16(x), cellY: state.y,
+                    atlasX: slot.origin.x, atlasY: slot.origin.y,
+                    atlasWidth: slot.size.x, atlasHeight: slot.size.y,
+                    offsetX: slot.offset.x, offsetY: slot.offset.y,
+                    r: state.red, g: state.green, b: state.blue, a: 255,
+                    colored: slot.colored ? 1 : 0
+                ))
+            }
+            preeditRectangles.append(TermiodStreamRectangle(
+                cellX: UInt16(x), cellY: state.y, x: 0, y: Int16(clamping: metrics.underlinePosition),
+                width: UInt16(clamping: metrics.width * grapheme.cells),
+                height: UInt16(clamping: metrics.underlineThickness),
+                r: state.red, g: state.green, b: state.blue, a: 255, overText: true
+            ))
+            x += grapheme.cells
+        }
+        preeditCells = (state.y, UInt16(first), UInt16(x - 1))
+    }
 
     private func rebuildRow(_ y: Int, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas) {
         var rectangles: [TermiodStreamRectangle] = []
@@ -978,10 +1066,23 @@ final class TermiodStreamFrameBuilder {
     func flatten(rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph]) {
         rectangles.removeAll(keepingCapacity: true)
         glyphs.removeAll(keepingCapacity: true)
-        for row in rowRectangles { rectangles.append(contentsOf: row) }
+        // The cells under composed text show only the composition.
+        func covered(_ x: UInt16, row: Int) -> Bool {
+            guard let cells = preeditCells, Int(cells.y) == row else { return false }
+            let wide = row < rowWideStarts.count && rowWideStarts[row].contains(x)
+            return x <= cells.last && x + (wide ? 1 : 0) >= cells.first
+        }
+        for (index, row) in rowRectangles.enumerated() {
+            if preeditCells.map({ Int($0.y) == index }) == true {
+                rectangles.append(contentsOf: row.filter { !covered($0.cellX, row: index) })
+            } else {
+                rectangles.append(contentsOf: row)
+            }
+        }
         rectangles.append(contentsOf: cursor)
+        rectangles.append(contentsOf: preeditRectangles)
         for (index, row) in rowGlyphs.enumerated() {
-            for glyph in row {
+            for glyph in row where !covered(glyph.cellX, row: index) {
                 var glyph = glyph
                 // Text under a block cursor is drawn in the background color,
                 // so the character stays readable through it.
@@ -994,5 +1095,6 @@ final class TermiodStreamFrameBuilder {
                 glyphs.append(glyph)
             }
         }
+        glyphs.append(contentsOf: preeditGlyphs)
     }
 }

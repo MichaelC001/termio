@@ -471,15 +471,31 @@ extension TermioStore {
         // session's near-instant boot-settle hit that window as a spurious
         // not_live. (A session mounted even once stays mounted, so this only fires
         // on the very first drive.)
-        if state.surface == nil { activateInBackground(session.id) }
+        //
+        // A pane on the `vt_stream` plane never makes that surface; its keys go
+        // through the client terminal's encoder instead, which holds the modes
+        // the program negotiated (the surface stopped hearing them).
+        if state.surface == nil, streamTerminal(for: session.id) == nil { activateInBackground(session.id) }
         let attachDeadline = Date().addingTimeInterval(3)
-        while state.surface == nil, Date() < attachDeadline {
+        while state.surface == nil, streamTerminal(for: session.id) == nil, Date() < attachDeadline {
             try? await Task.sleep(for: .milliseconds(150))
         }
-        guard let surfaceHandle = Self.rawSurface(from: state) else { return false }
+        let press: (SessionKeyPress) -> Void
+        if let link = runtimes[session.id]?.streamLink, let terminal = link.streamTerminal {
+            press = { key in
+                for input in TermiodStreamKeyboard.inputs(for: key) {
+                    let bytes = terminal.encode(input)
+                    if !bytes.isEmpty { link.send(bytes) }
+                }
+            }
+        } else if let surfaceHandle = Self.rawSurface(from: state) {
+            press = { Self.pressKey($0, on: surfaceHandle) }
+        } else {
+            return false
+        }
 
         // Write the payload as raw PTY bytes, then submit with a real Return *key
-        // event* — `pressReturn` leaves the encoding to Ghostty, which emits what
+        // event* — `press(.return)` leaves the encoding to Ghostty, which emits what
         // the program's keyboard mode expects, and a "\r" appended to the payload
         // cannot (an agent TUI reads one inside a paste as a newline, never a
         // submit). `ghostty_surface_key` drives the surface directly, with no focus
@@ -490,16 +506,16 @@ extension TermioStore {
         // only Ghostty knows whether this program wants `ESC [ A` or `ESC O A`. They
         // fire in the order named, each after the same settle the submit takes, so a
         // TUI that redraws between keystrokes keeps up.
-        for press in keys {
+        for key in keys {
             try? await Task.sleep(for: .milliseconds(40))
-            Self.pressKey(press, on: surfaceHandle)
+            press(key)
         }
         guard submit else {
             undeliveredPrompts.remove(session.id)
             return true
         }
         try? await Task.sleep(for: .milliseconds(40))
-        Self.pressReturn(on: surfaceHandle)
+        press(.return)
         // Whatever went wrong with the spawn prompt, someone has since driven
         // this session by hand; the warning has served its purpose.
         undeliveredPrompts.remove(session.id)
@@ -762,6 +778,15 @@ extension TermioStore {
     /// create a surface as a side effect. Reads through the backend's own lock
     /// (`readViewportText`), so it's safe from this actor.
     func viewportText(for id: Session.ID) -> String? {
+        // A stream pane's surface stopped hearing the session; its terminal has it.
+        if let terminal = streamTerminal(for: id) {
+            do {
+                return try terminal.activeText()
+            } catch {
+                Log.termiod.error("stream screen text: \(String(describing: error), privacy: .public)")
+                return nil
+            }
+        }
         guard let state = surfaces[id],
               case .inMemory(let terminal) = state.configuration.backend else { return nil }
         return terminal.readViewportText()
@@ -850,14 +875,13 @@ extension TermioStore {
     /// replaced an earlier reflection read of the private stored property, which
     /// would have started returning nil silently the first time the field was
     /// renamed upstream.
-    private static func rawSurface(from state: TerminalViewState) -> ghostty_surface_t? {
-        state.surface?.rawValue
+    /// The client terminal of a session on the `vt_stream` plane, if it is.
+    func streamTerminal(for id: Session.ID) -> TermiodStreamTerminal? {
+        runtimes[id]?.streamLink?.streamTerminal
     }
 
-    /// Sends a Return key press (and release) to the surface — the submit a user makes
-    /// by pressing Enter, and the shape every `--key` press takes.
-    private static func pressReturn(on surface: ghostty_surface_t) {
-        pressKey(.return, on: surface)
+    private static func rawSurface(from state: TerminalViewState) -> ghostty_surface_t? {
+        state.surface?.rawValue
     }
 
     /// Sends one key press (and release) to the surface. `keycode` is the native

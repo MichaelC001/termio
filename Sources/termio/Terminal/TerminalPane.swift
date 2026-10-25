@@ -200,6 +200,7 @@ struct TerminalPane: View {
                     // grid anchored top-left and declares what the pane holds.
                     TermiodStreamPane(
                         link: link,
+                        sessionID: id,
                         appearance: store.streamAppearance(),
                         colors: store.streamTheme(dark: colorScheme == .dark),
                         isSelected: isSelected,

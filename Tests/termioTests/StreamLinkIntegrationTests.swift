@@ -94,6 +94,33 @@ final class StreamLinkIntegrationTests: XCTestCase {
         try wait("input echoed back through the stream") { try text(link).contains("typed after") }
     }
 
+    /// A key reaches the program in the form its modes ask for: the program
+    /// turned on application cursor keys after the attach, which only the
+    /// client terminal heard, and `cat -v` shows the bytes that arrived.
+    func testAKeyIsEncodedWithTheModesTheProgramSetAfterTheAttach() throws {
+        let link = TermiodSessionLink(
+            sessionName: "keys-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(),
+                argv: ["/bin/sh", "-c", "stty -echo; printf 'ready\\033[?1h\\n'; exec /bin/cat -v"],
+                env: [], rows: 20, cols: 60),
+            rows: 20, cols: 60, offersStream: true)
+        link.start()
+        defer { link.detach() }
+        try wait("the program set its modes") { try text(link).contains("ready") }
+        let terminal = try XCTUnwrap(link.streamTerminal)
+        let press = try XCTUnwrap(SessionKeyPress.parse("up"))
+        for input in TermiodStreamKeyboard.inputs(for: press) {
+            let bytes = terminal.encode(input)
+            if !bytes.isEmpty { link.send(bytes) }
+        }
+        for input in TermiodStreamKeyboard.inputs(for: .return) {
+            let bytes = terminal.encode(input)
+            if !bytes.isEmpty { link.send(bytes) }
+        }
+        try wait("cat -v echoed the application-mode arrow") { try text(link).contains("^[OA") }
+    }
+
     /// A start the daemon refuses never takes the pane to the stream view:
     /// the refusal is shown where the embedded surface shows it.
     func testARefusedStartNeverStreams() throws {
