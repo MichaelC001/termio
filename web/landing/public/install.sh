@@ -148,6 +148,15 @@ serve_routes() {
     tailscale serve status --json 2>/dev/null | tr -d ' \n\t'
 }
 
+# Whether Serve already sends the root of https://$1 to termiod: the exact
+# address the pairing link names, not termiod under some other path or port.
+serves_termiod_at_root() {
+    case "$(serve_routes)" in
+        *'"'"$1"':443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:'"$PORT"'"}'*) return 0 ;;
+    esac
+    return 1
+}
+
 tailnet_has_https() {
     tailscale status --json --peers=false 2>/dev/null | tr -d '\n ' | grep -q '"CertDomains":\["'
 }
@@ -202,14 +211,11 @@ plan_tailnet() {
     # Serve replaces whatever already answers at the same address, so a node
     # that serves something else keeps it, and termiod stays off the tailnet.
     routes="$(serve_routes)"
-    case "$routes" in
-        ""|"{}"|*'"Proxy":"http://127.0.0.1:'"$PORT"'"'*) ;;
-        *'"Web":{'*|*'"TCP":{'*)
-            say "    Tailscale Serve already publishes something on this machine, so termiod"
-            say "    is not added to it. See: tailscale serve status"
-            return 0
-            ;;
-    esac
+    if [ -n "$routes" ] && [ "$routes" != "{}" ] && ! serves_termiod_at_root "$name"; then
+        say "    Tailscale Serve already publishes something on this machine, so termiod"
+        say "    is not added to it. See: tailscale serve status"
+        return 0
+    fi
     existing="$(existing_setting TERMIOD_WSS_ORIGIN wss.origin)"
     existing_bind="$(existing_setting TERMIOD_WSS wss.bind)"
     # Anything already set that is not exactly this is someone's publication:
@@ -318,9 +324,7 @@ serve_on_tailnet() {
         say "    installer again after the daemon restarts."
         return 0
     fi
-    case "$(serve_routes)" in
-        *'"Proxy":"http://127.0.0.1:'"$PORT"'"'*) return 0 ;;
-    esac
+    serves_termiod_at_root "${URL#https://}" && return 0
     if ! tailscale serve --bg --https=443 "http://127.0.0.1:$PORT" >/dev/null 2>&1; then
         say "    Tailscale Serve needs permission. Run once:"
         say "      sudo tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
