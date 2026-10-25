@@ -2027,10 +2027,12 @@ private struct PanelDividerHandle: View {
                     GeometryDragTracker.shared.endDrag()
                     DispatchQueue.main.async { store.flushViewports() }
                 })
-            // The gap and the seam: the line the grip draws is part of what grabs.
-            .frame(width: PaneCard.panelDivider + PaneCard.borderWidth, height: edge.height)
+            // The gap and the seam: the line the grip draws is part of what grabs. Below the
+            // header only: the header is the pane's to drag, and its centred handle can sit on
+            // the seam, where the rearrange monitor takes the press first.
+            .frame(width: PaneCard.panelDivider + PaneCard.borderWidth, height: panelFrame.height)
             .position(x: panelFrame.minX + (PaneCard.borderWidth - PaneCard.panelDivider) / 2,
-                      y: edge.midY)
+                      y: panelFrame.midY)
         }
         .onDisappear {
             guard anchorWidth != nil else { return }
