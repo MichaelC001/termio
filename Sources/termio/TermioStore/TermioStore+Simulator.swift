@@ -407,7 +407,8 @@ extension TermioStore {
                    let width = frame["width"] as? NSNumber, let height = frame["height"] as? NSNumber {
                     let rect = CGRect(x: x.doubleValue, y: y.doubleValue,
                                       width: width.doubleValue, height: height.doubleValue)
-                    if let screenRect, !rect.intersects(screenRect) {
+                    // An empty frame is laid out nowhere — an icon on a page not shown.
+                    if rect.isEmpty || screenRect.map({ !rect.intersects($0) }) == true {
                         offScreen += 1
                         continue
                     }

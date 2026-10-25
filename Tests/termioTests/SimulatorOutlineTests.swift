@@ -43,6 +43,16 @@ final class SimulatorOutlineTests: XCTestCase {
             "Icon \"Maps\" @ 30,88 162x185\n(1 off-screen elements omitted)")
     }
 
+    func testAnIconOnAPageNotShownHasAnEmptyFrameAndIsOmitted() {
+        let tree = document([
+            element("Icon", label: "Files", frame: (30, 88, 64, 64)),
+            element("Icon", label: "Settings", frame: (0, 0, 0, 0)),
+        ])
+        XCTAssertEqual(
+            TermioStore.outline(tree),
+            "Icon \"Files\" @ 30,88 64x64\n(1 off-screen elements omitted)")
+    }
+
     func testAnElementCrossingTheEdgeStays() {
         let tree = document([element("Cell", label: "Row", frame: (0, 860, 402, 44))])
         XCTAssertEqual(TermioStore.outline(tree), "Cell \"Row\" @ 0,860 402x44")

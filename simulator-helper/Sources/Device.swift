@@ -30,6 +30,8 @@ final class Device: @unchecked Sendable {
     private var surfaceID: IOSurfaceID?
     private var currentSurface: IOSurface?
     private var lastSurfaceCheckFailure: String?
+    /// Bumped by `detach`; what was being made before it is not cached after.
+    private var generation = 0
     /// The screen edge the finger now down on the pane went down on, held for
     /// its whole stroke: iOS reads a swipe from an edge as a system gesture
     /// only when every report of it names that edge.
@@ -121,12 +123,14 @@ final class Device: @unchecked Sendable {
             for await event in attachment.events {
                 switch event {
                 case .surfaceChanged(let surface):
-                    if let surface { self?.send(surface, to: port) }
+                    if let surface { self?.deliver(surface, from: attachment, to: port) }
                 case .frameRendered:
                     Wire.event("frame", ["stream": stream])
                 case .configurationChanged:
                     break
                 case .ended(let error):
+                    // Not for an attachment already replaced: its end is ours.
+                    guard self?.isCurrent(attachment) == true else { return }
                     Wire.event("detached", ["udid": udid, "error": "\(error)"])
                     return
                 @unknown default:
@@ -136,6 +140,22 @@ final class Device: @unchecked Sendable {
         }
     }
 
+    /// A surface change from `source`, sent only if `source` is still the
+    /// attachment in use. Cancelling a replaced attachment's task does not stop
+    /// an event it is already handling, and that event's surface is older than
+    /// the replacement's.
+    private func deliver(_ surface: IOSurface, from source: FramebufferAttachment, to port: SurfacePort) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard attachment === source else { return }
+        send(surface, to: port)
+    }
+
+    private func isCurrent(_ source: FramebufferAttachment) -> Bool {
+        lock.withLock { attachment === source }
+    }
+
+    /// Called with the lock held.
     private func send(_ surface: IOSurface, to port: SurfacePort) {
         currentSurface = surface
         surfaceID = IOSurfaceGetID(surface)
@@ -208,6 +228,10 @@ final class Device: @unchecked Sendable {
         framebuffer = nil
         hid = nil
         readers.removeAll()
+        strokeEdge = nil
+        // A connection or reader still being made belongs to the boot left
+        // behind; this makes it be thrown away when it arrives.
+        generation += 1
     }
 
     /// The edge for one report of a pane stroke: decided where it goes down,
@@ -419,9 +443,10 @@ final class Device: @unchecked Sendable {
     }
 
     private func connectedHID() async throws -> SimulatorHID {
-        if let hid = lock.withLock({ self.hid }) { return hid }
+        let (cached, started) = lock.withLock { (self.hid, generation) }
+        if let cached { return cached }
         let connected = try await simulator.hid.connect()
-        lock.withLock { self.hid = connected }
+        lock.withLock { if generation == started { self.hid = connected } }
         return connected
     }
 
@@ -469,7 +494,10 @@ final class Device: @unchecked Sendable {
                 if depth > 0, let frame, !bounds.contains(frame), frame.width > screen.width + 1 || frame.height > screen.height + 1 {
                     continue
                 }
+                // An empty frame is an element not laid out on screen — an icon on
+                // a home screen page not shown — and its "centre" is the corner.
                 if let text = element["label"] as? String, text.contains(label), let frame,
+                   frame.width > 0, frame.height > 0,
                    screen.contains(CGPoint(x: frame.midX, y: frame.midY)) {
                     candidates.append(frame)
                 }
@@ -518,10 +546,11 @@ final class Device: @unchecked Sendable {
 
     private func automation(_ method: AXBridgeFrontmostMethod? = nil) throws -> any UIAutomation {
         let method = method ?? lock.withLock { frontmostMethod }
-        if let reader = lock.withLock({ readers[method] }) { return reader }
+        let (cached, started) = lock.withLock { (readers[method], generation) }
+        if let cached { return cached }
         let created = try simulator.uiAutomation(
             backend: UIAutomationBackend(resolvedName: .axBridgeExclusive, frontmostMethod: method))
-        lock.withLock { readers[method] = created }
+        lock.withLock { if generation == started { readers[method] = created } }
         return created
     }
 }
