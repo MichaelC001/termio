@@ -17,8 +17,10 @@ import Foundation
 /// *private* on-disk format, undocumented and free to change between agent versions,
 /// so every read is best-effort: any miss returns `nil` and the session launches fresh.
 enum AgentSessionStore {
-    static func discover(agent: AgentPreset, directory: String, after launchedAt: Date?) -> String? {
-        match(agent: agent, directory: directory, after: launchedAt)?.id
+    static func discover(
+        agent: AgentPreset, directory: String, after launchedAt: Date?, account: String? = nil
+    ) -> String? {
+        match(agent: agent, directory: directory, after: launchedAt, account: account)?.id
     }
 
     /// The on-disk conversation transcript for an agent that doesn't hand termio a
@@ -71,9 +73,9 @@ enum AgentSessionStore {
     /// Both `discover` (id, for resume) and `discoverTranscript` (path, for the trace
     /// viewer) read from the same scan.
     private static func match(agent: AgentPreset, directory: String, after launchedAt: Date?,
-                              newest: Bool = false) -> (url: URL, id: String)? {
+                              newest: Bool = false, account: String? = nil) -> (url: URL, id: String)? {
         guard let launchedAt, let spec = agent.resumeSpec.discover else { return nil }
-        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(spec.root))
+        let root = URL(fileURLWithPath: XDGBaseDirectories.expand(agent.path(spec.root, inAccount: account)))
         let target = canonical(directory)
         return bestMatch(in: root, ext: spec.format.fileExtension, after: launchedAt,
                          newest: newest) { url in

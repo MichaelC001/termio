@@ -1,20 +1,54 @@
+import CryptoKit
 import Foundation
 import Security
 
 /// Claude Code's usage, read from the credential the CLI leaves on disk.
 ///
 /// Plan limits come from `/api/oauth/usage` with the OAuth bearer in
-/// `~/.claude/.credentials.json` (a plain file, no prompt) or, only when
-/// allowed, the `Claude Code-credentials` Keychain item the CLI writes on macOS.
+/// `<home>/.credentials.json` (a plain file, no prompt) or, only when allowed,
+/// the `Claude Code-credentials` Keychain item the CLI writes on macOS — one item
+/// per config folder, see `keychainService`.
 /// The endpoint needs the `user:profile` scope, which Claude Code's tokens carry.
 /// Token totals come from the per-session JSONL logs, and Claude is the one agent
 /// termio can price, so its scan carries a dollar estimate.
 struct ClaudeUsageProvider: UsageProvider {
-    var agent: AgentPreset { .claudeCode }
+    static let agent = AgentPreset.claudeCode
+    static let homeEnvironment = "CLAUDE_CONFIG_DIR"
+    static let defaultDirectory = ".claude"
+    static let loginArguments: String? = "auth login"
 
-    /// Claude Code has no home-directory override, so this one is fixed.
-    private var home: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+    let home: URL
+
+    /// Whether this is the folder Claude Code uses with `CLAUDE_CONFIG_DIR`
+    /// unset. Its Keychain item and its `.claude.json` sit at the unsuffixed
+    /// legacy spots; every other folder keeps both to itself.
+    private var isUnmovedHome: Bool {
+        ProcessInfo.processInfo.environment[Self.homeEnvironment] == nil
+            && home.standardizedFileURL.path == FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(Self.defaultDirectory).standardizedFileURL.path
+    }
+
+    /// The Keychain item holding this folder's login. Claude Code names it
+    /// `Claude Code-credentials`, plus `-<first 8 hex of SHA-256 of the
+    /// NFC-normalized CLAUDE_CONFIG_DIR>` whenever that variable is set (read
+    /// from the 2.1.308 binary). The hash is over the string as exported, so a
+    /// folder exported through a symlink or with a trailing slash won't match.
+    var keychainService: String {
+        let base = "Claude Code-credentials"
+        guard !isUnmovedHome else { return base }
+        let digest = SHA256.hash(data: Data(home.path.precomposedStringWithCanonicalMapping.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "\(base)-\(hex.prefix(8))"
+    }
+
+    /// The signed-in account lives in the global config: `~/.claude.json` for
+    /// the unmoved home, `<home>/.claude.json` for any other folder.
+    func accountEmail() -> String? {
+        let config = isUnmovedHome
+            ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+            : home.appendingPathComponent(".claude.json")
+        return (jsonObject(at: config)?["oauthAccount"] as? [String: Any])?["emailAddress"]
+            as? String
     }
 
     // MARK: - Plan limits
@@ -22,7 +56,7 @@ struct ClaudeUsageProvider: UsageProvider {
     /// `five_hour` → session lane, `seven_day` → weekly lane.
     func planLimits(allowKeychain: Bool) async -> PlanLimitReading {
         let credential = accessToken(allowKeychain: allowKeychain)
-        guard case .token(let token) = credential else {
+        guard case .token(let token, let plan) = credential else {
             return PlanLimitReading(keychainDeclined: credential == .keychainDeclined)
         }
         guard let request = request(
@@ -34,7 +68,7 @@ struct ClaudeUsageProvider: UsageProvider {
         return PlanLimitReading([
             payload.five_hour?.window(label: "5h"),
             payload.seven_day?.window(label: "Weekly"),
-        ].compactMap { $0 })
+        ].compactMap { $0 }, plan: plan)
     }
 
     // MARK: - Credentials
@@ -43,20 +77,21 @@ struct ClaudeUsageProvider: UsageProvider {
     /// user actively refusing the Keychain prompt (which the caller must
     /// remember, not retry).
     private enum Credential: Equatable {
-        case token(String)
+        /// The bearer and the plan it belongs to (`subscriptionType`).
+        case token(String, plan: String?)
         case unavailable
         case keychainDeclined
     }
 
     private func accessToken(allowKeychain: Bool) -> Credential {
         let file = home.appendingPathComponent(".credentials.json")
-        if let token = jsonObject(at: file).flatMap(parseToken) { return .token(token) }
+        if let credential = jsonObject(at: file).flatMap(parseToken) { return credential }
         guard allowKeychain else { return .unavailable }
-        switch keychainPassword(service: "Claude Code-credentials") {
+        switch keychainPassword(service: keychainService) {
         case .success(let data):
             guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let token = parseToken(root) else { return .unavailable }
-            return .token(token)
+                  let credential = parseToken(root) else { return .unavailable }
+            return credential
         case .declined:
             return .keychainDeclined
         case .unavailable:
@@ -64,9 +99,25 @@ struct ClaudeUsageProvider: UsageProvider {
         }
     }
 
-    private func parseToken(_ root: [String: Any]) -> String? {
+    /// The plain-file credential, or the Keychain item's mere existence: an
+    /// attributes-only query reads no secret, so macOS never prompts for it.
+    func hasCredential() -> Bool {
+        if jsonObject(at: home.appendingPathComponent(".credentials.json")).flatMap(parseToken) != nil {
+            return true
+        }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    private func parseToken(_ root: [String: Any]) -> Credential? {
         let oauth = (root["claudeAiOauth"] as? [String: Any]) ?? root
-        return oauth["accessToken"] as? String
+        guard let token = oauth["accessToken"] as? String else { return nil }
+        return .token(token, plan: (oauth["subscriptionType"] as? String)?.capitalized)
     }
 
     private enum KeychainRead {
@@ -102,7 +153,7 @@ struct ClaudeUsageProvider: UsageProvider {
 
     // MARK: - Token usage
 
-    /// Scans Claude Code's per-session JSONL logs (`~/.claude/projects/**/*.jsonl`)
+    /// Scans Claude Code's per-session JSONL logs (`<home>/projects/**/*.jsonl`)
     /// and totals tokens + estimated cost into the windows and per-day buckets.
     /// Each line is one API turn carrying `message.usage` and `message.model`.
     /// Duplicate turns (re-emitted on resume) are de-duplicated by request id.

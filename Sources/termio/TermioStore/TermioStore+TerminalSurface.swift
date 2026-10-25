@@ -225,10 +225,12 @@ extension TermioStore {
         // the remote host allocates its own pty over the connection. It never
         // resumes (a local-agent concept), so it short-circuits the agent launch
         // resolution below.
-        let launch = session.sshHost.map {
-            (command: Self.sshLaunchCommand(host: $0, keyToInstall: session.sshKeyToInstall),
-             resumeID: String?.none)
-        } ?? resolveLaunch(for: session, spawnPath: spawnPath)
+        let launch = session.oneShotCommand.map { (command: $0, resumeID: String?.none) }
+            ?? session.sshHost.map {
+                (command: Self.sshLaunchCommand(host: $0, keyToInstall: session.sshKeyToInstall),
+                 resumeID: String?.none)
+            }
+            ?? resolveLaunch(for: session, spawnPath: spawnPath)
         let agentCommand = launch.command
 
         // Pi checks the pinned `--session-id` against its session store at startup
@@ -502,6 +504,13 @@ extension TermioStore {
             return (base, nil)
         }
         let agent = session.agent
+        // A session on an extra account runs with that folder exported, and its
+        // conversations are looked for there — the store below and the discovery
+        // both read the folder the agent actually writes.
+        let account = accountHome(for: session)
+        let command = account.flatMap { home in
+            agent.configHome.map { "\($0.env)=\(Self.shellQuoted(home)) \(base)" }
+        } ?? base
         let resumeID: String?
         if agent.usesPinnedResumeID {
             // We mint and pin the id up front; reuse the persisted one across launches.
@@ -512,7 +521,7 @@ extension TermioStore {
             // so the scan happens at most once per session.
             resumeID = session.resumeID
                 ?? AgentSessionStore.discover(agent: agent, directory: spawnPath,
-                                              after: session.launchedAt)
+                                              after: session.launchedAt, account: account)
         } else {
             resumeID = nil
         }
@@ -521,7 +530,8 @@ extension TermioStore {
         // resume flag once the agent has persisted it. Fully manifest-driven: no agent is
         // named here.
         let pinnedConversationExists: Bool
-        if let store = agent.resumeSpec.store, let id = resumeID {
+        if var store = agent.resumeSpec.store, let id = resumeID {
+            store.root = agent.path(store.root, inAccount: account)
             pinnedConversationExists = SessionStore.exists(store, id: id)
         } else {
             pinnedConversationExists = false
@@ -531,9 +541,9 @@ extension TermioStore {
             pinnedConversationExists: pinnedConversationExists
         )
         guard let arguments = agent.resumeArguments(context) else {
-            return (base, resumeID)
+            return (command, resumeID)
         }
-        return ("\(base) \(arguments)", resumeID)
+        return ("\(command) \(arguments)", resumeID)
     }
 
     /// Persists that a session has launched and, for the id-pinning agents, the id it
@@ -546,12 +556,23 @@ extension TermioStore {
         guard firstLaunch || needsResumeID else { return }
         if needsResumeID { session.resumeID = resumeID }
         if firstLaunch {
+            session.accountHome = accountHome(for: session)
             session.launched = true
             // Stamp the launch moment so a later run can correlate Codex/OpenCode's own
             // session record back to this session by creation time (see `resolveLaunch`).
             session.launchedAt = Date()
         }
         updateSession(id) { $0 = session }
+    }
+
+    /// The account folder `session` runs on: the one it was started on, or —
+    /// before its first launch — the one chosen for new sessions. `nil` is the
+    /// default folder, and always for a session on another machine, whose
+    /// config lives over there.
+    func accountHome(for session: Session) -> String? {
+        guard session.termiodRemoteHost == nil, session.oneShotCommand == nil else { return nil }
+        if session.launched { return session.accountHome }
+        return settings.activeAccountFolder(for: session.agent)
     }
 
     /// Advances a session's pinned `resumeID` to the conversation it is *currently*
