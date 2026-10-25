@@ -884,22 +884,40 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 }
             }
         }
-        // The next path from `position`, seen through the window. The pattern
-        // looks past the window's edges, so a path is not taken to start or
-        // end there; one that reaches an edge the text goes past may be
-        // longer than what was searched, and is passed over.
+        func isPathCharacter(_ index: Int) -> Bool {
+            guard let scalar = Unicode.Scalar(units[index]) else { return true }
+            return scalar == "_" || CharacterSet.alphanumerics.contains(scalar) || "-.~:/?#@!$&*+;=%".unicodeScalars.contains(scalar)
+        }
+        // A path whose characters run unbroken past a window edge the text
+        // goes past may be longer than what was searched, and is passed over.
+        func isCut(_ range: NSRange) -> Bool {
+            var start = range.location
+            while start > window.lowerBound, isPathCharacter(start - 1) { start -= 1 }
+            if start == window.lowerBound, start > 0, isPathCharacter(start - 1) { return true }
+            var end = range.location + range.length
+            while end < window.upperBound, isPathCharacter(end) { end += 1 }
+            return end == window.upperBound && end < units.count && isPathCharacter(end)
+        }
+        // The next path from `position`, seen through the window. One search
+        // answers every later position up to the path it found, and a search
+        // that found none answers all of them.
+        var searchedFrom: Int?
+        var found: NSRange?
         func nextPath(from position: Int) -> (range: NSRange, whole: Bool)? {
+            if let searchedFrom, searchedFrom <= position, found.map({ $0.location >= position }) ?? true {
+                return found.map { ($0, !isCut($0)) }
+            }
             let start = max(position, window.lowerBound)
+            searchedFrom = position
+            found = nil
             guard let paths = pathPattern, start < window.upperBound,
                   let match = paths.firstMatch(
                       in: text, options: .withTransparentBounds,
                       range: NSRange(location: start, length: window.upperBound - start)
                   )
             else { return nil }
-            let range = match.range
-            let cut = range.location == window.lowerBound && window.lowerBound > 0
-                || range.location + range.length == window.upperBound && window.upperBound < units.count
-            return (range, !cut)
+            found = match.range
+            return (match.range, !isCut(match.range))
         }
         var ranges: [NSRange] = []
         var position = 0
@@ -1043,20 +1061,25 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Ghostty's path branches of its link pattern (`src/config/url.zig`), with
-    /// the one change ICU needs: a lookbehind must be bounded, so `\$\d*`
-    /// becomes `\$\d{0,9}`. Its scheme branch is `schemeURL`.
+    /// changes that keep its matches: a lookbehind must be bounded, so `\$\d*`
+    /// becomes `\$\d{0,9}`; the dot lookaheads scan once, possessively, up to
+    /// the first dot; and repetition no later step can use is possessive. Its
+    /// scheme branch is `schemeURL`.
     static let pathPattern: NSRegularExpression? = {
         let pathCharacters = #"[\w\-.~:\/?#@!$&*+;=%]"#
         let noTrailingColon = #"(?<!:)"#
-        let dottedLookahead = #"(?=[\w\-.~:\/?#@!$&*+;=%]*\.)"#
-        let undottedLookahead = #"(?![\w\-.~:\/?#@!$&*+;=%]*\.)"#
+        let dottedLookahead = #"(?=[\w\-~:\/?#@!$&*+;=%]*+\.)"#
+        let undottedLookahead = #"(?![\w\-~:\/?#@!$&*+;=%]*+\.)"#
         let dottedSpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]*[\/.])*"#
         let anySpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]+)*"#
-        let rootedPrefix = #"(?:\.\.\/|\.\/|(?<!\w)~\/|(?:[\w][\w\-.]*\/)*(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))"#
+        let rootedPrefix = #"(?:\.\.\/|\.\/|(?<!\w)~\/|(?<!\w)(?:[\w][\w\-.]*\/)*+(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))"#
         let rooted = rootedPrefix + "(?:" + dottedLookahead + pathCharacters + "+" + dottedSpaceSegments + noTrailingColon
             + "|" + undottedLookahead + pathCharacters + "+" + anySpaceSegments + noTrailingColon + ")"
-        let barePrefix = #"(?<!\$\d{0,9})(?<!\w)[\w][\w\-.]*\/"#
-        let bare = dottedLookahead + barePrefix + pathCharacters + "+" + noTrailingColon
+        // Ghostty puts the dotted lookahead before these lookbehinds. ICU
+        // tries each at every position, and a lookahead that scans the rest
+        // of a long word there costs its square; lookbehinds first is the
+        // same match.
+        let bare = #"(?<!\$\d{0,9})(?<!\w)"# + dottedLookahead + #"[\w][\w\-.]*\/"# + pathCharacters + "+" + noTrailingColon
         do {
             return try NSRegularExpression(pattern: rooted + "|" + bare)
         } catch {

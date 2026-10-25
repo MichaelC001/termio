@@ -70,7 +70,6 @@ final class TermiodStreamView: NSView {
     /// text costs one counter read a frame, not a copy of its line.
     fileprivate var hoverKey: HoverKey?
     fileprivate var hoverLine: TermiodStreamTerminal.LineText?
-    fileprivate var hoverScanned = ContinuousClock.now
     /// Settings ▸ Copy on select.
     var copyOnSelect = false
     /// Keys an editing binding took, whose releases the program never sees.
@@ -684,14 +683,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
             terminal: ObjectIdentifier(terminal), column: point.column, row: point.row, changes: terminal.changes
         )
         guard key != hoverKey else { return }
-        // Output under a resting pointer is looked at ten times a second, not
-        // every frame: an agent streaming text bumps `changes` on each write.
-        if let hoverKey, hoverKey.terminal == key.terminal, hoverKey.column == key.column, hoverKey.row == key.row,
-           ContinuousClock.now - hoverScanned < .milliseconds(100) {
-            return
-        }
         hoverKey = key
-        hoverScanned = ContinuousClock.now
         switch terminal.lineUnder(point) {
         case .hyperlink(let link):
             hoverLine = nil

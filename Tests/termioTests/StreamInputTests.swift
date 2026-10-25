@@ -480,11 +480,13 @@ final class StreamInputTests: XCTestCase {
             "https://[2001:0db8:85a3:0000:0000:0000:0000:0000:0000",
             base64,
             String(repeating: "a/", count: 3000),
+            String(repeating: "ab-cd.", count: 400),
+            String(repeating: "GET https://api.x.io/v1/items?id=42 200 ", count: 60) + "token=" + base64,
         ]
         for text in hostile {
             let started = ContinuousClock.now
             _ = TermiodStreamTerminal.linkRanges(in: text, around: (text as NSString).length / 2)
-            XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200), String(text.prefix(20)))
+            XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(30), String(text.prefix(20)))
         }
         XCTAssertEqual(
             TermiodStreamTerminal.linkRanges(in: "https://a" + String(repeating: ".,", count: 20)).first?.length,
@@ -504,6 +506,14 @@ final class StreamInputTests: XCTestCase {
             let found = TermiodStreamTerminal.linkRanges(in: text, around: index).first { NSLocationInRange(index, $0) }
             XCTAssertEqual(found.map { (text as NSString).substring(with: $0) }, url, "pointer at \(index)")
         }
+    }
+
+    /// A path that starts further back than the window is not offered as
+    /// the piece of it the window holds.
+    func testALongPathIsNeverOfferedAsAPieceOfIt() {
+        let path = "/Users/me/" + String(repeating: "my-dir/", count: 60) + "file.txt"
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path).first, NSRange(location: 0, length: (path as NSString).length))
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path, around: 430), [])
     }
 
     /// Ghostty's scheme branch: a suffix is a matched `(word)` or `[word]`
