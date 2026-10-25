@@ -1573,15 +1573,31 @@ final class TermiodSessionLink: @unchecked Sendable {
 
     /// The theme every client terminal resolves colors against, applied to the
     /// current one now and to each one a later attach decodes.
+    ///
+    /// Held under `streamLock` throughout, as is a snapshot's publication, so
+    /// a theme change and a terminal swap cannot interleave and leave the new
+    /// terminal on the old theme. The order is always `streamLock`, then the
+    /// terminal's own lock.
     func setStreamColors(_ colors: TermiodStreamTerminal.Colors) {
         streamLock.lock()
+        defer { streamLock.unlock() }
         streamColorsLocked = colors
-        let terminal = streamTerminalLocked
-        streamLock.unlock()
         do {
-            try terminal?.setColors(colors)
+            try streamTerminalLocked?.setColors(colors)
         } catch {
             Log.termiod.error("stream colors: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// The pane cannot draw this plane (no Metal renderer): attach again on
+    /// keyframes, which the embedded surface can show.
+    func abandonStream() {
+        workQueue.async { [self] in
+            guard !streamRefused else { return }
+            streamRefused = true
+            guard attached else { return }
+            teardownLocked()
+            scheduleReattachLocked()
         }
     }
 
@@ -1598,7 +1614,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// A native snapshot: the session's whole state, decoded into a terminal
     /// that replaces the previous one. Called on the reader thread, so every
     /// byte after it reaches the new terminal.
-    private func receiveStreamSnapshot(_ native: Data) {
+    ///
+    /// Returns false when it could not be decoded. The reader must then stop:
+    /// the connection is being replaced, and nothing more it reads may land.
+    private func receiveStreamSnapshot(_ native: Data) -> Bool {
         do {
             let terminal = try TermiodStreamTerminal(nativeSnapshot: native) { [weak self] reply in
                 // Answering is the writer's job alone (`TerminalDeviceReport`),
@@ -1606,12 +1625,10 @@ final class TermiodSessionLink: @unchecked Sendable {
                 self?.sendDeviceReport(reply)
             }
             streamLock.lock()
-            let colors = streamColorsLocked
-            streamLock.unlock()
-            if let colors { try terminal.setColors(colors) }
-            streamLock.lock()
+            defer { streamLock.unlock() }
+            if let colors = streamColorsLocked { try terminal.setColors(colors) }
             streamTerminalLocked = terminal
-            streamLock.unlock()
+            return true
         } catch {
             Log.termiod.error("""
             native snapshot on \(self.sessionName, privacy: .public) undecodable: \
@@ -1624,6 +1641,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 teardownLocked()
                 scheduleReattachLocked()
             }
+            return false
         }
     }
 
@@ -2522,7 +2540,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                         break
                     }
                     if let native = keyframe.native {
-                        self.receiveStreamSnapshot(native)
+                        guard self.receiveStreamSnapshot(native) else { return }
                     } else {
                         self.receiveKeyframe(keyframe)
                     }

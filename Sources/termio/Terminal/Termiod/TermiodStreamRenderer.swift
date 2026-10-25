@@ -79,9 +79,12 @@ final class TermiodStreamRenderer {
     }
 
     /// Rebuilds the atlas when the font or the display's scale changed, and
-    /// says whether it did so the caller can redeclare its viewport.
+    /// says whether the grid a pane holds may have changed — font or padding —
+    /// so the caller can redeclare its viewport.
     func update(appearance: Appearance, scale: CGFloat) throws -> Bool {
         guard appearance != self.appearance || scale != self.scale else { return false }
+        let paddingChanged = appearance.paddingX != self.appearance.paddingX
+            || appearance.paddingY != self.appearance.paddingY
         let fontChanged = appearance.fontFamily != self.appearance.fontFamily
             || appearance.fallbackFamilies != self.appearance.fallbackFamilies
             || appearance.fontSize != self.appearance.fontSize
@@ -92,7 +95,7 @@ final class TermiodStreamRenderer {
             atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
             builder.invalidate()
         }
-        return fontChanged
+        return fontChanged || paddingChanged
     }
 
     /// Draws one frame into `layer` if the terminal changed since the last one,
@@ -151,7 +154,8 @@ final class TermiodStreamRenderer {
     }
 
     private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool) throws -> Bool {
-        try terminal.capture(into: renderState)
+        // Held by synchronized output: keep drawing what was built last.
+        guard try terminal.capture(into: renderState) else { return false }
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
@@ -345,6 +349,10 @@ final class TermiodGlyphAtlas {
     private var shelfX = 0
     private var shelfY = 0
     private var shelfHeight = 0
+    private var exhausted = false
+    /// Bumped each time the atlas is emptied to make room, which moves every
+    /// sprite: anything built from an older generation must be rebuilt.
+    private(set) var generation = 0
 
     init(device: MTLDevice, appearance: TermiodStreamRenderer.Appearance, scale: CGFloat, size: Int = 4096) throws {
         let pointSize = appearance.fontSize * scale
@@ -409,7 +417,18 @@ final class TermiodGlyphAtlas {
     func slot(graphemes: [UInt32], bold: Bool, italic: Bool, cells: Int) -> Slot? {
         let key = Key(graphemes: graphemes, bold: bold, italic: italic)
         if let cached = slots[key] { return cached }
-        let slot = rasterize(key, cells: cells)
+        var slot = rasterize(key, cells: cells)
+        if slot == nil, exhausted {
+            // Full: start over rather than stop drawing new characters. The
+            // screen's own glyphs come back on the rebuild this triggers.
+            slots.removeAll(keepingCapacity: true)
+            shelfX = 0
+            shelfY = 0
+            shelfHeight = 0
+            exhausted = false
+            generation += 1
+            slot = rasterize(key, cells: cells)
+        }
         slots[key] = slot
         return slot
     }
@@ -492,7 +511,10 @@ final class TermiodGlyphAtlas {
             shelfX = 0
             shelfHeight = 0
         }
-        guard shelfY + height <= size else { return nil }
+        guard shelfY + height <= size else {
+            exhausted = true
+            return nil
+        }
         let origin = (shelfX, shelfY)
         shelfX += width
         shelfHeight = max(shelfHeight, height)
@@ -541,22 +563,43 @@ final class TermiodStreamFrameBuilder {
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         var rows: UInt16 = 0
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows)
-        let full = stale || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
-        let previousCursorStyle = lastCursorStyle
-        lastCursorStyle = cursorStyle
-        guard full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || previousCursorStyle != cursorStyle else {
-            return false
-        }
-        stale = false
-
         var colors = GhosttyRenderStateColors()
         colors.size = MemoryLayout<GhosttyRenderStateColors>.size
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
-        background = colors.background
-        if rowRectangles.count != Int(rows) {
-            rowRectangles = Array(repeating: [], count: Int(rows))
-            rowGlyphs = Array(repeating: [], count: Int(rows))
+        let full = stale || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
+        var changed = false
+        if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE {
+            stale = false
+            changed = true
+            background = colors.background
+            if rowRectangles.count != Int(rows) {
+                rowRectangles = Array(repeating: [], count: Int(rows))
+                rowGlyphs = Array(repeating: [], count: Int(rows))
+            }
+            let generation = atlas.generation
+            rebuildRows(state, full: full, colors: colors, atlas: atlas)
+            // The atlas was emptied to make room partway through, so rows
+            // built before that point name sprites that are gone.
+            if atlas.generation != generation {
+                rebuildRows(state, full: true, colors: colors, atlas: atlas)
+            }
+            var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
+            _ = ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
         }
+        // The cursor moves without dirtying any cell, so it is compared on
+        // its own every frame.
+        let cursorState = CursorState(state, colors: colors, style: cursorStyle)
+        if changed || cursorState != lastCursorState {
+            lastCursorState = cursorState
+            buildCursor(cursorState, colors: colors, atlas: atlas)
+            changed = true
+        }
+        return changed
+    }
+
+    private func rebuildRows(
+        _ state: GhosttyRenderState, full: Bool, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas
+    ) {
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &rowIterator)
         var y = 0
         while ghostty_render_state_row_iterator_next(rowIterator) {
@@ -569,13 +612,44 @@ final class TermiodStreamFrameBuilder {
             var clean = false
             _ = ghostty_render_state_row_set(rowIterator, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
         }
-        buildCursor(state, colors: colors, atlas: atlas, style: cursorStyle)
-        var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
-        _ = ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
-        return true
     }
 
-    private var lastCursorStyle: TermiodStreamRenderer.CursorStyle?
+    /// Everything the cursor's drawing depends on.
+    private struct CursorState: Equatable {
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        var shape: TermiodStreamRenderer.CursorStyle?
+        var red: UInt8 = 0
+        var green: UInt8 = 0
+        var blue: UInt8 = 0
+
+        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, style: TermiodStreamRenderer.CursorStyle) {
+            var visible = false
+            var hasValue = false
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
+            guard visible, hasValue else { return }
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
+            // The program's own choice (DECSCUSR) wins over the setting, as in
+            // the embedded surface; an unfocused pane always shows the outline.
+            var visual = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &visual)
+            switch (style, visual) {
+            case (.hollow, _): shape = .hollow
+            case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR): shape = .bar
+            case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE): shape = .underline
+            case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW): shape = .hollow
+            default: shape = style
+            }
+            let color = colors.cursor_has_value ? colors.cursor : colors.foreground
+            red = color.r
+            green = color.g
+            blue = color.b
+        }
+    }
+
+    private var lastCursorState: CursorState?
 
     private func rebuildRow(_ y: Int, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas) {
         var rectangles: [TermiodStreamRectangle] = []
@@ -710,41 +784,17 @@ final class TermiodStreamFrameBuilder {
         if style.overline { line(0) }
     }
 
-    private func buildCursor(
-        _ state: GhosttyRenderState, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas,
-        style: TermiodStreamRenderer.CursorStyle
-    ) {
+    private func buildCursor(_ state: CursorState, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas) {
         cursor = []
-        cursorGlyph = nil
-        var visible = false
-        var hasValue = false
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
-        guard visible, hasValue else { return }
-        var x: UInt16 = 0
-        var y: UInt16 = 0
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
-        // The program's own choice (DECSCUSR) wins over the setting, as in
-        // the embedded surface; an unfocused pane always shows the outline.
-        var visual = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &visual)
-        let shape: TermiodStreamRenderer.CursorStyle
-        switch (style, visual) {
-        case (.hollow, _): shape = .hollow
-        case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR): shape = .bar
-        case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE): shape = .underline
-        case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW): shape = .hollow
-        default: shape = style
-        }
-        let color = colors.cursor_has_value ? colors.cursor : colors.foreground
+        cursorCell = nil
+        guard let shape = state.shape else { return }
         let metrics = atlas.metrics
         let thickness = max(2, metrics.underlineThickness)
         func rectangle(_ left: Int, _ top: Int, _ width: Int, _ height: Int, overText: Bool) -> TermiodStreamRectangle {
             TermiodStreamRectangle(
-                cellX: x, cellY: y, x: Int16(clamping: left), y: Int16(clamping: top),
+                cellX: state.x, cellY: state.y, x: Int16(clamping: left), y: Int16(clamping: top),
                 width: UInt16(clamping: width), height: UInt16(clamping: height),
-                r: color.r, g: color.g, b: color.b, a: 255, overText: overText
+                r: state.red, g: state.green, b: state.blue, a: 255, overText: overText
             )
         }
         let width = metrics.width
@@ -752,6 +802,7 @@ final class TermiodStreamFrameBuilder {
         switch shape {
         case .block:
             cursor = [rectangle(0, 0, width, height, overText: false)]
+            cursorCell = (state.x, state.y)
         case .bar:
             cursor = [rectangle(0, 0, thickness, height, overText: true)]
         case .underline:
@@ -764,7 +815,6 @@ final class TermiodStreamFrameBuilder {
                 rectangle(width - thickness, 0, thickness, height, overText: true),
             ]
         }
-        cursorCell = shape == .block ? (x, y) : nil
         cursorBackground = colors.background
     }
 

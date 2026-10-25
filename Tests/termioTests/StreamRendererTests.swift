@@ -80,4 +80,77 @@ final class StreamRendererTests: XCTestCase {
         // The block cursor sits after `$ ` on row 4, drawn in the foreground.
         XCTAssertEqual(color(column: 2, row: 4).0, 230, accuracy: 2, "block cursor")
     }
+
+    private func builtFrame(
+        _ terminal: TermiodStreamTerminal, _ builder: TermiodStreamFrameBuilder,
+        _ state: GhosttyRenderState, _ atlas: TermiodGlyphAtlas
+    ) throws -> (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]) {
+        _ = try terminal.capture(into: state)
+        let changed = try builder.build(from: state, atlas: atlas, cursorStyle: .block)
+        var rectangles: [TermiodStreamRectangle] = []
+        var glyphs: [TermiodStreamGlyph] = []
+        builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+        return (changed, rectangles, glyphs)
+    }
+
+    private func renderState() throws -> GhosttyRenderState {
+        var state: GhosttyRenderState?
+        XCTAssertEqual(ghostty_render_state_new(nil, &state), GHOSTTY_SUCCESS)
+        return try XCTUnwrap(state)
+    }
+
+    /// Moving the cursor dirties no cell, and a frame must still follow it;
+    /// hiding a block cursor gives the character under it its own color back.
+    func testTheCursorRedrawsOnItsOwnAndLeavesNoTrace() throws {
+        let terminal = try terminal()
+        try terminal.setColors(colors())
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        let state = try renderState()
+        defer { ghostty_render_state_free(state) }
+        terminal.write(Data("X".utf8))
+        XCTAssertTrue(try builtFrame(terminal, builder, state, renderer.atlas).changed)
+        XCTAssertFalse(try builtFrame(terminal, builder, state, renderer.atlas).changed, "nothing changed")
+
+        terminal.write(Data("\u{1b}[D".utf8))
+        let onX = try builtFrame(terminal, builder, state, renderer.atlas)
+        XCTAssertTrue(onX.changed, "a cursor move alone is a new frame")
+        let covered = try XCTUnwrap(onX.glyphs.first { $0.cellX == 0 && $0.cellY == 0 })
+        XCTAssertEqual(covered.r, 20, "text under the block cursor takes the background color")
+
+        terminal.write(Data("\u{1b}[?25l".utf8))
+        let hidden = try builtFrame(terminal, builder, state, renderer.atlas)
+        XCTAssertTrue(hidden.changed)
+        let shown = try XCTUnwrap(hidden.glyphs.first { $0.cellX == 0 && $0.cellY == 0 })
+        XCTAssertEqual(shown.r, 230, "with the cursor hidden the character is drawn in the foreground")
+    }
+
+    /// Mode 2026: nothing is captured while the program holds the screen, and
+    /// a hold past the limit is ended for it.
+    func testSynchronizedOutputHoldsTheFrameUntilItEnds() throws {
+        let terminal = try terminal()
+        let state = try renderState()
+        defer { ghostty_render_state_free(state) }
+        XCTAssertTrue(try terminal.capture(into: state))
+        terminal.write(Data("\u{1b}[?2026hhalf a frame".utf8))
+        XCTAssertFalse(try terminal.capture(into: state), "held")
+        terminal.write(Data("\u{1b}[?2026l".utf8))
+        XCTAssertTrue(try terminal.capture(into: state), "released by the program")
+
+        terminal.write(Data("\u{1b}[?2026h".utf8))
+        XCTAssertFalse(try terminal.capture(into: state))
+        Thread.sleep(forTimeInterval: 1.1)
+        XCTAssertTrue(try terminal.capture(into: state), "a hold past the limit is ended")
+    }
+
+    /// A full atlas starts over instead of drawing nothing new.
+    func testAFullAtlasMakesRoomForNewGlyphs() throws {
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let atlas = try TermiodGlyphAtlas(device: renderer.device, appearance: appearance, scale: 2, size: 128)
+        for codepoint in UInt32(0x4E00)..<UInt32(0x4E00 + 200) {
+            XCTAssertNotNil(atlas.slot(graphemes: [codepoint], bold: false, italic: false, cells: 2),
+                            "U+\(String(codepoint, radix: 16)) was not drawn")
+        }
+        XCTAssertGreaterThan(atlas.generation, 0, "the atlas filled and was emptied")
+    }
 }

@@ -41,6 +41,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// What the terminal answers a program's query with — a cursor position
     /// report, a mode report. Called on the writing thread, inside `write`.
     private let onReply: (Data) -> Void
+    /// When the program began synchronized output (mode 2026), set by the
+    /// render-hold callback under `lock`. Nil while nothing is held.
+    private var heldSince: ContinuousClock.Instant?
+    /// How long a program may hold the screen before the hold is ended for
+    /// it, as libghostty's own example does.
+    static let holdLimit: Duration = .seconds(1)
 
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
@@ -60,6 +66,16 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         try Self.check(
             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(reply, to: UnsafeRawPointer.self)),
             "ghostty_terminal_set(write_pty)"
+        )
+        // Called inside `vt_write` or `resize`, so `lock` is already held.
+        let hold: GhosttyTerminalRenderHoldFn = { _, userdata, held in
+            guard let userdata else { return }
+            let owner = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue()
+            owner.heldSince = held ? ContinuousClock.now : nil
+        }
+        try Self.check(
+            ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, unsafeBitCast(hold, to: UnsafeRawPointer.self)),
+            "ghostty_terminal_set(render_hold)"
         )
     }
 
@@ -142,16 +158,34 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var palette: [GhosttyColorRgb]
     }
 
-    /// Copies the screen into `state` for a frame. The terminal is locked only
-    /// for the half of the update that reads it.
-    func capture(into state: GhosttyRenderState) throws {
+    /// Copies the screen into `state` for a frame, and says whether it did.
+    /// The terminal is locked only for the half of the update that reads it.
+    ///
+    /// While the program holds synchronized output the screen is mid-redraw,
+    /// so nothing is copied and the caller keeps drawing the last frame it
+    /// has. That frame is the last one captured, which can be up to a frame
+    /// older than the screen at the moment the hold began; libghostty's own
+    /// recipe captures inside the callback instead, which would need this
+    /// render state on the writing thread.
+    func capture(into state: GhosttyRenderState) throws -> Bool {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
+        if let since = heldSince {
+            guard ContinuousClock.now - since >= Self.holdLimit else {
+                lock.unlock()
+                return false
+            }
+            // Setting the mode directly never invokes the callback.
+            var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
+            _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode)
+            heldSince = nil
+        }
         let began = ghostty_render_state_begin_update(state, terminal)
         lock.unlock()
         try Self.check(began, "ghostty_render_state_begin_update")
         try Self.check(ghostty_render_state_end_update(state), "ghostty_render_state_end_update")
+        return true
     }
 
     private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {

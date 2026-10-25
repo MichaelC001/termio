@@ -64,6 +64,8 @@ final class TermiodStreamView: NSView {
     }
 
     var cellSize: CGSize? { renderer?.cellSize }
+    /// Metal or the shaders could not be set up, so this view can draw nothing.
+    var hasRenderer: Bool { renderer != nil }
 
     func setAppearance(_ appearance: TermiodStreamRenderer.Appearance) {
         guard let renderer else { return }
@@ -191,12 +193,15 @@ struct TermiodStreamPane: NSViewRepresentable {
 
     func makeNSView(context: Context) -> TermiodStreamView {
         let view = TermiodStreamView(appearance: appearance)
-        let link = link
-        view.terminal = { link.streamTerminal }
+        // A pane that cannot draw this plane hands the session back to the
+        // embedded surface rather than stay blank.
+        if !view.hasRenderer { link.abandonStream() }
         return view
     }
 
     func updateNSView(_ view: TermiodStreamView, context: Context) {
+        let link = link
+        view.terminal = { link.streamTerminal }
         view.onViewport = onViewport
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }

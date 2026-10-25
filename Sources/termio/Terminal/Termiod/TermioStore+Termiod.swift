@@ -179,8 +179,12 @@ extension TermioStore {
         link.onSizesByPolicy = { [weak self] byPolicy in
             self?.runtime(for: session.id).sizesByPolicy = byPolicy
         }
-        link.onStreaming = { [weak self] streaming in
-            self?.runtime(for: session.id).streaming = streaming
+        // A new link starts on the embedded surface until its handshake says
+        // otherwise; the previous one's terminal must not stay on screen.
+        runtime(for: session.id).streamLink = nil
+        link.onStreaming = { [weak self, weak link] streaming in
+            guard let self, let link, termiodLinks[session.id] === link else { return }
+            runtime(for: session.id).streamLink = streaming ? link : nil
         }
         if let colors = streamColors(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
             link.setStreamColors(colors)

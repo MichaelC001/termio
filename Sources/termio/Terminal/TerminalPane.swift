@@ -195,7 +195,7 @@ struct TerminalPane: View {
                     .position(x: card.midX, y: card.midY)
                     .opacity(isVisible ? 1 : 0)
                     .allowsHitTesting(isVisible)
-                if store.runtime(for: id).streaming, let link = store.termiodLinks[id] {
+                if let link = store.runtime(for: id).streamLink {
                     // The stream view never letterboxes: it draws the session's
                     // grid anchored top-left and declares what the pane holds.
                     TermiodStreamPane(
@@ -208,6 +208,8 @@ struct TerminalPane: View {
                         onVisibility: { store.reportRendering($0, for: id) },
                         onFocused: { selectFocusedSurface(id) }
                     )
+                    // One view per link: a relaunch attaches a new one.
+                    .id(ObjectIdentifier(link))
                     .frame(width: rect.width, height: rect.height)
                     .background(paneBackground)
                     .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
