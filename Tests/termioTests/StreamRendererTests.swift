@@ -151,6 +151,46 @@ final class StreamRendererTests: XCTestCase {
         XCTAssertGreaterThan(atlas.generation, 0, "the atlas filled and was emptied")
     }
 
+    /// Panes with the same font draw from one atlas on one device; another
+    /// font size gets its own.
+    func testPanesShareOneAtlasPerFont() throws {
+        let first = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let second = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        XCTAssertTrue(first.atlas === second.atlas)
+        XCTAssertTrue(first.device === second.device)
+        var larger = appearance
+        larger.fontSize = 15
+        let third = try TermiodStreamRenderer(appearance: larger, scale: 2)
+        XCTAssertFalse(first.atlas === third.atlas)
+        XCTAssertFalse(first.atlas === (try TermiodStreamRenderer(appearance: appearance, scale: 1)).atlas)
+    }
+
+    /// Another pane can empty the shared atlas between two of this pane's
+    /// frames; rows built before that name sprites that moved.
+    func testRowsAreRebuiltAfterAnotherPaneEmptiesTheAtlas() throws {
+        let terminal = try terminal()
+        try terminal.setTheme(colors())
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let atlas = try TermiodGlyphAtlas(device: renderer.device, appearance: appearance, scale: 2, size: 128)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("abc".utf8))
+        XCTAssertTrue(try builtFrame(terminal, builder, atlas).changed)
+        XCTAssertFalse(try builtFrame(terminal, builder, atlas).changed, "nothing changed")
+
+        let generation = atlas.generation
+        for codepoint in UInt32(0x4E00)..<UInt32(0x4E00 + 200) {
+            _ = atlas.slot(graphemes: [codepoint], bold: false, italic: false, cells: 2)
+        }
+        XCTAssertGreaterThan(atlas.generation, generation, "the other pane filled the atlas and emptied it")
+
+        let frame = try builtFrame(terminal, builder, atlas)
+        XCTAssertTrue(frame.changed, "the screen is rebuilt against the emptied atlas")
+        XCTAssertEqual(frame.glyphs.count, 3)
+        let slot = try XCTUnwrap(atlas.slot(graphemes: [0x61], bold: false, italic: false, cells: 1))
+        let first = try XCTUnwrap(frame.glyphs.first { $0.cellX == 0 && $0.cellY == 0 })
+        XCTAssertEqual(SIMD2(first.atlasX, first.atlasY), slot.origin, "the glyph names the sprite's new place")
+    }
+
     private func cursorWidth(_ frame: (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]),
                              at x: UInt16) -> UInt16? {
         // The cursor is the last rectangle laid at its cell with the foreground color.

@@ -32,19 +32,18 @@ final class TermiodStreamRenderer {
         case metal(String)
     }
 
+    /// Made once for every pane: a pane that built its own paid for a shader
+    /// compile and a 64 MB atlas, and a tab switch that mounts one should not.
+    private static let shared = Result { try TermiodStreamRenderResources() }
+
     /// Whether a renderer can be made on this Mac at all: a Metal device and
     /// shaders that compile. Asked once, before a link offers the plane.
-    static let isAvailable: Bool = {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let library = try? device.makeLibrary(source: streamShaderSource, options: nil)
-        else { return false }
-        return (try? pipeline(device, library, "glyph_vertex", "glyph_fragment")) != nil
-    }()
+    static var isAvailable: Bool {
+        (try? shared.get()) != nil
+    }
 
-    let device: MTLDevice
-    private let queue: MTLCommandQueue
-    private let rectanglePipeline: MTLRenderPipelineState
-    private let glyphPipeline: MTLRenderPipelineState
+    private let resources: TermiodStreamRenderResources
+    var device: MTLDevice { resources.device }
     private let builder: TermiodStreamFrameBuilder
     private(set) var atlas: TermiodGlyphAtlas
     private(set) var appearance: Appearance
@@ -54,20 +53,11 @@ final class TermiodStreamRenderer {
     private var glyphs: [TermiodStreamGlyph] = []
 
     init(appearance: Appearance, scale: CGFloat) throws {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
-            throw Failure.metal("no Metal device")
-        }
-        self.device = device
-        self.queue = queue
+        resources = try Self.shared.get()
         self.appearance = appearance
         self.scale = scale
-        // Compiled from source at runtime: a SwiftPM resource bundle is the one
-        // thing termio must never ship (AGENTS.md, "Dependencies").
-        let library = try device.makeLibrary(source: streamShaderSource, options: nil)
-        rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
-        glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
         builder = try TermiodStreamFrameBuilder()
-        atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+        atlas = try resources.atlas(appearance: appearance, scale: scale)
     }
 
     /// One cell in points, which is what a pane measures its viewport with.
@@ -89,7 +79,7 @@ final class TermiodStreamRenderer {
         self.appearance = appearance
         self.scale = scale
         if fontChanged {
-            atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+            atlas = try resources.atlas(appearance: appearance, scale: scale)
             builder.invalidate()
         }
         return fontChanged || paddingChanged
@@ -108,7 +98,7 @@ final class TermiodStreamRenderer {
             builder.invalidate()
             return
         }
-        guard let drawable = layer.nextDrawable(), let buffer = queue.makeCommandBuffer() else {
+        guard let drawable = layer.nextDrawable(), let buffer = resources.queue.makeCommandBuffer() else {
             inFlight.signal()
             builder.invalidate()
             return
@@ -135,7 +125,7 @@ final class TermiodStreamRenderer {
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: descriptor),
-              let buffer = queue.makeCommandBuffer(),
+              let buffer = resources.queue.makeCommandBuffer(),
               encode(into: buffer, texture: texture)
         else { throw Failure.metal("offscreen frame") }
         buffer.commit()
@@ -190,7 +180,7 @@ final class TermiodStreamRenderer {
         drawRectangles(rectangles.filter { !$0.overText }, encoder: encoder)
         if !glyphs.isEmpty,
            let data = device.makeBuffer(bytes: glyphs, length: glyphs.count * MemoryLayout<TermiodStreamGlyph>.stride) {
-            encoder.setRenderPipelineState(glyphPipeline)
+            encoder.setRenderPipelineState(resources.glyphPipeline)
             encoder.setVertexBuffer(data, offset: 0, index: 0)
             encoder.setFragmentTexture(atlas.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: glyphs.count)
@@ -204,9 +194,59 @@ final class TermiodStreamRenderer {
         guard !items.isEmpty,
               let data = device.makeBuffer(bytes: items, length: items.count * MemoryLayout<TermiodStreamRectangle>.stride)
         else { return }
-        encoder.setRenderPipelineState(rectanglePipeline)
+        encoder.setRenderPipelineState(resources.rectanglePipeline)
         encoder.setVertexBuffer(data, offset: 0, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: items.count)
+    }
+}
+
+/// What every stream pane draws with: one device, queue and pair of
+/// pipelines, and one glyph atlas per font and scale. A pane keeps only its
+/// frame builder and its own in-flight limit.
+@MainActor
+final class TermiodStreamRenderResources {
+    private struct AtlasKey: Hashable {
+        var fontFamily: String
+        var fallbackFamilies: [String]
+        var fontSize: CGFloat
+        var scale: CGFloat
+    }
+
+    private struct WeakAtlas {
+        weak var atlas: TermiodGlyphAtlas?
+    }
+
+    let device: MTLDevice
+    let queue: MTLCommandQueue
+    let rectanglePipeline: MTLRenderPipelineState
+    let glyphPipeline: MTLRenderPipelineState
+    /// Weak, so an atlas goes when the last pane using that font closes or
+    /// moves on to another one.
+    private var atlases: [AtlasKey: WeakAtlas] = [:]
+
+    init() throws {
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
+            throw TermiodStreamRenderer.Failure.metal("no Metal device")
+        }
+        self.device = device
+        self.queue = queue
+        // Compiled from source at runtime: a SwiftPM resource bundle is the one
+        // thing termio must never ship (AGENTS.md, "Dependencies").
+        let library = try device.makeLibrary(source: streamShaderSource, options: nil)
+        rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
+        glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
+    }
+
+    func atlas(appearance: TermiodStreamRenderer.Appearance, scale: CGFloat) throws -> TermiodGlyphAtlas {
+        let key = AtlasKey(
+            fontFamily: appearance.fontFamily, fallbackFamilies: appearance.fallbackFamilies,
+            fontSize: appearance.fontSize, scale: scale
+        )
+        if let atlas = atlases[key]?.atlas { return atlas }
+        atlases = atlases.filter { $0.value.atlas != nil }
+        let atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+        atlases[key] = WeakAtlas(atlas: atlas)
+        return atlas
     }
 
     private static func pipeline(
@@ -215,7 +255,9 @@ final class TermiodStreamRenderer {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: vertex)
         descriptor.fragmentFunction = library.makeFunction(name: fragment)
-        guard let attachment = descriptor.colorAttachments[0] else { throw Failure.metal("no color attachment") }
+        guard let attachment = descriptor.colorAttachments[0] else {
+            throw TermiodStreamRenderer.Failure.metal("no color attachment")
+        }
         attachment.pixelFormat = .bgra8Unorm
         attachment.isBlendingEnabled = true
         // Every fragment is premultiplied.
@@ -642,6 +684,10 @@ final class TermiodStreamFrameBuilder {
     nonisolated(unsafe) private var cells: GhosttyRenderStateRowCells?
     private var codepoints = [UInt32](repeating: 0, count: 32)
     private var stale = true
+    /// The atlas the cached rows name sprites in, and its generation then.
+    /// Panes share an atlas, so another pane can empty it between two builds.
+    private weak var builtAtlas: TermiodGlyphAtlas?
+    private var builtGeneration = 0
 
     init() throws {
         guard ghostty_render_state_row_iterator_new(nil, &rowIterator) == GHOSTTY_SUCCESS,
@@ -686,7 +732,8 @@ final class TermiodStreamFrameBuilder {
         var colors = GhosttyRenderStateColors()
         colors.size = MemoryLayout<GhosttyRenderStateColors>.size
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
-        let full = stale || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
+        let atlasMoved = builtAtlas !== atlas || builtGeneration != atlas.generation
+        let full = stale || atlasMoved || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
         var changed = false
         if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE {
             stale = false
@@ -706,6 +753,8 @@ final class TermiodStreamFrameBuilder {
                 rebuildRows(state, full: true, colors: colors, atlas: atlas)
                 atlas.mayEmpty = true
             }
+            builtAtlas = atlas
+            builtGeneration = atlas.generation
             var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
             _ = ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
         }
