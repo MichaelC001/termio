@@ -98,14 +98,18 @@ extension TermioStore {
         // Every extra account folder gets the same hooks and skill as the
         // default one; a session signed in there would otherwise report no
         // status at all.
-        let homes = settings.usageAccountFolders
-        installedAccountFolders = homes
+        installedAccountFolders = settings.usageAccountFolders
         // A removed account's folder is cleaned once no session still runs on
         // it: those sessions keep the account on purpose, and need its hooks
-        // to keep reporting status. The rest wait for a later sync.
+        // to keep reporting status. Until then it stays among the installed
+        // folders, so the Integration switches still reach it.
         let inUse = Set(allSessions.compactMap(\.accountHome))
         let retired = settings.usageRetiredAccountFolders
             .mapValues { $0.filter { !inUse.contains($0) } }
+            .filter { !$0.value.isEmpty }
+        let homes = settings.usageAccountFolders.merging(
+            settings.usageRetiredAccountFolders.mapValues { $0.filter(inUse.contains) }
+        ) { current, held in current + held.filter { !current.contains($0) } }
             .filter { !$0.value.isEmpty }
         // The settings, not the store: a task that held `self` would keep the
         // whole store — its daemon links included — alive past its owner.
