@@ -3,7 +3,7 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: bc59f027684c3a9c1a93e383b47c157012e71d9d007f212a811eb87d93b681c5
+  source_hash: dfbc007c0393149fe49c2414d1090b3deeb8e79800af007cda2110114eb5a43a
   generated_at: 2026-10-25
 ---
 
@@ -172,8 +172,9 @@ termio session spawn "summarize the failing CI job" --wait --timeout 120000
 每个会话都运行在 [Termio server](/docs/server) 上，应用只是看到它的一种方式。所以
 `termio session` 完全不依赖应用：
 
-- 应用在运行时，命令作用于你所在项目的会话，如上文所述。当应用回答它没有这个会话时（比如
-  从另一个项目用 `create` 建的会话），命令交给 Termio server。
+- 应用在运行时，命令作用于你所在项目的会话，如上文所述。当应用拒绝时——它没有这个会话、你
+  不在任何项目里，或者会话控制已关闭——不是应用创建的会话（比如用 `create` 建的）交给
+  Termio server。应用创建的会话留在它自己的项目里。
 - 没有应用在运行时，所有命令都交给 Termio server。`list` 列出这台设备上的全部会话，`run`
   在那里的一个新会话里运行命令，命令结束后会话里的 shell 仍然保留。
 
@@ -243,7 +244,8 @@ JSON 回复都带 `"schema_version": 1`；在同一个版本内字段只会*新�
 
 稳定的错误码：`disabled`、`no_scope`、`bad_op`、`bad_request`、`no_text`、`no_target`、
 `not_found`、`ambiguous`、`wrong_agent`、`bad_agent`、`no_agent`、`start_failed`、
-`not_live`——以及仅在 `--wait` 上出现的 `prompt_stalled`、`session_closed` 和 `agent_gone`。
+`not_live`、`needs_app`（只有应用才提供的参数，用在了应用够不着的会话上）、`daemon`（Termio
+server 没有应答）——以及仅在 `--wait` 上出现的 `prompt_stalled`、`session_closed` 和 `agent_gone`。
 
 成功回复，按动词分（下表为简洁起见省略 `schema_version` 和 `"ok": true`）：
 

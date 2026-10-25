@@ -1069,7 +1069,11 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                     "",
                 );
                 let outcome = match on_termiod(&reply, format, target).await {
-                    Some(info) => {
+                    Err((code, message)) => {
+                        control_error_reply(format, &code, &message);
+                        Outcome::Error
+                    }
+                    Ok(Some(info)) => {
                         match termiod::server::close_session(&info.id, args.output.json).await {
                             Ok(()) => Outcome::Ok,
                             Err(error) => {
@@ -1078,7 +1082,7 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                             }
                         }
                     }
-                    None => app_socket::finish(reply, format, ""),
+                    Ok(None) => app_socket::finish(reply, format, ""),
                 };
                 if outcome != Outcome::Ok {
                     failed = 1;
@@ -1153,10 +1157,13 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             if !addressed {
                 // Asked in this order so the app is probed only when termiod
                 // does hold a session by that name.
-                match termiod::server::resolve_running(&args.words[0]).await {
+                // Briefly: this delays every unaddressed send, which is most
+                // often a prompt for the app.
+                let brief = std::time::Duration::from_secs(1);
+                match termiod::server::resolve_running(&args.words[0], brief).await {
                     Ok(found) => addressed = found.is_some() && !app_running(channel),
                     Err(error) if !app_running(channel) => {
-                        refuse(format, "ambiguous", &format!("{error:#}"))
+                        refuse(format, "daemon", &format!("{error:#}"))
                     }
                     Err(_) => {}
                 }
@@ -1193,6 +1200,7 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 push(&mut extra, &format!("\"keys\":[{}]", names.join(",")));
             }
             let fallback = Fallback::Send {
+                first: args.words[0].clone(),
                 enter: !args.no_enter,
                 app_only: !args.keys.is_empty() || args.wait.waiting(),
             };
@@ -1202,11 +1210,16 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
     };
 
     let format = output.format();
+    // `read`'s text reply is the screen itself, which can say anything,
+    // including what an error says. Asked in JSON, the reply is unambiguous,
+    // and this prints the text the app would have.
+    let reads = matches!(fallback, Fallback::Read { .. });
+    let asked = if reads { "json" } else { format };
     let reply = app_socket::request_reply(
         channel,
         client_timeout,
         operation,
-        format,
+        asked,
         &target,
         &agent,
         &text,
@@ -1238,25 +1251,62 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             let line = format!("{line}\nexec \"$SHELL\" -l");
             daemon_reply(format, termiod::server::create_session(create, Some(line)).await);
         }
-        Fallback::Send { enter, app_only } if !target.is_empty() => {
-            if let Some(info) = on_termiod(&reply, format, &target).await {
-                if app_only {
-                    refuse(format, "needs_app", "--key and --wait need the Termio app to know the session, and it does not");
+        // An unaddressed send starts an agent, which only the app can do.
+        Fallback::Send { first, .. } if target.is_empty() && no_app => refuse(
+            format,
+            "not_found",
+            &format!("no session matches '{first}', and starting an agent needs the Termio app, which is not running"),
+        ),
+        Fallback::Send { enter, app_only, .. } if !target.is_empty() => {
+            match on_termiod(&reply, format, &target).await {
+                Ok(Some(info)) => {
+                    if app_only {
+                        refuse(format, "needs_app", "--key and --wait need the Termio app to know the session, and it does not");
+                    }
+                    daemon_reply(
+                        format,
+                        termiod::server::send_to_session(&info.id, &text, enter, output.json).await,
+                    );
                 }
-                daemon_reply(
-                    format,
-                    termiod::server::send_to_session(&info.id, &text, enter, output.json).await,
-                );
+                Ok(None) => {}
+                Err((code, message)) => refuse(format, &code, &message),
             }
         }
-        Fallback::Read { lines } => {
-            if let Some(info) = on_termiod(&reply, format, &target).await {
-                std::process::exit(serve_daemon_read(channel, &info, lines, format).await);
+        Fallback::Read { lines } => match on_termiod(&reply, asked, &target).await {
+            Ok(Some(info)) => {
+                std::process::exit(serve_daemon_read(channel, &info, lines, format).await)
             }
-        }
+            Ok(None) => {}
+            Err((code, message)) => refuse(format, &code, &message),
+        },
         _ => {}
     }
+    if reads && format != "json" {
+        if let app_socket::Reply::Answered(json) = &reply {
+            std::process::exit(print_read_as_text(json));
+        }
+    }
     exit_outcome(app_socket::finish(reply, format, &extra));
+}
+
+/// The app's text reply to `read`, from its JSON one: the screen, or
+/// `(blank screen)`, or `error: <message>`.
+fn print_read_as_text(json: &str) -> i32 {
+    let reply: serde_json::Value = match serde_json::from_str(json) {
+        Ok(reply) => reply,
+        Err(_) => {
+            println!("error: the app's reply was not JSON");
+            return 1;
+        }
+    };
+    if reply["ok"] == true {
+        let screen = reply["screen"].as_str().unwrap_or("");
+        println!("{}", if screen.is_empty() { "(blank screen)" } else { screen });
+        0
+    } else {
+        println!("error: {}", reply["message"].as_str().unwrap_or("the app refused"));
+        1
+    }
 }
 
 /// What a verb does on termiod when no app answers, or when the app answers
@@ -1265,28 +1315,37 @@ enum Fallback {
     None,
     List,
     Run { line: String, app_only: bool },
-    Send { enter: bool, app_only: bool },
+    Send { first: String, enter: bool, app_only: bool },
     Read { lines: Option<u64> },
 }
 
-/// The termiod session to act on instead of the app, after `reply`. Some when
-/// the app is absent or has no such session and a running termiod holds it.
-/// With no app, a target termiod lacks ends the command as not found; with the
-/// app, `None` leaves the app's own reply to be printed.
+/// The termiod session to act on instead of the app, after `reply`, or the
+/// error to report as `(code, message)`.
+///
+/// With no app, it is whatever session the target names, and naming none is
+/// not found. When the app declined (no such session, no project, control
+/// off), it is only a session the app did not make: the app names its own by
+/// UUID and scopes them to a project, and falling through to termiod must not
+/// reach around that scope. `Ok(None)` leaves the app's reply to be printed.
 async fn on_termiod(
     reply: &app_socket::Reply,
     format: &str,
     target: &str,
-) -> Option<termiod::protocol::SessionInfo> {
+) -> Result<Option<termiod::protocol::SessionInfo>, (String, String)> {
     let no_app = matches!(reply, app_socket::Reply::NoApp(..));
-    if !no_app && !app_socket::is_not_found(reply, format) {
-        return None;
+    if !no_app && !app_socket::app_declined(reply, format) {
+        return Ok(None);
     }
-    match termiod::server::resolve_running(target).await {
-        Ok(Some(info)) => Some(info),
-        Ok(None) if no_app => refuse(format, "not_found", &format!("no session matches '{target}'")),
-        Ok(None) => None,
-        Err(error) => refuse(format, "ambiguous", &format!("{error:#}")),
+    let found = termiod::server::resolve_running(target, termiod::server::LOOKUP_TIMEOUT)
+        .await
+        .map_err(|error| ("daemon".to_string(), format!("{error:#}")))?;
+    match found {
+        Some(info) if no_app || !uuid_shaped(&info.name.to_lowercase()) => Ok(Some(info)),
+        None if no_app => Err((
+            "not_found".to_string(),
+            format!("no session matches '{target}'"),
+        )),
+        _ => Ok(None),
     }
 }
 

@@ -20,8 +20,8 @@ on one — there is no project filter to lean on.
 
 - `termio session ls --all --json` — every session on this host, with its status
   (`working` / `idle` / `needs_you` / `done` / `failed` / `unknown`), name, and
-  pid. Sessions are addressed by id, id prefix or name; all work everywhere a
-  target is taken.
+  pid. Sessions are addressed by id or by name; both work everywhere a target
+  is taken.
 - `termio session read <target>` — print a session's screen.
 - `termio session send <target> "<text>"` — type into a session as if the user
   had. Use it to answer a sibling that is blocked on a question. `--no-enter`

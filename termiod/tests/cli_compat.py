@@ -185,6 +185,24 @@ def rejects(name, args, env_extra=None):
     )
 
 
+def reads_as_text(name, args):
+    """A text `read`: JSON on the wire, the app's text on stdout."""
+    screen = b'{"ok":true,"schema_version":1,"screen":"error: looks like one"}'
+    mock = MockApp([screen])
+    code, out, err = run(RUST, args)
+    requests = list(mock.requests)
+    mock.close()
+    sent = json.loads(requests[0]) if requests else {}
+    check(
+        name,
+        code == 0
+        and out == "error: looks like one\n"
+        and sent.get("format") == "json"
+        and sent.get("lines") == 12,
+        f"    exit={code} out={out!r} stderr={err!r} requests={requests!r}",
+    )
+
+
 def diagnoses(name, args, needle):
     """With no app running at all, argv is still diagnosed first.
 
@@ -244,7 +262,11 @@ def main():
     compare("answer", ["sessions", "answer", "8de0b387", "yes"], [ok])
     compare("spawn with placement", ["sessions", "spawn", "fix it", "--agent", "codex", "--direction", "down", "--ratio", "0.25"], [ok])
     compare("run", ["sessions", "run", "pnpm dev", "--direction", "right"], [ok])
-    compare("read with lines", ["sessions", "read", "8de0b387", "--lines", "12"], [ok])
+    # A text `read` asks the app in JSON and prints the screen itself: a
+    # screen can say anything, including what an error says, so the text
+    # reply alone cannot tell the two apart. Diverges from the shell client
+    # on purpose.
+    reads_as_text("read with lines", ["sessions", "read", "8de0b387", "--lines", "12"])
     compare("focus", ["sessions", "focus", "8de0b387"], [ok])
     compare("close two targets", ["sessions", "close", "8de0b387", "deadbeef"], [ok, ok])
     compare("close second fails", ["sessions", "close", "8de0b387", "deadbeef"], [ok, err])
@@ -314,8 +336,7 @@ def main():
         rejects(name, args)
 
     print("== parsing shapes the shell client never had ==")
-    compare("eq-form flag", ["sessions", "read", "8de0b387", "--lines=12"], [ok],
-            expect_script=["sessions", "read", "8de0b387", "--lines", "12"])
+    reads_as_text("eq-form flag", ["sessions", "read", "8de0b387", "--lines=12"])
     compare("eq-form on spawn", ["sessions", "spawn", "x", "--agent=codex"], [ok],
             expect_script=["sessions", "spawn", "x", "--agent", "codex"])
     # A payload that genuinely starts with `--` stays expressible after `--`.

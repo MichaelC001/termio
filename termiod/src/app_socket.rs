@@ -210,15 +210,25 @@ pub enum Reply {
     Failed,
 }
 
-/// Whether the app's reply says it has no such session — the one error after
-/// which the app has done nothing, so another owner may still answer. The
-/// text form is the app's own wording (`targetNotFoundMessage`).
-pub fn is_not_found(reply: &Reply, format: &str) -> bool {
+/// Whether the app declined the request without doing anything: it has no
+/// such session, the caller is in no project it knows, or session control is
+/// off. Another owner may still answer. The text forms are the app's own
+/// wording (`TermioStore+SessionControl.swift`); only `send` and `close` are
+/// matched in text, whose successful replies never start with `error:`.
+pub fn app_declined(reply: &Reply, format: &str) -> bool {
     let Reply::Answered(reply) = reply else { return false };
     if format == "json" {
-        reply.contains("\"error\":\"not_found\"")
+        ["not_found", "no_scope", "disabled"]
+            .iter()
+            .any(|code| reply.contains(&format!("\"error\":\"{code}\"")))
     } else {
-        reply.starts_with("error: No session '")
+        [
+            "error: No session '",
+            "error: Couldn’t tell which project you’re in.",
+            "error: Session control is off.",
+        ]
+        .iter()
+        .any(|prefix| reply.starts_with(prefix))
     }
 }
 

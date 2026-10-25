@@ -578,14 +578,18 @@ pub async fn attach_session(args: AttachArgs) -> Result<()> {
     }
 }
 
-/// Ends a session and its process group.
+/// Ends a session and its process group. Replies the way the app's `close`
+/// does, on stdout.
 pub async fn close_session(target: &str, json: bool) -> Result<()> {
-    let id = resolve_running_or_fail(target).await?;
-    client::kill(&id).await?;
+    let info = resolve_running_or_fail(target).await?;
+    client::kill(&info.id).await?;
     if json {
-        println!("{}", serde_json::json!({ "ok": true, "schema_version": 1, "id": id }));
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "schema_version": 1, "id": info.id, "closed": info.id, "title": info.name })
+        );
     } else {
-        eprintln!("closed {target}");
+        println!("closed {} ({})", info.id, info.name);
     }
     Ok(())
 }
@@ -594,29 +598,50 @@ pub async fn close_session(target: &str, json: bool) -> Result<()> {
 /// The bytes go as they are: the daemon's one-shot `send` has no key encoder,
 /// so named keys and `--wait` belong to the app.
 pub async fn send_to_session(target: &str, text: &str, enter: bool, json: bool) -> Result<()> {
-    let id = resolve_running_or_fail(target).await?;
+    // The app refuses an empty send too: a bare Return is rarely what was meant.
+    if text.is_empty() {
+        bail!("send needs text to send");
+    }
+    let info = resolve_running_or_fail(target).await?;
     let mut data = text.as_bytes().to_vec();
     if enter {
         data.push(b'\r');
     }
-    client::send(&id, data).await?;
+    client::send(&info.id, data).await?;
     if json {
-        println!("{}", serde_json::json!({ "ok": true, "schema_version": 1, "id": id }));
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "schema_version": 1, "id": info.id, "target": info.id, "title": info.name })
+        );
+    } else {
+        println!("sent to {}", info.id);
     }
     Ok(())
 }
 
-async fn resolve_running_or_fail(target: &str) -> Result<String> {
-    match resolve_running(target).await? {
-        Some(info) => Ok(info.id),
+async fn resolve_running_or_fail(target: &str) -> Result<SessionInfo> {
+    match resolve_running(target, LOOKUP_TIMEOUT).await? {
+        Some(info) => Ok(info),
         None => bail!("no session matches '{target}'"),
     }
 }
 
+/// How long a lookup waits for a running daemon to list its sessions.
+pub const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// `resolve` against a daemon that is already running. No daemon is no
-/// session, so a lookup that finds nothing never leaves a daemon behind.
-pub async fn resolve_running(target: &str) -> Result<Option<SessionInfo>> {
-    match client::sessions_of_running_daemon().await? {
+/// session, so a lookup that finds nothing never leaves a daemon behind. A
+/// daemon that accepts but never answers is an error after `timeout`, never
+/// a hang.
+pub async fn resolve_running(
+    target: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<SessionInfo>> {
+    let sessions = match tokio::time::timeout(timeout, client::sessions_of_running_daemon()).await {
+        Ok(sessions) => sessions?,
+        Err(_) => bail!("termiod did not answer within {}s", timeout.as_secs()),
+    };
+    match sessions {
         Some(sessions) => resolve_in(&sessions, target),
         None => Ok(None),
     }

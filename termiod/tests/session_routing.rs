@@ -205,9 +205,10 @@ fn host_runs_the_same_words_on_the_host() {
 }
 
 /// A stand-in for the app's control socket. It knows one session, `8de0b387`,
-/// answers "not found" for any other target the way the app words it, and
-/// counts the requests it receives.
-fn fake_app(home: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+/// whose screen reads like an error, answers "not found" for any other target
+/// the way the app words it, and counts the requests it receives. With
+/// `no_scope`, it answers every request as the app does outside any project.
+fn fake_app(home: &Path, no_scope: bool) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
     use std::io::{Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
     let directory = home.join("Library/Application Support/termio");
@@ -229,7 +230,18 @@ fn fake_app(home: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
             let request: serde_json::Value =
                 serde_json::from_slice(&buffer[..read]).unwrap_or_default();
             let target = request["target"].as_str().unwrap_or("");
-            let reply = if target.is_empty() || target == "8de0b387" {
+            let reply = if no_scope {
+                if request["format"] == "json" {
+                    "{\"error\":\"no_scope\",\"message\":\"x\",\"ok\":false,\"schema_version\":1}\n"
+                        .to_string()
+                } else {
+                    "error: Couldn’t tell which project you’re in. Run this from inside a Termio session.\n"
+                        .to_string()
+                }
+            } else if request["op"] == "read" && target == "8de0b387" {
+                "{\"ok\":true,\"schema_version\":1,\"screen\":\"error: No session 'x' in this project.\"}\n"
+                    .to_string()
+            } else if target.is_empty() || target == "8de0b387" {
                 "{\"ok\":true}\n".to_string()
             } else if request["format"] == "json" {
                 "{\"error\":\"not_found\",\"message\":\"x\",\"ok\":false,\"schema_version\":1}\n"
@@ -254,7 +266,7 @@ fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
     assert!(created.status.success(), "create failed: {created:?}");
     let reply: serde_json::Value = serde_json::from_slice(&created.stdout).expect("create --json");
     let id = reply["id"].as_str().expect("an id").to_string();
-    let app = fake_app(&daemon.home);
+    let app = fake_app(&daemon.home, false);
 
     let sent = termio(&daemon, &["session", "send", &id, "to-the-daemon"]);
     assert!(sent.status.success(), "send failed: {sent:?}");
@@ -272,6 +284,11 @@ fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
     let read = termio(&daemon, &["session", "read", &id]);
     assert!(!stdout(&read).contains("the-prompt"), "a prompt reached termiod: {read:?}");
 
+    // A screen that reads like an error is still the app's screen.
+    let read = termio(&daemon, &["session", "read", "8de0b387"]);
+    assert!(read.status.success(), "read failed: {read:?}");
+    assert_eq!(stdout(&read), "error: No session 'x' in this project.\n");
+
     let wait = termio(&daemon, &["session", "send", &id, "x", "--wait", "--json"]);
     assert!(!wait.status.success(), "--wait on a termiod-only session must refuse");
     let refusal: serde_json::Value = serde_json::from_slice(&wait.stdout).expect("a JSON refusal");
@@ -282,6 +299,42 @@ fn with_the_app_termiod_answers_only_what_the_app_does_not_know() {
     let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
     let reply: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("ls --json");
     assert_eq!(reply["sessions"].as_array().map(Vec::len), Some(0), "close left: {reply}");
+}
+
+/// Outside any project the app declines every request. A session the app did
+/// not make is still reachable; one it made, by its UUID name, is not.
+#[test]
+fn outside_a_project_termiod_answers_for_its_own_sessions_only() {
+    let daemon = start_daemon("scope");
+    let created = termio(&daemon, &["session", "create", "--name", "headless", "--", "/bin/cat"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let uuid = "8de0b387-485a-4016-8990-cbcbfff03199";
+    let created = termio(&daemon, &["session", "create", "--name", uuid, "--", "/bin/cat"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let _app = fake_app(&daemon.home, true);
+
+    let sent = termio(&daemon, &["session", "send", "--json", "termio://session/x"]);
+    assert!(!sent.status.success(), "{sent:?}");
+    let closed = termio(&daemon, &["session", "close", "headless"]);
+    assert!(closed.status.success(), "close failed: {closed:?}");
+    assert!(stdout(&closed).starts_with("closed "), "close reply: {closed:?}");
+
+    let refused = termio(&daemon, &["session", "close", uuid]);
+    assert!(!refused.status.success(), "an app session must stay the app's: {refused:?}");
+    let listed = termio(&daemon, &["session", "ls", "--all"]);
+    assert!(stdout(&listed).contains(uuid), "the app's session was closed: {listed:?}");
+}
+
+/// Every target of `close` gets its attempt, even after one fails.
+#[test]
+fn close_tries_every_target() {
+    let daemon = start_daemon("close");
+    let created = termio(&daemon, &["session", "create", "--name", "alpha", "--", "/bin/cat"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let closed = termio(&daemon, &["session", "close", "nosuch", "alpha"]);
+    assert!(!closed.status.success(), "a missing target fails the command");
+    let listed = termio(&daemon, &["session", "ls", "--all"]);
+    assert!(!stdout(&listed).contains("alpha"), "alpha was skipped: {listed:?}");
 }
 
 /// The app leaves its socket file behind when it quits. A file with no
