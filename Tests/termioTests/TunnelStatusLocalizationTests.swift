@@ -40,11 +40,11 @@ final class TunnelStatusLocalizationTests: XCTestCase {
     }
 
     func testTheInstallFailureIsTranslated() throws {
-        let binary = "tunelo"
+        let binary = "ngrok"
         let reason = "network down"
         XCTAssertEqual(
             try zh("couldn’t install \(binary): \(reason)"),
-            "无法安装 tunelo：network down")
+            "无法安装 ngrok：network down")
     }
 
     func testTheLaunchFailureIsTranslated() throws {
@@ -65,10 +65,10 @@ final class TunnelStatusLocalizationTests: XCTestCase {
     /// The one with a mixed `%@` + `%lld` key, which is the case most likely to
     /// drift: an `Int` interpolation compiles to `%lld`, not `%d`.
     func testTheRetryingFailureIsTranslated() throws {
-        let binary = "tunelo"
+        let binary = "cloudflared"
         let delay = 48
         XCTAssertEqual(
             try zh("\(binary) keeps exiting — retrying every \(delay)s"),
-            "tunelo 反复退出——每 48 秒重试一次")
+            "cloudflared 反复退出——每 48 秒重试一次")
     }
 }
