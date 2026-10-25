@@ -592,6 +592,7 @@ impl Node for SshNode {
             return Ok(Artifacts {
                 daemon: prebuilt.clone(),
                 client: ships_client.then(|| self.prebuilt_client.clone()).flatten(),
+                tailnet: None,
             });
         }
         let target = match &self.target {
@@ -612,7 +613,15 @@ impl Node for SshNode {
                 true => Some(shipped_client(&target, &daemon)?),
                 false => None,
             };
-            return Ok(Artifacts { daemon, client });
+            let tailnet = ships_client
+                .then(|| daemon.parent().map(|d| d.join(format!("termio-tailnet-{target}"))))
+                .flatten()
+                .filter(|path| path.is_file());
+            return Ok(Artifacts {
+                daemon,
+                client,
+                tailnet,
+            });
         }
         if client_only {
             // Repairing a client is not worth building a daemon for. A control
@@ -944,6 +953,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
     Ok(Artifacts {
         daemon,
         client: Some(client),
+        tailnet: None,
     })
 }
 
