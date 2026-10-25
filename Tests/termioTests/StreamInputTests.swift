@@ -374,6 +374,232 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual([try glyph(at: 2).r], [plain.r], "c is outside the selection")
     }
 
+    /// Ghostty's own cases for its link pattern (`src/config/url.zig`): the
+    /// first match in each input, and inputs with no match at all.
+    func testTheLinkPatternMatchesGhosttysCases() throws {
+        func first(_ input: String) -> String? {
+            TermiodStreamTerminal.linkRanges(in: input).first.map { (input as NSString).substring(with: $0) }
+        }
+        let cases: [(String, String)] = [
+            ("hello https://example.com world", "https://example.com"),
+            ("https://example.com/foo(bar) more", "https://example.com/foo(bar)"),
+            ("https://example.com/foo(bar)baz more", "https://example.com/foo(bar)baz"),
+            ("Link inside (https://example.com) parens", "https://example.com"),
+            ("Link period https://example.com. More text.", "https://example.com"),
+            ("Link trailing comma https://example.com, more text.", "https://example.com"),
+            ("Link in double quotes \"https://example.com\" and more", "https://example.com"),
+            ("Link in single quotes 'https://example.com' and more", "https://example.com"),
+            ("some file with https://google.com https://duckduckgo.com links.", "https://google.com"),
+            ("and links in it. links https://yahoo.com mailto:test@example.com ssh://1.2.3.4", "https://yahoo.com"),
+            ("also match http://example.com non-secure links", "http://example.com"),
+            ("match tel://+12123456789 phone numbers", "tel://+12123456789"),
+            ("match with query url https://example.com?query=1&other=2 and more text.", "https://example.com?query=1&other=2"),
+            ("url with dashes [mode 2027](https://github.com/contour-terminal/terminal-unicode-core) for better unicode support", "https://github.com/contour-terminal/terminal-unicode-core"),
+            ("dot.http://example.com", "http://example.com"),
+            ("weird characters https://example.com/~user/?query=1&other=2#hash and more", "https://example.com/~user/?query=1&other=2#hash"),
+            ("square brackets https://example.com/[foo] and more", "https://example.com/[foo]"),
+            ("[13]:TooManyStatements: TempFile#assign_temp_file_to_entity has approx 7 statements [https://example.com/docs/Too-Many-Statements.md]", "https://example.com/docs/Too-Many-Statements.md"),
+            ("match ftp://example.com ftp links", "ftp://example.com"),
+            ("match file://example.com file links", "file://example.com"),
+            ("match ssh://example.com ssh links", "ssh://example.com"),
+            ("match git://example.com git links", "git://example.com"),
+            ("/tmp/test.txt http://www.google.com", "/tmp/test.txt"),
+            ("match tel:+18005551234 tel links", "tel:+18005551234"),
+            ("match magnet:?xt=urn:btih:1234567890 magnet links", "magnet:?xt=urn:btih:1234567890"),
+            ("match ipfs://QmSomeHashValue ipfs links", "ipfs://QmSomeHashValue"),
+            ("match ipns://QmSomeHashValue ipns links", "ipns://QmSomeHashValue"),
+            ("match gemini://example.com gemini links", "gemini://example.com"),
+            ("match gopher://example.com gopher links", "gopher://example.com"),
+            ("match news:comp.infosystems.www.servers.unix news links", "news:comp.infosystems.www.servers.unix"),
+            ("/Users/ghostty.user/code/example.py", "/Users/ghostty.user/code/example.py"),
+            ("/Users/ghostty.user/code/../example.py", "/Users/ghostty.user/code/../example.py"),
+            ("/Users/ghostty.user/code/../example.py hello world", "/Users/ghostty.user/code/../example.py"),
+            ("../example.py", "../example.py"),
+            ("../example.py ", "../example.py"),
+            ("first time ../example.py contributor ", "../example.py"),
+            ("[link](/home/user/ghostty.user/example)", "/home/user/ghostty.user/example"),
+            ("Serving HTTP on :: port 8000 (http://[::]:8000/)", "http://[::]:8000/"),
+            ("IPv6 address https://[2001:db8::1]:8080/path", "https://[2001:db8::1]:8080/path"),
+            ("IPv6 localhost http://[::1]:3000", "http://[::1]:3000"),
+            ("Complex IPv6 https://[2001:db8:85a3:8d3:1319:8a2e:370:7348]:443/", "https://[2001:db8:85a3:8d3:1319:8a2e:370:7348]:443/"),
+            ("IPv6 with path https://[2001:db8::1]/path/to/resource", "https://[2001:db8::1]/path/to/resource"),
+            ("IPv6 with query https://[2001:db8::1]:8080/api?param=value&other=123", "https://[2001:db8::1]:8080/api?param=value&other=123"),
+            ("IPv6 compressed http://[2001:db8::]:80/", "http://[2001:db8::]:80/"),
+            ("IPv6 multiple zeros http://[2001:0:0:0:0:0:0:1]", "http://[2001:0:0:0:0:0:0:1]"),
+            ("IPv6 link-local https://[fe80::1234:5678:9abc]", "https://[fe80::1234:5678:9abc]"),
+            ("IPv6 multicast http://[ff02::1]/stream", "http://[ff02::1]/stream"),
+            ("IPv6 in markdown [link](http://[2001:db8::1]/docs)", "http://[2001:db8::1]/docs"),
+            ("./spaces-end.   ", "./spaces-end."),
+            ("./space middle", "./space middle"),
+            ("../test folder/file.txt", "../test folder/file.txt"),
+            ("/tmp/test folder/file.txt", "/tmp/test folder/file.txt"),
+            ("/tmp/test  folder/file.txt", "/tmp/test"),
+            ("diff --git a/src/font/shaper/harfbuzz.zig b/src/font/shaper/harfbuzz.zig", "a/src/font/shaper/harfbuzz.zig"),
+            ("/tmp/foo /tmp/bar", "/tmp/foo"),
+            ("/tmp/foo.txt /tmp/bar.txt", "/tmp/foo.txt"),
+            ("src/config/url.zig", "src/config/url.zig"),
+            ("app/folder/file.rb:1", "app/folder/file.rb:1"),
+            ("modified:   src/config/url.zig", "src/config/url.zig"),
+            ("lib/ghostty/terminal.zig:42:10", "lib/ghostty/terminal.zig:42:10"),
+            ("some-pkg/src/file.txt more text", "some-pkg/src/file.txt"),
+            ("src/foo.c,baz.txt", "src/foo.c"),
+            ("~/foo/bar.txt", "~/foo/bar.txt"),
+            ("open ~/Documents/notes.md please", "~/Documents/notes.md"),
+            ("~/.config/ghostty/config", "~/.config/ghostty/config"),
+            ("directory: ~/src/ghostty-org/ghostty", "~/src/ghostty-org/ghostty"),
+            ("$HOME/src/config/url.zig", "$HOME/src/config/url.zig"),
+            ("project dir: $PWD/src/ghostty/main.zig", "$PWD/src/ghostty/main.zig"),
+            ("foo/$BAR/baz", "foo/$BAR/baz"),
+            (".foo/bar/$VAR", ".foo/bar/$VAR"),
+            (".config/ghostty/config", ".config/ghostty/config"),
+            ("loaded from .local/share/ghostty/state.db now", ".local/share/ghostty/state.db"),
+            ("../some/where", "../some/where"),
+            ("  - shared/src/foo/SomeItem.m:12, shared/src/", "shared/src/foo/SomeItem.m:12"),
+            ("foo.local/share", "foo.local/share"),
+            ("2024/report.txt", "2024/report.txt"),
+            ("./foo bar,baz", "./foo bar"),
+            ("/tmp/foo bar,baz", "/tmp/foo bar"),
+            ("./.config/ghostty: Needs upstream (main)", "./.config/ghostty"),
+            ("./Downloads: Operation not permitted", "./Downloads"),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(first(input), expected, input)
+        }
+        for input in ["input/output", "foo/bar", "$10/bar", "$10/$20", "$10/bar.txt", "foo/bar,baz.txt",
+                      "foo$BAR/baz.txt", "foo~/bar.txt", "// foo bar", "//foo"] {
+            XCTAssertNil(first(input), input)
+        }
+    }
+
+    /// Text that made Ghostty's pattern, run by ICU, backtrack for seconds
+    /// finds its links at once.
+    func testHostileTextIsMatchedInLinearTime() {
+        let base64 = String(repeating: "QUJDRA", count: 1700)
+        let hostile = [
+            "https://a" + String(repeating: ".,", count: 2000),
+            "https://[2001:0db8:85a3:0000:0000:0000:0000:0000:0000",
+            base64,
+            String(repeating: "a/", count: 3000),
+            String(repeating: "ab-cd.", count: 400),
+            String(repeating: "GET https://api.x.io/v1/items?id=42 200 ", count: 60) + "token=" + base64,
+        ]
+        for text in hostile {
+            let started = ContinuousClock.now
+            _ = TermiodStreamTerminal.linkRanges(in: text, around: (text as NSString).length / 2)
+            XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200), String(text.prefix(20)))
+        }
+        XCTAssertEqual(
+            TermiodStreamTerminal.linkRanges(in: "https://a" + String(repeating: ".,", count: 20)).first?.length,
+            9, "the trailing dots and commas are not the URL"
+        )
+    }
+
+    /// A URL longer than the path window is the same whole URL from wherever
+    /// the pointer is on it, never a piece of it read as a path.
+    func testALongURLIsWholeFromEveryPointOnIt() {
+        let query = (0 ..< 60).map { "k\($0)=v\($0)" }.joined(separator: "&")
+        let url = "https://bucket.s3.amazonaws.com/dir/file.tar.gz?" + query
+            + "&X-Amz-Credential=AKIA/20261025/us-east-1/s3/aws4_request&sig=abc.def"
+        let text = "see " + url + " end"
+        let length = (url as NSString).length
+        for index in stride(from: 4, to: 4 + length, by: 37) {
+            let found = TermiodStreamTerminal.linkRanges(in: text, around: index).first { NSLocationInRange(index, $0) }
+            XCTAssertEqual(found.map { (text as NSString).substring(with: $0) }, url, "pointer at \(index)")
+        }
+    }
+
+    /// A path that starts further back than the window is not offered as
+    /// the piece of it the window holds.
+    func testALongPathIsNeverOfferedAsAPieceOfIt() {
+        let path = "/Users/me/" + String(repeating: "my-dir/", count: 60) + "file.txt"
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path).first, NSRange(location: 0, length: (path as NSString).length))
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: path, around: 430), [])
+        let spaced = "/Users/me/Library/" + String(repeating: "x-dir/", count: 45) + "Mobile Documents/file.txt"
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: spaced).first?.length, (spaced as NSString).length)
+        XCTAssertEqual(TermiodStreamTerminal.linkRanges(in: spaced, around: 305), [], "not Documents/file.txt")
+    }
+
+    /// Ghostty's scheme branch: a suffix is a matched `(word)` or `[word]`
+    /// after URL characters, and a word may be outside the BMP.
+    func testTheSchemeScanFollowsGhosttysSuffixRules() {
+        func first(_ input: String) -> String? {
+            TermiodStreamTerminal.linkRanges(in: input).first.map { (input as NSString).substring(with: $0) }
+        }
+        XCTAssertEqual(first("https://x.com/a(b] c"), "https://x.com/a")
+        XCTAssertEqual(first("https://x.com/a(b)(c) d"), "https://x.com/a(b)")
+        XCTAssertEqual(first("https://[::1](x) y"), "https://[::1]")
+        XCTAssertEqual(first("https://x.com/\u{20000}b c"), "https://x.com/\u{20000}b")
+    }
+
+    /// The link under the pointer: an OSC 8 hyperlink first, then a detected
+    /// URL or path, with the cells it covers.
+    func testTheLinkUnderThePointer() throws {
+        let terminal = try terminal(
+            "see https://example.com/a. ok\r\n\u{1b}]8;;https://termio.sh\u{07}docs\u{1b}]8;;\u{07} and src/main.swift"
+        )
+        XCTAssertEqual(terminal.link(at: point(6, 0)), .init(url: "https://example.com/a", segments: [.init(row: 0, columns: 4 ... 24)]))
+        XCTAssertNil(terminal.link(at: point(1, 0)), "plain text")
+        XCTAssertEqual(terminal.link(at: point(2, 1)), .init(url: "https://termio.sh", segments: [.init(row: 1, columns: 0 ... 3)]))
+        XCTAssertEqual(terminal.link(at: point(12, 1)), .init(url: "src/main.swift", segments: [.init(row: 1, columns: 9 ... 22)]))
+    }
+
+    /// A URL longer than the row is one link across the wrap, as Ghostty
+    /// matches the whole soft-wrapped line; and a host in brackets with no
+    /// closing one costs no time.
+    func testALinkWrapsAndAnUnclosedBracketIsCheap() throws {
+        let url = "https://github.com/termio-sh/termio/pull/785"
+        let terminal = try terminal("x " + url)
+        // 40 columns: the URL starts at 2 and wraps after 38 of its 44 characters.
+        let expected = TermiodStreamTerminal.Link(
+            url: url, segments: [.init(row: 0, columns: 2 ... 39), .init(row: 1, columns: 0 ... 5)]
+        )
+        XCTAssertEqual(terminal.link(at: point(10, 0)), expected)
+        XCTAssertEqual(terminal.link(at: point(3, 1)), expected, "from the second row too")
+
+        let hostile = try self.terminal("https://[2001:0db8:85a3:0000:0000:0000:0000:0000:0000")
+        let started = ContinuousClock.now
+        _ = hostile.link(at: point(12, 0))
+        XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200))
+    }
+
+    /// A wrapped URL whose start has scrolled out of the view is still the
+    /// whole URL, underlined only where it is on screen.
+    func testALinkIsFollowedIntoScrollback() throws {
+        let url = "https://github.com/termio-sh/termio/pull/785"
+        // 40 columns and 10 rows: 9 more lines push the URL's first row off the top.
+        let terminal = try terminal("x " + url + String(repeating: "\r\n", count: 9))
+        XCTAssertEqual(
+            terminal.link(at: point(3, 0)),
+            .init(url: url, segments: [.init(row: 0, columns: 0 ... 5)])
+        )
+    }
+
+    /// The hovered link is underlined across the cells it covers.
+    func testAHoveredLinkIsUnderlined() throws {
+        let terminal = try terminal("go https://x.io now")
+        let appearance = TermiodStreamRenderer.Appearance(
+            fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, paddingX: 0, paddingY: 0, backgroundOpacity: 1
+        )
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        let link = try XCTUnwrap(terminal.link(at: point(5, 0)))
+        func underlines(_ link: TermiodStreamTerminal.Link?) throws -> [TermiodStreamRectangle] {
+            _ = try terminal.withFrame { state, theme in
+                // Focused, so the cursor is a block under the text, not an
+                // outline among the over-text rectangles.
+                try builder.build(from: state, atlas: renderer.atlas, focused: true, theme: theme, link: link)
+            }
+            var rectangles: [TermiodStreamRectangle] = []
+            var glyphs: [TermiodStreamGlyph] = []
+            builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+            return rectangles.filter { $0.overText && $0.cellY == 0 }
+        }
+        let shown = try underlines(link)
+        XCTAssertEqual(shown.map(\.cellX), [3])
+        XCTAssertEqual(Int(shown.first?.width ?? 0), renderer.atlas.metrics.width * 12, "https://x.io is 12 cells")
+        XCTAssertTrue(try underlines(nil).isEmpty, "gone when ⌘ is let go")
+    }
+
     /// What `termio session read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")

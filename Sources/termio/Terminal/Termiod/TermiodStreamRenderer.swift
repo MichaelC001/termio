@@ -98,9 +98,10 @@ final class TermiodStreamRenderer {
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
     func draw(
-        _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil
+        _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
+        link: TermiodStreamTerminal.Link? = nil
     ) throws {
-        let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit)
+        let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit, link: link)
         guard changed || force else { return }
         // A frame the GPU cannot take yet is dropped, not queued: the next
         // tick draws the newer screen anyway.
@@ -128,7 +129,7 @@ final class TermiodStreamRenderer {
     func image(
         of terminal: TermiodStreamTerminal, width: Int, height: Int, focused: Bool = true, preedit: String? = nil
     ) throws -> CGImage {
-        _ = try prepare(terminal, focused: focused, force: true, preedit: preedit)
+        _ = try prepare(terminal, focused: focused, force: true, preedit: preedit, link: nil)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
@@ -154,14 +155,18 @@ final class TermiodStreamRenderer {
         return image
     }
 
-    private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool, preedit: String?) throws -> Bool {
+    private func prepare(
+        _ terminal: TermiodStreamTerminal, focused: Bool, force: Bool, preedit: String?, link: TermiodStreamTerminal.Link?
+    ) throws -> Bool {
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
         // Ghostty's blink: 600 ms on, 600 ms off.
         let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
         return try terminal.withFrame { state, theme in
-            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit)
+            try builder.build(
+                from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit, link: link
+            )
         }
     }
 
@@ -638,6 +643,8 @@ final class TermiodStreamFrameBuilder {
     private var preeditGlyphs: [TermiodStreamGlyph] = []
     private var preeditCells: (y: UInt16, first: UInt16, last: UInt16)?
     private var lastPreedit: PreeditState?
+    private var hoveredLink: TermiodStreamTerminal.Link?
+    private var linkUnderline: [TermiodStreamRectangle] = []
     nonisolated(unsafe) private var rowIterator: GhosttyRenderStateRowIterator?
     nonisolated(unsafe) private var cells: GhosttyRenderStateRowCells?
     private var codepoints = [UInt32](repeating: 0, count: 32)
@@ -663,7 +670,7 @@ final class TermiodStreamFrameBuilder {
     /// Returns false when nothing changed since the last build.
     func build(
         from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true,
-        theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil
+        theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil, link: TermiodStreamTerminal.Link? = nil
     ) throws -> Bool {
         let contrast = theme?.minimumContrast ?? 1
         if contrast != minimumContrast {
@@ -711,6 +718,22 @@ final class TermiodStreamFrameBuilder {
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
+        // A link under the pointer with ⌘ held is underlined, as Ghostty
+        // underlines it.
+        if link != hoveredLink {
+            hoveredLink = link
+            linkUnderline = (link?.segments ?? []).map { segment in
+                let metrics = atlas.metrics
+                return TermiodStreamRectangle(
+                    cellX: segment.columns.lowerBound, cellY: segment.row, x: 0,
+                    y: Int16(clamping: metrics.underlinePosition),
+                    width: UInt16(clamping: metrics.width * (Int(segment.columns.upperBound - segment.columns.lowerBound) + 1)),
+                    height: UInt16(clamping: metrics.underlineThickness),
+                    r: colors.foreground.r, g: colors.foreground.g, b: colors.foreground.b, a: 255, overText: true
+                )
+            }
+            changed = true
+        }
         let preeditState = PreeditState(state, text: preedit, colors: colors)
         if changed || preeditState != lastPreedit {
             lastPreedit = preeditState
@@ -1102,6 +1125,7 @@ final class TermiodStreamFrameBuilder {
         }
         rectangles.append(contentsOf: cursor)
         rectangles.append(contentsOf: preeditRectangles)
+        rectangles.append(contentsOf: linkUnderline)
         for (index, row) in rowGlyphs.enumerated() {
             for glyph in row where !covered(glyph.cellX, row: index) {
                 var glyph = glyph

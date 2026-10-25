@@ -180,3 +180,22 @@ final class TailnetTests: XCTestCase {
         XCTAssertEqual(Tailnet.peers(miniPeers, notReachedBy: ["mini.example.com"]).map(\.hostName), ["mini"])
     }
 }
+
+final class BuiltInTailscaleTests: XCTestCase {
+    func testTheDeviceNameIsADNSLabelAfterTheMac() {
+        XCTAssertEqual(BuiltInTailscale.deviceName(from: "Jiwei’s MacBook Pro"), "termio-jiwei-s-macbook-pro")
+        XCTAssertEqual(BuiltInTailscale.deviceName(from: "studio"), "termio-studio")
+        XCTAssertEqual(BuiltInTailscale.deviceName(from: "  --Mini--  "), "termio-mini")
+    }
+
+    func testANameWithNothingUsableFallsBackToTermio() {
+        XCTAssertEqual(BuiltInTailscale.deviceName(from: "袁的电脑"), "termio")
+        XCTAssertEqual(BuiltInTailscale.deviceName(from: ""), "termio")
+    }
+
+    func testALongNameIsCutToSixtyThreeWithoutATrailingHyphen() {
+        let name = BuiltInTailscale.deviceName(from: String(repeating: "a", count: 55) + " b")
+        XCTAssertLessThanOrEqual(name.count, 63)
+        XCTAssertFalse(name.hasSuffix("-"))
+    }
+}
