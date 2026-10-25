@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -352,7 +351,7 @@ func handle(ctx context.Context, conn net.Conn, client *local.Client, forward st
 		return
 	}
 
-	upstream, err := net.Dial("unix", forward)
+	upstream, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: forward, Net: "unix"})
 	if err != nil {
 		log.Printf("reaching termiod: %v", err)
 		return
@@ -361,29 +360,26 @@ func handle(ctx context.Context, conn net.Conn, client *local.Client, forward st
 	pipe(conn, upstream)
 }
 
-func pipe(a, b net.Conn) {
-	var group sync.WaitGroup
-	group.Add(2)
-	copyHalf := func(destination, source net.Conn) {
-		defer group.Done()
-		_, err := io.Copy(destination, source)
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			log.Printf("forwarding: %v", err)
+// pipe forwards both ways between a caller and termiod. termiod decides when
+// a connection is over: once it closes, the caller is closed too, even one
+// that never finished its TLS handshake and so cannot take a half-close.
+// A caller that finishes first only half-closes termiod's side, which lets
+// termiod see a clean detach.
+func pipe(caller net.Conn, termiod *net.UnixConn) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := io.Copy(termiod, caller); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("forwarding to termiod: %v", err)
 		}
-		switch half := destination.(type) {
-		case *net.UnixConn:
-			_ = half.CloseWrite()
-		case *tls.Conn:
-			_ = half.CloseWrite()
-		case interface{ CloseWrite() error }:
-			_ = half.CloseWrite()
-		default:
-			_ = destination.Close()
-		}
+		_ = termiod.CloseWrite()
+	}()
+	if _, err := io.Copy(caller, termiod); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Printf("forwarding from termiod: %v", err)
 	}
-	go copyHalf(a, b)
-	go copyHalf(b, a)
-	group.Wait()
+	caller.Close()
+	termiod.Close()
+	<-done
 }
 
 func logout(arguments []string) {

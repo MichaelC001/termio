@@ -84,6 +84,10 @@ pub struct Status {
     /// the new image reaps it by this number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helper_pid: Option<u32>,
+    /// The config the supervisor was running when it wrote this, so `on` can
+    /// tell a report about its own request from one about the previous config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied: Option<Config>,
 }
 
 impl Status {
@@ -283,8 +287,14 @@ async fn run_enabled(
     shutdown: &mut watch::Receiver<bool>,
     rotation: &wss::Rotation,
 ) {
+    let report = |status: &Status| {
+        write_status(&Status {
+            applied: Some(config.clone()),
+            ..status.clone()
+        })
+    };
     let Some(helper) = helper_path() else {
-        write_status(&Status::failed(format!(
+        report(&Status::failed(format!(
             "{HELPER} is not installed next to termiod, so this box cannot join the tailnet by itself"
         )));
         let _ = wait_for_change(config, shutdown).await;
@@ -293,7 +303,7 @@ async fn run_enabled(
     let socket = match bind_socket() {
         Ok(socket) => socket,
         Err(error) => {
-            write_status(&Status::failed(format!("{error:#}")));
+            report(&Status::failed(format!("{error:#}")));
             let _ = wait_for_change(config, shutdown).await;
             return;
         }
@@ -307,11 +317,11 @@ async fn run_enabled(
 
     let mut backoff = RESTART_FLOOR;
     loop {
-        write_status(&Status::new("starting"));
+        report(&Status::new("starting"));
         let mut child = match spawn_helper(&helper, config, &socket_path) {
             Ok(child) => child,
             Err(error) => {
-                write_status(&Status::failed(format!("{error:#}")));
+                report(&Status::failed(format!("{error:#}")));
                 if wait_or_change(backoff, config, shutdown).await {
                     break;
                 }
@@ -323,14 +333,14 @@ async fn run_enabled(
         // and that end of file would tell the helper to stop.
         let mut stdin = child.stdin.take();
         let helper_pid = child.id();
-        write_status(&Status {
+        report(&Status {
             helper_pid,
             ..Status::new("starting")
         });
         let reports = child
             .stdout
             .take()
-            .map(|stdout| tokio::spawn(follow_reports(stdout, helper_pid)));
+            .map(|stdout| tokio::spawn(follow_reports(stdout, helper_pid, config.clone())));
         let started = std::time::Instant::now();
 
         // Ends on a config change and on shutdown alike.
@@ -357,7 +367,7 @@ async fn run_enabled(
                             .flatten()
                     })
                     .unwrap_or(description);
-                write_status(&Status::failed(message));
+                report(&Status::failed(message));
                 if started.elapsed() > RESTART_CEILING {
                     backoff = RESTART_FLOOR;
                 }
@@ -512,7 +522,11 @@ fn spawn_helper(helper: &Path, config: &Config, socket: &Path) -> Result<Child> 
         .with_context(|| format!("starting {}", helper.display()))
 }
 
-async fn follow_reports(stdout: tokio::process::ChildStdout, helper_pid: Option<u32>) {
+async fn follow_reports(
+    stdout: tokio::process::ChildStdout,
+    helper_pid: Option<u32>,
+    applied: Config,
+) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(mut status) = serde_json::from_str::<Status>(&line) else {
@@ -521,6 +535,7 @@ async fn follow_reports(stdout: tokio::process::ChildStdout, helper_pid: Option<
         };
         status.pid = std::process::id();
         status.helper_pid = helper_pid;
+        status.applied = Some(applied.clone());
         if status.state == "running" {
             // The key is single-use, and the node keeps its login. Keeping
             // the file would only keep a secret on disk.
@@ -605,7 +620,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
     let mut running_since: Option<std::time::Instant> = None;
     let deadline = std::time::Instant::now() + Duration::from_secs(600);
     loop {
-        if let Some(status) = read_status() {
+        if let Some(status) = read_status().filter(|status| status.applied.as_ref() == Some(&config)) {
             match status.state.as_str() {
                 "running" => {
                     // The node can be up a moment before Tailscale has said
