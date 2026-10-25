@@ -21,7 +21,6 @@ import Foundation
 final class TunnelManager: ObservableObject {
     enum Provider: String, CaseIterable, Identifiable {
         case off
-        case tunelo
         case cloudflared
         case ngrok
         case custom
@@ -53,17 +52,6 @@ final class TunnelManager: ObservableObject {
             switch self {
             case .off:
                 return nil
-            case .tunelo:
-                return Spec(
-                    binaryName: "tunelo",
-                    label: "Tunelo",
-                    arguments: ["port", port],
-                    urlPattern: #"https://[a-zA-Z0-9-]+\.tunelo\.net"#,
-                    download: Spec.Download(
-                        url: "https://github.com/jiweiyuan/tunelo/releases/latest/download/tunelo-macos-\(arch)",
-                        isArchive: false
-                    )
-                )
             case .cloudflared:
                 return Spec(
                     binaryName: "cloudflared",
@@ -116,18 +104,6 @@ final class TunnelManager: ObservableObject {
             guard self != .custom else { return nil }
             return spec(servedPort: servedPort)
                 .map { "\($0.binaryName) \($0.arguments.joined(separator: " "))" }
-        }
-
-        /// Where tunelo keeps the Ed25519 key its stable subdomain is derived from.
-        /// Channel-scoped, so the dev build cannot claim the release build's name.
-        /// tunelo creates the file (0600) and any missing parent directory itself.
-        ///
-        /// Deliberately not part of `spec.arguments`: the flag is only appended once
-        /// the resolved binary is known to understand it, and `reapPattern` stays the
-        /// short port-scoped prefix it was.
-        static var tuneloIdentityPath: String {
-            AppChannel.supportDirectory
-                .appendingPathComponent("tunelo-identity.key", isDirectory: false).path
         }
     }
 
@@ -256,6 +232,7 @@ final class TunnelManager: ObservableObject {
     /// App-launch hook (and Mobile-Access resume): bring the tunnel the user had
     /// on last quit back up. A no-op when the provider is Off.
     func startIfEnabled() {
+        Self.reapLegacyTunelo()
         if provider != .off { restart() }
     }
 
@@ -352,64 +329,8 @@ final class TunnelManager: ObservableObject {
             // The user may have flipped the picker — or turned Mobile Access
             // off entirely — while the download ran.
             guard self.generation == epoch, self.provider == target, let binary else { return }
-            // Off the main actor: the probe execs the binary once per install.
-            let arguments = await Task.detached {
-                Self.launchArguments(for: target, binary: binary)
-            }.value
-            guard self.generation == epoch, self.provider == target else { return }
-            spawn(binary, for: target, arguments: arguments)
+            spawn(binary, for: target, arguments: target.spec?.arguments ?? [])
         }
-    }
-
-    /// A provider's argv, plus anything that depends on what the resolved binary
-    /// actually supports.
-    ///
-    /// tunelo only learned `--identity` (and the stable subdomain it implies) in
-    /// 0.3.0, and binary discovery deliberately prefers a user-managed install —
-    /// so a brew or cargo copy from before that release is a live possibility.
-    /// Handing an unknown flag to it would abort the tunnel at launch with a usage
-    /// error; asking first degrades to the old random-name behaviour instead.
-    nonisolated private static func launchArguments(for provider: Provider, binary: URL) -> [String] {
-        guard let spec = provider.spec else { return [] }
-        guard provider == .tunelo, supportsIdentityFlag(binary) else { return spec.arguments }
-        return spec.arguments + ["--identity", Provider.tuneloIdentityPath]
-    }
-
-    nonisolated private static let identityProbeLock = NSLock()
-    nonisolated(unsafe) private static var identityProbeCache: [String: Bool] = [:]
-
-    /// Does this binary accept `--identity`? Answered by its own `--help`, so a
-    /// version-string format change can't silently turn the flag off. Cached per
-    /// path: a tunnel restart loop must not exec the probe every time.
-    nonisolated private static func supportsIdentityFlag(_ binary: URL) -> Bool {
-        let key = binary.path
-        identityProbeLock.lock()
-        let cached = identityProbeCache[key]
-        identityProbeLock.unlock()
-        if let cached { return cached }
-
-        var supported = false
-        let process = Process()
-        process.executableURL = binary
-        process.arguments = ["port", "--help"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-            let output = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            supported = String(decoding: output, as: UTF8.self).contains("--identity")
-        } catch {
-            Log.tunnel.notice("couldn't probe \(binary.lastPathComponent, privacy: .public) for --identity: \(error.localizedDescription, privacy: .public)")
-        }
-        identityProbeLock.lock()
-        identityProbeCache[key] = supported
-        identityProbeLock.unlock()
-        if !supported {
-            Log.tunnel.notice("\(binary.path, privacy: .public) predates --identity — the tunnel URL will change on every restart")
-        }
-        return supported
     }
 
     private func spawn(_ binary: URL, for provider: Provider, arguments: [String]) {
@@ -417,9 +338,8 @@ final class TunnelManager: ObservableObject {
         let process = Process()
         process.executableURL = binary
         process.arguments = arguments
-        // CLIs print their public URL to the console (tunelo on stdout,
-        // cloudflared/ngrok inside a stderr/stdout banner); one merged pipe
-        // catches either.
+        // CLIs print their public URL inside a stderr or stdout banner; one
+        // merged pipe catches either.
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -450,8 +370,7 @@ final class TunnelManager: ObservableObject {
                 // Quick tunnels drop when the relay blips; restart while the
                 // user still wants one, but slow down against a hard failure.
                 // Each restart mints a NEW public URL — the open QR follows,
-                // an already-paired phone must re-scan (stable subdomains
-                // need tunelo to grow a --subdomain flag), which is the real
+                // an already-paired phone must re-scan, which is the real
                 // cost being rationed here.
                 guard self.provider == provider else { return }
                 self.consecutiveFailures += 1
@@ -568,13 +487,25 @@ final class TunnelManager: ObservableObject {
         let patterns = ports.flatMap { port in
             Provider.allCases.compactMap { $0.reapPattern(servedPort: port) }
         }
-        for pattern in patterns {
-            let pkill = Process()
-            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            pkill.arguments = ["-9", "-f", pattern]
-            try? pkill.run()
-            pkill.waitUntilExit()
+        for pattern in patterns { forceKill(matching: pattern) }
+    }
+
+    /// Tunelo was a provider until it lost its maintainer. A build from before
+    /// can leave one running that still publishes the companion port, and the
+    /// saved choice now reads back as Off, which never reaches `restart` and its
+    /// reaper. So it is reaped on its own, whatever the provider is.
+    private static func reapLegacyTunelo() {
+        for port in [AppChannel.companionPort, AppChannel.devicePort] {
+            forceKill(matching: "tunelo port \(port)")
         }
+    }
+
+    private static func forceKill(matching pattern: String) {
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-9", "-f", pattern]
+        try? pkill.run()
+        pkill.waitUntilExit()
     }
 
     // Read from the `nonisolated` reaper, so they can't inherit the type's
@@ -672,9 +603,9 @@ final class TunnelManager: ObservableObject {
         AppChannel.supportDirectory.appendingPathComponent("bin", isDirectory: true)
     }
 
-    /// One-time fetch from the provider's GitHub release. tunelo ships a bare
-    /// binary; cloudflared ships a single-file tgz. Both are small enough to
-    /// pull on first use, and neither ends up inside the app bundle (which
+    /// One-time fetch from the provider's GitHub release. cloudflared ships a
+    /// single-file tgz, small enough to pull on first use, and it never ends up
+    /// inside the app bundle (which
     /// would bloat every Sparkle update and freeze their CVE fixes to ours).
     /// A bring-your-own provider (no `spec.download`) throws a hint instead.
     nonisolated private static func install(_ provider: Provider) async throws -> URL {

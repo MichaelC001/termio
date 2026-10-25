@@ -177,7 +177,7 @@ struct LinkLiveness {
 /// frames carry raw PTY bytes both ways, text frames carry `CompanionControl`.
 ///
 /// Bound to localhost for the PoC; production fronts it with a tunnel
-/// (`tunelo port <n>`), so the socket itself never listens on the public net.
+/// (`cloudflared tunnel --url …`), so the socket itself never listens on the public net.
 @MainActor
 final class CompanionServer {
     private let port: UInt16
