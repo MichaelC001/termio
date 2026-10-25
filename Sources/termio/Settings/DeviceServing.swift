@@ -489,7 +489,12 @@ struct DeviceServingSection: View {
         invitedBase = base
         minting = true
         Task {
-            defer { minting = false }
+            defer {
+                minting = false
+                // A change that arrived mid-mint was dropped by the guard above,
+                // and nothing else will ask again for the address it moved to.
+                if mobile.isEnabled, mobile.attachesDirectly, directBase != base { refreshInvite() }
+            }
             do {
                 let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
                 // The pane may have moved to another address while the daemon
