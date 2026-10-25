@@ -254,6 +254,8 @@ func watch(ctx context.Context, client *local.Client, report func(status)) error
 			report(status{State: "needs_approval"})
 		case ipn.Running.String():
 			authURL = ""
+			// A key can expire later, and that sign-in has to be asked for.
+			askedForLogin = false
 			s := status{State: "running", HTTPS: len(current.CertDomains) > 0}
 			if self := current.Self; self != nil {
 				s.DNSName = strings.TrimSuffix(self.DNSName, ".")

@@ -174,9 +174,18 @@ pub fn read_status() -> Option<Status> {
     process_alive(status.pid).then_some(status)
 }
 
-/// Serializes `on`, `off` and `logout` against each other. The daemon never
-/// takes it: it only reads the config.
+/// Serializes `on`, `off` and `logout` against each other. The daemon takes
+/// it only without waiting, to delete a used auth key.
 fn lock_settings() -> Result<std::fs::File> {
+    open_settings_lock(true)?
+        .ok_or_else(|| anyhow::anyhow!("the settings lock was not taken"))
+}
+
+fn try_lock_settings() -> Result<Option<std::fs::File>> {
+    open_settings_lock(false)
+}
+
+fn open_settings_lock(wait: bool) -> Result<Option<std::fs::File>> {
     use std::os::fd::AsRawFd;
     let path = paths::durable_state_dir()?.join("tailscale.lock");
     let file = std::fs::OpenOptions::new()
@@ -185,11 +194,15 @@ fn lock_settings() -> Result<std::fs::File> {
         .write(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("locking {}", path.display()));
+    let operation = if wait { libc::LOCK_EX } else { libc::LOCK_EX | libc::LOCK_NB };
+    if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if !wait && error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        return Err(error).with_context(|| format!("locking {}", path.display()));
     }
-    Ok(file)
+    Ok(Some(file))
 }
 
 fn written_since(moment: std::time::SystemTime) -> bool {
@@ -537,13 +550,25 @@ async fn follow_reports(
         status.helper_pid = helper_pid;
         status.applied = Some(applied.clone());
         if status.state == "running" {
-            // The key is single-use, and the node keeps its login. Keeping
-            // the file would only keep a secret on disk.
-            if let Ok(path) = auth_key_path() {
-                let _ = std::fs::remove_file(path);
-            }
+            forget_used_auth_key(&applied);
         }
         write_status(&status);
+    }
+}
+
+/// The key is single-use and the node keeps its login, so keeping the file
+/// would only keep a secret on disk. It is deleted only while no `on` is
+/// writing one, and only when it is the key this helper started with: a newer
+/// one waits for the helper that will read it.
+fn forget_used_auth_key(applied: &Config) {
+    let Ok(Some(_lock)) = try_lock_settings() else {
+        return;
+    };
+    let current = read_config().ok();
+    if current.is_some_and(|config| config.auth_key_generation == applied.auth_key_generation) {
+        if let Ok(path) = auth_key_path() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
