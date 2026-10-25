@@ -88,7 +88,9 @@ final class PairingModel: ObservableObject {
         // A node reported on while either switch is off is paused the moment
         // the report arrives: the switch may have gone off before the first
         // read, when there was nothing yet to pause.
-        builtIn.$report
+        // On every read, not only a changed one: a pause that failed is
+        // retried by the next poll even when the node's state stands still.
+        builtIn.$reads
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
@@ -110,7 +112,7 @@ final class PairingModel: ObservableObject {
             builtIn.setEnabled(false)
         } else if allowed, defaults.bool(forKey: Self.pausedNodeKey) {
             defaults.removeObject(forKey: Self.pausedNodeKey)
-            builtIn.setEnabled(true)
+            builtIn.setEnabled(true, naming: false)
         }
     }
 
@@ -144,37 +146,6 @@ final class PairingModel: ObservableObject {
     func rotateToken() {
         guard mobile.attachesDirectly else {
             token = PairingToken.regenerate()
-            return
-        }
-        guard mobile.isEnabled, directBase != nil else {
-            // No address to mint an invite for, as while built-in Tailscale
-            // reconnects. Revoking cannot wait for one. It holds the mint lock,
-            // so an address that appears meanwhile is minted after the new
-            // token exists, never with the one being revoked.
-            guard !minting else {
-                queuedRefresh = (true, true)
-                return
-            }
-            minting = true
-            invite = nil
-            Task {
-                defer {
-                    minting = false
-                    let queued = queuedRefresh
-                    queuedRefresh = nil
-                    refreshInvite(rotate: queued?.rotate == true, force: true)
-                }
-                do {
-                    let result = try await RemotePairing.runLocally(arguments: ["pair", "--rotate"])
-                    if result.status != 0 {
-                        inviteFailure = RemotePairing.message(from: result)
-                    }
-                } catch let failure as RemotePairing.Failure {
-                    inviteFailure = failure.message
-                } catch {
-                    inviteFailure = error.localizedDescription
-                }
-            }
             return
         }
         refreshInvite(rotate: true)
@@ -241,14 +212,55 @@ final class PairingModel: ObservableObject {
         return "http://\(servedHost):\(AppChannel.devicePort)"
     }
 
+    /// The last bare rotation failed, which stays on screen until a rotation
+    /// works: a revocation that did not happen must not read as one that did.
+    private var rotationFailed = false
+
+    /// `termiod pair --rotate` with no invite to mint. It holds the mint lock,
+    /// so an address that appears meanwhile is minted after the new token
+    /// exists, never with the one being revoked.
+    private func rotateWithoutInvite() {
+        guard !minting else {
+            queuedRefresh = (true, true)
+            return
+        }
+        minting = true
+        invite = nil
+        invitedBase = nil
+        Task {
+            var failure: String?
+            do {
+                let result = try await RemotePairing.runLocally(arguments: ["pair", "--rotate"])
+                if result.status != 0 { failure = RemotePairing.message(from: result) }
+            } catch let error as RemotePairing.Failure {
+                failure = error.message
+            } catch {
+                failure = error.localizedDescription
+            }
+            rotationFailed = failure != nil
+            inviteFailure = failure
+            minting = false
+            let queued = queuedRefresh
+            queuedRefresh = nil
+            // A rotation asked for again while this one ran has just happened.
+            refreshInvite(force: queued != nil || failure == nil)
+        }
+    }
+
     /// Asks this Mac's daemon for the invite that names `directBase`.
     ///
     /// `rotate` mints a fresh pairing token first, which is what Rotate Token
     /// does on this side.
     private func refreshInvite(rotate: Bool = false, force: Bool = false) {
+        // Revoking cannot wait for an address: with none, as while built-in
+        // Tailscale reconnects, the token is rotated on its own.
+        if rotate, mobile.attachesDirectly, directBase == nil {
+            rotateWithoutInvite()
+            return
+        }
         guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
             invite = nil
-            inviteFailure = nil
+            if !rotationFailed { inviteFailure = nil }
             invitedBase = nil
             return
         }
@@ -279,6 +291,7 @@ final class PairingModel: ObservableObject {
                 guard base == invitedBase else { return }
                 invite = minted
                 inviteFailure = nil
+                if rotate { rotationFailed = false }
             } catch let failure as RemotePairing.Failure {
                 guard base == invitedBase else { return }
                 invite = nil
@@ -390,6 +403,13 @@ struct DeviceServingSection: View {
                 )
             }
             .toggleStyle(.switch)
+            // Turning this off takes built-in Tailscale off the tailnet too, and
+            // its rows go with it, so a failure to do that is said here.
+            if !(mobile.isEnabled && pairing.servesTailnet && !onTunnel), let failure = builtIn.failure {
+                Text(failure)
+                    .font(.settingsDetail)
+                    .foregroundStyle(.red)
+            }
 
             // Everything below only means anything while we're serving, so the
             // master switch reveals it — a dimmed, unscannable QR (and an

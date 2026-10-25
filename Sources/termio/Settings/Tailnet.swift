@@ -382,8 +382,16 @@ final class BuiltInTailscale: ObservableObject {
         let helper: String?
     }
 
+    /// The settings a report was produced under, so a report about the
+    /// previous config does not pass for one about the current.
+    struct Applied: Decodable, Equatable {
+        let enabled: Bool
+        let hostname: String?
+    }
+
     struct Status: Decodable, Equatable {
         let state: String
+        let applied: Applied?
         let authURL: String?
         let dnsName: String?
         let ips: [String]?
@@ -393,7 +401,7 @@ final class BuiltInTailscale: ObservableObject {
         let message: String?
 
         enum CodingKeys: String, CodingKey {
-            case state, ips, https, owner, tagged, message
+            case state, applied, ips, https, owner, tagged, message
             case authURL = "auth_url"
             case dnsName = "dns_name"
         }
@@ -408,8 +416,11 @@ final class BuiltInTailscale: ObservableObject {
     /// node that is connected, read just now, and owned by someone, because a
     /// tagged node admits nobody.
     var url: String? {
-        guard fresh, state == "running", report?.status?.tagged != true else { return nil }
-        return report?.url
+        guard fresh, let report, state == "running", report.status?.tagged != true,
+              let applied = report.status?.applied, applied.enabled,
+              (applied.hostname ?? "termio") == report.hostname
+        else { return nil }
+        return report.url
     }
     /// The build carries the helper. A dev build without Go does not.
     var available: Bool { report?.helper != nil }
@@ -419,7 +430,9 @@ final class BuiltInTailscale: ObservableObject {
     /// on screen.
     private var watchers = 0
     /// Reads finish out of order, so only the newest one started may publish.
-    private var reads = 0
+    private var started = 0
+    /// Counts reads that landed, changed or not, for whoever acts on each.
+    @Published private(set) var reads = 0
 
     /// Reads the state now. What was read before stops counting until then.
     func refresh() {
@@ -460,12 +473,15 @@ final class BuiltInTailscale: ObservableObject {
     /// On, or on its way there.
     var headedOn: Bool { requested ?? enabled }
 
-    func setEnabled(_ on: Bool) {
+    /// `naming`: give a node that still has the default name this Mac's own.
+    /// A resume passes false, because the rename moves the address a phone
+    /// paired to the node has saved.
+    func setEnabled(_ on: Bool, naming: Bool = true) {
         requested = on
         var arguments = on ? ["tailscale", "on", "--no-wait"] : ["tailscale", "off"]
         // Named only while the node still has the default name. Renaming one
         // that has its own would move the address a paired phone has saved.
-        if on, report?.hostname == nil || report?.hostname == "termio" {
+        if on, naming, report?.hostname == nil || report?.hostname == "termio" {
             arguments += ["--hostname", Self.deviceName]
         }
         perform(arguments)
@@ -508,16 +524,17 @@ final class BuiltInTailscale: ObservableObject {
     }
 
     private func read() async {
-        reads &+= 1
-        let mine = reads
+        started &+= 1
+        let mine = started
         guard let result = try? await RemotePairing.runLocally(arguments: ["tailscale", "status", "--json"]),
-              mine == reads,
+              mine == started,
               result.status == 0,
               let data = result.stdout.data(using: .utf8),
               let decoded = try? JSONDecoder().decode(Report.self, from: data)
         else { return }
         if decoded != report { report = decoded }
         fresh = true
+        reads &+= 1
     }
 
     /// `termio-` and this Mac's name as a DNS label, so two Macs on one tailnet
