@@ -153,6 +153,14 @@ extension UsageProvider {
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(defaultDirectory)
     }
 
+    /// The manifest's own folder, `~/.claude`, whatever the environment says.
+    /// Extra accounts are named and checked beside this one: termiod accepts
+    /// its siblings however either process was started, while a folder named
+    /// after an environment override only works when both saw the same one.
+    static var manifestHome: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(defaultDirectory)
+    }
+
     /// The JSON object at `file`, or `nil` when it is missing, unreadable, or not
     /// an object — all of which mean the same thing here: no credential.
     func jsonObject(at file: URL) -> [String: Any]? {

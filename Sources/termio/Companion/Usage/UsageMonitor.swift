@@ -104,7 +104,7 @@ final class UsageMonitor: ObservableObject {
     /// sign-in never lands in a folder that already holds someone's login.
     func nextAccount(for agent: AgentPreset) -> UsageAccount? {
         guard let type = Self.providerType(for: agent) else { return nil }
-        let base = type.defaultHome.standardizedFileURL
+        let base = type.manifestHome.standardizedFileURL
         let taken = Set(accounts(for: agent).map(\.home))
         for suffix in 2... {
             let home = base.deletingLastPathComponent()
@@ -145,7 +145,7 @@ final class UsageMonitor: ObservableObject {
     /// installs status hooks only into folders of that shape, so any other
     /// would run sessions that report no status.
     static func isAccountFolder(_ folder: URL, for agent: AgentPreset) -> Bool {
-        guard let base = providerType(for: agent)?.defaultHome.standardizedFileURL else { return false }
+        guard let base = providerType(for: agent)?.manifestHome.standardizedFileURL else { return false }
         let folder = folder.standardizedFileURL
         // termiod refuses a symlink here (it could lead anywhere), so the app
         // refuses it too rather than add an account that gets no hooks.
