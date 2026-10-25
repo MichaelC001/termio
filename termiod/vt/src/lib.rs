@@ -951,6 +951,14 @@ mod tests {
             Bytes(b"\x1b[?1049l\r\n\x1b]133;A\x07$ \x1b]133;B\x07"),
             Resize { rows: 9, cols: 50, reflow: false },
             Bytes(b"done \xf0\x9f\x9a\x80\r\n"),
+            // An empty prompt answered with Enter, and below it a command
+            // typed long enough to wrap: the resize lands with the cursor on
+            // a continuation row, so only a walk that climbs to the second
+            // prompt's first row, and no further, clears the right rows.
+            Bytes(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n"),
+            Bytes(b"\x1b]133;A\x07$ \x1b]133;B\x07a typed command long enough to wrap twice at fifty columns wide"),
+            Resize { rows: 9, cols: 30, reflow: false },
+            Bytes(b"\x1b[1;4mstyled\x1b[0m"),
         ]
     }
 
@@ -1013,6 +1021,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The screen as the formatter writes it with `format_vt`'s options, minus
+    /// the prologue and fixups that method adds, for comparing a client written
+    /// in another language against this one.
+    fn formatted(terminal: &VtTerminal) -> Vec<u8> {
+        let options = super::FormatterOptions::new()
+            .with_format(super::Format::Vt)
+            .with_unwrap(false)
+            .with_trim(false)
+            .with_palette(false)
+            .with_modes(true)
+            .with_scrolling_region(true)
+            .with_tabstops(false)
+            .with_pwd(true)
+            .with_keyboard(true)
+            .with_cursor(true)
+            .with_style(true)
+            .with_hyperlink(true)
+            .with_protection(true)
+            .with_kitty_keyboard(true)
+            .with_charsets(true);
+        let mut formatter =
+            super::Formatter::new(&terminal.terminal, options).expect("formatter");
+        // A blank screen formats to nothing, which `format_alloc` and
+        // `format_len` both report as an error.
+        let mut text = vec![0; 1 << 16];
+        let length = formatter.format_buf(&mut text).expect("formatted screen");
+        text.truncate(length);
+        text
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// The Mac client's `vt_stream` terminal is Swift, so it cannot share
+    /// `apply` with the daemon. Instead this records what the daemon's VT holds
+    /// after every step of `session_script`, attached inside an OSC sequence,
+    /// and the Swift test replays the same steps against it
+    /// (`Tests/termioTests/StreamTerminalTests.swift`). Run with
+    /// `TERMIO_UPDATE_FIXTURES=1` after changing the script or the engine.
+    #[test]
+    fn the_client_resize_fixture_matches_the_daemon() {
+        let attach_at = 4;
+        let mut daemon = VtTerminal::new(6, 20).expect("daemon terminal");
+        let mut fixture = String::new();
+        let mut written = 0usize;
+        let mut attached = false;
+        for step in session_script() {
+            match step {
+                Step::Bytes(bytes) => {
+                    let mut rest: &[u8] = bytes;
+                    if !attached && written + rest.len() >= attach_at {
+                        let (before, after) = rest.split_at(attach_at - written);
+                        daemon.vt_write(before);
+                        fixture += &format!(
+                            "attach {}\n",
+                            hex(&daemon.native_snapshot().expect("native snapshot"))
+                        );
+                        attached = true;
+                        rest = after;
+                    }
+                    daemon.vt_write(rest);
+                    written += bytes.len();
+                    if !attached {
+                        continue;
+                    }
+                    fixture += &format!("bytes {}\n", hex(rest));
+                }
+                Step::Resize { rows, cols, reflow } => {
+                    apply(&mut daemon, rows, cols, reflow);
+                    fixture += &format!("resize {rows} {cols} {}\n", u8::from(reflow));
+                }
+            }
+            let screen = daemon.snapshot().expect("daemon cells");
+            let width = daemon.terminal.width_px().expect("width");
+            let height = daemon.terminal.height_px().expect("height");
+            fixture += &format!(
+                "screen {} {} {width} {height} {} {} {} {}\n",
+                screen.rows,
+                screen.cols,
+                screen.cursor_x,
+                screen.cursor_y,
+                u8::from(screen.alt_screen),
+                hex(&formatted(&daemon))
+            );
+        }
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../Tests/termioTests/Fixtures/vt-stream-resize.txt");
+        if std::env::var_os("TERMIO_UPDATE_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).expect("write fixture");
+        }
+        let committed = std::fs::read_to_string(&path).expect("read fixture");
+        assert!(
+            committed == fixture,
+            "{} is stale; rerun with TERMIO_UPDATE_FIXTURES=1",
+            path.display()
+        );
     }
 
     /// The events arrive in the order the bytes did. A query is not one of
