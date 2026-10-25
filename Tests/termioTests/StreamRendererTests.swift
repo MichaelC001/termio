@@ -9,7 +9,7 @@ import XCTest
 @MainActor
 final class StreamRendererTests: XCTestCase {
     private let appearance = TermiodStreamRenderer.Appearance(
-        fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13, cursorStyle: .block,
+        fontFamily: "Menlo", fallbackFamilies: [], fontSize: 13,
         paddingX: 8, paddingY: 2, backgroundOpacity: 1
     )
 
@@ -31,20 +31,20 @@ final class StreamRendererTests: XCTestCase {
         return terminal
     }
 
-    private func colors() -> TermiodStreamTerminal.Colors {
+    private func colors() -> TermiodStreamTerminal.Theme {
         var palette = [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 128, g: 128, b: 128), count: 256)
         palette[1] = GhosttyColorRgb(r: 220, g: 40, b: 40)
         palette[4] = GhosttyColorRgb(r: 40, g: 80, b: 220)
-        return TermiodStreamTerminal.Colors(
+        return TermiodStreamTerminal.Theme(
             foreground: GhosttyColorRgb(r: 230, g: 230, b: 230),
             background: GhosttyColorRgb(r: 20, g: 20, b: 20),
-            cursor: nil, palette: palette
+            cursor: nil, palette: palette, cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK
         )
     }
 
     func testAFrameDrawsTheThemeTheCellsAndTheText() throws {
         let terminal = try terminal()
-        try terminal.setColors(colors())
+        try terminal.setTheme(colors())
         let screen = [
             "\u{1b}[41m  red  \u{1b}[0m \u{1b}[1mbold\u{1b}[0m \u{1b}[3mitalic\u{1b}[0m \u{1b}[2mfaint\u{1b}[0m",
             "\u{1b}[4msingle\u{1b}[0m \u{1b}[4:2mdouble\u{1b}[0m \u{1b}[4:3mcurly\u{1b}[0m \u{1b}[9mstrike\u{1b}[0m",
@@ -85,7 +85,7 @@ final class StreamRendererTests: XCTestCase {
         _ terminal: TermiodStreamTerminal, _ builder: TermiodStreamFrameBuilder, _ atlas: TermiodGlyphAtlas
     ) throws -> (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]) {
         let changed = try terminal.withFrame { state in
-            try builder.build(from: state, atlas: atlas, cursorStyle: .block)
+            try builder.build(from: state, atlas: atlas, focused: true)
         }
         var rectangles: [TermiodStreamRectangle] = []
         var glyphs: [TermiodStreamGlyph] = []
@@ -97,7 +97,7 @@ final class StreamRendererTests: XCTestCase {
     /// hiding a block cursor gives the character under it its own color back.
     func testTheCursorRedrawsOnItsOwnAndLeavesNoTrace() throws {
         let terminal = try terminal()
-        try terminal.setColors(colors())
+        try terminal.setTheme(colors())
         let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
         let builder = try TermiodStreamFrameBuilder()
         terminal.write(Data("X".utf8))
@@ -148,5 +148,64 @@ final class StreamRendererTests: XCTestCase {
                             "U+\(String(codepoint, radix: 16)) was not drawn")
         }
         XCTAssertGreaterThan(atlas.generation, 0, "the atlas filled and was emptied")
+    }
+
+    private func cursorWidth(_ frame: (changed: Bool, rectangles: [TermiodStreamRectangle], glyphs: [TermiodStreamGlyph]),
+                             at x: UInt16) -> UInt16? {
+        // The cursor is the last rectangle laid at its cell with the foreground color.
+        frame.rectangles.last { $0.cellX == x && $0.cellY == 0 && $0.r == 230 }?.width
+    }
+
+    /// The setting is the cursor's default, and a program's own DECSCUSR wins
+    /// over it, block included.
+    func testTheCursorSettingIsTheDefaultAProgramCanOverride() throws {
+        let terminal = try terminal()
+        var theme = colors()
+        theme.cursorStyle = GHOSTTY_TERMINAL_CURSOR_STYLE_BAR
+        try terminal.setTheme(theme)
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        let cell = UInt16(renderer.atlas.metrics.width)
+        XCTAssertLessThan(try XCTUnwrap(cursorWidth(builtFrame(terminal, builder, renderer.atlas), at: 0)), cell,
+                          "no program style: the bar setting")
+        terminal.write(Data("\u{1b}[2 q".utf8))
+        XCTAssertEqual(cursorWidth(try builtFrame(terminal, builder, renderer.atlas), at: 0), cell,
+                       "the program asked for a block")
+    }
+
+    /// A block cursor on a wide character covers both of its cells.
+    func testABlockCursorCoversAWideCharacter() throws {
+        let terminal = try terminal()
+        try terminal.setTheme(colors())
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("中\r".utf8))
+        let frame = try builtFrame(terminal, builder, renderer.atlas)
+        XCTAssertEqual(cursorWidth(frame, at: 0), UInt16(2 * renderer.atlas.metrics.width))
+        XCTAssertEqual(frame.glyphs.first { $0.cellX == 0 }?.r, 20, "the character reads through the cursor")
+    }
+
+    /// A snapshot taken during a hold restores mode 2026 without a callback;
+    /// the client starts held, on the frame it decoded.
+    func testAnAttachInsideAHoldStartsHeld() throws {
+        var raw: GhosttyTerminal?
+        XCTAssertEqual(ghostty_terminal_new(nil, &raw, 40, 10), GHOSTTY_SUCCESS)
+        let source = try XCTUnwrap(raw)
+        defer { ghostty_terminal_free(source) }
+        let bytes = Array("AB\u{1b}[?2026hCD".utf8)
+        ghostty_terminal_vt_write(source, bytes, bytes.count)
+        var encoded: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        XCTAssertEqual(ghostty_snapshot_encode_alloc(source, nil, &encoded, &length), GHOSTTY_SUCCESS)
+        let pointer = try XCTUnwrap(encoded)
+        defer { ghostty_free(nil, pointer, length) }
+        let terminal = try TermiodStreamTerminal(nativeSnapshot: Data(bytes: pointer, count: length))
+        let renderer = try TermiodStreamRenderer(appearance: appearance, scale: 2)
+        let builder = try TermiodStreamFrameBuilder()
+        terminal.write(Data("EF".utf8))
+        XCTAssertEqual(try builtFrame(terminal, builder, renderer.atlas).glyphs.count, 4,
+                       "held: the decoded screen, not the redraw after it")
+        terminal.write(Data("\u{1b}[?2026l".utf8))
+        XCTAssertEqual(try builtFrame(terminal, builder, renderer.atlas).glyphs.count, 6)
     }
 }

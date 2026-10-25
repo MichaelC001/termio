@@ -1554,7 +1554,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     private let streamLock = NSLock()
     private var streamTerminalLocked: TermiodStreamTerminal?
     private var streamingLocked = false
-    private var streamColorsLocked: TermiodStreamTerminal.Colors?
+    private var streamThemeLocked: TermiodStreamTerminal.Theme?
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
     var onStreaming: ((Bool) -> Void)?
@@ -1578,12 +1578,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// a theme change and a terminal swap cannot interleave and leave the new
     /// terminal on the old theme. The order is always `streamLock`, then the
     /// terminal's own lock.
-    func setStreamColors(_ colors: TermiodStreamTerminal.Colors) {
+    func setStreamTheme(_ colors: TermiodStreamTerminal.Theme) {
         streamLock.lock()
         defer { streamLock.unlock() }
-        streamColorsLocked = colors
+        streamThemeLocked = colors
         do {
-            try streamTerminalLocked?.setColors(colors)
+            try streamTerminalLocked?.setTheme(colors)
         } catch {
             Log.termiod.error("stream colors: \(String(describing: error), privacy: .public)")
         }
@@ -1632,7 +1632,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             }
             streamLock.lock()
             defer { streamLock.unlock() }
-            if let colors = streamColorsLocked { try terminal.setColors(colors) }
+            if let colors = streamThemeLocked { try terminal.setTheme(colors) }
             streamTerminalLocked = terminal
             return true
         } catch {

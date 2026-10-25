@@ -95,6 +95,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, unsafeBitCast(hold, to: UnsafeRawPointer.self)),
             "ghostty_terminal_set(render_hold)"
         )
+        // A snapshot taken mid-hold restores mode 2026 without a callback, and
+        // a repeated begin raises none: start held, on the frame decoded.
+        if try mode(ghostty_mode_new(2026, false)) {
+            try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
+            heldSince = ContinuousClock.now
+        }
     }
 
     /// The decoder borrows `bytes` until it is freed, so everything from its
@@ -143,7 +149,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The theme: libghostty resolves "default foreground" and palette indices
     /// against these, so a session drawn by two Macs follows each one's theme.
     /// A decoded snapshot carries none of the daemon's, which never sets any.
-    func setColors(_ colors: Colors) throws {
+    func setTheme(_ colors: Theme) throws {
         try locked {
             var foreground = colors.foreground
             var background = colors.background
@@ -158,13 +164,19 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             try palette.withUnsafeMutableBufferPointer { buffer in
                 try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, buffer.baseAddress), "ghostty_terminal_set(palette)")
             }
+            // The default a program's DECSCUSR 0 returns to — and what a cursor
+            // nobody styled shows. One the program chose explicitly keeps its
+            // own shape: the terminal tells the two apart even after a decode.
+            var cursorStyle = colors.cursorStyle
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cursorStyle), "ghostty_terminal_set(default cursor)")
         }
     }
 
-    struct Colors: Equatable {
-        static func == (left: Colors, right: Colors) -> Bool {
+    struct Theme: Equatable {
+        static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
-            return same(left.foreground, right.foreground) && same(left.background, right.background)
+            return left.cursorStyle == right.cursorStyle
+                && same(left.foreground, right.foreground) && same(left.background, right.background)
                 && left.cursor.map { cursor in right.cursor.map { same(cursor, $0) } ?? false } ?? (right.cursor == nil)
                 && left.palette.count == right.palette.count
                 && zip(left.palette, right.palette).allSatisfy(same)
@@ -175,6 +187,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var cursor: GhosttyColorRgb?
         /// Exactly 256 entries.
         var palette: [GhosttyColorRgb]
+        /// The cursor-style setting.
+        var cursorStyle: GhosttyTerminalCursorStyle
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so

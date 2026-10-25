@@ -177,7 +177,7 @@ import SwiftUI
 struct TermiodStreamPane: NSViewRepresentable {
     let link: TermiodSessionLink
     let appearance: TermiodStreamRenderer.Appearance
-    let colors: TermiodStreamTerminal.Colors?
+    let colors: TermiodStreamTerminal.Theme?
     let isSelected: Bool
     let isVisible: Bool
     let onViewport: (TerminalGrid) -> Void
@@ -185,7 +185,7 @@ struct TermiodStreamPane: NSViewRepresentable {
     let onFocused: () -> Void
 
     final class Coordinator {
-        var colorsApplied: TermiodStreamTerminal.Colors?
+        var themeApplied: TermiodStreamTerminal.Theme?
         var visible: Bool?
     }
 
@@ -207,9 +207,9 @@ struct TermiodStreamPane: NSViewRepresentable {
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
         view.isShowing = isVisible
-        if let colors, context.coordinator.colorsApplied != colors {
-            context.coordinator.colorsApplied = colors
-            link.setStreamColors(colors)
+        if let colors, context.coordinator.themeApplied != colors {
+            context.coordinator.themeApplied = colors
+            link.setStreamTheme(colors)
         }
         if context.coordinator.visible != isVisible {
             context.coordinator.visible = isVisible

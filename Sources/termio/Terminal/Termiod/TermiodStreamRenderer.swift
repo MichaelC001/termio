@@ -19,7 +19,6 @@ final class TermiodStreamRenderer {
         /// CoreText's own fallback.
         var fallbackFamilies: [String]
         var fontSize: CGFloat
-        var cursorStyle: CursorStyle
         var paddingX: CGFloat
         var paddingY: CGFloat
         var backgroundOpacity: CGFloat
@@ -155,9 +154,8 @@ final class TermiodStreamRenderer {
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
-        let style = focused ? appearance.cursorStyle : .hollow
         return try terminal.withFrame { state in
-            try builder.build(from: state, atlas: atlas, cursorStyle: style)
+            try builder.build(from: state, atlas: atlas, focused: focused)
         }
     }
 
@@ -538,6 +536,9 @@ final class TermiodStreamFrameBuilder {
     private(set) var background = GhosttyColorRgb(r: 0, g: 0, b: 0)
     private var rowRectangles: [[TermiodStreamRectangle]] = []
     private var rowGlyphs: [[TermiodStreamGlyph]] = []
+    /// The columns where a wide character starts, per row, so a cursor on one
+    /// covers both of its cells.
+    private var rowWideStarts: [Set<UInt16>] = []
     private var cursor: [TermiodStreamRectangle] = []
     private var cursorGlyph: TermiodStreamGlyph?
     private var cursorCell: (x: UInt16, y: UInt16)?
@@ -564,10 +565,7 @@ final class TermiodStreamFrameBuilder {
     }
 
     /// Returns false when nothing changed since the last build.
-    func build(
-        from state: GhosttyRenderState, atlas: TermiodGlyphAtlas,
-        cursorStyle: TermiodStreamRenderer.CursorStyle
-    ) throws -> Bool {
+    func build(from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool) throws -> Bool {
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         var rows: UInt16 = 0
@@ -584,6 +582,7 @@ final class TermiodStreamFrameBuilder {
             if rowRectangles.count != Int(rows) {
                 rowRectangles = Array(repeating: [], count: Int(rows))
                 rowGlyphs = Array(repeating: [], count: Int(rows))
+                rowWideStarts = Array(repeating: [], count: Int(rows))
             }
             let generation = atlas.generation
             rebuildRows(state, full: full, colors: colors, atlas: atlas)
@@ -599,7 +598,7 @@ final class TermiodStreamFrameBuilder {
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
-        let cursorState = CursorState(state, colors: colors, style: cursorStyle)
+        let cursorState = CursorState(state, colors: colors, focused: focused)
         if changed || cursorState != lastCursorState {
             lastCursorState = cursorState
             buildCursor(cursorState, colors: colors, atlas: atlas)
@@ -634,7 +633,7 @@ final class TermiodStreamFrameBuilder {
         var green: UInt8 = 0
         var blue: UInt8 = 0
 
-        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, style: TermiodStreamRenderer.CursorStyle) {
+        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool) {
             var visible = false
             var hasValue = false
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
@@ -642,17 +641,22 @@ final class TermiodStreamFrameBuilder {
             guard visible, hasValue else { return }
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
-            // The program's own choice (DECSCUSR) wins over the setting, as in
-            // the embedded surface; an unfocused pane always shows the outline.
+            // The terminal's own style: the program's DECSCUSR, or the setting
+            // where it chose none (`TermiodStreamTerminal.Theme.cursorStyle`).
+            // An unfocused pane always shows the outline.
             var visual = GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, &visual)
-            switch (style, visual) {
-            case (.hollow, _): shape = .hollow
+            switch (focused, visual) {
+            case (false, _): shape = .hollow
             case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR): shape = .bar
             case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE): shape = .underline
             case (_, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW): shape = .hollow
-            default: shape = style
+            default: shape = .block
             }
+            // On the right half of a wide character the cursor covers all of it.
+            var wideTail = false
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL, &wideTail)
+            if wideTail, x > 0 { x -= 1 }
             let color = colors.cursor_has_value ? colors.cursor : colors.foreground
             red = color.r
             green = color.g
@@ -665,6 +669,7 @@ final class TermiodStreamFrameBuilder {
     private func rebuildRow(_ y: Int, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas) {
         var rectangles: [TermiodStreamRectangle] = []
         var glyphs: [TermiodStreamGlyph] = []
+        var wideStarts: Set<UInt16> = []
         let metrics = atlas.metrics
         _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells)
         var x: UInt16 = 0
@@ -676,6 +681,7 @@ final class TermiodStreamFrameBuilder {
             _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
             if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
             let span: UInt16 = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1
+            if span == 2 { wideStarts.insert(x) }
 
             var style = GhosttyStyle()
             style.size = MemoryLayout<GhosttyStyle>.size
@@ -737,6 +743,7 @@ final class TermiodStreamFrameBuilder {
         }
         rowRectangles[y] = rectangles
         rowGlyphs[y] = glyphs
+        rowWideStarts[y] = wideStarts
     }
 
     private func appendDecorations(
@@ -808,7 +815,8 @@ final class TermiodStreamFrameBuilder {
                 r: state.red, g: state.green, b: state.blue, a: 255, overText: overText
             )
         }
-        let width = metrics.width
+        let wide = Int(state.y) < rowWideStarts.count && rowWideStarts[Int(state.y)].contains(state.x)
+        let width = metrics.width * (wide ? 2 : 1)
         let height = metrics.height
         switch shape {
         case .block:

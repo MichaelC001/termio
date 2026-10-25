@@ -201,7 +201,7 @@ struct TerminalPane: View {
                     TermiodStreamPane(
                         link: link,
                         appearance: store.streamAppearance(),
-                        colors: store.streamColors(dark: colorScheme == .dark),
+                        colors: store.streamTheme(dark: colorScheme == .dark),
                         isSelected: isSelected,
                         isVisible: isVisible,
                         onViewport: { grid in store.reportViewport(grid, for: id) },

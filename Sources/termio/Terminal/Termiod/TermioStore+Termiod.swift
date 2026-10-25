@@ -192,8 +192,8 @@ extension TermioStore {
                 runtime.streamLink = nil
             }
         }
-        if let colors = streamColors(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
-            link.setStreamColors(colors)
+        if let colors = streamTheme(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
+            link.setStreamTheme(colors)
         }
         link.onConnectionLost = { [weak self, weak inMemory] attempts in
             self?.applyTermiodConnectionLost(
@@ -2097,11 +2097,6 @@ extension TermioStore {
     /// The settings the embedded surface is configured with, in the form the
     /// stream renderer takes (`applyAppearance` is the embedded side).
     func streamAppearance() -> TermiodStreamRenderer.Appearance {
-        let cursor: TermiodStreamRenderer.CursorStyle = switch settings.cursorStyle {
-        case .block: .block
-        case .bar: .bar
-        case .underline: .underline
-        }
         var fallbacks = settings.ghosttyFontFallbacks.filter { $0 != settings.fontFamily }
         let chain = [settings.fontFamily] + settings.ghosttyFontFallbacks
         if let cjk = InstalledFonts.cjkMonospaceFallback(existingChain: chain) { fallbacks.append(cjk) }
@@ -2109,7 +2104,6 @@ extension TermioStore {
             fontFamily: settings.fontFamily,
             fallbackFamilies: fallbacks,
             fontSize: CGFloat(settings.fontSize),
-            cursorStyle: cursor,
             paddingX: CGFloat(settings.windowPadding),
             paddingY: CGFloat(Self.terminalWindowPaddingY),
             backgroundOpacity: CGFloat(settings.backgroundOpacity)
@@ -2120,7 +2114,7 @@ extension TermioStore {
     /// against. The same choice `makeTheme` hands the embedded surface: the
     /// picked theme, else Afterglow in dark and termio's Alabaster in light.
     /// The light theme's contrast floor is not applied here yet.
-    func streamColors(dark: Bool) -> TermiodStreamTerminal.Colors? {
+    func streamTheme(dark: Bool) -> TermiodStreamTerminal.Theme? {
         let name = dark ? settings.darkThemeName : settings.lightThemeName
         var overrides: [Int: String] = [:]
         var background: String?
@@ -2143,9 +2137,15 @@ extension TermioStore {
         where (0..<256).contains(index) {
             if let color = Self.rgb(hex) { palette[index] = color }
         }
-        return TermiodStreamTerminal.Colors(
+        let cursorStyle = switch settings.cursorStyle {
+        case .block: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK
+        case .bar: GHOSTTY_TERMINAL_CURSOR_STYLE_BAR
+        case .underline: GHOSTTY_TERMINAL_CURSOR_STYLE_UNDERLINE
+        }
+        return TermiodStreamTerminal.Theme(
             foreground: foreground, background: ground,
-            cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette
+            cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette,
+            cursorStyle: cursorStyle
         )
     }
 
