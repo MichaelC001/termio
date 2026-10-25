@@ -1543,16 +1543,126 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// when it arrives. Usually there is — a pane is made because it is about
     /// to be shown — but the Mac also makes surfaces for sessions nobody is
     /// showing, and the attach frame is where one says so.
+    /// Whether this link asks for the `vt_stream` plane. Only a pane does: the
+    /// phone bridge forwards raw bytes to a surface of its own.
+    private let offersStream: Bool
+    /// Set when the daemon refused the plane; the link stays on keyframes.
+    private var streamRefused = false
+    /// The client terminal while the link is on the `vt_stream` plane, replaced
+    /// by every native snapshot. Lock-guarded: the reader thread swaps it and
+    /// the view reads it each frame.
+    private let streamLock = NSLock()
+    private var streamTerminalLocked: TermiodStreamTerminal?
+    private var streamingLocked = false
+    private var streamThemeLocked: TermiodStreamTerminal.Theme?
+    /// Whether the last handshake put this link on the `vt_stream` plane, on
+    /// the main thread. The pane mounts the stream view while it is true.
+    var onStreaming: ((Bool) -> Void)?
+
+    var streamTerminal: TermiodStreamTerminal? {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return streamingLocked ? streamTerminalLocked : nil
+    }
+
+    var isStreaming: Bool {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return streamingLocked
+    }
+
+    /// The theme every client terminal resolves colors against, applied to the
+    /// current one now and to each one a later attach decodes.
+    ///
+    /// Held under `streamLock` throughout, as is a snapshot's publication, so
+    /// a theme change and a terminal swap cannot interleave and leave the new
+    /// terminal on the old theme. The order is always `streamLock`, then the
+    /// terminal's own lock.
+    func setStreamTheme(_ colors: TermiodStreamTerminal.Theme) {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        streamThemeLocked = colors
+        do {
+            try streamTerminalLocked?.setTheme(colors)
+        } catch {
+            Log.termiod.error("stream colors: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// The pane cannot draw this plane (no Metal renderer): attach again on
+    /// keyframes, which the embedded surface can show.
+    func abandonStream() {
+        workQueue.async { [self] in
+            guard !streamRefused else { return }
+            streamRefused = true
+            // Not attached — between attempts, or after the process exited —
+            // there is nothing to reattach; the next attempt, if any, asks for
+            // keyframes, and the pane leaves the stream view now.
+            guard attached else {
+                setStreaming(false)
+                return
+            }
+            teardownLocked()
+            scheduleReattachLocked()
+        }
+    }
+
+    private func setStreaming(_ streaming: Bool) {
+        streamLock.lock()
+        let changed = streamingLocked != streaming
+        streamingLocked = streaming
+        if !streaming { streamTerminalLocked = nil }
+        streamLock.unlock()
+        guard changed else { return }
+        DispatchQueue.main.async { [self] in onStreaming?(streaming) }
+    }
+
+    /// A native snapshot: the session's whole state, decoded into a terminal
+    /// that replaces the previous one. Called on the reader thread, so every
+    /// byte after it reaches the new terminal.
+    ///
+    /// Returns false when it could not be decoded. The reader must then stop:
+    /// the connection is being replaced, and nothing more it reads may land.
+    private func receiveStreamSnapshot(_ native: Data) -> Bool {
+        do {
+            let terminal = try TermiodStreamTerminal(nativeSnapshot: native) { [weak self] reply in
+                // Answering is the writer's job alone (`TerminalDeviceReport`),
+                // which `sendDeviceReport` enforces.
+                self?.sendDeviceReport(reply)
+            }
+            streamLock.lock()
+            defer { streamLock.unlock() }
+            if let colors = streamThemeLocked { try terminal.setTheme(colors) }
+            streamTerminalLocked = terminal
+            return true
+        } catch {
+            Log.termiod.error("""
+            native snapshot on \(self.sessionName, privacy: .public) undecodable: \
+            \(String(describing: error), privacy: .public)
+            """)
+            // Bytes after it have no terminal to land in, so this plane cannot
+            // continue: attach again on keyframes.
+            workQueue.async { [self] in
+                streamRefused = true
+                teardownLocked()
+                scheduleReattachLocked()
+            }
+            return false
+        }
+    }
+
     init(sessionName: String,
          specification: Termiod.CreateSpecification,
          route: TermiodRoute = .local,
          rows: Int,
          cols: Int,
-         rendering: Bool = true) {
+         rendering: Bool = true,
+         offersStream: Bool = false) {
         self.sessionName = sessionName
         self.specification = specification
         self.route = route
         self.rendering = rendering
+        self.offersStream = offersStream
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
         // `rows`/`cols` are the size this attachment asks for, not one the
@@ -1594,9 +1704,14 @@ final class TermiodSessionLink: @unchecked Sendable {
             let channel = try Termiod.Transport.open(route)
             transport = channel
             noteTransport(up: true)
+            let offering = offersStream && !streamRefused
             let handshake = try Termiod.performHello(
-                channel, role: "attach", caps: Termiod.attachCapabilities)
+                channel, role: "attach",
+                caps: Termiod.attachCapabilities + (offering ? [Termiod.streamCapability] : []))
             clientID = handshake.clientID
+            // Published only once the attach succeeds: a refused start has no
+            // stream to show, and the pane must stay where its error is.
+            let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
             hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
             let sizesByPolicy = hostSizesByPolicy
             DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
@@ -1641,6 +1756,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 throw TermiodClientError.handshakeRejected("attach was not acknowledged")
             }
             attached = true
+            setStreaming(streamGranted)
             isWriter = attachedPayload.writer
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
@@ -1704,6 +1820,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             switch error {
             case TermiodClientError.handshakeRejected(let message),
                  TermiodClientError.requestFailed(let message):
+                setStreaming(false)
                 deliverStartRefusedLocked(message)
             default:
                 // Could not reach it, or it stopped talking mid-handshake.
@@ -2414,7 +2531,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                 guard let self else { return }
                 switch frame.kind {
                 case .data:
-                    self.deliverOutput(frame.payload)
+                    if let terminal = self.streamTerminal {
+                        terminal.write(frame.payload)
+                    } else {
+                        self.deliverOutput(frame.payload)
+                    }
                 case .snapshot:
                     // The daemon guarantees `S` before any post-attach `D`, and
                     // this reader is a single serial thread, so S-before-D is
@@ -2428,7 +2549,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                         """)
                         break
                     }
-                    self.receiveKeyframe(keyframe)
+                    if let native = keyframe.native {
+                        guard self.receiveStreamSnapshot(native) else { return }
+                    } else {
+                        self.receiveKeyframe(keyframe)
+                    }
                 case .control:
                     if self.handleControl(frame.payload) { return }
                 case .event:
@@ -2483,6 +2608,12 @@ final class TermiodSessionLink: @unchecked Sendable {
             daemon error on \(self.sessionName, privacy: .public): \
             \(failure.message, privacy: .public)
             """)
+            if failure.code == Termiod.streamUnavailableCode {
+                // The daemon has no exact screen to hand this plane — its VT
+                // went stale — and lets the client go. The next attempt asks
+                // for the keyframe plane instead, for the rest of this link.
+                workQueue.async { [self] in streamRefused = true }
+            }
             // A refused claim answers here rather than with `writer_changed`,
             // and the flag has to clear either way: left set, one refusal would
             // mute this attachment for the rest of its life.
@@ -2524,6 +2655,17 @@ final class TermiodSessionLink: @unchecked Sendable {
             applyWriter(change.writer)
         case .resized(let size):
             applyAuthoritativeGrid(TerminalGrid(rows: size.rows, cols: size.cols))
+        case .vtResize(let resize):
+            // Read on this thread, before the next `D`: the marker's position
+            // in the stream is the whole contract.
+            do {
+                try streamTerminal?.resize(rows: resize.rows, cols: resize.cols, reflow: resize.reflow)
+            } catch {
+                Log.termiod.error("""
+                vt_resize on \(self.sessionName, privacy: .public) failed: \
+                \(String(describing: error), privacy: .public)
+                """)
+            }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.

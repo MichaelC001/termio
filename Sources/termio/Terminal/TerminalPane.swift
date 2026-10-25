@@ -45,6 +45,7 @@ struct TerminalPane: View {
     @EnvironmentObject var store: TermioStore
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var geometry: NavigatorGeometry
+    @Environment(\.colorScheme) private var colorScheme
     @State private var focusDriver = TerminalFocusDriver()
     @State private var activated: [Session.ID] = []
     @State private var lastLivePanelFrame: CGRect = .zero
@@ -194,6 +195,29 @@ struct TerminalPane: View {
                     .position(x: card.midX, y: card.midY)
                     .opacity(isVisible ? 1 : 0)
                     .allowsHitTesting(isVisible)
+                if let link = store.runtime(for: id).streamLink {
+                    // The stream view never letterboxes: it draws the session's
+                    // grid anchored top-left and declares what the pane holds.
+                    TermiodStreamPane(
+                        link: link,
+                        appearance: store.streamAppearance(),
+                        colors: store.streamTheme(dark: colorScheme == .dark),
+                        isSelected: isSelected,
+                        isVisible: isVisible,
+                        onViewport: { grid in store.reportViewport(grid, for: id) },
+                        onVisibility: { store.reportRendering($0, for: id) },
+                        onFocused: { selectFocusedSurface(id) }
+                    )
+                    // One view per link: a relaunch attaches a new one.
+                    .id(ObjectIdentifier(link))
+                    .frame(width: rect.width, height: rect.height)
+                    .background(paneBackground)
+                    .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
+                                                 topLeading: notch != nil))
+                    .position(x: rect.midX, y: rect.midY)
+                    .opacity(isVisible ? 1 : 0)
+                    .allowsHitTesting(isVisible)
+                } else {
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
                     sessionName: id.uuidString,
@@ -222,6 +246,7 @@ struct TerminalPane: View {
                 .position(x: rect.midX, y: rect.midY)
                 .opacity(isVisible ? 1 : 0)
                 .allowsHitTesting(isVisible)
+                }
                 // An open panel on a card without focus: the picture it left, which a
                 // click turns back into the live panel by focusing the card.
                 if let frame = panel.frame, !isSelected, isVisible {

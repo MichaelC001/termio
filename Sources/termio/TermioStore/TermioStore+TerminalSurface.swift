@@ -317,7 +317,8 @@ extension TermioStore {
             for: session, argv: argv, cwd: spawnPath, env: env,
             command: agentCommand,
             viewport: onScreen ? nil : TerminalGrid(rows: 0, cols: 0),
-            rendering: onScreen)
+            rendering: onScreen,
+            offersStream: Self.streamTerminalEnabled)
         let inMemory = InMemoryTerminalSession(
             write: { data in
                 // libghostty answers the host's terminal queries through this

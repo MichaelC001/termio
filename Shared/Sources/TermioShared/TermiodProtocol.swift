@@ -55,6 +55,15 @@ public enum Termiod {
     /// length as a malformed frame and drops the connection.
     public static let viewportCapability = "viewport"
 
+    /// The `vt_stream` plane: the client keeps a libghostty-vt terminal of its
+    /// own, gets libghostty's native snapshot on attach (`S` format 4), and an
+    /// `E vt_resize` at the byte where the daemon's VT changed size instead of
+    /// a keyframe. Offered on top of `attachCapabilities`, never instead.
+    public static let streamCapability = "vt_stream"
+    /// The error a daemon sends when it cannot give this client an exact
+    /// screen to follow; the client attaches again without `vt_stream`.
+    public static let streamUnavailableCode = "vt_stream_unavailable"
+
     /// The host honours `CreateSpecification.command` — a shell command line it
     /// wraps in the account's own login shell, which is how an agent launches
     /// on a box whose shell and `PATH` this client cannot know. Gate a spec
@@ -1208,6 +1217,16 @@ public enum Termiod {
         public let cols: UInt16
     }
 
+    /// The resize the daemon's VT applied at this point of the stream.
+    /// `reflow` is set when no shell held the terminal; otherwise the client
+    /// applies the shell-prompt resize (`TermiodStreamTerminal.resize`).
+    public struct VtResizePayload: Decodable, Sendable {
+        public let session: String
+        public let rows: UInt16
+        public let cols: UInt16
+        public let reflow: Bool
+    }
+
     /// A workstream status delta — `working · idle · needs_you · done · failed ·
     /// unknown`. The host reports the *state*; which dot, which words, and
     /// whether it fires a notification are the client's call.
@@ -1395,6 +1414,8 @@ public enum Termiod {
         case stalled(StalledPayload)
         case writerChanged(WriterChangedPayload)
         case resized(ResizedPayload)
+        /// Only on the `vt_stream` plane: apply this resize before the next byte.
+        case vtResize(VtResizePayload)
         case roster(RosterPayload)
         case sessionExited(SessionExitedPayload)
         /// One batch of `fs.search` hits, streamed to the connection that asked
@@ -1672,6 +1693,8 @@ public enum Termiod {
             return .writerChanged(try decoder.decode(WriterChangedPayload.self, from: payload))
         case "resized":
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
+        case "vt_resize":
+            return .vtResize(try decoder.decode(VtResizePayload.self, from: payload))
         case "roster":
             return .roster(try decoder.decode(RosterPayload.self, from: payload))
         case "session_exited":

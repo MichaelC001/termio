@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 import GhosttyTerminal
+import GhosttyTheme
+import GhosttyVt
 import TermioShared
 
 /// Session plumbing: sessions run inside a termiod daemon — the local one, or
@@ -31,7 +33,8 @@ extension TermioStore {
                          env: [String: String],
                          command: String? = nil,
                          viewport: TerminalGrid? = nil,
-                         rendering: Bool = true) -> TermiodSessionLink {
+                         rendering: Bool = true,
+                         offersStream: Bool = false) -> TermiodSessionLink {
         // The session is the only source of truth for where it runs. There used
         // to be a `TERMIO_TERMIOD_REMOTE` fallback here from before the picker
         // existed, but it silently turned *every* session without an explicit
@@ -70,7 +73,8 @@ extension TermioStore {
             route: route,
             rows: Int(opening.rows),
             cols: Int(opening.cols),
-            rendering: rendering
+            rendering: rendering,
+            offersStream: offersStream
         )
     }
 
@@ -174,6 +178,22 @@ extension TermioStore {
         }
         link.onSizesByPolicy = { [weak self] byPolicy in
             self?.runtime(for: session.id).sizesByPolicy = byPolicy
+        }
+        // A new link starts on the embedded surface until its handshake says
+        // otherwise; the previous one's terminal must not stay on screen.
+        runtime(for: session.id).streamLink = nil
+        link.onStreaming = { [weak self, weak link] streaming in
+            guard let self, let link else { return }
+            let runtime = runtime(for: session.id)
+            if streaming {
+                // Only the session's current link may take the pane.
+                if termiodLinks[session.id] === link { runtime.streamLink = link }
+            } else if runtime.streamLink === link {
+                runtime.streamLink = nil
+            }
+        }
+        if let colors = streamTheme(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
+            link.setStreamTheme(colors)
         }
         link.onConnectionLost = { [weak self, weak inMemory] attempts in
             self?.applyTermiodConnectionLost(
@@ -2062,4 +2082,97 @@ final class RemoteSetupHUD {
     func dismiss() {
         panel.orderOut(nil)
     }
+}
+
+/// The `vt_stream` client stack, which is off unless the hidden
+/// `TermioStreamTerminal` default is set: it draws but does not take input yet
+/// (docs/design/20261024-client-vt-follows-the-stream.md, phase 3).
+extension TermioStore {
+    /// Offered only where this Mac can draw it: a link that negotiated the
+    /// plane with no renderer behind it would show nothing at all.
+    static var streamTerminalEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "TermioStreamTerminal") && TermiodStreamRenderer.isAvailable
+    }
+
+    /// The settings the embedded surface is configured with, in the form the
+    /// stream renderer takes (`applyAppearance` is the embedded side).
+    func streamAppearance() -> TermiodStreamRenderer.Appearance {
+        var fallbacks = settings.ghosttyFontFallbacks.filter { $0 != settings.fontFamily }
+        let chain = [settings.fontFamily] + settings.ghosttyFontFallbacks
+        if let cjk = InstalledFonts.cjkMonospaceFallback(existingChain: chain) { fallbacks.append(cjk) }
+        return TermiodStreamRenderer.Appearance(
+            fontFamily: settings.fontFamily,
+            fallbackFamilies: fallbacks,
+            fontSize: CGFloat(settings.fontSize),
+            paddingX: CGFloat(settings.windowPadding),
+            paddingY: CGFloat(Self.terminalWindowPaddingY),
+            backgroundOpacity: CGFloat(settings.backgroundOpacity)
+        )
+    }
+
+    /// The theme for one appearance as the colors a client terminal resolves
+    /// against. The same choice `makeTheme` hands the embedded surface: the
+    /// picked theme, else Afterglow in dark and termio's Alabaster in light.
+    func streamTheme(dark: Bool) -> TermiodStreamTerminal.Theme? {
+        let name = dark ? settings.darkThemeName : settings.lightThemeName
+        var overrides: [Int: String] = [:]
+        var background: String?
+        let definition: GhosttyThemeDefinition?
+        if !name.isEmpty, let picked = ThemeLibrary.theme(named: name) {
+            definition = picked
+        } else if dark {
+            definition = ThemeLibrary.theme(named: "Afterglow")
+        } else {
+            definition = ThemeLibrary.theme(named: "Alabaster")
+            background = "FFFFFF"
+            overrides = [7: "4D4D4D", 15: "262626"]
+        }
+        guard let definition,
+              let foreground = Self.rgb(definition.foreground),
+              let ground = Self.rgb(background ?? definition.background)
+        else { return nil }
+        var palette = Self.xtermPalette
+        for (index, hex) in definition.palette.merging(overrides, uniquingKeysWith: { $1 })
+        where (0..<256).contains(index) {
+            if let color = Self.rgb(hex) { palette[index] = color }
+        }
+        let cursorStyle = switch settings.cursorStyle {
+        case .block: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK
+        case .bar: GHOSTTY_TERMINAL_CURSOR_STYLE_BAR
+        case .underline: GHOSTTY_TERMINAL_CURSOR_STYLE_UNDERLINE
+        }
+        return TermiodStreamTerminal.Theme(
+            foreground: foreground, background: ground,
+            cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette,
+            cursorStyle: cursorStyle, cursorBlink: settings.cursorBlink,
+            cursorText: definition.cursorText.flatMap(Self.rgb),
+            // `themeConfiguration`'s floor, for the same themes.
+            minimumContrast: definition.isDark ? 1 : Self.lightContrastFloor
+        )
+    }
+
+    private static func rgb(_ hex: String) -> GhosttyColorRgb? {
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        return GhosttyColorRgb(r: UInt8(value >> 16 & 0xff), g: UInt8(value >> 8 & 0xff), b: UInt8(value & 0xff))
+    }
+
+    /// xterm's 256 colors: the 16 a theme usually overrides, the 6x6x6 cube,
+    /// and the grey ramp.
+    private static let xtermPalette: [GhosttyColorRgb] = {
+        let base: [UInt32] = [
+            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+        ]
+        var colors = base.map { GhosttyColorRgb(r: UInt8($0 >> 16), g: UInt8($0 >> 8 & 0xff), b: UInt8($0 & 0xff)) }
+        let steps: [UInt8] = [0, 95, 135, 175, 215, 255]
+        for red in steps { for green in steps { for blue in steps {
+            colors.append(GhosttyColorRgb(r: red, g: green, b: blue))
+        } } }
+        for index in 0..<24 {
+            let level = UInt8(8 + index * 10)
+            colors.append(GhosttyColorRgb(r: level, g: level, b: level))
+        }
+        return colors
+    }()
 }
