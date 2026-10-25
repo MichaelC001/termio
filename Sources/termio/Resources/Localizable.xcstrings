@@ -1,6 +1,17 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "The token wasn’t rotated: %@": {
+      "comment": "Settings ▸ Server ▸ Pairing, under Rotate Token; %@ is termiod's error message.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "令牌未轮换：%@"
+          }
+        }
+      }
+    },
     "Built-In Tailscale": {
       "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: the switch that puts this Mac on the tailnet as its own device.",
       "localizations": {

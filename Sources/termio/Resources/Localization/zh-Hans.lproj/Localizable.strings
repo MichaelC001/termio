@@ -1736,6 +1736,8 @@
 	<string>模拟器辅助程序发回了 Termio 无法读取的回复。</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>termio 命令行工具、Agent 技能与通知</string>
+	<key>The token wasn’t rotated: %@</key>
+	<string>令牌未轮换：%@</string>
 	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>隧道地址可在任意网络使用，并终结于服务商的服务器。若要改用自己的中继，请选择“自定义”。</string>
 	<key>The working tree is clean.</key>

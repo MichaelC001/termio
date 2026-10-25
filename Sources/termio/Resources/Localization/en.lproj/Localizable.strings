@@ -1736,6 +1736,8 @@
 	<string>The simulator helper sent a reply Termio couldn’t read.</string>
 	<key>The termio command-line tool, agent skill, and notifications</key>
 	<string>The termio command-line tool, agent skill, and notifications</string>
+	<key>The token wasn’t rotated: %@</key>
+	<string>The token wasn’t rotated: %@</string>
 	<key>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</key>
 	<string>The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.</string>
 	<key>The working tree is clean.</key>

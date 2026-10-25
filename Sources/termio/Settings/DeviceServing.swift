@@ -105,12 +105,19 @@ final class PairingModel: ObservableObject {
 
     /// Turning either switch off takes the node off the tailnet, and turning
     /// it back on brings back a node it took off, and only that one.
+    /// When a pause may be tried again. Every read retries a pause that
+    /// failed, and a failure that lasts would otherwise retry without pause.
+    private var pauseRetry = Date.distantPast
+
     private func followMasterSwitch(_ allowed: Bool) {
         let defaults = UserDefaults.standard
         if !allowed, builtIn.headedOn {
+            guard Date() >= pauseRetry else { return }
+            pauseRetry = Date().addingTimeInterval(10)
             defaults.set(true, forKey: Self.pausedNodeKey)
             builtIn.setEnabled(false)
         } else if allowed, defaults.bool(forKey: Self.pausedNodeKey) {
+            pauseRetry = .distantPast
             defaults.removeObject(forKey: Self.pausedNodeKey)
             builtIn.setEnabled(true, naming: false)
         }
@@ -212,9 +219,10 @@ final class PairingModel: ObservableObject {
         return "http://\(servedHost):\(AppChannel.devicePort)"
     }
 
-    /// The last bare rotation failed, which stays on screen until a rotation
-    /// works: a revocation that did not happen must not read as one that did.
-    private var rotationFailed = false
+    /// Why the last Rotate Token did not revoke anything. Shown under the
+    /// button until a rotation works: a revocation that did not happen must
+    /// not read as one that did, and a working QR later does not undo that.
+    @Published private(set) var rotationFailure: String?
 
     /// `termiod pair --rotate` with no invite to mint. It holds the mint lock,
     /// so an address that appears meanwhile is minted after the new token
@@ -237,12 +245,12 @@ final class PairingModel: ObservableObject {
             } catch {
                 failure = error.localizedDescription
             }
-            rotationFailed = failure != nil
-            inviteFailure = failure
+            rotationFailure = failure
             minting = false
             let queued = queuedRefresh
             queuedRefresh = nil
-            // A rotation asked for again while this one ran has just happened.
+            // A rotation asked for again while this one ran has just been
+            // tried; a failure stays shown for the user to try again.
             refreshInvite(force: queued != nil || failure == nil)
         }
     }
@@ -260,7 +268,7 @@ final class PairingModel: ObservableObject {
         }
         guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
             invite = nil
-            if !rotationFailed { inviteFailure = nil }
+            inviteFailure = nil
             invitedBase = nil
             return
         }
@@ -291,12 +299,16 @@ final class PairingModel: ObservableObject {
                 guard base == invitedBase else { return }
                 invite = minted
                 inviteFailure = nil
-                if rotate { rotationFailed = false }
+                if rotate { rotationFailure = nil }
             } catch let failure as RemotePairing.Failure {
+                // Said whether or not the pane moved on: the token was not
+                // revoked either way.
+                if rotate { rotationFailure = failure.message }
                 guard base == invitedBase else { return }
                 invite = nil
                 inviteFailure = failure.message
             } catch {
+                if rotate { rotationFailure = error.localizedDescription }
                 guard base == invitedBase else { return }
                 invite = nil
                 inviteFailure = error.localizedDescription
@@ -486,6 +498,11 @@ struct DeviceServingSection: View {
                         title: localized("Pairing Token"),
                         subtext: localized("Issues a new token and revokes every paired iPhone.")
                     )
+                }
+                if let failure = pairing.rotationFailure {
+                    Text(localized("The token wasn’t rotated: \(failure)"))
+                        .font(.settingsDetail)
+                        .foregroundStyle(.red)
                 }
 
                 // The QR is unscannable without the companion installed, so the
