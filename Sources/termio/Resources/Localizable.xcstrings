@@ -4816,7 +4816,7 @@
       }
     },
     "On iPhone, tap the Mac pill ▸ Scan QR Code. The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.": {
-      "comment": "Footer under Settings ▸ Mobile ▸ Connect iPhone when a bundled third-party tunnel is selected. “Custom” names another entry in the same picker — translate it identically.",
+      "comment": "Footer under Settings ▸ Server ▸ Mobile when a bundled third-party tunnel is selected. “Custom” names another entry in the same picker — translate it identically.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -4827,7 +4827,7 @@
       }
     },
     "On iPhone, tap the Mac pill ▸ Scan QR Code. Traffic crosses the relay you run yourself — no third party in the path.": {
-      "comment": "Footer under Settings ▸ Mobile ▸ Connect iPhone when the user runs their own relay. “Mac pill” is a control in the iPhone app and ▸ separates steps in a menu path.",
+      "comment": "Footer under Settings ▸ Server ▸ Mobile when the user runs their own relay. “Mac pill” is a control in the iPhone app and ▸ separates steps in a menu path.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
@@ -7779,7 +7779,7 @@
       }
     },
     "URL Pattern": {
-      "comment": "Label for the Settings ▸ Mobile field holding a regular expression that matches the public URL a self-hosted tunnel prints on start-up.",
+      "comment": "Label for the Settings ▸ Server ▸ Mobile field holding a regular expression that matches the public URL a self-hosted tunnel prints on start-up.",
       "localizations": {
         "zh-Hans": {
           "stringUnit": {

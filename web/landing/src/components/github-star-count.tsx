@@ -36,7 +36,9 @@ export function GitHubStarCount({
           setStars(data.stars);
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.warn("Could not refresh the GitHub star count", error);
+      });
     return () => {
       cancelled = true;
     };
@@ -44,7 +46,7 @@ export function GitHubStarCount({
 
   if (stars === null) return null;
   return (
-    <span className="ml-1 inline-flex items-center gap-1 border-l border-primary-foreground/20 pl-3 text-primary-foreground/70">
+    <span className="ml-1 inline-flex items-center gap-1 border-l border-foreground/15 pl-3 text-muted-foreground">
       <StarMark className="h-3.5 w-3.5 text-brand-gold" />
       {formatStarCount(stars)}
     </span>

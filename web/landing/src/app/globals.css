@@ -62,24 +62,25 @@
 }
 
 /* The site's palette — Apple's HIG light system, matched to developer.apple.com:
-   a neutral #f5f5f7 canvas with pure-white cards, #1d1d1f ink (Apple's soft
+   a neutral #f4f4f6 canvas with pure-white cards, #1d1d1f ink (Apple's soft
    near-black, not pure black), the signature #86868b secondary gray, #d2d2d7
    hairlines, and a soft-black (#1d1d1f) primary for buttons. Fully monochrome —
-   no colored accent. Applied to <html> (see layout.tsx). */
+   no colored accent. The light half of the site's appearance switch. */
 :root {
   color-scheme: light;
   /* The light palette's raw values, named once. The docs surface re-applies these
      when the reader's system is in light mode (see `.docs-surface`), so the two
      places that resolve a light theme can never drift apart. */
-  --light-background: #ffffff;
+  /* A soft grey canvas rather than white, so white glass cards read above it. */
+  --light-background: #f4f4f6;
   --light-foreground: #1d1d1f;
   --light-card: #ffffff;
   --light-popover: #ffffff;
   --light-primary: #14171c;
   --light-primary-foreground: #ffffff;
-  --light-secondary: #f5f5f7;
+  --light-secondary: #e8e8ed;
   --light-muted-foreground: #6e6e73;
-  --light-accent: #e8e8ed;
+  --light-accent: #e1e1e7;
   --light-border: #d2d2d7;
   --light-input: #d2d2d7;
   /* Code blocks sit on their own surface: near-black in dark mode, a quiet grey in
@@ -134,10 +135,10 @@
   --sidebar-primary-foreground: var(--light-primary-foreground);
 }
 
-/* The site's real palette — a near-black canvas with light ink, the superwhisper
-   dark cinematic look. Applied to <html> so the whole page resolves these tokens
-   (and shadcn `dark:` variants fire); the terminal product shot reuses the same
-   class so it stays consistent with the page. */
+/* The dark palette, the site's base — a near-black canvas with light ink.
+   Applied to <html> so the whole page resolves these tokens (and shadcn `dark:`
+   variants fire); the appearance rules below swap the light palette over it.
+   Product mocks reuse the class so a drawn app window stays dark on any page. */
 .dark {
   color-scheme: dark;
   /* Raw values, named once — the docs' theme switch re-applies this same palette
@@ -228,24 +229,27 @@ html:has(.docs-surface) {
 
 }
 
-/* The docs are a reading surface, not part of the site's dark object, so they get
-   their own appearance: the reader's system by default, overridable by the switch
-   in the docs header. `<html class="dark">` still governs the landing page, which is
-   deliberately dark-only, so all of this is scoped to `.docs-surface`.
+/* The site's appearance: the reader's system by default, overridable by the
+   switch in the docs header and the landing footer. `<html class="dark">` is the
+   base; the rules below swap the light palette in over it. The docs get their
+   warm palette from the raw `--light-*` / `--dark-*` values redefined above, so
+   the same rules serve both surfaces.
 
    Three states, and the selectors are ordered so the more specific one wins:
-     - no `data-docs-theme` on <html>  → follow the OS (the media query below)
-     - `data-docs-theme="light"`       → light, whatever the OS says
-     - `data-docs-theme="dark"`        → dark, whatever the OS says
-   The attribute goes on <html> rather than on the surface itself so the blocking
-   script in the docs layout can set it before first paint — there is no
-   `.docs-surface` element yet at that point. */
+     - no `data-theme` on <html>  → follow the OS (the media query below)
+     - `data-theme="light"`       → light, whatever the OS says
+     - `data-theme="dark"`        → dark, whatever the OS says
+   The attribute goes on <html> so the blocking script in the root layout can set
+   it before first paint.
+
+   Product mocks put `.dark` on their own root, so a drawn app window stays dark
+   on a light page: the class re-declares the dark tokens for that subtree. */
 
 /* stylelint-disable-next-line no-duplicate-selectors */
 @media (prefers-color-scheme: light) {
-  /* The document itself has to agree, or a light docs page keeps a dark scrollbar
-     and flashes dark canvas when the reader over-scrolls. */
-  html:not([data-docs-theme]):has(.docs-surface) {
+  /* The document itself has to agree, or a light page keeps a dark scrollbar and
+     flashes dark canvas when the reader over-scrolls. */
+  html:not([data-theme]) {
     color-scheme: light;
     --color-fd-background: var(--background);
     --color-fd-foreground: var(--foreground);
@@ -275,10 +279,10 @@ html:has(.docs-surface) {
     --sidebar-ring: var(--light-foreground);
     --sidebar-primary-foreground: var(--light-primary-foreground);
   }
-  html:not([data-docs-theme]):has(.docs-surface) body {
+  html:not([data-theme]) body {
     background-color: var(--light-background);
   }
-  html:not([data-docs-theme]):has(.docs-surface) {
+  html:not([data-theme]) {
     color-scheme: light;
     --background: var(--light-background);
     --foreground: var(--light-foreground);
@@ -302,7 +306,7 @@ html:has(.docs-surface) {
   }
 }
 
-html[data-docs-theme="light"]:has(.docs-surface) {
+html[data-theme="light"] {
   color-scheme: light;
   --color-fd-background: var(--background);
   --color-fd-foreground: var(--foreground);
@@ -332,10 +336,10 @@ html[data-docs-theme="light"]:has(.docs-surface) {
   --sidebar-ring: var(--light-foreground);
   --sidebar-primary-foreground: var(--light-primary-foreground);
 }
-html[data-docs-theme="light"]:has(.docs-surface) body {
+html[data-theme="light"] body {
   background-color: var(--light-background);
 }
-html[data-docs-theme="light"]:has(.docs-surface) {
+html[data-theme="light"] {
   color-scheme: light;
   --background: var(--light-background);
   --foreground: var(--light-foreground);
@@ -360,7 +364,7 @@ html[data-docs-theme="light"]:has(.docs-surface) {
 
 /* Dark has to re-assert the palette rather than just standing aside: on a light
    system the media query above would otherwise win inside the surface. */
-html[data-docs-theme="dark"]:has(.docs-surface) {
+html[data-theme="dark"] {
   color-scheme: dark;
   --background: var(--dark-background);
   --foreground: var(--dark-foreground);
@@ -429,13 +433,13 @@ html:has(.docs-surface) [role="dialog"] {
     0 16px 48px -12px rgb(38 37 30 / 0.18),
     0 4px 12px -6px rgb(38 37 30 / 0.12);
 }
-html[data-docs-theme="dark"]:has(.docs-surface) [role="dialog"] {
+html[data-theme="dark"]:has(.docs-surface) [role="dialog"] {
   box-shadow:
     0 16px 48px -12px rgb(0 0 0 / 0.6),
     0 4px 12px -6px rgb(0 0 0 / 0.45);
 }
 @media (prefers-color-scheme: dark) {
-  html:not([data-docs-theme]):has(.docs-surface) [role="dialog"] {
+  html:not([data-theme]):has(.docs-surface) [role="dialog"] {
     box-shadow:
       0 16px 48px -12px rgb(0 0 0 / 0.6),
       0 4px 12px -6px rgb(0 0 0 / 0.45);
@@ -443,7 +447,7 @@ html[data-docs-theme="dark"]:has(.docs-surface) [role="dialog"] {
 }
 
 /* The one-frame guard the appearance switch sets while it flips the palette
-   (components/docs/theme-switch.tsx). Three different durations are in play on a
+   (components/theme-switch.tsx). Three different durations are in play on a
    docs page — none on the page background, 150ms on the hover-styled controls,
    250ms on the library's sidebar — so a theme change without this crosses the
    screen as a wipe instead of landing at once.
@@ -495,23 +499,6 @@ html[data-theme-switching] *::after {
     );
   }
 
-  /* The near-black hero canvas the aurora drifts over (see hero-gradient.tsx) —
-     the SSR / no-WebGL fallback under the MeshGradient. Deep navy settling to the
-     page's #08080a background. */
-  .hero-cinematic {
-    background-image:
-      radial-gradient(54% 44% at 50% -6%, rgba(40, 120, 200, 0.22), transparent 62%),
-      radial-gradient(40% 36% at 78% 8%, rgba(40, 150, 165, 0.12), transparent 60%),
-      linear-gradient(
-        180deg,
-        #0a1a40 0%,
-        #09152e 30%,
-        #08101f 60%,
-        #08080e 84%,
-        #08080a 100%
-      );
-  }
-
   /* Film-grain "frosted" overlay — fine SVG fractal noise blended over the aurora
      so the hero reads as matte/sanded rather than a glossy gradient. Static by
      default; a barely-there step animation gives it a subtle film shimmer. */
@@ -533,30 +520,6 @@ html[data-theme-switching] *::after {
     .grain-overlay {
       animation: none;
     }
-  }
-
-  /* Grain tuned for dark surfaces (e.g. the CTA card). `overlay` blend keeps
-     black pixels black, so on a near-black card the hero's grain is invisible.
-     Here we blend the noise normally at low opacity so it reads as a faint
-     frosted haze — the same matte texture, visible on a dark canvas. */
-  .grain-overlay-soft {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    background-size: 130px 130px;
-    opacity: 0.5;
-    mix-blend-mode: multiply;
-    animation: grain-shift 6s steps(4) infinite;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .grain-overlay-soft {
-      animation: none;
-    }
-  }
-
-  /* Subtler glow wash reused behind the CTA band, tuned for the dark canvas. */
-  .brand-wash {
-    background-image:
-      radial-gradient(40rem 30rem at 50% 0%, rgba(29, 29, 31, 0.05), transparent 60%),
-      radial-gradient(34rem 28rem at 85% 110%, rgba(29, 29, 31, 0.04), transparent 60%);
   }
 
   /* Cool accent for keywords: blue → violet → magenta, deepened for white. */
@@ -589,15 +552,16 @@ html[data-theme-switching] *::after {
       0 1px 1px rgba(20, 20, 20, 0.04),
       0 8px 24px -12px rgba(20, 20, 20, 0.16);
   }
-  /* Dark variant: a smoked, low-tint panel with a white-hairline sheen — reads as
-     frosted chrome over the cinematic hero instead of the bright light glass. */
+  /* Under `.dark` — which <html> always carries — the panel tints from the page
+     colour and each edge picks its pair by color-scheme, so the same pill is
+     smoked glass on the dark palette and frosted white on the light one. */
   .dark .liquid-glass {
-    background-color: rgba(8, 8, 11, 0.78);
+    background-color: color-mix(in oklab, var(--background) 78%, transparent);
     box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.09),
-      0 1px 1px rgba(0, 0, 0, 0.35),
-      0 12px 32px -14px rgba(0, 0, 0, 0.7);
+      inset 0 1px 0 0 light-dark(rgb(255 255 255 / 0.8), rgb(255 255 255 / 0.1)),
+      inset 0 0 0 1px light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.09)),
+      0 1px 1px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.35)),
+      0 12px 32px -14px light-dark(rgb(20 20 30 / 0.16), rgb(0 0 0 / 0.7));
   }
   /* The docs no longer use the floating glass pill — they have their own header
      (components/docs/docs-header.tsx) — so there is no light variant to declare
@@ -639,348 +603,6 @@ html[data-theme-switching] *::after {
 
   .hairline {
     border-color: var(--border);
-  }
-
-  /* Seamless logo carousel: the agent lane is duplicated, so translating the
-     track by -50% loops continuously. Edges fade so logos enter/leave softly. */
-  @keyframes marquee {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(-50%);
-    }
-  }
-  .animate-marquee {
-    animation: marquee 32s linear infinite;
-  }
-  .marquee-mask {
-    -webkit-mask-image: linear-gradient(
-      90deg,
-      transparent,
-      #000 10%,
-      #000 90%,
-      transparent
-    );
-    mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .animate-marquee {
-      animation: none;
-    }
-  }
-
-  @keyframes demo-cursor-blink {
-    50% {
-      opacity: 0;
-    }
-  }
-  .demo-cursor {
-    animation: demo-cursor-blink 1s step-end infinite;
-  }
-  /* The sidebar's "agent is working" mark, ported from the app's
-     WorkingIndicator: a comet runs the eight perimeter cells of a 3×3 dot grid,
-     carried by a brightness wave and a size swell so the tail can stay at half
-     ink and the grid keeps real weight. Every dot plays the same ramp — its
-     place on the ring is a negative animation-delay. Timings match the Swift
-     original: 1.1s a lap, opacity max(0.5, 1 - distance/4), scale
-     1 + 0.2·max(0, 1 - distance/2). */
-  @keyframes working-comet {
-    0% {
-      opacity: 1;
-      transform: scale(1.2);
-    }
-    12.5% {
-      opacity: 0.75;
-      transform: scale(1.1);
-    }
-    25%,
-    75% {
-      opacity: 0.5;
-      transform: scale(1);
-    }
-    87.5% {
-      opacity: 0.75;
-      transform: scale(1.1);
-    }
-    100% {
-      opacity: 1;
-      transform: scale(1.2);
-    }
-  }
-  .working-dot {
-    animation: working-comet 1.1s linear infinite;
-  }
-  /* Output lines land all at once (not typed) but fade + rise in gently, so a
-     result "arriving" reads as a soft reveal rather than an abrupt pop. */
-  @keyframes line-in {
-    from {
-      opacity: 0;
-      transform: translateY(3px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  .line-in {
-    animation: line-in 0.32s var(--ease-apple) both;
-  }
-  /* The content area splitting in two: the new column wipes open from the
-     divider outward, the way dragging a split open reveals it. */
-  @keyframes split-in {
-    from {
-      opacity: 0;
-      clip-path: inset(0 100% 0 0);
-    }
-    to {
-      opacity: 1;
-      clip-path: inset(0 0 0 0);
-    }
-  }
-  .split-in {
-    animation: split-in 0.44s var(--ease-apple) both;
-  }
-  /* A pane opening inside that column: the divider above it is already there,
-     so the content wipes down from it rather than sliding in from nowhere. */
-  @keyframes pane-in {
-    from {
-      opacity: 0;
-      clip-path: inset(0 0 100% 0);
-      transform: translateY(-4px);
-    }
-    to {
-      opacity: 1;
-      clip-path: inset(0 0 0 0);
-      transform: none;
-    }
-  }
-  .pane-in {
-    animation: pane-in 0.42s var(--ease-apple) both;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .demo-cursor,
-    .working-dot,
-    .line-in,
-    .pane-in,
-    .split-in {
-      animation: none;
-    }
-  }
-
-  /* ── Feature-grid mocks ────────────────────────────────────────────────
-     Six small app mocks loop forever beside the orchestration demo, so every
-     one of these is compositor-only (opacity / transform / color) and none of
-     them touches layout. Loops share a 6s bar so cards drifting against each
-     other still read as one system; per-element `animation-delay` places each
-     row in that bar. */
-
-  /* A two-state cross-fade — source ⇄ rendered, probing ⇄ reachable. `-a` holds
-     first, `-b` takes over, and both rest before the swap back. */
-  @keyframes mock-fade-a {
-    0%,
-    38% {
-      opacity: 1;
-    }
-    46%,
-    88% {
-      opacity: 0;
-    }
-    96%,
-    100% {
-      opacity: 1;
-    }
-  }
-  @keyframes mock-fade-b {
-    0%,
-    38% {
-      opacity: 0;
-    }
-    46%,
-    88% {
-      opacity: 1;
-    }
-    96%,
-    100% {
-      opacity: 0;
-    }
-  }
-  .mock-fade-a {
-    animation: mock-fade-a 6s var(--ease-apple) infinite both;
-  }
-  .mock-fade-b {
-    animation: mock-fade-b 6s var(--ease-apple) infinite both;
-  }
-
-  /* A row lighting up as the selection walks a list. */
-  @keyframes mock-option {
-    0%,
-    0.1% {
-      background-color: rgba(255, 255, 255, 0);
-    }
-    4%,
-    22% {
-      background-color: rgba(255, 255, 255, 0.09);
-    }
-    28%,
-    100% {
-      background-color: rgba(255, 255, 255, 0);
-    }
-  }
-  .mock-option {
-    animation: mock-option 4.8s var(--ease-apple) infinite both;
-  }
-
-  /* The palette query typing itself. Width, not content, so there is one
-     animated property and no reflow of anything around it. */
-  @keyframes mock-type {
-    0% {
-      max-width: 0ch;
-    }
-    18%,
-    88% {
-      max-width: 6ch;
-    }
-    100% {
-      max-width: 0ch;
-    }
-  }
-  .mock-type {
-    animation: mock-type 4.8s steps(6, end) infinite both;
-  }
-
-  /* The palette's live theme preview: the session behind it repaints as each
-     theme in the list is highlighted. */
-  @keyframes mock-theme {
-    0%,
-    28% {
-      background-color: #1b1b21;
-    }
-    38%,
-    62% {
-      background-color: #1e1c2b;
-    }
-    72%,
-    100% {
-      background-color: #231a24;
-    }
-  }
-  @keyframes mock-theme-ink {
-    0%,
-    28% {
-      color: #7dd3fc;
-    }
-    38%,
-    62% {
-      color: #cba6f7;
-    }
-    72%,
-    100% {
-      color: #ebbcba;
-    }
-  }
-  .mock-theme {
-    animation: mock-theme 4.8s var(--ease-apple) infinite both;
-  }
-  .mock-theme-ink {
-    animation: mock-theme-ink 4.8s var(--ease-apple) infinite both;
-  }
-
-  /* A session row cycling the app's three states: working (spinner), done
-     (green ring), needs-you (orange ring). The mark and the spinner are both
-     mounted and cross-faded, so the swap costs no layout. */
-  @keyframes mock-status-spinner {
-    0%,
-    28% {
-      opacity: 1;
-    }
-    33%,
-    100% {
-      opacity: 0;
-    }
-  }
-  @keyframes mock-status-mark {
-    0%,
-    28% {
-      opacity: 0;
-    }
-    33%,
-    100% {
-      opacity: 1;
-    }
-  }
-  /* Lit only after the spinner is fully out: in the app, working IS the
-     spinner, so a ring around one would be a state that cannot happen. */
-  @keyframes mock-status-ring {
-    0%,
-    36% {
-      border-color: transparent;
-    }
-    42%,
-    62% {
-      border-color: #27c93f;
-    }
-    68%,
-    92% {
-      border-color: #ffb764;
-    }
-    97%,
-    100% {
-      border-color: transparent;
-    }
-  }
-  .mock-status-spinner {
-    animation: mock-status-spinner 6s var(--ease-apple) infinite both;
-  }
-  .mock-status-mark {
-    animation: mock-status-mark 6s var(--ease-apple) infinite both;
-  }
-  .mock-status-ring {
-    animation: mock-status-ring 6s var(--ease-apple) infinite both;
-  }
-
-  /* A worktree's session revealed under its branch, one after another. */
-  @keyframes mock-open {
-    0%,
-    2% {
-      opacity: 0;
-      transform: translateY(-3px);
-    }
-    12%,
-    92% {
-      opacity: 1;
-      transform: none;
-    }
-    100% {
-      opacity: 0;
-      transform: translateY(-3px);
-    }
-  }
-  .mock-open {
-    animation: mock-open 6s var(--ease-apple) infinite both;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .mock-fade-a,
-    .mock-fade-b,
-    .mock-option,
-    .mock-type,
-    .mock-theme,
-    .mock-theme-ink,
-    .mock-status-spinner,
-    .mock-status-mark,
-    .mock-status-ring,
-    .mock-open {
-      animation: none;
-    }
-    /* Without the loop the `-b` layer would sit on top of `-a`; hold the
-       rendered/settled state, which is the one worth showing still. */
-    .mock-fade-a {
-      opacity: 0;
-    }
-    .mock-status-spinner {
-      opacity: 0;
-    }
   }
 
   /* Lightweight scroll-entrance: elements fade/slide in when revealed via IntersectionObserver. */
@@ -1091,8 +713,8 @@ html[data-theme-switching] *::after {
 
 /* Fumadocs' Shiki rules are unlayered and follow the landing's permanent .dark
    class. These must also be unlayered, with the docs appearance taking priority. */
-html:not([data-docs-theme]):has(.docs-surface),
-html[data-docs-theme="dark"]:has(.docs-surface) {
+html:not([data-theme]):has(.docs-surface),
+html[data-theme="dark"]:has(.docs-surface) {
   .shiki:not(.not-fumadocs-codeblock *) code span,
   code.shiki:not(.not-fumadocs-code *) span {
     color: var(--shiki-dark);
@@ -1105,7 +727,7 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
 }
 
 @media (prefers-color-scheme: light) {
-  html:not([data-docs-theme]):has(.docs-surface) {
+  html:not([data-theme]):has(.docs-surface) {
     .shiki:not(.not-fumadocs-codeblock *) code span,
     code.shiki:not(.not-fumadocs-code *) span {
       color: var(--shiki-light);
@@ -1118,7 +740,7 @@ html[data-docs-theme="dark"]:has(.docs-surface) {
   }
 }
 
-html[data-docs-theme="light"]:has(.docs-surface) {
+html[data-theme="light"]:has(.docs-surface) {
   .shiki:not(.not-fumadocs-codeblock *) code span,
   code.shiki:not(.not-fumadocs-code *) span {
     color: var(--shiki-light);
@@ -1415,3 +1037,35 @@ html[data-docs-theme="light"]:has(.docs-surface) {
     line-break: strict;
   }
 }
+
+/* The stage every product view sits on: the hero aurora's palette, painted in
+   CSS so a page can carry several without a WebGL context each (the hero and
+   the closing band are the two live shaders). Product shots get a painted
+   panel the way Cursor's do; the chrome around them stays black and white.
+   The stage is dark in both appearances — it is a picture, not a surface — so
+   it ships with `.dark` (see Stage in section-label.tsx). */
+.stage {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background-color: #070710;
+  background-image:
+    radial-gradient(55% 65% at 85% 0%, rgb(47 138 160 / 0.5), transparent 70%),
+    radial-gradient(65% 75% at 5% 100%, rgb(31 99 176 / 0.55), transparent 72%),
+    radial-gradient(90% 70% at 50% 50%, rgb(25 22 54 / 0.85), transparent 85%),
+    linear-gradient(160deg, #0c1a3d 0%, #070710 70%);
+}
+/* Film grain over the paint, under the content, so the gradient reads matte. */
+.stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  opacity: 0.09;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+

@@ -1,62 +1,85 @@
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Reveal } from "@/components/reveal";
-import { AppleMark } from "@/components/section-label";
-import { CtaGrain } from "@/components/cta-grain";
-import { downloadUrl, testflightUrl } from "@/lib/site";
+import { AppleMark, GitHubMark, Section } from "@/components/section-label";
+import { GitHubStarCount } from "@/components/github-star-count";
+import { HeroGradient } from "@/components/hero-gradient";
+import { downloadUrl, githubApiUrl, githubUrl } from "@/lib/site";
 
-export function CtaBand() {
+// Server-rendered star count so the number is in the initial HTML with no
+// pop-in; GitHubStarCount then refreshes it client-side from /api/github-stars.
+// Rendering must never depend on the GitHub API being up: any failure just
+// drops the count and keeps the button.
+async function fetchStarCount(): Promise<number | null> {
+  try {
+    const response = await fetch(githubApiUrl, {
+      next: { revalidate: 3600 },
+    });
+    if (!response.ok) return null;
+    const repo = (await response.json()) as { stargazers_count?: number };
+    return typeof repo.stargazers_count === "number"
+      ? repo.stargazers_count
+      : null;
+  } catch (error) {
+    console.warn("Could not read the GitHub star count", error);
+    return null;
+  }
+}
+
+// The page's one closing block: download, or star the repo. It sits on the same
+// live aurora as the hero window, so the page opens and closes on one picture;
+// `dark` keeps its ink light in either appearance, and the background colour
+// under the shader keeps it legible where WebGL is unavailable.
+export async function CtaBand() {
+  const starCount = await fetchStarCount();
   return (
-    <section aria-labelledby="cta-heading">
-      <div className="mx-auto w-full max-w-6xl px-5 py-32 sm:py-40 sm:px-8">
-        <Reveal>
-          <div className="brand-wash shadow-soft relative isolate overflow-hidden rounded-[2rem] border border-white/10 bg-card px-8 py-20 text-center sm:px-16">
-            {/* Grainy light waves rolling slowly across the card. */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 -z-10"
-            >
-              <CtaGrain />
-            </div>
+    <Section aria-labelledby="cta-heading">
+      <Reveal>
+        <div className="dark relative isolate overflow-hidden rounded-[2rem] bg-[#070710] px-8 py-24 sm:px-14 sm:py-32">
+          <HeroGradient className="absolute inset-0 -z-10" />
+          <div
+            aria-hidden="true"
+            className="grain-overlay pointer-events-none absolute -inset-[6%] -z-10"
+          />
+          <div className="flex flex-col items-center text-center">
             <h2
               id="cta-heading"
-              className="mx-auto max-w-2xl text-balance text-3xl font-medium leading-[1.1] tracking-tight text-foreground sm:text-[44px]"
+              className="text-balance text-4xl font-medium leading-[1.05] tracking-tight text-white sm:text-6xl"
             >
-              Stop babysitting terminals
+              Stop babysitting terminals.
             </h2>
-            <p className="mx-auto mt-5 max-w-xl text-lg text-muted-foreground">
-              Run Claude Code, Codex, OpenCode, Pi Agent and more side by side in
-              one native
-              window. Free to use — no account, no card.
+            <p className="mt-5 max-w-md text-pretty text-lg text-white/70">
+              Free and open source under the MIT license. No account, no card.
             </p>
-            <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <div className="mt-9 flex flex-wrap justify-center gap-3">
               <a
                 href={downloadUrl}
                 className={cn(
                   buttonVariants(),
-                  "h-12 gap-2 rounded-full px-7 text-base",
-                  "shadow-[0_12px_32px_rgba(20,23,28,0.18),0_0_0_1px_rgba(0,211,199,0.14)]",
+                  "h-11 gap-2 rounded-full px-6 text-[15px]",
                 )}
               >
                 <AppleMark />
                 Download for Mac
               </a>
               <a
-                href={testflightUrl}
+                href={githubUrl}
+                target="_blank"
+                rel="noreferrer"
                 className={cn(
-                  buttonVariants({ variant: "outline" }),
-                  "h-12 rounded-full px-7 text-base",
+                  buttonVariants({ variant: "secondary" }),
+                  "h-11 gap-2 rounded-full bg-white/10 px-6 text-[15px] text-white backdrop-blur-md hover:bg-white/15",
                 )}
               >
-                Download for iOS Beta
+                <GitHubMark />
+                Star on GitHub
+                <GitHubStarCount initialStars={starCount} />
               </a>
             </div>
-            <p className="mt-4 text-sm text-muted-foreground">
-              Requires macOS 14 or later
-            </p>
+            <p className="mt-4 text-sm text-white/60">Requires macOS 14 or later</p>
           </div>
-        </Reveal>
-      </div>
-    </section>
+        </div>
+      </Reveal>
+    </Section>
   );
 }
