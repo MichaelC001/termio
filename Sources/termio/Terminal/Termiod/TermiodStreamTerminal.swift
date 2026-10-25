@@ -683,19 +683,25 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    /// A link under the pointer: what it opens and the cells it covers on its
-    /// row, for the underline.
+    /// A link under the pointer: what it opens and the cells it covers, one
+    /// range per row, since a long one wraps.
     struct Link: Equatable {
+        struct Segment: Equatable {
+            var row: UInt16
+            var columns: ClosedRange<UInt16>
+        }
+
         var url: String
-        var row: UInt16
-        var columns: ClosedRange<UInt16>
+        var segments: [Segment]
     }
 
-    /// The link at a viewport cell, as Ghostty finds it: an OSC 8 hyperlink
-    /// first, then a URL or a path its default pattern (`config/url.zig`)
-    /// matches in the row's text.
+    /// The link at a viewport cell, as Ghostty finds it (`Surface.linkAtPin`):
+    /// an OSC 8 hyperlink first, then a URL or a path its default pattern
+    /// (`config/url.zig`) matches in the whole soft-wrapped line. The text is
+    /// copied under `lock`; the pattern runs after it is released, so neither
+    /// the main thread nor the reader waits on a match.
     func link(at point: SelectionPoint) -> Link? {
-        locked {
+        let found: (hyperlink: Link?, text: String, cells: [Link.Segment], column: UInt16)? = locked {
             var rows: UInt16 = 0
             var cols: UInt16 = 0
             _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
@@ -706,47 +712,87 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 var last = point.column
                 while first > 0, hyperlink(column: first - 1, row: point.row) == uri { first -= 1 }
                 while last + 1 < cols, hyperlink(column: last + 1, row: point.row) == uri { last += 1 }
-                return Link(url: uri, row: point.row, columns: first ... last)
+                return (Link(url: uri, segments: [.init(row: point.row, columns: first ... last)]), "", [], point.column)
             }
-            // The row's text, with the column each character came from.
+            // The right half of a wide character is that character.
+            var column = point.column
+            if column > 0, var reference = cellReference(column: column, row: point.row) {
+                var raw: GhosttyCell = 0
+                var wide = GHOSTTY_CELL_WIDE_NARROW
+                if ghostty_grid_ref_cell(&reference, &raw) == GHOSTTY_SUCCESS {
+                    _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+                }
+                if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { column -= 1 }
+            }
+            // The soft-wrapped line the pointer is on, within the viewport.
+            var top = point.row
+            while top > 0, wraps(row: top - 1) { top -= 1 }
+            var bottom = point.row
+            while bottom + 1 < rows, wraps(row: bottom) { bottom += 1 }
             var text = ""
-            var columnAt: [UInt16] = []
+            // The cell each UTF-16 unit of `text` came from.
+            var cells: [Link.Segment] = []
             var buffer = [UInt32](repeating: 0, count: 16)
-            for column in 0 ..< cols {
-                guard var reference = cellReference(column: column, row: point.row) else { return nil }
-                var length = 0
-                let result = buffer.withUnsafeMutableBufferPointer {
-                    ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
-                }
-                var cell = ""
-                if result == GHOSTTY_SUCCESS, length > 0 {
-                    for scalar in buffer.prefix(length).compactMap(Unicode.Scalar.init) {
-                        cell.unicodeScalars.append(scalar)
+            for row in top ... bottom {
+                for column in 0 ..< cols {
+                    guard var reference = cellReference(column: column, row: row) else { return nil }
+                    var length = 0
+                    let result = buffer.withUnsafeMutableBufferPointer {
+                        ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
                     }
-                }
-                if cell.isEmpty {
-                    // A wide character's second half adds no text.
-                    var raw: GhosttyCell = 0
-                    var wide = GHOSTTY_CELL_WIDE_NARROW
-                    if ghostty_grid_ref_cell(&reference, &raw) == GHOSTTY_SUCCESS {
-                        _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+                    var cell = ""
+                    if result == GHOSTTY_SUCCESS, length > 0 {
+                        for scalar in buffer.prefix(length).compactMap(Unicode.Scalar.init) {
+                            cell.unicodeScalars.append(scalar)
+                        }
                     }
-                    if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { continue }
-                    cell = " "
+                    if cell.isEmpty {
+                        // A wide character's second half adds no text.
+                        var raw: GhosttyCell = 0
+                        var wide = GHOSTTY_CELL_WIDE_NARROW
+                        if ghostty_grid_ref_cell(&reference, &raw) == GHOSTTY_SUCCESS {
+                            _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+                        }
+                        if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
+                        cell = " "
+                    }
+                    text += cell
+                    cells += Array(repeating: .init(row: row, columns: column ... column), count: cell.utf16.count)
                 }
-                text += cell
-                columnAt += Array(repeating: column, count: cell.utf16.count)
             }
-            guard let pattern = Self.linkPattern else { return nil }
-            let range = NSRange(location: 0, length: (text as NSString).length)
-            for match in pattern.matches(in: text, range: range) {
-                let start = columnAt[match.range.location]
-                let end = columnAt[match.range.location + match.range.length - 1]
-                guard (start ... end).contains(point.column) else { continue }
-                return Link(url: (text as NSString).substring(with: match.range), row: point.row, columns: start ... end)
-            }
-            return nil
+            return (nil, text, cells, column)
         }
+        guard let found else { return nil }
+        if let hyperlink = found.hyperlink { return hyperlink }
+        guard let pattern = Self.linkPattern else { return nil }
+        let text = found.text as NSString
+        for match in pattern.matches(in: found.text, range: NSRange(location: 0, length: text.length)) {
+            let covered = found.cells[match.range.location ..< match.range.location + match.range.length]
+            guard covered.contains(where: { $0.row == point.row && $0.columns.lowerBound == found.column }) else {
+                continue
+            }
+            // One segment per row the match crosses.
+            var segments: [Link.Segment] = []
+            for cell in covered {
+                if let last = segments.last, last.row == cell.row {
+                    segments[segments.count - 1].columns = last.columns.lowerBound ... cell.columns.upperBound
+                } else {
+                    segments.append(cell)
+                }
+            }
+            return Link(url: text.substring(with: match.range), segments: segments)
+        }
+        return nil
+    }
+
+    /// Whether a viewport row continues on the next one.
+    private func wraps(row: UInt16) -> Bool {
+        guard var reference = cellReference(column: 0, row: row) else { return false }
+        var gridRow: GhosttyRow = 0
+        guard ghostty_grid_ref_row(&reference, &gridRow) == GHOSTTY_SUCCESS else { return false }
+        var wrapped = false
+        _ = ghostty_row_get(gridRow, GHOSTTY_ROW_DATA_WRAP, &wrapped)
+        return wrapped
     }
 
     private func cellReference(column: UInt16, row: UInt16) -> GhosttyGridRef? {
@@ -773,11 +819,14 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Ghostty's default URL and path pattern (`src/config/url.zig`), with
-    /// one change ICU needs: its lookbehind must be bounded, so `\$\d*`
-    /// becomes `\$\d{0,9}`.
+    /// two changes ICU needs: a lookbehind must be bounded, so `\$\d*` becomes
+    /// `\$\d{0,9}`, and the IPv6 host is written without nested repetition.
     static let linkPattern: NSRegularExpression? = {
         let schemes = #"https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:"#
-        let ipv6 = #"(?:\[[:0-9a-fA-F]+(?:[:0-9a-fA-F]*)+\](?::[0-9]+)?)"#
+        // Ghostty writes this `\[[:0-9a-fA-F]+(?:[:0-9a-fA-F]*)+\]`, which
+        // matches the same text but nests one repetition in another: ICU
+        // backtracks through it exponentially when no `]` follows.
+        let ipv6 = #"(?:\[[:0-9a-fA-F]+\](?::[0-9]+)?)"#
         let schemeCharacters = #"[\w\-.~:/?#@!$&*+,;=%]"#
         let pathCharacters = #"[\w\-.~:\/?#@!$&*+;=%]"#
         let bracketedSuffix = #"(?:[\(\[]\w*[\)\]])?"#

@@ -77,6 +77,7 @@ final class TermiodStreamView: NSView {
         didSet {
             guard isShowing != oldValue else { return }
             displayLinkHandle?.isPaused = !isShowing
+            if !isShowing { setHoveredLink(nil) }
             needsFullDraw = true
         }
     }
@@ -202,6 +203,9 @@ final class TermiodStreamView: NSView {
 
     @objc private func tick() {
         guard isShowing, let renderer, let terminal = terminal() else { return }
+        // Every frame, as Ghostty does: output scrolls under a resting
+        // pointer, and ⌘ can be let go, or the app left, anywhere.
+        updateHoveredLink(command: NSEvent.modifierFlags.contains(.command))
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
@@ -658,7 +662,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// opens `TerminalLinkState.hoveredURL`, as it does for the embedded
     /// surface, even inside a program tracking the mouse.
     fileprivate func updateHoveredLink(command: Bool) {
-        guard command, let window, let terminal = terminal() else {
+        guard command, NSApp.isActive, let window, window.isKeyWindow, let terminal = terminal() else {
             setHoveredLink(nil)
             return
         }

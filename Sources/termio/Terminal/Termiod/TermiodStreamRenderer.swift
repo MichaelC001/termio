@@ -722,16 +722,16 @@ final class TermiodStreamFrameBuilder {
         // underlines it.
         if link != hoveredLink {
             hoveredLink = link
-            linkUnderline = link.map { link in
+            linkUnderline = (link?.segments ?? []).map { segment in
                 let metrics = atlas.metrics
-                return [TermiodStreamRectangle(
-                    cellX: link.columns.lowerBound, cellY: link.row, x: 0,
+                return TermiodStreamRectangle(
+                    cellX: segment.columns.lowerBound, cellY: segment.row, x: 0,
                     y: Int16(clamping: metrics.underlinePosition),
-                    width: UInt16(clamping: metrics.width * (Int(link.columns.upperBound - link.columns.lowerBound) + 1)),
+                    width: UInt16(clamping: metrics.width * (Int(segment.columns.upperBound - segment.columns.lowerBound) + 1)),
                     height: UInt16(clamping: metrics.underlineThickness),
                     r: colors.foreground.r, g: colors.foreground.g, b: colors.foreground.b, a: 255, overText: true
-                )]
-            } ?? []
+                )
+            }
             changed = true
         }
         let preeditState = PreeditState(state, text: preedit, colors: colors)

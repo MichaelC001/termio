@@ -478,10 +478,29 @@ final class StreamInputTests: XCTestCase {
         let terminal = try terminal(
             "see https://example.com/a. ok\r\n\u{1b}]8;;https://termio.sh\u{07}docs\u{1b}]8;;\u{07} and src/main.swift"
         )
-        XCTAssertEqual(terminal.link(at: point(6, 0)), .init(url: "https://example.com/a", row: 0, columns: 4 ... 24))
+        XCTAssertEqual(terminal.link(at: point(6, 0)), .init(url: "https://example.com/a", segments: [.init(row: 0, columns: 4 ... 24)]))
         XCTAssertNil(terminal.link(at: point(1, 0)), "plain text")
-        XCTAssertEqual(terminal.link(at: point(2, 1)), .init(url: "https://termio.sh", row: 1, columns: 0 ... 3))
-        XCTAssertEqual(terminal.link(at: point(12, 1)), .init(url: "src/main.swift", row: 1, columns: 9 ... 22))
+        XCTAssertEqual(terminal.link(at: point(2, 1)), .init(url: "https://termio.sh", segments: [.init(row: 1, columns: 0 ... 3)]))
+        XCTAssertEqual(terminal.link(at: point(12, 1)), .init(url: "src/main.swift", segments: [.init(row: 1, columns: 9 ... 22)]))
+    }
+
+    /// A URL longer than the row is one link across the wrap, as Ghostty
+    /// matches the whole soft-wrapped line; and a host in brackets with no
+    /// closing one costs no time.
+    func testALinkWrapsAndAnUnclosedBracketIsCheap() throws {
+        let url = "https://github.com/termio-sh/termio/pull/785"
+        let terminal = try terminal("x " + url)
+        // 40 columns: the URL starts at 2 and wraps after 38 of its 44 characters.
+        let expected = TermiodStreamTerminal.Link(
+            url: url, segments: [.init(row: 0, columns: 2 ... 39), .init(row: 1, columns: 0 ... 5)]
+        )
+        XCTAssertEqual(terminal.link(at: point(10, 0)), expected)
+        XCTAssertEqual(terminal.link(at: point(3, 1)), expected, "from the second row too")
+
+        let hostile = try self.terminal("https://[2001:0db8:85a3:0000:0000:0000:0000:0000:0000")
+        let started = ContinuousClock.now
+        _ = hostile.link(at: point(12, 0))
+        XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200))
     }
 
     /// The hovered link is underlined across the cells it covers.
