@@ -534,7 +534,7 @@ struct TerminalPane: View {
         guard let session = store.session(id) else { return }
         // A stream pane has no embedded view for the driver to find, and would
         // be retried forever; its own view is focused directly instead.
-        if store.runtime(for: id).streamLink != nil {
+        if store.runtimes[id]?.streamLink != nil {
             focusStreamPane(id, reason: reason)
             return
         }
@@ -545,7 +545,10 @@ struct TerminalPane: View {
             reason: reason,
             canFocus: { [weak store] in
                 guard let store else { return false }
-                return Self.terminalMayTakeKeyboard(id, store: store)
+                // A session that turned into a stream pane after this request
+                // has no embedded view left to find; stop retrying.
+                return store.runtimes[id]?.streamLink == nil
+                    && Self.terminalMayTakeKeyboard(id, store: store)
             }
         )
     }
@@ -580,8 +583,10 @@ struct TerminalPane: View {
     }
 
     private func injectTerminalFocusOrphan() {
+        // The injector drives the embedded surface's view; a stream pane has none.
         guard AppChannel.isDev,
               let id = store.selectedSessionID,
+              store.runtimes[id]?.streamLink == nil,
               let session = store.session(id) else { return }
         let state = store.surface(for: session)
         focusDriver.injectOrphan(
