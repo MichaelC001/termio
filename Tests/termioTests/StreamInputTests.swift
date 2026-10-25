@@ -492,6 +492,32 @@ final class StreamInputTests: XCTestCase {
         )
     }
 
+    /// A URL longer than the path window is the same whole URL from wherever
+    /// the pointer is on it, never a piece of it read as a path.
+    func testALongURLIsWholeFromEveryPointOnIt() {
+        let query = (0 ..< 60).map { "k\($0)=v\($0)" }.joined(separator: "&")
+        let url = "https://bucket.s3.amazonaws.com/dir/file.tar.gz?" + query
+            + "&X-Amz-Credential=AKIA/20261025/us-east-1/s3/aws4_request&sig=abc.def"
+        let text = "see " + url + " end"
+        let length = (url as NSString).length
+        for index in stride(from: 4, to: 4 + length, by: 37) {
+            let found = TermiodStreamTerminal.linkRanges(in: text, around: index).first { NSLocationInRange(index, $0) }
+            XCTAssertEqual(found.map { (text as NSString).substring(with: $0) }, url, "pointer at \(index)")
+        }
+    }
+
+    /// Ghostty's scheme branch: a suffix is a matched `(word)` or `[word]`
+    /// after URL characters, and a word may be outside the BMP.
+    func testTheSchemeScanFollowsGhosttysSuffixRules() {
+        func first(_ input: String) -> String? {
+            TermiodStreamTerminal.linkRanges(in: input).first.map { (input as NSString).substring(with: $0) }
+        }
+        XCTAssertEqual(first("https://x.com/a(b] c"), "https://x.com/a")
+        XCTAssertEqual(first("https://x.com/a(b)(c) d"), "https://x.com/a(b)")
+        XCTAssertEqual(first("https://[::1](x) y"), "https://[::1]")
+        XCTAssertEqual(first("https://x.com/\u{20000}b c"), "https://x.com/\u{20000}b")
+    }
+
     /// The link under the pointer: an OSC 8 hyperlink first, then a detected
     /// URL or path, with the cells it covers.
     func testTheLinkUnderThePointer() throws {

@@ -706,18 +706,26 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The text of the soft-wrapped line under a pointer, copied under `lock`,
     /// with the cell each UTF-16 unit came from (in screen rows), and where the
     /// viewport begins in screen rows. The match runs on it after the lock is
-    /// released.
+    /// released. A line longer than the copy budget is cut, and says so.
     struct LineText: Equatable {
+        struct Cell: Equatable {
+            var row: UInt32
+            var column: UInt16
+        }
+
         var text: String
-        var cells: [Link.Segment]
-        var pointer: Link.Segment
+        var cells: [Cell]
+        var pointer: Cell
         var viewportTop: UInt32
         var viewportRows: UInt16
+        var cutBefore = false
+        var cutAfter = false
     }
 
-    /// How far above and below the pointer's row a wrapped line is followed,
-    /// into scrollback or below the view.
-    static let wrapReach: UInt32 = 20
+    /// How many cells either side of the pointer's row a wrapped line is
+    /// followed for, into scrollback or below the view: a URL of a couple of
+    /// thousand characters, at a cost that stays flat however wide the pane.
+    static let lineCellBudget = 1024
 
     enum Under: Equatable {
         case hyperlink(Link)
@@ -769,22 +777,41 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                   ghostty_terminal_point_from_grid_ref(terminal, &viewportTop, GHOSTTY_POINT_TAG_SCREEN, &top)
                     == GHOSTTY_SUCCESS
             else { return nil }
-            // The right half of a wide character is that character.
-            var column = point.column
-            if column > 0, wide(&pointerRef) == GHOSTTY_CELL_WIDE_SPACER_TAIL { column -= 1 }
+            var pointer = LineText.Cell(row: screen.y, column: point.column)
+            switch wide(&pointerRef) {
+            case GHOSTTY_CELL_WIDE_SPACER_TAIL where point.column > 0:
+                // The right half of a wide character is that character.
+                pointer.column -= 1
+            case GHOSTTY_CELL_WIDE_SPACER_HEAD:
+                // The last column before a wide character that wrapped stands
+                // for it, at the start of the next row.
+                pointer = .init(row: screen.y + 1, column: 0)
+            default:
+                break
+            }
+            let reach = UInt32(max(1, Self.lineCellBudget / Int(max(cols, 1))))
             var first = screen.y
-            while first > 0, screen.y - first < Self.wrapReach, wraps(screenRow: first - 1) { first -= 1 }
+            while first > 0, screen.y - first < reach, wraps(screenRow: first - 1) { first -= 1 }
             var last = screen.y
-            while Int(last) + 1 < total, last - screen.y < Self.wrapReach, wraps(screenRow: last) { last += 1 }
-            var text = ""
-            var cells: [Link.Segment] = []
+            while Int(last) + 1 < total, last - screen.y < reach, wraps(screenRow: last) { last += 1 }
+            var line = LineText(
+                text: "", cells: [], pointer: pointer, viewportTop: top.y, viewportRows: rows,
+                cutBefore: first > 0 && wraps(screenRow: first - 1),
+                cutAfter: Int(last) + 1 < total && wraps(screenRow: last)
+            )
             var buffer = [UInt32](repeating: 0, count: 16)
             for row in first ... last {
                 for column in 0 ..< cols {
                     guard var reference = screenReference(column: column, row: row) else { return nil }
                     var length = 0
-                    let result = buffer.withUnsafeMutableBufferPointer {
+                    var result = buffer.withUnsafeMutableBufferPointer {
                         ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
+                    }
+                    if result == GHOSTTY_OUT_OF_SPACE, length > buffer.count {
+                        buffer = [UInt32](repeating: 0, count: length)
+                        result = buffer.withUnsafeMutableBufferPointer {
+                            ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
+                        }
                     }
                     var cell = ""
                     if result == GHOSTTY_SUCCESS, length > 0 {
@@ -798,33 +825,33 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                         if kind == GHOSTTY_CELL_WIDE_SPACER_TAIL || kind == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
                         cell = " "
                     }
-                    text += cell
-                    let at = Link.Segment(row: UInt16(clamping: row), columns: column ... column)
-                    cells += Array(repeating: at, count: cell.utf16.count)
+                    line.text += cell
+                    line.cells += Array(repeating: .init(row: row, column: column), count: cell.utf16.count)
                 }
             }
-            return .text(LineText(
-                text: text, cells: cells,
-                pointer: .init(row: UInt16(clamping: screen.y), columns: column ... column),
-                viewportTop: top.y, viewportRows: rows
-            ))
+            return .text(line)
         }
     }
 
-    /// The link a line's text holds under its pointer, in viewport rows.
+    /// The link a line's text holds under its pointer, in viewport rows. A
+    /// link that runs into a cut edge of the line is not offered: opening the
+    /// part of it that was copied would open the wrong place.
     static func link(in line: LineText) -> Link? {
         guard let index = line.cells.firstIndex(of: line.pointer) else { return nil }
         for range in linkRanges(in: line.text, around: index) {
             let covered = line.cells[range.location ..< range.location + range.length]
             guard covered.contains(line.pointer) else { continue }
+            if line.cutBefore && range.location == 0 || line.cutAfter && range.location + range.length == line.cells.count {
+                return nil
+            }
             var segments: [Link.Segment] = []
             for cell in covered {
-                let row = Int(cell.row) - Int(line.viewportTop)
-                guard row >= 0, row < Int(line.viewportRows) else { continue }
+                let row = Int64(cell.row) - Int64(line.viewportTop)
+                guard row >= 0, row < Int64(line.viewportRows) else { continue }
                 if let last = segments.last, last.row == UInt16(row) {
-                    segments[segments.count - 1].columns = last.columns.lowerBound ... cell.columns.upperBound
+                    segments[segments.count - 1].columns = last.columns.lowerBound ... cell.column
                 } else {
-                    segments.append(.init(row: UInt16(row), columns: cell.columns))
+                    segments.append(.init(row: UInt16(row), columns: cell.column ... cell.column))
                 }
             }
             return Link(url: (line.text as NSString).substring(with: range), segments: segments)
@@ -832,102 +859,132 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return nil
     }
 
-    /// How far either side of the pointer a line's text is searched. Ghostty's
+    /// How far either side of the pointer paths are searched for. Ghostty's
     /// path patterns cost the square of what they search, so a pasted blob
     /// thousands of characters long is searched only near the pointer.
-    static let linkWindow = 256
+    static let pathWindow = 256
 
     /// Ghostty's links in a text (`config/url.zig`), left to right, none
     /// overlapping: what its one pattern finds scanning from the start. URLs
-    /// with a scheme are found by `schemeURL`, which matches Ghostty's scheme
-    /// branch in one pass; paths by Ghostty's own path branches.
+    /// with a scheme are found over the whole text by `schemeURL`, which
+    /// matches Ghostty's scheme branch in one pass; paths by Ghostty's own
+    /// path branches, within `pathWindow` of `index`.
     static func linkRanges(in text: String, around index: Int? = nil) -> [NSRange] {
         let units = Array(text.utf16)
-        let window: Range<Int> = index.map { max(0, $0 - linkWindow) ..< min(units.count, $0 + linkWindow) }
+        let window: Range<Int> = index.map { max(0, $0 - pathWindow) ..< min(units.count, $0 + pathWindow) }
             ?? 0 ..< units.count
-        let searched = NSRange(location: window.lowerBound, length: window.count)
-        var found: [(range: NSRange, scheme: Bool)] = []
+        var urls: [NSRange] = []
         if let schemes = schemePattern {
-            for match in schemes.matches(in: text, range: searched) {
-                if let range = schemeURL(in: units, schemeAt: match.range, limit: window.upperBound) {
-                    found.append((range, true))
+            var end = 0
+            for match in schemes.matches(in: text, range: NSRange(location: 0, length: units.count))
+            where match.range.location >= end {
+                if let range = schemeURL(in: units, schemeAt: match.range) {
+                    urls.append(range)
+                    end = range.location + range.length
                 }
             }
         }
-        if let paths = pathPattern {
-            for match in paths.matches(in: text, range: searched) {
-                found.append((match.range, false))
+        // The next path from `position`, seen through the window. The pattern
+        // looks past the window's edges, so a path is not taken to start or
+        // end there; one that reaches an edge the text goes past may be
+        // longer than what was searched, and is passed over.
+        func nextPath(from position: Int) -> (range: NSRange, whole: Bool)? {
+            let start = max(position, window.lowerBound)
+            guard let paths = pathPattern, start < window.upperBound,
+                  let match = paths.firstMatch(
+                      in: text, options: .withTransparentBounds,
+                      range: NSRange(location: start, length: window.upperBound - start)
+                  )
+            else { return nil }
+            let range = match.range
+            let cut = range.location == window.lowerBound && window.lowerBound > 0
+                || range.location + range.length == window.upperBound && window.upperBound < units.count
+            return (range, !cut)
+        }
+        var ranges: [NSRange] = []
+        var position = 0
+        var next = 0
+        while true {
+            while next < urls.count, urls[next].location < position { next += 1 }
+            let url = next < urls.count ? urls[next] : nil
+            let path = nextPath(from: position)
+            // Leftmost first, and a URL before a path at the same place.
+            if let url, path.map({ url.location <= $0.range.location }) ?? true {
+                ranges.append(url)
+                position = url.location + url.length
+            } else if let path {
+                if path.whole { ranges.append(path.range) }
+                position = path.range.location + max(path.range.length, 1)
+            } else {
+                return ranges
             }
         }
-        // Leftmost first, a URL before a path at the same place, and nothing
-        // inside what was already taken: one pattern's search, in order.
-        found.sort { $0.range.location != $1.range.location ? $0.range.location < $1.range.location : $0.scheme }
-        var ranges: [NSRange] = []
-        var end = 0
-        for candidate in found where candidate.range.location >= end {
-            ranges.append(candidate.range)
-            end = candidate.range.location + candidate.range.length
-        }
-        return ranges
     }
 
-    /// Ghostty's scheme branch, in one pass: after the scheme, as many of its
-    /// URL characters, bracketed IPv6 hosts and `(word)` or `[word]` suffixes
-    /// as follow, less any trailing `.` or `,`. Its pattern says the same with
-    /// nested repetition, which ICU backtracks through exponentially.
-    static func schemeURL(in units: [UInt16], schemeAt scheme: NSRange, limit: Int) -> NSRange? {
-        func unit(_ character: Unicode.Scalar) -> UInt16 { UInt16(character.value) }
-        func isWord(_ unit: UInt16) -> Bool {
-            guard let scalar = Unicode.Scalar(unit) else { return false }
-            return scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
+    /// Ghostty's scheme branch, in one pass:
+    /// `scheme(?:ipv6|chars+(?:\(\w*\)|\[\w*\])?)+(?<![,.])`. Its pattern says
+    /// this with nested repetition, which ICU backtracks through exponentially.
+    static func schemeURL(in units: [UInt16], schemeAt scheme: NSRange) -> NSRange? {
+        let limit = units.count
+        func ascii(_ character: Unicode.Scalar) -> UInt16 { UInt16(character.value) }
+        /// The width in units of the `\w` character at `index`, or nil.
+        func word(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            let unit = units[index]
+            if UTF16.isLeadSurrogate(unit), index + 1 < limit, UTF16.isTrailSurrogate(units[index + 1]) {
+                let scalar = UTF16.decode(UTF16.EncodedScalar([unit, units[index + 1]]))
+                return CharacterSet.alphanumerics.contains(scalar) ? 2 : nil
+            }
+            guard let scalar = Unicode.Scalar(unit) else { return nil }
+            return scalar == "_" || CharacterSet.alphanumerics.contains(scalar) ? 1 : nil
         }
-        func isURL(_ unit: UInt16) -> Bool {
-            isWord(unit) || "-.~:/?#@!$&*+,;=%".utf16.contains(unit)
+        func urlCharacter(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            return word(at: index) ?? ("-.~:/?#@!$&*+,;=%".utf16.contains(units[index]) ? 1 : nil)
         }
-        func isHex(_ unit: UInt16) -> Bool {
-            ":0123456789abcdefABCDEF".utf16.contains(unit)
+        /// The end of a bracketed IPv6 host with an optional port at `index`.
+        func ipv6(at index: Int) -> Int? {
+            guard index < limit, units[index] == ascii("[") else { return nil }
+            var end = index + 1
+            while end < limit, ":0123456789abcdefABCDEF".utf16.contains(units[end]) { end += 1 }
+            guard end > index + 1, end < limit, units[end] == ascii("]") else { return nil }
+            end += 1
+            if end < limit, units[end] == ascii(":") {
+                var port = end + 1
+                while port < limit, "0123456789".utf16.contains(units[port]) { port += 1 }
+                if port > end + 1 { end = port }
+            }
+            return end
         }
-        func isDigit(_ unit: UInt16) -> Bool {
-            "0123456789".utf16.contains(unit)
+        /// The end of a `(word)` or `[word]` suffix at `index`.
+        func suffix(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            let close: UInt16
+            switch units[index] {
+            case ascii("("): close = ascii(")")
+            case ascii("["): close = ascii("]")
+            default: return nil
+            }
+            var end = index + 1
+            while let width = word(at: end) { end += width }
+            return end < limit && units[end] == close ? end + 1 : nil
         }
-        let start = scheme.location
         let body = scheme.location + scheme.length
         var index = body
-        while index < limit {
-            let current = units[index]
-            if current == unit("[") {
-                // A bracketed IPv6 host, with an optional port.
-                var end = index + 1
-                while end < limit, isHex(units[end]) { end += 1 }
-                if end > index + 1, end < limit, units[end] == unit("]") {
-                    end += 1
-                    if end < limit, units[end] == unit(":") {
-                        var port = end + 1
-                        while port < limit, isDigit(units[port]) { port += 1 }
-                        if port > end + 1 { end = port }
-                    }
-                    index = end
-                    continue
-                }
+        while true {
+            if let end = ipv6(at: index) {
+                index = end
+                continue
             }
-            guard isURL(current) else {
-                // A `(word)` or `[word]` suffix, right after URL characters.
-                if index > body, current == unit("(") || current == unit("[") {
-                    var end = index + 1
-                    while end < limit, isWord(units[end]) { end += 1 }
-                    if end < limit, units[end] == unit(")") || units[end] == unit("]") {
-                        index = end + 1
-                        continue
-                    }
-                }
-                break
-            }
-            index += 1
+            let run = index
+            while let width = urlCharacter(at: index) { index += width }
+            guard index > run else { break }
+            if let end = suffix(at: index) { index = end }
         }
-        while index > body, units[index - 1] == unit(".") || units[index - 1] == unit(",") {
+        while index > body, units[index - 1] == ascii(".") || units[index - 1] == ascii(",") {
             index -= 1
         }
-        return index > body ? NSRange(location: start, length: index - start) : nil
+        return index > body ? NSRange(location: scheme.location, length: index - scheme.location) : nil
     }
 
     private static let schemePattern = try? NSRegularExpression(
