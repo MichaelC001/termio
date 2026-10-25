@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -97,6 +98,7 @@ func newServer(arguments []string, name string) (*tsnet.Server, *flag.FlagSet, m
 	if *values["dir"] == "" {
 		log.Fatal("--dir is required")
 	}
+	lockDirectory(*values["dir"])
 	server := &tsnet.Server{
 		Dir:      *values["dir"],
 		Hostname: *values["hostname"],
@@ -153,18 +155,21 @@ func serve(arguments []string) {
 	}
 	go acceptLoop(ctx, plain, client, forward)
 
-	var secure sync.Once
+	// HTTPS is reported only once 443 is really open: a tailnet with
+	// certificates but no MagicDNS refuses the listener, and a pairing link
+	// to it would lead nowhere. A refusal is retried on the next change.
+	secure := false
 	watchErr := watch(ctx, client, func(s status) {
-		if s.State == "running" && s.HTTPS {
-			secure.Do(func() {
-				listener, err := server.ListenTLS("tcp", ":443")
-				if err != nil {
-					log.Printf("listening on 443: %v", err)
-					return
-				}
+		if s.State == "running" && s.HTTPS && !secure {
+			listener, err := server.ListenTLS("tcp", ":443")
+			if err != nil {
+				log.Printf("listening on 443: %v", err)
+			} else {
+				secure = true
 				go acceptLoop(ctx, listener, client, forward)
-			})
+			}
 		}
+		s.HTTPS = s.HTTPS && secure
 		emit(s)
 	})
 	if watchErr != nil && ctx.Err() == nil {
@@ -400,6 +405,35 @@ func logout(arguments []string) {
 		log.Fatal(err)
 	}
 }
+
+// lockDirectory holds the node directory for this process's life. A helper
+// outliving a crashed daemon, the next one after a handoff, and a logout all
+// use one directory, and tsnet's state in it must have one writer.
+func lockDirectory(directory string) {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		log.Fatalf("creating %s: %v", directory, err)
+	}
+	path := filepath.Join(directory, "termio-tailnet.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		log.Fatalf("opening %s: %v", path, err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			// Kept open, and so locked, until the process exits.
+			lockFile = file
+			return
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			log.Fatalf("another termio-tailnet is still using %s: %v", directory, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+var lockFile *os.File
 
 func version() string {
 	return "termio-tailnet (tailscale.com v1.104.2)"
