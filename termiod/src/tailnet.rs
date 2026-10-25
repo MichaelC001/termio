@@ -562,6 +562,9 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
     // The tailnet listener authenticates with the same token as every other
     // WebSocket, so turning it on without one would admit nobody.
     paths::load_or_create_pair_token()?;
+    // Taken before the key is written: a logout running now deletes the key
+    // file on its way out.
+    let lock = lock_settings()?;
     if let Some(source) = options.auth_key_file.as_deref() {
         let key = if source == Path::new("-") {
             let mut key = String::new();
@@ -577,7 +580,6 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
         }
         paths::replace_secret(&auth_key_path()?, key)?;
     }
-    let _lock = lock_settings()?;
     let mut config = read_config()?;
     config.enabled = true;
     if options.auth_key_file.is_some() {
@@ -590,7 +592,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
     // and is about to be retried. Only one written after this counts.
     let asked = std::time::SystemTime::now();
     write_config(&config)?;
-    drop(_lock);
+    drop(lock);
 
     // Connecting starts a daemon when none is running.
     crate::client::connect().await?;
