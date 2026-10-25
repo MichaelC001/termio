@@ -1,6 +1,226 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Built-In Tailscale": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: the switch that puts this Mac on the tailnet as its own device.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置 Tailscale"
+          }
+        }
+      }
+    },
+    "This build of Termio doesn’t include built-in Tailscale.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个版本的 Termio 不含内置 Tailscale。"
+          }
+        }
+      }
+    },
+    "Needs Direct Attach.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: why the switch is disabled.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要开启直接连接。"
+          }
+        }
+      }
+    },
+    "This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台 Mac 作为一台独立设备加入你的 tailnet，不需要 Tailscale 应用。"
+          }
+        }
+      }
+    },
+    "Access": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: row label for who may connect.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "访问"
+          }
+        }
+      }
+    },
+    "Nobody: a tagged device has no owner": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无人可访问：带标签的设备没有所有者"
+          }
+        }
+      }
+    },
+    "Only %@": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale; %@ is a Tailscale login name.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅限 %@"
+          }
+        }
+      }
+    },
+    "Only the account that signed in": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅限登录的账号"
+          }
+        }
+      }
+    },
+    "Sign Out…": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出登录…"
+          }
+        }
+      }
+    },
+    "Sign this Mac out of Tailscale?": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: confirmation title.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让这台 Mac 退出 Tailscale 登录？"
+          }
+        }
+      }
+    },
+    "Sign Out": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: destructive confirmation button.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "退出登录"
+          }
+        }
+      }
+    },
+    "iPhones paired over the tailnet can’t connect until you sign in again.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在你重新登录之前，通过 tailnet 配对的 iPhone 无法连接。"
+          }
+        }
+      }
+    },
+    "Tailscale Account": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailscale 账号"
+          }
+        }
+      }
+    },
+    "Signs this Mac’s device out of your tailnet.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让这台 Mac 的设备退出你的 tailnet。"
+          }
+        }
+      }
+    },
+    "Sign in with the Tailscale account your iPhone uses.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用你的 iPhone 所用的 Tailscale 账号登录。"
+          }
+        }
+      }
+    },
+    "Approve…": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: opens the Tailscale admin console.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批准…"
+          }
+        }
+      }
+    },
+    "Approve this Mac in the Tailscale admin console.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Tailscale 管理控制台中批准这台 Mac。"
+          }
+        }
+      }
+    },
+    "Stopped": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: status when the node stopped with no message.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止"
+          }
+        }
+      }
+    },
+    "Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.": {
+      "comment": "Settings ▸ Server ▸ Pairing, built-in Tailscale: footer.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只要 iPhone 上的 Tailscale 已连接，在任何网络下都能用。流量只走你的 tailnet。"
+          }
+        }
+      }
+    },
+    "Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing.": {
+      "comment": "Pair iPhone sheet, when built-in Tailscale is not connected.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置 Tailscale 尚未连接。请在“设置 ▸ Termio server ▸ 配对”中完成登录。"
+          }
+        }
+      }
+    },
     "Allow Paired Devices": {
       "comment": "Master switch in Settings ▸ Server ▸ Pairing: whether paired iPhones may connect to this Mac.",
       "localizations": {

@@ -50,6 +50,7 @@ final class PairingModel: ObservableObject {
     private var tailnetReads = 0
     private let tunnel = TunnelManager.shared
     private let mobile = MobileAccess.shared
+    private let builtIn = BuiltInTailscale.shared
     private var observers: Set<AnyCancellable> = []
     private static let servesTailnetKey = "companion.servesTailnet"
 
@@ -66,6 +67,7 @@ final class PairingModel: ObservableObject {
             $selectedHost.map { _ in }.eraseToAnyPublisher(),
             $tailnetAddress.map { _ in }.eraseToAnyPublisher(),
             $servesTailnet.map { _ in }.eraseToAnyPublisher(),
+            builtIn.$report.map { _ in }.eraseToAnyPublisher(),
         ]
         Publishers.MergeMany(triggers)
             .dropFirst(triggers.count)
@@ -83,6 +85,7 @@ final class PairingModel: ObservableObject {
         // now, and a QR minted for it would save an address nothing answers on.
         tailnetAddress = nil
         tailnetRead = false
+        builtIn.refresh()
         refreshHosts()
         refreshInvite(force: true)
         // The section and the sheet both refresh on appear, and a stalled read
@@ -111,6 +114,13 @@ final class PairingModel: ObservableObject {
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
     var onTunnel: Bool { tunnel.provider != .off }
+
+    /// The phone reaches this Mac's own node on the tailnet rather than the
+    /// address the Tailscale app gives it. The node forwards to the session
+    /// host only, so it carries Direct Attach and nothing else.
+    var usesBuiltInTailscale: Bool {
+        servesTailnet && !onTunnel && builtIn.enabled && mobile.attachesDirectly
+    }
 
     var tunnelRunning: Bool {
         if case .running = tunnel.status { return true }
@@ -157,6 +167,7 @@ final class PairingModel: ObservableObject {
         if case .running(let publicURL) = tunnel.status {
             return publicURL.absoluteString
         }
+        if usesBuiltInTailscale { return builtIn.url }
         guard !servedHost.isEmpty else { return nil }
         return "http://\(servedHost):\(AppChannel.devicePort)"
     }
@@ -261,8 +272,10 @@ struct DeviceServingSection: View {
     @ObservedObject private var pairing = PairingModel.shared
     @ObservedObject private var tunnel = TunnelManager.shared
     @ObservedObject private var mobile = MobileAccess.shared
+    @ObservedObject private var builtIn = BuiltInTailscale.shared
     @State private var inviteCopied = false
     @State private var confirmRotate = false
+    @State private var confirmSignOut = false
     /// Draft custom-relay fields, loaded from the persisted values on appear and
     /// written back only when the user commits them, so a half-typed command
     /// never becomes the live spec mid-keystroke.
@@ -318,9 +331,9 @@ struct DeviceServingSection: View {
                 Picker(localized("Network"), selection: reach) {
                     ForEach(TunnelManager.Provider.allCases) { provider in
                         Text(Self.pickerLabel(provider)).tag(Reach.tunnel(provider))
-                        // Offered only on a tailnet, but kept while chosen so
-                        // the picker never shows a selection it has no row for.
-                        if provider == .off, pairing.tailnetAddress != nil || pairing.servesTailnet {
+                        // Offered without a Tailscale app too: built-in Tailscale
+                        // needs none.
+                        if provider == .off {
                             Text(verbatim: "Tailscale").tag(Reach.tailnet)
                         }
                     }
@@ -336,7 +349,10 @@ struct DeviceServingSection: View {
                     }
                 }
                 if onTunnel { statusRow }
-                if pairing.servesTailnet, !onTunnel { tailnetRow }
+                if pairing.servesTailnet, !onTunnel {
+                    builtInRows
+                    if !pairing.usesBuiltInTailscale { tailnetRow }
+                }
 
                 LabeledContent {
                     Button(localized("Show QR Code…")) { pairing.showsSheet = true }
@@ -398,8 +414,10 @@ struct DeviceServingSection: View {
             // the user runs themselves.
             if mobile.isEnabled { footnote(networkFootnote) }
         }
+        .onDisappear { builtIn.stopWatching() }
         .onAppear {
             pairing.refresh()
+            builtIn.startWatching()
             let custom = CustomTunnel.current
             customCommand = custom.command
             customURLPattern = custom.urlPattern
@@ -428,6 +446,119 @@ struct DeviceServingSection: View {
     }
 
     private static let tailscaleApp = URL(fileURLWithPath: "/Applications/Tailscale.app")
+    private static let tailscaleMachines = URL(string: "https://login.tailscale.com/admin/machines")
+
+    /// Built-in Tailscale, the way Rex puts its server on the tailnet: one
+    /// switch, then the one step the node is waiting on, then who gets in.
+    @ViewBuilder
+    private var builtInRows: some View {
+        Toggle(isOn: Binding(get: { builtIn.enabled }, set: { builtIn.setEnabled($0) })) {
+            SettingsLabel(
+                title: localized("Built-In Tailscale"),
+                subtext: builtInSubtext
+            )
+        }
+        .toggleStyle(.switch)
+        .disabled(builtIn.busy || !builtIn.available || (!mobile.attachesDirectly && !builtIn.enabled))
+
+        if builtIn.enabled { builtInStatusRow }
+        if let failure = builtIn.failure {
+            Text(failure)
+                .font(.settingsDetail)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var builtInSubtext: String {
+        if !builtIn.available, builtIn.report != nil {
+            return localized("This build of Termio doesn’t include built-in Tailscale.")
+        }
+        if !mobile.attachesDirectly {
+            return localized("Needs Direct Attach.")
+        }
+        return localized("This Mac joins your tailnet as a device of its own. It doesn’t need the Tailscale app.")
+    }
+
+    @ViewBuilder
+    private var builtInStatusRow: some View {
+        let status = builtIn.report?.status
+        switch status?.state {
+        case "running":
+            LabeledContent(localized("Status")) {
+                Text(localized("Connected · \(Tailnet.trimmingRoot(status?.dnsName ?? ""))"))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            LabeledContent(localized("Access")) {
+                if status?.tagged == true {
+                    Text(localized("Nobody: a tagged device has no owner"))
+                        .foregroundStyle(.red)
+                } else if let owner = status?.owner {
+                    Text(localized("Only \(owner)"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(localized("Only the account that signed in"))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            LabeledContent {
+                Button(localized("Sign Out…")) { confirmSignOut = true }
+                    .confirmationDialog(
+                        localized("Sign this Mac out of Tailscale?"),
+                        isPresented: $confirmSignOut,
+                        titleVisibility: .visible
+                    ) {
+                        Button(localized("Sign Out"), role: .destructive) { builtIn.signOut() }
+                        Button(localized("Cancel"), role: .cancel) {}
+                    } message: {
+                        Text(localized("iPhones paired over the tailnet can’t connect until you sign in again."))
+                    }
+            } label: {
+                SettingsLabel(
+                    title: localized("Tailscale Account"),
+                    subtext: localized("Signs this Mac’s device out of your tailnet.")
+                )
+            }
+        case "needs_login":
+            LabeledContent {
+                if let link = status?.authURL.flatMap(URL.init(string:)) {
+                    Button(localized("Sign In…")) { NSWorkspace.shared.open(link) }
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            } label: {
+                SettingsLabel(
+                    title: localized("Status"),
+                    subtext: localized("Sign in with the Tailscale account your iPhone uses.")
+                )
+            }
+        case "needs_approval":
+            LabeledContent {
+                Button(localized("Approve…")) {
+                    if let machines = Self.tailscaleMachines { NSWorkspace.shared.open(machines) }
+                }
+            } label: {
+                SettingsLabel(
+                    title: localized("Status"),
+                    subtext: localized("Approve this Mac in the Tailscale admin console.")
+                )
+            }
+        case "error":
+            LabeledContent(localized("Status")) {
+                Text(status?.message ?? localized("Stopped"))
+                    .font(.settingsDetail)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.trailing)
+            }
+        default:
+            LabeledContent(localized("Status")) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(localized("Starting…")).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 
     /// A provider's name as the picker shows it. `Spec.label` is the tool's own
     /// name, so it reaches the screen untranslated — right for the two brands
@@ -450,6 +581,9 @@ struct DeviceServingSection: View {
         }
         if onTunnel {
             return localized("The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
+        }
+        if pairing.usesBuiltInTailscale {
+            return localized("Works from any network while Tailscale is connected on your iPhone. Traffic stays on your tailnet.")
         }
         if pairing.servesTailnet {
             return localized("Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
@@ -595,6 +729,7 @@ struct PairingSheet: View {
     @ObservedObject private var pairing = PairingModel.shared
     @ObservedObject private var tunnel = TunnelManager.shared
     @ObservedObject private var mobile = MobileAccess.shared
+    @ObservedObject private var builtIn = BuiltInTailscale.shared
     @State private var copied = false
 
     /// The QR with its address, or the one reason there is none yet. Mobile
@@ -612,7 +747,11 @@ struct PairingSheet: View {
                         footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
                         Button(localized("Turn On")) { mobile.isEnabled = true }
                     }
-                } else if pairing.servesTailnet, !pairing.onTunnel, pairing.tailnetAddress == nil {
+                } else if pairing.usesBuiltInTailscale, builtIn.url == nil {
+                    // The node has no address until it is signed in and up,
+                    // and the step it waits on is in Settings, not here.
+                    footnote(localized("Built-in Tailscale isn’t connected yet. Finish signing in under Settings ▸ Server ▸ Pairing."))
+                } else if pairing.servesTailnet, !pairing.onTunnel, !pairing.usesBuiltInTailscale, pairing.tailnetAddress == nil {
                     if pairing.tailnetRead {
                         footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
                     } else {

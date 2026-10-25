@@ -108,7 +108,7 @@ enum RemotePairing {
 
     // MARK: - Running it
 
-    private struct Result {
+    struct Result {
         let status: Int32
         let stdout: String
         let stderr: String
@@ -152,7 +152,9 @@ enum RemotePairing {
     /// The bundled `termiod`, run against this app's own channel so it reads the
     /// state directory the running daemon uses. Without the variable a dev build
     /// would mint a pairing token for the release channel's daemon.
-    private static func runLocally(arguments: [String]) async throws -> Result {
+    /// Runs this Mac's own `termiod` on its channel. Also how Settings drives
+    /// built-in Tailscale (`termiod tailscale`).
+    static func runLocally(arguments: [String]) async throws -> Result {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let binary = Termiod.daemonBinaryPath()
@@ -166,6 +168,13 @@ enum RemotePairing {
                 process.arguments = arguments
                 var environment = ProcessInfo.processInfo.environment
                 environment["TERMIO_CHANNEL"] = Termiod.channelName
+                // `TERMIOD_SOCK` outranks the channel, and an app launched from a
+                // Termio terminal inherits the release daemon's: left in, every
+                // command here would read and write that daemon's state. Kept
+                // outside a bundle, the same as the daemon spawn, for the tests.
+                if AppChannel.isTermioAppBundle {
+                    environment.removeValue(forKey: "TERMIOD_SOCK")
+                }
                 process.environment = environment
                 let out = Pipe()
                 let err = Pipe()
@@ -191,7 +200,7 @@ enum RemotePairing {
 
     /// What to show when the command failed. `termiod`'s message when it has one;
     /// otherwise ssh's, which is the case where the box was never reached at all.
-    private static func message(from result: Result) -> String {
+    static func message(from result: Result) -> String {
         let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         guard stderr.isEmpty else { return stderr }
         return localized("Exited with status \(Int(result.status)).")

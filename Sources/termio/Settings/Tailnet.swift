@@ -357,3 +357,151 @@ enum Tailnet {
         }
     }
 }
+
+/// This Mac's session host on the tailnet as a device of its own, the way a
+/// Linux box joins with `termiod tailscale on`. The daemon owns it: it runs
+/// `termio-tailnet` beside itself and keeps it up across restarts, so this only
+/// asks it, through the same `termiod tailscale` a terminal would use.
+@MainActor
+final class BuiltInTailscale: ObservableObject {
+    static let shared = BuiltInTailscale()
+
+    /// What `termiod tailscale status --json` last said. nil before the first
+    /// answer.
+    @Published private(set) var report: Report?
+    /// A command is running; the switch waits for it.
+    @Published private(set) var busy = false
+    /// Why the last command failed, in termiod's own words.
+    @Published private(set) var failure: String?
+
+    struct Report: Decodable, Equatable {
+        let enabled: Bool
+        let hostname: String
+        let status: Status?
+        let url: String?
+        let helper: String?
+    }
+
+    struct Status: Decodable, Equatable {
+        let state: String
+        let authURL: String?
+        let dnsName: String?
+        let ips: [String]?
+        let https: Bool?
+        let owner: String?
+        let tagged: Bool?
+        let message: String?
+
+        enum CodingKeys: String, CodingKey {
+            case state, ips, https, owner, tagged, message
+            case authURL = "auth_url"
+            case dnsName = "dns_name"
+        }
+    }
+
+    var enabled: Bool { report?.enabled ?? false }
+    var state: String? { report?.status?.state }
+    /// Where a phone reaches this Mac's session host on the tailnet, once the
+    /// node is connected.
+    var url: String? { state == "running" ? report?.url : nil }
+    /// The build carries the helper. A dev build without Go does not.
+    var available: Bool { report?.helper != nil }
+
+    private var polling: Task<Void, Never>?
+
+    /// Reads the state now, and keeps reading while the node is on its way
+    /// somewhere: signing in, waiting for approval, starting.
+    func refresh() {
+        Task { await read() }
+    }
+
+    func startWatching() {
+        guard polling == nil else { return }
+        polling = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.read()
+                try? await Task.sleep(for: .seconds(self.settled ? 10 : 1.5))
+            }
+        }
+    }
+
+    func stopWatching() {
+        polling?.cancel()
+        polling = nil
+    }
+
+    private var settled: Bool {
+        guard let report else { return false }
+        return !report.enabled || report.status?.state == "running"
+    }
+
+    func setEnabled(_ on: Bool) {
+        let arguments = on
+            ? ["tailscale", "on", "--no-wait", "--hostname", Self.deviceName]
+            : ["tailscale", "off"]
+        perform(arguments)
+    }
+
+    func signOut() {
+        perform(["tailscale", "logout"])
+    }
+
+    private func perform(_ arguments: [String]) {
+        guard !busy else { return }
+        busy = true
+        failure = nil
+        Task {
+            defer { busy = false }
+            do {
+                let result = try await RemotePairing.runLocally(arguments: arguments)
+                if result.status != 0 {
+                    failure = RemotePairing.message(from: result)
+                }
+            } catch let error as RemotePairing.Failure {
+                failure = error.message
+            } catch {
+                failure = error.localizedDescription
+            }
+            await read()
+        }
+    }
+
+    private func read() async {
+        guard let result = try? await RemotePairing.runLocally(arguments: ["tailscale", "status", "--json"]),
+              result.status == 0,
+              let data = result.stdout.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(Report.self, from: data)
+        else { return }
+        if decoded != report { report = decoded }
+    }
+
+    /// `termio-` and this Mac's name as a DNS label, so two Macs on one tailnet
+    /// do not both come up as `termio`, and the admin console says which is
+    /// which.
+    static var deviceName: String {
+        let raw = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        return deviceName(from: raw)
+    }
+
+    nonisolated static func deviceName(from computerName: String) -> String {
+        var label = ""
+        var lastWasHyphen = false
+        for scalar in computerName.lowercased().unicodeScalars {
+            if scalar.isASCII, CharacterSet.alphanumerics.contains(scalar) {
+                label.unicodeScalars.append(scalar)
+                lastWasHyphen = false
+            } else if !lastWasHyphen, !label.isEmpty {
+                label.append("-")
+                lastWasHyphen = true
+            }
+        }
+        while label.hasSuffix("-") { label.removeLast() }
+        guard !label.isEmpty else { return "termio" }
+        let name = "termio-" + label
+        guard name.count > 63 else { return name }
+        var trimmed = String(name.prefix(63))
+        while trimmed.hasSuffix("-") { trimmed.removeLast() }
+        return trimmed
+    }
+}
