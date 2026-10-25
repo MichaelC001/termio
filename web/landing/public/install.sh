@@ -209,7 +209,7 @@ plan_tailnet() {
     LISTENER_WANTED=1
     # The listener refuses to start without a pairing token, so it exists first.
     "$TERMIOD" pair >/dev/null
-    if [ "$existing" != "$want_origin" ]; then
+    if [ "$existing" != "$want_origin" ] || [ "$existing_bind" != "$want_bind" ]; then
         mkdir -p "$(dirname "$DROPIN")"
         printf '[Service]\nEnvironment="TERMIOD_WSS=127.0.0.1:%s"\nEnvironment="TERMIOD_WSS_ORIGIN=%s"\n' \
             "$PORT" "$URL" > "$DROPIN.new"
@@ -227,7 +227,15 @@ keep_running() {
     fi
     step "Keeping termiod running with systemd --user"
     [ "$LISTENER_CHANGED" = 1 ] && systemctl --user daemon-reload
-    if ! "$TERMIOD" service install; then
+    # `service install` writes the unit afresh. One that carries WebSocket
+    # settings of its own was configured by hand, and rewriting it would drop
+    # them at the next restart.
+    unit="$(dirname "$DROPIN")/../termiod.service"
+    if grep -q -e 'TERMIOD_WSS' -e '--wss' "$unit" 2>/dev/null; then
+        say "    $unit was configured by hand (it sets the WebSocket listener), so it is"
+        say "    left as it is. Move those settings into a drop-in to let this manage it."
+        SERVICE_OK=1
+    elif ! "$TERMIOD" service install; then
         say "    A Mac may have started termiod here over SSH. Run termiod stop once"
         say "    its sessions are done, then run this installer again."
         return 0
@@ -238,6 +246,13 @@ keep_running() {
     # sessions, so it happens only when the daemon said it holds none.
     [ "$LISTENER_WANTED" = 1 ] || return 0
     wait_for_listener && return 0
+    if port_taken; then
+        say "    Another program is using 127.0.0.1:$PORT, so termiod can't listen there and"
+        say "    nothing is published on the tailnet."
+        LISTENER_WANTED=0
+        URL=""
+        return 0
+    fi
     if [ "$(verified_live_sessions || echo unknown)" = 0 ]; then
         systemctl --user restart termiod.service
         wait_for_listener || say "    termiod didn't open its tailnet listener. See: termiod logs"
@@ -247,12 +262,22 @@ keep_running() {
     fi
 }
 
-# Whether a socket is listening on 127.0.0.1:$PORT, read from the kernel's own
-# table: every Linux has it, and no client tool's exit codes have to be
-# interpreted. Address and port are hex there; 0A is LISTEN.
+# Whether termiod itself is listening on 127.0.0.1:$PORT. The kernel's table
+# names the listening socket's inode (address and port in hex, 0A is LISTEN),
+# and the daemon's own descriptors must hold that inode: another program on
+# the port must never be what Tailscale Serve publishes.
 listening() {
     entry="0100007F:$(printf '%04X' "$PORT") 00000000:0000 0A"
-    grep -q "$entry" /proc/net/tcp 2>/dev/null
+    inode="$(grep "$entry" /proc/net/tcp 2>/dev/null | awk '{ print $10 }' | head -n1)"
+    [ -n "$inode" ] || return 1
+    pid="$(status_flat | sed -n 's/.*"daemon":{[^}]*"pid":\([0-9]*\).*/\1/p')"
+    [ -n "$pid" ] || return 1
+    ls -l "/proc/$pid/fd" 2>/dev/null | grep -q "socket:\[$inode\]"
+}
+
+# Something other than termiod holds the port.
+port_taken() {
+    grep -q "0100007F:$(printf '%04X' "$PORT") 00000000:0000 0A" /proc/net/tcp 2>/dev/null && ! listening
 }
 
 # A daemon that was just started binds its socket before its listener.
