@@ -1074,10 +1074,10 @@
 	<string>页面</string>
 	<key>Pair</key>
 	<string>配对</string>
-	<key>Pair a Phone…</key>
-	<string>配对手机…</string>
 	<key>Pair iPhone</key>
 	<string>配对 iPhone</string>
+	<key>Pair iPhone…</key>
+	<string>配对 iPhone…</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>切换后，已配对的 iPhone 需要重新扫码。</string>
 	<key>Pairing</key>
@@ -1636,6 +1636,8 @@
 	<string>请尝试其他搜索词。</string>
 	<key>Tunnel</key>
 	<string>隧道</string>
+	<key>Turn On</key>
+	<string>打开</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>关闭后 iPhone 将断开连接；配对会保留。</string>
 	<key>Turn on Allow Paired Devices to pair an iPhone.</key>

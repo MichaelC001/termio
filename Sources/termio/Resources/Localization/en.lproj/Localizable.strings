@@ -1074,10 +1074,10 @@
 	<string>Pages</string>
 	<key>Pair</key>
 	<string>Pair</string>
-	<key>Pair a Phone…</key>
-	<string>Pair a Phone…</string>
 	<key>Pair iPhone</key>
 	<string>Pair iPhone</string>
+	<key>Pair iPhone…</key>
+	<string>Pair iPhone…</string>
 	<key>Paired iPhones must scan the code again after switching.</key>
 	<string>Paired iPhones must scan the code again after switching.</string>
 	<key>Pairing</key>
@@ -1636,6 +1636,8 @@
 	<string>Try another search term.</string>
 	<key>Tunnel</key>
 	<string>Tunnel</string>
+	<key>Turn On</key>
+	<string>Turn On</string>
 	<key>Turn off to disconnect your iPhone; pairing is kept.</key>
 	<string>Turn off to disconnect your iPhone; pairing is kept.</string>
 	<key>Turn on Allow Paired Devices to pair an iPhone.</key>

@@ -1,92 +1,118 @@
+import Combine
 import CoreImage
 import SwiftUI
 
-/// What this Mac serves to phones — the companion port, the pairing token, the QR
-/// carrying both, and the tunnel fronting them (RFC §D9). A section of the Server
-/// pane: a phone attaches to a port this Mac serves, so it is a fact about the
-/// machine. It had a tab of its own while it sat three levels deep under Devices;
-/// Server is now first-level, so the QR is one click away inside it.
-struct DeviceServingSection: View {
+/// This Mac's pairing state: the addresses a phone could dial, the network that
+/// carries it, and the invite minted for that address. Held once for the app,
+/// because two views show it. The Pairing section configures it, and the QR
+/// sheet hangs off the pane's root, which also answers Pair iPhone… from the menu
+/// bar. A `Section` deep in a lazy `Form` cannot own a sheet like that: it may
+/// not exist yet when the request arrives.
+@MainActor
+final class PairingModel: ObservableObject {
+    static let shared = PairingModel()
+
     /// The reachable addresses, refreshed on open: Wi-Fi/Ethernet IPv4s
     /// first (the proven path), the Bonjour `.local` name as a fallback that
     /// survives DHCP lease changes.
-    @State private var hosts: [String] = []
-    @State private var selectedHost = ""
-    @State private var copied = false
-    @State private var inviteCopied = false
-    @State private var confirmRotate = false
-    @State private var token = PairingToken.current
-    @ObservedObject private var tunnel = TunnelManager.shared
-    @ObservedObject private var mobile = MobileAccess.shared
-    /// Draft custom-relay fields, loaded from the persisted values on appear and
-    /// written back only when the user commits them, so a half-typed command
-    /// never becomes the live spec mid-keystroke.
-    @State private var customCommand = ""
-    @State private var customURLPattern = ""
+    @Published private(set) var hosts: [String] = []
+    @Published var selectedHost = ""
+    @Published private(set) var token = PairingToken.current
     /// This Mac's session-host invite, minted by the daemon whenever the address
     /// it would carry changes. nil while direct attach is off, and between the
     /// address changing and the daemon answering.
-    @State private var invite: RemotePairing.Invite?
+    @Published private(set) var invite: RemotePairing.Invite?
     /// Why there is no invite, when there should be one. Rendered in the QR's
     /// place: an empty hero unit reads as a pane still loading.
-    @State private var inviteFailure: String?
-    /// The address the invite on screen was minted for, so a late answer for an
-    /// address the pane has already moved off is dropped rather than shown.
-    @State private var invitedBase: String?
-    /// A mint is in flight. The tunnel reports `.starting` and then `.running`
-    /// within a second or two, and each is a trigger — without this the pane
-    /// forks two `termiod pair` processes for one address.
-    @State private var minting = false
+    @Published private(set) var inviteFailure: String?
     /// Where the tailnet reaches this Mac, read when the pane opens. nil off a
     /// tailnet, which keeps Tailscale out of the picker.
-    @State private var tailnetAddress: String?
-    @State private var tailnetRead = false
-    @State private var showsPairing = false
+    @Published private(set) var tailnetAddress: String?
+    @Published private(set) var tailnetRead = false
     /// The phone reaches this Mac across the user's tailnet. Not a tunnel
     /// provider: nothing is spawned, because both listeners already take every
     /// interface, so only the address in the QR changes.
-    @AppStorage("companion.servesTailnet") private var servesTailnet = false
+    @Published var servesTailnet: Bool {
+        didSet { UserDefaults.standard.set(servesTailnet, forKey: Self.servesTailnetKey) }
+    }
+    @Published var showsSheet = false
+
+    /// The address the invite on screen was minted for, so a late answer for an
+    /// address the pane has already moved off is dropped rather than shown.
+    private var invitedBase: String?
+    /// A mint is in flight. The tunnel reports `.starting` and then `.running`
+    /// within a second or two, and each is a trigger — without this the pane
+    /// forks two `termiod pair` processes for one address.
+    private var minting = false
+    private let tunnel = TunnelManager.shared
+    private let mobile = MobileAccess.shared
+    private var observers: Set<AnyCancellable> = []
+    private static let servesTailnetKey = "companion.servesTailnet"
+
+    private init() {
+        servesTailnet = UserDefaults.standard.bool(forKey: Self.servesTailnetKey)
+        // The invite names one address, so it is re-minted whenever that address
+        // could have changed: the switches, the picked host, the tailnet, and the
+        // tunnel coming up or going away. A publisher fires before its value
+        // changes, so the refresh runs on the next turn, against the new value.
+        let triggers: [AnyPublisher<Void, Never>] = [
+            mobile.$isEnabled.map { _ in }.eraseToAnyPublisher(),
+            mobile.$attachesDirectly.map { _ in }.eraseToAnyPublisher(),
+            tunnel.$status.map { _ in }.eraseToAnyPublisher(),
+            $selectedHost.map { _ in }.eraseToAnyPublisher(),
+            $tailnetAddress.map { _ in }.eraseToAnyPublisher(),
+            $servesTailnet.map { _ in }.eraseToAnyPublisher(),
+        ]
+        Publishers.MergeMany(triggers)
+            .dropFirst(triggers.count)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.refreshInvite() }
+            .store(in: &observers)
+    }
+
+    /// Re-reads everything that can change while the pane is closed.
+    func refresh() {
+        refreshHosts()
+        refreshInvite()
+        Task {
+            tailnetAddress = await Tailnet.ownAddress()
+            tailnetRead = true
+        }
+    }
+
+    /// Rotate Token: on the session protocol the secret belongs to the daemon,
+    /// so revoking it is the daemon's verb rather than a defaults key this app
+    /// clears.
+    func rotateToken() {
+        if mobile.attachesDirectly {
+            refreshInvite(rotate: true)
+        } else {
+            token = PairingToken.regenerate()
+        }
+    }
 
     /// A tunnel is up (or coming up): the QR carries the public URL, not the LAN
     /// address, and the LAN host picker no longer applies.
-    private var onTunnel: Bool { tunnel.provider != .off }
+    var onTunnel: Bool { tunnel.provider != .off }
+
+    var tunnelRunning: Bool {
+        if case .running = tunnel.status { return true }
+        return false
+    }
 
     /// The host the QR names when no tunnel is up: this Mac's tailnet address, or
-    /// the LAN address picked below.
-    private var servedHost: String {
+    /// the LAN address picked in the section.
+    var servedHost: String {
         guard servesTailnet else { return selectedHost }
         guard let tailnetAddress else { return "" }
         return tailnetAddress.contains(":") ? "[\(tailnetAddress)]" : tailnetAddress
-    }
-
-    /// One picker for every way the phone reaches this Mac, so Tailscale sits
-    /// beside the tunnels it replaces.
-    private enum Reach: Hashable {
-        case tailnet
-        case tunnel(TunnelManager.Provider)
-    }
-
-    private var reach: Binding<Reach> {
-        Binding(
-            get: { servesTailnet && !onTunnel ? .tailnet : .tunnel(tunnel.provider) },
-            set: { choice in
-                switch choice {
-                case .tailnet:
-                    tunnel.setProvider(.off)
-                    servesTailnet = true
-                case .tunnel(let provider):
-                    servesTailnet = false
-                    tunnel.setProvider(provider)
-                }
-            }
-        )
     }
 
     /// What the QR encodes: over the companion wire the socket address itself,
     /// carrying the token as the query the server reads; over the session
     /// protocol the `termio://device` invite the daemon minted, which is the
     /// same link a Linux box's QR carries.
-    private var qrPayload: String {
+    var qrPayload: String {
         if mobile.attachesDirectly { return invite?.link ?? "" }
         return companionURL
     }
@@ -94,7 +120,7 @@ struct DeviceServingSection: View {
     /// The address under the QR — what the user copies and what they can check
     /// against the phone. The invite link is not it: it is a `termio://` URL
     /// with a secret in it, and it says nothing about where this Mac is.
-    private var addressText: String {
+    var addressText: String {
         if mobile.attachesDirectly { return invite?.url ?? "" }
         return companionURL
     }
@@ -108,7 +134,7 @@ struct DeviceServingSection: View {
     }
 
     /// Where a phone would reach this Mac's session host: the public URL while a
-    /// tunnel is up, the selected LAN address otherwise. nil when there is no
+    /// tunnel is up, the selected address otherwise. nil when there is no
     /// address to hand out, which is what stops a QR being minted for one.
     private var directBase: String? {
         if case .running(let publicURL) = tunnel.status {
@@ -118,9 +144,129 @@ struct DeviceServingSection: View {
         return "http://\(servedHost):\(AppChannel.devicePort)"
     }
 
-    private var tunnelRunning: Bool {
-        if case .running = tunnel.status { return true }
-        return false
+    /// Asks this Mac's daemon for the invite that names `directBase`.
+    ///
+    /// `rotate` mints a fresh pairing token first, which is what Rotate Token
+    /// does on this side.
+    private func refreshInvite(rotate: Bool = false) {
+        guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
+            invite = nil
+            inviteFailure = nil
+            invitedBase = nil
+            return
+        }
+        guard !minting else { return }
+        guard rotate || base != invitedBase || invite == nil else { return }
+        invitedBase = base
+        minting = true
+        Task {
+            defer {
+                minting = false
+                // A change that arrived mid-mint was dropped by the guard above,
+                // and nothing else will ask again for the address it moved to.
+                if mobile.isEnabled, mobile.attachesDirectly, directBase != base { refreshInvite() }
+            }
+            do {
+                let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
+                // The pane may have moved to another address while the daemon
+                // was answering; a QR for the previous one would scan and then
+                // reach nothing.
+                guard base == invitedBase else { return }
+                invite = minted
+                inviteFailure = nil
+            } catch let failure as RemotePairing.Failure {
+                guard base == invitedBase else { return }
+                invite = nil
+                inviteFailure = failure.message
+            } catch {
+                guard base == invitedBase else { return }
+                invite = nil
+                inviteFailure = error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshHosts() {
+        hosts = Self.lanIPv4Addresses() + [Self.bonjourName()].compactMap { $0 }
+        if !hosts.contains(selectedHost) {
+            selectedHost = hosts.first ?? ""
+        }
+    }
+
+    /// IPv4 addresses of the real interfaces (`en*` — Wi-Fi and Ethernet),
+    /// skipping link-local self-assignments.
+    private static func lanIPv4Addresses() -> [String] {
+        var addresses: [String] = []
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return [] }
+        defer { freeifaddrs(list) }
+        var cursor = list
+        while let ifa = cursor {
+            defer { cursor = ifa.pointee.ifa_next }
+            let name = String(cString: ifa.pointee.ifa_name)
+            guard name.hasPrefix("en"),
+                  let addr = ifa.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(
+                addr, socklen_t(addr.pointee.sa_len),
+                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST
+            ) == 0 else { continue }
+            let ip = String(decoding: host.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
+            if !ip.hasPrefix("169.254."), !addresses.contains(ip) {
+                addresses.append(ip)
+            }
+        }
+        return addresses
+    }
+
+    /// The `<name>.local` mDNS hostname, when the system reports one.
+    private static func bonjourName() -> String? {
+        let name = ProcessInfo.processInfo.hostName
+        return name.hasSuffix(".local") ? name : nil
+    }
+
+}
+
+/// What this Mac serves to phones — the companion port, the pairing token, the
+/// network fronting them, and the way in to the QR (RFC §D9). A section of the
+/// Server pane: a phone attaches to a port this Mac serves, so it is a fact
+/// about the machine.
+struct DeviceServingSection: View {
+    @ObservedObject private var pairing = PairingModel.shared
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @ObservedObject private var mobile = MobileAccess.shared
+    @State private var inviteCopied = false
+    @State private var confirmRotate = false
+    /// Draft custom-relay fields, loaded from the persisted values on appear and
+    /// written back only when the user commits them, so a half-typed command
+    /// never becomes the live spec mid-keystroke.
+    @State private var customCommand = ""
+    @State private var customURLPattern = ""
+
+    private var onTunnel: Bool { pairing.onTunnel }
+
+    /// One picker for every way the phone reaches this Mac, so Tailscale sits
+    /// beside the tunnels it replaces.
+    private enum Reach: Hashable {
+        case tailnet
+        case tunnel(TunnelManager.Provider)
+    }
+
+    private var reach: Binding<Reach> {
+        Binding(
+            get: { pairing.servesTailnet && !onTunnel ? .tailnet : .tunnel(tunnel.provider) },
+            set: { choice in
+                switch choice {
+                case .tailnet:
+                    tunnel.setProvider(.off)
+                    pairing.servesTailnet = true
+                case .tunnel(let provider):
+                    pairing.servesTailnet = false
+                    tunnel.setProvider(provider)
+                }
+            }
+        )
     }
 
     /// Configuration first, the code last. The QR is something you do once per
@@ -149,7 +295,7 @@ struct DeviceServingSection: View {
                         Text(Self.pickerLabel(provider)).tag(Reach.tunnel(provider))
                         // Offered only on a tailnet, but kept while chosen so
                         // the picker never shows a selection it has no row for.
-                        if provider == .off, tailnetAddress != nil || servesTailnet {
+                        if provider == .off, pairing.tailnetAddress != nil || pairing.servesTailnet {
                             Text(verbatim: "Tailscale").tag(Reach.tailnet)
                         }
                     }
@@ -157,18 +303,18 @@ struct DeviceServingSection: View {
                 // The custom-relay editor: shown only when Custom is picked,
                 // so the common third-party path stays uncluttered.
                 if tunnel.provider == .custom { customTunnelEditor }
-                if !onTunnel, !servesTailnet, hosts.count > 1 {
-                    Picker(localized("Address"), selection: $selectedHost) {
-                        ForEach(hosts, id: \.self) { host in
+                if !onTunnel, !pairing.servesTailnet, pairing.hosts.count > 1 {
+                    Picker(localized("Address"), selection: $pairing.selectedHost) {
+                        ForEach(pairing.hosts, id: \.self) { host in
                             Text(host).tag(host)
                         }
                     }
                 }
                 if onTunnel { statusRow }
-                if servesTailnet, !onTunnel { tailnetRow }
+                if pairing.servesTailnet, !onTunnel { tailnetRow }
 
                 LabeledContent {
-                    Button(localized("Show QR Code…")) { showsPairing = true }
+                    Button(localized("Show QR Code…")) { pairing.showsSheet = true }
                 } label: {
                     SettingsLabel(
                         title: localized("Pair iPhone"),
@@ -199,11 +345,7 @@ struct DeviceServingSection: View {
                             titleVisibility: .visible
                         ) {
                             Button(localized("Rotate Token"), role: .destructive) {
-                                if mobile.attachesDirectly {
-                                    refreshInvite(rotate: true)
-                                } else {
-                                    token = PairingToken.regenerate()
-                                }
+                                pairing.rotateToken()
                             }
                             Button(localized("Cancel"), role: .cancel) {}
                         } message: {
@@ -231,76 +373,12 @@ struct DeviceServingSection: View {
             // the user runs themselves.
             if mobile.isEnabled { footnote(networkFootnote) }
         }
-        .sheet(isPresented: $showsPairing) { pairingSheet }
         .onAppear {
-            refreshHosts()
+            pairing.refresh()
             let custom = CustomTunnel.current
             customCommand = custom.command
             customURLPattern = custom.urlPattern
-            refreshInvite()
         }
-        .task {
-            tailnetAddress = await Tailnet.ownAddress()
-            tailnetRead = true
-        }
-        // The invite names one address, so it is re-minted whenever that address
-        // could have changed: the switch, the picked host, and the tunnel coming
-        // up or going away.
-        .onChange(of: mobile.attachesDirectly) { refreshInvite() }
-        .onChange(of: selectedHost) { refreshInvite() }
-        .onChange(of: tailnetAddress) { refreshInvite() }
-        .onChange(of: servesTailnet) { refreshInvite() }
-        .onChange(of: tunnel.status) { refreshInvite() }
-    }
-
-    /// The QR with its address, or the one reason there is none yet. Mobile
-    /// Access switching off while it is open leaves nothing to scan, so the
-    /// sheet says that instead of keeping a code for a server that stopped.
-    private var pairingSheet: some View {
-        VStack(spacing: 16) {
-            Text(localized("Pair iPhone"))
-                .font(.headline)
-            Group {
-                if !mobile.isEnabled {
-                    footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
-                } else if servesTailnet, !onTunnel, tailnetAddress == nil {
-                    if tailnetRead {
-                        footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                } else if !servesTailnet, hosts.isEmpty, !tunnelRunning {
-                    footnote(localized("No network address found. Join a network, then reopen this pane."))
-                } else if onTunnel, !tunnelRunning {
-                    // The QR would name the LAN until the tunnel prints its URL,
-                    // and a phone that scans it in that second is paired to an
-                    // address the picker says is not in use.
-                    if case .failed(let message) = tunnel.status {
-                        footnote(message)
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                } else if mobile.attachesDirectly, let inviteFailure {
-                    footnote(inviteFailure)
-                } else if mobile.attachesDirectly, invite == nil {
-                    // A QR generated from an empty string is a scannable code
-                    // for nothing, which is worse than the wait it hides.
-                    ProgressView().controlSize(.small)
-                } else {
-                    scanBlock
-                }
-            }
-            .frame(minHeight: 120)
-            footnote(localized("On iPhone, tap the Mac pill ▸ Scan QR Code."))
-                .multilineTextAlignment(.center)
-            HStack {
-                Spacer()
-                Button(localized("Done")) { showsPairing = false }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
     }
 
     /// Where Tailscale stands on this Mac, in the place a tunnel shows its
@@ -308,13 +386,13 @@ struct DeviceServingSection: View {
     @ViewBuilder
     private var tailnetRow: some View {
         LabeledContent(localized("Status")) {
-            if let tailnetAddress {
+            if let tailnetAddress = pairing.tailnetAddress {
                 Text(localized("Connected · \(tailnetAddress)"))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-            } else if tailnetRead, FileManager.default.fileExists(atPath: Self.tailscaleApp.path) {
+            } else if pairing.tailnetRead, FileManager.default.fileExists(atPath: Self.tailscaleApp.path) {
                 Button(localized("Open Tailscale")) { NSWorkspace.shared.open(Self.tailscaleApp) }
-            } else if tailnetRead {
+            } else if pairing.tailnetRead {
                 // A Homebrew install has no app to open; `tailscale up` is its own.
                 Text(localized("Not Connected"))
                     .foregroundStyle(.secondary)
@@ -348,7 +426,7 @@ struct DeviceServingSection: View {
         if onTunnel {
             return localized("The tunnel address works from any network, and terminates on the provider's servers. Pick Custom to run your own relay instead.")
         }
-        if servesTailnet {
+        if pairing.servesTailnet {
             return localized("Works from any network while Tailscale is connected on both devices. Traffic stays on your tailnet.")
         }
         return localized("Your iPhone must be on the same network as this Mac.")
@@ -445,11 +523,7 @@ struct DeviceServingSection: View {
         .url(forResource: "testflight", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
 
-    private func footnote(_ text: String) -> some View {
-        Text(text)
-            .font(.settingsDetail)
-            .foregroundStyle(.secondary)
-    }
+    private func footnote(_ text: String) -> some View { pairingFootnote(text) }
 
     /// Just the tunnel's health — the public host already shows in the address
     /// row above, so this line carries state, not a second copy of the URL.
@@ -488,11 +562,79 @@ struct DeviceServingSection: View {
         }
     }
 
+}
+
+/// The QR to scan, opened by Pair iPhone in the section and by Pair iPhone… in
+/// the menu bar and the command palette.
+struct PairingSheet: View {
+    @ObservedObject private var pairing = PairingModel.shared
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @ObservedObject private var mobile = MobileAccess.shared
+    @State private var copied = false
+
+    /// The QR with its address, or the one reason there is none yet. Mobile
+    /// Access switching off while it is open leaves nothing to scan, so the
+    /// sheet says that instead of keeping a code for a server that stopped.
+    var body: some View {
+        VStack(spacing: 16) {
+            Text(localized("Pair iPhone"))
+                .font(.headline)
+            Group {
+                if !mobile.isEnabled {
+                    // Reached from the menu bar with serving off: the one step
+                    // that makes a code possible is offered here, not described.
+                    VStack(spacing: 10) {
+                        footnote(localized("Turn on Allow Paired Devices to pair an iPhone."))
+                        Button(localized("Turn On")) { mobile.isEnabled = true }
+                    }
+                } else if pairing.servesTailnet, !pairing.onTunnel, pairing.tailnetAddress == nil {
+                    if pairing.tailnetRead {
+                        footnote(localized("Tailscale isn’t connected on this Mac. Connect it, then reopen this pane."))
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else if !pairing.servesTailnet, pairing.hosts.isEmpty, !pairing.tunnelRunning {
+                    footnote(localized("No network address found. Join a network, then reopen this pane."))
+                } else if pairing.onTunnel, !pairing.tunnelRunning {
+                    // The QR would name the LAN until the tunnel prints its URL,
+                    // and a phone that scans it in that second is paired to an
+                    // address the picker says is not in use.
+                    if case .failed(let message) = tunnel.status {
+                        footnote(message)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                } else if mobile.attachesDirectly, let inviteFailure = pairing.inviteFailure {
+                    footnote(inviteFailure)
+                } else if mobile.attachesDirectly, pairing.invite == nil {
+                    // A QR generated from an empty string is a scannable code
+                    // for nothing, which is worse than the wait it hides.
+                    ProgressView().controlSize(.small)
+                } else {
+                    scanBlock
+                }
+            }
+            .frame(minHeight: 120)
+            footnote(localized("On iPhone, tap the Mac pill ▸ Scan QR Code."))
+                .multilineTextAlignment(.center)
+            HStack {
+                Spacer()
+                Button(localized("Done")) { pairing.showsSheet = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        // Opened from the menu bar, the sheet is the first thing to need fresh
+        // addresses, before the section below it has appeared.
+        .onAppear { pairing.refresh() }
+    }
+
     /// The hero unit: the QR to scan with its own URL captioned directly beneath
     /// it. One row (no divider between) so the pair reads as a single thing.
     private var scanBlock: some View {
         VStack(spacing: 12) {
-            if let qr = Self.qrImage(for: qrPayload) {
+            if let qr = pairingQRImage(for: pairing.qrPayload) {
                 Image(nsImage: qr)
                     .interpolation(.none)
                     .resizable()
@@ -512,7 +654,7 @@ struct DeviceServingSection: View {
     /// a trailing Copy the way Apple pins Copy to a serial-number row.
     private var addressRow: some View {
         HStack(spacing: 8) {
-            Text(addressText)
+            Text(pairing.addressText)
                 .font(.system(.subheadline, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -521,7 +663,7 @@ struct DeviceServingSection: View {
             Spacer(minLength: 8)
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(addressText, forType: .string)
+                NSPasteboard.general.setString(pairing.addressText, forType: .string)
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
             } label: {
@@ -532,90 +674,13 @@ struct DeviceServingSection: View {
         }
     }
 
-    /// Asks this Mac's daemon for the invite that names `directBase`.
-    ///
-    /// `rotate` mints a fresh pairing token first, which is what Rotate Token
-    /// does on this side: the secret belongs to the daemon, so revoking it is
-    /// the daemon's verb rather than a defaults key this app clears.
-    private func refreshInvite(rotate: Bool = false) {
-        guard mobile.isEnabled, mobile.attachesDirectly, let base = directBase else {
-            invite = nil
-            inviteFailure = nil
-            invitedBase = nil
-            return
-        }
-        guard !minting else { return }
-        guard rotate || base != invitedBase || invite == nil else { return }
-        invitedBase = base
-        minting = true
-        Task {
-            defer {
-                minting = false
-                // A change that arrived mid-mint was dropped by the guard above,
-                // and nothing else will ask again for the address it moved to.
-                if mobile.isEnabled, mobile.attachesDirectly, directBase != base { refreshInvite() }
-            }
-            do {
-                let minted = try await RemotePairing.localInvite(url: base, rotate: rotate)
-                // The pane may have moved to another address while the daemon
-                // was answering; a QR for the previous one would scan and then
-                // reach nothing.
-                guard base == invitedBase else { return }
-                invite = minted
-                inviteFailure = nil
-            } catch let failure as RemotePairing.Failure {
-                guard base == invitedBase else { return }
-                invite = nil
-                inviteFailure = failure.message
-            } catch {
-                guard base == invitedBase else { return }
-                invite = nil
-                inviteFailure = error.localizedDescription
-            }
-        }
-    }
+    private func footnote(_ text: String) -> some View { pairingFootnote(text) }
+}
 
-    private func refreshHosts() {
-        hosts = Self.lanIPv4Addresses() + [Self.bonjourName()].compactMap { $0 }
-        if !hosts.contains(selectedHost) {
-            selectedHost = hosts.first ?? ""
-        }
-    }
-
-    /// IPv4 addresses of the real interfaces (`en*` — Wi-Fi and Ethernet),
-    /// skipping link-local self-assignments.
-    private static func lanIPv4Addresses() -> [String] {
-        var addresses: [String] = []
-        var list: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&list) == 0 else { return [] }
-        defer { freeifaddrs(list) }
-        var cursor = list
-        while let ifa = cursor {
-            defer { cursor = ifa.pointee.ifa_next }
-            let name = String(cString: ifa.pointee.ifa_name)
-            guard name.hasPrefix("en"),
-                  let addr = ifa.pointee.ifa_addr,
-                  addr.pointee.sa_family == UInt8(AF_INET) else { continue }
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(
-                addr, socklen_t(addr.pointee.sa_len),
-                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST
-            ) == 0 else { continue }
-            let ip = String(decoding: host.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
-            if !ip.hasPrefix("169.254."), !addresses.contains(ip) {
-                addresses.append(ip)
-            }
-        }
-        return addresses
-    }
-
-    /// The `<name>.local` mDNS hostname, when the system reports one.
-    private static func bonjourName() -> String? {
-        let name = ProcessInfo.processInfo.hostName
-        return name.hasSuffix(".local") ? name : nil
-    }
-
-    private static func qrImage(for string: String) -> NSImage? { pairingQRImage(for: string) }
+private func pairingFootnote(_ text: String) -> some View {
+    Text(text)
+        .font(.settingsDetail)
+        .foregroundStyle(.secondary)
 }
 
 /// Plain CoreImage QR (medium error correction), rendered nearest-neighbor so

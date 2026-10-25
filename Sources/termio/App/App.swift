@@ -963,9 +963,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         openSettings(initialTab: remembered ?? .general)
     }
 
-    /// Opens the pairing QR (RFC §D9), which is a section of this Mac's Server
-    /// pane: what a phone attaches to is the port this Mac serves.
+    /// Opens the pairing QR (RFC §D9) from the menu bar or the command palette.
+    /// The QR is a sheet over this Mac's Pairing section, so the request waits
+    /// for that section to come on screen and open it.
     @objc func pairPhone(_ sender: Any?) {
+        PairingModel.shared.showsSheet = true
         openSettings(initialTab: .server)
     }
 

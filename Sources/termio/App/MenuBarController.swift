@@ -244,6 +244,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        // Pairing is the one Settings action people reach for away from the
+        // window, phone in hand, so it is offered where Rex offers it too.
+        menu.addItem(
+            withTitle: localized("Pair iPhone…"),
+            action: #selector(AppDelegate.pairPhone(_:)),
+            keyEquivalent: ""
+        )
         menu.addItem(
             withTitle: localized("Quit Termio"),
             action: #selector(NSApplication.terminate(_:)),

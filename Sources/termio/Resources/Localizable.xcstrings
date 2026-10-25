@@ -159,6 +159,17 @@
         }
       }
     },
+    "Pair iPhone…": {
+      "comment": "Menu bar menu item and command palette action that open the pairing QR code.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对 iPhone…"
+          }
+        }
+      }
+    },
     "Pairing": {
       "comment": "Section header in Settings ▸ Server: pairing an iPhone with this machine.",
       "localizations": {
@@ -220,6 +231,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "流量经由你自己运行的中继，路径中没有第三方。"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "comment": "Button in the pairing QR sheet that turns on Allow Paired Devices.",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开"
           }
         }
       }
@@ -5225,16 +5247,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "配对"
-          }
-        }
-      }
-    },
-    "Pair a Phone…": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "配对手机…"
           }
         }
       }
