@@ -101,6 +101,13 @@ pub enum SessionMsg {
         id: ClientId,
         data: Vec<u8>,
     },
+    /// Input from a `vt_stream` attachment as an event, which the session
+    /// encodes against its own VT's modes. Only a `key`, `paste`, `mouse`,
+    /// `wheel` or `focus` event reaches here.
+    InputEvent {
+        id: ClientId,
+        event: crate::protocol::Event,
+    },
     /// One attachment's viewport changed, or it started or stopped rendering.
     /// The PTY's size is derived from the whole set (`apply_size_policy`); this
     /// message never sets it directly.
@@ -211,6 +218,9 @@ struct ClientEntry {
     /// already zeroed the count of what the client owes, so a second overflow
     /// means it could not keep up even from a clean start.
     backlog_strikes: u32,
+    /// Whether this attachment's pane has focus, as it last said. The writer's
+    /// is what a program asking for focus reports is told.
+    focused: Option<bool>,
 }
 
 /// Whether this attachment can hold the write token.
@@ -385,6 +395,18 @@ struct Session {
     pty: Arc<Pty>,
     /// A dedicated writer prevents blocked PTY writes from stalling reads.
     input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    /// The encoders `vt_stream` input goes through, which the sidecar keeps
+    /// at the modes of the last byte it parsed (`termiod_vt::InputEncoder`).
+    input: Arc<Mutex<termiod_vt::InputEncoder>>,
+    /// A paste arriving in pieces: who is sending it, and whether it is
+    /// bracketed, which its first piece decided.
+    paste_in_progress: Option<(ClientId, bool)>,
+    /// Whether the input encoders hold the program's modes. False after a
+    /// handoff that could not carry the VT and whose ring does not replay
+    /// the whole session: a mode set before the ring's start is gone, and
+    /// input encoded without it would not be what the program reads. Such a
+    /// session serves `vt_stream` to nobody; its panes encode for themselves.
+    input_modes_known: bool,
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
@@ -477,12 +499,35 @@ impl Session {
     }
 
     fn recompute_writer(&mut self) {
-        self.writer = self
+        let writer = self
             .clients
             .iter()
             .filter_map(|(id, entry)| entry.role.attach_seq().map(|seq| (id, seq)))
             .max_by_key(|(_, seq)| *seq)
             .map(|(id, _)| id.clone());
+        self.set_writer(writer);
+    }
+
+    /// Another writer's focus is not known until its pane says.
+    fn set_writer(&mut self, writer: Option<ClientId>) {
+        let changed = writer != self.writer;
+        if changed {
+            self.close_open_paste();
+        }
+        self.writer = writer;
+        // The program hears focus from whoever types; the new writer's pane
+        // may have said it has focus while it could not report it.
+        if changed {
+            self.report_writer_focus();
+        }
+    }
+
+    /// Ends a paste whose pieces stopped coming — its sender lost the token,
+    /// or sent something else — so the program does not stay in a paste.
+    fn close_open_paste(&mut self) {
+        if let Some((_, true)) = self.paste_in_progress.take() {
+            let _ = self.input_tx.send(PASTE_END.to_vec());
+        }
     }
 
     /// The write token only ever moves through here, and only ever onto a
@@ -495,8 +540,136 @@ impl Session {
         {
             return false;
         }
-        self.writer = Some(id.clone());
+        self.set_writer(Some(id.clone()));
         true
+    }
+
+    /// A `vt_stream` client's input event, encoded with the modes of the last
+    /// byte the sidecar parsed. Everything but focus is typing, and follows
+    /// `Input`'s rules: only the writer's lands, and it counts as use.
+    fn input_event(&mut self, id: &ClientId, event: crate::protocol::Event) {
+        use crate::protocol::{Event, InputAction};
+        use termiod_vt::{KeyAction, MouseAction, Pointer};
+        // A session that lost its modes in a handoff takes no encoded input:
+        // its stream attachments are refused once their snapshot settles, and
+        // nothing may reach the program encoded with guesses meanwhile.
+        if !self.input_modes_known {
+            return;
+        }
+        if let Event::Focus { focused } = event {
+            // Kept for every attachment, so a pane that takes the token back
+            // has its focus known; reported only for the writer, since a pane
+            // that merely gained focus is not claiming the session.
+            if let Some(entry) = self.clients.get_mut(id) {
+                entry.focused = Some(focused);
+            }
+            if self.writer.as_ref() == Some(id) {
+                self.report_writer_focus();
+            }
+            return;
+        }
+        if self.writer.as_ref() != Some(id) {
+            // A release, plain motion or a composing key does not claim the
+            // token, so from a non-writer it is dropped without a complaint.
+            // The app's rule (`Termiod.InputEvent.claimsWriter`), so neither
+            // side calls a modifier on its way to a shortcut typing.
+            let typing = match &event {
+                Event::Key { action, composing, key, .. } => {
+                    *action != InputAction::Release && !*composing && !termiod_vt::is_modifier_key(key)
+                }
+                Event::Mouse { action, .. } => *action == InputAction::Press,
+                _ => true,
+            };
+            if typing {
+                self.reject_not_writer(id);
+            }
+            return;
+        }
+        let continues_paste = matches!(event, Event::Paste { .. })
+            && self.paste_in_progress.as_ref().is_some_and(|(sender, _)| sender == id);
+        if !continues_paste {
+            self.close_open_paste();
+        }
+        let Ok(mut encoder) = self.input.lock() else { return };
+        let bytes = match event {
+            Event::Key { action, key, mods, consumed_mods, text, unshifted, composing } => {
+                let action = match action {
+                    InputAction::Release => KeyAction::Release,
+                    InputAction::Repeat => KeyAction::Repeat,
+                    InputAction::Press | InputAction::Motion => KeyAction::Press,
+                };
+                encoder.key(&termiod_vt::KeyInput {
+                    action,
+                    key,
+                    mods,
+                    consumed_mods,
+                    text,
+                    unshifted,
+                    composing,
+                })
+            }
+            Event::Paste { text, more } => {
+                let open = self.paste_in_progress.take().filter(|(sender, _)| sender == id);
+                let bracketed = open.as_ref().map_or(encoder.modes().bracketed_paste, |(_, bracketed)| *bracketed);
+                if more {
+                    self.paste_in_progress = Some((id.clone(), bracketed));
+                }
+                encoder.paste_piece(&text, bracketed, open.is_none(), !more)
+            }
+            Event::Mouse { action, button, mods, x, y, cell_width, cell_height, buttons_held } => {
+                let action = match action {
+                    InputAction::Press => MouseAction::Press,
+                    InputAction::Release => MouseAction::Release,
+                    InputAction::Motion | InputAction::Repeat => MouseAction::Motion,
+                };
+                encoder.mouse(&termiod_vt::MouseInput {
+                    action,
+                    button,
+                    mods,
+                    at: Pointer { x, y, cell_width, cell_height },
+                    buttons_held,
+                })
+            }
+            Event::Wheel { rows, columns, mods, x, y, cell_width, cell_height } => {
+                encoder.wheel(&termiod_vt::WheelInput {
+                    rows,
+                    columns,
+                    mods,
+                    at: Pointer { x, y, cell_width, cell_height },
+                })
+            }
+            _ => return,
+        };
+        drop(encoder);
+        if bytes.is_empty() {
+            return;
+        }
+        self.status_engine.note_user_input(std::time::Instant::now());
+        self.note_use(id);
+        self.apply_size_policy();
+        let _ = self.input_tx.send(bytes);
+    }
+
+    /// Tells the program whether the writer's pane has focus, if it asked for
+    /// focus reports and the writer has said.
+    fn report_writer_focus(&mut self) {
+        // A report sent between a paste's pieces would become part of it.
+        self.close_open_paste();
+        let Some(focused) = self
+            .writer
+            .as_ref()
+            .and_then(|writer| self.clients.get(writer))
+            .and_then(|entry| entry.focused)
+        else {
+            return;
+        };
+        let bytes = match self.input.lock() {
+            Ok(encoder) => encoder.focus(focused),
+            Err(_) => return,
+        };
+        if !bytes.is_empty() {
+            let _ = self.input_tx.send(bytes);
+        }
     }
 
     fn allocate_snapshot_request(&mut self) -> u64 {
@@ -516,7 +689,7 @@ impl Session {
     ///
     /// The copy is handed over *owned*, so that a `Carried` nobody takes is a
     /// session hung up rather than a descriptor orphaned.
-    fn into_carried(self) -> anyhow::Result<Carried> {
+    fn into_carried(self, native: Option<Vec<u8>>) -> anyhow::Result<Carried> {
         let master = crate::handoff::duplicate_for_exec(self.pty.master_fd())?;
         let ring: Vec<Bytes> = self.ring.iter().cloned().collect();
         Ok(Carried {
@@ -538,6 +711,12 @@ impl Session {
                 ring_len: self.ring_bytes as u64,
                 ring_reconstructs_screen: self.ring_reconstructs_screen,
                 status_clocks: self.status_engine.carried_clocks(std::time::Instant::now()),
+                input_modes_unknown: !self.input_modes_known,
+                paste_open: matches!(self.paste_in_progress, Some((_, true))),
+                pending_len: 0,
+                pending_input: Vec::new(),
+                native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
+                native: native.map(Bytes::from).unwrap_or_default(),
             },
             master,
             ring,
@@ -1344,6 +1523,9 @@ impl Session {
 
         if entry.plane.is_stream() {
             let unusable = match &result {
+                _ if !self.input_modes_known => {
+                    Some("the program's input modes did not survive a handoff".to_string())
+                }
                 Err(error) => Some(error.clone()),
                 Ok(capture) => match &capture.native {
                     None => Some("the native snapshot could not be encoded".to_string()),
@@ -1898,6 +2080,10 @@ pub fn adopt(
         } else {
             vec![Bytes::from(ring)]
         },
+        input_modes_unknown: carried.input_modes_unknown,
+        paste_open: carried.paste_open,
+        pending_input: carried.pending_input,
+        native: (!carried.native.is_empty()).then(|| carried.native.to_vec()),
         faithful: carried.ring_reconstructs_screen,
     };
     start(
@@ -1950,8 +2136,60 @@ fn reap(pid: i32) -> tokio::task::JoinHandle<i32> {
 /// Output this session has already produced, for an actor that is taking over
 /// rather than starting: the bytes, and whether replaying them still draws the
 /// screen they drew the first time.
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// Gives an adopted session's encoders the program's modes, from the carried
+/// snapshot or by replaying the ring, and returns the snapshot if it decoded.
+///
+/// Done on the actor before it takes input: the sidecar parses on its own
+/// thread after the session is already accepting keystrokes, so it cannot be
+/// what seeds them. The ring is bounded by `RING_CAP`, replayed once here.
+fn seed_input(
+    encoder: &mut termiod_vt::InputEncoder,
+    native: Option<Vec<u8>>,
+    chunks: &[Bytes],
+    rows: u16,
+    cols: u16,
+) -> Option<Vec<u8>> {
+    if let Some(bytes) = native {
+        match termiod_vt::VtTerminal::from_native_snapshot(&bytes) {
+            Ok(terminal) => {
+                encoder.refresh(&terminal);
+                return Some(bytes);
+            }
+            Err(error) => {
+                eprintln!("termiod: carried VT snapshot undecodable, replaying the ring: {error}");
+            }
+        }
+    }
+    // A new session is a blank terminal of its size; an adopted one without a
+    // usable snapshot is that terminal after the ring.
+    if let Ok(mut terminal) = termiod_vt::VtTerminal::new(rows, cols) {
+        for chunk in chunks {
+            terminal.vt_write(chunk);
+        }
+        encoder.refresh(&terminal);
+    }
+    None
+}
+
+/// How long a handoff waits for the VT to finish what it was fed and
+/// snapshot it. Past it the session still crosses, on ring replay. Well inside
+/// `handoff::CARRY_TIMEOUT`, which this actor must answer within or the session
+/// is left behind.
+const CARRY_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 struct Replay {
     chunks: Vec<Bytes>,
+    /// The previous image no longer knew the program's input modes.
+    input_modes_unknown: bool,
+    /// The previous image left the program inside a paste.
+    paste_open: bool,
+    /// Input the previous image accepted and had not written.
+    pending_input: Vec<Bytes>,
+    /// The previous image's VT, as a native snapshot. When present the new VT
+    /// starts from it and the chunks only refill the ring.
+    native: Option<Vec<u8>>,
     /// See `Session::ring_reconstructs_screen`. False means the replay leaves
     /// rows this actor's VT cannot know; the adopting actor nudges the program
     /// to repaint them rather than taking the VT down.
@@ -1962,6 +2200,10 @@ impl Replay {
     fn none() -> Replay {
         Replay {
             chunks: Vec::new(),
+            input_modes_unknown: false,
+            paste_open: false,
+            pending_input: Vec::new(),
+            native: None,
             faithful: true,
         }
     }
@@ -1999,15 +2241,72 @@ fn start(
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let writer_pty = pty.clone();
-    tokio::spawn(async move {
-        while let Some(bytes) = input_rx.recv().await {
-            if writer_pty.write_all(&bytes).await.is_err() {
-                break;
+    // It knows what reached the program, so it is the one that ends a paste
+    // left open when the session's sender goes away: a handoff drops it after
+    // the last byte this image will write.
+    // Input accepted but not yet on the PTY, which the writer hands back
+    // when it is stopped: a handoff carries it to the next image instead of
+    // losing it in the exec, and a handoff that fails puts it back.
+    let unwritten = Arc::new(Mutex::new(Vec::<Bytes>::new()));
+    let writer_unwritten = unwritten.clone();
+    let (stop_writer, mut writer_stopped) = tokio::sync::oneshot::channel::<()>();
+    let input_writer = tokio::spawn(async move {
+        let mut current: Vec<u8> = Vec::new();
+        let mut offset = 0;
+        loop {
+            if offset == current.len() {
+                // Dropped, not cleared: a carried backlog can be large, and an
+                // idle session should not keep its allocation.
+                current = Vec::new();
+                offset = 0;
+                tokio::select! {
+                    next = input_rx.recv() => match next {
+                        Some(bytes) => current = bytes,
+                        None => return,
+                    },
+                    _ = &mut writer_stopped => break,
+                }
             }
+            // `write_some` writes or does not, with nothing awaited after a
+            // write, so stopping here never loses a byte it took.
+            tokio::select! {
+                written = writer_pty.write_some(&current[offset..]) => match written {
+                    Ok(count) => offset += count,
+                    Err(_) => return,
+                },
+                _ = &mut writer_stopped => break,
+            }
+        }
+        // Moved, not joined: handing back a large backlog costs nothing
+        // inside the carry deadline.
+        let mut rest = Vec::new();
+        if offset < current.len() {
+            rest.push(Bytes::from(current).slice(offset..));
+        }
+        while let Ok(bytes) = input_rx.try_recv() {
+            rest.push(Bytes::from(bytes));
+        }
+        if let Ok(mut unwritten) = writer_unwritten.lock() {
+            *unwritten = rest;
         }
     });
 
-    let sidecar = spawn_sidecar(facts.rows, facts.cols)?;
+    let input = Arc::new(Mutex::new(
+        termiod_vt::InputEncoder::new().map_err(|error| anyhow::anyhow!("input encoders: {error}"))?,
+    ));
+    let mut replay = replay;
+    // Before anything can attach, the encoders take the program's modes, and
+    // a snapshot that does not decode leaves the ring to replay instead.
+    let native = match input.lock() {
+        Ok(mut encoder) => seed_input(&mut encoder, replay.native.take(), &replay.chunks, facts.rows, facts.cols),
+        Err(_) => None,
+    };
+    let starts_from_snapshot = native.is_some();
+    let input_modes_unknown = replay.input_modes_unknown;
+    let paste_was_open = replay.paste_open;
+    let pending_input = std::mem::take(&mut replay.pending_input);
+
+    let sidecar = spawn_sidecar_sharing(facts.rows, facts.cols, input.clone(), native)?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let termination_reason = Arc::new(Mutex::new(None));
@@ -2030,6 +2329,9 @@ fn start(
         workstream: facts.workstream,
         pty,
         input_tx,
+        input,
+        paste_in_progress: None,
+        input_modes_known: true,
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
@@ -2063,13 +2365,28 @@ fn start(
     session.sync_status_watch();
     for chunk in replay.chunks {
         // Through the same two paths a live byte takes, in the same order: the
-        // ring it will be replayed from, and the VT that answers snapshots.
-        session.send_sidecar(SidecarCommand::Write(chunk.clone()));
+        // ring it will be replayed from, and the VT that answers snapshots —
+        // unless that VT already holds the previous image's screen.
+        if !starts_from_snapshot {
+            session.send_sidecar(SidecarCommand::Write(chunk.clone()));
+        }
         session.push_ring(chunk);
     }
     // `push_ring` may have set this itself, if what was carried no longer fits
     // the cap; either way the previous actor's verdict still applies.
     session.ring_reconstructs_screen &= replay.faithful;
+    // A snapshot of a VT that had already lost the program's modes carries
+    // the loss, so the previous image's verdict travels too.
+    session.input_modes_known = !input_modes_unknown && (starts_from_snapshot || session.ring_reconstructs_screen);
+    // What the previous image accepted and never wrote goes first, then the
+    // end of a paste whose remaining pieces went to that image's connection.
+    for chunk in pending_input {
+        let _ = session.input_tx.send(chunk.to_vec());
+    }
+    if paste_was_open {
+        let _ = session.input_tx.send(PASTE_END.to_vec());
+    }
+
     if !session.ring_reconstructs_screen {
         // The VT this actor started is blank plus a replay that does not draw
         // the screen the program believes it is looking at — output older than
@@ -2097,6 +2414,9 @@ fn start(
         on_exit,
         sidecar.results,
         sidecar.thread,
+        input_writer,
+        stop_writer,
+        unwritten,
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
@@ -2155,7 +2475,32 @@ fn screen_tick(
     }
 }
 
+#[cfg(test)]
 fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
+    let input = termiod_vt::InputEncoder::new()
+        .map_err(|error| anyhow::anyhow!("input encoders: {error}"))?;
+    spawn_sidecar_sharing(rows, cols, Arc::new(Mutex::new(input)), None)
+}
+
+/// Copies the VT's modes into the session's input encoders, and says when the
+/// program has just turned focus reports on.
+fn refresh_input(
+    input: &Mutex<termiod_vt::InputEncoder>,
+    terminal: Option<&termiod_vt::VtTerminal>,
+) -> bool {
+    let Some(terminal) = terminal else { return false };
+    let Ok(mut encoder) = input.lock() else { return false };
+    let before = encoder.modes().focus_reporting;
+    encoder.refresh(terminal);
+    !before && encoder.modes().focus_reporting
+}
+
+fn spawn_sidecar_sharing(
+    rows: u16,
+    cols: u16,
+    input: Arc<Mutex<termiod_vt::InputEncoder>>,
+    snapshot: Option<Vec<u8>>,
+) -> anyhow::Result<Sidecar> {
     // The channel itself stays unbounded and fire-and-forget — PTY delivery must
     // never wait for VT parsing. `SidecarQueue` is the budget instead: the
     // producer stops feeding the VT and declares it stale rather than blocking
@@ -2168,7 +2513,14 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
     let thread = std::thread::Builder::new()
         .name("termiod-vt".to_string())
         .spawn(move || {
-            let mut terminal = match termiod_vt::VtTerminal::new(rows, cols) {
+            let restored = snapshot.and_then(|bytes| {
+                termiod_vt::VtTerminal::from_native_snapshot(&bytes)
+                    .map_err(|error| {
+                        eprintln!("termiod: carried VT snapshot undecodable, replaying the ring: {error}");
+                    })
+                    .ok()
+            });
+            let mut terminal = match restored.map(Ok).unwrap_or_else(|| termiod_vt::VtTerminal::new(rows, cols)) {
                 Ok(terminal) => Some(terminal),
                 Err(error) => {
                     eprintln!("termiod: failed to initialize VT sidecar: {error}");
@@ -2178,6 +2530,9 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
             let mut fault = terminal
                 .is_none()
                 .then(|| "VT sidecar initialization failed".to_string());
+            // Not refreshed here: `seed_input` already gave the encoders this
+            // session's modes, and a terminal still blank before its replay
+            // would take them away again. The first parsed batch refreshes.
             let mut pending = None;
             let mut grid_diff_wanted = false;
             let mut frame_seq = 0u32;
@@ -2259,6 +2614,11 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 Err(std_mpsc::TryRecvError::Disconnected) => return,
                             }
                         }
+                        if refresh_input(&input, terminal.as_ref())
+                            && result_tx.send(SidecarResult::FocusReportsOn).is_err()
+                        {
+                            break;
+                        }
                         if let Some(signal) = programs.take_signal() {
                             signals.push(signal);
                         }
@@ -2310,6 +2670,7 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                                 if let Err(error) = resized {
                                     fault = Some(format!("VT resize failed: {error}"));
                                 }
+                                refresh_input(&input, Some(terminal));
                             }
                         }
                     }
@@ -2378,6 +2739,14 @@ fn spawn_sidecar(rows: u16, cols: u16) -> anyhow::Result<Sidecar> {
                     }
                     SidecarCommand::SetGridDiff(wanted) => grid_diff_wanted = wanted,
                     SidecarCommand::Shutdown => break,
+                    SidecarCommand::Carry(reply) => {
+                        let native = match (&fault, terminal.as_ref()) {
+                            (None, Some(terminal)) => terminal.native_snapshot().ok(),
+                            _ => None,
+                        };
+                        let _ = reply.send(native);
+                        break;
+                    }
                 }
             }
         })
@@ -2405,6 +2774,9 @@ async fn run(
     on_exit: mpsc::UnboundedSender<SessionEnded>,
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
+    input_writer: tokio::task::JoinHandle<()>,
+    stop_writer: tokio::sync::oneshot::Sender<()>,
+    unwritten: Arc<Mutex<Vec<Bytes>>>,
     termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -2555,14 +2927,45 @@ async fn run(
                     // with different code in it. Returning here drops the
                     // `Session` — and with it the original PTY descriptor,
                     // which is why `into_carried` duplicated one first.
-                    session.send_sidecar(SidecarCommand::Shutdown);
-                    let carried = session.into_carried();
+                    // The VT goes with the session when it can: a native
+                    // snapshot taken after every byte this actor fed it. A VT
+                    // that is down, or too far behind to answer in time,
+                    // sends none, and the new image replays the ring instead.
+                    let (native_tx, native_rx) = std_mpsc::channel();
+                    let answer = if session.send_sidecar(SidecarCommand::Carry(native_tx)) {
+                        tokio::task::spawn_blocking(move || native_rx.recv_timeout(CARRY_SNAPSHOT_TIMEOUT))
+                            .await
+                            .ok()
+                    } else {
+                        None
+                    };
+                    // A sidecar that answered — snapshot or not — has stopped.
+                    let answered = matches!(answer, Some(Ok(_)) | Some(Err(std_mpsc::RecvTimeoutError::Disconnected)));
+                    let native = match answer {
+                        Some(Ok(native)) => native,
+                        _ => None,
+                    };
+                    // The PTY writer stops at once and hands back what it
+                    // had not written, which crosses with the session.
+                    let carried = session.into_carried(native);
+                    let _ = stop_writer.send(());
+                    let _ = input_writer.await;
+                    let mut carried = carried;
+                    if let Ok(carried) = carried.as_mut() {
+                        carried.info.pending_input =
+                            unwritten.lock().map(|mut bytes| std::mem::take(&mut *bytes)).unwrap_or_default();
+                        carried.info.pending_len =
+                            carried.info.pending_input.iter().map(|chunk| chunk.len() as u64).sum();
+                    }
                     // The parser is a few kilobytes of grid and a thread that
-                    // has already been told to stop; joining it here costs a
-                    // scheduler turn on a runtime that is about to cease to
-                    // exist, and skipping it would leave the thread running
-                    // into the exec.
-                    let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
+                    // has already stopped; joining it costs a scheduler turn,
+                    // and skipping it would leave the thread running into the
+                    // exec. One still parsing a backlog past the timeout is
+                    // left to the exec instead: waiting for it would spend the
+                    // carry deadline and strand the session.
+                    if answered {
+                        let _ = tokio::task::spawn_blocking(move || sidecar_thread.join()).await;
+                    }
                     match carried {
                         Ok(carried) => {
                             let _ = reply.send(carried);
@@ -2631,6 +3034,7 @@ async fn run(
                             }
                         }
                     }
+                    Some(SidecarResult::FocusReportsOn) => session.report_writer_focus(),
                     Some(SidecarResult::Screen(tick)) => {
                         let now = std::time::Instant::now();
                         if let Some(change) =
@@ -2861,6 +3265,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     used: use_stamp,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
+                    focused: None,
                 },
             );
             // Enabling precedes this client's in-band Snapshot request, so
@@ -2967,11 +3372,13 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 // moving the size.
                 session.note_use(&id);
                 session.apply_size_policy();
+                session.close_open_paste();
                 let _ = session.input_tx.send(data);
             } else {
                 session.reject_not_writer(&id);
             }
         }
+        SessionMsg::InputEvent { id, event } => session.input_event(&id, event),
         SessionMsg::Viewport {
             id,
             rows,
@@ -3004,6 +3411,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             }
         }
         SessionMsg::Inject { data } => {
+            session.close_open_paste();
             let _ = session.input_tx.send(data);
         }
         SessionMsg::SetStatus {
@@ -3324,6 +3732,9 @@ mod tests {
                 workstream: None,
                 pty,
                 input_tx,
+                input: Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap())),
+                        paste_in_progress: None,
+                        input_modes_known: true,
                 clients: HashMap::new(),
                 writer: None,
                 next_seq: 0,
@@ -3383,6 +3794,7 @@ mod tests {
             // snapshot FIFO's boundaries; the engine has its own tests, and
             // routing them here would put a wall clock in an ordering test.
             SidecarResult::Osc(_) | SidecarResult::Screen(_) => {}
+            SidecarResult::FocusReportsOn => session.report_writer_focus(),
         }
     }
 
@@ -3511,6 +3923,117 @@ mod tests {
     /// Attaching is what took the token before this verb existed, so the phone
     /// permanently muted the Mac the moment it looked at a session, and the Mac
     /// could only answer by tearing its attachment down and rebuilding it. The
+    /// `vt_stream` input arrives as events and is encoded here, against the
+    /// modes of the host's own VT (Rex's model): application cursor keys turn
+    /// Up into `ESC O A` with no help from the client. Only the writer types,
+    /// and a pane's focus report waits until the program asks for one.
+    #[tokio::test]
+    async fn input_events_are_encoded_with_the_host_vt_modes() {
+        use crate::protocol::{Event, InputAction};
+        let Sidecar { commands, results: _results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        session.input_tx = input_tx;
+        let mut vt = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        vt.vt_write(b"\x1b[?1h");
+        session.input.lock().unwrap().refresh(&vt);
+
+        let _mac = attach_interactive_client(&mut session, "mac");
+        let _phone = attach_interactive_client(&mut session, "phone");
+        assert!(claim_writer(&mut session, "mac"));
+        let up = || Event::Key {
+            action: InputAction::Press,
+            key: "arrow_up".into(),
+            mods: 0,
+            consumed_mods: 0,
+            text: None,
+            unshifted: 0,
+            composing: false,
+        };
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: up() });
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1bOA");
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("phone"), event: up() });
+        assert!(input_rx.try_recv().is_err(), "an attachment without the token does not type");
+
+        let focus = |focused| Event::Focus { focused };
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: focus(true) });
+        assert!(input_rx.try_recv().is_err(), "nobody asked for focus reports");
+        vt.vt_write(b"\x1b[?1004h");
+        session.input.lock().unwrap().refresh(&vt);
+        session.report_writer_focus();
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I", "told at once when it asks");
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("phone"), event: focus(false) });
+        assert!(input_rx.try_recv().is_err(), "only the writer's pane reports focus");
+        // The token goes to the phone and comes back. Each move tells the
+        // program the new writer's focus, which each pane said while it could
+        // not report it.
+        assert!(claim_writer(&mut session, "phone"));
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[O", "the phone said it lost focus");
+        assert!(claim_writer(&mut session, "mac"));
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I", "the Mac's focus was kept");
+
+        // A paste in pieces is one paste; a piece left hanging is closed when
+        // the token moves.
+        vt.vt_write(b"\x1b[?2004h");
+        session.input.lock().unwrap().refresh(&vt);
+        let piece = |text: &str, more| Event::Paste { text: text.into(), more };
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: piece("a", true) });
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: piece("b", false) });
+        let pasted: Vec<u8> = std::iter::from_fn(|| input_rx.try_recv().ok()).flatten().collect();
+        assert_eq!(pasted, b"\x1b[200~ab\x1b[201~");
+        handle_msg(&mut session, SessionMsg::InputEvent { id: ClientId::new("mac"), event: piece("c", true) });
+        assert!(claim_writer(&mut session, "phone"));
+        let hanging: Vec<u8> = std::iter::from_fn(|| input_rx.try_recv().ok()).flatten().collect();
+        assert_eq!(hanging, b"\x1b[200~c\x1b[201~\x1b[O", "closed, then the phone's focus");
+
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// An adopted session's encoders hold the program's modes before the
+    /// sidecar has parsed anything, so the first keystroke is encoded right.
+    #[test]
+    fn an_adopted_session_is_seeded_with_the_carried_modes() {
+        let mut vt = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        vt.vt_write(b"\x1b[?2004h");
+        let mut encoder = termiod_vt::InputEncoder::new().unwrap();
+        let kept = super::seed_input(&mut encoder, Some(vt.native_snapshot().unwrap()), &[], 24, 80);
+        assert!(kept.is_some());
+        assert!(encoder.modes().bracketed_paste, "seeded from the carried VT");
+
+        let mut encoder = termiod_vt::InputEncoder::new().unwrap();
+        let kept = super::seed_input(
+            &mut encoder,
+            Some(b"not a snapshot".to_vec()),
+            &[Bytes::from_static(b"\x1b[?1h")],
+            24,
+            80,
+        );
+        assert!(kept.is_none(), "an undecodable snapshot falls back to the ring");
+        assert!(encoder.modes().cursor_keys_application, "seeded from the ring");
+    }
+
+    /// A handoff carries the VT as a native snapshot, so the next image's
+    /// sidecar keeps the program's modes — set long ago, past anything
+    /// the replay ring still holds — instead of a blank terminal's.
+    #[tokio::test]
+    async fn a_carried_vt_brings_the_programs_input_modes_with_it() {
+        let mut vt = termiod_vt::VtTerminal::new(24, 80).unwrap();
+        vt.vt_write(b"\x1b[?1h\x1b[?2004h");
+        let input = Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap()));
+        let Sidecar { commands, results: _results, queue: _queue, thread } =
+            super::spawn_sidecar_sharing(24, 80, input.clone(), Some(vt.native_snapshot().unwrap())).unwrap();
+        // The sidecar's VT is the carried one: the first batch it parses
+        // refreshes the encoders with the program's modes, not a blank's.
+        commands.send(SidecarCommand::Write(Bytes::from_static(b"x"))).unwrap();
+        let (reply, answer) = std_mpsc::channel();
+        commands.send(SidecarCommand::Carry(reply)).unwrap();
+        assert!(answer.recv().unwrap().is_some(), "a live VT answers a carry with its snapshot");
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+        let modes = input.lock().unwrap().modes();
+        assert!(modes.cursor_keys_application && modes.bracketed_paste);
+    }
+
     /// token travels by typing instead.
     #[tokio::test]
     async fn the_write_token_follows_the_device_being_used() {
@@ -4104,6 +4627,45 @@ mod tests {
         let refusal = vt_stream_refusal(&mut stream);
         assert!(refusal.is_some(), "a stale VT still served a vt_stream client");
         assert!(!session.clients.contains_key(&ClientId::new("stream")));
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
+    }
+
+    /// Nor does it take an input event while that refusal is on its way.
+    #[tokio::test]
+    async fn input_events_are_dropped_while_the_input_modes_are_unknown() {
+        use crate::protocol::Event;
+        let Sidecar { commands, results: _results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        session.input_tx = input_tx;
+        session.input_modes_known = false;
+        let _mac = attach_interactive_client(&mut session, "mac");
+        assert!(claim_writer(&mut session, "mac"));
+        handle_msg(
+            &mut session,
+            SessionMsg::InputEvent { id: ClientId::new("mac"), event: Event::Paste { text: "a\nb".into(), more: false } },
+        );
+        assert!(input_rx.try_recv().is_err(), "a paste encoded without the program's modes");
+        session.vt.shut_down();
+        let _ = tokio::task::spawn_blocking(move || thread.join()).await;
+    }
+
+    /// A session that lost its input modes in a handoff refuses the stream:
+    /// its input would be encoded with modes the program no longer has.
+    #[tokio::test]
+    async fn a_stream_client_is_refused_when_the_input_modes_are_unknown() {
+        let Sidecar { commands, mut results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.input_modes_known = false;
+        let mut stream = attach_stream_client(&mut session, "stream");
+        pump_sidecar(&mut session, &mut results, 1).await;
+        let refusal = vt_stream_refusal(&mut stream);
+        assert!(
+            refusal.as_deref().is_some_and(|message| message.contains("input modes")),
+            "a session with unknown input modes served a stream: {refusal:?}"
+        );
         session.vt.shut_down();
         drop(session);
         let _ = thread.join();
@@ -4711,6 +5273,9 @@ mod tests {
             workstream: None,
             pty,
             input_tx,
+            input: Arc::new(std::sync::Mutex::new(termiod_vt::InputEncoder::new().unwrap())),
+                paste_in_progress: None,
+                input_modes_known: true,
             clients: HashMap::from([(
                 ClientId::new("writer"),
                 ClientEntry {
@@ -4723,6 +5288,7 @@ mod tests {
                     used: 1,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
+                    focused: None,
                 },
             )]),
             writer: Some(ClientId::new("writer")),

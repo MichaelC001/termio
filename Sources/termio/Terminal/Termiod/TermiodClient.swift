@@ -1367,7 +1367,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var clientID: String?
     /// Keystrokes typed during the connect/attach window — flushed, in order,
     /// the moment the channel is writable so nothing the user typed is lost.
-    private var pendingInput = Data()
+    private var pendingInput: [PendingInput] = []
+    /// The pane's focus as it last said, resent on every stream attach.
+    private var lastFocusLocked: Bool?
+    private enum PendingInput {
+        case bytes(Data)
+        case event(Termiod.InputEvent)
+    }
     /// This attachment's viewport: how much of a session this pane could show,
     /// measured from the pane's own geometry rather than read back off the
     /// surface. The two are not the same thing once the surface is laid out at a
@@ -1736,8 +1742,23 @@ final class TermiodSessionLink: @unchecked Sendable {
             let offering = offersStream && !streamRefused
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
-                caps: Termiod.attachCapabilities + (offering ? [Termiod.streamCapability] : []))
+                caps: Termiod.attachCapabilities
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : []))
             clientID = handshake.clientID
+            // A daemon that streams but does not take input events has already
+            // put this connection on the stream plane, so the link cannot
+            // pretend otherwise: it attaches again, on keyframes.
+            if offering, handshake.capabilities.contains(Termiod.streamCapability),
+               !handshake.capabilities.contains(Termiod.inputCapability) {
+                Log.termiod.info("""
+                \(self.sessionName, privacy: .public): host streams without input events; \
+                attaching on keyframes
+                """)
+                streamRefused = true
+                teardownLocked()
+                attemptAttachLocked()
+                return
+            }
             // Published only once the attach succeeds: a refused start has no
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
@@ -1821,8 +1842,25 @@ final class TermiodSessionLink: @unchecked Sendable {
             // an observer's input would be rejected frame-by-frame by the
             // daemon. (This client always attaches `interact` today, so it is
             // normally the writer — this keeps it correct if observe is used.)
-            if isWriter, !pendingInput.isEmpty {
-                try sendDataLocked(pendingInput)
+            if isWriter {
+                for input in pendingInput {
+                    switch input {
+                    case .bytes(let data): try sendDataLocked(data)
+                    // Only the stream plane encodes events; a link that came
+                    // back on keyframes has no encoder at the far end.
+                    case .event(let event) where streamingNow: try sendEventLocked(event)
+                    case .event:
+                        // Typed into a stream pane while it fell back to
+                        // keyframes: the embedded surface encodes for itself,
+                        // and this event names a key, not bytes.
+                        Log.termiod.info("\(self.sessionName, privacy: .public): dropped an input event typed during a fallback to keyframes")
+                    }
+                }
+            }
+            // Whether or not this attachment holds the token: termiod keeps a
+            // non-writer's focus and reports it when that pane takes over.
+            if streamingNow, let focused = lastFocusLocked {
+                try sendEventLocked(.focus(focused))
             }
             pendingInput.removeAll(keepingCapacity: false)
             startReader(channel.readDescriptor)
@@ -1872,7 +1910,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         workQueue.async { [self] in
             guard !closed else { return }
             guard attached else {
-                pendingInput.append(data)
+                pendingInput.append(.bytes(data))
                 return
             }
             do {
@@ -1895,6 +1933,63 @@ final class TermiodSessionLink: @unchecked Sendable {
                 """)
             }
         }
+    }
+
+    /// Input on the `vt_stream` plane, as an event termiod encodes against its
+    /// own VT (`Termiod.InputEvent`). Typing claims the token as `send` does;
+    /// a focus change does not, and termiod reports only the writer's.
+    func sendInput(_ event: Termiod.InputEvent) {
+        if case .paste(let text, false) = event, text.utf8.count > Termiod.InputEvent.pastePieceBytes {
+            // Each piece fits, so none comes back here.
+            for piece in Termiod.InputEvent.pastePieces(text) { sendInputEvent(piece) }
+            return
+        }
+        sendInputEvent(event)
+    }
+
+    private func sendInputEvent(_ event: Termiod.InputEvent) {
+        let typing = event.claimsWriter
+        if typing {
+            inputLock.lock()
+            lastInputAtLocked = Date()
+            inputLock.unlock()
+        }
+        workQueue.async { [self] in
+            // Kept for every attach, even between them: a pane that already
+            // has focus says so once, and a program that asks after a
+            // reconnect must hear the pane's focus as it is now.
+            if case .focus(let focused) = event { lastFocusLocked = focused }
+            guard !closed else { return }
+            guard attached else {
+                if case .focus = event { return }
+                pendingInput.append(.event(event))
+                return
+            }
+            guard streamingNow else { return }
+            do {
+                // As `send` claims only for bytes: a modifier pressed on its
+                // way to a shortcut, a release or a composing key moves
+                // nothing, and termiod drops those from a non-writer.
+                if typing, !isWriter { try claimWriterLocked() }
+                try sendEventLocked(event)
+            } catch {
+                Log.termiod.error("""
+                input event to \(self.sessionName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+        }
+    }
+
+    private var streamingNow: Bool {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        return streamingLocked
+    }
+
+    private func sendEventLocked(_ event: Termiod.InputEvent) throws {
+        guard let transport else { return }
+        try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try event.payload())
     }
 
     /// Takes the write token for this attachment because its user is now here.
@@ -2695,6 +2790,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                 \(String(describing: error), privacy: .public)
                 """)
             }
+        case .vtStale:
+            // termiod encodes this pane's input with its VT's modes, and those
+            // just stopped following the program. The embedded surface encodes
+            // for itself, so the pane goes back to it.
+            if isStreaming { abandonStream() }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.

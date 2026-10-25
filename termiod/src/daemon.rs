@@ -1375,6 +1375,10 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             {
                 negotiated_caps.retain(|cap| cap != "vt_stream");
             }
+            // Input events are the stream plane's; any other plane types bytes.
+            if !negotiated_caps.iter().any(|cap| cap == "vt_stream") {
+                negotiated_caps.retain(|cap| cap != "vt_input");
+            }
             // The two are different planes and an attachment reads one. The
             // exact one wins; grid_diff is a degrade for bad networks.
             if negotiated_caps.iter().any(|cap| cap == "vt_stream") {
@@ -2843,6 +2847,12 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         | Event::HeadChanged { .. }
         | Event::StatusChanged { .. }
         | Event::SearchResults { .. } => false,
+        // Input travels from a client to the host, never back out.
+        Event::Key { .. }
+        | Event::Paste { .. }
+        | Event::Mouse { .. }
+        | Event::Wheel { .. }
+        | Event::Focus { .. } => false,
         Event::Unknown => false,
     }
 }
@@ -2902,6 +2912,11 @@ async fn run_attach(
 
     let supports_events = connection.capabilities.contains("events");
     let supports_snapshot = connection.capabilities.contains("snapshot");
+    // Input as events is the `vt_stream` plane's, as Rex's is (design doc,
+    // daemon item 6); any other attachment types bytes.
+    let takes_input_events = supports_snapshot
+        && connection.capabilities.contains("vt_stream")
+        && connection.capabilities.contains("vt_input");
     let supports_scrollback = supports_snapshot && connection.capabilities.contains("scrollback");
     let supports_grid_diff = supports_snapshot && connection.capabilities.contains("grid_diff");
     let negotiated = connection.negotiated;
@@ -3109,6 +3124,27 @@ async fn run_attach(
                 }
             }
             Ok(Some(Frame::Control(Control::Unknown))) => {}
+            Ok(Some(Frame::Event(
+                event @ (Event::Key { .. }
+                | Event::Paste { .. }
+                | Event::Mouse { .. }
+                | Event::Wheel { .. }
+                | Event::Focus { .. }),
+            ))) if takes_input_events => {
+                // Refused like `D` input once the actor has handed its PTY over.
+                if !handle.send(SessionMsg::InputEvent {
+                    id: client_id.clone(),
+                    event,
+                }) {
+                    let _ = out.send(Outbound::Control(error(
+                        None,
+                        ErrorCode::Busy,
+                        "this session is being handed to a new daemon; reattach to keep typing",
+                        true,
+                    )));
+                    break;
+                }
+            }
             Ok(Some(Frame::Event(event))) => drop(event),
             Ok(Some(Frame::Control(_))) => {
                 let _ = out.send(Outbound::Control(error(

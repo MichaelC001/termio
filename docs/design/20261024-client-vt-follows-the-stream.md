@@ -56,6 +56,11 @@ in the binary; **inferred** means not traced to the end.
 | The view does not resize the VT for server blocks | `automaticallyResizesTerminal` and `onGridSizeChange` exist on the render view and surface. The value Rex sets was not found | inferred |
 | Server order: wait for ground → VT resize → `TIOCSWINSZ` → APC in the stream | Go pclntab: `scheduleGroundMutationsLocked` calls `VTGround`; `term.(*Terminal).Resize` calls `libghostty.(*Terminal).Resize`, then `pty.resize`; `applyGroundMutationsLocked` calls `enqueueEncodableLocked` after the mutation | observed |
 
+| Input reaches the server as structured events, not bytes | The server's API text: "A client may send only `key`, `paste`, `mouse`, `wheel`, and `focus` events." A key carries `mods`, `consumed_mods`, `composing` and the unshifted key; a mouse event carries the cell, the pixel and the buttons held; a wheel carries `delta_x`, `delta_y` and `delta_mode` | observed |
+| The server encodes input with libghostty against its own VT | cgo stubs `_Cfunc_ghostty_key_encoder_encode`, `_Cfunc_ghostty_key_encoder_setopt_from_terminal`, `_Cfunc_ghostty_mouse_encoder_encode`, `_Cfunc_ghostty_focus_encode`, `_Cfunc_ghostty_go_terminal_paste`; Go methods `libghostty.(*KeyEncoder).Encode`, `(*MouseEncoder).Encode`, `FocusEncode`, `PasteEncode` | observed |
+| The server's VT answers the program's queries | cgo exports `goWritePtyTrampoline`, `goDeviceAttributesTrampoline`, `goXtversionTrampoline`, `goColorSchemeTrampoline` | observed |
+| The client also links libghostty's encoders | Swift types `GhosttyVT.KeyEncoder` and `GhosttyVT.MouseEncoder` are present. What the client uses them for was not traced | observed |
+
 Rex's own protocol document states the contract: "Program bytes before it were
 written at the old size, and bytes after it at the new size."
 
@@ -82,6 +87,16 @@ before the ioctl that raises SIGWINCH.
    sidecar parser is in the ground state, so it never lands inside an escape
    sequence.
 5. Clients without `vt_stream` keep today's barrier and keyframes.
+6. Input from a `vt_stream` client arrives as `E` events, as Rex's does:
+   `key`, `paste`, `mouse`, `wheel` and `focus`. The daemon encodes each one
+   with libghostty's encoders against the modes of its own VT, then writes the
+   bytes to the PTY on the path `D` input takes, with the same write-token
+   rule. `D` stays for text that is typed verbatim (`termio sessions send`).
+7. Encoding never waits for the parse. After each batch the sidecar parses, it
+   copies the terminal's modes into the encoders (`setopt_from_terminal`), and
+   the session actor encodes with them as they are. A Ctrl-C sent during a
+   flood is encoded at once, against the modes of the last byte parsed, not
+   queued behind the backlog.
 
 The anti-100× invariant is unchanged. The daemon still delivers bytes without
 waiting on the sidecar parse; only the marker's position is new.
@@ -99,8 +114,12 @@ waiting on the sidecar parse; only the marker's position is new.
    already consumes.
 4. Attach decodes the snapshot into a new terminal and swaps it in. Nothing is
    reset in place.
-5. Input goes through libghostty-vt's key, mouse, paste and focus encoders
-   against the terminal's live modes.
+5. Input goes to the daemon as events (daemon item 6). The client turns an
+   `NSEvent` into a key event, runs the input method and draws its preedit,
+   and keeps Ghostty's macOS editing bindings (⌘←, ⌥← and the rest), which
+   send fixed bytes. It does not encode: its terminal is one round trip behind
+   the program, so a key encoded against it uses modes the program may already
+   have changed.
 
 ### What gets deleted
 
@@ -166,10 +185,25 @@ Each phase ends at a gate. A failed gate stops the work.
    the markers; the two screens must be byte-identical after every marker.
 3. **Mac client stack behind a setting.** Gate: the parity list above, plus the
    relaunch and resize harnesses used for #755 (app VT against termiod's VT).
+   Milestones:
+   - M0, libghostty-swift 1.2.0 ships `GhosttyVt` beside GhosttyKit. **Done (#13).**
+   - M1, the client terminal and a parity fixture written by termiod. **Done (#769).**
+   - M2, the Metal renderer and the stream view, behind `TermioStreamTerminal`. **Done (#771).**
+   - M3, input as events that termiod encodes (daemon items 6 and 7); IME
+     preedit; `termio sessions send` and `read` on a stream pane.
+   - M4, selection and copy, links, search, the scrollback view, OSC title,
+     PWD, progress and notifications, clipboard, Kitty images.
+   - M5, the gate.
 4. **Default on the Mac.** Delete the hold machinery.
-5. **iOS.** The phone's mirror is a live surface fed through the companion
+5. **The daemon answers queries.** As Rex's server does, the daemon's VT
+   replies to device attributes, cursor and size reports, XTVERSION and the
+   color-scheme query, and no client answers any more. A session then gets
+   its answers with no window open. The color replies need each client's
+   theme, which the client sends to the daemon. Gate: the
+   `TerminalDeviceReport` cases pass against the daemon alone.
+6. **iOS.** The phone's mirror is a live surface fed through the companion
    bridge, so the marker must cross the bridge in order.
-6. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
+7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
    stream with no snapshot.
 
 ## Risks
@@ -183,8 +217,11 @@ Each phase ends at a gate. A failed gate stops the work.
   uses 8×16). Anything that depends on pixel size, such as Kitty placements and
   size reports, must be checked by the parity test.
 - Both the client and the daemon can answer terminal queries. Today only the
-  writer's surface answers (`TerminalDeviceReport`); the new client must keep
-  that rule.
+  writer's surface answers (`TerminalDeviceReport`); the new client keeps that
+  rule until phase 5 moves the answers to the daemon.
+- A remote daemon and the app can run different releases for a while, so input
+  events name keys by Ghostty's key names (`arrow_up`), never by the C enum's
+  numbers.
 
 ## Open questions
 

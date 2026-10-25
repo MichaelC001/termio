@@ -572,6 +572,30 @@ impl Pty {
     }
 
     /// Write client input to the PTY.
+    /// One write: waits until the master is writable and returns how many
+    /// bytes went. Nothing is awaited after the write, so a caller that drops
+    /// this future has either written nothing or knows exactly what it wrote.
+    pub async fn write_some(&self, data: &[u8]) -> std::io::Result<usize> {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let mut guard = self.master.writable().await?;
+            let fd = self.master.get_ref().as_raw_fd();
+            match guard.try_io(|_| {
+                let n = unsafe { libc::write(fd, data.as_ptr() as *const _, data.len()) };
+                if n < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(n as usize)
+                }
+            }) {
+                Ok(result) => return result,
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
     pub async fn write_all(&self, mut data: &[u8]) -> std::io::Result<()> {
         while !data.is_empty() {
             let mut guard = self.master.writable().await?;

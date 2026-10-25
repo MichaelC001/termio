@@ -250,6 +250,112 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return try body()
     }
 
+    /// Where a wheel turn goes, as Ghostty routes it: to a program tracking
+    /// the mouse, or to one on the alternate screen with alternate scroll
+    /// (mode 1007), which termiod encodes; otherwise it moves this view
+    /// through scrollback. termiod decides again against its own modes and
+    /// sends nothing for a turn that is scrollback there.
+    var wheelGoesToProgram: Bool {
+        locked {
+            var tracking = false
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+            guard !tracking else { return true }
+            var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+            return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE && (try? mode(ghostty_mode_new(1007, false))) == true
+        }
+    }
+
+    /// Whether the program asked for mouse reports, so a click is its.
+    var tracksMouse: Bool {
+        locked {
+            var tracking = false
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+            return tracking
+        }
+    }
+
+    /// The grid's size in cells.
+    var grid: (rows: UInt16, cols: UInt16) {
+        locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            return (rows, cols)
+        }
+    }
+
+    /// Moves this view through scrollback by `rows`, negative up. Only the
+    /// client's view moves; the session is untouched.
+    func scrollViewport(rows: Int) {
+        locked {
+            var behavior = GhosttyTerminalScrollViewport()
+            behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+            behavior.value.delta = rows
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+        }
+    }
+
+    /// The active screen as plain text, one line per row, whatever part of
+    /// scrollback the view shows: what `termio sessions read` reports.
+    func activeText() throws -> String {
+        try locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            try get(GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            try get(GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            guard rows > 0, cols > 0 else { return "" }
+            func reference(_ x: UInt16, _ y: UInt16) throws -> GhosttyGridRef {
+                var point = GhosttyPoint()
+                point.tag = GHOSTTY_POINT_TAG_ACTIVE
+                point.value.coordinate = GhosttyPointCoordinate(x: x, y: UInt32(y))
+                var reference = GhosttyGridRef()
+                reference.size = MemoryLayout<GhosttyGridRef>.size
+                try Self.check(ghostty_terminal_grid_ref(terminal, point, &reference), "ghostty_terminal_grid_ref")
+                return reference
+            }
+            var selection = GhosttySelection()
+            selection.size = MemoryLayout<GhosttySelection>.size
+            selection.start = try reference(0, 0)
+            selection.end = try reference(cols - 1, rows - 1)
+            return try withUnsafePointer(to: &selection) { selection in
+                var options = GhosttyFormatterTerminalOptions()
+                options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
+                options.extra.size = MemoryLayout<GhosttyFormatterTerminalExtra>.size
+                options.extra.screen.size = MemoryLayout<GhosttyFormatterScreenExtra>.size
+                options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
+                options.unwrap = false
+                options.trim = true
+                options.selection = selection
+                return String(decoding: try format(options), as: UTF8.self)
+            }
+        }
+    }
+
+    /// Back to the live screen, as a keystroke does in Ghostty.
+    func scrollViewportToBottom() {
+        locked { scrollToBottomLocked() }
+    }
+
+    /// The cursor's cell on the active screen.
+    var cursorPosition: (x: UInt16, y: UInt16)? {
+        locked {
+            var x: UInt16 = 0
+            var y: UInt16 = 0
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_CURSOR_X, &x) == GHOSTTY_SUCCESS,
+                  ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &y) == GHOSTTY_SUCCESS
+            else { return nil }
+            return (x, y)
+        }
+    }
+
+    private func scrollToBottomLocked() {
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+        ghostty_terminal_scroll_viewport(terminal, behavior)
+    }
+
     /// Applies an `E vt_resize` marker: the same operation the daemon's sidecar
     /// applied at this byte (`SidecarCommand::Resize` in `termiod/src/session.rs`).
     /// `reflow` is set when no shell held the terminal, and the screen rewraps;
@@ -327,6 +433,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         options.extra.screen.protection = true
         options.extra.screen.kitty_keyboard = true
         options.extra.screen.charsets = true
+        return try format(options)
+    }
+
+    private func format(_ options: GhosttyFormatterTerminalOptions) throws -> Data {
         var formatter: GhosttyFormatter?
         try Self.check(ghostty_formatter_terminal_new(nil, &formatter, terminal, options), "ghostty_formatter_terminal_new")
         guard let formatter else {
