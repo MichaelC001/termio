@@ -35,13 +35,14 @@ struct ClaudeUsageProvider: UsageProvider {
     /// folder exported through a symlink won't match.
     var keychainService: String { keychainServices[0] }
 
-    /// Every spelling of the folder a user plausibly exported: as stored, and
-    /// with the trailing slash shell completion adds. Claude hashes the string
-    /// verbatim, so each spelling is a different item.
+    /// The spelling termio exports when it launches a session on this folder,
+    /// and only that one. A login made under another spelling (a trailing slash)
+    /// is an item sessions started here would not find, so it reads as signed
+    /// out, and Sign In re-creates it under this spelling.
     var keychainServices: [String] {
         let base = "Claude Code-credentials"
         guard !isUnmovedHome else { return [base] }
-        return [home.path, home.path + "/"].map { spelling in
+        return [home.path].map { spelling in
             let digest = SHA256.hash(data: Data(spelling.precomposedStringWithCanonicalMapping.utf8))
             let hex = digest.map { String(format: "%02x", $0) }.joined()
             return "\(base)-\(hex.prefix(8))"

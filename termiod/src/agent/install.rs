@@ -483,7 +483,9 @@ fn rehomed(agent: &AgentDefinition, request: &InstallRequest) -> Vec<AgentDefini
 /// fix — a client can choose among the account folders, never name `/etc` or
 /// a project checkout.
 fn accepted_home(home: &crate::agent::manifest::ConfigHome, folder: &str) -> Option<String> {
-    accepted_home_beside(&machine::resolve(&home.path, None).ok()?, folder)
+    // Beside the folder the agent really uses here, its variable honoured — the
+    // app names the next account after that same folder.
+    accepted_home_beside(&machine::resolve(&home.path, Some(home)).ok()?, folder)
 }
 
 fn accepted_home_beside(default: &Path, folder: &str) -> Option<String> {

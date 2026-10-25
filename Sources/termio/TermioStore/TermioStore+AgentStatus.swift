@@ -190,7 +190,7 @@ extension TermioStore {
         var session = self[home]
         // A sign-in terminal runs an agent CLI's login, not the agent: promoting it
         // would persist an agent identity that relaunches as a full session.
-        guard !session.isSSH, session.oneShotCommand == nil else { return }
+        guard !session.isSSH, !session.isAccountSignIn else { return }
         if let detected {
             // Promote a plain terminal only: an already-promoted row seeing its own
             // agent is the idempotent no-op, and a *different* foreground under a
@@ -202,6 +202,9 @@ extension TermioStore {
             // here to protect it from.
             session.title = detected.displayName
             session.agent = detected
+            // Typed into a shell, the agent runs on whatever account that shell
+            // gives it, not one this row once started on.
+            session.accountHome = nil
             self[home] = session
         } else if session.agent != .terminal {
             demoteSessionToTerminal(id)
@@ -226,6 +229,7 @@ extension TermioStore {
         let terminalCount = roster(at: home).filter { $0.agent == .terminal }.count
         session.title = "Terminal \(terminalCount + 1)"
         session.agent = .terminal
+        session.accountHome = nil
         session.liveTitle = nil
         session.promptTitle = nil
         self[home] = session

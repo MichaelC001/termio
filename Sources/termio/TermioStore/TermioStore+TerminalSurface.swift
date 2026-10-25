@@ -582,7 +582,7 @@ extension TermioStore {
     /// default folder, and always for a session on another machine, whose
     /// config lives over there.
     func accountHome(for session: Session) -> String? {
-        guard session.termiodRemoteHost == nil, session.oneShotCommand == nil else { return nil }
+        guard session.termiodRemoteHost == nil, !session.isAccountSignIn else { return nil }
         if session.launched { return session.accountHome }
         return settings.activeAccountFolder(for: session.agent)
     }

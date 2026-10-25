@@ -521,6 +521,11 @@ struct Session: Identifiable, Hashable, Codable {
     /// start a finished sign-in over again.
     var oneShotCommand: String?
 
+    /// Marks a terminal opened to sign an agent CLI in, and outlives the
+    /// one-shot command: persisted, so a row restored while the login is still
+    /// waiting is never promoted to the agent it is logging in to.
+    var isAccountSignIn = false
+
     var isSSH: Bool { sshHost != nil }
 
     /// When set, this session runs **inside a `termiod` daemon on an SSH host**
@@ -644,7 +649,7 @@ struct Session: Identifiable, Hashable, Codable {
         case id, title, agent, createdAt, worktreePath, resumeID, launched, launchedAt,
              liveTitle, promptTitle, lastWorkingDirectory, spawnDirectory, sshHost, pinned,
              termiodRemoteHost, termiodRemoteCwd, deviceID, termiodSessionName,
-             termiodDaemonID, givenTitle, accountHome
+             termiodDaemonID, givenTitle, accountHome, isAccountSignIn
     }
 
     /// The name to recover from a state file written before `givenTitle` existed,
@@ -696,6 +701,7 @@ struct Session: Identifiable, Hashable, Codable {
             String.self, forKey: .termiodSessionName)
         termiodDaemonID = try container.decodeIfPresent(String.self, forKey: .termiodDaemonID)
         accountHome = try container.decodeIfPresent(String.self, forKey: .accountHome)
+        isAccountSignIn = try container.decodeIfPresent(Bool.self, forKey: .isAccountSignIn) ?? false
         givenTitle = try container.decodeIfPresent(String.self, forKey: .givenTitle)
             ?? Self.recoveredGivenTitle(title, agent: agent, remoteHost: termiodRemoteHost)
     }

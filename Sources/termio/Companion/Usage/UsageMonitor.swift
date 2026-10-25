@@ -88,12 +88,13 @@ final class UsageMonitor: ObservableObject {
     func accounts(for agent: AgentPreset) -> [UsageAccount] {
         guard let provider = Self.providers.first(where: { $0.agent == agent }) else { return [] }
         let defaultHome = provider.defaultHome.standardizedFileURL
-        // Two spellings of one folder (a symlink) would scan the same logs twice
-        // and double every total, so folders are told apart by where they lead.
-        var seen: Set<String> = [defaultHome.resolvingSymlinksInPath().path]
+        // Folders are told apart by spelling, not by where they lead: Claude
+        // keys a login by the exported string, so two spellings of one folder
+        // can hold two logins. The log scan is what dedupes by target.
+        var seen: Set<URL> = [defaultHome]
         let added = settings.usageAccountFolders(for: agent)
             .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .filter { seen.insert($0.resolvingSymlinksInPath().path).inserted }
+            .filter { seen.insert($0).inserted }
             .map { UsageAccount(agent: agent, home: $0, isDefault: false) }
         return [UsageAccount(agent: agent, home: defaultHome, isDefault: true)] + added
     }
@@ -235,7 +236,13 @@ final class UsageMonitor: ObservableObject {
         scanTask = Task.detached(priority: .utility) { [weak self] in
             let windows = DateWindows()
             var scanned: [AgentPreset: AgentTokenUsage] = [:]
+            // Two accounts whose folders lead to one directory share its logs;
+            // scanning both would double every total.
+            var scannedHomes = Set<String>()
             for (_, provider) in providers {
+                guard scannedHomes.insert(
+                    "\(provider.agent.rawValue):\(provider.home.resolvingSymlinksInPath().path)"
+                ).inserted else { continue }
                 let usage = provider.tokenUsage(in: windows)
                 guard !usage.isEmpty else { continue }
                 scanned[provider.agent, default: AgentTokenUsage()].add(usage)

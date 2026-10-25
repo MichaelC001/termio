@@ -893,6 +893,7 @@ extension TermioStore {
         var session = Session(title: title, agent: .terminal)
         session.givenTitle = title
         session.oneShotCommand = command
+        session.isAccountSignIn = true
         guard let index = workspaces.firstIndex(where: { $0.id == currentWorkspace.id }) else { return }
         workspaces[index].terminals.append(session)
         selectedSessionID = session.id
