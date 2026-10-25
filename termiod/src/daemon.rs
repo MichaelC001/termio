@@ -1372,6 +1372,11 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             {
                 negotiated_caps.retain(|cap| cap != "vt_stream");
             }
+            // The two are different planes and an attachment reads one. The
+            // exact one wins; grid_diff is a degrade for bad networks.
+            if negotiated_caps.iter().any(|cap| cap == "vt_stream") {
+                negotiated_caps.retain(|cap| cap != "grid_diff");
+            }
             write_control(
                 &mut wr,
                 &Control::HelloOk {

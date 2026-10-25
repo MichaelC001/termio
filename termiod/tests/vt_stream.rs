@@ -295,6 +295,45 @@ fn a_stream_client_holds_the_host_screen_through_resizes_with_no_keyframe() {
     let _ = std::fs::remove_file(&script);
 }
 
+fn granted(socket: &str, offered: &[&str]) -> Vec<String> {
+    let mut bridge = Command::new(BIN)
+        .arg("stdio")
+        .env("TERMIOD_SOCK", socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn stdio bridge");
+    let mut to_bridge = bridge.stdin.take().expect("bridge stdin");
+    let mut from_bridge = bridge.stdout.take().expect("bridge stdout");
+    let hello = serde_json::json!({
+        "op": "hello", "proto": 1, "min_proto": 1, "role": "attach",
+        "caps": offered, "client": "vt-stream-test",
+    });
+    write_frame(&mut to_bridge, b'C', hello.to_string().as_bytes());
+    let (_, payload) = read_frame(&mut from_bridge).expect("hello reply");
+    let reply: serde_json::Value = serde_json::from_slice(&payload).expect("hello json");
+    let caps = reply["caps"]
+        .as_array()
+        .expect("caps")
+        .iter()
+        .filter_map(|cap| cap.as_str().map(str::to_string))
+        .collect();
+    let _ = bridge.kill();
+    let _ = bridge.wait();
+    caps
+}
+
+/// vt_stream and grid_diff are two planes, and an attachment reads one; the
+/// exact one is granted, so the client is never told it has a plane it won't get.
+#[test]
+fn vt_stream_and_grid_diff_are_never_granted_together() {
+    let daemon = start_daemon("planes");
+    let caps = granted(&daemon.socket, &["snapshot", "events", "grid_diff", "vt_stream"]);
+    assert!(caps.iter().any(|cap| cap == "vt_stream"), "vt_stream was not granted: {caps:?}");
+    assert!(!caps.iter().any(|cap| cap == "grid_diff"), "both planes were granted: {caps:?}");
+}
+
 /// vt_stream resizes through an event, so a client that did not take the event
 /// plane is not granted it: it would never see a marker.
 #[test]
