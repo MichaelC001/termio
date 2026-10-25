@@ -42,11 +42,23 @@ struct ClaudeUsageProvider: UsageProvider {
     var keychainServices: [String] {
         let base = "Claude Code-credentials"
         guard !isUnmovedHome else { return [base] }
-        return [home.path].map { spelling in
+        return [exportedSpelling].map { spelling in
             let digest = SHA256.hash(data: Data(spelling.precomposedStringWithCanonicalMapping.utf8))
             let hex = digest.map { String(format: "%02x", $0) }.joined()
             return "\(base)-\(hex.prefix(8))"
         }
+    }
+
+    /// The string sessions on this folder export. For the folder termio's own
+    /// environment points at, that is the inherited value verbatim — sessions
+    /// and sign-in inherit it untouched, trailing slash and all — so the reader
+    /// hashes it the same way. Every other folder is exported as `home.path`.
+    private var exportedSpelling: String {
+        if let inherited = ProcessInfo.processInfo.environment[Self.homeEnvironment],
+           URL(fileURLWithPath: inherited).standardizedFileURL == home.standardizedFileURL {
+            return inherited
+        }
+        return home.path
     }
 
     /// The first spelling whose item exists. An attributes-only query reads no

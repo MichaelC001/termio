@@ -126,14 +126,9 @@ final class UsageMonitor: ObservableObject {
               let command = settings.commandPath(for: account.agent, on: .thisMac)
                 .flatMap({ $0.isEmpty ? nil : $0 }) ?? account.agent.command
         else { return nil }
-        if account.isDefault {
-            // termio's own environment may carry the variable (launched from a
-            // shell): export the folder in the one spelling the reader hashes.
-            guard ProcessInfo.processInfo.environment[type.homeEnvironment] != nil else {
-                return "\(command) \(login)"
-            }
-            return TermioStore.exporting(type.homeEnvironment, account.home.path, before: "\(command) \(login)")
-        }
+        // The default folder signs in exactly as its sessions launch: with
+        // whatever the environment already exports, untouched.
+        if account.isDefault { return "\(command) \(login)" }
         do {
             try FileManager.default.createDirectory(
                 at: account.home, withIntermediateDirectories: true,
