@@ -45,6 +45,23 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// What the terminal answers a program's query with — a cursor position
     /// report, a mode report. Called on the writing thread, inside `write`.
     private let onReply: (Data) -> Void
+    /// What the program tells the terminal that the app acts on, as the
+    /// embedded surface publishes it: the title, the working directory, the
+    /// bell, a desktop notification, a clipboard write. Called on the writing
+    /// thread, inside `write`, with `lock` held.
+    private let onSignal: (Signal) -> Void
+    /// The text a program reading the clipboard (OSC 52 `?`) is given, which
+    /// reaches it through `onReply`, so only the writer's answer is sent.
+    private let readClipboard: () -> String?
+
+    enum Signal: Equatable {
+        case title(String)
+        case workingDirectory(String)
+        case bell
+        case notification(title: String, body: String)
+        /// Text a program copied with OSC 52 to the standard clipboard.
+        case clipboard(String)
+    }
     /// When the program began synchronized output (mode 2026), set by the
     /// render-hold callback under `lock`. Nil while nothing is held.
     private var heldSince: ContinuousClock.Instant?
@@ -58,7 +75,11 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
     /// may survive into the new stream.
-    init(nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in }) throws {
+    init(
+        nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in },
+        onSignal: @escaping (Signal) -> Void = { _ in },
+        readClipboard: @escaping () -> String? = { nil }
+    ) throws {
         terminal = try nativeSnapshot.withUnsafeBytes { buffer in
             try Self.decode(buffer.bindMemory(to: UInt8.self))
         }
@@ -69,6 +90,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
         renderState = state
         self.onReply = onReply
+        self.onSignal = onSignal
+        self.readClipboard = readClipboard
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata), "ghostty_terminal_set(userdata)")
         let reply: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
@@ -104,6 +127,104 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
             heldSince = ContinuousClock.now
         }
+        try installSignals()
+        // The snapshot carries the title and directory the program last set,
+        // which no callback reports, as a replayed surface would have.
+        if let title = string(GHOSTTY_TERMINAL_DATA_TITLE), !title.isEmpty { onSignal(.title(title)) }
+        if let directory = workingDirectoryLocked() { onSignal(.workingDirectory(directory)) }
+    }
+
+    private func installSignals() throws {
+        func owner(_ userdata: UnsafeMutableRawPointer?) -> TermiodStreamTerminal? {
+            userdata.map { Unmanaged<TermiodStreamTerminal>.fromOpaque($0).takeUnretainedValue() }
+        }
+        let title: GhosttyTerminalTitleChangedFn = { _, userdata in
+            guard let owner = owner(userdata) else { return }
+            owner.onSignal(.title(owner.string(GHOSTTY_TERMINAL_DATA_TITLE) ?? ""))
+        }
+        let directory: GhosttyTerminalPwdChangedFn = { _, userdata in
+            guard let owner = owner(userdata), let path = owner.workingDirectoryLocked() else { return }
+            owner.onSignal(.workingDirectory(path))
+        }
+        let bell: GhosttyTerminalBellFn = { _, userdata in
+            owner(userdata)?.onSignal(.bell)
+        }
+        let notification: GhosttyTerminalDesktopNotificationFn = { _, userdata, notification in
+            guard let owner = owner(userdata), let notification else { return }
+            owner.onSignal(.notification(
+                title: TermiodStreamTerminal.text(notification.pointee.title), body: TermiodStreamTerminal.text(notification.pointee.body)
+            ))
+        }
+        // Written as the embedded surface writes it: the standard clipboard's
+        // text, with no prompt. The reply must come before this returns.
+        let clipboard: GhosttyTerminalClipboardWriteFn = { _, userdata, write in
+            guard let write else { return }
+            var reply = GhosttyClipboardWriteReply()
+            reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
+            reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
+            defer { withUnsafePointer(to: &reply) { write.pointee.reply(write, $0) } }
+            guard write.pointee.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD,
+                  let owner = owner(userdata), let contents = write.pointee.contents
+            else { return }
+            let entries = UnsafeBufferPointer(start: contents, count: write.pointee.contents_len)
+            guard let text = entries.first(where: { TermiodStreamTerminal.text($0.mime).hasPrefix("text/plain") }) else { return }
+            owner.onSignal(.clipboard(TermiodStreamTerminal.text(text.data)))
+        }
+        let clipboardRead: GhosttyTerminalClipboardReadFn = { _, userdata, read in
+            guard let read else { return }
+            var reply = GhosttyClipboardReadReply()
+            reply.size = MemoryLayout<GhosttyClipboardReadReply>.size
+            guard read.pointee.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD,
+                  let owner = owner(userdata), let text = owner.readClipboard()
+            else {
+                reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_UNSUPPORTED
+                withUnsafePointer(to: &reply) { read.pointee.reply(read, $0) }
+                return
+            }
+            let mime = Array("text/plain".utf8)
+            let data = Array(text.utf8)
+            mime.withUnsafeBufferPointer { mime in
+                data.withUnsafeBufferPointer { data in
+                    var content = GhosttyClipboardContent(
+                        mime: GhosttyString(ptr: mime.baseAddress, len: mime.count),
+                        data: GhosttyString(ptr: data.baseAddress, len: data.count)
+                    )
+                    withUnsafePointer(to: &content) { content in
+                        reply.result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS
+                        reply.contents = content
+                        reply.contents_len = 1
+                        withUnsafePointer(to: &reply) { read.pointee.reply(read, $0) }
+                    }
+                }
+            }
+        }
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ, unsafeBitCast(clipboardRead, to: UnsafeRawPointer.self)), "ghostty_terminal_set(clipboard read)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, unsafeBitCast(title, to: UnsafeRawPointer.self)), "ghostty_terminal_set(title)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, unsafeBitCast(directory, to: UnsafeRawPointer.self)), "ghostty_terminal_set(pwd)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, unsafeBitCast(bell, to: UnsafeRawPointer.self)), "ghostty_terminal_set(bell)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, unsafeBitCast(notification, to: UnsafeRawPointer.self)), "ghostty_terminal_set(notification)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(clipboard, to: UnsafeRawPointer.self)), "ghostty_terminal_set(clipboard write)")
+    }
+
+    private static func text(_ string: GhosttyString) -> String {
+        guard let pointer = string.ptr, string.len > 0 else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: pointer, count: string.len), as: UTF8.self)
+    }
+
+    /// A borrowed string the terminal holds; read with `lock` held.
+    private func string(_ data: GhosttyTerminalData) -> String? {
+        var value = GhosttyString()
+        guard ghostty_terminal_get(terminal, data, &value) == GHOSTTY_SUCCESS else { return nil }
+        return Self.text(value)
+    }
+
+    /// OSC 7 reports a `file://` URL; the app works with the path.
+    private func workingDirectoryLocked() -> String? {
+        guard let reported = string(GHOSTTY_TERMINAL_DATA_PWD), !reported.isEmpty else { return nil }
+        if reported.hasPrefix("file://"), let url = URL(string: reported) {
+            return url.path.isEmpty ? nil : url.path
+        }
+        return reported
     }
 
     /// The decoder borrows `bytes` until it is freed, so everything from its

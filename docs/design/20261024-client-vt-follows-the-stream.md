@@ -190,9 +190,24 @@ Each phase ends at a gate. A failed gate stops the work.
    - M1, the client terminal and a parity fixture written by termiod. **Done (#769).**
    - M2, the Metal renderer and the stream view, behind `TermioStreamTerminal`. **Done (#771).**
    - M3, input as events that termiod encodes (daemon items 6 and 7); IME
-     preedit; `termio sessions send` and `read` on a stream pane.
-   - M4, selection and copy, links, search, the scrollback view, OSC title,
-     PWD, progress and notifications, clipboard, Kitty images.
+     preedit; `termio sessions send` and `read` on a stream pane. **Done (#782).**
+   - M4a, what the program tells the terminal that the app acts on: the
+     title, the working directory, the bell, desktop notifications, and OSC 52
+     clipboard writes and reads.
+   - M4b, selection and copy, the scrollback view, search.
+   - M4c, links: OSC 8 hyperlinks, detected URLs and paths, hover and ⌘-click.
+   - M4d, Kitty images.
+
+   Rex's server sends the title, PWD, bell, notifications, progress and OSC 52
+   to clients as events, because its consumers include clients that do not
+   render. termio takes them from the stream pane's own terminal instead: it
+   parses the same bytes in the same order as the daemon's, so its callbacks
+   fire at the same byte, and the daemon already derives on its own what a
+   client without a screen needs (the status engine). Selection follows the
+   Mac client, not the server: Rex's server keeps a selection for clients
+   that forward the mouse and reports only `selection_copied`, which carries
+   no selection to draw, and its Mac client links libghostty's selection
+   gestures.
    - M5, the gate.
 4. **Default on the Mac.** Delete the hold machinery.
 5. **The daemon answers queries.** As Rex's server does, the daemon's VT

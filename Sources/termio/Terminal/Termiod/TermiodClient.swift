@@ -1593,6 +1593,10 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
     var onStreaming: ((Bool) -> Void)?
+    /// What the program told the stream pane's terminal that the app acts on
+    /// (`TermiodStreamTerminal.Signal`), on the main thread: what the embedded
+    /// surface publishes for a pane that is not streaming.
+    var onStreamSignal: ((TermiodStreamTerminal.Signal) -> Void)?
 
     var streamTerminal: TermiodStreamTerminal? {
         streamLock.lock()
@@ -1660,11 +1664,19 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the connection is being replaced, and nothing more it reads may land.
     private func receiveStreamSnapshot(_ native: Data) -> Bool {
         do {
-            let terminal = try TermiodStreamTerminal(nativeSnapshot: native) { [weak self] reply in
-                // Answering is the writer's job alone (`TerminalDeviceReport`),
-                // which `sendDeviceReport` enforces.
-                self?.sendDeviceReport(reply)
-            }
+            let terminal = try TermiodStreamTerminal(
+                nativeSnapshot: native,
+                onReply: { [weak self] reply in
+                    // Answering is the writer's job alone (`TerminalDeviceReport`),
+                    // which `sendDeviceReport` enforces.
+                    self?.sendDeviceReport(reply)
+                },
+                onSignal: { [weak self] signal in
+                    DispatchQueue.main.async { self?.onStreamSignal?(signal) }
+                },
+                // What the embedded surface serves: a copied file is its path.
+                readClipboard: { NSPasteboard.general.terminalPasteText() }
+            )
             streamLock.lock()
             defer { streamLock.unlock() }
             if let colors = streamThemeLocked { try terminal.setTheme(colors) }

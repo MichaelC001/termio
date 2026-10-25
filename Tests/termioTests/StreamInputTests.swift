@@ -177,6 +177,65 @@ final class StreamInputTests: XCTestCase {
         XCTAssertTrue(try terminal("\u{1b}[?1000h").wheelGoesToProgram, "mouse tracking")
     }
 
+    /// What the program tells the terminal that the app acts on, as the
+    /// embedded surface publishes it, and what a snapshot already carries.
+    func testTheTerminalReportsTitleDirectoryBellNotificationsAndCopies() throws {
+        var raw: GhosttyTerminal?
+        XCTAssertEqual(ghostty_terminal_new(nil, &raw, 40, 10), GHOSTTY_SUCCESS)
+        let source = try XCTUnwrap(raw)
+        defer { ghostty_terminal_free(source) }
+        let setup = Array("\u{1b}]0;agent at work\u{07}\u{1b}]7;file://box/tmp/work\u{07}".utf8)
+        ghostty_terminal_vt_write(source, setup, setup.count)
+        var encoded: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        XCTAssertEqual(ghostty_snapshot_encode_alloc(source, nil, &encoded, &length), GHOSTTY_SUCCESS)
+        let pointer = try XCTUnwrap(encoded)
+        defer { ghostty_free(nil, pointer, length) }
+        var signals: [TermiodStreamTerminal.Signal] = []
+        let terminal = try TermiodStreamTerminal(
+            nativeSnapshot: Data(bytes: pointer, count: length), onSignal: { signals.append($0) }
+        )
+        XCTAssertEqual(signals, [.title("agent at work"), .workingDirectory("/tmp/work")], "carried by the snapshot")
+
+        signals = []
+        terminal.write(Data("\u{1b}]2;thinking\u{07}".utf8))
+        terminal.write(Data("\u{1b}]7;file://box/home/me/project%20one\u{07}".utf8))
+        terminal.write(Data("\u{07}".utf8))
+        terminal.write(Data("\u{1b}]9;build finished\u{07}".utf8))
+        terminal.write(Data("\u{1b}]777;notify;Claude;needs you\u{07}".utf8))
+        terminal.write(Data("\u{1b}]52;c;aGVsbG8=\u{07}".utf8))
+        XCTAssertEqual(signals, [
+            .title("thinking"),
+            .workingDirectory("/home/me/project one"),
+            .bell,
+            .notification(title: "", body: "build finished"),
+            .notification(title: "Claude", body: "needs you"),
+            .clipboard("hello"),
+        ])
+    }
+
+    /// A program reading the clipboard is answered through the reply path,
+    /// which only the writer sends on.
+    func testAClipboardReadIsAnsweredThroughTheReplyPath() throws {
+        var raw: GhosttyTerminal?
+        XCTAssertEqual(ghostty_terminal_new(nil, &raw, 40, 10), GHOSTTY_SUCCESS)
+        let source = try XCTUnwrap(raw)
+        defer { ghostty_terminal_free(source) }
+        var encoded: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        XCTAssertEqual(ghostty_snapshot_encode_alloc(source, nil, &encoded, &length), GHOSTTY_SUCCESS)
+        let pointer = try XCTUnwrap(encoded)
+        defer { ghostty_free(nil, pointer, length) }
+        var replies = Data()
+        let terminal = try TermiodStreamTerminal(
+            nativeSnapshot: Data(bytes: pointer, count: length),
+            onReply: { replies.append($0) }, readClipboard: { "hello" }
+        )
+        terminal.write(Data("\u{1b}]52;c;?\u{07}".utf8))
+        let reply = String(decoding: replies, as: UTF8.self)
+        XCTAssertTrue(reply.contains("52;c;aGVsbG8="), reply.debugDescription)
+    }
+
     /// What `termio sessions read` reports for a stream pane.
     func testTheActiveScreenReadsAsText() throws {
         let terminal = try terminal("hello\r\nworld")

@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
@@ -964,11 +965,7 @@ extension TermioStore {
     /// `StatusEngine::note_title`): a title is a *level* signal of the agent's
     /// current state, so "Action Required" after a turn ends is a real question.
     private func monitor(_ state: TerminalViewState, for id: Session.ID) {
-        let flag: () -> Void = { [weak self] in
-            guard let self, !self.isViewing(id), self.status(for: id) != .done
-            else { return }
-            self.setStatus(.needsAttention, for: id)
-        }
+        let flag: () -> Void = { [weak self] in self?.noteAttentionSignal(for: id) }
         monitors[id] = [
             state.$lastBellAt.dropFirst().compactMap { $0 }.sink { _ in flag() },
             state.$lastDesktopNotificationAt.dropFirst().compactMap { $0 }.sink { _ in flag() },
@@ -979,20 +976,7 @@ extension TermioStore {
             // stream, against the same manifest rules, for every client at once
             // (`termiod/src/session/status.rs`). What is left here is the label.
             state.$title.removeDuplicates().sink { [weak self] title in
-                guard let self, let session = self.session(id) else { return }
-                let cleaned = LiveTerminalTitle.sanitized(title)
-                guard self.isMeaningfulLiveTitle(cleaned, for: session),
-                      self.runtimes[id]?.liveTitle != cleaned else { return }
-                self.setLiveTitle(cleaned, for: id)
-                // Also record it on the session itself, so the label survives an
-                // app restart (the agent won't re-emit a title until it next works).
-                // Declared agent sessions only: a plain terminal's adopted title
-                // belongs to the transient hand-started agent, so it lives in
-                // `liveTitles` and is cleared when that agent exits — persisting it
-                // would strand a stale topic on a bare shell across restarts.
-                if session.agent != .terminal {
-                    self.updateSession(id) { $0.liveTitle = cleaned }
-                }
+                self?.noteLiveTitle(title, for: id)
             },
             // The shell's OSC 7 cwd reports — the precise signal, when a shell
             // with integration actually emits it (the kernel poll in
@@ -1000,6 +984,49 @@ extension TermioStore {
             state.$workingDirectory.compactMap { $0 }.removeDuplicates()
                 .sink { [weak self] cwd in self?.noteWorkingDirectory(cwd, for: id) },
         ]
+    }
+
+    /// A bell or desktop notification while the user is looking elsewhere.
+    private func noteAttentionSignal(for id: Session.ID) {
+        guard !isViewing(id), status(for: id) != .done else { return }
+        setStatus(.needsAttention, for: id)
+    }
+
+    /// The program's live title, adopted as the session's label when it says
+    /// something (`isMeaningfulLiveTitle`).
+    private func noteLiveTitle(_ title: String, for id: Session.ID) {
+        guard let session = session(id) else { return }
+        let cleaned = LiveTerminalTitle.sanitized(title)
+        guard isMeaningfulLiveTitle(cleaned, for: session), runtimes[id]?.liveTitle != cleaned else { return }
+        setLiveTitle(cleaned, for: id)
+        // Also record it on the session itself, so the label survives an
+        // app restart (the agent won't re-emit a title until it next works).
+        // Declared agent sessions only: a plain terminal's adopted title
+        // belongs to the transient hand-started agent, so it lives in
+        // `liveTitles` and is cleared when that agent exits — persisting it
+        // would strand a stale topic on a bare shell across restarts.
+        if session.agent != .terminal {
+            updateSession(id) { $0.liveTitle = cleaned }
+        }
+    }
+
+    /// What a stream pane's terminal reports, handled as the embedded
+    /// surface's publications are in `monitor`: that surface hears no bytes
+    /// once the pane streams.
+    func noteStreamSignal(_ signal: TermiodStreamTerminal.Signal, for id: Session.ID) {
+        switch signal {
+        case .title(let title):
+            noteLiveTitle(title, for: id)
+        case .workingDirectory(let path):
+            noteWorkingDirectory(path, for: id)
+        case .bell, .notification:
+            noteAttentionSignal(for: id)
+        case .clipboard(let text):
+            // OSC 52, written without a prompt as the embedded surface does.
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
     }
 
     /// Records a session's reported working directory, from either source (the
