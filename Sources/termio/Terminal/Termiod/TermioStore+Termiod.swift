@@ -192,6 +192,9 @@ extension TermioStore {
                 runtime.streamLink = nil
             }
         }
+        link.onStreamSignal = { [weak self] signal in
+            self?.noteStreamSignal(signal, for: session.id)
+        }
         if let colors = streamTheme(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
             link.setStreamTheme(colors)
         }
