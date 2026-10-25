@@ -1014,6 +1014,10 @@ pub trait Node {
 pub struct Artifacts {
     pub daemon: PathBuf,
     pub client: Option<PathBuf>,
+    /// Built-in Tailscale's helper (`termio-tailnet`), when the bundle carries
+    /// one for this target. It speaks no session protocol, so it rides along
+    /// unverified.
+    pub tailnet: Option<PathBuf>,
 }
 
 /// See [`Node::rollback_plan`].
@@ -1713,6 +1717,20 @@ async fn stage<N: Node>(node: &N, plan: StagePlan) -> Result<Staged> {
             )
         };
         staged.client = true;
+        // Built-in Tailscale's helper, beside the client where `termiod
+        // tailscale` looks for it, in the same command: a box gets the whole
+        // build or none of it, and a deploy that failed here is tried again by
+        // the next one rather than leaving the helper missing for good. It has
+        // no `.prev`: nothing verifies it, so nothing rolls it back.
+        if let (Some(helper), true) = (&artifacts.tailnet, plan == StagePlan::Full) {
+            let target = format!("{client}-tailnet");
+            node.put(helper, "termio-tailnet.new").await?;
+            command = format!(
+                "{command} && {{ {{ chmod +x {target}.new && mv -f {target}.new {target}; }} || {{ {}; {}; false; }}; }}",
+                shell_restore(&client, "termio_replaced"),
+                shell_restore(&node.binary(), "termiod_replaced")
+            );
+        }
     }
     if command.is_empty() {
         return Ok(staged);
@@ -2277,6 +2295,8 @@ mod tests {
         client: Option<String>,
         /// The client this build would ship. `None` is a daemon-only build.
         client_artifact: Option<PathBuf>,
+        /// The built-in Tailscale helper this build would ship.
+        tailnet_artifact: Option<PathBuf>,
         /// Where a refused client repair is remembered, when a test cares.
         repair_note: Option<PathBuf>,
         /// Makes `put` fail the way ssh does when the host drops.
@@ -2300,6 +2320,7 @@ mod tests {
                 preserve: None,
                 client: Some("$HOME/.local/bin/termio".to_string()),
                 client_artifact: Some(PathBuf::from("/bundle/termio-aarch64-unknown-linux-musl")),
+                tailnet_artifact: None,
                 repair_note: None,
                 unreachable_put: false,
                 client_version: Some(client_answers()),
@@ -2356,6 +2377,7 @@ mod tests {
             Ok(Artifacts {
                 daemon: PathBuf::from("/bundle/termiod-aarch64-unknown-linux-musl"),
                 client: self.client_artifact.clone(),
+                tailnet: self.tailnet_artifact.clone(),
             })
         }
         fn client_binary(&self) -> Option<String> {
@@ -2531,6 +2553,52 @@ mod tests {
         assert!(commands[1].contains("mv -f $HOME/.local/bin/termio.new $HOME/.local/bin/termio"), "{}", commands[1]);
         assert!(commands.last().unwrap().ends_with("termio --version"), "{commands:?}");
         assert!(!commands.iter().any(|command| command.contains(" stop")));
+    }
+
+    /// The helper rides the daemon's stage, beside the client.
+    #[tokio::test]
+    async fn the_tailnet_helper_is_installed_beside_the_client() {
+        let mut node = FakeNode::new(
+            vec![
+                failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
+                ok(""), // chmod + mv, all three binaries
+                ok(&status_json(WANT, None, false)),
+            ],
+            vec![hello(Some(WANT))],
+        );
+        node.tailnet_artifact = Some(PathBuf::from("/bundle/termio-tailnet-aarch64-unknown-linux-musl"));
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Current { .. }), "{report:?}");
+        let puts = node.puts.borrow();
+        assert_eq!(puts.len(), 3, "{puts:?}");
+        assert!(puts[2].ends_with("→ termio-tailnet.new"), "{puts:?}");
+        let commands = node.commands.borrow();
+        assert!(
+            commands[1].contains("mv -f $HOME/.local/bin/termio-tailnet.new $HOME/.local/bin/termio-tailnet"),
+            "{}",
+            commands[1]
+        );
+    }
+
+    /// A helper that does not land takes the daemon and client back with it,
+    /// so the next deploy finds the box as it was and tries the whole build.
+    #[tokio::test]
+    async fn a_helper_that_fails_to_install_undoes_the_stage() {
+        let mut node = FakeNode::new(
+            vec![
+                failed(127, "bash: /home/u/.local/bin/termiod: No such file or directory"),
+                failed(1, "mv: cannot move: No space left on device"),
+            ],
+            vec![],
+        );
+        node.tailnet_artifact = Some(PathBuf::from("/bundle/termio-tailnet-aarch64-unknown-linux-musl"));
+        let report = reconcile(&node, WANT, Options::default()).await;
+        assert!(matches!(report.outcome, Outcome::Failed { .. }), "{report:?}");
+        let commands = node.commands.borrow();
+        let activation = &commands[1];
+        let helper = activation.find("termio-tailnet.new").unwrap_or(usize::MAX);
+        let undo = activation.rfind("termiod.prev").unwrap_or(0);
+        assert!(undo > helper, "the daemon's undo follows the helper: {activation}");
     }
 
     /// A binary too old to answer `status` is staged first and asked again with

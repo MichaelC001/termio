@@ -40,6 +40,7 @@ pub mod resource;
 pub mod service;
 pub mod session;
 pub mod shell_integration;
+pub mod tailnet;
 pub mod tombstone;
 pub mod version;
 pub mod wss;

@@ -3,7 +3,7 @@ title: Termio server
 description: 一台机器上跑着什么，才让会话比应用活得久——termiod 怎么装、怎么保活、怎么原地升级，以及出问题时怎么查。
 x-i18n:
   source_path: server.mdx
-  source_hash: 9d87b7583e2659c0321e1a7b2c4a8c01cdce727b88ec5bb2b45e54bd8012b266
+  source_hash: 23cfa6162f0143265827985c95982c687564f3566cea6bcb04ecb30419c82ea8
   generated_at: 2026-10-25
 ---
 
@@ -32,12 +32,14 @@ x-i18n:
 curl -fsSL https://www.termio.sh/install | sh
 ```
 
-它按机器的架构（x86_64 或 aarch64）下载 `termiod` 和 `termio` 命令行工具，用发布时的校验和
-核对，装好后用 `systemd --user` 让守护进程一直运行。这些构建是静态链接的，所以不挑发行版。
+它按机器的架构（x86_64 或 aarch64）下载 `termiod`、`termio` 命令行工具和 `termio-tailnet`，
+用发布时的校验和核对，装好后用 `systemd --user` 让守护进程一直运行。这些构建是静态链接的，
+所以不挑发行版。
 
-如果这台机器已登录 Tailscale，且 tailnet 开启了 HTTPS，它还会把 server 发布到你的 tailnet 上，
-并打印一条配对链接和一个二维码。在 Mac 上把链接粘贴到**设置 ▸ 远程主机 ▸ ＋ ▸ 与设备配对…**，
-或者用 iPhone 应用扫码。之后就不再经过 SSH。
+接着它用内置的 Tailscale 把 server 加入你的 tailnet，并打印一条登录链接。用你的 Mac 和 iPhone
+所用的 Tailscale 账号登录。这台机器不需要装 Tailscale。登录后，安装脚本会打印一条配对链接和
+一个二维码。在 Mac 上把链接粘贴到**设置 ▸ 远程主机 ▸ ＋ ▸ 与设备配对…**，或者用 iPhone 应用
+扫码。之后就不再经过 SSH。
 
 再跑一次就是原地升级，会话在升级过程中继续运行。选项写在 `sh -s --` 后面：
 
@@ -45,7 +47,8 @@ curl -fsSL https://www.termio.sh/install | sh
 | --- | --- |
 | `--version 0.63.0` | 安装指定版本，而不是最新版。 |
 | `--no-service` | 只装二进制，守护进程由你自己启动。 |
-| `--no-tailscale` | 不发布到 tailnet。 |
+| `--no-tailscale` | 不加入 tailnet。 |
+| `--tailscale-auth-key-file FILE` | 用一次性的 [auth key](https://tailscale.com/kb/1085/auth-keys) 加入 tailnet，不走浏览器登录。 |
 | `--dry-run` | 只打印要做的事，不做任何改动。 |
 
 ### 从 Mac 通过 SSH 装
@@ -69,6 +72,30 @@ termiod service install    # macOS 用 launchd，Linux 用 systemd --user
 
 没有 service 时，server 只活到你这次登录结束。装上之后，它会在崩溃后和重启后自己回来——
 这正是一台你只从远程访问的机器所需要的。
+
+## 内置 Tailscale [#tailscale]
+
+server 可以用内置的 Tailscale 作为一台独立设备加入你的 tailnet，设备名为 `termio`。这台机器
+不需要装 Tailscale。
+
+```bash
+termiod tailscale on       # 第一次会打印登录链接
+termiod pair --qr          # 连上之后，打印配对链接和二维码
+```
+
+只有登录它的那个 Tailscale 账号能连进来，而且每台 Mac 或 iPhone 仍然需要配对链接。这个设置在
+重启和开关机后保留。
+
+如果你的 tailnet 开启了 HTTPS 证书，客户端通过 `https://termio.<tailnet>.ts.net` 访问 server；
+没开的话，就用它在 tailnet 上的地址加 8790 端口，Tailscale 本身已经对这条连接加密。
+
+| 命令 | 作用 |
+| --- | --- |
+| `termiod tailscale on --hostname NAME` | 换一个设备名。 |
+| `termiod tailscale on --auth-key-file FILE` | 用一次性的 auth key 登录，不走浏览器。 |
+| `termiod tailscale status` | 显示是否已连上，以及客户端从哪里访问它。 |
+| `termiod tailscale off` | 离开 tailnet，直到再次 `on`。设备保持登录。 |
+| `termiod tailscale logout` | 让设备退出 Tailscale 登录，并关闭内置 Tailscale。 |
 
 ## 升级而不丢会话
 
