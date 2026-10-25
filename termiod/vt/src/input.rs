@@ -99,8 +99,9 @@ pub struct InputEncoder {
     /// is cleared each time the terminal's options are copied in, which is
     /// after every parsed batch, so motion is deduplicated here instead.
     last_cell: Option<(i64, i64)>,
-    /// SGR-Pixels (mode 1016) reports every pixel, so its motion is never
-    /// deduplicated by cell.
+    /// Whether the active format is SGR-Pixels, which reports every pixel and
+    /// so is never deduplicated by cell. The format is whichever the program
+    /// set last, which no mode bit says, so it is read off the encoder.
     pixel_reports: bool,
     /// Keys whose press went out without Alt because Option typed text with
     /// them, so their repeats and release go out the same way.
@@ -151,7 +152,6 @@ impl InputEncoder {
         // Every time: which format wins depends on the order the program set
         // them in, which only the terminal knows.
         self.mouse.set_options_from_terminal(terminal);
-        self.pixel_reports = mode(Mode::SGR_PIXELS_MOUSE);
         self.modes = InputModes {
             rows: terminal.rows().unwrap_or(0),
             cols: terminal.cols().unwrap_or(0),
@@ -162,6 +162,8 @@ impl InputEncoder {
             alternate_scroll: mode(Mode::ALT_SCROLL),
             cursor_keys_application: mode(Mode::DECCKM),
         };
+        // Probed with the grid known, so the probe's point is on it.
+        self.pixel_reports = mode(Mode::SGR_PIXELS_MOUSE) && self.encodes_pixels();
     }
 
     pub fn modes(&self) -> InputModes {
@@ -225,9 +227,14 @@ impl InputEncoder {
         if input.action == MouseAction::Press && !self.on_grid(input.at) {
             return Vec::new();
         }
+        // The cell the report names: clamped to the grid, as the encoder does.
+        let clamp = |value: f32, cell: u32, count: u16| {
+            let index = (f64::from(value) / f64::from(cell.max(1))).floor() as i64;
+            index.clamp(0, i64::from(count.max(1)) - 1)
+        };
         let cell = (
-            (f64::from(input.at.x) / f64::from(input.at.cell_width.max(1))).floor() as i64,
-            (f64::from(input.at.y) / f64::from(input.at.cell_height.max(1))).floor() as i64,
+            clamp(input.at.x, input.at.cell_width, self.modes.cols),
+            clamp(input.at.y, input.at.cell_height, self.modes.rows),
         );
         if input.action == MouseAction::Motion && !self.pixel_reports && self.last_cell == Some(cell) {
             return Vec::new();
@@ -344,6 +351,24 @@ impl InputEncoder {
                 Vec::new()
             }
         }
+    }
+
+    /// Encodes one press to see which format won: in SGR-Pixels the point
+    /// (15, 25) in 10×20 cells reports as pixels, otherwise as cell (2, 2).
+    fn encodes_pixels(&mut self) -> bool {
+        self.mouse_size = None;
+        self.set_size(Pointer { x: 0.0, y: 0.0, cell_width: 10, cell_height: 20 });
+        self.mouse.set_any_button_pressed(true);
+        self.mouse_event
+            .set_action(mouse::Action::Press)
+            .set_button(Some(mouse::Button::Left))
+            .set_mods(Mods::empty())
+            .set_position(mouse::Position { x: 15.0, y: 25.0 });
+        let mut bytes = Vec::new();
+        let _ = self.mouse.encode_to_vec(&self.mouse_event, &mut bytes);
+        // The next real event sets its own size.
+        self.mouse_size = None;
+        bytes.starts_with(b"\x1b[<") && !bytes.ends_with(b"2;2M")
     }
 
     fn on_grid(&self, at: Pointer) -> bool {
@@ -705,6 +730,26 @@ mod tests {
         vt.vt_write(b"\x1b[?1015h");
         encoder.refresh(&vt);
         assert_eq!(encoder.mouse(&click), b"\x1b[32;2;1M", "urxvt, set again");
+    }
+
+    /// Motion is deduplicated by the cell the report names, which is clamped
+    /// to the grid; and SGR set after SGR-Pixels is cells, not pixels.
+    #[test]
+    fn motion_is_deduplicated_by_the_reported_cell() {
+        let mut vt = VtTerminal::new(10, 40).unwrap();
+        let mut any = encoder(&mut vt, b"\x1b[?1003h\x1b[?1016h\x1b[?1006h");
+        let drag = |x| MouseInput {
+            action: MouseAction::Motion,
+            button: Some(1),
+            mods: 0,
+            at: Pointer { x, y: 10.0, cell_width: 10, cell_height: 20 },
+            buttons_held: true,
+        };
+        assert!(!any.mouse(&drag(11.0)).is_empty());
+        assert!(any.mouse(&drag(12.0)).is_empty(), "cell SGR won over SGR-Pixels");
+        assert!(!any.mouse(&drag(1.0)).is_empty());
+        assert!(any.mouse(&drag(-11.0)).is_empty(), "left of the grid is still column one");
+        assert!(any.mouse(&drag(-21.0)).is_empty());
     }
 
     /// Option-L types `@` on a German Mac. It must arrive as `@`, as it does

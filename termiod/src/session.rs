@@ -693,6 +693,8 @@ impl Session {
                 ring_reconstructs_screen: self.ring_reconstructs_screen,
                 status_clocks: self.status_engine.carried_clocks(std::time::Instant::now()),
                 input_modes_unknown: !self.input_modes_known,
+                // Filled in once the PTY writer has stopped, which knows.
+                paste_open: false,
                 native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
                 native: native.unwrap_or_default(),
             },
@@ -2059,6 +2061,7 @@ pub fn adopt(
             vec![Bytes::from(ring)]
         },
         input_modes_unknown: carried.input_modes_unknown,
+        paste_open: carried.paste_open,
         native: (!carried.native.is_empty()).then_some(carried.native),
         faithful: carried.ring_reconstructs_screen,
     };
@@ -2129,6 +2132,8 @@ struct Replay {
     chunks: Vec<Bytes>,
     /// The previous image no longer knew the program's input modes.
     input_modes_unknown: bool,
+    /// The previous image left the program inside a paste.
+    paste_open: bool,
     /// The previous image's VT, as a native snapshot. When present the new VT
     /// starts from it and the chunks only refill the ring.
     native: Option<Vec<u8>>,
@@ -2143,6 +2148,7 @@ impl Replay {
         Replay {
             chunks: Vec::new(),
             input_modes_unknown: false,
+            paste_open: false,
             native: None,
             faithful: true,
         }
@@ -2184,22 +2190,31 @@ fn start(
     // It knows what reached the program, so it is the one that ends a paste
     // left open when the session's sender goes away: a handoff drops it after
     // the last byte this image will write.
+    let paste_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_paste_open = paste_open.clone();
     let input_writer = tokio::spawn(async move {
-        let mut paste_open = false;
+        use std::sync::atomic::Ordering;
+        // The marker can straddle two writes (`D` arrives in reads of any
+        // size), so the end of the previous write is searched with this one.
+        let mut tail: Vec<u8> = Vec::new();
         while let Some(bytes) = input_rx.recv().await {
             if writer_pty.write_all(&bytes).await.is_err() {
                 return;
             }
-            let last = |marker: &[u8]| bytes.windows(marker.len()).rposition(|window| window == marker);
+            let mut seen = std::mem::take(&mut tail);
+            seen.extend_from_slice(&bytes);
+            let last = |marker: &[u8]| seen.windows(marker.len()).rposition(|window| window == marker);
             match (last(PASTE_START), last(PASTE_END)) {
-                (Some(start), Some(end)) => paste_open = start > end,
-                (Some(_), None) => paste_open = true,
-                (None, Some(_)) => paste_open = false,
+                (Some(start), Some(end)) => writer_paste_open.store(start > end, Ordering::Relaxed),
+                (Some(_), None) => writer_paste_open.store(true, Ordering::Relaxed),
+                (None, Some(_)) => writer_paste_open.store(false, Ordering::Relaxed),
                 (None, None) => {}
             }
+            let keep = seen.len().min(PASTE_END.len() - 1);
+            tail = seen.split_off(seen.len() - keep);
         }
-        if paste_open {
-            let _ = writer_pty.write_all(PASTE_END).await;
+        if writer_paste_open.load(Ordering::Relaxed) && writer_pty.write_all(PASTE_END).await.is_ok() {
+            writer_paste_open.store(false, Ordering::Relaxed);
         }
     });
 
@@ -2221,6 +2236,7 @@ fn start(
         });
     let starts_from_snapshot = native.is_some();
     let input_modes_unknown = replay.input_modes_unknown;
+    let paste_was_open = replay.paste_open;
 
     let sidecar = spawn_sidecar_sharing(facts.rows, facts.cols, input.clone(), native)?;
 
@@ -2294,6 +2310,10 @@ fn start(
     // A snapshot of a VT that had already lost the program's modes carries
     // the loss, so the previous image's verdict travels too.
     session.input_modes_known = !input_modes_unknown && (starts_from_snapshot || session.ring_reconstructs_screen);
+    if paste_was_open {
+        // The previous image could not finish a paste before the exec.
+        let _ = session.input_tx.send(PASTE_END.to_vec());
+    }
 
     if !session.ring_reconstructs_screen {
         // The VT this actor started is blank plus a replay that does not draw
@@ -2323,6 +2343,7 @@ fn start(
         sidecar.results,
         sidecar.thread,
         input_writer,
+        paste_open,
         termination_reason.clone(),
     ));
     Ok(SessionHandle {
@@ -2679,6 +2700,7 @@ async fn run(
     mut sidecar_results: mpsc::UnboundedReceiver<SidecarResult>,
     sidecar_thread: JoinHandle<()>,
     input_writer: tokio::task::JoinHandle<()>,
+    paste_open: Arc<std::sync::atomic::AtomicBool>,
     termination_reason: Arc<Mutex<Option<EndReason>>>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
@@ -2851,8 +2873,18 @@ async fn run(
                     // writer puts what is queued on the PTY, ends a paste the
                     // program is still inside, and stops, so nothing typed
                     // into this image is lost in the exec or left open.
-                    let carried = session.into_carried(native);
-                    let _ = tokio::time::timeout(INPUT_FLUSH_TIMEOUT, input_writer).await;
+                    let mut carried = session.into_carried(native);
+                    let mut input_writer = input_writer;
+                    if tokio::time::timeout(INPUT_FLUSH_TIMEOUT, &mut input_writer).await.is_err() {
+                        // The program stopped reading. What it has not taken
+                        // is lost, as at any exec, but the writer must not
+                        // finish it later beside the next writer, and a paste
+                        // it opened is the next image's to end.
+                        input_writer.abort();
+                    }
+                    if let Ok(carried) = carried.as_mut() {
+                        carried.info.paste_open = paste_open.load(std::sync::atomic::Ordering::Relaxed);
+                    }
                     // The parser is a few kilobytes of grid and a thread that
                     // has already stopped; joining it costs a scheduler turn,
                     // and skipping it would leave the thread running into the

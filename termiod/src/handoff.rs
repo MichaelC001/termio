@@ -146,6 +146,11 @@ pub struct CarriedSession {
     /// image must not trust it either.
     #[serde(default)]
     pub input_modes_unknown: bool,
+    /// The PTY writer stopped with the program inside a bracketed paste, its
+    /// end unwritten. The next image ends it first. An image that predates the
+    /// field leaves it open, as every image did before.
+    #[serde(default)]
+    pub paste_open: bool,
     /// The snapshot itself, which travels in the blob, not the header.
     #[serde(skip)]
     pub native: Vec<u8>,
@@ -682,6 +687,7 @@ mod tests {
             status_clocks: None,
             native_len: 0,
             input_modes_unknown: false,
+            paste_open: false,
             native: Vec::new(),
         }
     }
