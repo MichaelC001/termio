@@ -149,6 +149,16 @@ keep_running() {
         return 0
     fi
     step "Keeping termiod running with systemd --user"
+    # `service install` writes the unit afresh. One that carries WebSocket
+    # settings of its own was configured by hand, and rewriting it would drop
+    # them at the next restart.
+    unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/termiod.service"
+    if grep -q -e 'TERMIOD_WSS' -e '--wss' "$unit" 2>/dev/null; then
+        say "    $unit was configured by hand (it sets the WebSocket listener), so it is"
+        say "    left as it is. Move those settings into a drop-in to let this manage it."
+        SERVICE_OK=1
+        return 0
+    fi
     if ! "$TERMIOD" service install; then
         say "    A Mac may have started termiod here over SSH. Run termiod stop once"
         say "    its sessions are done, then run this installer again."

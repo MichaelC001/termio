@@ -45,6 +45,10 @@ pub struct Config {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// Bumped with each new auth key. The helper reads a key only when it
+    /// starts, so a new key has to look like a new config to restart it.
+    #[serde(default)]
+    pub auth_key_generation: u64,
 }
 
 impl Config {
@@ -76,6 +80,10 @@ pub struct Status {
     /// nothing.
     #[serde(default)]
     pub pid: u32,
+    /// The helper the daemon was running when it wrote this. After a handoff
+    /// the new image reaps it by this number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper_pid: Option<u32>,
 }
 
 impl Status {
@@ -162,6 +170,24 @@ pub fn read_status() -> Option<Status> {
     process_alive(status.pid).then_some(status)
 }
 
+/// Serializes `on`, `off` and `logout` against each other. The daemon never
+/// takes it: it only reads the config.
+fn lock_settings() -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let path = paths::durable_state_dir()?.join("tailscale.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("locking {}", path.display()));
+    }
+    Ok(file)
+}
+
 fn written_since(moment: std::time::SystemTime) -> bool {
     status_path()
         .and_then(|path| Ok(std::fs::metadata(path)?.modified()?))
@@ -207,6 +233,9 @@ pub fn start(shutdown: watch::Receiver<bool>) {
 
 async fn supervise(mut shutdown: watch::Receiver<bool>) {
     let rotation = wss::start_rotation_watch();
+    if let Err(error) = tokio::task::spawn_blocking(reap_inherited_helper).await {
+        eprintln!("termiod: tailscale: reaping the previous helper: {error}");
+    }
     loop {
         if *shutdown.borrow() {
             break;
@@ -293,10 +322,15 @@ async fn run_enabled(
         // Held out here because `Child::wait` closes a stdin it still owns,
         // and that end of file would tell the helper to stop.
         let mut stdin = child.stdin.take();
+        let helper_pid = child.id();
+        write_status(&Status {
+            helper_pid,
+            ..Status::new("starting")
+        });
         let reports = child
             .stdout
             .take()
-            .map(|stdout| tokio::spawn(follow_reports(stdout)));
+            .map(|stdout| tokio::spawn(follow_reports(stdout, helper_pid)));
         let started = std::time::Instant::now();
 
         // Ends on a config change and on shutdown alike.
@@ -360,6 +394,44 @@ async fn wait_or_change(
     }
 }
 
+/// After a handoff this process is the same pid as the image that started the
+/// last helper, so that helper is still its child. Its stdin closed with the
+/// `execve`, so it is on its way out. Waiting for it reaps it, and keeps two
+/// helpers from running on one node directory.
+fn reap_inherited_helper() {
+    let Some(status) = read_status_unchecked() else {
+        return;
+    };
+    let Some(pid) = status.helper_pid else { return };
+    if status.pid != std::process::id() {
+        return;
+    }
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let mut deadline = std::time::Instant::now() + STOP_GRACE;
+    let mut signalled = false;
+    loop {
+        let mut code = 0;
+        // Nonzero means reaped, and -1 means not our child (ECHILD): either
+        // way there is nothing left to wait for.
+        if unsafe { libc::waitpid(pid, &mut code, libc::WNOHANG) } != 0 {
+            return;
+        }
+        if std::time::Instant::now() > deadline {
+            if signalled {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                unsafe { libc::waitpid(pid, &mut code, 0) };
+                return;
+            }
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            signalled = true;
+            deadline = std::time::Instant::now() + STOP_GRACE;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn read_status_unchecked() -> Option<Status> {
     let raw = std::fs::read_to_string(status_path().ok()?).ok()?;
     serde_json::from_str(&raw).ok()
@@ -389,7 +461,10 @@ async fn accept_loop(
         match listener.accept().await {
             Ok((stream, _)) => {
                 let shutdown = shutdown.clone();
-                let rotation = rotation.clone();
+                // A clone inherits the listener's last-seen version, so a
+                // rotation before this connection would close it at once.
+                let mut rotation = rotation.clone();
+                rotation.borrow_and_update();
                 tokio::spawn(async move {
                     if let Err(error) = wss::serve_connection(
                         stream,
@@ -437,7 +512,7 @@ fn spawn_helper(helper: &Path, config: &Config, socket: &Path) -> Result<Child> 
         .with_context(|| format!("starting {}", helper.display()))
 }
 
-async fn follow_reports(stdout: tokio::process::ChildStdout) {
+async fn follow_reports(stdout: tokio::process::ChildStdout, helper_pid: Option<u32>) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(mut status) = serde_json::from_str::<Status>(&line) else {
@@ -445,6 +520,7 @@ async fn follow_reports(stdout: tokio::process::ChildStdout) {
             continue;
         };
         status.pid = std::process::id();
+        status.helper_pid = helper_pid;
         if status.state == "running" {
             // The key is single-use, and the node keeps its login. Keeping
             // the file would only keep a secret on disk.
@@ -501,8 +577,12 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
         }
         paths::replace_secret(&auth_key_path()?, key)?;
     }
+    let _lock = lock_settings()?;
     let mut config = read_config()?;
     config.enabled = true;
+    if options.auth_key_file.is_some() {
+        config.auth_key_generation += 1;
+    }
     if options.hostname.is_some() {
         config.hostname = options.hostname;
     }
@@ -510,6 +590,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
     // and is about to be retried. Only one written after this counts.
     let asked = std::time::SystemTime::now();
     write_config(&config)?;
+    drop(_lock);
 
     // Connecting starts a daemon when none is running.
     crate::client::connect().await?;
@@ -562,6 +643,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
 }
 
 pub fn run_off() -> Result<()> {
+    let _lock = lock_settings()?;
     let mut config = read_config()?;
     config.enabled = false;
     write_config(&config)?;
@@ -573,6 +655,9 @@ pub async fn run_logout() -> Result<()> {
     let Some(helper) = helper_path() else {
         bail!("{HELPER} is not installed next to termiod");
     };
+    // Held to the end: an `on` in the meantime would start a node on the
+    // directory this is about to delete.
+    let _lock = lock_settings()?;
     let mut config = read_config()?;
     config.enabled = false;
     write_config(&config)?;
