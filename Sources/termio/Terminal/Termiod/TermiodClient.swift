@@ -1162,14 +1162,23 @@ extension Termiod {
         }
     }
 
-    /// Removes the host's project at `path`, over one connection: it reads the
-    /// roster and the view, lets `decide` pick the project to remove, and sends
-    /// `project_remove` with `only`. Returns the view's revision after the
-    /// removal, or `nil` when the host has no view or `decide` removes nothing.
+    /// The host refused to remove a project because other live sessions are
+    /// placed in it.
+    struct HostProjectConflict: Error, LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Removes a host's project, over one connection: it reads the roster and
+    /// the view, lets `decide` pick the project and the sessions it may end,
+    /// and sends `project_remove` with those as `only`. Returns the view's
+    /// revision after the removal, or `nil` when the host has no view or
+    /// `decide` removes nothing. A `conflict` reply throws
+    /// `HostProjectConflict`.
     @discardableResult
     static func removeHostProject(
-        route: TermiodRoute, only: Set<String>,
-        decide: (SessionsPayload, HostView) throws -> String?
+        route: TermiodRoute,
+        decide: (SessionsPayload, HostView) throws -> (project: String, only: Set<String>)?
     ) throws -> UInt64? {
         try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
             guard handshake.capabilities.contains(viewCapability) else { return nil }
@@ -1183,13 +1192,23 @@ extension Termiod {
                 if case .viewState(let payload) = reply { return payload.view }
                 return nil
             }
-            guard let project = try decide(sessions, view) else { return nil }
+            guard let (project, only) = try decide(sessions, view) else { return nil }
             try writeFrame(
                 transport.writeDescriptor, kind: .control,
                 payload: projectRemovePayload(project: project, only: only.sorted(), seq: 3))
-            return try readReply(transport) { reply -> UInt64? in
-                if case .revised(let payload) = reply { return payload.revision }
-                return nil
+            while true {
+                let frame = try readFrame(transport.readDescriptor)
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .revised(let payload):
+                    return payload.revision
+                case .error(let payload) where payload.code == "conflict":
+                    throw HostProjectConflict(message: payload.message)
+                case .error(let payload):
+                    throw TermiodClientError.requestFailed(payload.message)
+                default:
+                    continue
+                }
             }
         }
     }

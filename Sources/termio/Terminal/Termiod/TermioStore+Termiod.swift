@@ -1089,16 +1089,22 @@ extension TermioStore {
     }
 
     /// Removes the host's own record of a project whose row was just removed,
-    /// so the next roster does not bring the row back. `closing` is every
-    /// session the user agreed to end.
+    /// so the next roster does not bring the row back. `closing` names every
+    /// session the user agreed to end, by daemon id and by daemon name: a row
+    /// can be between ids, and the fresh roster maps its name to one.
     ///
-    /// Decided on a fresh read, over the same connection as the removal, and
-    /// the host checks `closing` again when it acts: a session started on the
-    /// box since the last roster is in no list here, and the host would kill
-    /// it. When the removal does not happen, the user is told, and the next
-    /// roster brings the row back with the project the host still has.
+    /// Decided on a fresh read, over the same connection as the removal. A
+    /// host that knows `only` checks it again when it acts. A host from before
+    /// `only` (v0.66.0) does not, and a session started on the box between the
+    /// read and the removal is killed there.
+    ///
+    /// When other live sessions are placed in the project, the host keeps it
+    /// and the row comes back with the next roster. `quiet` keeps that silent,
+    /// for a caller that confirmed a larger removal; otherwise the user is
+    /// told. Any other failure is logged only, as a journaled kill is.
     func removeHostProject(
-        path: String, name: String, closing: Set<String>, on device: KnownDevice
+        path: String, name: String, closing: (ids: Set<String>, names: Set<String>),
+        quiet: Bool, on device: KnownDevice
     ) {
         let route = device.route
         let key = device.id
@@ -1106,29 +1112,32 @@ extension TermioStore {
         hostProjectsRemoving[key, default: []].append(path)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var revision: UInt64?
-            var failure: String?
+            var refusal: String?
             do {
-                revision = try Termiod.removeHostProject(route: route, only: closing) {
-                    sessions, view in
+                revision = try Termiod.removeHostProject(route: route) { sessions, view in
+                    var only = closing.ids
+                    for information in sessions.sessions where closing.names.contains(
+                        Self.daemonKey(information)) {
+                        only.insert(information.id)
+                    }
                     let live = Set(sessions.sessions.filter(\.alive).map(\.id))
-                    switch Self.hostProjectRemoval(
-                        at: path, in: view, live: live, closing: closing) {
+                    switch Self.hostProjectRemoval(at: path, in: view, live: live, closing: only) {
                     case .none:
                         return nil
                     case .remove(let project):
-                        return project
+                        return (project, only)
                     case .others(_, let others):
-                        throw TermiodClientError.requestFailed(localized(
+                        throw Termiod.HostProjectConflict(message: localized(
                             "\(others.count) other sessions are running in this project."))
                     }
                 }
+            } catch let conflict as Termiod.HostProjectConflict {
+                if !quiet { refusal = conflict.message }
+                Log.termiod.info("""
+                kept project \(path, privacy: .public) on \(route.description, privacy: .public): \
+                \(conflict.message, privacy: .public)
+                """)
             } catch {
-                // Only a refusal from the host is news. A box that cannot be
-                // reached is said nowhere else either, and a kill to it is
-                // journaled the same quiet way.
-                if case TermiodClientError.requestFailed(let message) = error {
-                    failure = message
-                }
                 Log.termiod.error("""
                 removing project \(path, privacy: .public) from \
                 \(route.description, privacy: .public) failed: \
@@ -1144,11 +1153,11 @@ extension TermioStore {
                     if let revision {
                         self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
                     }
-                    if let failure {
+                    if let refusal {
                         let alert = NSAlert()
                         alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
                         alert.informativeText = localized(
-                            "\(failure) Close them, then remove the project again.")
+                            "\(refusal) Close them, then remove the project again.")
                         alert.alertStyle = .warning
                         alert.runModal()
                     }

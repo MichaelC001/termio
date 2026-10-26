@@ -272,19 +272,20 @@ final class TermiodHostViewIntegrationTests: XCTestCase {
 
         // A removal that agreed to end only other sessions is refused on the
         // host, and the session keeps running.
-        XCTAssertThrowsError(try Termiod.removeHostProject(route: .local, only: ["s_other"]) { _, _ in
-            project
-        })
+        XCTAssertThrowsError(try Termiod.removeHostProject(route: .local) { _, _ in
+            (project, ["s_other"])
+        }) { error in
+            XCTAssertTrue(error is Termiod.HostProjectConflict, "\(error)")
+        }
         let (still, _) = try Termiod.rosterAndView(route: .local)
         XCTAssertTrue(still.sessions.contains { $0.id == session && $0.alive })
 
-        let revision = try Termiod.removeHostProject(route: .local, only: [session]) {
-            sessions, view in
+        let revision = try Termiod.removeHostProject(route: .local) { sessions, view in
             let live = Set(sessions.sessions.filter(\.alive).map(\.id))
             guard case .remove(let id) = TermioStore.hostProjectRemoval(
                 at: canonical, in: view, live: live, closing: [session])
             else { return nil }
-            return id
+            return (id, [session])
         }
         XCTAssertNotNil(revision)
 

@@ -1217,8 +1217,8 @@ extension TermioStore {
     /// (they may hold uncommitted agent work, so deletion is the user's call).
     ///
     /// `asking` is false when the caller has already confirmed a larger
-    /// removal, such as a workspace: then no dialog shows, and sessions the
-    /// host placed in the project from elsewhere in the sidebar are left
+    /// removal, such as a workspace: then no dialog shows at all, and sessions
+    /// the host placed in the project from elsewhere in the sidebar are left
     /// running, with the host's project kept for them.
     func removeProject(_ id: Project.ID, asking: Bool = true) {
         guard let project = projects.first(where: { $0.id == id }) else { return }
@@ -1251,9 +1251,16 @@ extension TermioStore {
 
         let removedSessions = projects[projectIndex].sessions
         let removedSessionIDs = Set(removedSessions.map(\.id))
-        let closing = Set((removedSessions + others).compactMap(\.termiodDaemonID))
+        let ending = removedSessions + others
         for (device, path) in hostCheckouts {
-            removeHostProject(path: path, name: project.name, closing: closing, on: device)
+            // Per machine: a name like `build` can exist on two boxes at once.
+            let there = Set(sessions(authoredFor: device).map(\.id))
+            let endingThere = ending.filter { there.contains($0.id) }
+            let closing = (
+                ids: Set(endingThere.compactMap(\.termiodDaemonID)),
+                names: Set(endingThere.map(daemonSessionName(for:))))
+            removeHostProject(
+                path: path, name: project.name, closing: closing, quiet: !asking, on: device)
         }
         for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
