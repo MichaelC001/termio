@@ -251,6 +251,10 @@ Each phase ends at a gate. A failed gate stops the work.
 - Both the client and the daemon can answer terminal queries. Today only the
   writer's surface answers (`TerminalDeviceReport`); the new client keeps that
   rule until phase 5 moves the answers to the daemon.
+- Each attach decodes a fresh terminal from termiod's snapshot, which holds
+  termiod's own scrollback (about a thousand lines). A reconnect, a wake from
+  sleep or a handoff therefore drops older history the pane had kept, where the
+  embedded surface keeps it. Phase 7's resume by byte offset removes this.
 - A remote daemon and the app can run different releases for a while, so input
   events name keys by Ghostty's key names (`arrow_up`), never by the C enum's
   numbers.

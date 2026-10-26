@@ -157,6 +157,28 @@ final class StreamTerminalTests: XCTestCase {
         XCTAssertEqual(reports, "", "reported a scheme that did not change")
     }
 
+    /// A decoded snapshot carries termiod's limit of about a thousand lines;
+    /// the pane keeps what the Scrollback setting allows instead.
+    func testThePaneKeepsTheScrollbackSettingNotTheDaemonsLimit() throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "vt-stream-resize", withExtension: "txt", subdirectory: "Fixtures"))
+        let attach = try XCTUnwrap(
+            try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first { $0.hasPrefix("attach ") })
+        let snapshot = try Self.hex(String(attach.dropFirst("attach ".count)))
+        // The fixture attaches inside an OSC sequence; BEL ends it.
+        let lines = Data(("\u{7}" + (0 ..< 5000).map { "line \($0)\r\n" }.joined()).utf8)
+
+        let daemonLimit = try TermiodStreamTerminal(nativeSnapshot: snapshot)
+        daemonLimit.write(lines)
+        let setting = try TermiodStreamTerminal(nativeSnapshot: snapshot)
+        try setting.setScrollbackLimit(bytes: 10_000_000)
+        setting.write(lines)
+
+        XCTAssertGreaterThan(try daemonLimit.scrollbackRows(), 0)
+        XCTAssertLessThan(try daemonLimit.scrollbackRows(), 2000)
+        XCTAssertGreaterThan(try setting.scrollbackRows(), 4900)
+    }
+
     private static func hex(_ text: String) throws -> Data {
         var bytes = Data(capacity: text.utf8.count / 2)
         var high: UInt8?

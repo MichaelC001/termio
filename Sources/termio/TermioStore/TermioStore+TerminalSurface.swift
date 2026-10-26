@@ -708,6 +708,10 @@ extension TermioStore {
                 pumpRendering(state, duration: 0.5)
             }
         }
+        // A link whose pane view has not mounted holds a terminal too.
+        for link in termiodLinks.values {
+            link.setStreamScrollback(bytes: streamScrollbackBytes)
+        }
     }
 
     /// Drives the terminal through its startup render handshake.
