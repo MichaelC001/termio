@@ -107,6 +107,18 @@ pub fn probe_token() -> String {
 /// open, and is named in the daemon's log on the way out.
 pub const CARRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// What the host answered queries with, carried so the next image answers the
+/// same until a writer says otherwise (`termiod_vt::Answers`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedAnswers {
+    pub xtversion: String,
+    pub foreground: Option<[u8; 3]>,
+    pub background: Option<[u8; 3]>,
+    pub cursor: Option<[u8; 3]>,
+    pub palette: Option<Vec<[u8; 3]>>,
+    pub dark: Option<bool>,
+}
+
 /// One session, packed for the crossing. The descriptor numbers are meaningless
 /// to anything but the process that wrote them, which is the same process that
 /// reads them back — that is the whole point of the exec.
@@ -141,6 +153,9 @@ pub struct CarriedSession {
     /// reads its rings and ignores the rest.
     #[serde(default)]
     pub native_len: u64,
+    /// What the host answered the program's queries with (`vt_answers`).
+    #[serde(default)]
+    pub answers: Option<CarriedAnswers>,
     /// The session's input encoders had lost the program's modes in an
     /// earlier handoff. A snapshot of that VT carries the loss, so the next
     /// image must not trust it either.
@@ -715,6 +730,7 @@ mod tests {
             ring_reconstructs_screen: true,
             status_clocks: None,
             native_len: 0,
+            answers: None,
             input_modes_unknown: false,
             paste_open: false,
             pending_len: 0,

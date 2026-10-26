@@ -233,6 +233,8 @@ struct ClientEntry {
     /// it writes. `None` is a client that answers for itself, so the host's VT
     /// must not answer too, or the program would read every answer twice.
     answers: Option<termiod_vt::Answers>,
+    /// Whether it has sent `answers` yet. Until it has, the last answers stand.
+    answers_said: bool,
 }
 
 /// Whether this attachment can hold the write token.
@@ -552,13 +554,18 @@ impl Session {
     fn sync_answering(&mut self) {
         // A writer that has not said yet, and nobody writing, keep the last
         // answers: what the previous writer, or the previous image, said.
+        //
+        // Two limits are accepted. A Mac pane on the embedded surface that
+        // claims the token within milliseconds of a query can answer it as
+        // well, since its surface parses on its own thread. And a scheme
+        // report (mode 2031) follows a change between two `vt_answers`
+        // writers, not one from a writer that answers for itself, whose
+        // appearance the host never knew.
         let last = || self.applied_answers.clone().unwrap_or_default();
         let answers = match self.writer.as_ref() {
-            Some(writer) => self
-                .clients
-                .get(writer)
-                .and_then(|entry| entry.answers.clone())
-                .map(|answers| if answers == termiod_vt::Answers::default() { last() } else { answers }),
+            Some(writer) => self.clients.get(writer).and_then(|entry| {
+                entry.answers.as_ref().map(|answers| if entry.answers_said { answers.clone() } else { last() })
+            }),
             None => Some(last()),
         };
         let answering = self.answers_live && self.vt.is_live() && answers.is_some();
@@ -716,6 +723,9 @@ impl Session {
         };
         drop(encoder);
         if bytes.is_empty() {
+            // The last piece of a paste can encode to nothing; replies held
+            // while it was open go now.
+            self.flush_held_replies();
             return;
         }
         self.status_engine.note_user_input(std::time::Instant::now());
@@ -791,6 +801,14 @@ impl Session {
                 pending_len: 0,
                 pending_input: Vec::new(),
                 native_len: native.as_ref().map_or(0, |bytes| bytes.len() as u64),
+                answers: self.applied_answers.clone().map(|answers| crate::handoff::CarriedAnswers {
+                    xtversion: answers.xtversion,
+                    foreground: answers.foreground,
+                    background: answers.background,
+                    cursor: answers.cursor,
+                    palette: answers.palette,
+                    dark: answers.dark,
+                }),
                 native: native.map(Bytes::from).unwrap_or_default(),
             },
             master,
@@ -2126,6 +2144,7 @@ pub fn spawn(
             title: None,
             workstream,
             status_clocks: None,
+            answers: None,
         },
         pty,
         waiter,
@@ -2175,6 +2194,14 @@ pub fn adopt(
             title: carried.title,
             workstream: carried.workstream,
             status_clocks: carried.status_clocks,
+            answers: carried.answers.map(|answers| termiod_vt::Answers {
+                xtversion: answers.xtversion,
+                foreground: answers.foreground,
+                background: answers.background,
+                cursor: answers.cursor,
+                palette: answers.palette,
+                dark: answers.dark,
+            }),
         },
         pty,
         waiter,
@@ -2300,6 +2327,8 @@ struct Facts {
     /// How long the carried status has been true. `None` for a fresh spawn,
     /// which has no history to keep.
     status_clocks: Option<crate::session::status::CarriedClocks>,
+    /// What the previous image answered queries with. `None` for a fresh spawn.
+    answers: Option<termiod_vt::Answers>,
 }
 
 /// The half of session startup that a fresh spawn and a carried session share:
@@ -2391,6 +2420,7 @@ fn start(
         .as_ref()
         .map(|workstream| workstream.agent_id.clone());
     let adopted_clocks = facts.status_clocks.clone();
+    let facts_answers = facts.answers.clone();
     let mut session = Session {
         id: facts.id.clone(),
         name: facts.name,
@@ -2443,6 +2473,12 @@ fn start(
         .status_engine
         .seed(&adopted, adopted_clocks.as_ref(), std::time::Instant::now());
     session.sync_status_watch();
+    // The previous image's answers, applied while answering is still off, so
+    // the program is not told of a change that did not happen.
+    if let Some(answers) = facts_answers {
+        session.send_sidecar(SidecarCommand::SetAnswers(answers.clone()));
+        session.applied_answers = Some(answers);
+    }
     for chunk in replay.chunks {
         // Through the same two paths a live byte takes, in the same order: the
         // ring it will be replayed from, and the VT that answers snapshots —
@@ -3058,7 +3094,9 @@ async fn run(
                     };
                     // Replies to bytes the sidecar parsed before it stopped are
                     // still in flight; on the input path they cross with the
-                    // session, which the new image does not answer again.
+                    // session, which the new image does not answer again. An
+                    // open paste ends here first, or they would cross inside it.
+                    session.close_open_paste();
                     while let Ok(result) = sidecar_results.try_recv() {
                         if let SidecarResult::Replies(replies) = result {
                             session.held_replies.extend_from_slice(&replies);
@@ -3391,6 +3429,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     backlog_strikes: 0,
                     focused: None,
                     answers: vt_answers.then(termiod_vt::Answers::default),
+                    answers_said: false,
                 },
             );
             // `vt_stale` went out once, to whoever was attached; a client
@@ -3521,6 +3560,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             if let Some(entry) = session.clients.get_mut(&id) {
                 if entry.answers.is_some() {
                     entry.answers = Some(answers);
+                    entry.answers_said = true;
                 }
             }
             session.sync_answering();
@@ -5530,6 +5570,7 @@ mod tests {
                     backlog_strikes: 0,
                     focused: None,
                     answers: None,
+                    answers_said: false,
                 },
             )]),
             writer: Some(ClientId::new("writer")),
