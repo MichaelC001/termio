@@ -80,6 +80,43 @@ public enum TerminalDeviceReport {
         }
     }
 
+    /// A report termiod's VT makes itself when it answers (`vt_answers`), so a
+    /// surface's own copy would be a second answer. The rest stay with the
+    /// surface: focus reports (termiod hears focus only as an event on the
+    /// stream plane), clipboard and glyph replies (it has neither), XTGETTCAP
+    /// (it has no terminfo), and size reports, which carry the pane's own
+    /// cell pixels while somebody writes.
+    public static func isHostAnswered(_ data: Data) -> Bool {
+        guard isReport(data) else { return false }
+        let bytes = [UInt8](data)
+        switch bytes[1] {
+        case 0x5B: // ESC [
+            guard let final = bytes[2...].first(where: { $0 >= 0x40 && $0 <= 0x7E }) else { return false }
+            switch final {
+            case 0x63, 0x6E, 0x52, 0x79: return true // c n R y
+            case 0x75: return bytes[2] == 0x3F // ? u
+            default: return false
+            }
+        case 0x50: // ESC P: XTVERSION and DECRQSS, not XTGETTCAP
+            if bytes[2] == 0x3E { return true }
+            var index = 2
+            while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 { index += 1 }
+            return index < bytes.count && bytes[index] == 0x24 // $
+        case 0x5D: // ESC ]: colors
+            var number = 0
+            var index = 2
+            while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 {
+                number = number * 10 + Int(bytes[index] - 0x30)
+                index += 1
+            }
+            return number == 4 || (10...19).contains(number)
+        case 0x5F: // ESC _: kitty graphics, which termiod's VT holds too
+            return bytes[2] == 0x47
+        default:
+            return false
+        }
+    }
+
     private static func isControlSequenceReport(_ bytes: [UInt8]) -> Bool {
         let marker = bytes[2]
         var index = 2

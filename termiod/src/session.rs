@@ -470,6 +470,8 @@ struct Session {
     answers_live: bool,
     /// What the VT was last told to answer with.
     applied_answers: Option<termiod_vt::Answers>,
+    /// Whether the VT answers size reports, as last told.
+    size_reports: bool,
     /// Replies that arrived while a paste was open, which would otherwise
     /// become part of the pasted text. Sent when it closes.
     held_replies: Vec<u8>,
@@ -580,6 +582,11 @@ impl Session {
         if answering != self.answering {
             self.answering = answering;
             self.send_sidecar(SidecarCommand::SetAnswering(answering));
+        }
+        let size_reports = self.writer.is_none();
+        if size_reports != self.size_reports {
+            self.size_reports = size_reports;
+            self.send_sidecar(SidecarCommand::SetSizeReports(size_reports));
         }
     }
 
@@ -2455,6 +2462,7 @@ fn start(
         answering: false,
         answers_live: false,
         applied_answers: None,
+        size_reports: true,
         held_replies: Vec::new(),
         status_engine: StatusEngine::new(
             std::time::Instant::now(),
@@ -2871,6 +2879,11 @@ fn spawn_sidecar_sharing(
                         watch_text = text;
                     }
                     SidecarCommand::SetGridDiff(wanted) => grid_diff_wanted = wanted,
+                    SidecarCommand::SetSizeReports(on) => {
+                        if let Some(terminal) = terminal.as_mut() {
+                            terminal.set_size_reports(on);
+                        }
+                    }
                     SidecarCommand::SetAnswering(on) => {
                         if let Some(terminal) = terminal.as_mut() {
                             terminal.set_answering(on);
@@ -3939,6 +3952,7 @@ mod tests {
                 answering: false,
                 answers_live: false,
                 applied_answers: None,
+                size_reports: true,
                 held_replies: Vec::new(),
                 status_engine: super::StatusEngine::new(
                     std::time::Instant::now(),
@@ -5604,6 +5618,7 @@ mod tests {
             answering: false,
             answers_live: false,
             applied_answers: None,
+            size_reports: true,
             held_replies: Vec::new(),
             status_engine: super::StatusEngine::new(
                 std::time::Instant::now(),

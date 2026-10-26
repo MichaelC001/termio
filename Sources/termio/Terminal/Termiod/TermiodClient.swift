@@ -1860,7 +1860,9 @@ final class TermiodSessionLink: @unchecked Sendable {
                 channel, role: "attach",
                 caps: Termiod.attachCapabilities
                     + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : [])
-                    + (offersAnswers ? [Termiod.answersCapability] : []))
+                    // Only with answers to give: a pane whose theme did not
+                    // resolve answers for itself, or both would answer.
+                    + (offersAnswers && answersToSend != nil ? [Termiod.answersCapability] : []))
             clientID = handshake.clientID
             // A daemon that streams but does not take input events has already
             // put this connection on the stream plane, so the link cannot
@@ -1931,8 +1933,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             setStreaming(streamGranted)
             isWriter = attachedPayload.writer
             // Sent with the attach, so termiod had them before it granted the
-            // token; a pane that had none yet sends them when it has them.
-            if answersWithAttach != nil { hostAnswers = true }
+            // token, and once more as an event, which a termiod that predates
+            // the attach field still reads.
+            if answersWithAttach != nil { sendAnswersLocked() }
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
             }
@@ -2153,7 +2156,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     func sendDeviceReport(_ data: Data) {
         guard !data.isEmpty else { return }
         workQueue.async { [self] in
-            guard !closed, attached, isWriter, !hostAnswers || hostAnswersStale else { return }
+            guard !closed, attached, isWriter else { return }
+            // termiod answered it already; replies it does not make still go.
+            if hostAnswers, !hostAnswersStale, TerminalDeviceReport.isHostAnswered(data) { return }
             do {
                 try sendDataLocked(data)
             } catch {

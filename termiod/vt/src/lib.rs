@@ -227,12 +227,26 @@ pub const CELL_HEIGHT: u32 = 16;
 
 /// The state the query callbacks read and the replies they write, shared
 /// with the closures the engine holds.
-#[derive(Default)]
 struct Answering {
     on: Slot<bool>,
+    /// Size reports (XTWINOPS, mode 2048) are answered here only while nobody
+    /// writes; a writer's pane answers them with its own cell pixels.
+    sizes: Slot<bool>,
     replies: RefCell<Vec<u8>>,
     xtversion: Slot<&'static str>,
     dark: Slot<Option<bool>>,
+}
+
+impl Default for Answering {
+    fn default() -> Self {
+        Self {
+            on: Slot::new(false),
+            sizes: Slot::new(true),
+            replies: RefCell::default(),
+            xtversion: Slot::new(""),
+            dark: Slot::new(None),
+        }
+    }
 }
 
 /// One leaked copy per distinct name: the XTVERSION callback must hand back
@@ -364,8 +378,12 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
         }),
         "Terminal::on_xtversion",
     )?;
+    let sizes = answering.clone();
     check(
-        terminal.on_size(|terminal| {
+        terminal.on_size(move |terminal| {
+            if !sizes.sizes.get() {
+                return None;
+            }
             Some(SizeReportSize {
                 rows: terminal.rows().ok()?,
                 columns: terminal.cols().ok()?,
@@ -443,6 +461,12 @@ impl VtTerminal {
         if !on {
             self.answering.replies.borrow_mut().clear();
         }
+    }
+
+    /// Whether size reports are answered here: off while a writer's pane
+    /// answers them.
+    pub fn set_size_reports(&mut self, on: bool) {
+        self.answering.sizes.set(on);
     }
 
     /// The writer's identity and theme, which the answers carry.

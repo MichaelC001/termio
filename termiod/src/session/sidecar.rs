@@ -117,6 +117,8 @@ pub(crate) enum SidecarCommand {
     /// the replay of a previous image's output is behind it.
     SetAnswering(bool),
     SetAnswers(termiod_vt::Answers),
+    /// Whether the VT answers size reports: only while nobody writes.
+    SetSizeReports(bool),
     Shutdown,
     /// The daemon is handing this session to its next image: answer with the
     /// VT's native snapshot, taken after every byte sent before this, then
