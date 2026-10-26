@@ -3,7 +3,7 @@ title: iOS 应用
 description: 用二维码把 Termio iOS 应用与一台设备配对，随时用手机查看正在运行的 Agent——只连你自己的机器，不经过我们的任何中继。
 x-i18n:
   source_path: iphone.mdx
-  source_hash: 219cd540f22e603009e4deae0c4c67ff261e7d9dd3aa883a52e8e5e263af35a4
+  source_hash: 263ad6fd3ed092e1a72059c037d6e920f9caa26d7e922d992aadb976acd0f080
   generated_at: 2026-10-26
 ---
 
@@ -69,8 +69,8 @@ Mac 帮你装好的机器——走你的局域网或你自己配置的隧道。�
 ## 远程连到一台机器 [#reaching-a-machine-remotely]
 
 在同一个 Wi-Fi 下，配对就够了。想从任何地方连上，就给它一个地址。**设置 ▸ Termio server ▸
-配对 ▸ 网络**里有 **Tailscale**——打开**内置 Tailscale**，这台 Mac 不装 Tailscale 应用也能加入
-你的 tailnet——也有隧道：内置的隧道会替你起一条，或者选 **自定义** 跑你自己选的隧道命令——一条命名的 `cloudflared` 隧道，或者
+配对 ▸ 网络**里有 **Tailscale**——打开**内置 Tailscale**（需要先打开**直接连接**），这台 Mac 不装
+Tailscale 应用也能加入你的 tailnet——也有隧道：内置的隧道会替你起一条，或者选 **自定义** 跑你自己选的隧道命令——一条命名的 `cloudflared` 隧道，或者
 你自己的中继——并匹配它打印出来的 URL。Termio 绝不把你的流量绕经我们的服务器；托管型隧道
 服务商则会在他们的服务器上终结连接，这正是「自定义」存在的原因。
 
