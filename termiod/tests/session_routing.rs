@@ -354,6 +354,15 @@ fn with_the_app_the_app_answers() {
     let spawned = termio(&daemon, &["session", "send", "headless", "the-prompt"]);
     assert!(spawned.status.success(), "send failed: {spawned:?}");
     assert_eq!(app.load(Ordering::SeqCst), before + 1);
+
+    // An app session's daemon name is its uppercase UUID, which is also its
+    // TERMIO_SESSION: read by it, the screen comes from termiod.
+    let uuid = "1AAAAAAA-0000-4000-8000-0000000000AB";
+    let made = termio(&daemon, &["session", "create", "--name", uuid, "--", "sh", "-c", "echo app-session; exec cat"]);
+    assert!(made.status.success(), "create failed: {made:?}");
+    let before = app.load(Ordering::SeqCst);
+    assert!(screen_shows(&daemon, uuid, "app-session"), "read by the uppercase UUID went to the app");
+    assert_eq!(app.load(Ordering::SeqCst), before, "read asked the app");
 }
 
 /// Outside any project the app declines everything, and that stands.

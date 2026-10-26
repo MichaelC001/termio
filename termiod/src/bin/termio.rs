@@ -668,19 +668,6 @@ async fn daemon_read(
     format: &str,
 ) -> Option<i32> {
     let token = read_token(channel, target)?;
-    let listing = tokio::time::timeout(
-        termiod::server::LOOKUP_TIMEOUT,
-        termiod::client::sessions_of_running_daemon(),
-    );
-    let sessions = match listing.await {
-        Ok(Ok(Some(sessions))) => sessions,
-        _ => return None,
-    };
-    // A session named exactly the token is that session, as `send` and
-    // `close` resolve it.
-    if sessions.iter().any(|info| info.name == token) {
-        return None;
-    }
     let token_lower = token.to_lowercase();
     // Daemon-first claims only the canonical app-created population:
     // sessions whose daemon name is a UUID, matched by a hex/dash token. An
@@ -688,6 +675,32 @@ async fn daemon_read(
     // and resolve differently — those targets stay with the app.
     if token_lower.is_empty()
         || !token_lower.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return None;
+    }
+    let listing = tokio::time::timeout(
+        termiod::server::LOOKUP_TIMEOUT,
+        termiod::client::sessions_of_running_daemon(),
+    );
+    let sessions = match listing.await {
+        Ok(Ok(Some(sessions))) => sessions,
+        // A stalled daemon has had its time: with no app to answer instead,
+        // that is the reply, not a second wait.
+        Err(_) if !app_running(channel) => {
+            control_error_reply(
+                format,
+                "daemon",
+                &format!("termiod did not answer within {}s", termiod::server::LOOKUP_TIMEOUT.as_secs()),
+            );
+            return Some(1);
+        }
+        _ => return None,
+    };
+    // A session named exactly the token is that session, as `send` and
+    // `close` resolve it, unless the name is an app session's own UUID.
+    if sessions
+        .iter()
+        .any(|info| info.name == token && !uuid_shaped(&info.name.to_lowercase()))
     {
         return None;
     }
@@ -1176,14 +1189,18 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                     termiod::server::LOOKUP_TIMEOUT
                 };
                 let mut found = termiod::server::resolve_running(&args.words[0], lookup).await;
+                // Probed once, and only when the answer matters: a probe is a
+                // connection the app answers.
+                let mut app = None;
+                let mut app_up = || *app.get_or_insert_with(|| app_running(channel));
                 // A socket file the app left behind is no app: the lookup
                 // then gets its full time.
-                if found.is_err() && lookup < termiod::server::LOOKUP_TIMEOUT && !app_running(channel) {
+                if found.is_err() && lookup < termiod::server::LOOKUP_TIMEOUT && !app_up() {
                     found = termiod::server::resolve_running(&args.words[0], termiod::server::LOOKUP_TIMEOUT).await;
                 }
                 match found {
-                    Ok(found) => addressed = found.is_some() && !app_running(channel),
-                    Err(error) if !app_running(channel) => {
+                    Ok(found) => addressed = found.is_some() && !app_up(),
+                    Err(error) if !app_up() => {
                         let (code, message) = lookup_error(&error);
                         refuse(format, code, &message)
                     }
