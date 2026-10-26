@@ -1279,10 +1279,14 @@ extension TermioStore {
                 }
                 return
             }
-            let mine = Set(project.sessions.compactMap(\.termiodDaemonID))
+            let ids = Set(project.sessions.compactMap(\.termiodDaemonID))
+            let names = Set(project.sessions.map(daemonSessionName(for:)))
             for (device, path) in hostCheckouts {
                 let snapshot: HostSnapshot?
                 if let entry = read[device.id] { snapshot = entry } else { snapshot = hostSnapshot(of: device) }
+                // By name too: a row can be between daemon ids.
+                let mine = ids.union(
+                    snapshot?.live.filter { names.contains($0.value) }.map(\.key) ?? [])
                 guard let snapshot,
                       case .others(_, let ids) = Self.hostProjectRemoval(
                         at: path, in: snapshot.view, live: Set(snapshot.live.keys), closing: mine)
