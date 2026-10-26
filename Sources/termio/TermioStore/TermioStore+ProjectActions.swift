@@ -1247,6 +1247,9 @@ extension TermioStore {
                 unread.append(device)
             }
             if !unread.isEmpty {
+                // A second click while the read runs would open a second dialog.
+                guard !projectsBeingRead.contains(id) else { return }
+                projectsBeingRead.insert(id)
                 // At most a few seconds: a box that does not answer by then is
                 // not asked about, and its host decides alone.
                 let deadline = DispatchTime.now() + .seconds(3)
@@ -1273,6 +1276,7 @@ extension TermioStore {
                     lock.unlock()
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
+                            self?.projectsBeingRead.remove(id)
                             self?.removeProject(id, asking: true, alsoEnding: alsoEnding, read: settled)
                         }
                     }
@@ -1314,15 +1318,17 @@ extension TermioStore {
         for (deviceID, ids) in otherIDs {
             guard let device = hostCheckouts.first(where: { $0.device.id == deviceID })?.device
             else { continue }
+            let names = Set(ids.compactMap { otherNames[$0] })
             let rows = sessions(authoredFor: device).filter {
                 $0.termiodDaemonID.map(ids.contains) == true
+                    || ($0.termiodDaemonID == nil && names.contains(daemonSessionName(for: $0)))
             }
             others += rows
             // A session with no row here is ended by the host. Journaled, so a
             // roster read before the kill kills it again instead of adopting it.
-            let rowIDs = Set(rows.compactMap(\.termiodDaemonID))
-            for id in ids.subtracting(rowIDs) {
-                guard let name = otherNames[id] else { continue }
+            let rowNames = Set(rows.map(daemonSessionName(for:)))
+            for id in ids {
+                guard let name = otherNames[id], !rowNames.contains(name) else { continue }
                 journalClosedSession(
                     named: name, sshAlias: device.alias, deviceID: device.deviceID, daemonID: id)
             }

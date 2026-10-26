@@ -1189,6 +1189,9 @@ final class TermioStore: ObservableObject {
     /// old to own one. Remove Project does not read them again.
     var viewlessHosts: Set<String> = []
 
+    /// Projects whose Remove Project is reading a host before it asks.
+    var projectsBeingRead: Set<Project.ID> = []
+
     /// Routes whose daemon this app has asked to stop and is waiting to see come
     /// back (`ensureRemoteReady`). A roster that fails meanwhile is the restart
     /// in progress, not a dead machine — without this the two are the same red
