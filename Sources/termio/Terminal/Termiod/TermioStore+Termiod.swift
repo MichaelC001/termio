@@ -1119,11 +1119,16 @@ extension TermioStore {
                         return project
                     case .others(_, let others):
                         throw TermiodClientError.requestFailed(localized(
-                            "\(others.count) other sessions started in this project since you removed it."))
+                            "\(others.count) other sessions are running in this project."))
                     }
                 }
             } catch {
-                failure = error.localizedDescription
+                // Only a refusal from the host is news. A box that cannot be
+                // reached is said nowhere else either, and a kill to it is
+                // journaled the same quiet way.
+                if case TermiodClientError.requestFailed(let message) = error {
+                    failure = message
+                }
                 Log.termiod.error("""
                 removing project \(path, privacy: .public) from \
                 \(route.description, privacy: .public) failed: \
@@ -1143,7 +1148,7 @@ extension TermioStore {
                         let alert = NSAlert()
                         alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
                         alert.informativeText = localized(
-                            "\(failure) The project stays on \(alias) and comes back here.")
+                            "\(failure) Close them, then remove the project again.")
                         alert.alertStyle = .warning
                         alert.runModal()
                     }

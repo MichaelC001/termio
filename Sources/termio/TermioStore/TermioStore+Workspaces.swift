@@ -505,7 +505,7 @@ extension TermioStore {
     func removeWorkspace(_ id: Workspace.ID) {
         guard workspaces.count > 1, let target = workspaces.first(where: { $0.id == id })
         else { return }
-        for project in projects(inWorkspace: id) { removeProject(project.id) }
+        for project in projects(inWorkspace: id) { removeProject(project.id, asking: false) }
         // Closing the last session in a machine's fallback may already have swept
         // the workspace away, so removal is matched by id rather than by an index
         // captured before the teardown.
