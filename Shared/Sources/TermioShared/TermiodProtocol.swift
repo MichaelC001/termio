@@ -71,6 +71,25 @@ public enum Termiod {
     /// from a daemon that grants it as well: one with `vt_stream` alone drops
     /// every event, which is a pane that cannot be typed into.
     public static let inputCapability = "vt_input"
+    /// A reattach continues the stream where the dropped connection left it:
+    /// `stream_position` after each `S`, `resume` on the attach, and
+    /// `stream_resumed` when termiod's ring still holds the gap. Offered with
+    /// `vt_stream`.
+    public static let resumeCapability = "vt_resume"
+
+    /// Where a stream stood: the stream (`epoch`), the bytes taken from it,
+    /// and the `vt_resize` markers applied.
+    public struct ResumePosition: Codable, Equatable, Sendable {
+        public var epoch: UInt64
+        public var offset: UInt64
+        public var markers: UInt64
+
+        public init(epoch: UInt64, offset: UInt64, markers: UInt64) {
+            self.epoch = epoch
+            self.offset = offset
+            self.markers = markers
+        }
+    }
     /// The error a daemon sends when it cannot give this client an exact
     /// screen to follow; the client attaches again without `vt_stream`.
     public static let streamUnavailableCode = "vt_stream_unavailable"
@@ -416,6 +435,8 @@ public enum Termiod {
         /// Sent with the attach, so the host answers with them from the moment
         /// it grants the token (`vt_answers`).
         let answers: HostAnswers.Fields?
+        /// Where this client's stream stood, to continue from (`vt_resume`).
+        let resume: ResumePosition?
         let seq: UInt64
     }
 
@@ -1241,6 +1262,19 @@ public enum Termiod {
         public let reflow: Bool
     }
 
+    public struct StreamPositionPayload: Decodable, Sendable {
+        public let session: String
+        public let epoch: UInt64
+        public let offset: UInt64
+        public let markers: UInt64
+    }
+
+    public struct StreamResumedPayload: Decodable, Sendable {
+        public let session: String
+        public let epoch: UInt64
+        public let offset: UInt64
+    }
+
     /// A workstream status delta — `working · idle · needs_you · done · failed ·
     /// unknown`. The host reports the *state*; which dot, which words, and
     /// whether it fires a notification are the client's call.
@@ -1430,6 +1464,10 @@ public enum Termiod {
         case resized(ResizedPayload)
         /// Only on the `vt_stream` plane: apply this resize before the next byte.
         case vtResize(VtResizePayload)
+        /// After a `vt_resume` client's `S`: where that snapshot left its stream.
+        case streamPosition(StreamPositionPayload)
+        /// The reattach continues the stream; no `S` follows.
+        case streamResumed(StreamResumedPayload)
         /// The host's VT stopped parsing: it can no longer snapshot, and the
         /// modes it encodes input with are frozen.
         case vtStale
@@ -1712,6 +1750,10 @@ public enum Termiod {
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
         case "vt_resize":
             return .vtResize(try decoder.decode(VtResizePayload.self, from: payload))
+        case "stream_position":
+            return .streamPosition(try decoder.decode(StreamPositionPayload.self, from: payload))
+        case "stream_resumed":
+            return .streamResumed(try decoder.decode(StreamResumedPayload.self, from: payload))
         case "vt_stale":
             return .vtStale
         case "roster":
@@ -1825,7 +1867,8 @@ public enum Termiod {
         rows: UInt16,
         cols: UInt16,
         rendering: Bool = true,
-        answers: HostAnswers? = nil
+        answers: HostAnswers? = nil,
+        resume: ResumePosition? = nil
     ) throws -> Data {
         try encodeControl(AttachOperation(
             target: target,
@@ -1834,6 +1877,7 @@ public enum Termiod {
             cols: cols,
             rendering: rendering ? nil : false,
             answers: answers?.fields,
+            resume: resume,
             seq: 1
         ))
     }

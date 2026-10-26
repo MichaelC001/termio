@@ -94,6 +94,36 @@ final class StreamLinkIntegrationTests: XCTestCase {
         try wait("input echoed back through the stream") { try text(link).contains("typed after") }
     }
 
+    /// A dropped connection comes back where it left off (`vt_resume`): the
+    /// output written while it was gone arrives from termiod's ring, into the
+    /// same terminal, with no snapshot to replace it.
+    func testAReattachResumesTheStreamInTheSameTerminal() throws {
+        let link = TermiodSessionLink(
+            sessionName: "resume-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(),
+                argv: ["/bin/sh", "-c", "printf 'one\\n'; sleep 1; printf 'two\\n'; exec /bin/cat"],
+                env: [], rows: 20, cols: 60),
+            rows: 20, cols: 60, offersStream: true)
+        var reattached = false
+        link.onReattached = { reattached = true }
+        link.start()
+        defer { link.detach() }
+
+        try wait("the first output reached the client terminal") {
+            try link.isStreaming && text(link).contains("one")
+        }
+        let first = try XCTUnwrap(link.streamTerminal)
+        XCTAssertFalse(try text(link).contains("two"))
+        link.dropConnection()
+        wait("the link reattached") { reattached }
+        try wait("what was written while it was gone arrived") { try text(link).contains("two") }
+        XCTAssertTrue(link.streamTerminal === first, "the reattach decoded a snapshot instead of resuming")
+
+        link.send(Data("after resume\n".utf8))
+        try wait("the resumed stream carries live output") { try text(link).contains("after resume") }
+    }
+
     /// A key reaches the program in the form its modes ask for: the program
     /// turned on application cursor keys after the attach, termiod encoded the
     /// key event against its own VT, and `cat -v` shows the bytes that arrived.

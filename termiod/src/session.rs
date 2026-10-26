@@ -87,6 +87,10 @@ pub enum SessionMsg {
         vt_answers: bool,
         /// The answers it attached with, if it sent them then.
         answers: Option<termiod_vt::Answers>,
+        /// Negotiated `vt_resume`: told its stream position after each `S`.
+        vt_resume: bool,
+        /// Where its previous connection's stream stood, to continue from.
+        resume: Option<crate::protocol::ResumeSpec>,
         reply: oneshot::Sender<AddClientReply>,
     },
     /// What a `vt_answers` client wants queries answered with while it writes.
@@ -237,6 +241,8 @@ struct ClientEntry {
     answers: Option<termiod_vt::Answers>,
     /// Whether it has sent `answers` yet. Until it has, the last answers stand.
     answers_said: bool,
+    /// Negotiated `vt_resume`: sent `stream_position` after each `S`.
+    vt_resume: bool,
 }
 
 /// Whether this attachment can hold the write token.
@@ -434,6 +440,17 @@ struct Session {
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
+    /// Names this actor's stream for `vt_resume`: an offset means nothing in
+    /// another one, so a reattach after a handoff or a restart snapshots.
+    stream_epoch: u64,
+    /// Bytes fanned out since this actor began; the ring's end.
+    stream_offset: u64,
+    /// The `vt_resize` markers inside the ring: the offset each was sent at
+    /// and its number, so a resumed client takes the ones it missed where the
+    /// live ones went.
+    stream_markers: VecDeque<(u64, u64, Event)>,
+    /// `vt_resize` markers sent since this actor began.
+    stream_marker_count: u64,
     /// Whether the ring, replayed from its start into a blank terminal of the
     /// current size, still reconstructs this screen.
     ///
@@ -827,6 +844,7 @@ impl Session {
 
     fn push_ring(&mut self, data: Bytes) {
         self.ring_bytes += data.len();
+        self.stream_offset += data.len() as u64;
         self.ring.push_back(data);
         while self.ring_bytes > RING_CAP {
             if let Some(evicted) = self.ring.pop_front() {
@@ -834,6 +852,66 @@ impl Session {
                 self.ring_reconstructs_screen = false;
             }
         }
+        let start = self.ring_start();
+        while self.stream_markers.front().is_some_and(|(offset, _, _)| *offset < start) {
+            self.stream_markers.pop_front();
+        }
+    }
+
+    /// The stream offset of the ring's first byte.
+    fn ring_start(&self) -> u64 {
+        self.stream_offset - self.ring_bytes as u64
+    }
+
+    /// What a `vt_resume` client that stood at `resume` missed, in stream
+    /// order: the ring's bytes from its offset, each marker before the byte it
+    /// preceded live. `None` when that is not this stream, or the ring no
+    /// longer reaches back to it.
+    fn resume_replay(&self, resume: crate::protocol::ResumeSpec) -> Option<Vec<Replayed>> {
+        let start = self.ring_start();
+        if resume.epoch != self.stream_epoch
+            || resume.offset < start
+            || resume.offset > self.stream_offset
+            || resume.markers > self.stream_marker_count
+        {
+            return None;
+        }
+        let missed: Vec<&(u64, u64, Event)> =
+            self.stream_markers.iter().filter(|(_, number, _)| *number > resume.markers).collect();
+        // Every marker it missed must still be here and lie at or past its
+        // offset, and every one it applied at or before it; anything else is
+        // a position this stream never had.
+        let applied_past = self
+            .stream_markers
+            .iter()
+            .any(|(offset, number, _)| *number <= resume.markers && *offset > resume.offset);
+        if applied_past
+            || missed.len() as u64 != self.stream_marker_count - resume.markers
+            || missed.iter().any(|(offset, _, _)| *offset < resume.offset)
+        {
+            return None;
+        }
+        let mut replay = Vec::new();
+        let mut markers = missed.into_iter().peekable();
+        let mut position = start;
+        for chunk in &self.ring {
+            let end = position + chunk.len() as u64;
+            let mut from = position.max(resume.offset);
+            while from < end {
+                // A marker at `from` went out before the byte at `from`.
+                while let Some((_, _, marker)) = markers.next_if(|(offset, _, _)| *offset <= from) {
+                    replay.push(Replayed::Marker(marker.clone()));
+                }
+                let until = markers.peek().map_or(end, |(offset, _, _)| (*offset).min(end));
+                replay.push(Replayed::Bytes(chunk.slice((from - position) as usize..(until - position) as usize)));
+                from = until;
+            }
+            position = end;
+        }
+        for (_, _, marker) in markers {
+            replay.push(Replayed::Marker(marker.clone()));
+        }
+        Some(replay)
     }
 
     /// Answers `OSC 7501 ; ?` in live output before it goes out; see
@@ -879,6 +957,8 @@ impl Session {
             cols,
             reflow,
         };
+        self.stream_marker_count += 1;
+        self.stream_markers.push_back((self.stream_offset, self.stream_marker_count, marker.clone()));
         let dead = self
             .clients
             .iter()
@@ -1726,6 +1806,22 @@ impl Session {
             return false;
         }
 
+        // The boundary is where this client's buffered bytes begin: they were
+        // fanned out after the sidecar took the snapshot, in the same order.
+        if entry.plane.is_stream() && entry.vt_resume {
+            let buffered: u64 = data.iter().map(|payload| payload.bytes.len() as u64).sum();
+            let position = Event::StreamPosition {
+                session: self.id.to_string(),
+                epoch: self.stream_epoch,
+                offset: self.stream_offset - buffered,
+                markers: self.stream_marker_count,
+            };
+            if entry.out.send(ClientEvent::Event(position)).is_err() {
+                release_buffered(&entry.backlog, data);
+                self.remove_finished_client(client_id);
+                return false;
+            }
+        }
         let history_pending = match Self::queue_history_chunk(&self.id, client_id, &mut entry) {
             Ok(more) => more,
             Err(()) => {
@@ -2454,6 +2550,10 @@ fn start(
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
+        stream_epoch: new_stream_epoch(),
+        stream_offset: 0,
+        stream_markers: VecDeque::new(),
+        stream_marker_count: 0,
         ring_reconstructs_screen: true,
         settle_nudge_at: None,
         events,
@@ -2554,6 +2654,21 @@ fn start(
         tx,
         termination_reason,
     })
+}
+
+/// One step of a `vt_resume` replay: ring bytes, or a marker between them.
+enum Replayed {
+    Bytes(Bytes),
+    Marker(Event),
+}
+
+/// A stream epoch no other actor shares: seeded per process by the hasher's
+/// random keys, and mixed with the clock so two actors in one process differ.
+fn new_stream_epoch() -> u64 {
+    use std::hash::BuildHasher;
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
+    // 53 bits, so every JSON reader on the wire holds it exactly.
+    std::collections::hash_map::RandomState::new().hash_one(nanos) & ((1 << 53) - 1)
 }
 
 struct Sidecar {
@@ -3369,6 +3484,8 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             vt_stream,
             vt_answers,
             answers,
+            vt_resume,
+            resume,
             reply,
         } => {
             // Only interactive attachments are numbered: the sequence exists
@@ -3393,7 +3510,34 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             } else {
                 0
             };
-            let snapshot_request = snapshot.then(|| session.allocate_snapshot_request());
+            // A resume continues the stream plane where it stopped, so it is
+            // only taken whole: every replayed byte is reserved first, and a
+            // replay that does not fit falls back to a fresh snapshot.
+            let resumed = resume
+                .filter(|_| snapshot && vt_stream && !grid_diff)
+                .and_then(|position| session.resume_replay(position).map(|replay| (position, replay)))
+                .and_then(|(position, replay)| {
+                    let mut metered = Vec::with_capacity(replay.len());
+                    for step in replay {
+                        match step {
+                            Replayed::Bytes(bytes) => match backlog.reserve(bytes) {
+                                Some(payload) => metered.push(ClientEvent::Data(payload)),
+                                None => {
+                                    for event in &metered {
+                                        if let ClientEvent::Data(payload) = event {
+                                            backlog.release(payload);
+                                        }
+                                    }
+                                    return None;
+                                }
+                            },
+                            Replayed::Marker(marker) => metered.push(ClientEvent::Event(marker)),
+                        }
+                    }
+                    Some((position, metered))
+                });
+            let snapshot_request =
+                (snapshot && resumed.is_none()).then(|| session.allocate_snapshot_request());
 
             if !snapshot {
                 for replay in &session.ring {
@@ -3411,6 +3555,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // `S` will open. Grid diffs ride on top of the snapshot plane and
             // are unreachable without it.
             let plane = match snapshot_request {
+                None if resumed.is_some() => ClientPlane::Stream(ClientDelivery::Live),
                 None => ClientPlane::Raw,
                 Some(request_id) => {
                     let delivery = ClientDelivery::SnapshotPending {
@@ -3446,8 +3591,34 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     focused: None,
                     answers_said: vt_answers && answers.is_some(),
                     answers: vt_answers.then(|| answers.unwrap_or_default()),
+                    vt_resume,
                 },
             );
+            // Ahead of anything the session sends it from here on, so the
+            // replay ends exactly where live output and markers continue.
+            if let Some((position, replay)) = resumed {
+                if let Some(entry) = session.clients.get(&id) {
+                    let mut steps = std::iter::once(ClientEvent::Event(Event::StreamResumed {
+                        session: session.id.to_string(),
+                        epoch: position.epoch,
+                        offset: position.offset,
+                    }))
+                    .chain(replay);
+                    for step in steps.by_ref() {
+                        if let Err(error) = entry.out.send(step) {
+                            if let ClientEvent::Data(payload) = error.0 {
+                                entry.backlog.release(&payload);
+                            }
+                            break;
+                        }
+                    }
+                    for step in steps {
+                        if let ClientEvent::Data(payload) = step {
+                            entry.backlog.release(&payload);
+                        }
+                    }
+                }
+            }
             // `vt_stale` went out once, to whoever was attached; a client
             // arriving later must hear it too, or it would wait for the host
             // to answer queries the host can no longer answer.
@@ -3944,6 +4115,10 @@ mod tests {
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
+                stream_epoch: super::new_stream_epoch(),
+                stream_offset: 0,
+                stream_markers: VecDeque::new(),
+                stream_marker_count: 0,
                 ring_reconstructs_screen: true,
                 settle_nudge_at: None,
                 events,
@@ -4055,6 +4230,8 @@ mod tests {
                 grid_diff: false,
                 vt_stream: false,
                 vt_answers: false,
+                vt_resume: false,
+                resume: None,
                 answers: None,
                 reply,
             },
@@ -4100,6 +4277,8 @@ mod tests {
                     vt_stream: false,
                     vt_answers,
                     answers,
+                    vt_resume: false,
+                    resume: None,
                     reply,
                 },
             );
@@ -4218,6 +4397,8 @@ mod tests {
                 grid_diff: false,
                 vt_stream: false,
                 vt_answers: false,
+                vt_resume: false,
+                resume: None,
                 answers: None,
                 reply,
             },
@@ -4902,11 +5083,143 @@ mod tests {
                 grid_diff: false,
                 vt_stream: true,
                 vt_answers: false,
+                vt_resume: false,
+                resume: None,
                 answers: None,
                 reply,
             },
         );
         rx
+    }
+
+    fn attach_resuming_client(
+        session: &mut Session,
+        id: &str,
+        resume: Option<crate::protocol::ResumeSpec>,
+    ) -> mpsc::UnboundedReceiver<ClientEvent> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (reply, _reply_rx) = oneshot::channel();
+        handle_msg(
+            session,
+            SessionMsg::AddClient {
+                id: ClientId::new(id),
+                interactive: true,
+                rows: 0,
+                cols: 0,
+                rendering: true,
+                out: tx,
+                backlog: Arc::new(ClientBacklog::new()),
+                snapshot: true,
+                scrollback: false,
+                grid_diff: false,
+                vt_stream: true,
+                vt_answers: false,
+                vt_resume: true,
+                resume,
+                answers: None,
+                reply,
+            },
+        );
+        rx
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Resumed {
+        Snapshot,
+        Position { offset: u64, markers: u64 },
+        Resumed { offset: u64 },
+        Marker { rows: u16, cols: u16 },
+        Data(Vec<u8>),
+    }
+
+    fn drain_resumed(client: &mut mpsc::UnboundedReceiver<ClientEvent>) -> Vec<Resumed> {
+        let mut seen = Vec::new();
+        while let Ok(event) = client.try_recv() {
+            match event {
+                ClientEvent::Snapshot(_) => seen.push(Resumed::Snapshot),
+                ClientEvent::Data(payload) => seen.push(Resumed::Data(payload.bytes.to_vec())),
+                ClientEvent::Event(Event::StreamPosition { offset, markers, .. }) => {
+                    seen.push(Resumed::Position { offset, markers })
+                }
+                ClientEvent::Event(Event::StreamResumed { offset, .. }) => seen.push(Resumed::Resumed { offset }),
+                ClientEvent::Event(Event::VtResize { rows, cols, .. }) => seen.push(Resumed::Marker { rows, cols }),
+                _ => {}
+            }
+        }
+        seen
+    }
+
+    /// A `vt_resume` client that drops and comes back is handed what it
+    /// missed from the ring, the marker in its place and no snapshot; one
+    /// that already applied the marker is not handed it again; and a position
+    /// from another stream, or older than the ring, gets a fresh snapshot.
+    #[tokio::test]
+    async fn a_stream_client_resumes_where_its_connection_dropped() {
+        let Sidecar { commands, mut results, queue, thread } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+        session.write_sidecar(Bytes::from_static(b"start "));
+        session.fan_out(Bytes::from_static(b"start "));
+
+        let mut first = attach_resuming_client(&mut session, "first", None);
+        pump_sidecar(&mut session, &mut results, 1).await;
+        let attach = drain_resumed(&mut first);
+        assert_eq!(attach[..2], [Resumed::Snapshot, Resumed::Position { offset: 6, markers: 0 }]);
+        let epoch = session.stream_epoch;
+
+        session.write_sidecar(Bytes::from_static(b"before"));
+        session.fan_out(Bytes::from_static(b"before"));
+        declare_viewport(&mut session, "first", 10, 40, true);
+        session.write_sidecar(Bytes::from_static(b"after"));
+        session.fan_out(Bytes::from_static(b"after"));
+        pump_sidecar(&mut session, &mut results, 0).await;
+        assert_eq!(
+            drain_resumed(&mut first),
+            [Resumed::Data(b"before".to_vec()), Resumed::Marker { rows: 10, cols: 40 }, Resumed::Data(b"after".to_vec())]
+        );
+        // Its connection dropped after "before", while more was written.
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("first") });
+        session.write_sidecar(Bytes::from_static(b"later"));
+        session.fan_out(Bytes::from_static(b"later"));
+
+        let position = |offset, markers| Some(crate::protocol::ResumeSpec { epoch, offset, markers });
+        let mut missed_marker = attach_resuming_client(&mut session, "missed", position(12, 0));
+        let replay = drain_resumed(&mut missed_marker);
+        assert_eq!(
+            replay[..4],
+            [
+                Resumed::Resumed { offset: 12 },
+                Resumed::Marker { rows: 10, cols: 40 },
+                Resumed::Data(b"after".to_vec()),
+                Resumed::Data(b"later".to_vec()),
+            ]
+        );
+        assert!(!replay.contains(&Resumed::Snapshot), "a resumed client was sent a snapshot");
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("missed") });
+
+        let mut applied_marker = attach_resuming_client(&mut session, "applied", position(12, 1));
+        assert_eq!(
+            drain_resumed(&mut applied_marker)[..3],
+            [Resumed::Resumed { offset: 12 }, Resumed::Data(b"after".to_vec()), Resumed::Data(b"later".to_vec())]
+        );
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("applied") });
+
+        let other_stream = Some(crate::protocol::ResumeSpec { epoch: epoch ^ 1, offset: 12, markers: 0 });
+        let mut stranger = attach_resuming_client(&mut session, "stranger", other_stream);
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(drain_resumed(&mut stranger).first(), Some(&Resumed::Snapshot));
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("stranger") });
+
+        let flood = Bytes::from(vec![b'x'; super::RING_CAP + 1]);
+        session.write_sidecar(flood.clone());
+        session.fan_out(flood);
+        let mut too_old = attach_resuming_client(&mut session, "too-old", position(12, 1));
+        pump_sidecar(&mut session, &mut results, 1).await;
+        assert_eq!(drain_resumed(&mut too_old).first(), Some(&Resumed::Snapshot));
+
+        session.vt.shut_down();
+        drop(session);
+        let _ = thread.join();
     }
 
     fn vt_stream_refusal(client: &mut mpsc::UnboundedReceiver<ClientEvent>) -> Option<String> {
@@ -5064,6 +5377,8 @@ mod tests {
                 grid_diff: false,
                 vt_stream: true,
                 vt_answers: false,
+                vt_resume: false,
+                resume: None,
                 answers: None,
                 reply,
             },
@@ -5602,6 +5917,7 @@ mod tests {
                     focused: None,
                     answers: None,
                     answers_said: false,
+                    vt_resume: false,
                 },
             )]),
             writer: Some(ClientId::new("writer")),
@@ -5610,6 +5926,10 @@ mod tests {
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,
+            stream_epoch: super::new_stream_epoch(),
+            stream_offset: 0,
+            stream_markers: VecDeque::new(),
+            stream_marker_count: 0,
             ring_reconstructs_screen: true,
             settle_nudge_at: None,
             events,
@@ -5763,6 +6083,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });
@@ -5921,6 +6243,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });
@@ -5985,6 +6309,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });
@@ -6038,6 +6364,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });
@@ -6102,6 +6430,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });
@@ -6186,6 +6516,8 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            vt_resume: false,
+            resume: None,
             answers: None,
             reply,
         });

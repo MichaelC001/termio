@@ -1439,6 +1439,7 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             // Input events are the stream plane's; any other plane types bytes.
             if !negotiated_caps.iter().any(|cap| cap == "vt_stream") {
                 negotiated_caps.retain(|cap| cap != "vt_input");
+                negotiated_caps.retain(|cap| cap != "vt_resume");
             }
             // The answers arrive as an event, and `vt_stale` hands answering
             // back: neither reaches a client without events.
@@ -1537,6 +1538,7 @@ struct AttachRequest {
     rendering: bool,
     mode: AttachMode,
     answers: Option<crate::protocol::AnswersSpec>,
+    resume: Option<crate::protocol::ResumeSpec>,
     re: Option<u64>,
 }
 
@@ -2019,6 +2021,7 @@ async fn process_control(
             rendering,
             mode,
             answers,
+            resume,
             seq,
         } => {
             let handle = match manager.resolve(&target).await {
@@ -2069,6 +2072,7 @@ async fn process_control(
                 rendering,
                 mode,
                 answers,
+                resume,
                 re: seq,
             }));
         }
@@ -3046,7 +3050,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         }
         Event::Resized { .. } => false,
         // A marker in one attachment's byte stream; meaningless anywhere else.
-        Event::VtResize { .. } => false,
+        Event::VtResize { .. } | Event::StreamPosition { .. } | Event::StreamResumed { .. } => false,
         Event::Ready { .. } => false,
         // Both are addressed to one attachment's stream, not to the roster: a
         // resync is that client's own, and a stale VT only means anything to a
@@ -3106,6 +3110,12 @@ async fn run_attach(
             && connection.capabilities.contains("vt_stream"),
         vt_answers: connection.capabilities.contains("vt_answers"),
         answers: request.answers.as_ref().map(vt_answers),
+        vt_resume: connection.capabilities.contains("vt_stream")
+            && connection.capabilities.contains("vt_resume"),
+        resume: (connection.capabilities.contains("vt_stream")
+            && connection.capabilities.contains("vt_resume"))
+        .then_some(request.resume)
+        .flatten(),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
