@@ -99,31 +99,34 @@ public final class TermiodStreamRenderer {
 
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
+    /// True when a frame was presented.
+    @discardableResult
     public func draw(
         _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
         link: TermiodStreamTerminal.Link? = nil
-    ) throws {
+    ) throws -> Bool {
         let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit, link: link)
-        guard changed || force else { return }
+        guard changed || force else { return false }
         // A frame the GPU cannot take yet is dropped, not queued: the next
         // tick draws the newer screen anyway.
         guard inFlight.wait(timeout: .now()) == .success else {
             builder.invalidate()
-            return
+            return false
         }
         guard let drawable = layer.nextDrawable(), let buffer = resources.queue.makeCommandBuffer() else {
             inFlight.signal()
             builder.invalidate()
-            return
+            return false
         }
         guard encode(into: buffer, texture: drawable.texture) else {
             inFlight.signal()
-            return
+            return false
         }
         buffer.present(drawable)
         let semaphore = inFlight
         buffer.addCompletedHandler { _ in semaphore.signal() }
         buffer.commit()
+        return true
     }
 
     /// For a texture the CPU writes or reads. On an Intel Mac no GPU takes a

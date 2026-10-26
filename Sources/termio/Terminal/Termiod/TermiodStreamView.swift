@@ -33,6 +33,9 @@ final class TermiodStreamView: NSView {
     fileprivate let metalLayer = CAMetalLayer()
     fileprivate var renderer: TermiodStreamRenderer?
     private var displayLinkHandle: CADisplayLink?
+    /// Frames presented to the layer, for the debug snapshot: a window
+    /// capture cannot read a Metal layer, so this is how a run says it drew.
+    private(set) var framesPresented = 0
     private var drawnTerminal: ObjectIdentifier?
     fileprivate var needsFullDraw = true
     private var lastViewport: TerminalGrid?
@@ -186,6 +189,15 @@ final class TermiodStreamView: NSView {
         displayLinkHandle = link
     }
 
+    /// The screen as this view draws it, offscreen at the drawable's size:
+    /// what the debug snapshot writes, since it cannot read the layer.
+    func debugImage() -> CGImage? {
+        guard let renderer, let terminal = terminal() else { return nil }
+        let size = metalLayer.drawableSize
+        defer { needsFullDraw = true }
+        return try? renderer.image(of: terminal, width: Int(size.width), height: Int(size.height), focused: focused)
+    }
+
     @objc private func keyWindowChanged() {
         focused = window?.isKeyWindow == true && window?.firstResponder === self
     }
@@ -234,11 +246,13 @@ final class TermiodStreamView: NSView {
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
         do {
-            try renderer.draw(
+            if try renderer.draw(
                 terminal, into: metalLayer, focused: focused, force: needsFullDraw || replaced,
                 preedit: markedText.length > 0 ? markedText.string : nil,
                 link: hoveredLink
-            )
+            ) {
+                framesPresented += 1
+            }
             needsFullDraw = false
         } catch {
             Log.termiod.error("stream frame failed: \(String(describing: error), privacy: .public)")

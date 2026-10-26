@@ -61,10 +61,20 @@ enum DebugWindowSnapshot {
         // same distributed notification; a probe build and the dev app would
         // otherwise overwrite each other's capture.
         let stem = "/tmp/termio\(AppChannel.suffix)"
-        var lines: [String] = ["window frame=\(window.frame) key=\(window.isKeyWindow)"]
+        var lines: [String] = [
+            "window frame=\(window.frame) key=\(window.isKeyWindow) visible-on-screen=\(window.occlusionState.contains(.visible))",
+        ]
         dump(view, depth: 0, into: &lines)
         try? lines.joined(separator: "\n").write(
             toFile: stem + "-views.txt", atomically: true, encoding: .utf8)
+        // A window capture leaves a Metal layer empty, so each stream pane
+        // also draws itself offscreen.
+        for (index, stream) in streamViews(in: view).enumerated() {
+            guard let image = stream.debugImage(),
+                  let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+            else { continue }
+            try? png.write(to: URL(fileURLWithPath: stem + "-stream-\(index).png"))
+        }
 
         guard let rep = composited(window) ?? cached(view),
               let png = rep.representation(using: .png, properties: [:]) else { return }
@@ -124,11 +134,17 @@ enum DebugWindowSnapshot {
     }
 
     @MainActor
+    private static func streamViews(in view: NSView) -> [TermiodStreamView] {
+        (view as? TermiodStreamView).map { [$0] } ?? view.subviews.flatMap { streamViews(in: $0) }
+    }
+
+    @MainActor
     private static func dump(_ view: NSView, depth: Int, into lines: inout [String]) {
         let indent = String(repeating: "  ", count: depth)
         var bits = "\(indent)\(type(of: view)) frame=\(view.frame)"
         if view.isHidden { bits += " HIDDEN" }
         if view.alphaValue < 1 { bits += " alpha=\(view.alphaValue)" }
+        if let stream = view as? TermiodStreamView { bits += " framesPresented=\(stream.framesPresented)" }
         if let bg = view.layer?.backgroundColor, let c = NSColor(cgColor: bg), c.alphaComponent > 0 {
             bits += " bg=\(c)"
         }
