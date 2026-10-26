@@ -1548,10 +1548,13 @@ pub enum Event {
     },
     /// The reattach continues the client's stream at `offset`: no `S`
     /// follows, and the next `D` is the byte after the one it last took.
+    /// Bytes before `live` are the replay of what it missed: queries in them
+    /// were asked while it was away, and nobody waits for its answers now.
     StreamResumed {
         session: String,
         epoch: u64,
         offset: u64,
+        live: u64,
     },
     SessionExited {
         session: String,

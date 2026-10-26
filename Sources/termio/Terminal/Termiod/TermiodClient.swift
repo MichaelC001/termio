@@ -1611,6 +1611,12 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// terminal follows no position termiod named.
     private let resumeLock = NSLock()
     private var resumePositionLocked: Termiod.ResumePosition?
+    /// Reader-thread state: where a resumed stream's live output begins, and
+    /// whether the frame being written lies before it. A query in a replayed
+    /// frame was asked while this link was away; answering it now would type
+    /// the answer into whatever the program is reading.
+    private var replayEnd: UInt64?
+    private var writingReplay = false
     private var streamScrollbackLocked: Int?
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
@@ -1788,6 +1794,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             let terminal = try TermiodStreamTerminal(
                 nativeSnapshot: native,
                 onReply: { [weak self] reply in
+                    if self?.writingReplay == true { return }
                     // Answering is the writer's job alone (`TerminalDeviceReport`),
                     // which `sendDeviceReport` enforces.
                     self?.sendDeviceReport(reply)
@@ -2820,7 +2827,13 @@ final class TermiodSessionLink: @unchecked Sendable {
                 switch frame.kind {
                 case .data:
                     if let terminal = self.streamTerminal {
+                        // A replay ends where live output starts, so a frame is
+                        // all one or all the other.
+                        if let end = self.replayEnd, let at = self.resumePosition?.offset {
+                            self.writingReplay = at < end
+                        }
                         terminal.write(frame.payload)
+                        self.writingReplay = false
                         self.advanceResume(bytes: frame.payload.count)
                     } else {
                         self.deliverOutput(frame.payload)
@@ -2842,6 +2855,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                         // A new terminal follows no position until termiod
                         // names the one this snapshot was taken at.
                         self.setResumePosition(nil)
+                        self.replayEnd = nil
                         guard self.receiveStreamSnapshot(native) else { return }
                     } else {
                         self.receiveKeyframe(keyframe)
@@ -2963,9 +2977,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                 """)
             }
         case .streamPosition(let position):
+            replayEnd = nil
             setResumePosition(Termiod.ResumePosition(
                 epoch: position.epoch, offset: position.offset, markers: position.markers))
         case .streamResumed(let resumed):
+            replayEnd = resumed.live
             Log.termiod.info("""
             \(self.sessionName, privacy: .public) resumed its stream at byte \(resumed.offset, privacy: .public)
             """)

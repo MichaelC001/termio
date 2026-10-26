@@ -18,6 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 const RING_CAP: usize = 128 * 1024;
+/// The `vt_resize` markers kept for `vt_resume`, beyond those the ring prunes.
+const STREAM_MARKER_CAP: usize = 4096;
 const READ_CHUNK: usize = 64 * 1024;
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
 mod backlog;
@@ -959,6 +961,11 @@ impl Session {
         };
         self.stream_marker_count += 1;
         self.stream_markers.push_back((self.stream_offset, self.stream_marker_count, marker.clone()));
+        // Resizes over a child that prints nothing never move the ring; past
+        // this many, a position from before them snapshots instead.
+        if self.stream_markers.len() > STREAM_MARKER_CAP {
+            self.stream_markers.pop_front();
+        }
         let dead = self
             .clients
             .iter()
@@ -3513,8 +3520,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // A resume continues the stream plane where it stopped, so it is
             // only taken whole: every replayed byte is reserved first, and a
             // replay that does not fit falls back to a fresh snapshot.
+            // Not while the VT is stale or the input modes are unknown: the
+            // snapshot path refuses the stream plane then, and so must this.
             let resumed = resume
                 .filter(|_| snapshot && vt_stream && !grid_diff)
+                .filter(|_| session.vt.is_live() && session.input_modes_known)
                 .and_then(|position| session.resume_replay(position).map(|replay| (position, replay)))
                 .and_then(|(position, replay)| {
                     let mut metered = Vec::with_capacity(replay.len());
@@ -3602,6 +3612,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                         session: session.id.to_string(),
                         epoch: position.epoch,
                         offset: position.offset,
+                        live: session.stream_offset,
                     }))
                     .chain(replay);
                     for step in steps.by_ref() {
@@ -5216,6 +5227,14 @@ mod tests {
         let mut too_old = attach_resuming_client(&mut session, "too-old", position(12, 1));
         pump_sidecar(&mut session, &mut results, 1).await;
         assert_eq!(drain_resumed(&mut too_old).first(), Some(&Resumed::Snapshot));
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("too-old") });
+
+        // A stale VT refuses the stream plane, resumed or not.
+        let live = session.stream_offset;
+        session.mark_vt_stale("test".to_string());
+        let mut after_stale = attach_resuming_client(&mut session, "after-stale", position(live, 1));
+        pump_sidecar(&mut session, &mut results, 0).await;
+        assert!(vt_stream_refusal(&mut after_stale).is_some(), "a stale VT resumed a stream client");
 
         session.vt.shut_down();
         drop(session);
