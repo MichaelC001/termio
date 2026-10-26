@@ -231,10 +231,12 @@ Each phase ends at a gate. A failed gate stops the work.
      running dev app (2026-10-26, a window capture with the window key, and
      each pane drawn offscreen by its own renderer): bold, italic, underline,
      16, 256 and truecolor, CJK wide characters, emoji, combining marks, box
-     drawing, a Kitty PNG and the block cursor all draw. Two gaps remain: an
-     emoji with a skin-tone modifier (👍🏽) draws as two glyphs, and `=>`,
-     `!=`, `===` draw without ligatures (not yet compared with the embedded
-     surface on the same font).
+     drawing, a Kitty PNG and the block cursor all draw. An emoji with a
+     skin-tone modifier (👍🏽) drew as two glyphs: termiod's VT did not
+     cluster graphemes (mode 2027), fixed in #809. One gap remains: the
+     renderer shapes one grapheme at a time, where Ghostty shapes runs, so a
+     font with programming ligatures (Fira Code, JetBrains Mono) draws `=>`
+     as two glyphs. The default SF Mono has none, so it looks the same.
 4. **Default on the Mac.** The stream pane is the default; the hidden
    `TermioStreamTerminal` default set to NO keeps keyframes. The hold
    machinery stays until phase 6: a host without `vt_stream` and the phone's
