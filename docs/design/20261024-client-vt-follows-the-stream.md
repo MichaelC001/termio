@@ -227,8 +227,14 @@ Each phase ends at a gate. A failed gate stops the work.
    gestures.
    - M5, the gate. The app's VT matched termiod's after 10 paced and 20
      fast resizes, 5 quit-and-relaunch rounds, and a session hidden at
-     relaunch then shown (2026-10-25, a probe app on its own daemon). What
-     the parity list asks of the screen itself is judged in the running app.
+     relaunch then shown (2026-10-25, a probe app on its own daemon). In the
+     running dev app (2026-10-26, a window capture with the window key, and
+     each pane drawn offscreen by its own renderer): bold, italic, underline,
+     16, 256 and truecolor, CJK wide characters, emoji, combining marks, box
+     drawing, a Kitty PNG and the block cursor all draw. Two gaps remain: an
+     emoji with a skin-tone modifier (👍🏽) draws as two glyphs, and `=>`,
+     `!=`, `===` draw without ligatures (not yet compared with the embedded
+     surface on the same font).
 4. **Default on the Mac.** The stream pane is the default; the hidden
    `TermioStreamTerminal` default set to NO keeps keyframes. The hold
    machinery stays until phase 6: a host without `vt_stream` and the phone's
