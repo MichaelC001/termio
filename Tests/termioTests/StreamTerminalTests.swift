@@ -1,3 +1,4 @@
+import GhosttyVt
 import TermioShared
 import XCTest
 @testable import termio
@@ -88,6 +89,39 @@ final class StreamTerminalTests: XCTestCase {
     }
 
     private struct BadHex: Error {}
+
+    /// A program sees the terminal the embedded surface is: Ghostty's device
+    /// attributes and XTVERSION, size reports, and the theme's color scheme.
+    func testThePaneAnswersQueriesAsTheEmbeddedSurfaceDoes() throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "vt-stream-resize", withExtension: "txt", subdirectory: "Fixtures"))
+        let attach = try XCTUnwrap(
+            try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first { $0.hasPrefix("attach ") })
+        let snapshot = try Self.hex(String(attach.dropFirst("attach ".count)))
+        func answer(_ query: String, background: UInt8? = nil) throws -> String {
+            var replies = ""
+            let terminal = try TermiodStreamTerminal(
+                nativeSnapshot: snapshot, onReply: { replies += String(decoding: $0, as: UTF8.self) })
+            if let background {
+                try terminal.setTheme(TermiodStreamTerminal.Theme(
+                    foreground: GhosttyColorRgb(r: 128, g: 128, b: 128),
+                    background: GhosttyColorRgb(r: background, g: background, b: background),
+                    cursor: nil, palette: [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 0, g: 0, b: 0), count: 256),
+                    cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK, cursorBlink: false))
+            }
+            // The fixture attaches inside an OSC sequence; BEL ends it.
+            terminal.write(Data(("\u{7}" + query).utf8))
+            return replies
+        }
+        XCTAssertEqual(try answer("\u{1b}[c"), "\u{1b}[?62;22;52c")
+        XCTAssertEqual(try answer("\u{1b}[>c"), "\u{1b}[>1;10;0c")
+        XCTAssertFalse(embeddedGhosttyVersion().isEmpty)
+        XCTAssertEqual(try answer("\u{1b}[>q"), "\u{1b}P>|ghostty \(embeddedGhosttyVersion())\u{1b}\\")
+        XCTAssertEqual(try answer("\u{1b}[18t"), "\u{1b}[8;6;20t")
+        XCTAssertEqual(try answer("\u{1b}[16t"), "\u{1b}[6;16;8t")
+        XCTAssertEqual(try answer("\u{1b}[?996n", background: 20), "\u{1b}[?997;1n")
+        XCTAssertEqual(try answer("\u{1b}[?996n", background: 250), "\u{1b}[?997;2n")
+    }
 
     private static func hex(_ text: String) throws -> Data {
         var bytes = Data(capacity: text.utf8.count / 2)

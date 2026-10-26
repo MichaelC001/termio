@@ -139,6 +139,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(reply, to: UnsafeRawPointer.self)),
             "ghostty_terminal_set(write_pty)"
         )
+        try installQueryAnswers()
         // Called inside `vt_write` or `resize`, so `lock` is already held. At
         // the start of a hold the terminal holds exactly the frame the program
         // wants on screen, and nothing after it has been parsed yet: that is
@@ -442,6 +443,57 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         ghostty_terminal_free(terminal)
         ghostty_render_state_free(renderState)
     }
+
+    /// What the embedded surface answers, so a program sees one terminal in
+    /// either pane: Ghostty's DA1 with clipboard access (termio leaves
+    /// `clipboard-write` at its default, allow) and DA2, Ghostty's XTVERSION,
+    /// size reports in this terminal's 8 by 16 cells, which Kitty images are
+    /// laid out in, and the color scheme. libghostty-vt answers none of the
+    /// last three by itself, and answers DA2 and XTVERSION as libghostty.
+    /// Ghostty reports the window's appearance as the scheme; the theme's
+    /// background stands in for it, which agrees with the theme termio picks
+    /// for each appearance.
+    private func installQueryAnswers() throws {
+        let attributes: GhosttyTerminalDeviceAttributesFn = { _, _, out in
+            guard let out else { return false }
+            var answer = GhosttyDeviceAttributes()
+            answer.primary.conformance_level = 62
+            answer.primary.features.0 = 22
+            answer.primary.features.1 = 52
+            answer.primary.num_features = 2
+            answer.secondary = GhosttyDeviceAttributesSecondary(device_type: 1, firmware_version: 10, rom_cartridge: 0)
+            out.pointee = answer
+            return true
+        }
+        let version: GhosttyTerminalXtversionFn = { _, _ in
+            TermiodStreamTerminal.xtversion.withUnsafeBufferPointer { GhosttyString(ptr: $0.baseAddress, len: $0.count) }
+        }
+        let size: GhosttyTerminalSizeFn = { terminal, _, out in
+            guard let out else { return false }
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            out.pointee = GhosttySizeReportSize(
+                rows: rows, columns: cols, cell_width: TermiodStreamTerminal.cellWidth, cell_height: TermiodStreamTerminal.cellHeight)
+            return true
+        }
+        let scheme: GhosttyTerminalColorSchemeFn = { _, userdata, out in
+            guard let userdata, let out else { return false }
+            let owner = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue()
+            guard let background = owner.theme?.background else { return false }
+            let luminance = 0.2126 * Double(background.r) + 0.7152 * Double(background.g) + 0.0722 * Double(background.b)
+            out.pointee = luminance < 128 ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+            return true
+        }
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, unsafeBitCast(attributes, to: UnsafeRawPointer.self)), "ghostty_terminal_set(device attributes)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_XTVERSION, unsafeBitCast(version, to: UnsafeRawPointer.self)), "ghostty_terminal_set(xtversion)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SIZE, unsafeBitCast(size, to: UnsafeRawPointer.self)), "ghostty_terminal_set(size)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, unsafeBitCast(scheme, to: UnsafeRawPointer.self)), "ghostty_terminal_set(color scheme)")
+    }
+
+    /// "ghostty <version>", as the embedded surface answers XTVERSION.
+    private static let xtversion: [UInt8] = Array("ghostty \(embeddedGhosttyVersion())".utf8)
 
     func write(_ bytes: Data) {
         locked { writeLocked(bytes) }
