@@ -484,6 +484,8 @@
 	<string>拷贝 ssh 命令</string>
 	<key>Could not run ssh: %@</key>
 	<string>无法运行 ssh：%@</string>
+	<key>Could not run termio: %@</key>
+	<string>无法运行 termio：%@</string>
 	<key>Couldn't read plan limits.</key>
 	<string>无法读取套餐限额。</string>
 	<key>Couldn’t change the Themes folder</key>

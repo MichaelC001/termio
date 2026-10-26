@@ -2519,6 +2519,16 @@
         }
       }
     },
+    "Could not run termio: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法运行 termio：%@"
+          }
+        }
+      }
+    },
     "Couldn’t change the Themes folder": {
       "localizations": {
         "zh-Hans": {

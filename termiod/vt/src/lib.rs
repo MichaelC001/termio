@@ -966,7 +966,18 @@ mod tests {
             Bytes(b"\x1b]133;A\x07$ \x1b]133;B\x07a typed command long enough to wrap twice at fifty columns wide"),
             Resize { rows: 9, cols: 30, reflow: false },
             Bytes(b"\x1b[1;4mstyled\x1b[0m"),
+            // A Kitty image 8 by 40 pixels, black RGB: the cursor moves past
+            // the three rows it covers at 8 by 16, which a client only does
+            // with the same cell size and image rules as the daemon.
+            Bytes(kitty_image()),
+            Bytes(b"after the image"),
         ]
+    }
+
+    fn kitty_image() -> &'static [u8] {
+        let payload = "A".repeat(8 * 40 * 3 / 3 * 4);
+        let command = format!("\r\n\x1b_Ga=T,f=24,s=8,v=40,q=2;{payload}\x1b\\");
+        Box::leak(command.into_bytes().into_boxed_slice())
     }
 
     /// The `vt_stream` contract: a client that decodes the native snapshot at

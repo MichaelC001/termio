@@ -244,8 +244,29 @@ pub fn helper_path() -> Option<PathBuf> {
 
 /// Run for the daemon's whole life: follow `tailscale-config.json`, and keep the
 /// helper and the tailnet socket up exactly while it says enabled.
-pub fn start(shutdown: watch::Receiver<bool>) {
-    tokio::spawn(supervise(shutdown));
+pub fn start(shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(supervise(shutdown))
+}
+
+/// Waits for the supervisor to stop the helper and remove its socket and
+/// status file. Without it the process exits under the task, and `status`
+/// then reports a node that is gone.
+pub async fn finish(task: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(STOP_GRACE + Duration::from_secs(2), task)
+        .await
+        .is_err()
+    {
+        eprintln!("termiod: tailscale: the helper did not stop in time");
+    }
+}
+
+/// Where the helper is looked for, for messages that say it is missing.
+fn missing_helper() -> String {
+    let directory = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.display().to_string()))
+        .unwrap_or_else(|| "this program's directory".into());
+    format!("{HELPER} is not installed in {directory}")
 }
 
 async fn supervise(mut shutdown: watch::Receiver<bool>) {
@@ -308,7 +329,8 @@ async fn run_enabled(
     };
     let Some(helper) = helper_path() else {
         report(&Status::failed(format!(
-            "{HELPER} is not installed next to termiod, so this box cannot join the tailnet by itself"
+            "{}, so this box cannot join the tailnet by itself",
+            missing_helper()
         )));
         let _ = wait_for_change(config, shutdown).await;
         return;
@@ -597,7 +619,7 @@ pub async fn run_on(options: OnOptions) -> Result<()> {
         validate_hostname(name)?;
     }
     if helper_path().is_none() {
-        bail!("{HELPER} is not installed next to termiod. Reinstall the Termio server to get it.");
+        bail!("{}. Reinstall the Termio server to get it.", missing_helper());
     }
     // The tailnet listener authenticates with the same token as every other
     // WebSocket, so turning it on without one would admit nobody.
@@ -695,7 +717,7 @@ pub fn run_off() -> Result<()> {
 
 pub async fn run_logout() -> Result<()> {
     let Some(helper) = helper_path() else {
-        bail!("{HELPER} is not installed next to termiod");
+        bail!("{}", missing_helper());
     };
     // Held to the end: an `on` in the meantime would start a node on the
     // directory this is about to delete.
