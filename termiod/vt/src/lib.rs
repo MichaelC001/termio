@@ -1174,11 +1174,27 @@ mod tests {
                         daemon.snapshot().expect("daemon cells"),
                         "cells diverged attaching at byte {attach_at}, after step {index}"
                     );
-                    assert_eq!(
-                        client.format_vt().expect("client vt"),
-                        daemon.format_vt().expect("daemon vt"),
-                        "screens diverged attaching at byte {attach_at}, after step {index}"
-                    );
+                    // Scrollback is pruned by whole pages, and a terminal
+                    // decoded from a snapshot lays its pages out differently
+                    // from one that grew byte by byte. Where 4 KB pages make
+                    // them prune at different rows, the rows the client keeps
+                    // must still be the newest the daemon keeps.
+                    let client_rows = client.scrollback(usize::MAX).expect("client scrollback").rows;
+                    let daemon_rows = daemon.scrollback(usize::MAX).expect("daemon scrollback").rows;
+                    if client_rows.len() == daemon_rows.len() {
+                        assert_eq!(
+                            client.format_vt().expect("client vt"),
+                            daemon.format_vt().expect("daemon vt"),
+                            "screens diverged attaching at byte {attach_at}, after step {index}"
+                        );
+                    } else {
+                        let kept = client_rows.len().min(daemon_rows.len());
+                        assert_eq!(
+                            client_rows[..kept],
+                            daemon_rows[..kept],
+                            "scrollback diverged attaching at byte {attach_at}, after step {index}"
+                        );
+                    }
                 }
             }
         }
