@@ -3,7 +3,7 @@ title: The client VT follows the stream
 status: draft
 type: design
 created: 2026-10-24
-updated: 2026-10-25
+updated: 2026-10-26
 related:
   - 20260730-termiod-session-protocol.md
   - 20260901-pty-size-is-not-the-write-token.md
@@ -225,8 +225,15 @@ Each phase ends at a gate. A failed gate stops the work.
    that forward the mouse and reports only `selection_copied`, which carries
    no selection to draw, and its Mac client links libghostty's selection
    gestures.
-   - M5, the gate.
-4. **Default on the Mac.** Delete the hold machinery.
+   - M5, the gate. The app's VT matched termiod's after 10 paced and 20
+     fast resizes, 5 quit-and-relaunch rounds, and a session hidden at
+     relaunch then shown (2026-10-25, a probe app on its own daemon). What
+     the parity list asks of the screen itself is judged in the running app.
+4. **Default on the Mac.** The stream pane is the default; the hidden
+   `TermioStreamTerminal` default set to NO keeps keyframes. The hold
+   machinery stays until phase 6: a host without `vt_stream` and the phone's
+   mirror still attach on keyframes, and the companion reads the surface
+   grid. It is deleted once nothing does.
 5. **The daemon answers queries.** As Rex's server does, the daemon's VT
    replies to device attributes, cursor and size reports, XTVERSION and the
    color-scheme query, and no client answers any more. A session then gets
