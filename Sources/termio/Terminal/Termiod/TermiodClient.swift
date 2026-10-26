@@ -1705,6 +1705,27 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var streamTerminalLocked: TermiodStreamTerminal?
     private var streamingLocked = false
     private var streamThemeLocked: TermiodStreamTerminal.Theme?
+    /// Where the stream terminal stands (`vt_resume`): set by `stream_position`
+    /// after a snapshot, advanced by the reader as it writes each byte and
+    /// applies each marker, and offered back on a reattach. Nil while the
+    /// terminal follows no position termiod named.
+    private let resumeLock = NSLock()
+    private var resumePositionLocked: Termiod.ResumePosition?
+    /// Reader-thread state: where a resumed stream's live output begins, and
+    /// whether the frame being written lies before it. A query in a replayed
+    /// frame was asked while this link was away; answering it now would type
+    /// the answer into whatever the program is reading.
+    private var replayBytesLeft: UInt64 = 0
+    private var replayMarkersLeft: UInt64 = 0
+    /// Set by the reader while it applies the replay, read by the stream
+    /// terminal's reply and signal callbacks, which `setTheme` can also reach
+    /// from the main thread.
+    private let replayLock = NSLock()
+    private var writingReplayLocked = false
+    private var writingReplay: Bool {
+        get { replayLock.lock(); defer { replayLock.unlock() }; return writingReplayLocked }
+        set { replayLock.lock(); writingReplayLocked = newValue; replayLock.unlock() }
+    }
     private var streamScrollbackLocked: Int?
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
@@ -1841,7 +1862,27 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    private func advanceResume(bytes: Int = 0, markers: UInt64 = 0) {
+        resumeLock.lock()
+        resumePositionLocked?.offset += UInt64(bytes)
+        resumePositionLocked?.markers += markers
+        resumeLock.unlock()
+    }
+
+    private func setResumePosition(_ position: Termiod.ResumePosition?) {
+        resumeLock.lock()
+        resumePositionLocked = position
+        resumeLock.unlock()
+    }
+
+    private var resumePosition: Termiod.ResumePosition? {
+        resumeLock.lock()
+        defer { resumeLock.unlock() }
+        return resumePositionLocked
+    }
+
     private func setStreaming(_ streaming: Bool) {
+        if !streaming { setResumePosition(nil) }
         streamLock.lock()
         let changed = streamingLocked != streaming
         streamingLocked = streaming
@@ -1866,11 +1907,17 @@ final class TermiodSessionLink: @unchecked Sendable {
                 nativeSnapshot: native,
                 xtversion: Self.xtversion,
                 onReply: { [weak self] reply in
+                    if self?.writingReplay == true { return }
                     // Answering is the writer's job alone (`TerminalDeviceReport`),
                     // which `sendDeviceReport` enforces.
                     self?.sendDeviceReport(reply)
                 },
-                onSignal: { [weak self] signal in self?.deliverStreamSignal(signal) },
+                onSignal: { [weak self] signal in
+                    // A copy replayed from the gap would overwrite whatever the
+                    // person copied since.
+                    if case .clipboard = signal, self?.writingReplay == true { return }
+                    self?.deliverStreamSignal(signal)
+                },
                 // What the embedded surface serves: a copied file is its path.
                 // A copy the program made a moment ago that the main thread has
                 // not written yet is what it reads back, in stream order.
@@ -1963,7 +2010,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
                 caps: Termiod.attachCapabilities
-                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : [])
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability, Termiod.resumeCapability] : [])
                     // Only with answers to give: a pane whose theme did not
                     // resolve answers for itself, or both would answer.
                     + (offersAnswers && answersToSend != nil ? [Termiod.answersCapability] : []))
@@ -2008,13 +2055,18 @@ final class TermiodSessionLink: @unchecked Sendable {
             // form of this frame that tells it otherwise.
             let declaredRendering = hostSizesByPolicy ? rendering : true
             let answersWithAttach = hostAnswersGranted ? answersToSend : nil
+            // Only with the terminal that position describes still here: the
+            // bytes termiod replays continue it, and nothing else.
+            let resume = streamGranted && handshake.capabilities.contains(Termiod.resumeCapability)
+                && streamTerminal != nil ? resumePosition : nil
             let payload = try Termiod.attachPayload(
                 target: sessionName,
                 specification: specification,
                 rows: requested.rows,
                 cols: requested.cols,
                 rendering: declaredRendering,
-                answers: answersWithAttach
+                answers: answersWithAttach,
+                resume: resume
             )
             try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
             let reply = try Termiod.readFrame(channel.readDescriptor)
@@ -2893,7 +2945,16 @@ final class TermiodSessionLink: @unchecked Sendable {
                 switch frame.kind {
                 case .data:
                     if let terminal = self.streamTerminal {
+                        // A replay ends where live output starts, so a frame is
+                        // all one or all the other.
+                        let replayed = self.replayBytesLeft > 0
+                        if replayed {
+                            self.replayBytesLeft -= min(self.replayBytesLeft, UInt64(frame.payload.count))
+                            self.writingReplay = true
+                        }
                         terminal.write(frame.payload)
+                        if replayed { self.writingReplay = false }
+                        self.advanceResume(bytes: frame.payload.count)
                     } else {
                         self.deliverOutput(frame.payload)
                     }
@@ -2911,6 +2972,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                         break
                     }
                     if let native = keyframe.native {
+                        // A new terminal follows no position until termiod
+                        // names the one this snapshot was taken at.
+                        self.setResumePosition(nil)
+                        self.replayBytesLeft = 0
+                        self.replayMarkersLeft = 0
                         guard self.receiveStreamSnapshot(native) else { return }
                     } else {
                         self.receiveKeyframe(keyframe)
@@ -3019,14 +3085,37 @@ final class TermiodSessionLink: @unchecked Sendable {
         case .vtResize(let resize):
             // Read on this thread, before the next `D`: the marker's position
             // in the stream is the whole contract.
+            // A replayed marker's size report (mode 2048) was answered while
+            // this link was away, by termiod's VT with nobody writing.
+            let replayed = replayMarkersLeft > 0
+            if replayed {
+                replayMarkersLeft -= 1
+                writingReplay = true
+            }
+            defer { if replayed { writingReplay = false } }
             do {
                 try streamTerminal?.resize(rows: resize.rows, cols: resize.cols, reflow: resize.reflow)
+                advanceResume(markers: 1)
             } catch {
+                // The terminal left the stream here; a resume would continue
+                // from a screen termiod never had.
+                setResumePosition(nil)
                 Log.termiod.error("""
                 vt_resize on \(self.sessionName, privacy: .public) failed: \
                 \(String(describing: error), privacy: .public)
                 """)
             }
+        case .streamPosition(let position):
+            replayBytesLeft = 0
+            replayMarkersLeft = 0
+            setResumePosition(Termiod.ResumePosition(
+                epoch: position.epoch, offset: position.offset, markers: position.markers))
+        case .streamResumed(let resumed):
+            replayBytesLeft = resumed.live - min(resumed.live, resumed.offset)
+            replayMarkersLeft = resumed.liveMarkers - min(resumed.liveMarkers, resumePosition?.markers ?? resumed.liveMarkers)
+            Log.termiod.info("""
+            \(self.sessionName, privacy: .public) resumed its stream at byte \(resumed.offset, privacy: .public)
+            """)
         case .vtStale:
             // termiod encodes this pane's input with its VT's modes, and those
             // just stopped following the program. The embedded surface encodes
@@ -3223,6 +3312,17 @@ final class TermiodSessionLink: @unchecked Sendable {
                   connectionLostDelivered else { return }
             policy.reset()
             attemptAttachLocked()
+        }
+    }
+
+    /// Cuts the attach channel the way a lost network does: the reader sees
+    /// the end of its stream and the reconnect loop takes over. `shutdown`,
+    /// not `close`, so the descriptor cannot be reused under the reader.
+    func dropConnection() {
+        dispatchPrecondition(condition: .notOnQueue(workQueue))
+        workQueue.sync { [self] in
+            guard let transport else { return }
+            Darwin.shutdown(transport.readDescriptor, SHUT_RDWR)
         }
     }
 }

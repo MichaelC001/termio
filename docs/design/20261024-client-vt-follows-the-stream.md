@@ -271,6 +271,20 @@ Each phase ends at a gate. A failed gate stops the work.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
    stream with no snapshot.
 
+   Mechanism (`vt_resume`, on top of `vt_stream`). Each session actor names
+   its stream with a random epoch and numbers its bytes and its `vt_resize`
+   markers. After a stream client's `S`, termiod sends `stream_position`:
+   the epoch, the offset the snapshot was taken at (its buffered bytes begin
+   there) and the markers sent so far. The client adds every `D` it writes
+   and every marker it applies. A reattach offers the sum as `resume`; when
+   the epoch matches and the ring still reaches back to that offset, termiod
+   sends `stream_resumed`, then the ring's bytes from there with each marker
+   it missed in its place, and no `S`. The client keeps its terminal, so its
+   scrollback survives. Markers are counted as well as bytes because one sent
+   on the byte a connection dropped on may or may not have arrived. Anything
+   else, an older offset, another epoch after a restart or a handoff, or a
+   replay that does not fit the backlog, gets a fresh snapshot as before.
+
 ## Risks
 
 - **Renderer parity is the largest risk.** It is a full terminal renderer for
@@ -284,10 +298,10 @@ Each phase ends at a gate. A failed gate stops the work.
 - Both the client and the daemon can answer terminal queries. Today only the
   writer's surface answers (`TerminalDeviceReport`); the new client keeps that
   rule until phase 5 moves the answers to the daemon.
-- Each attach decodes a fresh terminal from termiod's snapshot, which holds
-  termiod's own scrollback (about a thousand lines). A reconnect, a wake from
-  sleep or a handoff therefore drops older history the pane had kept, where the
-  embedded surface keeps it. Phase 7's resume by byte offset removes this.
+- An attach that cannot resume decodes a fresh terminal from termiod's
+  snapshot, which holds termiod's own scrollback (about a thousand lines). A
+  gap longer than the ring (128 KiB), a restart or a handoff therefore drops
+  older history the pane had kept, where the embedded surface keeps it.
 - A remote daemon and the app can run different releases for a while, so input
   events name keys by Ghostty's key names (`arrow_up`), never by the C enum's
   numbers.

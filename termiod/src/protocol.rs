@@ -61,7 +61,21 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // `events`: the answers arrive as one, and `vt_stale` hands answering
     // back to the writer.
     "vt_answers",
+    // A `vt_stream` client reattaches where its stream left off, as Rex's
+    // `RESUME` does: `stream_position` after each snapshot, `resume` on the
+    // attach, `stream_resumed` when the ring still holds the gap.
+    "vt_resume",
 ];
+/// Where a `vt_resume` client's stream stood when its connection dropped: the
+/// stream it was on, how many of its bytes it had taken, and how many
+/// `vt_resize` markers it had applied. A marker sent at the very byte a
+/// connection dropped on may or may not have arrived; the count says which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeSpec {
+    pub epoch: u64,
+    pub offset: u64,
+    pub markers: u64,
+}
 /// The `answers` a client sends with its attach: the `answers` event's fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswersSpec {
@@ -732,6 +746,10 @@ pub enum Control {
         /// grants this attachment the token; the `answers` event updates them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answers: Option<AnswersSpec>,
+        /// A `vt_resume` client's position, to continue its stream from
+        /// there rather than from a fresh snapshot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume: Option<ResumeSpec>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
@@ -1522,6 +1540,27 @@ pub enum Event {
         rows: u16,
         cols: u16,
         reflow: bool,
+    },
+    /// After a `vt_resume` client's `S`: the stream that snapshot belongs to,
+    /// and the stream offset and marker count it was taken at. Every `D` after
+    /// it adds its length and every `vt_resize` one marker; a reattach offers
+    /// the sums back as `resume`.
+    StreamPosition {
+        session: String,
+        epoch: u64,
+        offset: u64,
+        markers: u64,
+    },
+    /// The reattach continues the client's stream at `offset`: no `S`
+    /// follows, and the next `D` is the byte after the one it last took.
+    /// Bytes before `live` are the replay of what it missed: queries in them
+    /// were asked while it was away, and nobody waits for its answers now.
+    StreamResumed {
+        session: String,
+        epoch: u64,
+        offset: u64,
+        live: u64,
+        live_markers: u64,
     },
     SessionExited {
         session: String,
