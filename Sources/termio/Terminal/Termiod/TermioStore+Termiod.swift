@@ -836,7 +836,12 @@ extension TermioStore {
             // exactly as it did, and that is precisely when it must be retried.
             // Before the sweep, so a session it adopts lands in the project the
             // host placed it in, and that project already has a row.
-            if let view { applyHostView(view, from: device, route: route) }
+            if let view {
+                viewlessHosts.remove(device.id)
+                applyHostView(view, from: device, route: route)
+            } else {
+                viewlessHosts.insert(device.id)
+            }
             reconcileExternalSessions(live, from: device, route: route)
             // Published only when it would say something different. The sidebar
             // rebuilds on every publish, and a device that answers what it
@@ -1062,14 +1067,22 @@ extension TermioStore {
         return others.isEmpty ? .remove(hostProject.id) : .others(hostProject.id, others.sorted())
     }
 
-    /// A host's live sessions and its view, read together for one decision.
-    typealias HostSnapshot = (live: Set<String>, view: Termiod.HostView)
+    /// A host's live sessions, daemon id to daemon name, and its view, read
+    /// together for one decision.
+    typealias HostSnapshot = (live: [String: String], view: Termiod.HostView)
+
+    nonisolated static func liveNames(_ sessions: [Termiod.SessionInformation]) -> [String: String] {
+        var names: [String: String] = [:]
+        for information in sessions where information.alive {
+            names[information.id] = daemonKey(information)
+        }
+        return names
+    }
 
     /// The last view and roster this app has of a host.
     func hostSnapshot(of device: KnownDevice) -> HostSnapshot? {
         guard let view = hostViews[device.id] else { return nil }
-        let live = Set(rosterFetches[device.route.description]?.answer?.live.map(\.id) ?? [])
-        return (live, view)
+        return (Self.liveNames(rosterFetches[device.route.description]?.answer?.live ?? []), view)
     }
 
     /// The project the host placed this session in, when the host has a view
@@ -1108,7 +1121,7 @@ extension TermioStore {
         hostProjectsRemoving[key, default: []].append(path)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var revision: UInt64?
-            var refusal: String?
+            var refused = false
             do {
                 revision = try Termiod.removeHostProject(route: route) { sessions, view in
                     var only = closing.ids
@@ -1122,16 +1135,15 @@ extension TermioStore {
                         return nil
                     case .remove(let project):
                         return (project, only)
-                    case .others(_, let others):
-                        throw Termiod.HostProjectConflict(message: localized(
-                            "\(others.count) other sessions are running in this project."))
+                    case .others:
+                        throw Termiod.HostProjectConflict()
                     }
                 }
-            } catch let conflict as Termiod.HostProjectConflict {
-                if !quiet { refusal = conflict.message }
+            } catch is Termiod.HostProjectConflict {
+                refused = !quiet
                 Log.termiod.info("""
                 kept project \(path, privacy: .public) on \(route.description, privacy: .public): \
-                \(conflict.message, privacy: .public)
+                other live sessions are placed in it
                 """)
             } catch {
                 Log.termiod.error("""
@@ -1149,11 +1161,11 @@ extension TermioStore {
                     if let revision {
                         self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
                     }
-                    if let refusal {
+                    if refused {
                         let alert = NSAlert()
                         alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
                         alert.informativeText = localized(
-                            "\(refusal) Close them, then remove the project again.")
+                            "Other sessions are running in this project. Close them, then remove the project again.")
                         alert.alertStyle = .warning
                         alert.runModal()
                     }

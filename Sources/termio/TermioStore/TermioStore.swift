@@ -1185,6 +1185,10 @@ final class TermioStore: ObservableObject {
     /// in flight carries an older view that still lists the project.
     var hostViewFloors: [String: UInt64] = [:]
 
+    /// Hosts that answered a roster without a view, by `KnownDevice.id`: too
+    /// old to own one. Remove Project does not read them again.
+    var viewlessHosts: Set<String> = []
+
     /// Routes whose daemon this app has asked to stop and is waiting to see come
     /// back (`ensureRemoteReady`). A roster that fails meanwhile is the restart
     /// in progress, not a dead machine — without this the two are the same red

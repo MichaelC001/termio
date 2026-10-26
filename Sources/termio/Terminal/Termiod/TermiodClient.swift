@@ -1164,10 +1164,7 @@ extension Termiod {
 
     /// The host refused to remove a project because other live sessions are
     /// placed in it.
-    struct HostProjectConflict: Error, LocalizedError {
-        let message: String
-        var errorDescription: String? { message }
-    }
+    struct HostProjectConflict: Error {}
 
     /// Removes a host's project, over one connection: it reads the roster and
     /// the view, lets `decide` pick the project and the sessions it may end,
@@ -1203,7 +1200,7 @@ extension Termiod {
                 case .revised(let payload):
                     return payload.revision
                 case .error(let payload) where payload.code == "conflict":
-                    throw HostProjectConflict(message: payload.message)
+                    throw HostProjectConflict()
                 case .error(let payload):
                     throw TermiodClientError.requestFailed(payload.message)
                 default:

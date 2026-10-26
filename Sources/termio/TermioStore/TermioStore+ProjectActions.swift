@@ -1236,27 +1236,44 @@ extension TermioStore {
         // all. Ending them is the user's call, so it is asked first, and their
         // rows close with the project.
         var otherIDs: [String: Set<String>] = [:]
+        var otherNames: [String: String] = [:]
         if asking {
             // A host this run has no view of yet is read first, off the main
             // thread, and the removal resumes with what it said.
             var unread: [KnownDevice] = []
             for (device, _) in hostCheckouts
-            where hostViews[device.id] == nil && read.index(forKey: device.id) == nil
-                && !unread.contains(device) {
+            where hostViews[device.id] == nil && !viewlessHosts.contains(device.id)
+                && read.index(forKey: device.id) == nil && !unread.contains(device) {
                 unread.append(device)
             }
             if !unread.isEmpty {
+                // At most a few seconds: a box that does not answer by then is
+                // not asked about, and its host decides alone.
+                let deadline = DispatchTime.now() + .seconds(3)
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let lock = NSLock()
                     var fetched = read
+                    for device in unread { fetched[device.id] = .some(nil) }
+                    let group = DispatchGroup()
                     for device in unread {
-                        let reply = try? Termiod.rosterAndView(route: device.route)
-                        fetched[device.id] = reply.flatMap { sessions, view in
-                            view.map { (live: Set(sessions.sessions.filter(\.alive).map(\.id)), view: $0) }
+                        group.enter()
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            defer { group.leave() }
+                            guard let (sessions, view) = try? Termiod.rosterAndView(
+                                route: device.route), let view
+                            else { return }
+                            lock.lock()
+                            fetched[device.id] = (Self.liveNames(sessions.sessions), view)
+                            lock.unlock()
                         }
                     }
+                    _ = group.wait(timeout: deadline)
+                    lock.lock()
+                    let settled = fetched
+                    lock.unlock()
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
-                            self?.removeProject(id, asking: true, alsoEnding: alsoEnding, read: fetched)
+                            self?.removeProject(id, asking: true, alsoEnding: alsoEnding, read: settled)
                         }
                     }
                 }
@@ -1268,17 +1285,17 @@ extension TermioStore {
                 if let entry = read[device.id] { snapshot = entry } else { snapshot = hostSnapshot(of: device) }
                 guard let snapshot,
                       case .others(_, let ids) = Self.hostProjectRemoval(
-                        at: path, in: snapshot.view, live: snapshot.live, closing: mine)
+                        at: path, in: snapshot.view, live: Set(snapshot.live.keys), closing: mine)
                 else { continue }
                 otherIDs[device.id, default: []].formUnion(ids)
+                for id in ids { otherNames[id] = snapshot.live[id] }
             }
         }
-        let otherCount = otherIDs.values.reduce(0) { $0 + $1.count }
-        if otherCount > 0 {
+        if otherIDs.values.contains(where: { !$0.isEmpty }) {
             let alert = NSAlert()
             alert.messageText = localized("Remove “\(project.name)”?")
             alert.informativeText = localized(
-                "\(otherCount) other sessions are running in this project. Removing it ends them too.")
+                "Other sessions are running in this project. Removing it ends them too.")
             alert.addButton(withTitle: localized("Remove"))
             alert.addButton(withTitle: localized("Cancel"))
             // Asked before the project's own sessions are read: the dialog runs
@@ -1293,8 +1310,17 @@ extension TermioStore {
         for (deviceID, ids) in otherIDs {
             guard let device = hostCheckouts.first(where: { $0.device.id == deviceID })?.device
             else { continue }
-            others += sessions(authoredFor: device).filter {
+            let rows = sessions(authoredFor: device).filter {
                 $0.termiodDaemonID.map(ids.contains) == true
+            }
+            others += rows
+            // A session with no row here is ended by the host. Journaled, so a
+            // roster read before the kill kills it again instead of adopting it.
+            let rowIDs = Set(rows.compactMap(\.termiodDaemonID))
+            for id in ids.subtracting(rowIDs) {
+                guard let name = otherNames[id] else { continue }
+                journalClosedSession(
+                    named: name, sshAlias: device.alias, deviceID: device.deviceID, daemonID: id)
             }
         }
         let ending = removedSessions + others + alsoEnding
