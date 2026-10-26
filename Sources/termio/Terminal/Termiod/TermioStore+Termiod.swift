@@ -34,7 +34,8 @@ extension TermioStore {
                          command: String? = nil,
                          viewport: TerminalGrid? = nil,
                          rendering: Bool = true,
-                         offersStream: Bool = false) -> TermiodSessionLink {
+                         offersStream: Bool = false,
+                         offersAnswers: Bool = false) -> TermiodSessionLink {
         // The session is the only source of truth for where it runs. There used
         // to be a `TERMIO_TERMIOD_REMOTE` fallback here from before the picker
         // existed, but it silently turned *every* session without an explicit
@@ -74,7 +75,8 @@ extension TermioStore {
             rows: Int(opening.rows),
             cols: Int(opening.cols),
             rendering: rendering,
-            offersStream: offersStream
+            offersStream: offersStream,
+            offersAnswers: offersAnswers
         )
     }
 
@@ -2121,7 +2123,11 @@ extension TermioStore {
         switch settings.appearanceMode {
         case .light: dark = false
         case .dark: dark = true
-        case .system: dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        case .system:
+            // The window's, as the embedded surface reports it; the app's can
+            // lag it while the window's appearance observer runs.
+            let appearance = NSApp.mainWindow?.effectiveAppearance ?? NSApp.effectiveAppearance
+            dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         }
         guard let theme = streamTheme(dark: dark) else { return nil }
         func hex(_ color: GhosttyColorRgb) -> String { String(format: "%02x%02x%02x", color.r, color.g, color.b) }

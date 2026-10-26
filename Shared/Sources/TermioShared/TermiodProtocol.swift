@@ -46,12 +46,14 @@ public enum Termiod {
     /// holds the write token, and understands an `R` that says "not rendering".
     /// A host that does not offer it gets v0's four bytes and v0's meaning.
     public static let attachCapabilities = [
-        "snapshot", "events", viewportCapability, spawnCommandCapability, answersCapability,
+        "snapshot", "events", viewportCapability, spawnCommandCapability,
     ]
 
     /// termiod's VT answers the program's terminal queries, from the writer's
     /// `HostAnswers`, so this client answers none while the host does: until
-    /// `vt_stale`, when answering comes back to it.
+    /// `vt_stale`, when answering comes back to it. Offered only by a client
+    /// that sends answers and routes every reply its surface makes through
+    /// one gate; any other answers for itself, as before.
     public static let answersCapability = "vt_answers"
 
     /// The host computes the PTY size as a policy over the attachments that are
@@ -411,6 +413,9 @@ public enum Termiod {
         /// predates the field reads anyway.
         let rendering: Bool?
         let mode = "interact"
+        /// Sent with the attach, so the host answers with them from the moment
+        /// it grants the token (`vt_answers`).
+        let answers: HostAnswers.Fields?
         let seq: UInt64
     }
 
@@ -1819,7 +1824,8 @@ public enum Termiod {
         specification: CreateSpecification?,
         rows: UInt16,
         cols: UInt16,
-        rendering: Bool = true
+        rendering: Bool = true,
+        answers: HostAnswers? = nil
     ) throws -> Data {
         try encodeControl(AttachOperation(
             target: target,
@@ -1827,6 +1833,7 @@ public enum Termiod {
             rows: rows,
             cols: cols,
             rendering: rendering ? nil : false,
+            answers: answers?.fields,
             seq: 1
         ))
     }
@@ -1863,6 +1870,21 @@ public enum Termiod {
             self.cursor = cursor
             self.palette = palette
             self.dark = dark
+        }
+
+        /// The answers as the attach request and the `answers` event carry them.
+        public struct Fields: Encodable, Sendable {
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public var fields: Fields {
+            Fields(xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                   palette: palette, dark: dark)
         }
 
         private struct Wire: Encodable {

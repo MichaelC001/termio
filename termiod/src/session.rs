@@ -85,6 +85,8 @@ pub enum SessionMsg {
         /// Negotiated `vt_answers`: this client answers no query itself while
         /// it writes, so the host's VT does.
         vt_answers: bool,
+        /// The answers it attached with, if it sent them then.
+        answers: Option<termiod_vt::Answers>,
         reply: oneshot::Sender<AddClientReply>,
     },
     /// What a `vt_answers` client wants queries answered with while it writes.
@@ -3353,6 +3355,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             grid_diff,
             vt_stream,
             vt_answers,
+            answers,
             reply,
         } => {
             // Only interactive attachments are numbered: the sequence exists
@@ -3428,8 +3431,8 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
-                    answers: vt_answers.then(termiod_vt::Answers::default),
-                    answers_said: false,
+                    answers_said: vt_answers && answers.is_some(),
+                    answers: vt_answers.then(|| answers.unwrap_or_default()),
                 },
             );
             // `vt_stale` went out once, to whoever was attached; a client
@@ -4038,6 +4041,7 @@ mod tests {
                 grid_diff: false,
                 vt_stream: false,
                 vt_answers: false,
+                answers: None,
                 reply,
             },
         );
@@ -4063,7 +4067,7 @@ mod tests {
             }
             seen
         };
-        let attach = |session: &mut Session, id: &str, vt_answers: bool| {
+        let attach_with = |session: &mut Session, id: &str, vt_answers: bool, answers: Option<termiod_vt::Answers>| {
             let (out, _rx) = mpsc::unbounded_channel();
             let (reply, _reply_rx) = oneshot::channel();
             handle_msg(
@@ -4081,10 +4085,12 @@ mod tests {
                     grid_diff: false,
                     vt_stream: false,
                     vt_answers,
+                    answers,
                     reply,
                 },
             );
         };
+        let attach = |session: &mut Session, id: &str, vt_answers: bool| attach_with(session, id, vt_answers, None);
 
         session.sync_answering();
         assert!(switches(&sidecar_rx).is_empty(), "answered before the replay was behind it");
@@ -4106,6 +4112,14 @@ mod tests {
             },
         );
         assert_eq!(switches(&sidecar_rx), ["answers \"ghostty 1.3.1\""]);
+
+        // Answers sent with the attach are applied before the token is
+        // granted, so no query after it is answered with the last writer's.
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("mac") });
+        let _ = switches(&sidecar_rx);
+        let phone = termiod_vt::Answers { xtversion: "ghostty phone".to_string(), dark: Some(false), ..Default::default() };
+        attach_with(&mut session, "phone", true, Some(phone));
+        assert_eq!(switches(&sidecar_rx), ["answers \"ghostty phone\""]);
 
         session.mark_vt_stale("test".to_string());
         assert!(!session.answering);
@@ -4190,6 +4204,7 @@ mod tests {
                 grid_diff: false,
                 vt_stream: false,
                 vt_answers: false,
+                answers: None,
                 reply,
             },
         );
@@ -4873,6 +4888,7 @@ mod tests {
                 grid_diff: false,
                 vt_stream: true,
                 vt_answers: false,
+                answers: None,
                 reply,
             },
         );
@@ -5034,6 +5050,7 @@ mod tests {
                 grid_diff: false,
                 vt_stream: true,
                 vt_answers: false,
+                answers: None,
                 reply,
             },
         );
@@ -5731,6 +5748,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         answer.await.expect("attached");
@@ -5888,6 +5906,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -5951,6 +5970,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         answer.await.expect("attached");
@@ -6003,6 +6023,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -6066,6 +6087,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         answer.await.expect("attached");
@@ -6149,6 +6171,7 @@ mod tests {
             grid_diff: false,
             vt_stream: false,
             vt_answers: false,
+            answers: None,
             reply,
         });
         let granted = answer.await.expect("attached");

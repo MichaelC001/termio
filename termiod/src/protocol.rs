@@ -62,6 +62,23 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // back to the writer.
     "vt_answers",
 ];
+/// The `answers` a client sends with its attach: the `answers` event's fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnswersSpec {
+    #[serde(default)]
+    pub xtversion: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark: Option<bool>,
+}
+
 /// Snapshot payload carrying packed cells.
 ///
 /// v3 replaced v1's resolved-RGB cell with a tagged colour slot. v1 is gone
@@ -711,6 +728,10 @@ pub enum Control {
         rendering: bool,
         #[serde(default)]
         mode: AttachMode,
+        /// A `vt_answers` client's answers, here so the host has them before it
+        /// grants this attachment the token; the `answers` event updates them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<AnswersSpec>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

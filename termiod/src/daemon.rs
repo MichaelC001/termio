@@ -1536,6 +1536,7 @@ struct AttachRequest {
     cols: u16,
     rendering: bool,
     mode: AttachMode,
+    answers: Option<crate::protocol::AnswersSpec>,
     re: Option<u64>,
 }
 
@@ -2017,6 +2018,7 @@ async fn process_control(
             cols,
             rendering,
             mode,
+            answers,
             seq,
         } => {
             let handle = match manager.resolve(&target).await {
@@ -2066,6 +2068,7 @@ async fn process_control(
                 cols,
                 rendering,
                 mode,
+                answers,
                 re: seq,
             }));
         }
@@ -3102,6 +3105,7 @@ async fn run_attach(
         vt_stream: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("vt_stream"),
         vt_answers: connection.capabilities.contains("vt_answers"),
+        answers: request.answers.as_ref().map(vt_answers),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -3366,15 +3370,14 @@ async fn run_attach(
                 palette,
                 dark,
             }))) if answers_negotiated => {
-                let palette: Option<Vec<[u8; 3]>> = palette.iter().map(|color| rgb(color)).collect();
-                let answers = termiod_vt::Answers {
+                let answers = vt_answers(&crate::protocol::AnswersSpec {
                     xtversion,
-                    foreground: foreground.as_deref().and_then(rgb),
-                    background: background.as_deref().and_then(rgb),
-                    cursor: cursor.as_deref().and_then(rgb),
-                    palette: palette.filter(|colors| colors.len() == 256),
+                    foreground,
+                    background,
+                    cursor,
+                    palette,
                     dark,
-                };
+                });
                 handle.send(SessionMsg::Answers {
                     id: client_id.clone(),
                     answers,
@@ -3707,4 +3710,18 @@ fn rgb(hex: &str) -> Option<[u8; 3]> {
     }
     let byte = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
     Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// What a client's `answers` say, in the VT's terms. A palette that is not
+/// 256 good colors is the engine's own.
+fn vt_answers(spec: &crate::protocol::AnswersSpec) -> termiod_vt::Answers {
+    let palette: Option<Vec<[u8; 3]>> = spec.palette.iter().map(|color| rgb(color)).collect();
+    termiod_vt::Answers {
+        xtversion: spec.xtversion.clone(),
+        foreground: spec.foreground.as_deref().and_then(rgb),
+        background: spec.background.as_deref().and_then(rgb),
+        cursor: spec.cursor.as_deref().and_then(rgb),
+        palette: palette.filter(|colors| colors.len() == 256),
+        dark: spec.dark,
+    }
 }

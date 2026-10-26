@@ -134,21 +134,32 @@ final class StreamLinkIntegrationTests: XCTestCase {
         XCTAssertFalse(link.isStreaming)
     }
 
-    /// Without the capability the link stays on keyframes and has no terminal.
     /// With `vt_answers`, termiod answers the program and the pane stays
     /// silent, so each query is answered once, with the name the pane gave.
     func testTheHostAnswersOnceForAStreamPaneThatWrites() throws {
+        XCTAssertEqual(try answers(offersAnswers: true), "\u{1b}P>|ghostty test-name\u{1b}\\\u{1b}[?62;22;52c")
+    }
+
+    /// A link that does not offer it, as the phone's bridge does not, answers
+    /// for itself, and termiod stays silent: still one answer each.
+    func testALinkWithoutAnswersAnswersForItselfOnce() throws {
+        XCTAssertEqual(
+            try answers(offersAnswers: false),
+            "\u{1b}P>|ghostty \(embeddedGhosttyVersion())\u{1b}\\\u{1b}[?62;22;52c")
+    }
+
+    /// What a program that asks XTVERSION and DA1 after its first key reads,
+    /// collected until two quiet seconds pass.
+    private func answers(offersAnswers: Bool) throws -> String {
         let file = NSTemporaryDirectory() + "answers-\(UUID().uuidString.prefix(8))"
         defer { try? FileManager.default.removeItem(atPath: file) }
-        // Waits for one key, so the pane writes before anything is asked;
-        // then collects whatever answers arrive within two quiet seconds.
         let script = "stty raw -echo; dd bs=1 count=1 of=/dev/null 2>/dev/null; "
             + "printf '\\033[>q\\033[c'; stty min 0 time 20; cat > \(file); exec cat"
         let link = TermiodSessionLink(
             sessionName: "answers-\(UUID().uuidString.prefix(8))",
             specification: Termiod.CreateSpecification(
                 cwd: NSTemporaryDirectory(), argv: ["/bin/sh", "-c", script], env: [], rows: 20, cols: 60),
-            rows: 20, cols: 60, offersStream: true)
+            rows: 20, cols: 60, offersStream: true, offersAnswers: offersAnswers)
         link.setHostAnswers(Termiod.HostAnswers(
             xtversion: "ghostty test-name", foreground: "dddddd", background: "111111", cursor: nil,
             palette: [], dark: true))
@@ -161,10 +172,10 @@ final class StreamLinkIntegrationTests: XCTestCase {
             ((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").contains("c")
         }
         RunLoop.current.run(until: Date().addingTimeInterval(2.5))
-        let answers = try String(contentsOfFile: file, encoding: .utf8)
-        XCTAssertEqual(answers, "\u{1b}P>|ghostty test-name\u{1b}\\\u{1b}[?62;22;52c")
+        return try String(contentsOfFile: file, encoding: .utf8)
     }
 
+    /// Without the capability the link stays on keyframes and has no terminal.
     func testALinkThatDoesNotOfferTheStreamStaysOnKeyframes() throws {
         let link = TermiodSessionLink(
             sessionName: "keyframe-\(UUID().uuidString.prefix(8))",
