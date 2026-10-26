@@ -199,6 +199,7 @@ extension TermioStore {
             link.setStreamTheme(colors)
         }
         link.setStreamScrollback(bytes: streamScrollbackBytes)
+        if let answers = hostAnswers() { link.setHostAnswers(answers) }
         link.onConnectionLost = { [weak self, weak inMemory] attempts in
             self?.applyTermiodConnectionLost(
                 for: session.id, attempts: attempts, surface: inMemory)
@@ -2110,6 +2111,31 @@ extension TermioStore {
             paddingY: CGFloat(Self.terminalWindowPaddingY),
             backgroundOpacity: CGFloat(settings.backgroundOpacity)
         )
+    }
+
+    /// What termiod answers a program's terminal queries with on this Mac's
+    /// behalf (`vt_answers`): the embedded surface's name, and the theme and
+    /// appearance the window shows, as the embedded surface would answer.
+    func hostAnswers() -> Termiod.HostAnswers? {
+        let dark: Bool
+        switch settings.appearanceMode {
+        case .light: dark = false
+        case .dark: dark = true
+        case .system: dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        }
+        guard let theme = streamTheme(dark: dark) else { return nil }
+        func hex(_ color: GhosttyColorRgb) -> String { String(format: "%02x%02x%02x", color.r, color.g, color.b) }
+        return Termiod.HostAnswers(
+            xtversion: "ghostty \(embeddedGhosttyVersion())",
+            foreground: hex(theme.foreground), background: hex(theme.background), cursor: theme.cursor.map(hex),
+            palette: theme.palette.map(hex), dark: dark)
+    }
+
+    /// Hands every link the current answers: on a theme change, and when the
+    /// window's appearance flips.
+    func refreshHostAnswers() {
+        guard let answers = hostAnswers() else { return }
+        for link in termiodLinks.values { link.setHostAnswers(answers) }
     }
 
     /// The embedded surface's `scrollback-limit`, which the UI speaks in

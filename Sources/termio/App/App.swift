@@ -283,7 +283,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // change out from under them, so this is a no-op there; re-applying is idempotent and
         // can't loop (it changes no appearance-affecting property).
         appearanceObserver = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.applyWindowTransparency() }
+            MainActor.assumeIsolated {
+                self?.applyWindowTransparency()
+                self?.store.refreshHostAnswers()
+            }
         }
         // After the split view has restored its autosaved collapse state.
         DispatchQueue.main.async { [weak self] in

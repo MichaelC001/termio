@@ -46,8 +46,13 @@ public enum Termiod {
     /// holds the write token, and understands an `R` that says "not rendering".
     /// A host that does not offer it gets v0's four bytes and v0's meaning.
     public static let attachCapabilities = [
-        "snapshot", "events", viewportCapability, spawnCommandCapability,
+        "snapshot", "events", viewportCapability, spawnCommandCapability, answersCapability,
     ]
+
+    /// termiod's VT answers the program's terminal queries, from the writer's
+    /// `HostAnswers`, so this client answers none while the host does: until
+    /// `vt_stale`, when answering comes back to it.
+    public static let answersCapability = "vt_answers"
 
     /// The host computes the PTY size as a policy over the attachments that are
     /// rendering (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
@@ -1836,6 +1841,45 @@ public enum Termiod {
 
     public static func detachPayload() throws -> Data {
         try encodeControl(DetachOperation())
+    }
+
+    /// What termiod answers a program's terminal queries with while this client
+    /// writes (`vt_answers`): the name XTVERSION reports, the theme as `rrggbb`
+    /// for the color queries, and whether the appearance is dark.
+    public struct HostAnswers: Equatable, Sendable {
+        public var xtversion: String
+        public var foreground: String?
+        public var background: String?
+        public var cursor: String?
+        /// 256 entries, or none for the engine's palette.
+        public var palette: [String]
+        public var dark: Bool
+
+        public init(xtversion: String, foreground: String?, background: String?, cursor: String?,
+                    palette: [String], dark: Bool) {
+            self.xtversion = xtversion
+            self.foreground = foreground
+            self.background = background
+            self.cursor = cursor
+            self.palette = palette
+            self.dark = dark
+        }
+
+        private struct Wire: Encodable {
+            let ev = "answers"
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public func payload() throws -> Data {
+            try encodeControl(Wire(
+                xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                palette: palette, dark: dark))
+        }
     }
 
     /// Input a `vt_stream` client sends as an `E` event. termiod encodes it

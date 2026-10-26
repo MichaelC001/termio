@@ -712,6 +712,7 @@ extension TermioStore {
         for link in termiodLinks.values {
             link.setStreamScrollback(bytes: streamScrollbackBytes)
         }
+        refreshHostAnswers()
     }
 
     /// Drives the terminal through its startup render handshake.

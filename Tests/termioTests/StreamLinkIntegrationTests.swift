@@ -135,6 +135,36 @@ final class StreamLinkIntegrationTests: XCTestCase {
     }
 
     /// Without the capability the link stays on keyframes and has no terminal.
+    /// With `vt_answers`, termiod answers the program and the pane stays
+    /// silent, so each query is answered once, with the name the pane gave.
+    func testTheHostAnswersOnceForAStreamPaneThatWrites() throws {
+        let file = NSTemporaryDirectory() + "answers-\(UUID().uuidString.prefix(8))"
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        // Waits for one key, so the pane writes before anything is asked;
+        // then collects whatever answers arrive within two quiet seconds.
+        let script = "stty raw -echo; dd bs=1 count=1 of=/dev/null 2>/dev/null; "
+            + "printf '\\033[>q\\033[c'; stty min 0 time 20; cat > \(file); exec cat"
+        let link = TermiodSessionLink(
+            sessionName: "answers-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(), argv: ["/bin/sh", "-c", script], env: [], rows: 20, cols: 60),
+            rows: 20, cols: 60, offersStream: true)
+        link.setHostAnswers(Termiod.HostAnswers(
+            xtversion: "ghostty test-name", foreground: "dddddd", background: "111111", cursor: nil,
+            palette: [], dark: true))
+        link.start()
+        defer { link.detach() }
+
+        wait("the link negotiated vt_stream") { link.isStreaming && link.streamTerminal != nil }
+        link.send(Data("x".utf8))
+        wait("the program collected its answers") {
+            ((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").contains("c")
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+        let answers = try String(contentsOfFile: file, encoding: .utf8)
+        XCTAssertEqual(answers, "\u{1b}P>|ghostty test-name\u{1b}\\\u{1b}[?62;22;52c")
+    }
+
     func testALinkThatDoesNotOfferTheStreamStaysOnKeyframes() throws {
         let link = TermiodSessionLink(
             sessionName: "keyframe-\(UUID().uuidString.prefix(8))",

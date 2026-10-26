@@ -1583,6 +1583,13 @@ final class TermiodSessionLink: @unchecked Sendable {
     private let offersStream: Bool
     /// Set when the daemon refused the plane; the link stays on keyframes.
     private var streamRefused = false
+    /// termiod answers this session's queries on this connection
+    /// (`vt_answers`), so the surface's own replies are dropped, until
+    /// `vt_stale` hands answering back. Work-queue state.
+    private var hostAnswers = false
+    private var hostAnswersStale = false
+    /// What termiod answers with while this pane writes. Work-queue state.
+    private var answersToSend: Termiod.HostAnswers?
     /// The client terminal while the link is on the `vt_stream` plane, replaced
     /// by every native snapshot. Lock-guarded: the reader thread swaps it and
     /// the view reads it each frame.
@@ -1683,6 +1690,27 @@ final class TermiodSessionLink: @unchecked Sendable {
             try streamTerminalLocked?.setScrollbackLimit(bytes: bytes)
         } catch {
             Log.termiod.error("stream scrollback: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// What termiod answers this session's queries with while this pane
+    /// writes: the embedded surface's terminal name and the pane's theme.
+    func setHostAnswers(_ answers: Termiod.HostAnswers) {
+        workQueue.async { [self] in
+            guard answersToSend != answers else { return }
+            answersToSend = answers
+            sendAnswersLocked()
+        }
+    }
+
+    private func sendAnswersLocked() {
+        guard hostAnswers, attached, let answers = answersToSend, let transport else { return }
+        do {
+            try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try answers.payload())
+        } catch {
+            Log.termiod.error("""
+            answers to \(self.sessionName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)
+            """)
         }
     }
 
@@ -1840,6 +1868,8 @@ final class TermiodSessionLink: @unchecked Sendable {
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
             hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+            hostAnswers = handshake.capabilities.contains(Termiod.answersCapability)
+            hostAnswersStale = false
             let sizesByPolicy = hostSizesByPolicy
             DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
             let device = handshake.device
@@ -1885,6 +1915,8 @@ final class TermiodSessionLink: @unchecked Sendable {
             attached = true
             setStreaming(streamGranted)
             isWriter = attachedPayload.writer
+            // First, so the host answers with this pane's theme from the start.
+            sendAnswersLocked()
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
             }
@@ -2105,7 +2137,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     func sendDeviceReport(_ data: Data) {
         guard !data.isEmpty else { return }
         workQueue.async { [self] in
-            guard !closed, attached, isWriter else { return }
+            guard !closed, attached, isWriter, !hostAnswers || hostAnswersStale else { return }
             do {
                 try sendDataLocked(data)
             } catch {
@@ -2872,6 +2904,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             // just stopped following the program. The embedded surface encodes
             // for itself, so the pane goes back to it.
             if isStreaming { abandonStream() }
+            // termiod's VT no longer follows the program, so its answers
+            // would be wrong: this pane answers again.
+            workQueue.async { [self] in hostAnswersStale = true }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.
