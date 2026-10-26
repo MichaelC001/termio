@@ -83,9 +83,10 @@ public enum TerminalDeviceReport {
     /// A report termiod's VT makes itself when it answers (`vt_answers`), so a
     /// surface's own copy would be a second answer. The rest stay with the
     /// surface: focus reports (termiod hears focus only as an event on the
-    /// stream plane), clipboard and glyph replies (it has neither), XTGETTCAP
-    /// (it has no terminfo), and size reports, which carry the pane's own
-    /// cell pixels while somebody writes.
+    /// stream plane), OSC 52 and glyph replies (it has neither), the terminfo
+    /// name (`TN`, the one XTGETTCAP entry it lacks), and, while somebody
+    /// writes, size reports and kitty clipboard reads, which termiod's VT
+    /// leaves to the writer's pane.
     public static func isHostAnswered(_ data: Data) -> Bool {
         guard isReport(data) else { return false }
         let bytes = [UInt8](data)
@@ -101,7 +102,11 @@ public enum TerminalDeviceReport {
             if bytes[2] == 0x3E { return true }
             var index = 2
             while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 { index += 1 }
-            return index < bytes.count && bytes[index] == 0x24 // $
+            guard index + 1 < bytes.count else { return false }
+            if bytes[index] == 0x24 { return true } // $r DECRQSS
+            // XTGETTCAP, from Ghostty's terminfo, except its name.
+            let name = Array(bytes[(index + 2)...].prefix(4).map { $0 | 0x20 }) // lowercase hex
+            return bytes[index] == 0x2B && name != Array("544e".utf8)
         case 0x5D: // ESC ]: colors
             var number = 0
             var index = 2
@@ -109,7 +114,7 @@ public enum TerminalDeviceReport {
                 number = number * 10 + Int(bytes[index] - 0x30)
                 index += 1
             }
-            return number == 4 || (10...19).contains(number)
+            return number == 4 || (10...19).contains(number) || number == 21
         case 0x5F: // ESC _: kitty graphics, which termiod's VT holds too
             return bytes[2] == 0x47
         default:

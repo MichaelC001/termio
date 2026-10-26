@@ -148,13 +148,32 @@ final class StreamLinkIntegrationTests: XCTestCase {
             "\u{1b}P>|ghostty \(embeddedGhosttyVersion())\u{1b}\\\u{1b}[?62;22;52c")
     }
 
-    /// What a program that asks XTVERSION and DA1 after its first key reads,
-    /// collected until two quiet seconds pass.
-    private func answers(offersAnswers: Bool) throws -> String {
+    /// Every query class either side answers, answered once while termiod
+    /// answers: the ones it makes, and the ones it leaves to the pane.
+    func testEachQueryIsAnsweredOnceWhileTheHostAnswers() throws {
+        let cases: [(query: String, reply: String)] = [
+            ("\\033P+q636F6C6F7273\\033\\\\", "+r636F6C6F7273"),
+            ("\\033]21;foreground=?\\033\\\\", "]21;foreground="),
+            ("\\033[?6n", "R"),
+            ("\\033P$qm\\033\\\\", "$r"),
+            ("\\033[18t", "[8;"),
+        ]
+        for (query, reply) in cases {
+            let read = try answers(offersAnswers: true, query: query)
+            XCTAssertEqual(read.components(separatedBy: reply).count - 1, 1, "\(query): \(read.debugDescription)")
+        }
+        // The kitty clipboard is the pane's to answer; termiod's VT can only refuse.
+        let clipboard = try answers(offersAnswers: true, query: "\\033]5522;type=read:status=DATA\\033\\\\")
+        XCTAssertFalse(clipboard.contains("EPERM"), clipboard.debugDescription)
+    }
+
+    /// What a program that asks `query` and then DA1 after its first key
+    /// reads, collected until two quiet seconds pass.
+    private func answers(offersAnswers: Bool, query: String = "\\033[>q") throws -> String {
         let file = NSTemporaryDirectory() + "answers-\(UUID().uuidString.prefix(8))"
         defer { try? FileManager.default.removeItem(atPath: file) }
         let script = "stty raw -echo; dd bs=1 count=1 of=/dev/null 2>/dev/null; "
-            + "printf '\\033[>q\\033[c'; stty min 0 time 20; cat > \(file); exec cat"
+            + "printf '\(query)\\033[c'; stty min 0 time 20; cat > \(file); exec cat"
         let link = TermiodSessionLink(
             sessionName: "answers-\(UUID().uuidString.prefix(8))",
             specification: Termiod.CreateSpecification(

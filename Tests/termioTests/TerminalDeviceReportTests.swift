@@ -56,13 +56,13 @@ final class TerminalDeviceReportTests: XCTestCase {
             "\u{1b}[?62;22;52c", "\u{1b}[>1;10;0c", "\u{1b}[12;40R", "\u{1b}[0n", "\u{1b}[?997;1n",
             "\u{1b}[?2026;2$y", "\u{1b}[?0u", "\u{1b}P>|ghostty 1.3.1+abc\u{1b}\\", "\u{1b}P1$r0m\u{1b}\\",
             "\u{1b}]11;rgb:1111/2222/3333\u{7}", "\u{1b}]4;1;rgb:cccc/6666/6666\u{7}", "\u{1b}_Gi=1;OK\u{1b}\\",
+            "\u{1b}P1+r636F6C6F7273=323536\u{1b}\\", "\u{1b}]21;foreground=rgb:ff/ff/ff\u{1b}\\",
         ] {
             XCTAssertTrue(host(answered), answered.debugDescription)
         }
         for kept in [
             "\u{1b}[I", "\u{1b}[O", "\u{1b}[8;24;80t", "\u{1b}[4;384;640t",
-            "\u{1b}]52;c;aGVsbG8=\u{7}", "\u{1b}P1+r544e=787465726d2d67686f73747479\u{1b}\\",
-            "\u{1b}]21;foreground=rgb:ff/ff/ff\u{1b}\\",
+            "\u{1b}]52;c;aGVsbG8=\u{7}", "\u{1b}P1+r544E=787465726D2D67686F73747479\u{1b}\\",
         ] {
             XCTAssertFalse(host(kept), kept.debugDescription)
         }

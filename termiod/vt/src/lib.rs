@@ -229,9 +229,11 @@ pub const CELL_HEIGHT: u32 = 16;
 /// with the closures the engine holds.
 struct Answering {
     on: Slot<bool>,
-    /// Size reports (XTWINOPS, mode 2048) are answered here only while nobody
-    /// writes; a writer's pane answers them with its own cell pixels.
-    sizes: Slot<bool>,
+    /// Whether nobody writes. While somebody does, their pane answers what
+    /// only it can answer right: size reports (XTWINOPS and the in-band mode
+    /// 2048 one, with its own cell pixels) and kitty clipboard reads (OSC
+    /// 5522, which this VT can only refuse).
+    alone: Slot<bool>,
     replies: RefCell<Vec<u8>>,
     xtversion: Slot<&'static str>,
     dark: Slot<Option<bool>>,
@@ -241,7 +243,7 @@ impl Default for Answering {
     fn default() -> Self {
         Self {
             on: Slot::new(false),
-            sizes: Slot::new(true),
+            alone: Slot::new(true),
             replies: RefCell::default(),
             xtversion: Slot::new(""),
             dark: Slot::new(None),
@@ -350,7 +352,8 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
     let writes = answering.clone();
     check(
         terminal.on_pty_write(move |_terminal, data| {
-            if writes.on.get() {
+            let pane_answers = data.starts_with(b"\x1b[48;") || data.starts_with(b"\x1b]5522;");
+            if writes.on.get() && (writes.alone.get() || !pane_answers) {
                 writes.replies.borrow_mut().extend_from_slice(data);
             }
         }),
@@ -381,7 +384,7 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
     let sizes = answering.clone();
     check(
         terminal.on_size(move |terminal| {
-            if !sizes.sizes.get() {
+            if !sizes.alone.get() {
                 return None;
             }
             Some(SizeReportSize {
@@ -463,10 +466,10 @@ impl VtTerminal {
         }
     }
 
-    /// Whether size reports are answered here: off while a writer's pane
-    /// answers them.
-    pub fn set_size_reports(&mut self, on: bool) {
-        self.answering.sizes.set(on);
+    /// Whether nobody writes, which decides who answers size reports and
+    /// kitty clipboard reads (`Answering::alone`).
+    pub fn set_alone(&mut self, alone: bool) {
+        self.answering.alone.set(alone);
     }
 
     /// The writer's identity and theme, which the answers carry.
@@ -1261,6 +1264,22 @@ mod tests {
         terminal.take_replies();
         terminal.resize(30, 100).expect("resize");
         assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[48;30;100;480;800t");
+    }
+
+    /// While somebody writes, their pane answers size reports and kitty
+    /// clipboard reads: this VT would report 8 by 16 cells and refuse.
+    #[test]
+    fn a_writers_pane_answers_sizes_and_the_kitty_clipboard() {
+        let mut terminal = VtTerminal::new(24, 80).expect("terminal");
+        terminal.resize(24, 80).expect("resize");
+        terminal.set_answering(true);
+        terminal.vt_write(b"\x1b]5522;type=read\x1b\\");
+        assert!(String::from_utf8(terminal.take_replies()).unwrap().contains("EPERM"), "nobody writes: refused here");
+        terminal.set_alone(false);
+        terminal.vt_write(b"\x1b]5522;type=read\x1b\\\x1b[18t\x1b[?2048h");
+        terminal.resize(30, 100).expect("resize");
+        terminal.vt_write(b"\x1b[c");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[?62;22;52c");
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only

@@ -470,7 +470,7 @@ struct Session {
     answers_live: bool,
     /// What the VT was last told to answer with.
     applied_answers: Option<termiod_vt::Answers>,
-    /// Whether the VT answers size reports, as last told.
+    /// Whether the VT was last told nobody writes (`SetAlone`).
     size_reports: bool,
     /// Replies that arrived while a paste was open, which would otherwise
     /// become part of the pasted text. Sent when it closes.
@@ -586,7 +586,7 @@ impl Session {
         let size_reports = self.writer.is_none();
         if size_reports != self.size_reports {
             self.size_reports = size_reports;
-            self.send_sidecar(SidecarCommand::SetSizeReports(size_reports));
+            self.send_sidecar(SidecarCommand::SetAlone(size_reports));
         }
     }
 
@@ -2879,9 +2879,9 @@ fn spawn_sidecar_sharing(
                         watch_text = text;
                     }
                     SidecarCommand::SetGridDiff(wanted) => grid_diff_wanted = wanted,
-                    SidecarCommand::SetSizeReports(on) => {
+                    SidecarCommand::SetAlone(alone) => {
                         if let Some(terminal) = terminal.as_mut() {
-                            terminal.set_size_reports(on);
+                            terminal.set_alone(alone);
                         }
                     }
                     SidecarCommand::SetAnswering(on) => {
