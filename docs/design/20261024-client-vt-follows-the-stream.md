@@ -225,8 +225,23 @@ Each phase ends at a gate. A failed gate stops the work.
    that forward the mouse and reports only `selection_copied`, which carries
    no selection to draw, and its Mac client links libghostty's selection
    gestures.
-   - M5, the gate.
-4. **Default on the Mac.** Delete the hold machinery.
+   - M5, the gate. The app's VT matched termiod's after 10 paced and 20
+     fast resizes, 5 quit-and-relaunch rounds, and a session hidden at
+     relaunch then shown (2026-10-25, a probe app on its own daemon). In the
+     running dev app (2026-10-26, a window capture with the window key, and
+     each pane drawn offscreen by its own renderer): bold, italic, underline,
+     16, 256 and truecolor, CJK wide characters, emoji, combining marks, box
+     drawing, a Kitty PNG and the block cursor all draw. An emoji with a
+     skin-tone modifier (👍🏽) drew as two glyphs: termiod's VT did not
+     cluster graphemes (mode 2027), fixed in #809. One gap remains: the
+     renderer shapes one grapheme at a time, where Ghostty shapes runs, so a
+     font with programming ligatures (Fira Code, JetBrains Mono) draws `=>`
+     as two glyphs. The default SF Mono has none, so it looks the same.
+4. **Default on the Mac.** The stream pane is the default; the hidden
+   `TermioStreamTerminal` default set to NO keeps keyframes. The hold
+   machinery stays until phase 6: a host without `vt_stream` and the phone's
+   mirror still attach on keyframes, and the companion reads the surface
+   grid. It is deleted once nothing does.
 5. **The daemon answers queries.** As Rex's server does, the daemon's VT
    replies to device attributes, cursor and size reports, XTVERSION and the
    color-scheme query, and no client answers any more. A session then gets

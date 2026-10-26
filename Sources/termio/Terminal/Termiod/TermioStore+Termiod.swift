@@ -2303,14 +2303,16 @@ final class RemoteSetupHUD {
     }
 }
 
-/// The `vt_stream` client stack, which is off unless the hidden
-/// `TermioStreamTerminal` default is set: it draws but does not take input yet
-/// (docs/design/20261024-client-vt-follows-the-stream.md, phase 3).
+/// The `vt_stream` client stack, the default on the Mac
+/// (docs/design/20261024-client-vt-follows-the-stream.md, phase 4). Setting the
+/// hidden `TermioStreamTerminal` default to NO keeps every pane on keyframes,
+/// the path a host without `vt_stream` and the phone still use.
 extension TermioStore {
     /// Offered only where this Mac can draw it: a link that negotiated the
     /// plane with no renderer behind it would show nothing at all.
     static var streamTerminalEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "TermioStreamTerminal") && TermiodStreamRenderer.isAvailable
+        (UserDefaults.standard.object(forKey: "TermioStreamTerminal") as? Bool ?? true)
+            && TermiodStreamRenderer.isAvailable
     }
 
     /// The settings the embedded surface is configured with, in the form the
