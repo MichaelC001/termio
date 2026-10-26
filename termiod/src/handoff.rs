@@ -753,5 +753,29 @@ mod tests {
             serde_json::from_value(older).expect("an older blob still crosses");
         assert!(decoded.status_clocks.is_none());
         assert!(!decoded.ring_reconstructs_screen);
+        assert!(decoded.answers.is_none(), "an older blob carries no answers");
+    }
+
+    /// The host's answers cross with the session, so the next image answers
+    /// with the last writer's name and theme rather than the engine's.
+    #[test]
+    fn a_carried_session_keeps_its_answers() {
+        let blob = serde_json::json!({
+            "id": "s_1", "name": "s_1", "cwd": "", "command": "sh", "pid": 1,
+            "rows": 24, "cols": 80, "created_unix": 0, "status": "working",
+            "master_fd": -1, "ring_len": 0,
+            "answers": {
+                "xtversion": "ghostty 1.3.1", "foreground": [221, 221, 221], "background": [17, 34, 51],
+                "cursor": null, "palette": null, "dark": true,
+            },
+        });
+        let decoded: CarriedSession = serde_json::from_value(blob).expect("the blob decodes");
+        let answers = decoded.answers.clone().expect("answers crossed");
+        assert_eq!(answers.xtversion, "ghostty 1.3.1");
+        assert_eq!(answers.background, Some([17, 34, 51]));
+        assert_eq!(answers.dark, Some(true));
+        let again: CarriedSession =
+            serde_json::from_value(serde_json::to_value(&decoded).expect("encodes")).expect("decodes");
+        assert_eq!(again.answers, decoded.answers);
     }
 }
