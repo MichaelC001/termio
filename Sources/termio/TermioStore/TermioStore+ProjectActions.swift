@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TermioShared
 
 extension TermioStore {
     /// Adds a session to a project, optionally running in one of its linked
@@ -1221,44 +1222,90 @@ extension TermioStore {
     /// the host placed in the project from elsewhere in the sidebar are left
     /// running, with the host's project kept for them. `alsoEnding` lists the
     /// other sessions that larger removal ends, so the host may end them here.
-    func removeProject(_ id: Project.ID, asking: Bool = true, alsoEnding: [Session] = []) {
+    ///
+    /// `read` holds each host's roster and view read for this removal, by
+    /// `KnownDevice.id`; a key with `nil` is a host that could not be read.
+    func removeProject(
+        _ id: Project.ID, asking: Bool = true, alsoEnding: [Session] = [],
+        read: [String: HostSnapshot?] = [:]
+    ) {
         guard let project = projects.first(where: { $0.id == id }) else { return }
         let hostCheckouts = hostCheckouts(of: project)
         // The host ends every live session placed in its project, and some of
-        // those may be rows elsewhere in this sidebar. Ending them is the
-        // user's call, so it is asked, and their rows close with the project.
-        // Asked before the project's own sessions are read: the dialog runs
-        // the event loop, and a roster may file a new session here meanwhile.
-        var others: [Session] = []
+        // those may be rows elsewhere in this sidebar, or have no row here at
+        // all. Ending them is the user's call, so it is asked first, and their
+        // rows close with the project.
+        var otherIDs: [String: Set<String>] = [:]
         if asking {
+            // A host this run has no view of yet is read first, off the main
+            // thread, and the removal resumes with what it said.
+            var unread: [KnownDevice] = []
+            for (device, _) in hostCheckouts
+            where hostViews[device.id] == nil && read.index(forKey: device.id) == nil
+                && !unread.contains(device) {
+                unread.append(device)
+            }
+            if !unread.isEmpty {
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    var fetched = read
+                    for device in unread {
+                        let reply = try? Termiod.rosterAndView(route: device.route)
+                        fetched[device.id] = reply.flatMap { sessions, view in
+                            view.map { (live: Set(sessions.sessions.filter(\.alive).map(\.id)), view: $0) }
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self?.removeProject(id, asking: true, alsoEnding: alsoEnding, read: fetched)
+                        }
+                    }
+                }
+                return
+            }
             let mine = Set(project.sessions.compactMap(\.termiodDaemonID))
             for (device, path) in hostCheckouts {
-                let ids = Set(otherHostSessions(at: path, on: device, closing: mine))
-                others += sessions(authoredFor: device).filter {
-                    $0.termiodDaemonID.map(ids.contains) == true
-                }
+                let snapshot: HostSnapshot?
+                if let entry = read[device.id] { snapshot = entry } else { snapshot = hostSnapshot(of: device) }
+                guard let snapshot,
+                      case .others(_, let ids) = Self.hostProjectRemoval(
+                        at: path, in: snapshot.view, live: snapshot.live, closing: mine)
+                else { continue }
+                otherIDs[device.id, default: []].formUnion(ids)
             }
         }
-        if !others.isEmpty {
+        let otherCount = otherIDs.values.reduce(0) { $0 + $1.count }
+        if otherCount > 0 {
             let alert = NSAlert()
             alert.messageText = localized("Remove “\(project.name)”?")
             alert.informativeText = localized(
-                "\(others.count) other sessions are running in this project. Removing it ends them too.")
+                "\(otherCount) other sessions are running in this project. Removing it ends them too.")
             alert.addButton(withTitle: localized("Remove"))
             alert.addButton(withTitle: localized("Cancel"))
+            // Asked before the project's own sessions are read: the dialog runs
+            // the event loop, and a roster may file a new session here meanwhile.
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         guard let projectIndex = projects.firstIndex(where: { $0.id == id }) else { return }
 
         let removedSessions = projects[projectIndex].sessions
         let removedSessionIDs = Set(removedSessions.map(\.id))
+        var others: [Session] = []
+        for (deviceID, ids) in otherIDs {
+            guard let device = hostCheckouts.first(where: { $0.device.id == deviceID })?.device
+            else { continue }
+            others += sessions(authoredFor: device).filter {
+                $0.termiodDaemonID.map(ids.contains) == true
+            }
+        }
         let ending = removedSessions + others + alsoEnding
         for (device, path) in hostCheckouts {
             // Per machine: a name like `build` can exist on two boxes at once.
-            let there = Set(sessions(authoredFor: device).map(\.id))
-            let endingThere = ending.filter { there.contains($0.id) }
+            // Read off each session, not the tree: a larger removal has
+            // already taken some of these rows out of it.
+            let endingThere = ending.filter { isAuthored($0, for: device) }
             let closing = (
-                ids: Set(endingThere.compactMap(\.termiodDaemonID)),
+                ids: Set(endingThere.compactMap(\.termiodDaemonID))
+                    .union(otherIDs[device.id] ?? []),
                 names: Set(endingThere.map(daemonSessionName(for:))))
             removeHostProject(
                 path: path, name: project.name, closing: closing, quiet: !asking, on: device)

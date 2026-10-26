@@ -1062,18 +1062,14 @@ extension TermioStore {
         return others.isEmpty ? .remove(hostProject.id) : .others(hostProject.id, others.sorted())
     }
 
-    /// The live sessions the host placed in its project at `path` that are not
-    /// in `closing`, from the last view and roster this app has.
-    func otherHostSessions(
-        at path: String, on device: KnownDevice, closing: Set<String>
-    ) -> [String] {
-        guard let view = hostViews[device.id] else { return [] }
+    /// A host's live sessions and its view, read together for one decision.
+    typealias HostSnapshot = (live: Set<String>, view: Termiod.HostView)
+
+    /// The last view and roster this app has of a host.
+    func hostSnapshot(of device: KnownDevice) -> HostSnapshot? {
+        guard let view = hostViews[device.id] else { return nil }
         let live = Set(rosterFetches[device.route.description]?.answer?.live.map(\.id) ?? [])
-        if case .others(_, let others) = Self.hostProjectRemoval(
-            at: path, in: view, live: live, closing: closing) {
-            return others
-        }
-        return []
+        return (live, view)
     }
 
     /// The project the host placed this session in, when the host has a view
