@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import GhosttyVt
 import TermioShared
 import XCTest
+@testable import TermioStream
 @testable import termio
 
 /// Input on the `vt_stream` plane: the client turns keystrokes into events
@@ -81,6 +82,21 @@ final class StreamInputTests: XCTestCase {
         XCTAssertEqual(events.map(\.action), [.press, .release])
         XCTAssertEqual(events[0].mods, TermiodStreamKeyboard.control)
         XCTAssertEqual(events[0].unshifted, 0x63)
+    }
+
+    /// The wire shape termiod's `Event::Answers` decodes.
+    func testHostAnswersCarryTheFieldsTermiodReads() throws {
+        let answers = Termiod.HostAnswers(
+            xtversion: "ghostty 1.3.1", foreground: "dddddd", background: "112233", cursor: nil,
+            palette: Array(repeating: "000000", count: 256), dark: true)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: try answers.payload()) as? [String: Any])
+        XCTAssertEqual(json["ev"] as? String, "answers")
+        XCTAssertEqual(json["xtversion"] as? String, "ghostty 1.3.1")
+        XCTAssertEqual(json["foreground"] as? String, "dddddd")
+        XCTAssertEqual(json["background"] as? String, "112233")
+        XCTAssertNil(json["cursor"] as? String)
+        XCTAssertEqual((json["palette"] as? [String])?.count, 256)
+        XCTAssertEqual(json["dark"] as? Bool, true)
     }
 
     /// The wire shape termiod's `Event::Key`, `Mouse` and `Focus` decode.

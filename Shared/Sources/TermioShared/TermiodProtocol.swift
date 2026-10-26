@@ -49,6 +49,13 @@ public enum Termiod {
         "snapshot", "events", viewportCapability, spawnCommandCapability,
     ]
 
+    /// termiod's VT answers the program's terminal queries, from the writer's
+    /// `HostAnswers`, so this client answers none while the host does: until
+    /// `vt_stale`, when answering comes back to it. Offered only by a client
+    /// that sends answers and routes every reply its surface makes through
+    /// one gate; any other answers for itself, as before.
+    public static let answersCapability = "vt_answers"
+
     /// The host computes the PTY size as a policy over the attachments that are
     /// rendering (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     /// Gate the five-byte `R` on it: an older host reads a payload of any other
@@ -64,6 +71,25 @@ public enum Termiod {
     /// from a daemon that grants it as well: one with `vt_stream` alone drops
     /// every event, which is a pane that cannot be typed into.
     public static let inputCapability = "vt_input"
+    /// A reattach continues the stream where the dropped connection left it:
+    /// `stream_position` after each `S`, `resume` on the attach, and
+    /// `stream_resumed` when termiod's ring still holds the gap. Offered with
+    /// `vt_stream`.
+    public static let resumeCapability = "vt_resume"
+
+    /// Where a stream stood: the stream (`epoch`), the bytes taken from it,
+    /// and the `vt_resize` markers applied.
+    public struct ResumePosition: Codable, Equatable, Sendable {
+        public var epoch: UInt64
+        public var offset: UInt64
+        public var markers: UInt64
+
+        public init(epoch: UInt64, offset: UInt64, markers: UInt64) {
+            self.epoch = epoch
+            self.offset = offset
+            self.markers = markers
+        }
+    }
     /// The error a daemon sends when it cannot give this client an exact
     /// screen to follow; the client attaches again without `vt_stream`.
     public static let streamUnavailableCode = "vt_stream_unavailable"
@@ -74,6 +100,12 @@ public enum Termiod {
     /// that carries one on it: an older host would ignore the field and spawn
     /// a plain shell that *looks* like the agent session it isn't.
     public static let spawnCommandCapability = "spawn_command"
+
+    /// The host owns its view: the projects registered on it and the pane each
+    /// session sits in (`docs/design/20261025-termiod-owns-the-view.md`). A host
+    /// without it has no projects of its own, and the client files sessions by
+    /// their cwd as it always has.
+    public static let viewCapability = "view"
 
     /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
@@ -406,6 +438,11 @@ public enum Termiod {
         /// predates the field reads anyway.
         let rendering: Bool?
         let mode = "interact"
+        /// Sent with the attach, so the host answers with them from the moment
+        /// it grants the token (`vt_answers`).
+        let answers: HostAnswers.Fields?
+        /// Where this client's stream stood, to continue from (`vt_resume`).
+        let resume: ResumePosition?
         let seq: UInt64
     }
 
@@ -417,6 +454,18 @@ public enum Termiod {
     private struct KillOperation: Encodable {
         let op = "kill"
         let id: String
+        let seq: UInt64
+    }
+
+    private struct ViewOperation: Encodable {
+        let op = "view"
+        let seq: UInt64
+    }
+
+    private struct ProjectRemoveOperation: Encodable {
+        let op = "project_remove"
+        let project: String
+        let only: [String]
         let seq: UInt64
     }
 
@@ -966,6 +1015,124 @@ public enum Termiod {
         }
     }
 
+    /// One host's view: its projects and where each session's pane sits. The
+    /// host owns it and sends it whole, so a client replaces its copy and never
+    /// merges into it. `revision` only compares within one host.
+    public struct HostView: Decodable, Sendable, Equatable {
+        public let revision: UInt64
+        public let projects: [Project]
+        public let loose: [Group]
+
+        public struct Project: Decodable, Sendable, Equatable {
+            public let id: String
+            /// The canonical path on the host.
+            public let path: String
+            public let label: String
+            public let pinned: Bool
+            public let groups: [Group]
+
+            private enum CodingKeys: String, CodingKey {
+                case id, path, label, pinned, groups
+            }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                id = try container.decode(String.self, forKey: .id)
+                path = try container.decode(String.self, forKey: .path)
+                label = try container.decode(String.self, forKey: .label)
+                pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+                groups = try container.decodeIfPresent([Group].self, forKey: .groups) ?? []
+            }
+
+            /// The daemon ids of the sessions this project's panes show.
+            public var sessions: [String] { groups.flatMap(\.root.sessions) }
+        }
+
+        public struct Group: Decodable, Sendable, Equatable {
+            public let id: String
+            public let label: String?
+            public let root: Node
+            public let focused: String
+            public let zoomed: String?
+        }
+
+        /// Externally tagged on the wire: `{"pane": {…}}` or `{"split": {…}}`.
+        /// A node of a kind a newer host added decodes as `unknown`, and shows
+        /// no session, so it never fails the whole view.
+        public indirect enum Node: Decodable, Sendable, Equatable {
+            case pane(Pane)
+            case split(Split)
+            case unknown
+
+            private enum CodingKeys: String, CodingKey {
+                case pane, split
+            }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if let pane = try container.decodeIfPresent(Pane.self, forKey: .pane) {
+                    self = .pane(pane)
+                } else if let split = try container.decodeIfPresent(Split.self, forKey: .split) {
+                    self = .split(split)
+                } else {
+                    self = .unknown
+                }
+            }
+
+            public var sessions: [String] {
+                switch self {
+                case .pane(let pane): return pane.session.map { [$0] } ?? []
+                case .split(let split): return split.before.sessions + split.after.sessions
+                case .unknown: return []
+                }
+            }
+        }
+
+        public struct Split: Decodable, Sendable, Equatable {
+            public let direction: String
+            public let ratio: Double
+            public let before: Node
+            public let after: Node
+        }
+
+        public struct Pane: Decodable, Sendable, Equatable {
+            public let id: String
+            public let label: String?
+            /// `terminal` today. A kind this build does not know still decodes,
+            /// and shows no session.
+            public let kind: String
+            public let session: String?
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case revision, projects, loose
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            revision = try container.decode(UInt64.self, forKey: .revision)
+            projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
+            loose = try container.decodeIfPresent([Group].self, forKey: .loose) ?? []
+        }
+
+        /// The project each placed session's pane is in, by daemon id.
+        public var projectBySession: [String: Project] {
+            var placed: [String: Project] = [:]
+            for project in projects {
+                for session in project.sessions { placed[session] = project }
+            }
+            return placed
+        }
+    }
+
+    public struct ViewStatePayload: Decodable, Sendable {
+        public let view: HostView
+    }
+
+    public struct RevisedPayload: Decodable, Sendable {
+        public let revision: UInt64
+    }
+
     /// One row of `termio server list` — a session as the **device** describes it.
     ///
     /// This carries enough to draw a row without consulting anything on the
@@ -1231,6 +1398,23 @@ public enum Termiod {
         public let reflow: Bool
     }
 
+    public struct StreamPositionPayload: Decodable, Sendable {
+        public let session: String
+        public let epoch: UInt64
+        public let offset: UInt64
+        public let markers: UInt64
+    }
+
+    public struct StreamResumedPayload: Decodable, Sendable {
+        public let session: String
+        public let epoch: UInt64
+        public let offset: UInt64
+        /// Where live output begins, in bytes and in `vt_resize` markers; what
+        /// comes before it is the replay.
+        public let live: UInt64
+        public let liveMarkers: UInt64
+    }
+
     /// A workstream status delta — `working · idle · needs_you · done · failed ·
     /// unknown`. The host reports the *state*; which dot, which words, and
     /// whether it fires a notification are the client's call.
@@ -1420,6 +1604,10 @@ public enum Termiod {
         case resized(ResizedPayload)
         /// Only on the `vt_stream` plane: apply this resize before the next byte.
         case vtResize(VtResizePayload)
+        /// After a `vt_resume` client's `S`: where that snapshot left its stream.
+        case streamPosition(StreamPositionPayload)
+        /// The reattach continues the stream; no `S` follows.
+        case streamResumed(StreamResumedPayload)
         /// The host's VT stopped parsing: it can no longer snapshot, and the
         /// modes it encodes input with are frozen.
         case vtStale
@@ -1601,6 +1789,11 @@ public enum Termiod {
         case attached(AttachedPayload)
         case exited(ExitedPayload)
         case sessions(SessionsPayload)
+        /// The reply to `view`.
+        case viewState(ViewStatePayload)
+        /// The reply to a view change that names nothing new, such as
+        /// `project_remove`: the view's revision after it.
+        case revised(RevisedPayload)
         case uploadOpened(UploadOpenedPayload)
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
@@ -1652,6 +1845,10 @@ public enum Termiod {
             return .exited(try decoder.decode(ExitedPayload.self, from: payload))
         case "sessions":
             return .sessions(try decoder.decode(SessionsPayload.self, from: payload))
+        case "view_state":
+            return .viewState(try decoder.decode(ViewStatePayload.self, from: payload))
+        case "revised":
+            return .revised(try decoder.decode(RevisedPayload.self, from: payload))
         case "upload_opened":
             return .uploadOpened(try decoder.decode(UploadOpenedPayload.self, from: payload))
         case "upload_ack":
@@ -1702,6 +1899,10 @@ public enum Termiod {
             return .resized(try decoder.decode(ResizedPayload.self, from: payload))
         case "vt_resize":
             return .vtResize(try decoder.decode(VtResizePayload.self, from: payload))
+        case "stream_position":
+            return .streamPosition(try decoder.decode(StreamPositionPayload.self, from: payload))
+        case "stream_resumed":
+            return .streamResumed(try decoder.decode(StreamResumedPayload.self, from: payload))
         case "vt_stale":
             return .vtStale
         case "roster":
@@ -1814,7 +2015,9 @@ public enum Termiod {
         specification: CreateSpecification?,
         rows: UInt16,
         cols: UInt16,
-        rendering: Bool = true
+        rendering: Bool = true,
+        answers: HostAnswers? = nil,
+        resume: ResumePosition? = nil
     ) throws -> Data {
         try encodeControl(AttachOperation(
             target: target,
@@ -1822,6 +2025,8 @@ public enum Termiod {
             rows: rows,
             cols: cols,
             rendering: rendering ? nil : false,
+            answers: answers?.fields,
+            resume: resume,
             seq: 1
         ))
     }
@@ -1830,12 +2035,79 @@ public enum Termiod {
         try encodeControl(ListOperation(seq: seq))
     }
 
+    public static func viewPayload(seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ViewOperation(seq: seq))
+    }
+
+    /// `only`: the sessions the caller agreed to end. A host refuses the whole
+    /// removal with `conflict` when a live session outside it is placed in the
+    /// project. A host from before `only` ignores it.
+    public static func projectRemovePayload(
+        project: String, only: [String], seq: UInt64 = 1
+    ) throws -> Data {
+        try encodeControl(ProjectRemoveOperation(project: project, only: only, seq: seq))
+    }
+
     public static func killPayload(target: String, seq: UInt64 = 1) throws -> Data {
         try encodeControl(KillOperation(id: target, seq: seq))
     }
 
     public static func detachPayload() throws -> Data {
         try encodeControl(DetachOperation())
+    }
+
+    /// What termiod answers a program's terminal queries with while this client
+    /// writes (`vt_answers`): the name XTVERSION reports, the theme as `rrggbb`
+    /// for the color queries, and whether the appearance is dark.
+    public struct HostAnswers: Equatable, Sendable {
+        public var xtversion: String
+        public var foreground: String?
+        public var background: String?
+        public var cursor: String?
+        /// 256 entries, or none for the engine's palette.
+        public var palette: [String]
+        public var dark: Bool
+
+        public init(xtversion: String, foreground: String?, background: String?, cursor: String?,
+                    palette: [String], dark: Bool) {
+            self.xtversion = xtversion
+            self.foreground = foreground
+            self.background = background
+            self.cursor = cursor
+            self.palette = palette
+            self.dark = dark
+        }
+
+        /// The answers as the attach request and the `answers` event carry them.
+        public struct Fields: Encodable, Sendable {
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public var fields: Fields {
+            Fields(xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                   palette: palette, dark: dark)
+        }
+
+        private struct Wire: Encodable {
+            let ev = "answers"
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public func payload() throws -> Data {
+            try encodeControl(Wire(
+                xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                palette: palette, dark: dark))
+        }
     }
 
     /// Input a `vt_stream` client sends as an `E` event. termiod encodes it

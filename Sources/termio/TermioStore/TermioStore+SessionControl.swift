@@ -3,6 +3,7 @@ import Foundation
 import GhosttyKit
 import GhosttyTerminal
 import os
+import TermioStream
 
 /// Handles `termio session …` requests from `SessionControlListener`. Every
 /// operation is scoped to the caller's own project (resolved from the caller's

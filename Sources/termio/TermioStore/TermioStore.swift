@@ -1167,6 +1167,31 @@ final class TermioStore: ObservableObject {
 
     var rosterFetches: [String: RosterFetch] = [:]
 
+    /// Each host's view as it last answered, keyed by `KnownDevice.id`: the
+    /// alias, or the empty string for this Mac.
+    /// The host owns it; the store reads it to file sessions and to know which
+    /// projects the host has.
+    var hostViews: [String: Termiod.HostView] = [:]
+
+    /// Project paths whose host removal is still in flight, by `KnownDevice.id`.
+    /// A view read before the removal landed still lists them, and must not
+    /// bring their rows back.
+    /// A path appears once per removal in flight, so two removals of one path
+    /// do not clear each other's guard.
+    var hostProjectsRemoving: [String: [String]] = [:]
+
+    /// The lowest view revision each host may still apply, by `KnownDevice.id`:
+    /// the revision a removal this app made returned. A roster that was already
+    /// in flight carries an older view that still lists the project.
+    var hostViewFloors: [String: UInt64] = [:]
+
+    /// Hosts that answered a roster without a view, by `KnownDevice.id`: too
+    /// old to own one. Remove Project does not read them again.
+    var viewlessHosts: Set<String> = []
+
+    /// Projects whose Remove Project is reading a host before it asks.
+    var projectsBeingRead: Set<Project.ID> = []
+
     /// Routes whose daemon this app has asked to stop and is waiting to see come
     /// back (`ensureRemoteReady`). A roster that fails meanwhile is the restart
     /// in progress, not a dead machine — without this the two are the same red

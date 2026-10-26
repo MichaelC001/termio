@@ -250,14 +250,47 @@ Each phase ends at a gate. A failed gate stops the work.
    answering back to the writer. A writer without `vt_answers` answers for
    itself, so a program never reads one answer twice. The answers are the
    embedded surface's: Ghostty's DA1 and DA2, size reports in 8 by 16 cells,
-   the writer's colors and scheme. XTGETTCAP is not answered on either side
-   of the stream yet: libghostty-vt carries no terminfo table.
-   **Daemon done:** a session with no window open is answered DA1, DA2 and a
-   cursor report (`termiod/tests/vt_answers.rs`). The Mac client follows.
-6. **iOS.** The phone's mirror is a live surface fed through the companion
-   bridge, so the marker must cross the bridge in order.
+   the writer's colors and scheme, and XTGETTCAP except the terminal's name
+   (`TN`). While someone writes, the writer's pane keeps what only it knows:
+   focus reports, the clipboard, size reports (the embedded surface in its
+   real pixels, the stream pane in 8 by 16 cells), `TN`, and
+   the cursor's style and blink (DECRQSS ` q`, DECRQM 12), which follow the
+   user's setting. Two Kitty limits are accepted on purpose: the daemon's VT
+   takes direct transfers only and stores 10 MB, so a program that sends a
+   file or temp-file transfer, or more than 10 MB, is told it failed, while
+   the pane still draws what reaches it.
+   **Daemon done (#801):** a session with no window open is answered DA1, DA2
+   and a cursor report (`termiod/tests/vt_answers.rs`). **Mac (#804):** every
+   attach offers `vt_answers`; the link drops the replies the app's surfaces
+   make while termiod answers, and answers again after `vt_stale`.
+6. **iOS.** The phone streams over its own termiod path (`TermiodSession`,
+   `docs/design/20260824-ios-as-device-client.md`), not the companion bridge:
+   `D` and `E` already share one channel there, so markers keep their order
+   with no new wire messages, and the bridge is due to be deleted
+   (`20260831-companion-second-protocol-retires.md`). The companion path stays
+   on keyframes until then. **Step one done (#807):** the terminal and the
+   renderer live in Shared's `TermioStream` module, which iOS can link.
+   **Deferred, on purpose:** a UIKit view to replace the package's
+   `UITerminalView` (about 3,200 lines: keyboard, input method, sticky
+   modifiers, key bar, scrolling, pinch zoom), and `TermiodSession` offering
+   `vt_stream`, `vt_input` and `vt_resume`. The Mac comes first; the phone keeps
+   the embedded surface and keyframes meanwhile.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
    stream with no snapshot.
+
+   Mechanism (`vt_resume`, on top of `vt_stream`). Each session actor names
+   its stream with a random epoch and numbers its bytes and its `vt_resize`
+   markers. After a stream client's `S`, termiod sends `stream_position`:
+   the epoch, the offset the snapshot was taken at (its buffered bytes begin
+   there) and the markers sent so far. The client adds every `D` it writes
+   and every marker it applies. A reattach offers the sum as `resume`; when
+   the epoch matches and the ring still reaches back to that offset, termiod
+   sends `stream_resumed`, then the ring's bytes from there with each marker
+   it missed in its place, and no `S`. The client keeps its terminal, so its
+   scrollback survives. Markers are counted as well as bytes because one sent
+   on the byte a connection dropped on may or may not have arrived. Anything
+   else, an older offset, another epoch after a restart or a handoff, or a
+   replay that does not fit the backlog, gets a fresh snapshot as before.
 
 ## Risks
 
@@ -272,10 +305,10 @@ Each phase ends at a gate. A failed gate stops the work.
 - Both the client and the daemon can answer terminal queries. Today only the
   writer's surface answers (`TerminalDeviceReport`); the new client keeps that
   rule until phase 5 moves the answers to the daemon.
-- Each attach decodes a fresh terminal from termiod's snapshot, which holds
-  termiod's own scrollback (about a thousand lines). A reconnect, a wake from
-  sleep or a handoff therefore drops older history the pane had kept, where the
-  embedded surface keeps it. Phase 7's resume by byte offset removes this.
+- An attach that cannot resume decodes a fresh terminal from termiod's
+  snapshot, which holds termiod's own scrollback (about a thousand lines). A
+  gap longer than the ring (128 KiB), a restart or a handoff therefore drops
+  older history the pane had kept, where the embedded surface keeps it.
 - A remote daemon and the app can run different releases for a while, so input
   events name keys by Ghostty's key names (`arrow_up`), never by the C enum's
   numbers.

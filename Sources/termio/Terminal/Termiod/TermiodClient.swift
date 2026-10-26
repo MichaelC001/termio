@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import TermioShared
+import TermioStream
 
 /// Whether a person currently has their hands on this app's geometry — a
 /// window edge, a split divider, an inspector divider.
@@ -1127,6 +1128,105 @@ extension Termiod {
         }
     }
 
+    /// The roster and, from a host that owns a view, the view, over one
+    /// connection and one round trip: both requests go out before either reply
+    /// is read, and the host answers them in order. The view is `nil` from a
+    /// host too old to have one, and when it cannot be read: the roster never
+    /// fails because of the view.
+    static func rosterAndView(route: TermiodRoute) throws -> (SessionsPayload, HostView?) {
+        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            let asksView = handshake.capabilities.contains(viewCapability)
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
+            if asksView {
+                // A second `seq`: the host answers a repeated one from its reply
+                // cache, which here is the roster.
+                try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 2))
+            }
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            guard asksView else { return (sessions, nil) }
+            do {
+                let view = try readReply(transport) { reply -> HostView? in
+                    if case .viewState(let payload) = reply { return payload.view }
+                    return nil
+                }
+                return (sessions, view)
+            } catch {
+                Log.termiod.error("""
+                view of \(route.description, privacy: .public) unreadable: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+                return (sessions, nil)
+            }
+        }
+    }
+
+    /// The host refused to remove a project because other live sessions are
+    /// placed in it.
+    struct HostProjectConflict: Error {}
+
+    /// Removes a host's project, over one connection: it reads the roster and
+    /// the view, lets `decide` pick the project and the sessions it may end,
+    /// and sends `project_remove` with those as `only`. Returns the view's
+    /// revision after the removal, or `nil` when the host has no view or
+    /// `decide` removes nothing. A `conflict` reply throws
+    /// `HostProjectConflict`.
+    @discardableResult
+    static func removeHostProject(
+        route: TermiodRoute,
+        decide: (SessionsPayload, HostView) throws -> (project: String, only: Set<String>)?
+    ) throws -> UInt64? {
+        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            guard handshake.capabilities.contains(viewCapability) else { return nil }
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 2))
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            let view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            guard let (project, only) = try decide(sessions, view) else { return nil }
+            try writeFrame(
+                transport.writeDescriptor, kind: .control,
+                payload: projectRemovePayload(project: project, only: only.sorted(), seq: 3))
+            while true {
+                let frame = try readFrame(transport.readDescriptor)
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .revised(let payload):
+                    return payload.revision
+                case .error(let payload) where payload.code == "conflict":
+                    throw HostProjectConflict()
+                case .error(let payload):
+                    throw TermiodClientError.requestFailed(payload.message)
+                default:
+                    continue
+                }
+            }
+        }
+    }
+
+    /// Reads control frames until `match` accepts one. An `error` reply throws;
+    /// anything else is not the reply and is skipped.
+    private static func readReply<Reply>(
+        _ transport: Transport, _ match: (IncomingControl) -> Reply?
+    ) throws -> Reply {
+        while true {
+            let frame = try readFrame(transport.readDescriptor)
+            guard frame.kind == .control else { continue }
+            let reply = try decodeControl(frame.payload)
+            if case .error(let payload) = reply {
+                throw TermiodClientError.requestFailed(payload.message)
+            }
+            if let matched = match(reply) { return matched }
+        }
+    }
+
     /// Ends a session for real — the explicit user-facing destroy verb, never
     /// part of quit/detach. The target may be a termiod id or name (the app
     /// uses the session UUID it named the session with).
@@ -1581,8 +1681,23 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether this link asks for the `vt_stream` plane. Only a pane does: the
     /// phone bridge forwards raw bytes to a surface of its own.
     private let offersStream: Bool
+    /// Whether this link offers `vt_answers`: a Mac pane, which sends its
+    /// answers and routes every reply its surface makes through
+    /// `sendDeviceReport`. The companion's bridge does not: the phone's theme
+    /// is not the Mac's, so the phone answers for itself.
+    private let offersAnswers: Bool
     /// Set when the daemon refused the plane; the link stays on keyframes.
     private var streamRefused = false
+    /// termiod granted `vt_answers` on this connection.
+    private var hostAnswersGranted = false
+    /// termiod answers this session's queries with this pane's answers on
+    /// this connection, so the surface's own replies are dropped, until
+    /// `vt_stale` hands answering back. Only once answers have gone out: a
+    /// pane that sent none answers for itself. Work-queue state.
+    private var hostAnswers = false
+    private var hostAnswersStale = false
+    /// What termiod answers with while this pane writes. Work-queue state.
+    private var answersToSend: Termiod.HostAnswers?
     /// The client terminal while the link is on the `vt_stream` plane, replaced
     /// by every native snapshot. Lock-guarded: the reader thread swaps it and
     /// the view reads it each frame.
@@ -1590,6 +1705,27 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var streamTerminalLocked: TermiodStreamTerminal?
     private var streamingLocked = false
     private var streamThemeLocked: TermiodStreamTerminal.Theme?
+    /// Where the stream terminal stands (`vt_resume`): set by `stream_position`
+    /// after a snapshot, advanced by the reader as it writes each byte and
+    /// applies each marker, and offered back on a reattach. Nil while the
+    /// terminal follows no position termiod named.
+    private let resumeLock = NSLock()
+    private var resumePositionLocked: Termiod.ResumePosition?
+    /// Reader-thread state: where a resumed stream's live output begins, and
+    /// whether the frame being written lies before it. A query in a replayed
+    /// frame was asked while this link was away; answering it now would type
+    /// the answer into whatever the program is reading.
+    private var replayBytesLeft: UInt64 = 0
+    private var replayMarkersLeft: UInt64 = 0
+    /// Set by the reader while it applies the replay, read by the stream
+    /// terminal's reply and signal callbacks, which `setTheme` can also reach
+    /// from the main thread.
+    private let replayLock = NSLock()
+    private var writingReplayLocked = false
+    private var writingReplay: Bool {
+        get { replayLock.lock(); defer { replayLock.unlock() }; return writingReplayLocked }
+        set { replayLock.lock(); writingReplayLocked = newValue; replayLock.unlock() }
+    }
     private var streamScrollbackLocked: Int?
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
@@ -1686,6 +1822,28 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    /// What termiod answers this session's queries with while this pane
+    /// writes: the embedded surface's terminal name and the pane's theme.
+    func setHostAnswers(_ answers: Termiod.HostAnswers) {
+        workQueue.async { [self] in
+            guard answersToSend != answers else { return }
+            answersToSend = answers
+            sendAnswersLocked()
+        }
+    }
+
+    private func sendAnswersLocked() {
+        guard hostAnswersGranted, attached, let answers = answersToSend, let transport else { return }
+        do {
+            try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try answers.payload())
+            hostAnswers = true
+        } catch {
+            Log.termiod.error("""
+            answers to \(self.sessionName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)
+            """)
+        }
+    }
+
     /// The pane cannot draw this plane (no Metal renderer): attach again on
     /// keyframes, which the embedded surface can show.
     func abandonStream() {
@@ -1704,7 +1862,27 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    private func advanceResume(bytes: Int = 0, markers: UInt64 = 0) {
+        resumeLock.lock()
+        resumePositionLocked?.offset += UInt64(bytes)
+        resumePositionLocked?.markers += markers
+        resumeLock.unlock()
+    }
+
+    private func setResumePosition(_ position: Termiod.ResumePosition?) {
+        resumeLock.lock()
+        resumePositionLocked = position
+        resumeLock.unlock()
+    }
+
+    private var resumePosition: Termiod.ResumePosition? {
+        resumeLock.lock()
+        defer { resumeLock.unlock() }
+        return resumePositionLocked
+    }
+
     private func setStreaming(_ streaming: Bool) {
+        if !streaming { setResumePosition(nil) }
         streamLock.lock()
         let changed = streamingLocked != streaming
         streamingLocked = streaming
@@ -1713,6 +1891,9 @@ final class TermiodSessionLink: @unchecked Sendable {
         guard changed else { return }
         DispatchQueue.main.async { [self] in onStreaming?(streaming) }
     }
+
+    /// What XTVERSION names in a stream pane: the embedded surface's Ghostty.
+    private static let xtversion = "ghostty \(embeddedGhosttyVersion())"
 
     /// A native snapshot: the session's whole state, decoded into a terminal
     /// that replaces the previous one. Called on the reader thread, so every
@@ -1724,12 +1905,19 @@ final class TermiodSessionLink: @unchecked Sendable {
         do {
             let terminal = try TermiodStreamTerminal(
                 nativeSnapshot: native,
+                xtversion: Self.xtversion,
                 onReply: { [weak self] reply in
+                    if self?.writingReplay == true { return }
                     // Answering is the writer's job alone (`TerminalDeviceReport`),
                     // which `sendDeviceReport` enforces.
                     self?.sendDeviceReport(reply)
                 },
-                onSignal: { [weak self] signal in self?.deliverStreamSignal(signal) },
+                onSignal: { [weak self] signal in
+                    // A copy replayed from the gap would overwrite whatever the
+                    // person copied since.
+                    if case .clipboard = signal, self?.writingReplay == true { return }
+                    self?.deliverStreamSignal(signal)
+                },
                 // What the embedded surface serves: a copied file is its path.
                 // A copy the program made a moment ago that the main thread has
                 // not written yet is what it reads back, in stream order.
@@ -1769,12 +1957,14 @@ final class TermiodSessionLink: @unchecked Sendable {
          rows: Int,
          cols: Int,
          rendering: Bool = true,
-         offersStream: Bool = false) {
+         offersStream: Bool = false,
+         offersAnswers: Bool = false) {
         self.sessionName = sessionName
         self.specification = specification
         self.route = route
         self.rendering = rendering
         self.offersStream = offersStream
+        self.offersAnswers = offersAnswers
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
         // `rows`/`cols` are the size this attachment asks for, not one the
@@ -1820,7 +2010,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
                 caps: Termiod.attachCapabilities
-                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : []))
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability, Termiod.resumeCapability] : [])
+                    // Only with answers to give: a pane whose theme did not
+                    // resolve answers for itself, or both would answer.
+                    + (offersAnswers && answersToSend != nil ? [Termiod.answersCapability] : []))
             clientID = handshake.clientID
             // A daemon that streams but does not take input events has already
             // put this connection on the stream plane, so the link cannot
@@ -1840,6 +2033,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
             hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+            hostAnswersGranted = handshake.capabilities.contains(Termiod.answersCapability)
+            hostAnswers = false
+            hostAnswersStale = false
             let sizesByPolicy = hostSizesByPolicy
             DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
             let device = handshake.device
@@ -1858,12 +2054,19 @@ final class TermiodSessionLink: @unchecked Sendable {
             // attachment as one somebody is looking at, and there is no
             // form of this frame that tells it otherwise.
             let declaredRendering = hostSizesByPolicy ? rendering : true
+            let answersWithAttach = hostAnswersGranted ? answersToSend : nil
+            // Only with the terminal that position describes still here: the
+            // bytes termiod replays continue it, and nothing else.
+            let resume = streamGranted && handshake.capabilities.contains(Termiod.resumeCapability)
+                && streamTerminal != nil ? resumePosition : nil
             let payload = try Termiod.attachPayload(
                 target: sessionName,
                 specification: specification,
                 rows: requested.rows,
                 cols: requested.cols,
-                rendering: declaredRendering
+                rendering: declaredRendering,
+                answers: answersWithAttach,
+                resume: resume
             )
             try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
             let reply = try Termiod.readFrame(channel.readDescriptor)
@@ -1885,6 +2088,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             attached = true
             setStreaming(streamGranted)
             isWriter = attachedPayload.writer
+            // Sent with the attach, so termiod had them before it granted the
+            // token, and once more as an event, which a termiod that predates
+            // the attach field still reads.
+            if answersWithAttach != nil { sendAnswersLocked() }
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
             }
@@ -2106,6 +2313,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         guard !data.isEmpty else { return }
         workQueue.async { [self] in
             guard !closed, attached, isWriter else { return }
+            // termiod answered it already; replies it does not make still go.
+            if hostAnswers, !hostAnswersStale, TerminalDeviceReport.isHostAnswered(data) { return }
             do {
                 try sendDataLocked(data)
             } catch {
@@ -2716,6 +2925,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// dispatch-source shape once payloads span multiple reads). Ends on EOF,
     /// error, or the session's exit notice.
     private func startReader(_ socket: Int32) {
+        // Events from this connection carry it, so one that arrives after a
+        // reconnect does not act on the next connection.
+        let generation = reattachGeneration
         let thread = Thread { [weak self] in
             // A frame kind this client never negotiated is a host bug, not
             // traffic — logged once per kind so a misbehaving daemon is visible
@@ -2733,7 +2945,16 @@ final class TermiodSessionLink: @unchecked Sendable {
                 switch frame.kind {
                 case .data:
                     if let terminal = self.streamTerminal {
+                        // A replay ends where live output starts, so a frame is
+                        // all one or all the other.
+                        let replayed = self.replayBytesLeft > 0
+                        if replayed {
+                            self.replayBytesLeft -= min(self.replayBytesLeft, UInt64(frame.payload.count))
+                            self.writingReplay = true
+                        }
                         terminal.write(frame.payload)
+                        if replayed { self.writingReplay = false }
+                        self.advanceResume(bytes: frame.payload.count)
                     } else {
                         self.deliverOutput(frame.payload)
                     }
@@ -2751,6 +2972,11 @@ final class TermiodSessionLink: @unchecked Sendable {
                         break
                     }
                     if let native = keyframe.native {
+                        // A new terminal follows no position until termiod
+                        // names the one this snapshot was taken at.
+                        self.setResumePosition(nil)
+                        self.replayBytesLeft = 0
+                        self.replayMarkersLeft = 0
                         guard self.receiveStreamSnapshot(native) else { return }
                     } else {
                         self.receiveKeyframe(keyframe)
@@ -2758,7 +2984,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 case .control:
                     if self.handleControl(frame.payload) { return }
                 case .event:
-                    if self.handleEvent(frame.payload) { return }
+                    if self.handleEvent(frame.payload, generation: generation) { return }
                 case .file, .upload:
                     // `F`/`U` never ride an attach channel at all — transfers use
                     // their own control channel, so the hot path stays raw.
@@ -2836,7 +3062,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Not private so the routing can be driven with real frames — which of the
     /// two information caches an arriving frame lands in is the kind of thing
     /// that goes wrong silently.
-    func handleEvent(_ payload: Data) -> Bool {
+    func handleEvent(_ payload: Data, generation: Int? = nil) -> Bool {
         let event: Termiod.IncomingEvent
         do {
             event = try Termiod.decodeEvent(payload)
@@ -2859,19 +3085,49 @@ final class TermiodSessionLink: @unchecked Sendable {
         case .vtResize(let resize):
             // Read on this thread, before the next `D`: the marker's position
             // in the stream is the whole contract.
+            // A replayed marker's size report (mode 2048) was answered while
+            // this link was away, by termiod's VT with nobody writing.
+            let replayed = replayMarkersLeft > 0
+            if replayed {
+                replayMarkersLeft -= 1
+                writingReplay = true
+            }
+            defer { if replayed { writingReplay = false } }
             do {
                 try streamTerminal?.resize(rows: resize.rows, cols: resize.cols, reflow: resize.reflow)
+                advanceResume(markers: 1)
             } catch {
+                // The terminal left the stream here; a resume would continue
+                // from a screen termiod never had.
+                setResumePosition(nil)
                 Log.termiod.error("""
                 vt_resize on \(self.sessionName, privacy: .public) failed: \
                 \(String(describing: error), privacy: .public)
                 """)
             }
+        case .streamPosition(let position):
+            replayBytesLeft = 0
+            replayMarkersLeft = 0
+            setResumePosition(Termiod.ResumePosition(
+                epoch: position.epoch, offset: position.offset, markers: position.markers))
+        case .streamResumed(let resumed):
+            replayBytesLeft = resumed.live - min(resumed.live, resumed.offset)
+            replayMarkersLeft = resumed.liveMarkers - min(resumed.liveMarkers, resumePosition?.markers ?? resumed.liveMarkers)
+            Log.termiod.info("""
+            \(self.sessionName, privacy: .public) resumed its stream at byte \(resumed.offset, privacy: .public)
+            """)
         case .vtStale:
             // termiod encodes this pane's input with its VT's modes, and those
             // just stopped following the program. The embedded surface encodes
             // for itself, so the pane goes back to it.
             if isStreaming { abandonStream() }
+            // termiod's VT no longer follows the program, so its answers
+            // would be wrong: this pane answers again. Queries termiod's VT
+            // never parsed before it went stale go unanswered; that needs a
+            // VT 16 MiB behind its PTY.
+            workQueue.async { [self] in
+                if generation == nil || generation == reattachGeneration { hostAnswersStale = true }
+            }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.
@@ -3056,6 +3312,17 @@ final class TermiodSessionLink: @unchecked Sendable {
                   connectionLostDelivered else { return }
             policy.reset()
             attemptAttachLocked()
+        }
+    }
+
+    /// Cuts the attach channel the way a lost network does: the reader sees
+    /// the end of its stream and the reconnect loop takes over. `shutdown`,
+    /// not `close`, so the descriptor cannot be reused under the reader.
+    func dropConnection() {
+        dispatchPrecondition(condition: .notOnQueue(workQueue))
+        workQueue.sync { [self] in
+            guard let transport else { return }
+            Darwin.shutdown(transport.readDescriptor, SHUT_RDWR)
         }
     }
 }

@@ -522,6 +522,8 @@
 	<string>Couldn’t remove %@.</string>
 	<key>Couldn’t remove worktree</key>
 	<string>Couldn’t remove worktree</string>
+	<key>Couldn’t remove “%@” from %@</key>
+	<string>Couldn’t remove “%@” from %@</string>
 	<key>Couldn’t save the password to your Keychain.</key>
 	<string>Couldn’t save the password to your Keychain.</string>
 	<key>Couldn’t start %@ on %@.</key>
@@ -1182,6 +1184,10 @@
 	<string>Opens the ~/.ssh/config entry this machine is defined in.</string>
 	<key>Other machines</key>
 	<string>Other machines</string>
+	<key>Other sessions are running in this project. Close them, then remove the project again.</key>
+	<string>Other sessions are running in this project. Close them, then remove the project again.</string>
+	<key>Other sessions are running in this project. Removing it ends them too.</key>
+	<string>Other sessions are running in this project. Removing it ends them too.</string>
 	<key>Overwrite</key>
 	<string>Overwrite</string>
 	<key>Padding</key>

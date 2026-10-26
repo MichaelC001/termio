@@ -155,6 +155,19 @@ impl Pane {
     }
 }
 
+impl Project {
+    /// Every session a terminal pane in this project shows.
+    pub fn sessions(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(|group| group.panes())
+            .filter_map(|pane| match &pane.kind {
+                PaneKind::Terminal { session } => Some(session.clone()),
+            })
+            .collect()
+    }
+}
+
 impl Group {
     pub fn panes(&self) -> Vec<&Pane> {
         let mut out = Vec::new();

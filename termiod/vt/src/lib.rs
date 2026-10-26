@@ -227,12 +227,28 @@ pub const CELL_HEIGHT: u32 = 16;
 
 /// The state the query callbacks read and the replies they write, shared
 /// with the closures the engine holds.
-#[derive(Default)]
 struct Answering {
     on: Slot<bool>,
+    /// Whether nobody writes. While somebody does, their pane answers what
+    /// only it can answer right: size reports (XTWINOPS and the in-band mode
+    /// 2048 one, with its own cell pixels) and kitty clipboard reads (OSC
+    /// 5522, which this VT can only refuse).
+    alone: Slot<bool>,
     replies: RefCell<Vec<u8>>,
     xtversion: Slot<&'static str>,
     dark: Slot<Option<bool>>,
+}
+
+impl Default for Answering {
+    fn default() -> Self {
+        Self {
+            on: Slot::new(false),
+            alone: Slot::new(true),
+            replies: RefCell::default(),
+            xtversion: Slot::new(""),
+            dark: Slot::new(None),
+        }
+    }
 }
 
 /// One leaked copy per distinct name: the XTVERSION callback must hand back
@@ -336,7 +352,13 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
     let writes = answering.clone();
     check(
         terminal.on_pty_write(move |_terminal, data| {
-            if writes.on.get() {
+            // The cursor's blink (DECRQM 12) and style (DECRQSS ` q`) are the
+            // pane's too: this VT holds only the engine's default cursor.
+            let pane_answers = data.starts_with(b"\x1b[48;")
+                || data.starts_with(b"\x1b]5522;")
+                || data.starts_with(b"\x1b[?12;")
+                || (data.starts_with(b"\x1bP") && data.ends_with(b" q\x1b\\"));
+            if writes.on.get() && (writes.alone.get() || !pane_answers) {
                 writes.replies.borrow_mut().extend_from_slice(data);
             }
         }),
@@ -364,8 +386,12 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
         }),
         "Terminal::on_xtversion",
     )?;
+    let sizes = answering.clone();
     check(
-        terminal.on_size(|terminal| {
+        terminal.on_size(move |terminal| {
+            if !sizes.alone.get() {
+                return None;
+            }
             Some(SizeReportSize {
                 rows: terminal.rows().ok()?,
                 columns: terminal.cols().ok()?,
@@ -443,6 +469,12 @@ impl VtTerminal {
         if !on {
             self.answering.replies.borrow_mut().clear();
         }
+    }
+
+    /// Whether nobody writes, which decides who answers size reports and
+    /// kitty clipboard reads (`Answering::alone`).
+    pub fn set_alone(&mut self, alone: bool) {
+        self.answering.alone.set(alone);
     }
 
     /// The writer's identity and theme, which the answers carry.
@@ -1237,6 +1269,28 @@ mod tests {
         terminal.take_replies();
         terminal.resize(30, 100).expect("resize");
         assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[48;30;100;480;800t");
+    }
+
+    /// While somebody writes, their pane answers size reports, kitty
+    /// clipboard reads and the cursor's style and blink: this VT would report
+    /// 8 by 16 cells, refuse, and give the engine's default cursor.
+    #[test]
+    fn a_writers_pane_answers_sizes_and_the_kitty_clipboard() {
+        let mut terminal = VtTerminal::new(24, 80).expect("terminal");
+        terminal.resize(24, 80).expect("resize");
+        terminal.set_answering(true);
+        terminal.vt_write(b"\x1b]5522;type=read\x1b\\");
+        assert!(String::from_utf8(terminal.take_replies()).unwrap().contains("EPERM"), "nobody writes: refused here");
+        terminal.set_alone(false);
+        terminal.vt_write(b"\x1b]5522;type=read\x1b\\\x1b[18t\x1b[?2048h");
+        terminal.resize(30, 100).expect("resize");
+        terminal.vt_write(b"\x1b[?12$p\x1bP$q q\x1b\\");
+        terminal.vt_write(b"\x1b[c");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[?62;22;52c");
+        terminal.set_alone(true);
+        terminal.vt_write(b"\x1b[?12$p\x1bP$q q\x1b\\");
+        let alone = String::from_utf8(terminal.take_replies()).unwrap();
+        assert!(alone.starts_with("\x1b[?12;") && alone.ends_with(" q\x1b\\"), "nobody writes: answered here, {alone:?}");
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only

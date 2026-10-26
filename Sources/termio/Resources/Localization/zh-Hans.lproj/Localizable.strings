@@ -522,6 +522,8 @@
 	<string>无法移除 %@。</string>
 	<key>Couldn’t remove worktree</key>
 	<string>无法移除 worktree</string>
+	<key>Couldn’t remove “%@” from %@</key>
+	<string>无法从 %2$@ 移除“%1$@”</string>
 	<key>Couldn’t save the password to your Keychain.</key>
 	<string>无法把密码保存到钥匙串。</string>
 	<key>Couldn’t start %@ on %@.</key>
@@ -1182,6 +1184,10 @@
 	<string>打开定义该设备的 ~/.ssh/config 条目。</string>
 	<key>Other machines</key>
 	<string>其他设备</string>
+	<key>Other sessions are running in this project. Close them, then remove the project again.</key>
+	<string>这个项目里还有其他会话在运行。先关闭它们，再移除这个项目。</string>
+	<key>Other sessions are running in this project. Removing it ends them too.</key>
+	<string>这个项目里还有其他会话在运行。移除项目也会结束它们。</string>
 	<key>Overwrite</key>
 	<string>覆盖</string>
 	<key>Padding</key>

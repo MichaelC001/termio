@@ -1439,6 +1439,7 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             // Input events are the stream plane's; any other plane types bytes.
             if !negotiated_caps.iter().any(|cap| cap == "vt_stream") {
                 negotiated_caps.retain(|cap| cap != "vt_input");
+                negotiated_caps.retain(|cap| cap != "vt_resume");
             }
             // The answers arrive as an event, and `vt_stale` hands answering
             // back: neither reaches a client without events.
@@ -1536,6 +1537,8 @@ struct AttachRequest {
     cols: u16,
     rendering: bool,
     mode: AttachMode,
+    answers: Option<crate::protocol::AnswersSpec>,
+    resume: Option<crate::protocol::ResumeSpec>,
     re: Option<u64>,
 }
 
@@ -1808,7 +1811,7 @@ async fn process_control(
             };
             send_response(out, response_cache, seq, response);
         }
-        Control::ProjectRemove { project, seq } => {
+        Control::ProjectRemove { project, only, seq } => {
             let response = if !connection.capabilities.contains("view") {
                 error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
             } else {
@@ -1827,18 +1830,49 @@ async fn process_control(
                             })
                             .collect::<Vec<_>>()
                     });
+                let mut outside = Vec::new();
+                if let (Some(sessions), Some(only)) = (&sessions, &only) {
+                    for session in sessions {
+                        if !only.contains(session) && manager.resolve(session).await.is_some() {
+                            outside.push(session.clone());
+                        }
+                    }
+                }
                 match sessions {
                     None => error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false),
+                    Some(_) if !outside.is_empty() => error(
+                        seq,
+                        ErrorCode::Conflict,
+                        format!("other live sessions are in this project: {}", outside.join(", ")),
+                        false,
+                    ),
                     Some(sessions) => match kill_all(manager, &sessions).await {
                         Err(busy) => error(seq, ErrorCode::Busy, busy, true),
                         // The kills went first: a project whose row is gone
                         // while one of its sessions crosses a handoff alive
                         // would come back as a loose pane nobody asked for.
                         Ok(()) => match manager.view.change(|view| {
+                            // A session placed in the project while the kills
+                            // ran was not killed, and must not lose its pane.
+                            let placed = view
+                                .projects
+                                .iter()
+                                .find(|row| row.id == project)
+                                .map(|row| row.sessions())
+                                .unwrap_or_default();
+                            if placed.iter().any(|session| !sessions.contains(session)) {
+                                return Ok((false, false));
+                            }
                             view.remove_project(&project)?;
-                            Ok(((), true))
+                            Ok((true, true))
                         }) {
-                            Ok(((), revision)) => Control::Revised { revision, re: seq },
+                            Ok((true, revision)) => Control::Revised { revision, re: seq },
+                            Ok((false, _)) => error(
+                                seq,
+                                ErrorCode::Conflict,
+                                "a session was placed in the project while it was being removed; ask again",
+                                true,
+                            ),
                             Err(e) => view_error(seq, ErrorCode::NotFound, e),
                         },
                     },
@@ -2017,6 +2051,8 @@ async fn process_control(
             cols,
             rendering,
             mode,
+            answers,
+            resume,
             seq,
         } => {
             let handle = match manager.resolve(&target).await {
@@ -2066,6 +2102,8 @@ async fn process_control(
                 cols,
                 rendering,
                 mode,
+                answers,
+                resume,
                 re: seq,
             }));
         }
@@ -3043,7 +3081,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         }
         Event::Resized { .. } => false,
         // A marker in one attachment's byte stream; meaningless anywhere else.
-        Event::VtResize { .. } => false,
+        Event::VtResize { .. } | Event::StreamPosition { .. } | Event::StreamResumed { .. } => false,
         Event::Ready { .. } => false,
         // Both are addressed to one attachment's stream, not to the roster: a
         // resync is that client's own, and a stale VT only means anything to a
@@ -3102,6 +3140,13 @@ async fn run_attach(
         vt_stream: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("vt_stream"),
         vt_answers: connection.capabilities.contains("vt_answers"),
+        answers: request.answers.as_ref().map(vt_answers),
+        vt_resume: connection.capabilities.contains("vt_stream")
+            && connection.capabilities.contains("vt_resume"),
+        resume: (connection.capabilities.contains("vt_stream")
+            && connection.capabilities.contains("vt_resume"))
+        .then_some(request.resume)
+        .flatten(),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -3366,15 +3411,14 @@ async fn run_attach(
                 palette,
                 dark,
             }))) if answers_negotiated => {
-                let palette: Option<Vec<[u8; 3]>> = palette.iter().map(|color| rgb(color)).collect();
-                let answers = termiod_vt::Answers {
+                let answers = vt_answers(&crate::protocol::AnswersSpec {
                     xtversion,
-                    foreground: foreground.as_deref().and_then(rgb),
-                    background: background.as_deref().and_then(rgb),
-                    cursor: cursor.as_deref().and_then(rgb),
-                    palette: palette.filter(|colors| colors.len() == 256),
+                    foreground,
+                    background,
+                    cursor,
+                    palette,
                     dark,
-                };
+                });
                 handle.send(SessionMsg::Answers {
                     id: client_id.clone(),
                     answers,
@@ -3707,4 +3751,18 @@ fn rgb(hex: &str) -> Option<[u8; 3]> {
     }
     let byte = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
     Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// What a client's `answers` say, in the VT's terms. A palette that is not
+/// 256 good colors is the engine's own.
+fn vt_answers(spec: &crate::protocol::AnswersSpec) -> termiod_vt::Answers {
+    let palette: Option<Vec<[u8; 3]>> = spec.palette.iter().map(|color| rgb(color)).collect();
+    termiod_vt::Answers {
+        xtversion: spec.xtversion.clone(),
+        foreground: spec.foreground.as_deref().and_then(rgb),
+        background: spec.background.as_deref().and_then(rgb),
+        cursor: spec.cursor.as_deref().and_then(rgb),
+        palette: palette.filter(|colors| colors.len() == 256),
+        dark: spec.dark,
+    }
 }

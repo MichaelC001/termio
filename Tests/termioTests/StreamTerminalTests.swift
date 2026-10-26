@@ -1,6 +1,7 @@
 import GhosttyVt
 import TermioShared
 import XCTest
+@testable import TermioStream
 @testable import termio
 
 /// The `vt_stream` contract, across languages: the client terminal, built from
@@ -113,7 +114,8 @@ final class StreamTerminalTests: XCTestCase {
         func answer(_ query: String, theme: TermiodStreamTerminal.Theme? = nil) throws -> String {
             var replies = ""
             let terminal = try TermiodStreamTerminal(
-                nativeSnapshot: snapshot, onReply: { replies += String(decoding: $0, as: UTF8.self) })
+                nativeSnapshot: snapshot, xtversion: "ghostty \(embeddedGhosttyVersion())",
+                onReply: { replies += String(decoding: $0, as: UTF8.self) })
             if let theme { try terminal.setTheme(theme) }
             // The fixture attaches inside an OSC sequence; BEL ends it.
             terminal.write(Data(("\u{7}" + query).utf8))

@@ -3,7 +3,7 @@ title: termiod owns the view
 status: draft
 type: design
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 related:
   - 20260730-termiod-session-protocol.md
   - 20261024-client-vt-follows-the-stream.md
@@ -329,6 +329,16 @@ Each phase ships on its own.
    host. `pane.close` lands here because a session that ends on its own keeps
    its pane, and nothing else could clear it. The Mac draws the sidebar from
    the view. This fixes the remote `termio .` failure.
+
+   The Mac half lands in two steps:
+   - **1a.** The Mac reads a remote host's view with its roster, over the same
+     connection. Each host project gets a row in that machine's workspace. A
+     session the Mac adopts is filed in the project the host placed it in,
+     before cwd matching. Remove Project also removes the host's project,
+     unless a live session the row did not hold is placed in it. Rows are
+     only added from the view. A host project removed elsewhere keeps its row.
+   - **1b.** The sidebar is drawn from the view, with `view.import`, for this
+     Mac's own host as well.
 2. **Arrangement.** Add `pane.split`, `pane.move`,
    `pane.focus`, `pane.zoom` and `split.resize`. The Mac's split view draws
    from the view. Add the CLI verbs `split`, `focus`, `zoom` and `view`.

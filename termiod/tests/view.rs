@@ -275,10 +275,23 @@ fn a_project_holds_its_sessions_and_survives_a_restart() {
         .to_string();
     assert_eq!(
         sessions_in(&client.view()["projects"][0]["groups"][0]),
-        vec![linked]
+        vec![linked.clone()]
     );
 
-    let removed = client.request(json!({"op": "project_remove", "project": project}));
+    // A removal that agreed to end only other sessions is refused whole, and
+    // the live session placed in the project keeps running.
+    let refused = client.request(json!({
+        "op": "project_remove", "project": project, "only": ["s_someone_else"],
+    }));
+    assert_eq!(refused["code"], "conflict", "{refused}");
+    assert_eq!(
+        sessions_in(&client.view()["projects"][0]["groups"][0]),
+        vec![linked.clone()]
+    );
+
+    let removed = client.request(json!({
+        "op": "project_remove", "project": project, "only": [linked],
+    }));
     assert_eq!(removed["op"], "revised", "{removed}");
     assert_eq!(client.view()["projects"], json!([]));
 
