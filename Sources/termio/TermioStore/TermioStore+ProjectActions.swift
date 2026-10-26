@@ -1220,6 +1220,27 @@ extension TermioStore {
 
         let removedSessions = projects[projectIndex].sessions
         let removedSessionIDs = Set(removedSessions.map(\.id))
+        // Each machine this checkout is on: the row's own machine, and every
+        // box a project here was cloned to. The host keeps its own record of a
+        // project, and without this the next roster brings the row back.
+        let removed = projects[projectIndex]
+        let closing = Set(removedSessions.compactMap(\.termiodDaemonID))
+        let aliases = Set(workspaces.compactMap(\.deviceAlias))
+        for alias in aliases {
+            let device = KnownDevice(
+                alias: alias,
+                deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)))
+            var paths: Set<String> = []
+            if workspace(owning: removed)?.isOn(alias: alias, device: device.deviceID) == true {
+                paths.insert(removed.path)
+            }
+            if let checkout = removed.remoteCheckout(device: device.deviceID, alias: alias) {
+                paths.insert(checkout)
+            }
+            for path in paths {
+                removeHostProject(path: path, closing: closing, on: device)
+            }
+        }
         for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
             // be told — the same verb Close Session uses, and like it, by name:

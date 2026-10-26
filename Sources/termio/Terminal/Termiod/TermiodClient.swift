@@ -1127,6 +1127,62 @@ extension Termiod {
         }
     }
 
+    /// The roster and, from a host that owns a view, the view, over one
+    /// connection: on an SSH route that is one round trip, not two. The view is
+    /// `nil` from a host too old to have one.
+    static func rosterAndView(route: TermiodRoute) throws -> (SessionsPayload, HostView?) {
+        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            guard handshake.capabilities.contains(viewCapability) else { return (sessions, nil) }
+            // A second `seq`: the host answers a repeated one from its reply
+            // cache, which here is the roster.
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 2))
+            let view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            return (sessions, view)
+        }
+    }
+
+    /// Removes a project from the host's view and returns the view's revision
+    /// after it, or `nil` from a host without a view. The host kills the
+    /// sessions its panes show, so a caller sends this only when those are
+    /// sessions it is closing anyway.
+    @discardableResult
+    static func removeHostProject(_ project: String, route: TermiodRoute) throws -> UInt64? {
+        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            guard handshake.capabilities.contains(viewCapability) else { return nil }
+            try writeFrame(
+                transport.writeDescriptor, kind: .control,
+                payload: projectRemovePayload(project: project))
+            return try readReply(transport) { reply -> UInt64? in
+                if case .revised(let payload) = reply { return payload.revision }
+                return nil
+            }
+        }
+    }
+
+    /// Reads control frames until `match` accepts one. An `error` reply throws;
+    /// anything else is not the reply and is skipped.
+    private static func readReply<Reply>(
+        _ transport: Transport, _ match: (IncomingControl) -> Reply?
+    ) throws -> Reply {
+        while true {
+            let frame = try readFrame(transport.readDescriptor)
+            guard frame.kind == .control else { continue }
+            let reply = try decodeControl(frame.payload)
+            if case .error(let payload) = reply {
+                throw TermiodClientError.requestFailed(payload.message)
+            }
+            if let matched = match(reply) { return matched }
+        }
+    }
+
     /// Ends a session for real — the explicit user-facing destroy verb, never
     /// part of quit/detach. The target may be a termiod id or name (the app
     /// uses the session UUID it named the session with).
