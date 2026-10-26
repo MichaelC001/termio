@@ -370,23 +370,44 @@ impl ViewStore {
     /// Load the view from `dir`, or start an empty one. A file that cannot be
     /// read is moved aside and reported, never silently replaced; one that
     /// cannot even be moved is left alone and this daemon keeps the view in
-    /// memory only.
+    /// memory only, which a handoff carries on.
     ///
-    /// The revision restarts at no less than the current time in milliseconds.
-    /// A client's cursor names a revision, and a restarted daemon may have lost
-    /// the file or a write that failed, so counting on from the file could hand
-    /// out a revision a client already holds for a different view. A floor
-    /// above every revision an earlier run issued makes such a cursor stale,
-    /// and a stale cursor is a gap that is served the whole view.
-    pub fn open(dir: Option<&Path>, registry: Registry) -> ViewStore {
-        let (mut view, file) = match dir.map(|dir| dir.join(VIEW_FILE)) {
+    /// `carried` is the view a handoff brought across. It is the same view
+    /// the old image held, so it keeps its revision and every client cursor
+    /// stays exact; it is saved at once, which also catches up a write the
+    /// old image failed.
+    ///
+    /// Without it the revision restarts at no less than the current time in
+    /// milliseconds. A client's cursor names a revision, and a restarted daemon
+    /// may have lost the file or a write that failed, so counting on from the
+    /// file could hand out a revision a client already holds for a different
+    /// view. A floor above every revision an earlier run issued makes such a
+    /// cursor stale, and a stale cursor is a gap that is served the whole view.
+    pub fn open(dir: Option<&Path>, registry: Registry, carried: Option<View>) -> ViewStore {
+        let (saved, file) = match dir.map(|dir| dir.join(VIEW_FILE)) {
             Some(file) => match load(&file) {
                 Some(view) => (view, Some(file)),
                 None => (View::default(), None),
             },
             None => (View::default(), None),
         };
-        view.revision = view.revision.max(revision_floor());
+        let view = match carried {
+            Some(view) => {
+                if let Some(file) = &file {
+                    if let Err(error) = crate::tombstone::write_json(file, &view) {
+                        eprintln!(
+                            "termiod: the view was not saved to {}: {error:#}",
+                            file.display()
+                        );
+                    }
+                }
+                view
+            }
+            None => View {
+                revision: saved.revision.max(revision_floor()),
+                ..saved
+            },
+        };
         registry.install_view(view.clone());
         ViewStore {
             view: Mutex::new(view),
@@ -448,7 +469,9 @@ fn load(file: &Path) -> Option<View> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(View::default()),
         Err(error) => format!("could not be read ({error})"),
     };
-    let aside = file.with_extension("json.unreadable");
+    // Named by the time, so a fault that recurs on every start never moves a
+    // later, emptier file over the copy an earlier start set aside.
+    let aside = file.with_extension(format!("json.unreadable-{}", revision_floor()));
     match std::fs::rename(file, &aside) {
         Ok(()) => {
             eprintln!(
@@ -611,7 +634,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("termiod-view-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let store = ViewStore::open(Some(&dir), Registry::new());
+        let store = ViewStore::open(Some(&dir), Registry::new(), None);
         let start = store.snapshot().revision;
         let ((), revision) = store
             .change(|view| Ok(((), view.add_project("/work", None).1)))
@@ -625,7 +648,7 @@ mod tests {
             .change(|_| -> Result<((), bool)> { Err(anyhow!("refused")) })
             .is_err());
 
-        let reopened = ViewStore::open(Some(&dir), Registry::new());
+        let reopened = ViewStore::open(Some(&dir), Registry::new(), None);
         assert_eq!(reopened.snapshot().projects, store.snapshot().projects);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -642,7 +665,7 @@ mod tests {
             r#"{"revision":5,"projects":[],"loose":[]}"#,
         )
         .unwrap();
-        let store = ViewStore::open(Some(&dir), Registry::new());
+        let store = ViewStore::open(Some(&dir), Registry::new(), None);
         assert!(store.snapshot().revision >= revision_floor() - 60_000);
 
         // A saved revision above the clock (the clock went back) still counts on.
@@ -653,7 +676,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ViewStore::open(Some(&dir), Registry::new())
+            ViewStore::open(Some(&dir), Registry::new(), None)
                 .snapshot()
                 .revision,
             ahead
@@ -667,9 +690,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(VIEW_FILE), "{not json").unwrap();
-        let store = ViewStore::open(Some(&dir), Registry::new());
+        let store = ViewStore::open(Some(&dir), Registry::new(), None);
         assert_eq!(store.snapshot().projects, Vec::new());
-        assert!(dir.join("view.json.unreadable").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("view.json.unreadable-")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -684,26 +711,64 @@ mod tests {
         std::fs::write(&file, saved).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        // Readable once moved aside: the good copy survives under the new name.
-        let store = ViewStore::open(Some(&dir), Registry::new());
+        // Readable once moved aside: the good copy survives under a new name,
+        // and the same fault on the next start never moves the newer, emptier
+        // file over it.
+        let asides = |dir: &Path| -> Vec<PathBuf> {
+            let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.to_string_lossy().contains(".unreadable-"))
+                .collect();
+            found.sort();
+            found
+        };
+        let store = ViewStore::open(Some(&dir), Registry::new(), None);
         store
             .change(|view| Ok(((), view.add_project("/work", None).1)))
             .unwrap();
-        let aside = dir.join("view.json.unreadable");
-        std::fs::set_permissions(&aside, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(std::fs::read_to_string(&aside).unwrap(), saved);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let _store = ViewStore::open(Some(&dir), Registry::new(), None);
+        let found = asides(&dir);
+        assert_eq!(found.len(), 2, "{found:?}");
+        std::fs::set_permissions(&found[0], std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read_to_string(&found[0]).unwrap(), saved);
+        let aside = found[0].clone();
 
         // Not even movable: the daemon keeps the view in memory and writes nothing.
         std::fs::rename(&aside, &file).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let store = ViewStore::open(Some(&dir), Registry::new());
+        let store = ViewStore::open(Some(&dir), Registry::new(), None);
         store
             .change(|view| Ok(((), view.add_project("/work", None).1)))
             .unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_carried_view_keeps_its_revision_and_is_saved() {
+        let dir = std::env::temp_dir().join(format!("termiod-view-carried-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The file lags the carried view: the old image's last write failed.
+        std::fs::write(
+            dir.join(VIEW_FILE),
+            r#"{"revision":5,"projects":[],"loose":[]}"#,
+        )
+        .unwrap();
+        let mut carried = View::default();
+        carried.add_project("/work", None);
+        carried.revision = 9;
+        let store = ViewStore::open(Some(&dir), Registry::new(), Some(carried.clone()));
+        assert_eq!(store.snapshot(), carried);
+        let saved: View =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(VIEW_FILE)).unwrap()).unwrap();
+        assert_eq!(saved, carried);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

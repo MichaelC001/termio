@@ -113,6 +113,12 @@ fn status(socket: &Path) -> Value {
     serde_json::from_slice(&output.stdout).expect("status is json")
 }
 
+fn view(socket: &Path) -> Value {
+    let output = termio(socket, &["view", "--json"]);
+    assert!(output.status.success(), "view failed: {output:?}");
+    serde_json::from_slice(&output.stdout).expect("view is json")
+}
+
 /// `list --json` — `SessionInfo`, which carries the pid that `status` omits.
 fn listed(socket: &Path) -> Vec<Value> {
     let output = termio(socket, &["server", "list", "--json"]);
@@ -187,6 +193,7 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
     assert!(sent.status.success(), "send failed: {sent:?}");
 
     let ticks = wait_for_counter(&tally, 3);
+    let view_before = view(&socket);
 
     let handed = termio(&socket, &["server", "handoff", "--json"]);
     assert!(
@@ -209,6 +216,11 @@ fn a_handoff_keeps_the_pid_the_sessions_and_the_screen() {
         "{after}"
     );
     assert_eq!(carried[0]["name"].as_str(), Some("carried"), "{after}");
+
+    // The view crossed in the blob: the same panes at the same revision, so
+    // every client's cursor is still exact. A reload from disk would restart
+    // the revision at the clock.
+    assert_eq!(view(&socket), view_before, "the view did not cross the handoff");
 
     // The claim, in one assertion: the shell never saw a hangup.
     wait_for_counter(&tally, ticks + 5);
