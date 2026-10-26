@@ -605,14 +605,18 @@ async fn settle(id: &str, rows: u16, cols: u16) {
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
     let mut previous: Option<String> = None;
     while tokio::time::Instant::now() < deadline {
-        if let Ok(rows) = client::observe_screen_rows(id, rows, cols).await {
-            let frame = rows.join("\n").trim().to_string();
-            if !frame.is_empty() {
-                if previous.as_deref() == Some(frame.as_str()) {
-                    return;
-                }
-                previous = Some(frame);
+        // A shell that already exited fails the send that follows, which
+        // reports it; a daemon that stops answering is cut off at the deadline.
+        let screen = tokio::time::timeout_at(deadline, client::observe_screen_rows(id, rows, cols));
+        let Ok(Ok(rows)) = screen.await else {
+            return;
+        };
+        let frame = rows.join("\n").trim().to_string();
+        if !frame.is_empty() {
+            if previous.as_deref() == Some(frame.as_str()) {
+                return;
             }
+            previous = Some(frame);
         }
         tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     }
