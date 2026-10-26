@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TermioShared
 
 extension TermioStore {
     /// Adds a session to a project, optionally running in one of its linked
@@ -1215,11 +1216,137 @@ extension TermioStore {
     /// removed — the folder on disk, and any git worktrees the sessions created, are
     /// deliberately left untouched, the same hands-off stance `closeSession` takes
     /// (they may hold uncommitted agent work, so deletion is the user's call).
-    func removeProject(_ id: Project.ID) {
+    ///
+    /// `asking` is false when the caller has already confirmed a larger
+    /// removal, such as a workspace: then no dialog shows at all, and sessions
+    /// the host placed in the project from elsewhere in the sidebar are left
+    /// running, with the host's project kept for them. `alsoEnding` lists the
+    /// other sessions that larger removal ends, so the host may end them here.
+    ///
+    /// `read` holds each host's roster and view read for this removal, by
+    /// `KnownDevice.id`; a key with `nil` is a host that could not be read.
+    func removeProject(
+        _ id: Project.ID, asking: Bool = true, alsoEnding: [Session] = [],
+        read: [String: HostSnapshot?] = [:]
+    ) {
+        guard let project = projects.first(where: { $0.id == id }) else { return }
+        let hostCheckouts = hostCheckouts(of: project)
+        // The host ends every live session placed in its project, and some of
+        // those may be rows elsewhere in this sidebar, or have no row here at
+        // all. Ending them is the user's call, so it is asked first, and their
+        // rows close with the project.
+        var otherIDs: [String: Set<String>] = [:]
+        var otherNames: [String: String] = [:]
+        if asking {
+            // A host this run has no view of yet is read first, off the main
+            // thread, and the removal resumes with what it said.
+            var unread: [KnownDevice] = []
+            for (device, _) in hostCheckouts
+            where hostViews[device.id] == nil && !viewlessHosts.contains(device.id)
+                && read.index(forKey: device.id) == nil && !unread.contains(device) {
+                unread.append(device)
+            }
+            if !unread.isEmpty {
+                // A second click while the read runs would open a second dialog.
+                guard !projectsBeingRead.contains(id) else { return }
+                projectsBeingRead.insert(id)
+                // At most a few seconds: a box that does not answer by then is
+                // not asked about, and its host decides alone.
+                let deadline = DispatchTime.now() + .seconds(3)
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    let lock = NSLock()
+                    var fetched = read
+                    for device in unread { fetched[device.id] = .some(nil) }
+                    let group = DispatchGroup()
+                    for device in unread {
+                        group.enter()
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            defer { group.leave() }
+                            guard let (sessions, view) = try? Termiod.rosterAndView(
+                                route: device.route), let view
+                            else { return }
+                            lock.lock()
+                            fetched[device.id] = (Self.liveNames(sessions.sessions), view)
+                            lock.unlock()
+                        }
+                    }
+                    _ = group.wait(timeout: deadline)
+                    lock.lock()
+                    let settled = fetched
+                    lock.unlock()
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self?.projectsBeingRead.remove(id)
+                            self?.removeProject(id, asking: true, alsoEnding: alsoEnding, read: settled)
+                        }
+                    }
+                }
+                return
+            }
+            let ids = Set(project.sessions.compactMap(\.termiodDaemonID))
+            let names = Set(project.sessions.map(daemonSessionName(for:)))
+            for (device, path) in hostCheckouts {
+                let snapshot: HostSnapshot?
+                if let entry = read[device.id] { snapshot = entry } else { snapshot = hostSnapshot(of: device) }
+                // By name too: a row can be between daemon ids.
+                let mine = ids.union(
+                    snapshot?.live.filter { names.contains($0.value) }.map(\.key) ?? [])
+                guard let snapshot,
+                      case .others(_, let ids) = Self.hostProjectRemoval(
+                        at: path, in: snapshot.view, live: Set(snapshot.live.keys), closing: mine)
+                else { continue }
+                otherIDs[device.id, default: []].formUnion(ids)
+                for id in ids { otherNames[id] = snapshot.live[id] }
+            }
+        }
+        if otherIDs.values.contains(where: { !$0.isEmpty }) {
+            let alert = NSAlert()
+            alert.messageText = localized("Remove “\(project.name)”?")
+            alert.informativeText = localized(
+                "Other sessions are running in this project. Removing it ends them too.")
+            alert.addButton(withTitle: localized("Remove"))
+            alert.addButton(withTitle: localized("Cancel"))
+            // Asked before the project's own sessions are read: the dialog runs
+            // the event loop, and a roster may file a new session here meanwhile.
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         guard let projectIndex = projects.firstIndex(where: { $0.id == id }) else { return }
 
         let removedSessions = projects[projectIndex].sessions
         let removedSessionIDs = Set(removedSessions.map(\.id))
+        var others: [Session] = []
+        for (deviceID, ids) in otherIDs {
+            guard let device = hostCheckouts.first(where: { $0.device.id == deviceID })?.device
+            else { continue }
+            let names = Set(ids.compactMap { otherNames[$0] })
+            let rows = sessions(authoredFor: device).filter {
+                // By name too: a row can be between ids, or hold a stale one.
+                $0.termiodDaemonID.map(ids.contains) == true
+                    || names.contains(daemonSessionName(for: $0))
+            }
+            others += rows
+            // A session with no row here is ended by the host. Journaled, so a
+            // roster read before the kill kills it again instead of adopting it.
+            let rowNames = Set(rows.map(daemonSessionName(for:)))
+            for id in ids {
+                guard let name = otherNames[id], !rowNames.contains(name) else { continue }
+                journalClosedSession(
+                    named: name, sshAlias: device.alias, deviceID: device.deviceID, daemonID: id)
+            }
+        }
+        let ending = removedSessions + others + alsoEnding
+        for (device, path) in hostCheckouts {
+            // Per machine: a name like `build` can exist on two boxes at once.
+            // Read off each session, not the tree: a larger removal has
+            // already taken some of these rows out of it.
+            let endingThere = ending.filter { isAuthored($0, for: device) }
+            let closing = (
+                ids: Set(endingThere.compactMap(\.termiodDaemonID))
+                    .union(otherIDs[device.id] ?? []),
+                names: Set(endingThere.map(daemonSessionName(for:))))
+            removeHostProject(
+                path: path, name: project.name, closing: closing, quiet: !asking, on: device)
+        }
         for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
             // be told — the same verb Close Session uses, and like it, by name:
@@ -1236,6 +1363,7 @@ extension TermioStore {
             clearActivityTracking(for: sessionID)
         }
         projects.remove(at: projectIndex)
+        for other in others { closeSession(other.id) }
 
         // Drop the removed sessions out of any split layout first — the prune
         // may already have moved the selection onto a surviving pane.
@@ -1246,6 +1374,28 @@ extension TermioStore {
         if let selected = selectedSessionID, removedSessionIDs.contains(selected) {
             selectedSessionID = sessions(inWorkspace: currentWorkspace.id).first?.id
         }
+    }
+
+    /// Each machine a project's checkout is on, with its path there: the row's
+    /// own machine, and every box a project here was cloned to. The host keeps
+    /// its own record of a project, and without removing it the next roster
+    /// brings the row back.
+    private func hostCheckouts(of project: Project) -> [(device: KnownDevice, path: String)] {
+        var checkouts: [(device: KnownDevice, path: String)] = []
+        for alias in Set(workspaces.compactMap(\.deviceAlias)).sorted() {
+            let device = KnownDevice(
+                alias: alias,
+                deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)))
+            var paths: Set<String> = []
+            if workspace(owning: project)?.isOn(alias: alias, device: device.deviceID) == true {
+                paths.insert(project.path)
+            }
+            if let checkout = project.remoteCheckout(device: device.deviceID, alias: alias) {
+                paths.insert(checkout)
+            }
+            for path in paths.sorted() { checkouts.append((device, path)) }
+        }
+        return checkouts
     }
 
     /// Renames a session via a one-field prompt (the same `NSAlert` shape the

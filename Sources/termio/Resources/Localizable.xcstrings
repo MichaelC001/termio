@@ -10331,6 +10331,36 @@
           }
         }
       }
+    },
+    "Other sessions are running in this project. Close them, then remove the project again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个项目里还有其他会话在运行。先关闭它们，再移除这个项目。"
+          }
+        }
+      }
+    },
+    "Other sessions are running in this project. Removing it ends them too.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个项目里还有其他会话在运行。移除项目也会结束它们。"
+          }
+        }
+      }
+    },
+    "Couldn’t remove “%@” from %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法从 %2$@ 移除“%1$@”"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

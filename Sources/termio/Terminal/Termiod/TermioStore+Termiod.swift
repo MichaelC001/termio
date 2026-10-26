@@ -753,11 +753,10 @@ extension TermioStore {
         }
         let requested = ContinuousClock.now
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome: Result<Termiod.SessionsPayload, Error> = Trace.device.measure(
-                "roster fetch", "route=\(route.description)"
-            ) {
+            let outcome: Result<(Termiod.SessionsPayload, Termiod.HostView?), Error> =
+                Trace.device.measure("roster fetch", "route=\(route.description)") {
                 do {
-                    return .success(try Termiod.roster(route: route))
+                    return .success(try Termiod.rosterAndView(route: route))
                 } catch {
                     return .failure(error)
                 }
@@ -790,7 +789,7 @@ extension TermioStore {
     }
 
     private func applyRoster(
-        _ outcome: Result<Termiod.SessionsPayload, Error>,
+        _ outcome: Result<(Termiod.SessionsPayload, Termiod.HostView?), Error>,
         from device: KnownDevice,
         route: TermiodRoute,
         persisted: Set<String>
@@ -825,7 +824,7 @@ extension TermioStore {
             roster of \(key, privacy: .public) failed: \
             \(message, privacy: .public)
             """)
-        case .success(let payload):
+        case .success(let (payload, view)):
             let live = payload.sessions.filter(\.alive)
             let answer = DeviceSessions(live: live, tombstones: payload.tombstones)
             let unchanged = rosterFetches[key]?.answer == answer
@@ -838,6 +837,14 @@ extension TermioStore {
             // Settled on every successful refresh, before the unchanged guard: a
             // pending kill whose first attempt failed leaves the roster looking
             // exactly as it did, and that is precisely when it must be retried.
+            // Before the sweep, so a session it adopts lands in the project the
+            // host placed it in, and that project already has a row.
+            if let view {
+                viewlessHosts.remove(device.id)
+                applyHostView(view, from: device, route: route)
+            } else {
+                viewlessHosts.insert(device.id)
+            }
             reconcileExternalSessions(live, from: device, route: route)
             // Published only when it would say something different. The sidebar
             // rebuilds on every publish, and a device that answers what it
@@ -949,7 +956,8 @@ extension TermioStore {
         session.termiodRemoteHost = device.alias
         session.deviceID = device.deviceID
         session.termiodRemoteCwd = information.cwd.isEmpty ? nil : information.cwd
-        if let projectIndex = adoptionProjectIndex(forCwd: information.cwd, on: device) {
+        if let projectIndex = hostPlacedProjectIndex(of: information, on: device)
+            ?? adoptionProjectIndex(forCwd: information.cwd, on: device) {
             projects[projectIndex].sessions.append(session)
             return
         }
@@ -962,6 +970,211 @@ extension TermioStore {
             return
         }
         workspaces[index].terminals.append(session)
+    }
+
+    // MARK: - The host's view
+
+    /// Records a host's view and gives each of its projects a row.
+    ///
+    /// A project registered on the box, by `termio .` there or by another
+    /// client, is a project on that machine, and a viewer of the machine should
+    /// see it as one. Only remote machines: on this Mac the app still authors
+    /// the tree, and `termio .` here goes to the app.
+    ///
+    /// Rows are only added. A project the host no longer has keeps its row,
+    /// because a row the app made itself was never in the host's view.
+    func applyHostView(
+        _ view: Termiod.HostView, from device: KnownDevice, route: TermiodRoute
+    ) {
+        if let floor = hostViewFloors[device.id], view.revision < floor {
+            Log.termiod.info("""
+            ignored view \(view.revision, privacy: .public) of \
+            \(route.description, privacy: .public): older than \(floor, privacy: .public)
+            """)
+            return
+        }
+        hostViews[device.id] = view
+        guard let alias = device.alias else { return }
+        let removing = Set((hostProjectsRemoving[device.id] ?? []).map(Self.hostPathKey))
+        let deviceID = device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route)
+        let known = KnownDevice(alias: alias, deviceID: deviceID)
+        var added = false
+        for hostProject in view.projects
+        where projectIndex(forHostPath: hostProject.path, on: known) == nil
+            && !removing.contains(Self.hostPathKey(hostProject.path)) {
+            projects.append(Project(
+                workspaceID: workspace(forDevice: alias, deviceID: deviceID),
+                name: hostProject.label,
+                path: hostProject.path,
+                // The same "not a repo we can read" mark `addRemoteProject`
+                // gives a checkout on a box.
+                branch: "—",
+                sessions: []))
+            added = true
+            Log.termiod.info("""
+            project \(hostProject.path, privacy: .public) registered on \
+            \(alias, privacy: .public) has a row now
+            """)
+        }
+        if added { persistSoon() }
+    }
+
+    /// A path on another machine, compared as text: `.` and `..` collapsed,
+    /// repeated and trailing slashes dropped. Never through this Mac's
+    /// filesystem, which knows nothing of that machine's symlinks.
+    nonisolated static func hostPathKey(_ path: String) -> String {
+        var parts: [Substring] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch part {
+            case ".": continue
+            case "..": if !parts.isEmpty { parts.removeLast() }
+            default: parts.append(part)
+            }
+        }
+        return "/" + parts.joined(separator: "/")
+    }
+
+    /// The project row for a checkout the host knows at `path`: a project filed
+    /// on that machine at that path, or a project here that was cloned there.
+    func projectIndex(forHostPath path: String, on device: KnownDevice) -> Int? {
+        guard let alias = device.alias else { return nil }
+        let wanted = Self.hostPathKey(path)
+        func same(_ other: String?) -> Bool {
+            guard let other, !other.isEmpty else { return false }
+            return Self.hostPathKey(other) == wanted
+        }
+        return projects.firstIndex { project in
+            (same(project.path)
+                && workspace(owning: project)?.isOn(alias: alias, device: device.deviceID) == true)
+                || same(project.remoteCheckout(device: device.deviceID, alias: alias))
+        }
+    }
+
+    /// What removing a row at `path` does to the host's project there.
+    enum HostProjectRemoval: Equatable {
+        /// The host has no project there.
+        case none
+        /// Remove this project; only sessions in `closing` are placed in it.
+        case remove(String)
+        /// These live sessions outside `closing` are placed in the project.
+        case others(String, [String])
+    }
+
+    nonisolated static func hostProjectRemoval(
+        at path: String, in view: Termiod.HostView, live: Set<String>, closing: Set<String>
+    ) -> HostProjectRemoval {
+        let wanted = hostPathKey(path)
+        guard let hostProject = view.projects.first(where: { hostPathKey($0.path) == wanted })
+        else { return .none }
+        let others = Set(hostProject.sessions).intersection(live).subtracting(closing)
+        return others.isEmpty ? .remove(hostProject.id) : .others(hostProject.id, others.sorted())
+    }
+
+    /// A host's live sessions, daemon id to daemon name, and its view, read
+    /// together for one decision.
+    typealias HostSnapshot = (live: [String: String], view: Termiod.HostView)
+
+    nonisolated static func liveNames(_ sessions: [Termiod.SessionInformation]) -> [String: String] {
+        var names: [String: String] = [:]
+        for information in sessions where information.alive {
+            names[information.id] = daemonKey(information)
+        }
+        return names
+    }
+
+    /// The last view and roster this app has of a host.
+    func hostSnapshot(of device: KnownDevice) -> HostSnapshot? {
+        guard let view = hostViews[device.id] else { return nil }
+        return (Self.liveNames(rosterFetches[device.route.description]?.answer?.live ?? []), view)
+    }
+
+    /// The project the host placed this session in, when the host has a view
+    /// and the session's pane is inside one of its projects.
+    private func hostPlacedProjectIndex(
+        of information: Termiod.SessionInformation, on device: KnownDevice
+    ) -> Int? {
+        guard !information.id.isEmpty,
+              let view = hostViews[device.id],
+              let hostProject = view.projectBySession[information.id]
+        else { return nil }
+        return projectIndex(forHostPath: hostProject.path, on: device)
+    }
+
+    /// Removes the host's own record of a project whose row was just removed,
+    /// so the next roster does not bring the row back. `closing` names every
+    /// session the user agreed to end, by daemon id and by daemon name: a row
+    /// can be between ids, and the fresh roster maps its name to one.
+    ///
+    /// Decided on a fresh read, over the same connection as the removal. A
+    /// host that knows `only` checks it again when it acts. A host from before
+    /// `only` (v0.66.0) does not, and a session started on the box between the
+    /// read and the removal is killed there.
+    ///
+    /// When other live sessions are placed in the project, the host keeps it
+    /// and the row comes back with the next roster. `quiet` keeps that silent,
+    /// for a caller that confirmed a larger removal; otherwise the user is
+    /// told. Any other failure is logged only, as a journaled kill is.
+    func removeHostProject(
+        path: String, name: String, closing: (ids: Set<String>, names: Set<String>),
+        quiet: Bool, on device: KnownDevice
+    ) {
+        let route = device.route
+        let key = device.id
+        guard let alias = device.alias else { return }
+        hostProjectsRemoving[key, default: []].append(path)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var revision: UInt64?
+            var refused = false
+            do {
+                revision = try Termiod.removeHostProject(route: route) { sessions, view in
+                    var only = closing.ids
+                    for information in sessions.sessions where closing.names.contains(
+                        Self.daemonKey(information)) {
+                        only.insert(information.id)
+                    }
+                    let live = Set(sessions.sessions.filter(\.alive).map(\.id))
+                    switch Self.hostProjectRemoval(at: path, in: view, live: live, closing: only) {
+                    case .none:
+                        return nil
+                    case .remove(let project):
+                        return (project, only)
+                    case .others:
+                        throw Termiod.HostProjectConflict()
+                    }
+                }
+            } catch is Termiod.HostProjectConflict {
+                refused = !quiet
+                Log.termiod.info("""
+                kept project \(path, privacy: .public) on \(route.description, privacy: .public): \
+                other live sessions are placed in it
+                """)
+            } catch {
+                Log.termiod.error("""
+                removing project \(path, privacy: .public) from \
+                \(route.description, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let index = self.hostProjectsRemoving[key]?.firstIndex(of: path) {
+                        self.hostProjectsRemoving[key]?.remove(at: index)
+                    }
+                    if let revision {
+                        self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
+                    }
+                    if refused {
+                        let alert = NSAlert()
+                        alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
+                        alert.informativeText = localized(
+                            "Other sessions are running in this project. Close them, then remove the project again.")
+                        alert.alertStyle = .warning
+                        alert.runModal()
+                    }
+                }
+            }
+        }
     }
 
     /// The project an adopted session files under: the one whose root **on the

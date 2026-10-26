@@ -82,6 +82,12 @@ public enum Termiod {
     /// a plain shell that *looks* like the agent session it isn't.
     public static let spawnCommandCapability = "spawn_command"
 
+    /// The host owns its view: the projects registered on it and the pane each
+    /// session sits in (`docs/design/20261025-termiod-owns-the-view.md`). A host
+    /// without it has no projects of its own, and the client files sessions by
+    /// their cwd as it always has.
+    public static let viewCapability = "view"
+
     /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
     public static let controlCapabilities: [String] = []
@@ -427,6 +433,18 @@ public enum Termiod {
     private struct KillOperation: Encodable {
         let op = "kill"
         let id: String
+        let seq: UInt64
+    }
+
+    private struct ViewOperation: Encodable {
+        let op = "view"
+        let seq: UInt64
+    }
+
+    private struct ProjectRemoveOperation: Encodable {
+        let op = "project_remove"
+        let project: String
+        let only: [String]
         let seq: UInt64
     }
 
@@ -974,6 +992,124 @@ public enum Termiod {
             tombstones = try container.decodeIfPresent(
                 [SessionTombstone].self, forKey: .tombstones) ?? []
         }
+    }
+
+    /// One host's view: its projects and where each session's pane sits. The
+    /// host owns it and sends it whole, so a client replaces its copy and never
+    /// merges into it. `revision` only compares within one host.
+    public struct HostView: Decodable, Sendable, Equatable {
+        public let revision: UInt64
+        public let projects: [Project]
+        public let loose: [Group]
+
+        public struct Project: Decodable, Sendable, Equatable {
+            public let id: String
+            /// The canonical path on the host.
+            public let path: String
+            public let label: String
+            public let pinned: Bool
+            public let groups: [Group]
+
+            private enum CodingKeys: String, CodingKey {
+                case id, path, label, pinned, groups
+            }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                id = try container.decode(String.self, forKey: .id)
+                path = try container.decode(String.self, forKey: .path)
+                label = try container.decode(String.self, forKey: .label)
+                pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+                groups = try container.decodeIfPresent([Group].self, forKey: .groups) ?? []
+            }
+
+            /// The daemon ids of the sessions this project's panes show.
+            public var sessions: [String] { groups.flatMap(\.root.sessions) }
+        }
+
+        public struct Group: Decodable, Sendable, Equatable {
+            public let id: String
+            public let label: String?
+            public let root: Node
+            public let focused: String
+            public let zoomed: String?
+        }
+
+        /// Externally tagged on the wire: `{"pane": {…}}` or `{"split": {…}}`.
+        /// A node of a kind a newer host added decodes as `unknown`, and shows
+        /// no session, so it never fails the whole view.
+        public indirect enum Node: Decodable, Sendable, Equatable {
+            case pane(Pane)
+            case split(Split)
+            case unknown
+
+            private enum CodingKeys: String, CodingKey {
+                case pane, split
+            }
+
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if let pane = try container.decodeIfPresent(Pane.self, forKey: .pane) {
+                    self = .pane(pane)
+                } else if let split = try container.decodeIfPresent(Split.self, forKey: .split) {
+                    self = .split(split)
+                } else {
+                    self = .unknown
+                }
+            }
+
+            public var sessions: [String] {
+                switch self {
+                case .pane(let pane): return pane.session.map { [$0] } ?? []
+                case .split(let split): return split.before.sessions + split.after.sessions
+                case .unknown: return []
+                }
+            }
+        }
+
+        public struct Split: Decodable, Sendable, Equatable {
+            public let direction: String
+            public let ratio: Double
+            public let before: Node
+            public let after: Node
+        }
+
+        public struct Pane: Decodable, Sendable, Equatable {
+            public let id: String
+            public let label: String?
+            /// `terminal` today. A kind this build does not know still decodes,
+            /// and shows no session.
+            public let kind: String
+            public let session: String?
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case revision, projects, loose
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            revision = try container.decode(UInt64.self, forKey: .revision)
+            projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
+            loose = try container.decodeIfPresent([Group].self, forKey: .loose) ?? []
+        }
+
+        /// The project each placed session's pane is in, by daemon id.
+        public var projectBySession: [String: Project] {
+            var placed: [String: Project] = [:]
+            for project in projects {
+                for session in project.sessions { placed[session] = project }
+            }
+            return placed
+        }
+    }
+
+    public struct ViewStatePayload: Decodable, Sendable {
+        public let view: HostView
+    }
+
+    public struct RevisedPayload: Decodable, Sendable {
+        public let revision: UInt64
     }
 
     /// One row of `termio server list` — a session as the **device** describes it.
@@ -1611,6 +1747,11 @@ public enum Termiod {
         case attached(AttachedPayload)
         case exited(ExitedPayload)
         case sessions(SessionsPayload)
+        /// The reply to `view`.
+        case viewState(ViewStatePayload)
+        /// The reply to a view change that names nothing new, such as
+        /// `project_remove`: the view's revision after it.
+        case revised(RevisedPayload)
         case uploadOpened(UploadOpenedPayload)
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
@@ -1662,6 +1803,10 @@ public enum Termiod {
             return .exited(try decoder.decode(ExitedPayload.self, from: payload))
         case "sessions":
             return .sessions(try decoder.decode(SessionsPayload.self, from: payload))
+        case "view_state":
+            return .viewState(try decoder.decode(ViewStatePayload.self, from: payload))
+        case "revised":
+            return .revised(try decoder.decode(RevisedPayload.self, from: payload))
         case "upload_opened":
             return .uploadOpened(try decoder.decode(UploadOpenedPayload.self, from: payload))
         case "upload_ack":
@@ -1840,6 +1985,19 @@ public enum Termiod {
 
     public static func listPayload(seq: UInt64 = 1) throws -> Data {
         try encodeControl(ListOperation(seq: seq))
+    }
+
+    public static func viewPayload(seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ViewOperation(seq: seq))
+    }
+
+    /// `only`: the sessions the caller agreed to end. A host refuses the whole
+    /// removal with `conflict` when a live session outside it is placed in the
+    /// project. A host from before `only` ignores it.
+    public static func projectRemovePayload(
+        project: String, only: [String], seq: UInt64 = 1
+    ) throws -> Data {
+        try encodeControl(ProjectRemoveOperation(project: project, only: only, seq: seq))
     }
 
     public static func killPayload(target: String, seq: UInt64 = 1) throws -> Data {

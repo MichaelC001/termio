@@ -228,7 +228,7 @@ extension TermioStore {
         isAuthored(session, for: currentDevice)
     }
 
-    private func isAuthored(_ session: Session, for device: KnownDevice) -> Bool {
+    func isAuthored(_ session: Session, for device: KnownDevice) -> Bool {
         // Which machine the session is *about*. A durable termiod session names
         // it directly; a plain `ssh` terminal runs its PTY here but exists to put
         // the user on that box, so it belongs to the same place. `nil` is this Mac.

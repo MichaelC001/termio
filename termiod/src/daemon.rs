@@ -1809,7 +1809,7 @@ async fn process_control(
             };
             send_response(out, response_cache, seq, response);
         }
-        Control::ProjectRemove { project, seq } => {
+        Control::ProjectRemove { project, only, seq } => {
             let response = if !connection.capabilities.contains("view") {
                 error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
             } else {
@@ -1828,18 +1828,49 @@ async fn process_control(
                             })
                             .collect::<Vec<_>>()
                     });
+                let mut outside = Vec::new();
+                if let (Some(sessions), Some(only)) = (&sessions, &only) {
+                    for session in sessions {
+                        if !only.contains(session) && manager.resolve(session).await.is_some() {
+                            outside.push(session.clone());
+                        }
+                    }
+                }
                 match sessions {
                     None => error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false),
+                    Some(_) if !outside.is_empty() => error(
+                        seq,
+                        ErrorCode::Conflict,
+                        format!("other live sessions are in this project: {}", outside.join(", ")),
+                        false,
+                    ),
                     Some(sessions) => match kill_all(manager, &sessions).await {
                         Err(busy) => error(seq, ErrorCode::Busy, busy, true),
                         // The kills went first: a project whose row is gone
                         // while one of its sessions crosses a handoff alive
                         // would come back as a loose pane nobody asked for.
                         Ok(()) => match manager.view.change(|view| {
+                            // A session placed in the project while the kills
+                            // ran was not killed, and must not lose its pane.
+                            let placed = view
+                                .projects
+                                .iter()
+                                .find(|row| row.id == project)
+                                .map(|row| row.sessions())
+                                .unwrap_or_default();
+                            if placed.iter().any(|session| !sessions.contains(session)) {
+                                return Ok((false, false));
+                            }
                             view.remove_project(&project)?;
-                            Ok(((), true))
+                            Ok((true, true))
                         }) {
-                            Ok(((), revision)) => Control::Revised { revision, re: seq },
+                            Ok((true, revision)) => Control::Revised { revision, re: seq },
+                            Ok((false, _)) => error(
+                                seq,
+                                ErrorCode::Conflict,
+                                "a session was placed in the project while it was being removed; ask again",
+                                true,
+                            ),
                             Err(e) => view_error(seq, ErrorCode::NotFound, e),
                         },
                     },
