@@ -1320,8 +1320,9 @@ extension TermioStore {
             else { continue }
             let names = Set(ids.compactMap { otherNames[$0] })
             let rows = sessions(authoredFor: device).filter {
+                // By name too: a row can be between ids, or hold a stale one.
                 $0.termiodDaemonID.map(ids.contains) == true
-                    || ($0.termiodDaemonID == nil && names.contains(daemonSessionName(for: $0)))
+                    || names.contains(daemonSessionName(for: $0))
             }
             others += rows
             // A session with no row here is ended by the host. Journaled, so a
