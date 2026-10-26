@@ -1740,7 +1740,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             )
             streamLock.lock()
             defer { streamLock.unlock() }
-            if let colors = streamThemeLocked { try terminal.setTheme(colors) }
+            if let colors = streamThemeLocked {
+                try terminal.setTheme(colors)
+                terminal.reportColorSchemeIfSubscribed()
+            }
             if let bytes = streamScrollbackLocked { try terminal.setScrollbackLimit(bytes: bytes) }
             streamTerminalLocked = terminal
             return true
