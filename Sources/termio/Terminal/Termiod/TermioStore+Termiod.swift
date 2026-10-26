@@ -2150,7 +2150,8 @@ extension TermioStore {
             // `themeConfiguration`'s floor, for the same themes.
             minimumContrast: definition.isDark ? 1 : Self.lightContrastFloor,
             selectionBackground: definition.selectionBackground.flatMap(Self.rgb),
-            selectionForeground: definition.selectionForeground.flatMap(Self.rgb)
+            selectionForeground: definition.selectionForeground.flatMap(Self.rgb),
+            dark: dark
         )
     }
 

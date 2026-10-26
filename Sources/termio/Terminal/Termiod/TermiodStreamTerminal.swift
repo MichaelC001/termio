@@ -448,11 +448,11 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// either pane: Ghostty's DA1 with clipboard access (termio leaves
     /// `clipboard-write` at its default, allow) and DA2, Ghostty's XTVERSION,
     /// size reports in this terminal's 8 by 16 cells, which Kitty images are
-    /// laid out in, and the color scheme. libghostty-vt answers none of the
-    /// last three by itself, and answers DA2 and XTVERSION as libghostty.
-    /// Ghostty reports the window's appearance as the scheme; the theme's
-    /// background stands in for it, which agrees with the theme termio picks
-    /// for each appearance.
+    /// laid out in, and the color scheme of the appearance the theme was picked
+    /// for. libghostty-vt answers none of the last three by itself, and answers
+    /// DA2 and XTVERSION as libghostty. One difference stays: libghostty-vt
+    /// answers DA3, which Ghostty does not, and the callback is not told which
+    /// level was asked.
     private func installQueryAnswers() throws {
         let attributes: GhosttyTerminalDeviceAttributesFn = { _, _, out in
             guard let out else { return false }
@@ -466,7 +466,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             return true
         }
         let version: GhosttyTerminalXtversionFn = { _, _ in
-            TermiodStreamTerminal.xtversion.withUnsafeBufferPointer { GhosttyString(ptr: $0.baseAddress, len: $0.count) }
+            GhosttyString(ptr: TermiodStreamTerminal.xtversion.baseAddress, len: TermiodStreamTerminal.xtversion.count)
         }
         let size: GhosttyTerminalSizeFn = { terminal, _, out in
             guard let out else { return false }
@@ -481,9 +481,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         let scheme: GhosttyTerminalColorSchemeFn = { _, userdata, out in
             guard let userdata, let out else { return false }
             let owner = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue()
-            guard let background = owner.theme?.background else { return false }
-            let luminance = 0.2126 * Double(background.r) + 0.7152 * Double(background.g) + 0.0722 * Double(background.b)
-            out.pointee = luminance < 128 ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+            guard let theme = owner.theme else { return false }
+            out.pointee = theme.dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
             return true
         }
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, unsafeBitCast(attributes, to: UnsafeRawPointer.self)), "ghostty_terminal_set(device attributes)")
@@ -492,8 +491,14 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, unsafeBitCast(scheme, to: UnsafeRawPointer.self)), "ghostty_terminal_set(color scheme)")
     }
 
-    /// "ghostty <version>", as the embedded surface answers XTVERSION.
-    private static let xtversion: [UInt8] = Array("ghostty \(embeddedGhosttyVersion())".utf8)
+    /// "ghostty <version>", as the embedded surface answers XTVERSION. Allocated
+    /// once and never freed: the callback hands the engine this pointer.
+    nonisolated(unsafe) private static let xtversion: UnsafeBufferPointer<UInt8> = {
+        let bytes = Array("ghostty \(embeddedGhosttyVersion())".utf8)
+        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bytes.count)
+        _ = buffer.initialize(from: bytes)
+        return UnsafeBufferPointer(buffer)
+    }()
 
     func write(_ bytes: Data) {
         locked { writeLocked(bytes) }
@@ -513,7 +518,11 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// against these, so a session drawn by two Macs follows each one's theme.
     /// A decoded snapshot carries none of the daemon's, which never sets any.
     func setTheme(_ colors: Theme) throws {
-        try locked {
+        let report = try locked { () -> Data? in
+            // A program that turned on color scheme reports (mode 2031) is told
+            // when the appearance changes, as Ghostty tells it.
+            let reportsScheme = theme.map { $0.dark != colors.dark } == true
+                && (try? mode(ghostty_mode_new(2031, false))) == true
             var foreground = colors.foreground
             var background = colors.background
             var palette = colors.palette
@@ -551,13 +560,16 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode), "ghostty_terminal_set(blink mode)")
             }
             theme = colors
+            return reportsScheme ? Data((colors.dark ? "\u{1b}[?997;1n" : "\u{1b}[?997;2n").utf8) : nil
         }
+        if let report { onReply(report) }
     }
 
     struct Theme: Equatable {
         static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
-            return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
+            return left.dark == right.dark
+                && left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
                 && left.minimumContrast == right.minimumContrast
                 && left.selectionBackground.map { color in right.selectionBackground.map { same(color, $0) } ?? false }
                     ?? (right.selectionBackground == nil)
@@ -586,6 +598,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         /// default foreground behind the default background.
         var selectionBackground: GhosttyColorRgb? = nil
         var selectionForeground: GhosttyColorRgb? = nil
+        /// The appearance this theme was picked for, which a program asking
+        /// for the color scheme is told: Ghostty reports the window's
+        /// appearance, and either slot in Settings may hold any theme.
+        var dark = false
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so
