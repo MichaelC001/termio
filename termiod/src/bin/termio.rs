@@ -741,7 +741,7 @@ async fn serve_daemon_read(
     format: &str,
 ) -> i32 {
     let mut rows =
-        match termiod::client::observe_screen_rows(&info.name, info.rows, info.cols).await {
+        match termiod::client::observe_screen_rows(&info.id, info.rows, info.cols).await {
             Ok(rows) => rows,
             Err(error) => {
                 control_error_reply(format, "daemon", &format!("{error:#}"));

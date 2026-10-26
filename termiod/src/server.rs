@@ -580,6 +580,7 @@ pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
         workstream: None,
     };
     let id = client::create(spec).await?;
+    settle(&id, rows, cols).await;
     let mut data = line.into_bytes();
     data.push(b'\r');
     client::send(&id, data).await?;
@@ -594,6 +595,27 @@ pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
         println!("  (read its output with `termio session read {id}`)");
     }
     Ok(())
+}
+
+/// Waits for a new shell to finish starting, by the app's rule: after a
+/// beat to start painting, two identical frames that are not blank, or 10 s.
+/// Typed before then, the line can be eaten by the shell's startup files.
+async fn settle(id: &str, rows: u16, cols: u16) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let mut previous: Option<String> = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(rows) = client::observe_screen_rows(id, rows, cols).await {
+            let frame = rows.join("\n").trim().to_string();
+            if !frame.is_empty() {
+                if previous.as_deref() == Some(frame.as_str()) {
+                    return;
+                }
+                previous = Some(frame);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    }
 }
 
 pub async fn attach_session(args: AttachArgs) -> Result<()> {
@@ -705,11 +727,15 @@ pub async fn resolve(target: &str) -> Result<Option<SessionInfo>> {
 
 pub fn resolve_in(sessions: &[SessionInfo], target: &str) -> Result<Option<SessionInfo>> {
     let token = session_token(target);
-    if let Some(info) = sessions
-        .iter()
-        .find(|info| info.id == token || info.name == token)
-    {
+    if let Some(info) = sessions.iter().find(|info| info.id == token) {
         return Ok(Some(info.clone()));
+    }
+    // `create --name` takes a name already in use, so a name can be shared.
+    let named: Vec<&SessionInfo> = sessions.iter().filter(|info| info.name == token).collect();
+    match named.as_slice() {
+        [] => {}
+        [only] => return Ok(Some((*only).clone())),
+        _ => bail!("more than one session is named '{target}'; use its id"),
     }
     let lower = token.to_lowercase();
     let prefix = lower.len() >= 8 && lower.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -949,5 +975,13 @@ mod tests {
     fn a_prefix_that_matches_two_sessions_is_an_error() {
         let sessions = [session("abcdef0011", "x"), session("abcdef0022", "y")];
         assert!(resolve_in(&sessions, "abcdef00").is_err());
+    }
+
+    #[test]
+    fn a_name_two_sessions_share_is_an_error() {
+        let sessions = [session("abcdef0011", "dup"), session("abcdef0022", "dup")];
+        assert!(resolve_in(&sessions, "dup").is_err());
+        let by_id = resolve_in(&sessions, "abcdef0022").unwrap().unwrap();
+        assert_eq!(by_id.id, "abcdef0022");
     }
 }

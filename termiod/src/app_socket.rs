@@ -273,23 +273,31 @@ pub fn request_reply(
     Reply::Answered(response.to_string())
 }
 
-/// Prints a reply from `request_reply` and turns it into the outcome the exit
-/// code reports.
-/// Whether a process listens on the socket at `socket`. A refused connect
-/// means either a socket file the app left behind when it quit, or a live app
-/// whose backlog is full; only the second has a listener. Asked of `lsof`,
-/// which names the process that bound the path, so it tells a probe channel's
-/// app or another HOME's app apart from this one.
-pub fn has_listener(socket: &std::path::Path) -> bool {
-    std::process::Command::new("lsof")
-        .arg("-t")
-        .arg(socket)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map(|found| found.status.success() && !found.stdout.trim_ascii().is_empty())
-        .unwrap_or(false)
+/// Whether a process holds the socket at `socket` by its path. A refused
+/// connect means either a socket file the app left behind when it quit, or a
+/// live app whose backlog is full. Only the second has a holder: the path
+/// names the app's listening socket and the connections it accepted, never a
+/// client's end. `lsof` matches the path as it was bound, so both the path
+/// and its canonical form are asked. Never true where `lsof` is missing.
+pub fn has_listener(socket: &Path) -> bool {
+    let held = |path: &Path| {
+        std::process::Command::new("lsof")
+            .arg("-t")
+            .arg(path)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|found| found.status.success() && !found.stdout.trim_ascii().is_empty())
+            .unwrap_or(false)
+    };
+    held(socket)
+        || std::fs::canonicalize(socket)
+            .ok()
+            .filter(|canonical| canonical != socket)
+            .is_some_and(|canonical| held(&canonical))
 }
 
+/// Prints a reply from `request_reply` and turns it into the outcome the exit
+/// code reports.
 pub fn finish(reply: Reply, format: &str, extra: &str) -> Outcome {
     let response = match reply {
         Reply::Answered(response) => response,
@@ -469,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn only_a_bound_listener_counts() {
         let directory = std::env::temp_dir().join(format!("termio-listener-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();

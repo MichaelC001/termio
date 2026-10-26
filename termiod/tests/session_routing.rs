@@ -175,6 +175,20 @@ fn without_the_app_the_replies_keep_the_contract() {
     let reply: serde_json::Value = serde_json::from_slice(&spawned.stdout).expect("spawn --json");
     assert_eq!(reply["error"], "needs_app");
 
+    // Two sessions may share a name; each id reads its own screen.
+    let mut ids = Vec::new();
+    for word in ["first-dup", "second-dup"] {
+        let script = format!("echo {word}; exec cat");
+        let made = termio(&daemon, &["session", "create", "--json", "--name", "Dup", "--", "sh", "-c", &script]);
+        let reply: serde_json::Value = serde_json::from_slice(&made.stdout).expect("create --json");
+        ids.push(reply["id"].as_str().expect("an id").to_string());
+    }
+    assert!(screen_shows(&daemon, &ids[0], "first-dup"), "the first id read another screen");
+    assert!(screen_shows(&daemon, &ids[1], "second-dup"));
+    let shared = termio(&daemon, &["session", "read", "--json", "Dup"]);
+    let reply: serde_json::Value = serde_json::from_slice(&shared.stdout).expect("read --json");
+    assert_eq!(reply["ok"], false, "a shared name picked one session");
+
     let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
     assert!(!stdout(&listed).contains("null"), "ls --all --json: {}", stdout(&listed));
 }
