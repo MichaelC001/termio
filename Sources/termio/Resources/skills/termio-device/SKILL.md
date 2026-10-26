@@ -21,7 +21,9 @@ on one — there is no project filter to lean on.
 - `termio session ls --all --json` — every session on this host, with its status
   (`working` / `idle` / `needs_you` / `done` / `failed` / `unknown`), name, and
   pid. Sessions are addressed by id or by name; both work everywhere a target
-  is taken.
+  is taken. On a Mac where the Termio app runs, `send`, `read` and `close`
+  act on the app's sessions instead: there, take targets from `termio session
+  ls --json`.
 - `termio session read <target>` — print a session's screen.
 - `termio session send <target> "<text>"` — type into a session as if the user
   had. Use it to answer a sibling that is blocked on a question. `--no-enter`

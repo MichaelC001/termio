@@ -143,20 +143,6 @@ pub fn resolve() -> (Channel, Provenance) {
 }
 
 /// The shell client's `locate_termiod()`, same rungs in the same order: the
-/// Whether the channel's app is a live process. Asked of LaunchServices, which
-/// answers only for a running app, so a socket file the app left behind when
-/// it quit does not count. Never true off macOS.
-pub fn app_is_running(channel: &Channel) -> bool {
-    if !cfg!(target_os = "macos") {
-        return false;
-    }
-    std::process::Command::new("lsappinfo")
-        .args(["info", "-only", "bundlepath", &channel.bundle_id])
-        .output()
-        .map(|info| String::from_utf8_lossy(&info.stdout).contains("\"LSBundlePath\"="))
-        .unwrap_or(false)
-}
-
 /// explicit `TERMIOD_BIN` override; the daemon beside this binary, but only
 /// when this binary itself runs out of a bundle's `Contents/Resources` (a
 /// checkout's `target/debug/termio` must not quietly prefer its sibling over

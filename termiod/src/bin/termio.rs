@@ -761,11 +761,11 @@ async fn serve_daemon_read(
         object.insert("screen", serde_json::Value::from(screen));
         object.insert(
             "target",
-            serde_json::Value::from(format!(
-                "{}://session/{}",
-                channel.url_scheme(),
-                info.name.to_lowercase()
-            )),
+            serde_json::Value::from(if uuid_shaped(&info.name.to_lowercase()) {
+                format!("{}://session/{}", channel.url_scheme(), info.name.to_lowercase())
+            } else {
+                info.id.clone()
+            }),
         );
         object.insert("title", serde_json::Value::from(read_title(info)));
         match serde_json::to_string(&object) {
@@ -1226,11 +1226,7 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             daemon_reply(format, termiod::server::list_sessions(output.json, true).await);
         }
         // With no app to show a pane, the command runs in a session on
-        // termiod. Like the app's `run`, it leaves a shell behind: the line
-        // ends by replacing itself with the login shell, so the output stays
-        // on the screen for `read` after the command exits. The shell is the
-        // passwd one the daemon runs the line in, quoted the way sh, bash,
-        // zsh, fish and csh all read.
+        // termiod, typed into a login shell as the app types it.
         Fallback::Run { line, app_only } if no_app => {
             if app_only {
                 refuse(format, "needs_app", "--wait, --direction and --ratio need the Termio app, and it is not running");
@@ -1243,8 +1239,6 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 json: output.json,
                 argv: Vec::new(),
             };
-            let shell = termiod::agent::machine::login_shell();
-            let line = format!("{line}\nexec {} -l", termiod::lifecycle::shell_quote(&shell));
             daemon_reply(format, termiod::server::run_session(create, line).await);
         }
         // An unaddressed send starts an agent, which only the app can do.
@@ -1258,6 +1252,9 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 Ok(Some(info)) => {
                     if app_only {
                         refuse(format, "needs_app", "--key and --wait need the Termio app, and it is not running");
+                    }
+                    if text.is_empty() {
+                        refuse(format, "no_text", "send needs text to send.");
                     }
                     daemon_reply(
                         format,
@@ -1340,13 +1337,15 @@ fn push(extra: &mut String, fragment: &str) {
 }
 
 /// Whether there is an app, by the same rule a request uses: a socket file
-/// is an app unless nothing listens there and the app is not running.
+/// is an app unless no process listens on it.
 fn app_running(channel: &Channel) -> bool {
     match std::os::unix::net::UnixStream::connect(app_socket::socket_path(channel)) {
         Ok(_) => true,
         Err(error) => match error.kind() {
             std::io::ErrorKind::NotFound => false,
-            std::io::ErrorKind::ConnectionRefused => channel::app_is_running(channel),
+            std::io::ErrorKind::ConnectionRefused => {
+                app_socket::has_listener(&app_socket::socket_path(channel))
+            }
             _ => true,
         },
     }
@@ -1691,7 +1690,8 @@ List, start, drive and close sessions.
 
 With the Termio app running, these commands act on the sessions of the
 project you run them in. With no app running, they act on this machine's
-termiod. `create`, `attach` and `ls --all` always act on termiod.
+termiod. `create`, `attach` and `ls --all` always act on termiod, and so
+does `read` of a session the app opened.
 `termio -H <host> session …` acts on another machine.
 
 A SESSION is a termio://session/<id> link, an id, an id prefix of 8 or more

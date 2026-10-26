@@ -210,11 +210,12 @@ Every session runs on a [Termio server](/docs/server), and the app is only one
 way to see it. So `termio session` works with no app at all:
 
 - With the app running, a command acts on the sessions of your project, as
-  above. The project scope and the Session control switch hold.
+  above. The project scope and the Session control switch hold, with one
+  exception: `read` of a session the app opened answers from the Termio server
+  directly.
 - With no app running, every command goes to the Termio server. `list` shows
-  every session on the machine, `run` starts its command in a new session there
-  under a shell that stays after the command exits, and a session’s name works
-  as its address.
+  every session on the machine, `run` types its command into a new shell
+  session there, and a session’s name works as its address.
 
 `list --all` shows every session on the machine even when the app is running.
 `create` and `attach` always act on the server:
@@ -305,7 +306,7 @@ brevity):
 | `focus` | `focused` |
 | `list --all`, and `list` with no app | `sessions: [{id, name, cwd, command, pid, status, …}]` — the Termio server’s own rows |
 | `create` | `id` |
-| `run`, `send`, `close` with no app | as above, with the session’s id as `target` |
+| `run`, `send`, `read`, `close` with no app | as above, with the session’s id as `target`; `read` of a session the app opened keeps its link |
 
 The two wait verbs share one reply shape (`--wait` means the same thing
 everywhere): the final `status`, and the transcript line range

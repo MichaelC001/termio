@@ -145,6 +145,40 @@ fn run_without_the_app_starts_a_session_on_termiod() {
     assert_eq!(refusal["error"], "needs_app");
 }
 
+/// With no app, the replies keep the shapes and codes the app's replies have.
+#[test]
+fn without_the_app_the_replies_keep_the_contract() {
+    let daemon = start_daemon("contract");
+    // A line the shell cannot finish still leaves a session, waiting for more.
+    let ran = termio(&daemon, &["session", "run", "--json", "echo 'unterminated"]);
+    let reply: serde_json::Value = serde_json::from_slice(&ran.stdout).expect("run --json");
+    assert_eq!(reply["queued"], true);
+    let id = reply["id"].as_str().expect("an id").to_string();
+    std::thread::sleep(Duration::from_millis(500));
+    let read = termio(&daemon, &["session", "read", &id]);
+    assert!(read.status.success(), "the session ended: {read:?}");
+
+    let created = termio(&daemon, &["session", "create", "--name", "Build", "--", "/bin/cat"]);
+    assert!(created.status.success(), "create failed: {created:?}");
+    let read = termio(&daemon, &["session", "read", "--json", "Build"]);
+    let reply: serde_json::Value = serde_json::from_slice(&read.stdout).expect("read --json");
+    let target = reply["target"].as_str().expect("a target").to_string();
+    let again = termio(&daemon, &["session", "read", &target]);
+    assert!(again.status.success(), "the reply's target does not resolve: {again:?}");
+
+    let empty = termio(&daemon, &["session", "send", "--json", "Build"]);
+    let reply: serde_json::Value = serde_json::from_slice(&empty.stdout).expect("send --json");
+    assert_eq!(reply["error"], "no_text");
+
+    let spawned = termio(&daemon, &["session", "spawn", "--json", "hello"]);
+    assert!(!spawned.status.success());
+    let reply: serde_json::Value = serde_json::from_slice(&spawned.stdout).expect("spawn --json");
+    assert_eq!(reply["error"], "needs_app");
+
+    let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
+    assert!(!stdout(&listed).contains("null"), "ls --all --json: {}", stdout(&listed));
+}
+
 /// The old names still parse: shipped hooks, skills and apps run them.
 #[test]
 fn the_old_names_still_work() {

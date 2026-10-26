@@ -501,7 +501,14 @@ pub struct AttachArgs {
 pub async fn list_sessions(json: bool, contract: bool) -> Result<()> {
     let sessions = client::list().await?;
     if json && contract {
-        let reply = serde_json::json!({ "ok": true, "schema_version": 1, "sessions": sessions });
+        // The contract omits a field it does not know rather than send null.
+        let mut rows = serde_json::to_value(&sessions)?;
+        if let Some(rows) = rows.as_array_mut() {
+            for row in rows.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+                row.retain(|_, value| !value.is_null());
+            }
+        }
+        let reply = serde_json::json!({ "ok": true, "schema_version": 1, "sessions": rows });
         println!("{}", serde_json::to_string_pretty(&reply)?);
         return Ok(());
     }
@@ -555,8 +562,10 @@ pub async fn create_session(args: CreateArgs, command: Option<String>) -> Result
     Ok(())
 }
 
-/// `termio session run` with no app: `create_session` for a shell line,
-/// replying in the shape of the app's `run` reply.
+/// `termio session run` with no app: a login shell on termiod with `line`
+/// typed into it, as the app's `run` types it. The shell stays when the
+/// command exits, so its output stays on the screen for `read`. Replies in
+/// the shape of the app's `run` reply.
 pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
     let (rows, cols) = client::term_size();
     let json = args.json;
@@ -564,20 +573,24 @@ pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
         name: args.name,
         cwd: args.cwd,
         argv: Vec::new(),
-        command: Some(line),
+        command: None,
         env: Vec::new(),
         rows,
         cols,
         workstream: None,
     };
     let id = client::create(spec).await?;
+    let mut data = line.into_bytes();
+    data.push(b'\r');
+    client::send(&id, data).await?;
     if json {
         let reply = serde_json::json!({
-            "ok": true, "schema_version": 1, "id": id, "target": id, "title": id, "created": true,
+            "ok": true, "schema_version": 1, "id": id, "target": id, "title": id,
+            "created": true, "queued": true,
         });
         println!("{reply}");
     } else {
-        println!("started {id} — command running; use this address for follow-ups");
+        println!("started {id} — command queued; use this address for follow-ups");
         println!("  (read its output with `termio session read {id}`)");
     }
     Ok(())

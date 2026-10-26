@@ -233,7 +233,7 @@ pub fn request_reply(
         Err(error)
             if error.kind() == std::io::ErrorKind::NotFound
                 || (error.kind() == std::io::ErrorKind::ConnectionRefused
-                    && !crate::channel::app_is_running(channel)) =>
+                    && !has_listener(&socket)) =>
         {
             return Reply::NoApp(socket, error.kind());
         }
@@ -275,18 +275,45 @@ pub fn request_reply(
 
 /// Prints a reply from `request_reply` and turns it into the outcome the exit
 /// code reports.
+/// Whether a process listens on the socket at `socket`. A refused connect
+/// means either a socket file the app left behind when it quit, or a live app
+/// whose backlog is full; only the second has a listener. Asked of `lsof`,
+/// which names the process that bound the path, so it tells a probe channel's
+/// app or another HOME's app apart from this one.
+pub fn has_listener(socket: &std::path::Path) -> bool {
+    std::process::Command::new("lsof")
+        .arg("-t")
+        .arg(socket)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|found| found.status.success() && !found.stdout.trim_ascii().is_empty())
+        .unwrap_or(false)
+}
+
 pub fn finish(reply: Reply, format: &str, extra: &str) -> Outcome {
     let response = match reply {
         Reply::Answered(response) => response,
-        Reply::NoApp(socket, std::io::ErrorKind::NotFound) => {
-            eprintln!("termio: app is not running (no control socket at {})", socket.display());
-            return Outcome::Error;
-        }
-        Reply::NoApp(socket, _) => {
-            eprintln!(
-                "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
-                socket.display()
-            );
+        Reply::NoApp(socket, kind) => {
+            if kind == std::io::ErrorKind::NotFound {
+                eprintln!("termio: app is not running (no control socket at {})", socket.display());
+            } else {
+                eprintln!(
+                    "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
+                    socket.display()
+                );
+            }
+            // A JSON caller reads stdout only, so it gets the error contract.
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "error": "needs_app",
+                        "message": "this needs the Termio app, and it is not running",
+                        "schema_version": 1,
+                    })
+                );
+            }
             return Outcome::Error;
         }
         Reply::Failed => return Outcome::Error,
@@ -439,6 +466,19 @@ mod tests {
         std::fs::write(dir.join("session-control.sock"), b"").unwrap();
         assert_eq!(resolve_in(&dir), dir.join("app.sock"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_bound_listener_counts() {
+        let directory = std::env::temp_dir().join(format!("termio-listener-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("app.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(has_listener(&path));
+        drop(listener);
+        assert!(!has_listener(&path), "a socket file outlived its listener");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
