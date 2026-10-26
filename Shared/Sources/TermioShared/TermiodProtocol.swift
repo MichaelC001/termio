@@ -1273,8 +1273,10 @@ public enum Termiod {
         public let session: String
         public let epoch: UInt64
         public let offset: UInt64
-        /// Where live output begins; bytes before it are the replay.
+        /// Where live output begins, in bytes and in `vt_resize` markers; what
+        /// comes before it is the replay.
         public let live: UInt64
+        public let liveMarkers: UInt64
     }
 
     /// A workstream status delta — `working · idle · needs_you · done · failed ·

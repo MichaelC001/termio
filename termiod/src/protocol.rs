@@ -1555,6 +1555,7 @@ pub enum Event {
         epoch: u64,
         offset: u64,
         live: u64,
+        live_markers: u64,
     },
     SessionExited {
         session: String,

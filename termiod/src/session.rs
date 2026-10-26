@@ -3613,6 +3613,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                         epoch: position.epoch,
                         offset: position.offset,
                         live: session.stream_offset,
+                        live_markers: session.stream_marker_count,
                     }))
                     .chain(replay);
                     for step in steps.by_ref() {
