@@ -1372,15 +1372,14 @@ public final class TermiodStreamFrameBuilder {
     }
 
     private var lastCursorState: CursorState?
-    /// The cell runs were last broken at: the visible cursor's, blink aside.
+    /// The cell runs were last broken at: the cursor's, shown or hidden, as
+    /// Ghostty breaks them.
     private var shapingCursor: (x: UInt16, y: Int)?
 
     private static func shapingBreak(_ state: GhosttyRenderState) -> (x: UInt16, y: Int)? {
-        var visible = false
         var hasValue = false
-        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &visible)
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
-        guard visible, hasValue else { return nil }
+        guard hasValue else { return nil }
         var x: UInt16 = 0
         var y: UInt16 = 0
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
@@ -1540,12 +1539,15 @@ public final class TermiodStreamFrameBuilder {
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {
                 continue
             }
+            // Before contrast, which follows each cell's own background: Ghostty
+            // never breaks a run on the background.
+            let styled = foreground
             if minimumContrast > 1, !slot.colored, !TermiodGlyphAtlas.isGraphic(grapheme) {
                 foreground = Self.contrasted(foreground, against: background, minimum: minimumContrast)
             }
             if grapheme.count == 1, let unit = Self.ligaturePunctuation(grapheme[0]) {
                 let look = LigatureCell.Look(
-                    red: foreground.r, green: foreground.g, blue: foreground.b, alpha: alpha, inverse: style.inverse,
+                    red: styled.r, green: styled.g, blue: styled.b, alpha: alpha, inverse: style.inverse,
                     selected: selection?.contains(x) == true,
                     cursor: shapingCursor.map { $0.y == y && $0.x == x } ?? false)
                 ligatureCells.append(LigatureCell(
