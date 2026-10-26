@@ -15,7 +15,8 @@ use crate::session::{
     self, ClientBacklog, ClientEvent, Metered, SessionEnded, SessionHandle, SessionMsg,
 };
 use crate::tombstone::{EndReason, Graveyard};
-use anyhow::{Context, Result};
+use crate::view::Place;
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -58,6 +59,8 @@ pub struct Manager {
     /// death has to leave evidence — an empty session list otherwise reads as
     /// "nothing was running" rather than "everything was lost".
     graveyard: Arc<Graveyard>,
+    /// Which projects exist on this host and where each session's pane sits.
+    view: Arc<crate::view::ViewStore>,
     session_removed: Arc<Notify>,
     /// Where a `handoff` request goes. The accept loop owns the listener and
     /// the runtime, so replacing the image is its move to make; a connection
@@ -92,8 +95,16 @@ impl Manager {
         host_id: String,
         graveyard: Arc<Graveyard>,
         handoff: mpsc::UnboundedSender<std::path::PathBuf>,
+        view_dir: Option<std::path::PathBuf>,
+        carried_view: Option<crate::view::View>,
     ) -> Manager {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let resources = Registry::new();
+        let view = Arc::new(crate::view::ViewStore::open(
+            view_dir.as_deref(),
+            resources.clone(),
+            carried_view,
+        ));
         Manager {
             inner: Arc::new(Mutex::new(ManagerInner {
                 sessions: HashMap::new(),
@@ -105,9 +116,10 @@ impl Manager {
             on_exit,
             events,
             host_id: Arc::new(host_id),
-            resources: Registry::new(),
+            resources,
             uploads: crate::files::Uploads::new(),
             graveyard,
+            view,
             session_removed: Arc::new(Notify::new()),
             handoff,
             searching: Arc::new(tokio::sync::Semaphore::new(search_permits())),
@@ -248,7 +260,9 @@ impl Manager {
         // Only once every session is installed again: a create that slipped in
         // before this point would have been spawned into a daemon that was
         // still handing over. The handoff claim goes with it — this attempt is
-        // over, and the next one is allowed to try.
+        // over, and the next one is allowed to try. The view thaws first, so a
+        // create admitted by the line below can place its session.
+        self.view.thaw();
         self.inner.lock().unwrap().draining = false;
         lost
     }
@@ -270,6 +284,7 @@ impl Manager {
     /// mean one unreadable state directory blocked every upgrade until restart.
     fn end_handoff(&self) {
         self.inner.lock().unwrap().handing_off = false;
+        self.view.thaw();
     }
 
     fn find(&self, id: &SessionId) -> Option<SessionHandle> {
@@ -828,7 +843,22 @@ pub async fn serve(
     );
     let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
     let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel::<std::path::PathBuf>();
-    let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx);
+    let view_dir = match paths::durable_state_dir() {
+        Ok(dir) => Some(dir),
+        Err(error) => {
+            eprintln!("termiod: the view will not be saved: {error:#}");
+            None
+        }
+    };
+    let carried_view = inherited.as_ref().and_then(|(blob, _)| blob.view.clone());
+    let manager = Manager::new(
+        on_exit_tx,
+        host_id,
+        graveyard,
+        handoff_tx,
+        view_dir,
+        carried_view,
+    );
     tokio::spawn(pump_status_resource(
         manager.events.subscribe(),
         manager.resources.clone(),
@@ -860,6 +890,24 @@ pub async fn serve(
         );
     }
 
+    // Sessions carried across a handoff from a daemon that kept no view have no
+    // pane yet. They get one before the first client can ask where they are.
+    // Only those are resolved: placement touches the filesystem, and every
+    // session a view-keeping daemon handed over already has its pane.
+    let shown = manager.view.snapshot().sessions();
+    let mut live: Vec<(String, String)> = Vec::new();
+    for info in manager.list().await {
+        if !shown.contains(&info.id) {
+            live.push((info.id, placement_cwd(&info.cwd).await));
+        }
+    }
+    if let Err(error) = manager
+        .view
+        .change(|view| Ok(((), view.place_unplaced(&live))))
+    {
+        eprintln!("termiod: placing the carried sessions in the view failed: {error:#}");
+    }
+
     {
         let manager = manager.clone();
         tokio::spawn(async move {
@@ -877,6 +925,17 @@ pub async fn serve(
                 manager
                     .graveyard
                     .bury(&ended.info, reason, Some(ended.status));
+                // A kill is a close: the user meant the pane to go. A session
+                // that ended any other way keeps its pane, which is where a
+                // client says why it ended.
+                if reason == EndReason::Killed {
+                    let session = id.to_string();
+                    if let Err(error) =
+                        manager.view.change(|view| Ok(((), view.remove_session(&session))))
+                    {
+                        eprintln!("termiod: removing the pane of {session} failed: {error:#}");
+                    }
+                }
                 // The scratch dir is reaped with the session (§C.12 `temp:`),
                 // in-flight uploads first so no dotfile survives the sweep.
                 manager.uploads.drop_session(&id);
@@ -1188,6 +1247,7 @@ async fn hand_over(
         // Assigned by `pack`, with the session masters.
         listener_fd: -1,
         sessions: Vec::new(),
+        view: Some(manager.view.freeze()),
     };
     let blob_fd = match crate::handoff::pack(blob, listener_fd, sessions, staged) {
         Ok(fd) => fd.into_raw_fd(),
@@ -1660,15 +1720,146 @@ async fn process_control(
 
     match control {
         Control::Create { spec, seq } => {
-            let response = match manager.create(spec) {
-                Ok(id) => {
-                    manager.publish_created(&id).await;
-                    Control::Created {
-                        id: id.to_string(),
-                        re: seq,
+            let place = spec.place.clone().unwrap_or_default();
+            let cwd = placement_cwd(spec.cwd.as_deref().unwrap_or_default()).await;
+            let unknown_project = place.project.as_ref().filter(|project| {
+                !manager.view.snapshot().projects.iter().any(|known| &&known.id == project)
+            });
+            let response = if manager.view.is_frozen() {
+                // A session spawned now could not be placed: its pane would be
+                // missing for the life of this image, or lose its project in
+                // the next one.
+                error(seq, ErrorCode::Busy, format!("{:#}", crate::view::Frozen), true)
+            } else if let Some(project) = unknown_project {
+                // Refused before the spawn: a session nobody can find in the
+                // view is the state this whole design removes.
+                error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false)
+            } else {
+                match manager.create(spec) {
+                    Ok(id) => {
+                        let session = id.to_string();
+                        let pane = match manager.view.change(|view| {
+                            // The project can be removed while the session
+                            // spawns; a live session still gets a pane, loose.
+                            let pane = view
+                                .place_terminal(&session, &cwd, &place)
+                                .or_else(|_| {
+                                    // No cwd: loose, never some other project.
+                                    view.place_terminal(&session, "", &Place::default())
+                                })?;
+                            Ok((pane, true))
+                        }) {
+                            Ok((pane, _)) => Some(pane),
+                            Err(e) => {
+                                eprintln!("termiod: session {session} has no pane: {e:#}");
+                                None
+                            }
+                        };
+                        manager.publish_created(&id).await;
+                        Control::Created {
+                            id: session,
+                            pane,
+                            re: seq,
+                        }
                     }
+                    Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
                 }
-                Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::View { seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                Control::ViewState {
+                    view: Box::new(manager.view.snapshot()),
+                    re: seq,
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::ProjectAdd { path, label, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                match std::fs::canonicalize(&path) {
+                    Ok(canonical) if canonical.is_dir() => {
+                        let canonical = canonical.to_string_lossy().into_owned();
+                        match manager
+                            .view
+                            .change(|view| Ok(view.add_project(&canonical, label.as_deref())))
+                        {
+                            Ok((project, revision)) => Control::ProjectAdded {
+                                project,
+                                revision,
+                                re: seq,
+                            },
+                            Err(e) => view_error(seq, ErrorCode::Internal, e),
+                        }
+                    }
+                    Ok(_) => error(seq, ErrorCode::NotFound, format!("not a directory: {path}"), false),
+                    Err(e) => error(seq, ErrorCode::NotFound, format!("{path}: {e}"), false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::ProjectRemove { project, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                let sessions = manager
+                    .view
+                    .snapshot()
+                    .projects
+                    .iter()
+                    .find(|row| row.id == project)
+                    .map(|row| {
+                        row.groups
+                            .iter()
+                            .flat_map(|group| group.panes())
+                            .map(|pane| match &pane.kind {
+                                crate::view::PaneKind::Terminal { session } => session.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                match sessions {
+                    None => error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false),
+                    Some(sessions) => match kill_all(manager, &sessions).await {
+                        Err(busy) => error(seq, ErrorCode::Busy, busy, true),
+                        // The kills went first: a project whose row is gone
+                        // while one of its sessions crosses a handoff alive
+                        // would come back as a loose pane nobody asked for.
+                        Ok(()) => match manager.view.change(|view| {
+                            view.remove_project(&project)?;
+                            Ok(((), true))
+                        }) {
+                            Ok(((), revision)) => Control::Revised { revision, re: seq },
+                            Err(e) => view_error(seq, ErrorCode::NotFound, e),
+                        },
+                    },
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::PaneClose { pane, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                match manager.view.snapshot().session_of(&pane) {
+                    None => error(seq, ErrorCode::NotFound, format!("no such pane: {pane}"), false),
+                    Some(session) => match kill_all(manager, std::slice::from_ref(&session)).await {
+                        Err(busy) => error(seq, ErrorCode::Busy, busy, true),
+                        // The kill's own exit may have removed the pane
+                        // already; either way it is gone at this revision.
+                        Ok(()) => match manager
+                            .view
+                            .change(|view| Ok(((), view.remove_session(&session))))
+                        {
+                            Ok(((), revision)) => Control::Revised { revision, re: seq },
+                            Err(e) => view_error(seq, ErrorCode::Internal, e),
+                        },
+                    },
+                }
             };
             send_response(out, response_cache, seq, response);
         }
@@ -1897,6 +2088,15 @@ async fn process_control(
                     seq,
                     ErrorCode::Denied,
                     "the resources capability was not negotiated",
+                    false,
+                )
+            } else if resource == crate::resource::VIEW_ID
+                && !connection.capabilities.contains("view")
+            {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the view capability was not negotiated",
                     false,
                 )
             } else if (resource.starts_with("git:") || resource.starts_with("head:"))
@@ -2517,6 +2717,9 @@ async fn process_control(
         | Control::HelloErr { .. }
         | Control::Ok { .. }
         | Control::Created { .. }
+        | Control::ViewState { .. }
+        | Control::ProjectAdded { .. }
+        | Control::Revised { .. }
         | Control::Sessions { .. }
         | Control::Attached { .. }
         | Control::Exited { .. }
@@ -2847,6 +3050,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         | Event::GitChanged { .. }
         | Event::HeadChanged { .. }
         | Event::StatusChanged { .. }
+        | Event::ViewChanged { .. }
         | Event::SearchResults { .. } => false,
         // Input travels from a client to the host, never back out.
         Event::Key { .. }
@@ -3194,6 +3398,72 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
         message: message.into(),
         retryable,
     }
+}
+
+/// The reply for a view change that failed: `busy`, worth retrying, while a
+/// handoff carries the view; otherwise `code`.
+fn view_error(seq: Option<u64>, code: ErrorCode, e: anyhow::Error) -> Control {
+    if e.is::<crate::view::Frozen>() {
+        error(seq, ErrorCode::Busy, format!("{e:#}"), true)
+    } else {
+        error(seq, code, format!("{e:#}"), false)
+    }
+}
+
+/// Kill every session in `sessions` that is still running. An ended one is
+/// skipped. A kill that cannot be delivered because the session is crossing a
+/// handoff is an error the caller retries, as `kill` reports it: closing what
+/// shows it would let it come back on the other side.
+async fn kill_all(manager: &Manager, sessions: &[String]) -> std::result::Result<(), String> {
+    let mut busy = Vec::new();
+    for session in sessions {
+        if let Some(handle) = manager.resolve(session).await {
+            if !handle.send(SessionMsg::Kill {
+                reason: EndReason::Killed,
+            }) {
+                busy.push(session.clone());
+            }
+        }
+    }
+    if busy.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is being handed to a new daemon and was not killed; reconnect and ask again",
+            busy.join(", ")
+        ))
+    }
+}
+
+/// The directory a session is placed by: where it really runs. An empty cwd
+/// spawns in the daemon's own directory, and a project's path is canonical, so
+/// a symlinked or relative spelling must resolve before it is matched.
+///
+/// Resolving touches the filesystem, and a cwd on a hung network mount would
+/// stall the caller, so it runs on a blocking thread and gives up after a
+/// second; the spelling as given is then still a fair guess.
+async fn placement_cwd(cwd: &str) -> String {
+    let path = if cwd.is_empty() {
+        match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(_) => return String::new(),
+        }
+    } else {
+        std::path::PathBuf::from(cwd)
+    };
+    // A plain thread, not the runtime's blocking pool: one stuck on a dead
+    // mount is abandoned, and the pool would wait for it when the daemon exits.
+    let (tx, rx) = oneshot::channel();
+    let resolve = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::canonicalize(resolve));
+    });
+    match tokio::time::timeout(Duration::from_secs(1), rx).await {
+        Ok(Ok(Ok(canonical))) => canonical,
+        _ => path,
+    }
+    .to_string_lossy()
+    .into_owned()
 }
 
 #[cfg(test)]

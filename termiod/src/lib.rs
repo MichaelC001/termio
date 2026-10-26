@@ -44,4 +44,5 @@ pub mod shell_integration;
 pub mod tailnet;
 pub mod tombstone;
 pub mod version;
+pub mod view;
 pub mod wss;

@@ -46,6 +46,7 @@ Sessions:
 Machines:
   server      A machine's termiod: status, logs, deploy, service, Tailscale
   pair        Print the link that pairs a phone or a browser
+  view        This machine's projects and how their sessions are grouped
 
 App:
   open        Open DIR (default: the current directory) as a project
@@ -94,6 +95,13 @@ enum Verb {
     Open {
         #[arg(value_name = "DIR")]
         dir: Option<PathBuf>,
+    },
+
+    /// This machine's projects and how their sessions are grouped.
+    View {
+        /// Output the view as JSON.
+        #[arg(long)]
+        json: bool,
     },
 
     /// List, start, drive and close sessions.
@@ -931,14 +939,15 @@ async fn main() -> Result<()> {
     }
 
     match cli.verb {
-        None => open_project(&channel, Path::new(".")),
+        None => open_project(&channel, Path::new(".")).await,
         Some(Verb::Open { dir }) => {
-            open_project(&channel, dir.as_deref().unwrap_or(Path::new(".")))
+            open_project(&channel, dir.as_deref().unwrap_or(Path::new("."))).await
         }
         Some(Verb::Directory(words)) => {
             let directory = words.first().map(String::as_str).unwrap_or(".");
-            open_project(&channel, Path::new(directory))
+            open_project(&channel, Path::new(directory)).await
         }
+        Some(Verb::View { json }) => print_view(json).await,
         Some(Verb::Version { json }) => version::print_table(&channel, provenance, json).await,
         Some(Verb::Completion { shell }) => {
             let mut command = Cli::command();
@@ -1670,7 +1679,7 @@ fn simulator(channel: &Channel, verb: SimVerb) -> Result<()> {
 
 /// Resolve to an absolute, symlink-free path so termio keys the project by
 /// the same canonical path it stores, avoiding duplicate sidebar entries.
-fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
+async fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
     if !directory.is_dir() {
         eprintln!("termio: not a directory: {}", directory.display());
         std::process::exit(1);
@@ -1679,7 +1688,7 @@ fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("resolving {}", directory.display()))?;
     if !cfg!(target_os = "macos") {
-        bail!("termio open drives the Mac app; there is none on this machine");
+        return open_on_this_host(&absolute).await;
     }
     let error = Command::new("open")
         .arg("-b")
@@ -1687,6 +1696,72 @@ fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
         .arg(&absolute)
         .exec();
     Err(error).context("running open")
+}
+
+/// Off a Mac there is no app to hand the directory to. The project goes into
+/// this host's view instead, which every client connected here draws. A project
+/// with no running session gets a shell, so it opens onto something live.
+async fn open_on_this_host(directory: &Path) -> Result<()> {
+    let path = directory.to_string_lossy().into_owned();
+    let project = termiod::client::project_add(&path).await?;
+    let view = termiod::client::view().await?;
+    let Some(row) = view.projects.iter().find(|row| row.id == project) else {
+        bail!("{path} was registered but is not in the view");
+    };
+    let live: Vec<String> = termiod::client::list()
+        .await?
+        .into_iter()
+        .map(|info| info.id)
+        .collect();
+    let running = row.groups.iter().flat_map(|group| group.panes()).any(|pane| match &pane.kind {
+        termiod::view::PaneKind::Terminal { session } => live.contains(session),
+    });
+    if !running {
+        let (rows, cols) = termiod::client::term_size();
+        let spec = termiod::protocol::CreateSpec {
+            cwd: Some(path.clone()),
+            rows,
+            cols,
+            place: Some(termiod::view::Place {
+                project: Some(project.clone()),
+            }),
+            ..Default::default()
+        };
+        termiod::client::create(spec).await?;
+    }
+    println!("Opened {}. It shows in termio on every device connected to this machine.", row.label);
+    Ok(())
+}
+
+/// `termio view`: the host's projects and how their sessions are grouped.
+async fn print_view(json: bool) -> Result<()> {
+    let view = termiod::client::view().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+    fn print_groups(groups: &[termiod::view::Group]) {
+        for group in groups {
+            let sessions: Vec<String> = group
+                .panes()
+                .iter()
+                .map(|pane| match &pane.kind {
+                    termiod::view::PaneKind::Terminal { session } => session.clone(),
+                })
+                .collect();
+            println!("  {}  {}", group.id, sessions.join(" "));
+        }
+    }
+    println!("revision {}", view.revision);
+    for project in &view.projects {
+        println!("{}  {}", project.label, project.path);
+        print_groups(&project.groups);
+    }
+    if !view.loose.is_empty() {
+        println!("(no project)");
+        print_groups(&view.loose);
+    }
+    Ok(())
 }
 
 const NOTIFY_HELP: &str = "\

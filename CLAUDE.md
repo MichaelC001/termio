@@ -47,8 +47,10 @@ is a design regression, not a tradeoff:
    brings its own crypto.
 4. **One protocol, versioned and transport-agnostic.** Unix socket, SSH stdio, and
    later QUIC carry the *same* framed messages. No second protocol for the phone.
-5. **No nested window manager in the host.** One PTY per session; panes and layout
-   are client concerns.
+5. **Layout lives in termiod as control-plane state.** One PTY per session. The
+   host owns projects, groups, panes, focus and zoom; clients keep only their
+   viewport. Nothing about layout runs on the byte path. See
+   `docs/design/20261025-termiod-owns-the-view.md`.
 6. **Single writer, many readers.** Observers never claim the write token.
 
 ## Working style

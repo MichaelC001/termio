@@ -552,6 +552,7 @@ pub async fn create_session(args: CreateArgs, command: Option<String>) -> Result
         rows,
         cols,
         workstream: None,
+        place: None,
     };
     let id = client::create(spec).await?;
     if args.json {
@@ -578,6 +579,7 @@ pub async fn run_session(args: CreateArgs, line: String) -> Result<()> {
         rows,
         cols,
         workstream: None,
+        place: None,
     };
     let id = client::create(spec).await?;
     settle(&id, rows, cols).await;
@@ -642,6 +644,7 @@ pub async fn attach_session(args: AttachArgs) -> Result<()> {
             rows,
             cols,
             workstream: None,
+            place: None,
         })
     };
     if args.observe {

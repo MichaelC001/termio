@@ -209,6 +209,11 @@ pub struct Blob {
     /// carried rather than re-bound.
     pub listener_fd: RawFd,
     pub sessions: Vec<CarriedSession>,
+    /// The host's view, carried so the new image continues it at the same
+    /// revision even when it never reached the disk. Absent from an older
+    /// image's blob; the new image then loads the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<crate::view::View>,
 }
 
 /// Whether `binary` can be handed off to at all, checked *before* the running
@@ -610,6 +615,7 @@ mod tests {
             host_id: "h_1".to_string(),
             listener_fd: -1,
             sessions: Vec::new(),
+            view: None,
         };
         // Two descriptors that are not ptys but are perfectly good stand-ins
         // for "an owning fd the actor handed over".

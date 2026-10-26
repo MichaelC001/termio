@@ -62,6 +62,11 @@ pub const FS_PREFIX: &str = "fs:";
 /// `docs/design/20260831-companion-second-protocol-retires.md` §3.6.
 pub const STATUS_ID: &str = "status:";
 
+/// The `view:host` resource id: this host's view
+/// (`docs/design/20261025-termiod-owns-the-view.md`). One per host, and its
+/// `seq` is the view's revision.
+pub const VIEW_ID: &str = "view:host";
+
 /// The `git:` resource id prefix (§C.13). Ids are `git:<canonical repo root>`.
 pub const GIT_PREFIX: &str = "git:";
 
@@ -150,6 +155,16 @@ impl ResourceBatch for StatusBatch {
                 .stalled
                 .as_ref()
                 .map(|s| s.transcript_lines_grown),
+        }
+    }
+}
+
+impl ResourceBatch for crate::view::View {
+    fn into_event(self, resource: String, seq: u64) -> Event {
+        Event::ViewChanged {
+            resource,
+            seq,
+            view: Box::new(self),
         }
     }
 }
@@ -343,12 +358,23 @@ struct HeadEntry {
 /// status. That is the honest answer, and it is one round trip.
 type StatusEntry = Arc<Mutex<ResourceState<StatusBatch>>>;
 
+/// The `view:host` resource. Every batch is the whole view, so a gap
+/// subscriber is served `snapshot` at the current seq. The entry is installed
+/// once at startup with `seq` at the persisted revision, and no sweep removes
+/// it: the view is the host's own state, not a watch that lingers.
+#[derive(Clone)]
+struct ViewEntry {
+    state: Arc<Mutex<ResourceState<crate::view::View>>>,
+    snapshot: Arc<Mutex<crate::view::View>>,
+}
+
 #[derive(Clone)]
 enum ResourceEntry {
     Fs(WatchEntry),
     Git(GitEntry),
     Head(HeadEntry),
     Status(StatusEntry),
+    View(ViewEntry),
 }
 
 #[derive(Clone, Default)]
@@ -382,8 +408,8 @@ impl Registry {
     /// prefixes pick the kind (§C.13 adds `git:`), and `status:` names the one
     /// device-wide resource, which takes no root.
     pub fn resource_id(spec: &str) -> Result<String> {
-        if spec == STATUS_ID {
-            return Ok(STATUS_ID.to_string());
+        if spec == STATUS_ID || spec == VIEW_ID {
+            return Ok(spec.to_string());
         }
         for prefix in [GIT_PREFIX, HEAD_PREFIX] {
             let Some(root) = spec.strip_prefix(prefix) else {
@@ -437,6 +463,9 @@ impl Registry {
     ) -> Result<SubscribeReply> {
         if resource == STATUS_ID {
             return self.subscribe_status(client, tx, since);
+        }
+        if resource == VIEW_ID {
+            return self.subscribe_view(client, tx, since);
         }
         if resource.starts_with(GIT_PREFIX) {
             return self.subscribe_git(resource, client, tx, since);
@@ -524,6 +553,63 @@ impl Registry {
             _ => return,
         };
         entry.lock().unwrap().publish(STATUS_ID, batch);
+    }
+
+    /// Install the view entry at the persisted revision. Called once, before
+    /// the daemon accepts a connection.
+    pub fn install_view(&self, view: crate::view::View) {
+        let mut state = ResourceState::new(None);
+        state.seq = view.revision;
+        // With an empty ring, `resume` takes a cursor one behind as current and
+        // replays nothing. Seeding the ring with the view at its own revision
+        // makes that cursor replay it, as it would have before the restart.
+        if view.revision > 0 {
+            state.ring.push_back((view.revision, view.clone()));
+        }
+        let entry = ViewEntry {
+            state: Arc::new(Mutex::new(state)),
+            snapshot: Arc::new(Mutex::new(view)),
+        };
+        self.watches
+            .lock()
+            .unwrap()
+            .insert(VIEW_ID.to_string(), ResourceEntry::View(entry));
+    }
+
+    /// Publish the view at its revision. The caller holds the view's own lock,
+    /// which is what keeps revisions in order; the revision is always the
+    /// resource's next seq.
+    pub fn publish_view(&self, view: crate::view::View) {
+        let entry = match self.watches.lock().unwrap().get(VIEW_ID) {
+            Some(ResourceEntry::View(entry)) => entry.clone(),
+            _ => {
+                eprintln!("termiod: the view changed before its resource was installed; not published");
+                return;
+            }
+        };
+        let mut state = entry.state.lock().unwrap();
+        debug_assert_eq!(state.seq + 1, view.revision, "the view's revision is its resource seq");
+        *entry.snapshot.lock().unwrap() = view.clone();
+        state.seq = view.revision - 1;
+        state.publish(VIEW_ID, view);
+    }
+
+    fn subscribe_view(
+        &self,
+        client: ClientId,
+        tx: mpsc::UnboundedSender<Event>,
+        since: Option<u64>,
+    ) -> Result<SubscribeReply> {
+        let entry = match self.watches.lock().unwrap().get(VIEW_ID) {
+            Some(ResourceEntry::View(entry)) => entry.clone(),
+            _ => return Err(anyhow!("this host keeps no view")),
+        };
+        let mut state = entry.state.lock().unwrap();
+        let snapshot = entry.snapshot.clone();
+        Ok(state.attach(VIEW_ID, client, tx, since, |seq| {
+            let view = snapshot.lock().unwrap().clone();
+            Some(vec![view.into_event(VIEW_ID.to_string(), seq)])
+        }))
     }
 
     fn subscribe_git(
@@ -723,6 +809,7 @@ impl Registry {
             Some(ResourceEntry::Git(entry)) => drop_interest(&entry.state, client),
             Some(ResourceEntry::Head(entry)) => drop_interest(&entry.state, client),
             Some(ResourceEntry::Status(state)) => drop_interest(state, client),
+            Some(ResourceEntry::View(entry)) => drop_interest(&entry.state, client),
             None => false,
         }
     }
@@ -1052,6 +1139,63 @@ fn classify(path: &Path) -> Classified {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn view_at(revision: u64) -> crate::view::View {
+        crate::view::View {
+            revision,
+            ..crate::view::View::default()
+        }
+    }
+
+    fn view_seqs(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<u64> {
+        let mut seqs = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::ViewChanged { seq, view, .. } => {
+                    assert_eq!(seq, view.revision, "a view event's seq is its revision");
+                    seqs.push(seq);
+                }
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
+        seqs
+    }
+
+    /// A first subscribe has no baseline, and the host can supply one: the
+    /// whole view at the current revision, ahead of anything live.
+    #[test]
+    fn a_view_subscriber_is_served_the_whole_view_then_live_changes() {
+        let registry = Registry::new();
+        registry.install_view(view_at(7));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry.subscribe(VIEW_ID, ClientId::new("mac"), tx, None).unwrap();
+        assert!(reply.gap);
+        assert_eq!(reply.seq, 7);
+        registry.publish_view(view_at(8));
+        assert_eq!(view_seqs(&mut rx), vec![7, 8]);
+    }
+
+    /// After a restart the ring would be empty, and a client one revision
+    /// behind would read as current. The seeded ring replays that revision.
+    #[test]
+    fn a_cursor_one_behind_a_restarted_host_replays_the_current_view() {
+        let registry = Registry::new();
+        registry.install_view(view_at(7));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry.subscribe(VIEW_ID, ClientId::new("mac"), tx, Some(6)).unwrap();
+        assert!(!reply.gap);
+        assert_eq!(view_seqs(&mut rx), vec![7]);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry.subscribe(VIEW_ID, ClientId::new("phone"), tx, Some(7)).unwrap();
+        assert!(!reply.gap, "an up-to-date cursor resumes with nothing");
+        assert!(view_seqs(&mut rx).is_empty());
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reply = registry.subscribe(VIEW_ID, ClientId::new("old"), tx, Some(2)).unwrap();
+        assert!(reply.gap);
+        assert_eq!(view_seqs(&mut rx), vec![7], "a stale cursor gets the whole view");
+    }
 
     fn batch(paths: &[&str]) -> FsBatch {
         FsBatch {

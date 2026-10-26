@@ -453,7 +453,7 @@ impl Graveyard {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let text = std::fs::read_to_string(path).ok()?;
     // A corrupt record is dropped rather than fatal: a daemon that will not
     // start because it cannot parse its own history is a worse outcome than a
@@ -464,7 +464,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 /// Written atomically via a temp file and rename, so a daemon killed mid-write
 /// leaves the previous record intact rather than a truncated one — a file that
 /// only matters when something died badly must survive dying badly.
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let text = serde_json::to_vec_pretty(value)?;
     let temporary = path.with_extension("tmp");
     std::fs::write(&temporary, &text)

@@ -127,6 +127,7 @@ from the real front matter).
 | draft | design | [Session guests — three deltas, not a sharing subsystem](design/20260818-session-guests.md) |
 | draft | design | [Superlogical research brief (Codex / competitive)](design/20260805-_research-superlogical-codex-brief.md) |
 | draft | design | [termiod — Agent-native session mux](design/20260730-termiod-session-mux.md) |
+| draft | design | [termiod owns the view](design/20261025-termiod-owns-the-view.md) |
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
 | draft | design | [The client VT follows the stream](design/20261024-client-vt-follows-the-stream.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
