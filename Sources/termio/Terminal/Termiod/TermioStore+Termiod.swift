@@ -198,6 +198,7 @@ extension TermioStore {
         if let colors = streamTheme(dark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) {
             link.setStreamTheme(colors)
         }
+        link.setStreamScrollback(bytes: streamScrollbackBytes)
         link.onConnectionLost = { [weak self, weak inMemory] attempts in
             self?.applyTermiodConnectionLost(
                 for: session.id, attempts: attempts, surface: inMemory)
@@ -2110,6 +2111,10 @@ extension TermioStore {
             backgroundOpacity: CGFloat(settings.backgroundOpacity)
         )
     }
+
+    /// The embedded surface's `scrollback-limit`, which the UI speaks in
+    /// megabytes.
+    var streamScrollbackBytes: Int { settings.scrollbackMegabytes * 1_000_000 }
 
     /// The theme for one appearance as the colors a client terminal resolves
     /// against. The same choice `makeTheme` hands the embedded surface: the

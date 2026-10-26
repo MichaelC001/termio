@@ -1590,6 +1590,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     private var streamTerminalLocked: TermiodStreamTerminal?
     private var streamingLocked = false
     private var streamThemeLocked: TermiodStreamTerminal.Theme?
+    private var streamScrollbackLocked: Int?
     /// Whether the last handshake put this link on the `vt_stream` plane, on
     /// the main thread. The pane mounts the stream view while it is true.
     var onStreaming: ((Bool) -> Void)?
@@ -1671,6 +1672,20 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    /// The Scrollback setting in bytes, kept like the theme: under
+    /// `streamLock`, and applied to each terminal a snapshot replaces.
+    func setStreamScrollback(bytes: Int) {
+        streamLock.lock()
+        defer { streamLock.unlock() }
+        guard streamScrollbackLocked != bytes else { return }
+        streamScrollbackLocked = bytes
+        do {
+            try streamTerminalLocked?.setScrollbackLimit(bytes: bytes)
+        } catch {
+            Log.termiod.error("stream scrollback: \(String(describing: error), privacy: .public)")
+        }
+    }
+
     /// The pane cannot draw this plane (no Metal renderer): attach again on
     /// keyframes, which the embedded surface can show.
     func abandonStream() {
@@ -1726,6 +1741,7 @@ final class TermiodSessionLink: @unchecked Sendable {
             streamLock.lock()
             defer { streamLock.unlock() }
             if let colors = streamThemeLocked { try terminal.setTheme(colors) }
+            if let bytes = streamScrollbackLocked { try terminal.setScrollbackLimit(bytes: bytes) }
             streamTerminalLocked = terminal
             return true
         } catch {

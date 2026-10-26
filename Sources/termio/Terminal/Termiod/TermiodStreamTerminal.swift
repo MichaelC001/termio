@@ -457,6 +457,27 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
+    /// How much history this client keeps: the Scrollback setting, in bytes,
+    /// as the embedded surface's `scrollback-limit`. A decoded snapshot carries
+    /// termiod's own limits, about a thousand lines, which are the daemon's
+    /// memory budget per session and not what a pane should show. The line
+    /// limit is removed so the byte limit alone decides, as in Ghostty.
+    func setScrollbackLimit(bytes: Int) throws {
+        try locked {
+            var limit = max(0, bytes)
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &limit), "ghostty_terminal_set(scrollback bytes)")
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, nil), "ghostty_terminal_set(scrollback lines)")
+        }
+    }
+
+    func scrollbackRows() throws -> Int {
+        try locked {
+            var rows = 0
+            try get(GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &rows)
+            return rows
+        }
+    }
+
     /// The theme: libghostty resolves "default foreground" and palette indices
     /// against these, so a session drawn by two Macs follows each one's theme.
     /// A decoded snapshot carries none of the daemon's, which never sets any.

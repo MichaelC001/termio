@@ -199,6 +199,7 @@ struct TerminalPane: View {
                     // Stays mounted while the view comes and goes, so the link
                     // hears a hidden pane stop counting toward the session's size.
                     StreamLinkReport(isVisible: isVisible, colors: store.streamTheme(dark: colorScheme == .dark),
+                                     scrollbackBytes: store.streamScrollbackBytes,
                                      link: link) { store.reportRendering($0, for: id) }
                         .id(ObjectIdentifier(link))
                     // Unlike the embedded surface, which owns its terminal and so
@@ -858,6 +859,7 @@ private struct SharedGridLetterbox<Content: View>: View {
 private struct StreamLinkReport: View {
     let isVisible: Bool
     let colors: TermiodStreamTerminal.Theme?
+    let scrollbackBytes: Int
     let link: TermiodSessionLink
     let report: (Bool) -> Void
 
@@ -868,6 +870,9 @@ private struct StreamLinkReport: View {
             .onChange(of: isVisible, initial: true) { _, visible in report(visible) }
             .onChange(of: colors, initial: true) { _, colors in
                 if let colors { link.setStreamTheme(colors) }
+            }
+            .onChange(of: scrollbackBytes, initial: true) { _, bytes in
+                link.setStreamScrollback(bytes: bytes)
             }
     }
 }
