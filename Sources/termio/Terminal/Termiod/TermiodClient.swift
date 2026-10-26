@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import TermioShared
+import TermioStream
 
 /// Whether a person currently has their hands on this app's geometry — a
 /// window edge, a split divider, an inspector divider.
@@ -1757,10 +1758,14 @@ final class TermiodSessionLink: @unchecked Sendable {
     ///
     /// Returns false when it could not be decoded. The reader must then stop:
     /// the connection is being replaced, and nothing more it reads may land.
+    /// What XTVERSION names in a stream pane: the embedded surface's Ghostty.
+    private static let xtversion = "ghostty \(embeddedGhosttyVersion())"
+
     private func receiveStreamSnapshot(_ native: Data) -> Bool {
         do {
             let terminal = try TermiodStreamTerminal(
                 nativeSnapshot: native,
+                xtversion: Self.xtversion,
                 onReply: { [weak self] reply in
                     // Answering is the writer's job alone (`TerminalDeviceReport`),
                     // which `sendDeviceReport` enforces.

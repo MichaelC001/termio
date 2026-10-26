@@ -4,6 +4,7 @@ import GhosttyTerminal
 import GhosttyTheme
 import GhosttyVt
 import TermioShared
+import TermioStream
 
 /// Session plumbing: sessions run inside a termiod daemon — the local one, or
 /// one reached over SSH — and this app is an attach client. Kept beside the

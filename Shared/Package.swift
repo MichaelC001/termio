@@ -15,6 +15,7 @@ let package = Package(
     ],
     products: [
         .library(name: "TermioShared", targets: ["TermioShared"]),
+        .library(name: "TermioStream", targets: ["TermioStream"]),
     ],
     dependencies: [
         // Highlightr — the highlight.js wrapper the iOS file viewer uses, so a
@@ -25,6 +26,9 @@ let package = Package(
         // build-machine path and fatalErrors in a packaged release (the v0.2.4
         // open-a-file crash). Xcode-built iOS gets the safe accessor variant.
         .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
+        // libghostty-vt for TermioStream. The same package and requirement as
+        // the Mac app's, so both resolve to one pin.
+        .package(url: "https://github.com/termio-sh/libghostty-swift", from: "1.2.0"),
     ],
     targets: [
         .target(
@@ -36,6 +40,16 @@ let package = Package(
             // UIImage can't decode SVG files, so Pi's and Cursor's vector favicons
             // are pre-rasterized at 256px.
             resources: [.process("Resources")]
+        ),
+        // The `vt_stream` client terminal and its Metal renderer, shared by the
+        // Mac's stream pane and the phone's (design doc phase 6). Platform
+        // views live in each app. No resources, so no `Bundle.module`: the
+        // shaders compile from source at runtime.
+        .target(
+            name: "TermioStream",
+            dependencies: [
+                .product(name: "GhosttyVt", package: "libghostty-swift"),
+            ]
         ),
     ]
 )

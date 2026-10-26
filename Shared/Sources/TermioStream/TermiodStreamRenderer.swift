@@ -1,4 +1,6 @@
-import AppKit
+import CoreGraphics
+import Foundation
+import os
 import CoreText
 import GhosttyVt
 import Metal
@@ -12,23 +14,31 @@ import QuartzCore
 /// CoreText, which supplies font fallback for CJK and color emoji; runs across
 /// cells, and with them ligatures, are not shaped.
 @MainActor
-final class TermiodStreamRenderer {
-    struct Appearance: Equatable {
-        var fontFamily: String
+public final class TermiodStreamRenderer {
+    public struct Appearance: Equatable {
+        public init(fontFamily: String, fallbackFamilies: [String], fontSize: CGFloat, paddingX: CGFloat, paddingY: CGFloat, backgroundOpacity: CGFloat) {
+            self.fontFamily = fontFamily
+            self.fallbackFamilies = fallbackFamilies
+            self.fontSize = fontSize
+            self.paddingX = paddingX
+            self.paddingY = paddingY
+            self.backgroundOpacity = backgroundOpacity
+        }
+        public var fontFamily: String
         /// Faces tried, in order, for a character the primary lacks, before
         /// CoreText's own fallback.
-        var fallbackFamilies: [String]
-        var fontSize: CGFloat
-        var paddingX: CGFloat
-        var paddingY: CGFloat
-        var backgroundOpacity: CGFloat
+        public var fallbackFamilies: [String]
+        public var fontSize: CGFloat
+        public var paddingX: CGFloat
+        public var paddingY: CGFloat
+        public var backgroundOpacity: CGFloat
     }
 
-    enum CursorStyle: Equatable {
+    public enum CursorStyle: Equatable {
         case block, bar, underline, hollow
     }
 
-    enum Failure: Error {
+    public enum Failure: Error {
         case metal(String)
     }
 
@@ -38,22 +48,22 @@ final class TermiodStreamRenderer {
 
     /// Whether a renderer can be made on this Mac at all: a Metal device and
     /// shaders that compile. Asked once, before a link offers the plane.
-    static var isAvailable: Bool {
+    public static var isAvailable: Bool {
         (try? shared.get()) != nil
     }
 
     private let resources: TermiodStreamRenderResources
-    var device: MTLDevice { resources.device }
+    public var device: MTLDevice { resources.device }
     private let builder: TermiodStreamFrameBuilder
     private let images: TermiodStreamImages
-    private(set) var atlas: TermiodGlyphAtlas
-    private(set) var appearance: Appearance
+    public private(set) var atlas: TermiodGlyphAtlas
+    public private(set) var appearance: Appearance
     private var scale: CGFloat
     private let inFlight = DispatchSemaphore(value: 3)
     private var rectangles: [TermiodStreamRectangle] = []
     private var glyphs: [TermiodStreamGlyph] = []
 
-    init(appearance: Appearance, scale: CGFloat) throws {
+    public init(appearance: Appearance, scale: CGFloat) throws {
         resources = try Self.shared.get()
         self.appearance = appearance
         self.scale = scale
@@ -63,14 +73,14 @@ final class TermiodStreamRenderer {
     }
 
     /// One cell in points, which is what a pane measures its viewport with.
-    var cellSize: CGSize {
+    public var cellSize: CGSize {
         CGSize(width: CGFloat(atlas.metrics.width) / scale, height: CGFloat(atlas.metrics.height) / scale)
     }
 
     /// Rebuilds the atlas when the font or the display's scale changed, and
     /// says whether the grid a pane holds may have changed — font or padding —
     /// so the caller can redeclare its viewport.
-    func update(appearance: Appearance, scale: CGFloat) throws -> Bool {
+    public func update(appearance: Appearance, scale: CGFloat) throws -> Bool {
         guard appearance != self.appearance || scale != self.scale else { return false }
         let paddingChanged = appearance.paddingX != self.appearance.paddingX
             || appearance.paddingY != self.appearance.paddingY
@@ -89,7 +99,7 @@ final class TermiodStreamRenderer {
 
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
-    func draw(
+    public func draw(
         _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
         link: TermiodStreamTerminal.Link? = nil
     ) throws {
@@ -120,11 +130,11 @@ final class TermiodStreamRenderer {
     /// shared texture, an integrated one included, though it reports unified
     /// memory; managed is the macOS default and works on every GPU, Apple
     /// silicon's included.
-    static let cpuTextureStorage = MTLStorageMode.managed
+    public static let cpuTextureStorage = MTLStorageMode.managed
 
     /// The whole screen drawn into an image of the given pixel size, for
     /// looking at a frame without a window — the renderer's own tests.
-    func image(
+    public func image(
         of terminal: TermiodStreamTerminal, width: Int, height: Int, focused: Bool = true, preedit: String? = nil
     ) throws -> CGImage {
         _ = try prepare(terminal, focused: focused, force: true, preedit: preedit, link: nil)
@@ -243,23 +253,23 @@ final class TermiodStreamRenderer {
 /// pipelines, and one glyph atlas per font and scale. A pane keeps only its
 /// frame builder, its terminal's images and its own in-flight limit.
 @MainActor
-final class TermiodStreamRenderResources {
+public final class TermiodStreamRenderResources {
     private struct AtlasKey: Hashable {
-        var fontFamily: String
-        var fallbackFamilies: [String]
-        var fontSize: CGFloat
-        var scale: CGFloat
+        public var fontFamily: String
+        public var fallbackFamilies: [String]
+        public var fontSize: CGFloat
+        public var scale: CGFloat
     }
 
     private struct WeakAtlas {
         weak var atlas: TermiodGlyphAtlas?
     }
 
-    let device: MTLDevice
-    let queue: MTLCommandQueue
-    let rectanglePipeline: MTLRenderPipelineState
-    let glyphPipeline: MTLRenderPipelineState
-    let imagePipeline: MTLRenderPipelineState
+    public let device: MTLDevice
+    public let queue: MTLCommandQueue
+    public let rectanglePipeline: MTLRenderPipelineState
+    public let glyphPipeline: MTLRenderPipelineState
+    public let imagePipeline: MTLRenderPipelineState
     /// Weak, so an atlas goes when the last pane using that font closes or
     /// moves on to another one.
     private var atlases: [AtlasKey: WeakAtlas] = [:]
@@ -268,7 +278,7 @@ final class TermiodStreamRenderResources {
     /// otherwise drop the atlas and rasterize every glyph again on the way back.
     private var current: TermiodGlyphAtlas?
 
-    init() throws {
+    public init() throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             throw TermiodStreamRenderer.Failure.metal("no Metal device")
         }
@@ -282,7 +292,7 @@ final class TermiodStreamRenderResources {
         imagePipeline = try Self.pipeline(device, library, "image_vertex", "image_fragment")
     }
 
-    func atlas(appearance: TermiodStreamRenderer.Appearance, scale: CGFloat) throws -> TermiodGlyphAtlas {
+    public func atlas(appearance: TermiodStreamRenderer.Appearance, scale: CGFloat) throws -> TermiodGlyphAtlas {
         let key = AtlasKey(
             fontFamily: appearance.fontFamily, fallbackFamilies: appearance.fallbackFamilies,
             fontSize: appearance.fontSize, scale: scale
@@ -320,32 +330,67 @@ final class TermiodStreamRenderResources {
 
 /// Layouts shared with the shaders. Every field is 2 or 4 bytes wide and
 /// 4-byte aligned in Metal, so Swift lays them out the same way.
-struct TermiodStreamUniforms {
-    var viewport: SIMD2<Float>
-    var cell: SIMD2<Float>
-    var atlas: SIMD2<Float>
-    var origin: SIMD2<Float>
+public struct TermiodStreamUniforms {
+    public init(viewport: SIMD2<Float>, cell: SIMD2<Float>, atlas: SIMD2<Float>, origin: SIMD2<Float>) {
+        self.viewport = viewport
+        self.cell = cell
+        self.atlas = atlas
+        self.origin = origin
+    }
+    public var viewport: SIMD2<Float>
+    public var cell: SIMD2<Float>
+    public var atlas: SIMD2<Float>
+    public var origin: SIMD2<Float>
 }
 
 /// A solid rectangle inside a cell, in pixels from the cell's top-left.
-struct TermiodStreamRectangle {
-    var cellX: UInt16, cellY: UInt16
-    var x: Int16, y: Int16
-    var width: UInt16, height: UInt16
-    var r: UInt8, g: UInt8, b: UInt8, a: UInt8
+public struct TermiodStreamRectangle {
+    public init(cellX: UInt16, cellY: UInt16, x: Int16, y: Int16, width: UInt16, height: UInt16, r: UInt8, g: UInt8, b: UInt8, a: UInt8, overText: Bool = false, padding: (UInt8, UInt8, UInt8) = (0, 0, 0)) {
+        self.cellX = cellX
+        self.cellY = cellY
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.r = r
+        self.g = g
+        self.b = b
+        self.a = a
+        self.overText = overText
+        self.padding = padding
+    }
+    public var cellX: UInt16, cellY: UInt16
+    public var x: Int16, y: Int16
+    public var width: UInt16, height: UInt16
+    public var r: UInt8, g: UInt8, b: UInt8, a: UInt8
     /// Not read by the shader.
-    var overText: Bool = false
-    var padding: (UInt8, UInt8, UInt8) = (0, 0, 0)
+    public var overText: Bool = false
+    public var padding: (UInt8, UInt8, UInt8) = (0, 0, 0)
 }
 
-struct TermiodStreamGlyph {
-    var cellX: UInt16, cellY: UInt16
-    var atlasX: UInt16, atlasY: UInt16
-    var atlasWidth: UInt16, atlasHeight: UInt16
-    var offsetX: Int16, offsetY: Int16
-    var r: UInt8, g: UInt8, b: UInt8, a: UInt8
+public struct TermiodStreamGlyph {
+    public init(cellX: UInt16, cellY: UInt16, atlasX: UInt16, atlasY: UInt16, atlasWidth: UInt16, atlasHeight: UInt16, offsetX: Int16, offsetY: Int16, r: UInt8, g: UInt8, b: UInt8, a: UInt8, colored: UInt32) {
+        self.cellX = cellX
+        self.cellY = cellY
+        self.atlasX = atlasX
+        self.atlasY = atlasY
+        self.atlasWidth = atlasWidth
+        self.atlasHeight = atlasHeight
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+        self.r = r
+        self.g = g
+        self.b = b
+        self.a = a
+        self.colored = colored
+    }
+    public var cellX: UInt16, cellY: UInt16
+    public var atlasX: UInt16, atlasY: UInt16
+    public var atlasWidth: UInt16, atlasHeight: UInt16
+    public var offsetX: Int16, offsetY: Int16
+    public var r: UInt8, g: UInt8, b: UInt8, a: UInt8
     /// 1 when the sprite carries its own color (emoji), so the shader keeps it.
-    var colored: UInt32
+    public var colored: UInt32
 }
 
 private let streamShaderSource = """
@@ -423,45 +468,71 @@ fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas
 /// The Kitty images on screen: the placements the render state lists, and a
 /// texture for each image generation they show. The list is read again only
 /// when its generation moves, and pixels only for a generation not yet held.
-final class TermiodStreamImages {
-    struct Placement: Equatable {
-        var id: UInt32
-        var generation: UInt64
-        var layer: GhosttyRenderStateImageLayer
-        var z: Int32
-        var column: Int32
-        var row: Int32
-        var offsetX: UInt32
-        var offsetY: UInt32
-        var width: UInt32
-        var height: UInt32
-        var sourceX: UInt32
-        var sourceY: UInt32
-        var sourceWidth: UInt32
-        var sourceHeight: UInt32
+public final class TermiodStreamImages {
+    public struct Placement: Equatable {
+        public init(id: UInt32, generation: UInt64, layer: GhosttyRenderStateImageLayer, z: Int32, column: Int32, row: Int32, offsetX: UInt32, offsetY: UInt32, width: UInt32, height: UInt32, sourceX: UInt32, sourceY: UInt32, sourceWidth: UInt32, sourceHeight: UInt32) {
+            self.id = id
+            self.generation = generation
+            self.layer = layer
+            self.z = z
+            self.column = column
+            self.row = row
+            self.offsetX = offsetX
+            self.offsetY = offsetY
+            self.width = width
+            self.height = height
+            self.sourceX = sourceX
+            self.sourceY = sourceY
+            self.sourceWidth = sourceWidth
+            self.sourceHeight = sourceHeight
+        }
+        public var id: UInt32
+        public var generation: UInt64
+        public var layer: GhosttyRenderStateImageLayer
+        public var z: Int32
+        public var column: Int32
+        public var row: Int32
+        public var offsetX: UInt32
+        public var offsetY: UInt32
+        public var width: UInt32
+        public var height: UInt32
+        public var sourceX: UInt32
+        public var sourceY: UInt32
+        public var sourceWidth: UInt32
+        public var sourceHeight: UInt32
     }
 
-    struct Key: Hashable {
-        var id: UInt32
-        var generation: UInt64
+    public struct Key: Hashable {
+        public init(id: UInt32, generation: UInt64) {
+            self.id = id
+            self.generation = generation
+        }
+        public var id: UInt32
+        public var generation: UInt64
     }
 
-    struct Layout {
-        var origin: SIMD2<Float>
-        var cell: SIMD2<Float>
-        var textureWidth: Int
-        var textureHeight: Int
+    public struct Layout {
+        public init(origin: SIMD2<Float>, cell: SIMD2<Float>, textureWidth: Int, textureHeight: Int) {
+            self.origin = origin
+            self.cell = cell
+            self.textureWidth = textureWidth
+            self.textureHeight = textureHeight
+        }
+        public var origin: SIMD2<Float>
+        public var cell: SIMD2<Float>
+        public var textureWidth: Int
+        public var textureHeight: Int
     }
 
     private struct Quad {
-        var origin: SIMD2<Float>
-        var size: SIMD2<Float>
-        var uvOrigin: SIMD2<Float>
-        var uvSize: SIMD2<Float>
+        public var origin: SIMD2<Float>
+        public var size: SIMD2<Float>
+        public var uvOrigin: SIMD2<Float>
+        public var uvSize: SIMD2<Float>
     }
 
     nonisolated(unsafe) private var iterator: GhosttyRenderStateImageIterator?
-    private(set) var placements: [Placement] = []
+    public private(set) var placements: [Placement] = []
     private var listGeneration: UInt64?
     private var columns: UInt16 = 0
     private var rows: UInt16 = 0
@@ -471,7 +542,7 @@ final class TermiodStreamImages {
     /// A placement whose pixels have not arrived: looked for every frame.
     private var missing = false
 
-    init() throws {
+    public init() throws {
         guard ghostty_render_state_image_iterator_new(nil, &iterator) == GHOSTTY_SUCCESS else {
             throw TermiodStreamRenderer.Failure.metal("render state image iterator")
         }
@@ -484,7 +555,7 @@ final class TermiodStreamImages {
     /// Under the frame's lock: rereads the list if it moved, and copies the
     /// pixels the textures lack. Returns whether the frame must be drawn for
     /// the images' sake.
-    func read(_ state: GhosttyRenderState, storage: TermiodStreamTerminal.FrameImages, force: Bool) -> Bool {
+    public func read(_ state: GhosttyRenderState, storage: TermiodStreamTerminal.FrameImages, force: Bool) -> Bool {
         var generation: UInt64 = 0
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
         guard force || missing || generation != listGeneration else { return false }
@@ -554,14 +625,14 @@ final class TermiodStreamImages {
 
     /// Outside the lock: turns copied pixels into textures, and lets go of
     /// textures no placement shows any more.
-    func upload(device: MTLDevice) {
+    public func upload(device: MTLDevice) {
         for (key, pixels) in pending {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .rgba8Unorm, width: pixels.width, height: pixels.height, mipmapped: false
             )
             descriptor.usage = .shaderRead
             guard let texture = device.makeTexture(descriptor: descriptor) else {
-                Log.termiod.error("image texture \(pixels.width)x\(pixels.height) failed")
+                StreamLog.logger.error("image texture \(pixels.width)x\(pixels.height) failed")
                 continue
             }
             pixels.rgba().withUnsafeBytes { bytes in
@@ -583,7 +654,7 @@ final class TermiodStreamImages {
     }
 
     /// The quads of one layer, in pixels of the drawable, clipped to the grid.
-    func quads(_ layer: GhosttyRenderStateImageLayer, layout: Layout) -> [(Key, SIMD4<Float>, SIMD4<Float>)] {
+    public func quads(_ layer: GhosttyRenderStateImageLayer, layout: Layout) -> [(Key, SIMD4<Float>, SIMD4<Float>)] {
         let scale = SIMD2(
             layout.cell.x / Float(TermiodStreamTerminal.cellWidth),
             layout.cell.y / Float(TermiodStreamTerminal.cellHeight)
@@ -603,7 +674,7 @@ final class TermiodStreamImages {
         }
     }
 
-    func encode(
+    public func encode(
         _ layer: GhosttyRenderStateImageLayer, layout: Layout, encoder: MTLRenderCommandEncoder,
         pipeline: MTLRenderPipelineState
     ) {
@@ -633,48 +704,62 @@ final class TermiodStreamImages {
 }
 
 /// The pixel size of one cell and where the baseline and decorations sit in it.
-struct TermiodCellMetrics: Equatable {
-    var width: Int
-    var height: Int
-    var baseline: Int
-    var underlinePosition: Int
-    var underlineThickness: Int
-    var strikethroughPosition: Int
+public struct TermiodCellMetrics: Equatable {
+    public init(width: Int, height: Int, baseline: Int, underlinePosition: Int, underlineThickness: Int, strikethroughPosition: Int) {
+        self.width = width
+        self.height = height
+        self.baseline = baseline
+        self.underlinePosition = underlinePosition
+        self.underlineThickness = underlineThickness
+        self.strikethroughPosition = strikethroughPosition
+    }
+    public var width: Int
+    public var height: Int
+    public var baseline: Int
+    public var underlinePosition: Int
+    public var underlineThickness: Int
+    public var strikethroughPosition: Int
 }
 
 /// Glyph sprites rasterized with CoreText into one premultiplied BGRA texture,
 /// packed in shelves. A sprite is one grapheme in one face, so combining marks,
 /// ZWJ emoji and fallback fonts all come out of CoreText's own line layout.
 @MainActor
-final class TermiodGlyphAtlas {
-    struct Slot {
-        var origin: SIMD2<UInt16>
-        var size: SIMD2<UInt16>
+public final class TermiodGlyphAtlas {
+    public struct Slot {
+        public init(origin: SIMD2<UInt16>, size: SIMD2<UInt16>, offset: SIMD2<Int16>, colored: Bool) {
+            self.origin = origin
+            self.size = size
+            self.offset = offset
+            self.colored = colored
+        }
+        public var origin: SIMD2<UInt16>
+        public var size: SIMD2<UInt16>
         /// The sprite's top-left from the cell's top-left, in pixels.
-        var offset: SIMD2<Int16>
-        var colored: Bool
+        public var offset: SIMD2<Int16>
+        public var colored: Bool
     }
 
     private struct Key: Hashable {
-        var graphemes: [UInt32]
-        var bold: Bool
-        var italic: Bool
+        public var graphemes: [UInt32]
+        public var bold: Bool
+        public var italic: Bool
         /// One grapheme can be one cell or two (mode 2027 decides an emoji's
         /// width), and an emoji's sprite is sized to its cells.
-        var cells: Int
+        public var cells: Int
     }
 
     /// Replaced, never rewritten, when the atlas is emptied: a frame still on
     /// the GPU keeps sampling the texture it was encoded with.
-    private(set) var texture: MTLTexture
-    let metrics: TermiodCellMetrics
-    let size: Int
+    public private(set) var texture: MTLTexture
+    public let metrics: TermiodCellMetrics
+    public let size: Int
     private let device: MTLDevice
     private let fonts: [CTFont]
     /// Off for the pass that rebuilds a screen after the atlas was emptied:
     /// emptying it again would undo the rows that pass already built. A
     /// glyph that does not fit then is dropped, not drawn from a stale slot.
-    var mayEmpty = true
+    public var mayEmpty = true
     private var slots: [Key: Slot?] = [:]
     private var shelfX = 0
     private var shelfY = 0
@@ -682,9 +767,9 @@ final class TermiodGlyphAtlas {
     private var exhausted = false
     /// Bumped each time the atlas is emptied to make room, which moves every
     /// sprite: anything built from an older generation must be rebuilt.
-    private(set) var generation = 0
+    public private(set) var generation = 0
 
-    init(device: MTLDevice, appearance: TermiodStreamRenderer.Appearance, scale: CGFloat, size: Int = 4096) throws {
+    public init(device: MTLDevice, appearance: TermiodStreamRenderer.Appearance, scale: CGFloat, size: Int = 4096) throws {
         let pointSize = appearance.fontSize * scale
         let primary = Self.font(family: appearance.fontFamily, size: pointSize)
         let cascade = appearance.fallbackFamilies.map { family in
@@ -749,7 +834,7 @@ final class TermiodGlyphAtlas {
 
     /// The sprite for a grapheme, rasterized on first use. Nil for a grapheme
     /// with nothing to draw, or once the atlas is full.
-    func slot(graphemes: [UInt32], bold: Bool, italic: Bool, cells: Int) -> Slot? {
+    public func slot(graphemes: [UInt32], bold: Bool, italic: Bool, cells: Int) -> Slot? {
         let key = Key(graphemes: graphemes, bold: bold, italic: italic, cells: cells)
         if let cached = slots[key] { return cached }
         var slot = rasterize(key, cells: cells)
@@ -774,7 +859,7 @@ final class TermiodGlyphAtlas {
     /// own size they stop short of the line spacing and leave gaps.
     /// Characters that draw pictures rather than text, which keep the exact
     /// color a program chose: Ghostty exempts them from minimum contrast.
-    static func isGraphic(_ graphemes: [UInt32]) -> Bool {
+    public static func isGraphic(_ graphemes: [UInt32]) -> Bool {
         guard graphemes.count == 1, let codepoint = graphemes.first else { return false }
         return (0x2500...0x259F).contains(codepoint) || (0x2800...0x28FF).contains(codepoint)
             || (0xE0B0...0xE0D7).contains(codepoint) || (0x1FB00...0x1FBFF).contains(codepoint)
@@ -940,8 +1025,8 @@ final class TermiodGlyphAtlas {
 /// Turns the render state into rectangles and glyphs, rebuilding only the rows
 /// libghostty marked dirty.
 @MainActor
-final class TermiodStreamFrameBuilder {
-    private(set) var background = GhosttyColorRgb(r: 0, g: 0, b: 0)
+public final class TermiodStreamFrameBuilder {
+    public private(set) var background = GhosttyColorRgb(r: 0, g: 0, b: 0)
     private var rowRectangles: [[TermiodStreamRectangle]] = []
     private var rowGlyphs: [[TermiodStreamGlyph]] = []
     /// The columns where a wide character starts, per row, so a cursor on one
@@ -969,7 +1054,7 @@ final class TermiodStreamFrameBuilder {
     private weak var builtAtlas: TermiodGlyphAtlas?
     private var builtGeneration = 0
 
-    init() throws {
+    public init() throws {
         guard ghostty_render_state_row_iterator_new(nil, &rowIterator) == GHOSTTY_SUCCESS,
               ghostty_render_state_row_cells_new(nil, &cells) == GHOSTTY_SUCCESS
         else { throw TermiodStreamRenderer.Failure.metal("render state iterators") }
@@ -982,12 +1067,12 @@ final class TermiodStreamFrameBuilder {
 
     /// The next build rebuilds every row: the atlas changed, or a frame built
     /// from the render state was never drawn and its dirt was already consumed.
-    func invalidate() {
+    public func invalidate() {
         stale = true
     }
 
     /// Returns false when nothing changed since the last build.
-    func build(
+    public func build(
         from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true,
         theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil, link: TermiodStreamTerminal.Link? = nil
     ) throws -> Bool {
@@ -1103,20 +1188,20 @@ final class TermiodStreamFrameBuilder {
 
     /// Everything the cursor's drawing depends on.
     private struct CursorState: Equatable {
-        var x: UInt16 = 0
-        var y: UInt16 = 0
-        var shape: TermiodStreamRenderer.CursorStyle?
-        var red: UInt8 = 0
-        var green: UInt8 = 0
-        var blue: UInt8 = 0
+        public var x: UInt16 = 0
+        public var y: UInt16 = 0
+        public var shape: TermiodStreamRenderer.CursorStyle?
+        public var red: UInt8 = 0
+        public var green: UInt8 = 0
+        public var blue: UInt8 = 0
         /// The theme's cursor-text color, which only the drawing reads.
-        var text: [UInt8]?
+        public var text: [UInt8]?
 
-        init() {}
+        public init() {}
 
         /// `blinkOn` is the blink phase now; a cursor that blinks is drawn
         /// only in the on half, and a pane out of focus never blinks.
-        init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool, blinkOn: Bool) {
+        public init(_ state: GhosttyRenderState, colors: GhosttyRenderStateColors, focused: Bool, blinkOn: Bool) {
             var visible = false
             var hasValue = false
             var blinking = false
@@ -1153,15 +1238,15 @@ final class TermiodStreamFrameBuilder {
 
     /// Everything the composed text's drawing depends on.
     private struct PreeditState: Equatable {
-        var text = ""
-        var x: UInt16 = 0
-        var y: UInt16 = 0
-        var cols: UInt16 = 0
-        var red: UInt8 = 0
-        var green: UInt8 = 0
-        var blue: UInt8 = 0
+        public var text = ""
+        public var x: UInt16 = 0
+        public var y: UInt16 = 0
+        public var cols: UInt16 = 0
+        public var red: UInt8 = 0
+        public var green: UInt8 = 0
+        public var blue: UInt8 = 0
 
-        init(_ state: GhosttyRenderState, text: String?, colors: GhosttyRenderStateColors) {
+        public init(_ state: GhosttyRenderState, text: String?, colors: GhosttyRenderStateColors) {
             var hasValue = false
             _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
             guard let text, !text.isEmpty, hasValue else { return }
@@ -1420,7 +1505,7 @@ final class TermiodStreamFrameBuilder {
 
     /// Ghostty's `minimum-contrast`: a glyph below the ratio against its own
     /// background is drawn in black or white, whichever reads better.
-    static func contrasted(_ color: GhosttyColorRgb, against background: GhosttyColorRgb, minimum: Double) -> GhosttyColorRgb {
+    public static func contrasted(_ color: GhosttyColorRgb, against background: GhosttyColorRgb, minimum: Double) -> GhosttyColorRgb {
         func luminance(_ color: GhosttyColorRgb) -> Double {
             func channel(_ value: UInt8) -> Double {
                 let c = Double(value) / 255
@@ -1438,7 +1523,7 @@ final class TermiodStreamFrameBuilder {
         return ratio(white, background) > ratio(black, background) ? white : black
     }
 
-    func flatten(rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph]) {
+    public func flatten(rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph]) {
         rectangles.removeAll(keepingCapacity: true)
         glyphs.removeAll(keepingCapacity: true)
         // The cells under composed text show only the composition.

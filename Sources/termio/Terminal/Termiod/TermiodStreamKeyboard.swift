@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import GhosttyVt
 import TermioShared
+import TermioStream
 
 /// How a Mac keystroke becomes a key event for a `vt_stream` session: the
 /// physical key by Ghostty's name, the modifiers with their sides, and the

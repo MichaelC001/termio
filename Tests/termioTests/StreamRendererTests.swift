@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyVt
 import XCTest
+@testable import TermioStream
 @testable import termio
 
 /// The stream renderer, drawn offscreen: no window, so it runs anywhere Metal
