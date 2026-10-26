@@ -891,6 +891,7 @@ dependencies = [
 name = "termiod-vt"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "libghostty-vt",
  "png",
 ]

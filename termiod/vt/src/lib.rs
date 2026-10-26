@@ -992,6 +992,18 @@ mod tests {
             Bytes(b"damaged"),
             Bytes(kitty_command(&[png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight), b"trailing".to_vec()].concat())),
             Bytes(b"trailing"),
+            // The shared header rule decides, not either library: a bad CRC on
+            // an ancillary chunk and an IEND with a body are refused, and pixel
+            // data a library cannot decode is kept as zeros at the header size,
+            // so the cursor still moves.
+            Bytes(kitty_command(&png_ancillary_bad_crc())),
+            Bytes(b"text crc"),
+            Bytes(kitty_command(&png_iend_body())),
+            Bytes(b"iend body"),
+            Bytes(kitty_command(&png_short_idat())),
+            Bytes(b"short"),
+            Bytes(kitty_command(&png_empty_idat())),
+            Bytes(b"empty"),
         ]
     }
 
@@ -1014,6 +1026,11 @@ mod tests {
         assert_eq!(cursor(kitty_command(&large)), (0, 1));
         assert_eq!(cursor(kitty_command(&png_cut())), (0, 1));
         assert_eq!(cursor(kitty_command(&png_damaged())), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_ancillary_bad_crc())), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_iend_body())), (0, 1));
+        // Undecodable pixels: accepted as zeros, one cell by one row.
+        assert_eq!(cursor(kitty_command(&png_short_idat())), (1, 1));
+        assert_eq!(cursor(kitty_command(&png_empty_idat())), (1, 1));
     }
 
     fn png_image(width: u32, height: u32, color: ::png::ColorType, depth: ::png::BitDepth) -> Vec<u8> {
@@ -1046,6 +1063,41 @@ mod tests {
         let end = image.len() - 12;
         image[end - 1] ^= 1;
         image
+    }
+
+    fn png_chunk(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let crc = crc32fast::hash(&[kind.as_slice(), body].concat());
+        [&(body.len() as u32).to_be_bytes()[..], kind, body, &crc.to_be_bytes()].concat()
+    }
+
+    /// A valid 8 by 16 RGB PNG split as (signature and IHDR, IDAT body).
+    fn png_parts() -> (Vec<u8>, Vec<u8>) {
+        let image = png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight);
+        let head = image[..33].to_vec();
+        let length = u32::from_be_bytes(image[33..37].try_into().expect("length")) as usize;
+        (head, image[41..41 + length].to_vec())
+    }
+
+    fn png_ancillary_bad_crc() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        let mut text = png_chunk(b"tEXt", b"k\0v");
+        *text.last_mut().expect("crc") ^= 1;
+        [head, text, png_chunk(b"IDAT", &idat), png_chunk(b"IEND", &[])].concat()
+    }
+
+    fn png_iend_body() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        [head, png_chunk(b"IDAT", &idat), png_chunk(b"IEND", &[0, 0])].concat()
+    }
+
+    fn png_short_idat() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        [head, png_chunk(b"IDAT", &idat[..idat.len() / 2]), png_chunk(b"IEND", &[])].concat()
+    }
+
+    fn png_empty_idat() -> Vec<u8> {
+        let (head, _) = png_parts();
+        [head, png_chunk(b"IDAT", &[]), png_chunk(b"IEND", &[])].concat()
     }
 
     fn kitty_command(image: &[u8]) -> &'static [u8] {

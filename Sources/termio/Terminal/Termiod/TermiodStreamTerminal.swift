@@ -306,20 +306,22 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         return decoded
     }
 
-    /// The largest decoded PNG accepted, in RGBA bytes. termiod's decoder
-    /// refuses past the same size (`DECODED_LIMIT` in `termiod/vt/src/kitty_png.rs`).
+    /// The largest decoded PNG accepted, in RGBA bytes. termiod refuses past
+    /// the same size (`DECODED_LIMIT` in `termiod/vt/src/kitty_png.rs`).
     static let pngDecodedLimit = 10_000_000
 
     /// libghostty-vt decodes no PNG itself; it calls a process-wide hook. The
     /// decoded size decides how many cells a Kitty image covers and so where
-    /// the cursor lands after it, so this must accept the PNGs termiod's
-    /// decoder accepts, at the same sizes, or the screens drift apart. Both
-    /// take the size from the header, refuse a PNG over the limit before
-    /// decoding it, and refuse one that does not end in its IEND chunk.
+    /// the cursor lands after it, so this must accept exactly the PNGs termiod
+    /// accepts, at the same sizes, or the screens drift apart. ImageIO and the
+    /// `png` crate are lenient about different damage, so neither decides:
+    /// `pngHeader` does, and termiod's `kitty_png::header` is the same walk
+    /// in Rust. Pixels ImageIO cannot decode are stored as zeros at the header
+    /// size, as termiod stores them.
     private static let installPNGDecoder: Void = {
         let hook: GhosttySysDecodePngFn = { _, allocator, data, length, out in
             guard let data, let out,
-                  let image = TermiodStreamTerminal.decodePNG(Data(bytes: data, count: length)),
+                  let image = TermiodStreamTerminal.decodePNG(UnsafeRawBufferPointer(start: data, count: length)),
                   let buffer = ghostty_alloc(allocator, image.pixels.count)
             else { return false }
             image.pixels.withUnsafeBufferPointer { pixels in
@@ -338,27 +340,25 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }()
 
-    /// Straight (not premultiplied) RGBA, which is what libghostty stores.
-    static func decodePNG(_ data: Data) -> (width: UInt32, height: UInt32, pixels: [UInt8])? {
+    /// Straight (not premultiplied) RGBA at the size `pngHeader` accepted.
+    static func decodePNG(_ bytes: UnsafeRawBufferPointer) -> (width: UInt32, height: UInt32, pixels: [UInt8])? {
+        guard let (width, height) = pngHeader(bytes), let base = bytes.baseAddress else { return nil }
+        let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: base), count: bytes.count, deallocator: .none)
+        let pixels = pngPixels(data, width: Int(width), height: Int(height))
+            ?? [UInt8](repeating: 0, count: Int(width) * Int(height) * 4)
+        return (width, height, pixels)
+    }
+
+    private static func pngPixels(_ data: Data, width: Int, height: Int) -> [UInt8]? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard pngChunksAreWhole(data),
-              let source = CGImageSourceCreateWithData(data as CFData, options),
-              CGImageSourceGetType(source) as String? == "public.png",
-              CGImageSourceGetStatus(source) == .statusComplete,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0
-        else { return nil }
-        let (count, overflow) = width.multipliedReportingOverflow(by: height)
-        guard !overflow, count <= pngDecodedLimit / 4,
+        guard let source = CGImageSourceCreateWithData(data as CFData, options),
               let image = CGImageSourceCreateImageAtIndex(source, 0, options),
               image.width == width, image.height == height
         else { return nil }
         // The image's own RGB space, so no colour conversion changes the
         // values a program sent; termiod passes them through untouched.
         let space = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpaceCreateDeviceRGB()
-        var pixels = [UInt8](repeating: 0, count: count * 4)
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
             guard let context = CGContext(
                 data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -378,36 +378,60 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 pixels[channel] = alpha == 0 ? 0 : UInt8(min(255, (UInt16(pixels[channel]) * 255 + alpha / 2) / alpha))
             }
         }
-        return (UInt32(width), UInt32(height), pixels)
+        return pixels
     }
 
-    /// ImageIO draws a PNG whose IEND is missing or whose chunk CRC is wrong;
-    /// termiod's `png` crate refuses both. So every chunk up to IEND must be
-    /// present with a matching CRC, and bytes after IEND are ignored, as the
-    /// crate ignores them.
-    static func pngChunksAreWhole(_ data: Data) -> Bool {
-        let bytes = [UInt8](data)
+    /// The size a PNG is accepted at, or nil when it is refused: the
+    /// signature, then IHDR first with 13 bytes, then every chunk whole with a
+    /// matching CRC, up to an IEND with no body. Bytes after IEND are ignored.
+    /// Neither dimension may be 0 or past 2^31 - 1, and the decoded RGBA may
+    /// not pass `pngDecodedLimit`. Keep in step with `kitty_png::header`.
+    static func pngHeader(_ bytes: UnsafeRawBufferPointer) -> (UInt32, UInt32)? {
         let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-        guard bytes.starts(with: signature) else { return false }
-        var offset = signature.count
-        while offset + 12 <= bytes.count {
-            let length = bytes[offset ..< offset + 4].reduce(0) { $0 << 8 | Int($1) }
-            let body = offset + 4
-            guard length <= Int(Int32.max), body + 4 + length + 4 <= bytes.count else { return false }
-            let stored = bytes[body + 4 + length ..< body + 8 + length].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
-            guard crc32(bytes[body ..< body + 4 + length]) == stored else { return false }
-            if bytes[body ..< body + 4].elementsEqual("IEND".utf8) { return true }
-            offset = body + 8 + length
+        guard bytes.count >= signature.count, bytes.prefix(signature.count).elementsEqual(signature) else { return nil }
+        func word(_ at: Int) -> UInt32 {
+            (0 ..< 4).reduce(UInt32(0)) { $0 << 8 | UInt32(bytes[at + $1]) }
         }
-        return false
+        var offset = signature.count
+        var size: (UInt32, UInt32)?
+        while true {
+            guard offset + 8 <= bytes.count else { return nil }
+            let length = Int(word(offset))
+            let kind = offset + 4
+            guard length <= bytes.count, kind + 4 + length + 4 <= bytes.count,
+                  crc32(UnsafeRawBufferPointer(rebasing: bytes[kind ..< kind + 4 + length])) == word(kind + 4 + length)
+            else { return nil }
+            let name = String(decoding: UnsafeRawBufferPointer(rebasing: bytes[kind ..< kind + 4]), as: UTF8.self)
+            switch (size, name) {
+            case (nil, "IHDR") where length == 13:
+                let width = word(kind + 4), height = word(kind + 8)
+                guard width > 0, height > 0, width <= UInt32(Int32.max), height <= UInt32(Int32.max) else { return nil }
+                let (pixels, overflow) = Int(width).multipliedReportingOverflow(by: Int(height))
+                guard !overflow, pixels <= pngDecodedLimit / 4 else { return nil }
+                size = (width, height)
+            case (nil, _):
+                return nil
+            case (let accepted?, "IEND"):
+                return length == 0 ? accepted : nil
+            default:
+                break
+            }
+            offset = kind + 4 + length + 4
+        }
     }
 
     private static let crcTable: [UInt32] = (0 ..< 256).map { index in
         (0 ..< 8).reduce(UInt32(index)) { value, _ in value & 1 == 1 ? 0xEDB8_8320 ^ (value >> 1) : value >> 1 }
     }
 
-    private static func crc32(_ bytes: ArraySlice<UInt8>) -> UInt32 {
-        ~bytes.reduce(UInt32.max) { crcTable[Int(($0 ^ UInt32($1)) & 0xFF)] ^ ($0 >> 8) }
+    private static func crc32(_ bytes: UnsafeRawBufferPointer) -> UInt32 {
+        crcTable.withUnsafeBufferPointer { table in
+            var crc = UInt32.max
+            for byte in bytes {
+                crc = table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+            }
+            return ~crc
+        }
     }
 
     deinit {

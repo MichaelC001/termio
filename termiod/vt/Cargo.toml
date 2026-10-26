@@ -36,3 +36,4 @@ publish = false
 [dependencies]
 libghostty-vt = { git = "https://github.com/termio-sh/libghostty-rs", rev = "6424b77efd0356ce20bba7f993de1a425637edd9" }
 png = "0.18"
+crc32fast = "1"
