@@ -6,7 +6,9 @@
 //! in-memory cell layout.
 
 mod input;
+mod kitty_png;
 
+pub use kitty_png::DECODED_LIMIT as PNG_DECODED_LIMIT;
 pub use input::{
     is_modifier_key, key_named, InputEncoder, InputModes, KeyAction, KeyInput, MouseAction, MouseInput, Pointer,
     WheelInput,
@@ -267,6 +269,7 @@ pub const CONTINUATION_LIMIT: usize = 1 << 20;
 
 impl VtTerminal {
     pub fn new(rows: u16, cols: u16) -> Result<Self> {
+        kitty_png::install();
         let mut terminal = check(
             Terminal::new(TerminalOptions {
                 cols,
@@ -286,6 +289,7 @@ impl VtTerminal {
     /// A terminal decoded from `native_snapshot`, as a client attaching on the
     /// `vt_stream` plane builds its own.
     pub fn from_native_snapshot(snapshot: &[u8]) -> Result<Self> {
+        kitty_png::install();
         let terminal = check(
             Terminal::decode_snapshot(snapshot, CONTINUATION_LIMIT),
             "Terminal::decode_snapshot",
@@ -971,7 +975,146 @@ mod tests {
             // with the same cell size and image rules as the daemon.
             Bytes(kitty_image()),
             Bytes(b"after the image"),
+            // A PNG 16 by 20 pixels covers two cells by two rows, a gray one
+            // 9 by 17 the same. Each one after is refused by both decoders, so
+            // the cursor stays where it was: past the decoded-size limit by its
+            // header, cut short before IEND, a damaged CRC. Bytes after the
+            // IEND are ignored by both.
+            Bytes(kitty_command(&png_image(16, 20, ::png::ColorType::Rgba, ::png::BitDepth::Eight))),
+            Bytes(b"png"),
+            Bytes(kitty_command(&png_image(9, 17, ::png::ColorType::Grayscale, ::png::BitDepth::Eight))),
+            Bytes(b"gray"),
+            Bytes(kitty_command(&png_image(1600, 1600, ::png::ColorType::Grayscale, ::png::BitDepth::One))),
+            Bytes(b"too big"),
+            Bytes(kitty_command(&png_cut())),
+            Bytes(b"cut"),
+            Bytes(kitty_command(&png_damaged())),
+            Bytes(b"damaged"),
+            Bytes(kitty_command(&[png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight), b"trailing".to_vec()].concat())),
+            Bytes(b"trailing"),
+            // The shared header rule decides, not either library: a bad CRC on
+            // an ancillary chunk and an IEND with a body are refused, and pixel
+            // data a library cannot decode is kept as zeros at the header size,
+            // so the cursor still moves.
+            Bytes(kitty_command(&png_ancillary_bad_crc())),
+            Bytes(b"text crc"),
+            Bytes(kitty_command(&png_iend_body())),
+            Bytes(b"iend body"),
+            Bytes(kitty_command(&png_short_idat())),
+            Bytes(b"short"),
+            Bytes(kitty_command(&png_empty_idat())),
+            Bytes(b"empty"),
         ]
+    }
+
+    /// A PNG moves the cursor past the rows it covers on any thread, not only
+    /// on the one that installed the decoder.
+    #[test]
+    fn a_kitty_png_is_decoded_on_every_thread() {
+        let cursor = |image: &'static [u8]| {
+            let mut terminal = VtTerminal::new(10, 20).expect("terminal");
+            // A new terminal has no cell size until its first resize.
+            terminal.resize(10, 20).expect("resize");
+            terminal.vt_write(image);
+            let screen = terminal.snapshot().expect("cells");
+            (screen.cursor_x, screen.cursor_y)
+        };
+        let small = kitty_command(&png_image(16, 20, ::png::ColorType::Rgba, ::png::BitDepth::Eight));
+        assert_eq!(cursor(small), (2, 2));
+        assert_eq!(std::thread::spawn(move || cursor(small)).join().expect("thread"), (2, 2));
+        let large = png_image(1600, 1600, ::png::ColorType::Grayscale, ::png::BitDepth::One);
+        assert_eq!(cursor(kitty_command(&large)), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_cut())), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_damaged())), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_ancillary_bad_crc())), (0, 1));
+        assert_eq!(cursor(kitty_command(&png_iend_body())), (0, 1));
+        // Undecodable pixels: accepted as zeros, one cell by one row.
+        assert_eq!(cursor(kitty_command(&png_short_idat())), (1, 1));
+        assert_eq!(cursor(kitty_command(&png_empty_idat())), (1, 1));
+    }
+
+    fn png_image(width: u32, height: u32, color: ::png::ColorType, depth: ::png::BitDepth) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        let mut encoder = ::png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(color);
+        encoder.set_depth(depth);
+        let bits = color.samples() * depth as usize;
+        let row = (width as usize * bits).div_ceil(8);
+        // A pattern for the small images, zeros for the large one, so its
+        // payload stays small and the every-boundary test stays quick.
+        let pattern = |index: usize| if bits == 1 { 0 } else { (index * 7) as u8 };
+        let pixels: Vec<u8> = (0..row * height as usize).map(pattern).collect();
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(&pixels).expect("png data");
+        writer.finish().expect("png finish");
+        encoded
+    }
+
+    /// Every pixel present, the IEND chunk missing.
+    fn png_cut() -> Vec<u8> {
+        let mut image = png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight);
+        image.truncate(image.len() - 12);
+        image
+    }
+
+    /// The IDAT chunk's CRC with one bit flipped.
+    fn png_damaged() -> Vec<u8> {
+        let mut image = png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight);
+        let end = image.len() - 12;
+        image[end - 1] ^= 1;
+        image
+    }
+
+    fn png_chunk(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let crc = crc32fast::hash(&[kind.as_slice(), body].concat());
+        [&(body.len() as u32).to_be_bytes()[..], kind, body, &crc.to_be_bytes()].concat()
+    }
+
+    /// A valid 8 by 16 RGB PNG split as (signature and IHDR, IDAT body).
+    fn png_parts() -> (Vec<u8>, Vec<u8>) {
+        let image = png_image(8, 16, ::png::ColorType::Rgb, ::png::BitDepth::Eight);
+        let head = image[..33].to_vec();
+        let length = u32::from_be_bytes(image[33..37].try_into().expect("length")) as usize;
+        (head, image[41..41 + length].to_vec())
+    }
+
+    fn png_ancillary_bad_crc() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        let mut text = png_chunk(b"tEXt", b"k\0v");
+        *text.last_mut().expect("crc") ^= 1;
+        [head, text, png_chunk(b"IDAT", &idat), png_chunk(b"IEND", &[])].concat()
+    }
+
+    fn png_iend_body() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        [head, png_chunk(b"IDAT", &idat), png_chunk(b"IEND", &[0, 0])].concat()
+    }
+
+    fn png_short_idat() -> Vec<u8> {
+        let (head, idat) = png_parts();
+        [head, png_chunk(b"IDAT", &idat[..idat.len() / 2]), png_chunk(b"IEND", &[])].concat()
+    }
+
+    fn png_empty_idat() -> Vec<u8> {
+        let (head, _) = png_parts();
+        [head, png_chunk(b"IDAT", &[]), png_chunk(b"IEND", &[])].concat()
+    }
+
+    fn kitty_command(image: &[u8]) -> &'static [u8] {
+        let command = format!("\r\n\x1b_Ga=T,f=100,q=2;{}\x1b\\", base64(image));
+        Box::leak(command.into_bytes().into_boxed_slice())
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut text = String::new();
+        for chunk in bytes.chunks(3) {
+            let word = chunk.iter().enumerate().fold(0u32, |word, (index, byte)| word | u32::from(*byte) << (16 - 8 * index));
+            for index in 0..4 {
+                text.push(if index <= chunk.len() { ALPHABET[(word >> (18 - 6 * index) & 63) as usize] as char } else { '=' });
+            }
+        }
+        text
     }
 
     fn kitty_image() -> &'static [u8] {
@@ -1031,11 +1174,27 @@ mod tests {
                         daemon.snapshot().expect("daemon cells"),
                         "cells diverged attaching at byte {attach_at}, after step {index}"
                     );
-                    assert_eq!(
-                        client.format_vt().expect("client vt"),
-                        daemon.format_vt().expect("daemon vt"),
-                        "screens diverged attaching at byte {attach_at}, after step {index}"
-                    );
+                    // Scrollback is pruned by whole pages, and a terminal
+                    // decoded from a snapshot lays its pages out differently
+                    // from one that grew byte by byte. Where 4 KB pages make
+                    // them prune at different rows, the rows the client keeps
+                    // must still be the newest the daemon keeps.
+                    let client_rows = client.scrollback(usize::MAX).expect("client scrollback").rows;
+                    let daemon_rows = daemon.scrollback(usize::MAX).expect("daemon scrollback").rows;
+                    if client_rows.len() == daemon_rows.len() {
+                        assert_eq!(
+                            client.format_vt().expect("client vt"),
+                            daemon.format_vt().expect("daemon vt"),
+                            "screens diverged attaching at byte {attach_at}, after step {index}"
+                        );
+                    } else {
+                        let kept = client_rows.len().min(daemon_rows.len());
+                        assert_eq!(
+                            client_rows[..kept],
+                            daemon_rows[..kept],
+                            "scrollback diverged attaching at byte {attach_at}, after step {index}"
+                        );
+                    }
                 }
             }
         }
