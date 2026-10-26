@@ -53,6 +53,9 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // own name because a daemon with `vt_stream` alone drops those events: a
     // client streams only from a daemon that grants both.
     "vt_input",
+    // The host's view: `view`, `project_add`, `project_remove`, `create`'s
+    // `place`, and the `view:host` resource.
+    "view",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -488,6 +491,8 @@ pub enum ErrorCode {
     CreateFailed,
     Denied,
     Busy,
+    /// A project, group or pane the request named is not in the host's view.
+    NotFound,
     /// The write was refused because what it would replace has changed since
     /// the writer read it. Its own code because a client shows it as a question
     /// (overwrite, or not) rather than as a failure.
@@ -537,6 +542,10 @@ pub struct CreateSpec {
     pub cols: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workstream: Option<WorkstreamSpec>,
+    /// Where the session's pane goes in the host's view. Absent: a new group
+    /// in the project that holds the cwd, else a loose group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<crate::view::Place>,
 }
 
 fn default_rows() -> u16 {
@@ -562,6 +571,7 @@ impl Default for CreateSpec {
             rows: default_rows(),
             cols: default_cols(),
             workstream: None,
+            place: None,
         }
     }
 }
@@ -1034,6 +1044,27 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Read the host's view once. A client that keeps it live subscribes to
+    /// `view:host` instead. Capability `view`.
+    View {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Register a directory on this host as a project. Idempotent on the
+    /// canonical path: registering one twice returns the first project.
+    ProjectAdd {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Remove a project row and kill the sessions its panes show.
+    ProjectRemove {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
 
     // Daemon → client responses.
     Ok {
@@ -1042,6 +1073,29 @@ pub enum Control {
     },
     Created {
         id: String,
+        /// The pane the session was placed in. Absent from a host without the
+        /// `view` capability, and when placing failed after the spawn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `view`.
+    ViewState {
+        view: Box<crate::view::View>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `project_add`: the project and the view's revision after it.
+    ProjectAdded {
+        project: String,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to a view change that names nothing new: the revision after it.
+    Revised {
+        revision: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
     },
@@ -1327,7 +1381,10 @@ impl Control {
             | Control::Wait { seq, .. }
             | Control::SetStatus { seq, .. }
             | Control::InstallAgents { seq, .. }
-            | Control::ProbeAgents { seq, .. } => *seq,
+            | Control::ProbeAgents { seq, .. }
+            | Control::View { seq }
+            | Control::ProjectAdd { seq, .. }
+            | Control::ProjectRemove { seq, .. } => *seq,
             _ => None,
         }
     }
@@ -1541,6 +1598,13 @@ pub enum Event {
     /// so the label beside a checkout's name can be kept live for every
     /// checkout a client shows without the per-event `git status` the `git:`
     /// kind costs.
+    /// The host's whole view at revision `seq`, on the `view:host` resource.
+    /// Not a delta: a client replaces what it holds.
+    ViewChanged {
+        resource: String,
+        seq: u64,
+        view: Box<crate::view::View>,
+    },
     HeadChanged {
         resource: String,
         seq: u64,

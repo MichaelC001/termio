@@ -307,6 +307,29 @@ pub async fn create(spec: CreateSpec) -> Result<String> {
     }
 }
 
+/// The host's view, read once.
+pub async fn view() -> Result<crate::view::View> {
+    match request_with_capabilities(&Control::View { seq: Some(1) }, &["view"]).await? {
+        Control::ViewState { view, .. } => Ok(*view),
+        Control::Error { message, .. } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Register a directory as a project on this host. Returns the project's id.
+pub async fn project_add(path: &str) -> Result<String> {
+    let request = Control::ProjectAdd {
+        path: path.to_string(),
+        label: None,
+        seq: Some(1),
+    };
+    match request_with_capabilities(&request, &["view"]).await? {
+        Control::ProjectAdded { project, .. } => Ok(project),
+        Control::Error { message, .. } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
 pub async fn list() -> Result<Vec<SessionInfo>> {
     match request(&Control::List { seq: Some(1) }).await? {
         Control::Sessions { sessions, .. } => Ok(sessions),

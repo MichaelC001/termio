@@ -460,6 +460,7 @@ async fn run_here(cmd: ServerCmd) -> Result<()> {
                 rows,
                 cols,
                 workstream: None,
+                place: None,
             };
             let id = client::create(spec).await?;
             println!("{id}");
@@ -491,6 +492,7 @@ async fn run_here(cmd: ServerCmd) -> Result<()> {
                     rows,
                     cols,
                     workstream: None,
+                    place: None,
                 })
             };
             if observe {

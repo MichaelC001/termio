@@ -58,6 +58,8 @@ pub struct Manager {
     /// death has to leave evidence — an empty session list otherwise reads as
     /// "nothing was running" rather than "everything was lost".
     graveyard: Arc<Graveyard>,
+    /// Which projects exist on this host and where each session's pane sits.
+    view: Arc<crate::view::ViewStore>,
     session_removed: Arc<Notify>,
     /// Where a `handoff` request goes. The accept loop owns the listener and
     /// the runtime, so replacing the image is its move to make; a connection
@@ -92,8 +94,14 @@ impl Manager {
         host_id: String,
         graveyard: Arc<Graveyard>,
         handoff: mpsc::UnboundedSender<std::path::PathBuf>,
+        view_dir: Option<std::path::PathBuf>,
     ) -> Manager {
         let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let resources = Registry::new();
+        let view = Arc::new(crate::view::ViewStore::open(
+            view_dir.as_deref(),
+            resources.clone(),
+        ));
         Manager {
             inner: Arc::new(Mutex::new(ManagerInner {
                 sessions: HashMap::new(),
@@ -105,9 +113,10 @@ impl Manager {
             on_exit,
             events,
             host_id: Arc::new(host_id),
-            resources: Registry::new(),
+            resources,
             uploads: crate::files::Uploads::new(),
             graveyard,
+            view,
             session_removed: Arc::new(Notify::new()),
             handoff,
             searching: Arc::new(tokio::sync::Semaphore::new(search_permits())),
@@ -828,7 +837,14 @@ pub async fn serve(
     );
     let (on_exit_tx, mut on_exit_rx) = mpsc::unbounded_channel::<SessionEnded>();
     let (handoff_tx, mut handoff_rx) = mpsc::unbounded_channel::<std::path::PathBuf>();
-    let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx);
+    let view_dir = match paths::durable_state_dir() {
+        Ok(dir) => Some(dir),
+        Err(error) => {
+            eprintln!("termiod: the view will not be saved: {error:#}");
+            None
+        }
+    };
+    let manager = Manager::new(on_exit_tx, host_id, graveyard, handoff_tx, view_dir);
     tokio::spawn(pump_status_resource(
         manager.events.subscribe(),
         manager.resources.clone(),
@@ -860,6 +876,21 @@ pub async fn serve(
         );
     }
 
+    // Sessions carried across a handoff from a daemon that kept no view have no
+    // pane yet. They get one before the first client can ask where they are.
+    let live: Vec<(String, String)> = manager
+        .list()
+        .await
+        .into_iter()
+        .map(|info| (info.id, info.cwd))
+        .collect();
+    if let Err(error) = manager
+        .view
+        .change(|view| Ok(((), view.place_unplaced(&live))))
+    {
+        eprintln!("termiod: placing the carried sessions in the view failed: {error:#}");
+    }
+
     {
         let manager = manager.clone();
         tokio::spawn(async move {
@@ -877,6 +908,17 @@ pub async fn serve(
                 manager
                     .graveyard
                     .bury(&ended.info, reason, Some(ended.status));
+                // A kill is a close: the user meant the pane to go. A session
+                // that ended any other way keeps its pane, which is where a
+                // client says why it ended.
+                if reason == EndReason::Killed {
+                    let session = id.to_string();
+                    if let Err(error) =
+                        manager.view.change(|view| Ok(((), view.remove_session(&session))))
+                    {
+                        eprintln!("termiod: removing the pane of {session} failed: {error:#}");
+                    }
+                }
                 // The scratch dir is reaped with the session (§C.12 `temp:`),
                 // in-flight uploads first so no dotfile survives the sweep.
                 manager.uploads.drop_session(&id);
@@ -1659,15 +1701,105 @@ async fn process_control(
 
     match control {
         Control::Create { spec, seq } => {
-            let response = match manager.create(spec) {
-                Ok(id) => {
-                    manager.publish_created(&id).await;
-                    Control::Created {
-                        id: id.to_string(),
-                        re: seq,
+            let place = spec.place.clone().unwrap_or_default();
+            let cwd = spec.cwd.clone().unwrap_or_default();
+            let unknown_project = place.project.as_ref().filter(|project| {
+                !manager.view.snapshot().projects.iter().any(|known| &&known.id == project)
+            });
+            let response = if let Some(project) = unknown_project {
+                // Refused before the spawn: a session nobody can find in the
+                // view is the state this whole design removes.
+                error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false)
+            } else {
+                match manager.create(spec) {
+                    Ok(id) => {
+                        let session = id.to_string();
+                        let pane = match manager.view.change(|view| {
+                            Ok((view.place_terminal(&session, &cwd, &place)?, true))
+                        }) {
+                            Ok((pane, _)) => Some(pane),
+                            Err(e) => {
+                                eprintln!("termiod: session {session} has no pane: {e:#}");
+                                None
+                            }
+                        };
+                        manager.publish_created(&id).await;
+                        Control::Created {
+                            id: session,
+                            pane,
+                            re: seq,
+                        }
                     }
+                    Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
                 }
-                Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::View { seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                Control::ViewState {
+                    view: Box::new(manager.view.snapshot()),
+                    re: seq,
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::ProjectAdd { path, label, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                match std::fs::canonicalize(&path) {
+                    Ok(canonical) if canonical.is_dir() => {
+                        let canonical = canonical.to_string_lossy().into_owned();
+                        match manager
+                            .view
+                            .change(|view| Ok(view.add_project(&canonical, label.as_deref())))
+                        {
+                            Ok((project, revision)) => Control::ProjectAdded {
+                                project,
+                                revision,
+                                re: seq,
+                            },
+                            Err(e) => error(seq, ErrorCode::Internal, format!("{e:#}"), false),
+                        }
+                    }
+                    Ok(_) => error(seq, ErrorCode::NotFound, format!("not a directory: {path}"), false),
+                    Err(e) => error(seq, ErrorCode::NotFound, format!("{path}: {e}"), false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::ProjectRemove { project, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                match manager
+                    .view
+                    .change(|view| Ok((view.remove_project(&project)?, true)))
+                {
+                    Ok((sessions, revision)) => {
+                        for session in sessions {
+                            match manager.resolve(&session).await {
+                                Some(handle) => {
+                                    if !handle.send(SessionMsg::Kill {
+                                        reason: EndReason::Killed,
+                                    }) {
+                                        eprintln!(
+                                            "termiod: session {session} of a removed project \
+                                             was being handed off and was not killed"
+                                        );
+                                    }
+                                }
+                                // Already ended: its pane is gone with the project.
+                                None => {}
+                            }
+                        }
+                        Control::Revised { revision, re: seq }
+                    }
+                    Err(e) => error(seq, ErrorCode::NotFound, format!("{e:#}"), false),
+                }
             };
             send_response(out, response_cache, seq, response);
         }
@@ -2516,6 +2648,9 @@ async fn process_control(
         | Control::HelloErr { .. }
         | Control::Ok { .. }
         | Control::Created { .. }
+        | Control::ViewState { .. }
+        | Control::ProjectAdded { .. }
+        | Control::Revised { .. }
         | Control::Sessions { .. }
         | Control::Attached { .. }
         | Control::Exited { .. }
@@ -2846,6 +2981,7 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         | Event::GitChanged { .. }
         | Event::HeadChanged { .. }
         | Event::StatusChanged { .. }
+        | Event::ViewChanged { .. }
         | Event::SearchResults { .. } => false,
         // Input travels from a client to the host, never back out.
         Event::Key { .. }
