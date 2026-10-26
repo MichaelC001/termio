@@ -324,10 +324,12 @@ iOS keyboard occludes the screen instead of resizing it.
 Each phase ships on its own.
 
 1. **View and projects.** Add the `view:host` resource with projects, groups
-   and terminal panes. Add `project.add`, `group.new`, placement on `create`,
-   `view.import` and `termio .` on every host. The Mac draws the sidebar from
+   and terminal panes. Add `project.add`, `project.remove`, `pane.close`,
+   `group.new`, placement on `create`, `view.import` and `termio .` on every
+   host. `pane.close` lands here because a session that ends on its own keeps
+   its pane, and nothing else could clear it. The Mac draws the sidebar from
    the view. This fixes the remote `termio .` failure.
-2. **Arrangement.** Add `pane.split`, `pane.move`, `pane.close`,
+2. **Arrangement.** Add `pane.split`, `pane.move`,
    `pane.focus`, `pane.zoom` and `split.resize`. The Mac's split view draws
    from the view. Add the CLI verbs `split`, `focus`, `zoom` and `view`.
 3. **Client actions.** Add `client.invoke` and `client.reply`. Move `sim` and

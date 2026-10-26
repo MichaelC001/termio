@@ -15,7 +15,8 @@ use crate::session::{
     self, ClientBacklog, ClientEvent, Metered, SessionEnded, SessionHandle, SessionMsg,
 };
 use crate::tombstone::{EndReason, Graveyard};
-use anyhow::{Context, Result};
+use crate::view::Place;
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -882,7 +883,7 @@ pub async fn serve(
         .list()
         .await
         .into_iter()
-        .map(|info| (info.id, info.cwd))
+        .map(|info| (info.id, placement_cwd(&info.cwd)))
         .collect();
     if let Err(error) = manager
         .view
@@ -1703,7 +1704,7 @@ async fn process_control(
     match control {
         Control::Create { spec, seq } => {
             let place = spec.place.clone().unwrap_or_default();
-            let cwd = spec.cwd.clone().unwrap_or_default();
+            let cwd = placement_cwd(spec.cwd.as_deref().unwrap_or_default());
             let unknown_project = place.project.as_ref().filter(|project| {
                 !manager.view.snapshot().projects.iter().any(|known| &&known.id == project)
             });
@@ -1716,7 +1717,14 @@ async fn process_control(
                     Ok(id) => {
                         let session = id.to_string();
                         let pane = match manager.view.change(|view| {
-                            Ok((view.place_terminal(&session, &cwd, &place)?, true))
+                            // The project can be removed while the session
+                            // spawns; a live session still gets a pane, loose.
+                            let pane = view
+                                .place_terminal(&session, &cwd, &place)
+                                .or_else(|_| {
+                                    view.place_terminal(&session, &cwd, &Place::default())
+                                })?;
+                            Ok((pane, true))
                         }) {
                             Ok((pane, _)) => Some(pane),
                             Err(e) => {
@@ -1795,6 +1803,35 @@ async fn process_control(
                                 }
                                 // Already ended: its pane is gone with the project.
                                 None => {}
+                            }
+                        }
+                        Control::Revised { revision, re: seq }
+                    }
+                    Err(e) => error(seq, ErrorCode::NotFound, format!("{e:#}"), false),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::PaneClose { pane, seq } => {
+            let response = if !connection.capabilities.contains("view") {
+                error(seq, ErrorCode::Denied, "the view capability was not negotiated", false)
+            } else {
+                match manager.view.change(|view| {
+                    let session = view
+                        .session_of(&pane)
+                        .ok_or_else(|| anyhow!("no such pane: {pane}"))?;
+                    view.remove_session(&session);
+                    Ok((session, true))
+                }) {
+                    Ok((session, revision)) => {
+                        if let Some(handle) = manager.resolve(&session).await {
+                            if !handle.send(SessionMsg::Kill {
+                                reason: EndReason::Killed,
+                            }) {
+                                eprintln!(
+                                    "termiod: session {session} of a closed pane was being \
+                                     handed off and was not killed"
+                                );
                             }
                         }
                         Control::Revised { revision, re: seq }
@@ -2029,6 +2066,15 @@ async fn process_control(
                     seq,
                     ErrorCode::Denied,
                     "the resources capability was not negotiated",
+                    false,
+                )
+            } else if resource == crate::resource::VIEW_ID
+                && !connection.capabilities.contains("view")
+            {
+                error(
+                    seq,
+                    ErrorCode::Denied,
+                    "the view capability was not negotiated",
                     false,
                 )
             } else if (resource.starts_with("git:") || resource.starts_with("head:"))
@@ -3330,6 +3376,24 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
         message: message.into(),
         retryable,
     }
+}
+
+/// The directory a session is placed by: where it really runs. An empty cwd
+/// spawns in the daemon's own directory, and a project's path is canonical, so
+/// a symlinked or relative spelling must resolve before it is matched.
+fn placement_cwd(cwd: &str) -> String {
+    let path = if cwd.is_empty() {
+        match std::env::current_dir() {
+            Ok(dir) => dir,
+            Err(_) => return String::new(),
+        }
+    } else {
+        std::path::PathBuf::from(cwd)
+    };
+    std::fs::canonicalize(&path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

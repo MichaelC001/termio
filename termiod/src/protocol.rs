@@ -1065,6 +1065,14 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Close a pane: it leaves the view, and a session it shows that is still
+    /// running is killed. The only way to clear the pane of a session that
+    /// already ended.
+    PaneClose {
+        pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
 
     // Daemon → client responses.
     Ok {
@@ -1384,7 +1392,8 @@ impl Control {
             | Control::ProbeAgents { seq, .. }
             | Control::View { seq }
             | Control::ProjectAdd { seq, .. }
-            | Control::ProjectRemove { seq, .. } => *seq,
+            | Control::ProjectRemove { seq, .. }
+            | Control::PaneClose { seq, .. } => *seq,
             _ => None,
         }
     }

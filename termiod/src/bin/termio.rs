@@ -1395,7 +1395,7 @@ async fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
 
 /// Off a Mac there is no app to hand the directory to. The project goes into
 /// this host's view instead, which every client connected here draws. A project
-/// that has no group yet gets a shell, so it opens onto something.
+/// with no running session gets a shell, so it opens onto something live.
 async fn open_on_this_host(directory: &Path) -> Result<()> {
     let path = directory.to_string_lossy().into_owned();
     let project = termiod::client::project_add(&path).await?;
@@ -1403,7 +1403,15 @@ async fn open_on_this_host(directory: &Path) -> Result<()> {
     let Some(row) = view.projects.iter().find(|row| row.id == project) else {
         bail!("{path} was registered but is not in the view");
     };
-    if row.groups.is_empty() {
+    let live: Vec<String> = termiod::client::list()
+        .await?
+        .into_iter()
+        .map(|info| info.id)
+        .collect();
+    let running = row.groups.iter().flat_map(|group| group.panes()).any(|pane| match &pane.kind {
+        termiod::view::PaneKind::Terminal { session } => live.contains(session),
+    });
+    if !running {
         let (rows, cols) = termiod::client::term_size();
         let spec = termiod::protocol::CreateSpec {
             cwd: Some(path.clone()),

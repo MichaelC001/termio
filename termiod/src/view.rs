@@ -200,6 +200,16 @@ impl View {
             .collect()
     }
 
+    /// The session the terminal pane `pane` shows.
+    pub fn session_of(&self, pane: &str) -> Option<String> {
+        self.groups()
+            .flat_map(|group| group.panes())
+            .find(|shown| shown.id == pane)
+            .map(|shown| match &shown.kind {
+                PaneKind::Terminal { session } => session.clone(),
+            })
+    }
+
     fn has_id(&self, id: &str) -> bool {
         self.projects.iter().any(|project| project.id == id)
             || self
@@ -357,11 +367,26 @@ pub struct ViewStore {
 }
 
 impl ViewStore {
-    /// Load the view from `dir`, or start an empty one. A file that does not
-    /// parse is moved aside and reported, never silently replaced.
+    /// Load the view from `dir`, or start an empty one. A file that cannot be
+    /// read is moved aside and reported, never silently replaced; one that
+    /// cannot even be moved is left alone and this daemon keeps the view in
+    /// memory only.
+    ///
+    /// The revision restarts at no less than the current time in milliseconds.
+    /// A client's cursor names a revision, and a restarted daemon may have lost
+    /// the file or a write that failed, so counting on from the file could hand
+    /// out a revision a client already holds for a different view. A floor
+    /// above every revision an earlier run issued makes such a cursor stale,
+    /// and a stale cursor is a gap that is served the whole view.
     pub fn open(dir: Option<&Path>, registry: Registry) -> ViewStore {
-        let file = dir.map(|dir| dir.join(VIEW_FILE));
-        let view = file.as_deref().map(load).unwrap_or_default();
+        let (mut view, file) = match dir.map(|dir| dir.join(VIEW_FILE)) {
+            Some(file) => match load(&file) {
+                Some(view) => (view, Some(file)),
+                None => (View::default(), None),
+            },
+            None => (View::default(), None),
+        };
+        view.revision = view.revision.max(revision_floor());
         registry.install_view(view.clone());
         ViewStore {
             view: Mutex::new(view),
@@ -405,31 +430,41 @@ impl ViewStore {
     }
 }
 
-fn load(file: &Path) -> View {
-    let text = match std::fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return View::default(),
-        Err(error) => {
-            eprintln!(
-                "termiod: the view at {} did not load: {error}",
-                file.display()
-            );
-            return View::default();
-        }
+fn revision_floor() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The saved view, an empty one, or `None` when the file must not be written:
+/// it holds something that could not be read and could not be moved aside.
+fn load(file: &Path) -> Option<View> {
+    let problem = match std::fs::read_to_string(file) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(view) => return Some(view),
+            Err(error) => format!("did not parse ({error})"),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(View::default()),
+        Err(error) => format!("could not be read ({error})"),
     };
-    match serde_json::from_str(&text) {
-        Ok(view) => view,
-        Err(error) => {
-            let aside = file.with_extension("json.unreadable");
+    let aside = file.with_extension("json.unreadable");
+    match std::fs::rename(file, &aside) {
+        Ok(()) => {
             eprintln!(
-                "termiod: the view at {} did not parse ({error}); moved to {} and starting empty",
+                "termiod: the view at {} {problem}; moved to {} and starting empty",
                 file.display(),
                 aside.display()
             );
-            if let Err(error) = std::fs::rename(file, &aside) {
-                eprintln!("termiod: moving the unreadable view aside failed: {error}");
-            }
-            View::default()
+            Some(View::default())
+        }
+        Err(error) => {
+            eprintln!(
+                "termiod: the view at {} {problem} and could not be moved aside ({error}); \
+                 this daemon will not save the view",
+                file.display()
+            );
+            None
         }
     }
 }
@@ -577,32 +612,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = ViewStore::open(Some(&dir), Registry::new());
+        let start = store.snapshot().revision;
         let ((), revision) = store
             .change(|view| Ok(((), view.add_project("/work", None).1)))
             .unwrap();
-        assert_eq!(revision, 1);
+        assert_eq!(revision, start + 1);
         let ((), revision) = store
             .change(|view| Ok(((), view.add_project("/work", None).1)))
             .unwrap();
-        assert_eq!(revision, 1, "an unchanged view keeps its revision");
+        assert_eq!(revision, start + 1, "an unchanged view keeps its revision");
         assert!(store
             .change(|_| -> Result<((), bool)> { Err(anyhow!("refused")) })
             .is_err());
 
         let reopened = ViewStore::open(Some(&dir), Registry::new());
-        assert_eq!(reopened.snapshot(), store.snapshot());
+        assert_eq!(reopened.snapshot().projects, store.snapshot().projects);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn an_unreadable_file_is_moved_aside() {
+    fn a_restart_never_reissues_a_revision_a_client_may_hold() {
+        let dir = std::env::temp_dir().join(format!("termiod-view-floor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A view saved at a low revision: a lost file or a failed write leaves
+        // the daemon behind revisions its clients already saw.
+        std::fs::write(
+            dir.join(VIEW_FILE),
+            r#"{"revision":5,"projects":[],"loose":[]}"#,
+        )
+        .unwrap();
+        let store = ViewStore::open(Some(&dir), Registry::new());
+        assert!(store.snapshot().revision >= revision_floor() - 60_000);
+
+        // A saved revision above the clock (the clock went back) still counts on.
+        let ahead = revision_floor() + 1_000_000;
+        std::fs::write(
+            dir.join(VIEW_FILE),
+            format!(r#"{{"revision":{ahead},"projects":[],"loose":[]}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            ViewStore::open(Some(&dir), Registry::new())
+                .snapshot()
+                .revision,
+            ahead
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unparseable_file_is_moved_aside() {
         let dir = std::env::temp_dir().join(format!("termiod-view-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(VIEW_FILE), "{not json").unwrap();
         let store = ViewStore::open(Some(&dir), Registry::new());
-        assert_eq!(store.snapshot(), View::default());
+        assert_eq!(store.snapshot().projects, Vec::new());
         assert!(dir.join("view.json.unreadable").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("termiod-view-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(VIEW_FILE);
+        let saved = r#"{"revision":4,"projects":[],"loose":[]}"#;
+        std::fs::write(&file, saved).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Readable once moved aside: the good copy survives under the new name.
+        let store = ViewStore::open(Some(&dir), Registry::new());
+        store
+            .change(|view| Ok(((), view.add_project("/work", None).1)))
+            .unwrap();
+        let aside = dir.join("view.json.unreadable");
+        std::fs::set_permissions(&aside, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read_to_string(&aside).unwrap(), saved);
+
+        // Not even movable: the daemon keeps the view in memory and writes nothing.
+        std::fs::rename(&aside, &file).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let store = ViewStore::open(Some(&dir), Registry::new());
+        store
+            .change(|view| Ok(((), view.add_project("/work", None).1)))
+            .unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pane_names_its_session() {
+        let mut view = View::default();
+        let pane = view.place_terminal("a", "/", &Place::default()).unwrap();
+        assert_eq!(view.session_of(&pane).as_deref(), Some("a"));
+        assert_eq!(view.session_of("pane:missing"), None);
     }
 }

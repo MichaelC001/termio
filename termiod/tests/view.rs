@@ -234,7 +234,7 @@ fn a_project_holds_its_sessions_and_survives_a_restart() {
     let before_restart = control.view();
     assert_eq!(
         sessions_in(&before_restart["projects"][0]["groups"][0]),
-        vec![exited]
+        vec![exited.clone()]
     );
 
     drop(client);
@@ -242,7 +242,41 @@ fn a_project_holds_its_sessions_and_survives_a_restart() {
     drop(daemon);
     let daemon = start_daemon(&dir);
     let mut client = Connection::open(&daemon);
-    assert_eq!(client.view(), before_restart, "the view survives a restart");
+    let after_restart = client.view();
+    assert_eq!(
+        after_restart["projects"], before_restart["projects"],
+        "the view survives a restart"
+    );
+    assert!(
+        after_restart["revision"].as_u64() > before_restart["revision"].as_u64(),
+        "a restarted host never reissues a revision: {after_restart}"
+    );
+
+    // The ended session's pane is cleared by closing the pane; a kill finds
+    // no session to kill.
+    let killed = client.request(json!({"op": "kill", "id": exited}));
+    assert_eq!(killed["code"], "no_such_session", "{killed}");
+    let pane = after_restart["projects"][0]["groups"][0]["root"]["pane"]["id"].clone();
+    let closed = client.request(json!({"op": "pane_close", "pane": pane}));
+    assert_eq!(closed["op"], "revised", "{closed}");
+    assert_eq!(client.view()["projects"][0]["groups"], json!([]));
+    let again = client.request(json!({"op": "pane_close", "pane": pane}));
+    assert_eq!(again["code"], "not_found", "{again}");
+
+    // A symlinked spelling of the project's directory still lands in it.
+    let link = format!("{dir}/link");
+    std::os::unix::fs::symlink(&checkout, &link).expect("symlink");
+    let linked = client.request(json!({
+        "op": "create", "cwd": link, "argv": ["/bin/sh", "-c", "sleep 60"],
+    }));
+    let linked = linked["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{linked}"))
+        .to_string();
+    assert_eq!(
+        sessions_in(&client.view()["projects"][0]["groups"][0]),
+        vec![linked]
+    );
 
     let removed = client.request(json!({"op": "project_remove", "project": project}));
     assert_eq!(removed["op"], "revised", "{removed}");
