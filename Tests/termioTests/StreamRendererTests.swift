@@ -121,6 +121,50 @@ final class StreamRendererTests: XCTestCase {
         }
         XCTAssertNotEqual(origin(at: 2), alone.origin, "the = of => drew as a lone =")
         XCTAssertEqual(origin(at: 7), alone.origin, "a lone = changed")
+
+        // A run in a font without ligatures shapes as its characters, however
+        // long: the pen is measured from the run's own advances, not the grid.
+        let menlo = try TermiodGlyphAtlas(device: renderer.device, appearance: appearance, scale: 2)
+        XCTAssertNil(menlo.ligatures(Array("----------".utf16), bold: false, italic: false))
+        XCTAssertNil(menlo.ligatures(Array(String(repeating: "=", count: 40).utf16), bold: false, italic: false))
+        let berkeley = TermiodStreamRenderer.Appearance(
+            fontFamily: "Berkeley Mono", fallbackFamilies: [], fontSize: 13, paddingX: 8, paddingY: 2, backgroundOpacity: 1)
+        if let berkeleyAtlas = try? TermiodGlyphAtlas(device: renderer.device, appearance: berkeley, scale: 1) {
+            XCTAssertNil(berkeleyAtlas.ligatures(Array(String(repeating: "=", count: 40).utf16), bold: false, italic: false))
+        }
+        for scale in [1, 2] as [CGFloat] {
+            let shaped = try TermiodGlyphAtlas(device: renderer.device, appearance: ligatured, scale: scale)
+                .ligatures(Array(String(repeating: "=", count: 40).utf16), bold: false, italic: false) ?? []
+            for case let .glyph(_, shift) in shaped {
+                XCTAssertEqual(shift, 0, "a glyph walked off its cell at scale \(scale)")
+            }
+        }
+    }
+
+    /// A ligature is one glyph across its cells, so it is drawn only where
+    /// they look alike, as Ghostty breaks its runs: two colors, or the
+    /// cursor on one of them, draw the characters apart.
+    func testARunBreaksWhereItsCellsAreDrawnDifferently() throws {
+        let ligatured = TermiodStreamRenderer.Appearance(
+            fontFamily: "JetBrains Mono", fallbackFamilies: [], fontSize: 13,
+            paddingX: 8, paddingY: 2, backgroundOpacity: 1
+        )
+        let installed = CTFontCreateWithFontDescriptor(
+            CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: "JetBrains Mono"] as CFDictionary), 13, nil)
+        try XCTSkipUnless((CTFontCopyFamilyName(installed) as String) == "JetBrains Mono", "JetBrains Mono is not installed")
+        let renderer = try TermiodStreamRenderer(appearance: ligatured, scale: 2)
+        let atlas = renderer.atlas
+        let equals = try XCTUnwrap(atlas.slot(graphemes: [0x3D], bold: false, italic: false, cells: 1))
+        func equalsOrigin(_ text: String, column: UInt16) throws -> SIMD2<UInt16>? {
+            let terminal = try terminal()
+            terminal.write(Data(text.utf8))
+            let (_, _, glyphs) = try builtFrame(terminal, TermiodStreamFrameBuilder(), atlas)
+            return glyphs.first { $0.cellX == column && $0.cellY == 0 }.map { SIMD2($0.atlasX, $0.atlasY) }
+        }
+        XCTAssertNotEqual(try equalsOrigin("a => b", column: 2), equals.origin, "one color still joins")
+        XCTAssertEqual(try equalsOrigin("a \u{1b}[31m=\u{1b}[34m>\u{1b}[0m b", column: 2), equals.origin, "two colors joined")
+        // The cursor left on the `>`: its cell stands alone.
+        XCTAssertEqual(try equalsOrigin("a => b\u{1b}[1;4H", column: 2), equals.origin, "a run joined across the cursor")
     }
 
     /// Moving the cursor dirties no cell, and a frame must still follow it;
