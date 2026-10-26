@@ -14,7 +14,7 @@ pub use input::{
     WheelInput,
 };
 
-use std::cell::RefCell;
+use std::cell::{Cell as Slot, RefCell};
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -22,9 +22,11 @@ use std::rc::Rc;
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::render::{CellIterator, Dirty, RenderState, RowIterator};
 use libghostty_vt::screen::{CellContentTag, RowSemanticPrompt, Screen};
-use libghostty_vt::style::{RgbColor, StyleColor};
+use libghostty_vt::style::{Palette, RgbColor, StyleColor};
 use libghostty_vt::terminal::{
-    Mode, Point, PointCoordinate, ProgramStatusState, SemanticPromptKind,
+    ColorScheme, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point,
+    PointCoordinate, PrimaryDeviceAttributes, ProgramStatusState, SecondaryDeviceAttributes,
+    SemanticPromptKind, SizeReportSize, TertiaryDeviceAttributes,
 };
 use libghostty_vt::{Error, Terminal, TerminalOptions};
 
@@ -204,6 +206,61 @@ pub enum VtEvent {
     PromptStart,
 }
 
+/// What termiod answers a program's terminal queries with on its writer's
+/// behalf (`vt_answers`): the writer's terminal name for XTVERSION, its theme
+/// for the color queries, and whether that theme is dark. Colors are RGB.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Answers {
+    pub xtversion: String,
+    pub foreground: Option<[u8; 3]>,
+    pub background: Option<[u8; 3]>,
+    pub cursor: Option<[u8; 3]>,
+    /// Exactly 256 entries, or none for the engine's default palette.
+    pub palette: Option<Vec<[u8; 3]>>,
+    pub dark: Option<bool>,
+}
+
+/// The cell size every termiod VT and every `vt_stream` client uses, which
+/// size reports and Kitty image layout are in.
+pub const CELL_WIDTH: u32 = 8;
+pub const CELL_HEIGHT: u32 = 16;
+
+/// The state the query callbacks read and the replies they write, shared
+/// with the closures the engine holds.
+#[derive(Default)]
+struct Answering {
+    on: Slot<bool>,
+    replies: RefCell<Vec<u8>>,
+    xtversion: Slot<&'static str>,
+    dark: Slot<Option<bool>>,
+}
+
+/// One leaked copy per distinct name: the XTVERSION callback must hand back
+/// a string that outlives it, and a host meets only a few app versions.
+/// Names past `NAME_LIMIT` bytes are cut (Ghostty's own answer buffer holds
+/// 288), and past `NAMES_LIMIT` distinct ones a new name is not kept.
+fn interned(name: &str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    const NAME_LIMIT: usize = 256;
+    const NAMES_LIMIT: usize = 64;
+    static NAMES: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+    let mut end = name.len().min(NAME_LIMIT);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let name = &name[..end];
+    let mut names = NAMES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(known) = names.iter().find(|known| **known == name) {
+        return known;
+    }
+    if names.len() >= NAMES_LIMIT {
+        return "";
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.push(leaked);
+    leaked
+}
+
 /// A terminal plus reusable render iterators. This type is deliberately
 /// `!Send`/`!Sync`; construct and use it on the sidecar thread that owns it.
 pub struct VtTerminal {
@@ -212,6 +269,7 @@ pub struct VtTerminal {
     row_iterator: RowIterator<'static>,
     row_cells: CellIterator<'static>,
     events: Rc<RefCell<Vec<VtEvent>>>,
+    answering: Rc<Answering>,
     _thread_confined: PhantomData<Rc<()>>,
 }
 
@@ -221,13 +279,15 @@ pub struct VtTerminal {
 /// they stay in byte order: a report printed after a prompt is not dropped by
 /// that prompt's cleanup.
 ///
-/// No `on_pty_write`, so the engine answers no query. The writer's surface
-/// answers the terminal's queries, and termiod answers `OSC 7501 ; ?` on its
-/// read path (`SupportQuery`), ahead of anything a client can say.
+/// Queries are answered only while `set_answering` is on; until then the
+/// writer's surface answers them, as before `vt_answers`. termiod answers
+/// `OSC 7501 ; ?` on its read path (`SupportQuery`) either way.
 fn listen(
     terminal: &mut Terminal<'static, 'static>,
     events: &Rc<RefCell<Vec<VtEvent>>>,
+    answering: &Rc<Answering>,
 ) -> Result<()> {
+    answer_queries(terminal, answering)?;
     let reports = events.clone();
     check(
         terminal.on_program_status(move |_terminal, report| {
@@ -257,6 +317,70 @@ fn listen(
             }
         }),
         "Terminal::on_semantic_prompt",
+    )?;
+    Ok(())
+}
+
+/// The answers Ghostty's embedded surface gives (`termio/stream_handler.zig`):
+/// DA1 with clipboard access, which termio leaves at Ghostty's default, and
+/// Ghostty's DA2; XTVERSION as the writer's terminal names itself; size
+/// reports in `CELL_WIDTH` by `CELL_HEIGHT` cells; the writer's color scheme.
+/// One difference stays: the engine answers DA3, which Ghostty does not, and
+/// the callback is not told which level was asked. What the engine writes
+/// back goes to `replies`, and only while on.
+fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answering>) -> Result<()> {
+    const PRIMARY: PrimaryDeviceAttributes = PrimaryDeviceAttributes::new(
+        ConformanceLevel(62),
+        &[DeviceAttributeFeature(22), DeviceAttributeFeature(52)],
+    );
+    let writes = answering.clone();
+    check(
+        terminal.on_pty_write(move |_terminal, data| {
+            if writes.on.get() {
+                writes.replies.borrow_mut().extend_from_slice(data);
+            }
+        }),
+        "Terminal::on_pty_write",
+    )?;
+    check(
+        terminal.on_device_attributes(|_terminal| {
+            Some(DeviceAttributes {
+                primary: PRIMARY,
+                secondary: SecondaryDeviceAttributes {
+                    device_type: DeviceType(1),
+                    firmware_version: 10,
+                    rom_cartridge: 0,
+                },
+                tertiary: TertiaryDeviceAttributes { unit_id: 0 },
+            })
+        }),
+        "Terminal::on_device_attributes",
+    )?;
+    let names = answering.clone();
+    check(
+        terminal.on_xtversion(move |_terminal| {
+            let name = names.xtversion.get();
+            (!name.is_empty()).then_some(name)
+        }),
+        "Terminal::on_xtversion",
+    )?;
+    check(
+        terminal.on_size(|terminal| {
+            Some(SizeReportSize {
+                rows: terminal.rows().ok()?,
+                columns: terminal.cols().ok()?,
+                cell_width: CELL_WIDTH,
+                cell_height: CELL_HEIGHT,
+            })
+        }),
+        "Terminal::on_size",
+    )?;
+    let schemes = answering.clone();
+    check(
+        terminal.on_color_scheme(move |_terminal| {
+            schemes.dark.get().map(|dark| if dark { ColorScheme::Dark } else { ColorScheme::Light })
+        }),
+        "Terminal::on_color_scheme",
     )?;
     Ok(())
 }
@@ -299,15 +423,62 @@ impl VtTerminal {
 
     fn wrap(mut terminal: Terminal<'static, 'static>) -> Result<Self> {
         let events = Rc::new(RefCell::new(Vec::new()));
-        listen(&mut terminal, &events)?;
+        let answering = Rc::new(Answering::default());
+        listen(&mut terminal, &events, &answering)?;
         Ok(Self {
             terminal,
             render_state: check(RenderState::new(), "RenderState::new")?,
             row_iterator: check(RowIterator::new(), "RowIterator::new")?,
             row_cells: check(CellIterator::new(), "CellIterator::new")?,
             events,
+            answering,
             _thread_confined: PhantomData,
         })
+    }
+
+    /// Whether this VT answers the program's queries. Off for bytes that are
+    /// not live output (a replay), and while the writer answers for itself.
+    pub fn set_answering(&mut self, on: bool) {
+        self.answering.on.set(on);
+        if !on {
+            self.answering.replies.borrow_mut().clear();
+        }
+    }
+
+    /// The writer's identity and theme, which the answers carry.
+    pub fn set_answers(&mut self, answers: &Answers) -> Result<()> {
+        let rgb = |color: [u8; 3]| RgbColor { r: color[0], g: color[1], b: color[2] };
+        self.answering.xtversion.set(interned(&answers.xtversion));
+        let scheme_changed = self.answering.dark.replace(answers.dark) != answers.dark;
+        // A program that turned on color scheme reports (mode 2031) is told
+        // when the writer's appearance changes, as Ghostty tells it.
+        if scheme_changed && self.answering.on.get() {
+            if let (Some(dark), Ok(true)) = (answers.dark, self.terminal.mode(Mode::COLOR_SCHEME_REPORT)) {
+                let report: &[u8] = if dark { b"\x1b[?997;1n" } else { b"\x1b[?997;2n" };
+                self.answering.replies.borrow_mut().extend_from_slice(report);
+            }
+        }
+        check(self.terminal.set_default_fg_color(answers.foreground.map(rgb)), "Terminal::set_default_fg_color")?;
+        check(self.terminal.set_default_bg_color(answers.background.map(rgb)), "Terminal::set_default_bg_color")?;
+        check(self.terminal.set_default_cursor_color(answers.cursor.map(rgb)), "Terminal::set_default_cursor_color")?;
+        let palette = match &answers.palette {
+            Some(colors) if colors.len() == 256 => {
+                let mut palette = [RgbColor { r: 0, g: 0, b: 0 }; 256];
+                for (slot, color) in palette.iter_mut().zip(colors) {
+                    *slot = rgb(*color);
+                }
+                Some(Palette(palette))
+            }
+            _ => None,
+        };
+        check(self.terminal.set_default_color_palette(palette), "Terminal::set_default_color_palette")?;
+        Ok(())
+    }
+
+    /// What the program's queries were answered with since the last call, in
+    /// byte order, for termiod to write to the PTY.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut *self.answering.replies.borrow_mut())
     }
 
     /// The whole terminal in libghostty's own snapshot format: both screens,
@@ -1005,6 +1176,67 @@ mod tests {
             Bytes(kitty_command(&png_empty_idat())),
             Bytes(b"empty"),
         ]
+    }
+
+    /// termiod answers as the embedded surface does, and only while on: a
+    /// replay, or a writer that answers for itself, gets nothing from here.
+    #[test]
+    fn queries_are_answered_as_the_embedded_surface_does_only_while_on() {
+        let answer = |query: &[u8], answers: Option<&super::Answers>| {
+            let mut terminal = VtTerminal::new(24, 80).expect("terminal");
+            terminal.resize(24, 80).expect("resize");
+            if let Some(answers) = answers {
+                terminal.set_answers(answers).expect("answers");
+            }
+            terminal.vt_write(query);
+            assert!(terminal.take_replies().is_empty(), "answered while off");
+            terminal.set_answering(true);
+            terminal.vt_write(query);
+            String::from_utf8(terminal.take_replies()).expect("utf-8")
+        };
+        let dark = super::Answers {
+            xtversion: "ghostty 1.3.1".to_string(),
+            foreground: Some([0xdd, 0xdd, 0xdd]),
+            background: Some([0x11, 0x22, 0x33]),
+            dark: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(answer(b"\x1b[c", None), "\x1b[?62;22;52c");
+        assert_eq!(answer(b"\x1b[>c", None), "\x1b[>1;10;0c");
+        assert_eq!(answer(b"\x1b[>q", Some(&dark)), "\x1bP>|ghostty 1.3.1\x1b\\");
+        assert_eq!(answer(b"\x1b[18t", None), "\x1b[8;24;80t");
+        assert_eq!(answer(b"\x1b[16t", None), "\x1b[6;16;8t");
+        assert_eq!(answer(b"\x1b[6n", None), "\x1b[1;1R");
+        assert_eq!(answer(b"\x1b[?996n", Some(&dark)), "\x1b[?997;1n");
+        assert_eq!(answer(b"\x1b[?996n", None), "");
+        let light = super::Answers { dark: Some(false), ..dark.clone() };
+        assert_eq!(answer(b"\x1b[?996n", Some(&light)), "\x1b[?997;2n");
+        assert_eq!(answer(b"\x1b]11;?\x07", Some(&dark)), "\x1b]11;rgb:1111/2222/3333\x07");
+    }
+
+    /// The two answers no query asks for: a scheme report when the writer's
+    /// appearance changes under mode 2031, and the in-band size report a
+    /// resize writes under mode 2048.
+    #[test]
+    fn unsolicited_reports_follow_their_modes() {
+        let mut terminal = VtTerminal::new(24, 80).expect("terminal");
+        terminal.resize(24, 80).expect("resize");
+        terminal.set_answering(true);
+        let light = super::Answers { dark: Some(false), ..Default::default() };
+        let dark = super::Answers { dark: Some(true), ..Default::default() };
+        terminal.set_answers(&light).expect("answers");
+        terminal.set_answers(&dark).expect("answers");
+        assert!(terminal.take_replies().is_empty(), "reported a scheme nobody asked to hear");
+        terminal.vt_write(b"\x1b[?2031h");
+        terminal.set_answers(&light).expect("answers");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[?997;2n");
+        terminal.set_answers(&light).expect("answers");
+        assert!(terminal.take_replies().is_empty(), "reported a scheme that did not change");
+
+        terminal.vt_write(b"\x1b[?2048h");
+        terminal.take_replies();
+        terminal.resize(30, 100).expect("resize");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[48;30;100;480;800t");
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only

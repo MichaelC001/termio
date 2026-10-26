@@ -1,3 +1,4 @@
+import GhosttyVt
 import TermioShared
 import XCTest
 @testable import termio
@@ -26,6 +27,10 @@ final class StreamTerminalTests: XCTestCase {
             switch fields[0] {
             case "attach":
                 terminal = try TermiodStreamTerminal(nativeSnapshot: try Self.hex(fields[1]))
+                // As a pane does (the Scrollback setting). Left at the limit
+                // the snapshot carries, a terminal on 4 KB pages (Intel)
+                // prunes rows termiod's own VT, on 16 KB pages, kept.
+                try terminal?.setScrollbackLimit(bytes: 10_000_000)
             case "bytes":
                 try XCTUnwrap(terminal).write(try Self.hex(fields[1]))
             case "resize":
@@ -88,6 +93,95 @@ final class StreamTerminalTests: XCTestCase {
     }
 
     private struct BadHex: Error {}
+
+    /// A program sees the terminal the embedded surface is: Ghostty's device
+    /// attributes and XTVERSION, size reports, and the color scheme of the
+    /// appearance the theme was picked for.
+    func testThePaneAnswersQueriesAsTheEmbeddedSurfaceDoes() throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "vt-stream-resize", withExtension: "txt", subdirectory: "Fixtures"))
+        let attach = try XCTUnwrap(
+            try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first { $0.hasPrefix("attach ") })
+        let snapshot = try Self.hex(String(attach.dropFirst("attach ".count)))
+        func theme(background: UInt8, dark: Bool) -> TermiodStreamTerminal.Theme {
+            TermiodStreamTerminal.Theme(
+                foreground: GhosttyColorRgb(r: 128, g: 128, b: 128),
+                background: GhosttyColorRgb(r: background, g: background, b: background),
+                cursor: nil, palette: [GhosttyColorRgb](repeating: GhosttyColorRgb(r: 0, g: 0, b: 0), count: 256),
+                cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK, cursorBlink: false, dark: dark)
+        }
+        func answer(_ query: String, theme: TermiodStreamTerminal.Theme? = nil) throws -> String {
+            var replies = ""
+            let terminal = try TermiodStreamTerminal(
+                nativeSnapshot: snapshot, onReply: { replies += String(decoding: $0, as: UTF8.self) })
+            if let theme { try terminal.setTheme(theme) }
+            // The fixture attaches inside an OSC sequence; BEL ends it.
+            terminal.write(Data(("\u{7}" + query).utf8))
+            return replies
+        }
+        XCTAssertEqual(try answer("\u{1b}[c"), "\u{1b}[?62;22;52c")
+        XCTAssertEqual(try answer("\u{1b}[>c"), "\u{1b}[>1;10;0c")
+        XCTAssertFalse(embeddedGhosttyVersion().isEmpty)
+        XCTAssertEqual(try answer("\u{1b}[>q"), "\u{1b}P>|ghostty \(embeddedGhosttyVersion())\u{1b}\\")
+        XCTAssertEqual(try answer("\u{1b}[18t"), "\u{1b}[8;6;20t")
+        XCTAssertEqual(try answer("\u{1b}[16t"), "\u{1b}[6;16;8t")
+        XCTAssertEqual(try answer("\u{1b}[14t"), "\u{1b}[4;96;160t")
+        XCTAssertEqual(try answer("\u{1b}[?996n", theme: theme(background: 20, dark: true)), "\u{1b}[?997;1n")
+        XCTAssertEqual(try answer("\u{1b}[?996n", theme: theme(background: 250, dark: false)), "\u{1b}[?997;2n")
+        // A dark theme picked for the light appearance answers light, as the
+        // embedded surface answers from the window's appearance.
+        XCTAssertEqual(try answer("\u{1b}[?996n", theme: theme(background: 20, dark: false)), "\u{1b}[?997;2n")
+
+        // With mode 2031 on, the program is told when the appearance changes.
+        var reports = ""
+        let terminal = try TermiodStreamTerminal(
+            nativeSnapshot: snapshot, onReply: { reports += String(decoding: $0, as: UTF8.self) })
+        terminal.write(Data("\u{7}".utf8))
+        try terminal.setTheme(theme(background: 250, dark: false))
+        try terminal.setTheme(theme(background: 20, dark: true))
+        XCTAssertEqual(reports, "", "reported a change to a program that did not ask")
+        try terminal.setTheme(theme(background: 250, dark: false))
+        terminal.write(Data("\u{1b}[?2031h".utf8))
+        // The first theme is no change, even to a program that asked.
+        var first = ""
+        let fresh = try TermiodStreamTerminal(
+            nativeSnapshot: snapshot, onReply: { first += String(decoding: $0, as: UTF8.self) })
+        fresh.write(Data("\u{7}\u{1b}[?2031h".utf8))
+        try fresh.setTheme(theme(background: 20, dark: true))
+        XCTAssertEqual(first, "", "reported the first theme as a change")
+        // A reattached pane says once where it stands now.
+        reports = ""
+        terminal.reportColorSchemeIfSubscribed()
+        XCTAssertEqual(reports, "\u{1b}[?997;2n")
+        reports = ""
+        try terminal.setTheme(theme(background: 20, dark: true))
+        XCTAssertEqual(reports, "\u{1b}[?997;1n")
+        reports = ""
+        try terminal.setTheme(theme(background: 30, dark: true))
+        XCTAssertEqual(reports, "", "reported a scheme that did not change")
+    }
+
+    /// A decoded snapshot carries termiod's limit of about a thousand lines;
+    /// the pane keeps what the Scrollback setting allows instead.
+    func testThePaneKeepsTheScrollbackSettingNotTheDaemonsLimit() throws {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "vt-stream-resize", withExtension: "txt", subdirectory: "Fixtures"))
+        let attach = try XCTUnwrap(
+            try String(contentsOf: url, encoding: .utf8).split(separator: "\n").first { $0.hasPrefix("attach ") })
+        let snapshot = try Self.hex(String(attach.dropFirst("attach ".count)))
+        // The fixture attaches inside an OSC sequence; BEL ends it.
+        let lines = Data(("\u{7}" + (0 ..< 5000).map { "line \($0)\r\n" }.joined()).utf8)
+
+        let daemonLimit = try TermiodStreamTerminal(nativeSnapshot: snapshot)
+        daemonLimit.write(lines)
+        let setting = try TermiodStreamTerminal(nativeSnapshot: snapshot)
+        try setting.setScrollbackLimit(bytes: 10_000_000)
+        setting.write(lines)
+
+        XCTAssertGreaterThan(try daemonLimit.scrollbackRows(), 0)
+        XCTAssertLessThan(try daemonLimit.scrollbackRows(), 2000)
+        XCTAssertGreaterThan(try setting.scrollbackRows(), 4900)
+    }
 
     private static func hex(_ text: String) throws -> Data {
         var bytes = Data(capacity: text.utf8.count / 2)

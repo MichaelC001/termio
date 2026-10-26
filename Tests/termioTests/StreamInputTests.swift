@@ -486,7 +486,9 @@ final class StreamInputTests: XCTestCase {
         for text in hostile {
             let started = ContinuousClock.now
             _ = TermiodStreamTerminal.linkRanges(in: text, around: (text as NSString).length / 2)
-            XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(200), String(text.prefix(20)))
+            // Backtracking took seconds; a busy shared runner takes a few
+            // hundred milliseconds to do linear work, so the bound sits between.
+            XCTAssertLessThan(ContinuousClock.now - started, .seconds(1), String(text.prefix(20)))
         }
         XCTAssertEqual(
             TermiodStreamTerminal.linkRanges(in: "https://a" + String(repeating: ".,", count: 20)).first?.length,

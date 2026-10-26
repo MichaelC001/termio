@@ -139,6 +139,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(reply, to: UnsafeRawPointer.self)),
             "ghostty_terminal_set(write_pty)"
         )
+        try installQueryAnswers()
         // Called inside `vt_write` or `resize`, so `lock` is already held. At
         // the start of a hold the terminal holds exactly the frame the program
         // wants on screen, and nothing after it has been parsed yet: that is
@@ -443,6 +444,62 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         ghostty_render_state_free(renderState)
     }
 
+    /// What the embedded surface answers, so a program sees one terminal in
+    /// either pane: Ghostty's DA1 with clipboard access (termio leaves
+    /// `clipboard-write` at its default, allow) and DA2, Ghostty's XTVERSION,
+    /// size reports in this terminal's 8 by 16 cells, which Kitty images are
+    /// laid out in, and the color scheme of the appearance the theme was picked
+    /// for. libghostty-vt answers none of the last three by itself, and answers
+    /// DA2 and XTVERSION as libghostty. One difference stays: libghostty-vt
+    /// answers DA3, which Ghostty does not, and the callback is not told which
+    /// level was asked.
+    private func installQueryAnswers() throws {
+        let attributes: GhosttyTerminalDeviceAttributesFn = { _, _, out in
+            guard let out else { return false }
+            var answer = GhosttyDeviceAttributes()
+            answer.primary.conformance_level = 62
+            answer.primary.features.0 = 22
+            answer.primary.features.1 = 52
+            answer.primary.num_features = 2
+            answer.secondary = GhosttyDeviceAttributesSecondary(device_type: 1, firmware_version: 10, rom_cartridge: 0)
+            out.pointee = answer
+            return true
+        }
+        let version: GhosttyTerminalXtversionFn = { _, _ in
+            GhosttyString(ptr: TermiodStreamTerminal.xtversion.baseAddress, len: TermiodStreamTerminal.xtversion.count)
+        }
+        let size: GhosttyTerminalSizeFn = { terminal, _, out in
+            guard let out else { return false }
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            out.pointee = GhosttySizeReportSize(
+                rows: rows, columns: cols, cell_width: TermiodStreamTerminal.cellWidth, cell_height: TermiodStreamTerminal.cellHeight)
+            return true
+        }
+        let scheme: GhosttyTerminalColorSchemeFn = { _, userdata, out in
+            guard let userdata, let out else { return false }
+            let owner = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue()
+            guard let theme = owner.theme else { return false }
+            out.pointee = theme.dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+            return true
+        }
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, unsafeBitCast(attributes, to: UnsafeRawPointer.self)), "ghostty_terminal_set(device attributes)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_XTVERSION, unsafeBitCast(version, to: UnsafeRawPointer.self)), "ghostty_terminal_set(xtversion)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SIZE, unsafeBitCast(size, to: UnsafeRawPointer.self)), "ghostty_terminal_set(size)")
+        try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, unsafeBitCast(scheme, to: UnsafeRawPointer.self)), "ghostty_terminal_set(color scheme)")
+    }
+
+    /// "ghostty <version>", as the embedded surface answers XTVERSION. Allocated
+    /// once and never freed: the callback hands the engine this pointer.
+    nonisolated(unsafe) private static let xtversion: UnsafeBufferPointer<UInt8> = {
+        let bytes = Array("ghostty \(embeddedGhosttyVersion())".utf8)
+        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bytes.count)
+        _ = buffer.initialize(from: bytes)
+        return UnsafeBufferPointer(buffer)
+    }()
+
     func write(_ bytes: Data) {
         locked { writeLocked(bytes) }
         while rendererWaiting.withLock({ $0 }) { sched_yield() }
@@ -457,11 +514,36 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
+    /// How much history this client keeps: the Scrollback setting, in bytes,
+    /// as the embedded surface's `scrollback-limit`. A decoded snapshot carries
+    /// termiod's own limits, about a thousand lines, which are the daemon's
+    /// memory budget per session and not what a pane should show. The line
+    /// limit is removed so the byte limit alone decides, as in Ghostty.
+    func setScrollbackLimit(bytes: Int) throws {
+        try locked {
+            var limit = max(0, bytes)
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &limit), "ghostty_terminal_set(scrollback bytes)")
+            try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, nil), "ghostty_terminal_set(scrollback lines)")
+        }
+    }
+
+    func scrollbackRows() throws -> Int {
+        try locked {
+            var rows = 0
+            try get(GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &rows)
+            return rows
+        }
+    }
+
     /// The theme: libghostty resolves "default foreground" and palette indices
     /// against these, so a session drawn by two Macs follows each one's theme.
     /// A decoded snapshot carries none of the daemon's, which never sets any.
     func setTheme(_ colors: Theme) throws {
-        try locked {
+        let report = try locked { () -> Data? in
+            // A program that turned on color scheme reports (mode 2031) is told
+            // when the appearance changes, as Ghostty tells it.
+            let reportsScheme = theme.map { $0.dark != colors.dark } == true
+                && (try? mode(ghostty_mode_new(2031, false))) == true
             var foreground = colors.foreground
             var background = colors.background
             var palette = colors.palette
@@ -499,13 +581,28 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE, &mode), "ghostty_terminal_set(blink mode)")
             }
             theme = colors
+            return reportsScheme ? Data((colors.dark ? "\u{1b}[?997;1n" : "\u{1b}[?997;2n").utf8) : nil
         }
+        if let report { onReply(report) }
+    }
+
+    /// Tells a program that turned on color scheme reports (mode 2031) the
+    /// scheme it is in now. A terminal decoded on reattach starts with no
+    /// theme, so a change made while the pane was detached reaches the program
+    /// only this way; a report repeating the current scheme does no harm.
+    func reportColorSchemeIfSubscribed() {
+        let report = locked { () -> Data? in
+            guard let theme, (try? mode(ghostty_mode_new(2031, false))) == true else { return nil }
+            return Data((theme.dark ? "\u{1b}[?997;1n" : "\u{1b}[?997;2n").utf8)
+        }
+        if let report { onReply(report) }
     }
 
     struct Theme: Equatable {
         static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
-            return left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
+            return left.dark == right.dark
+                && left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
                 && left.minimumContrast == right.minimumContrast
                 && left.selectionBackground.map { color in right.selectionBackground.map { same(color, $0) } ?? false }
                     ?? (right.selectionBackground == nil)
@@ -534,6 +631,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         /// default foreground behind the default background.
         var selectionBackground: GhosttyColorRgb? = nil
         var selectionForeground: GhosttyColorRgb? = nil
+        /// The appearance this theme was picked for, which a program asking
+        /// for the color scheme is told: Ghostty reports the window's
+        /// appearance, and either slot in Settings may hold any theme.
+        var dark = false
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so

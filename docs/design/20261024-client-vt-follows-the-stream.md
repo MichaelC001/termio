@@ -240,6 +240,20 @@ Each phase ends at a gate. A failed gate stops the work.
    its answers with no window open. The color replies need each client's
    theme, which the client sends to the daemon. Gate: the
    `TerminalDeviceReport` cases pass against the daemon alone.
+
+   Mechanism. A client that negotiates `vt_answers` answers no query while it
+   writes, and sends an `answers` event: its XTVERSION name (the daemon's
+   engine reports its own crate version, not Ghostty's), its theme, and
+   whether that theme is dark. The daemon's VT answers while the writer
+   negotiated `vt_answers` or nobody writes, never for the replay of a
+   previous image's output, and never once it is stale, when `vt_stale` hands
+   answering back to the writer. A writer without `vt_answers` answers for
+   itself, so a program never reads one answer twice. The answers are the
+   embedded surface's: Ghostty's DA1 and DA2, size reports in 8 by 16 cells,
+   the writer's colors and scheme. XTGETTCAP is not answered on either side
+   of the stream yet: libghostty-vt carries no terminfo table.
+   **Daemon done:** a session with no window open is answered DA1, DA2 and a
+   cursor report (`termiod/tests/vt_answers.rs`). The Mac client follows.
 6. **iOS.** The phone's mirror is a live surface fed through the companion
    bridge, so the marker must cross the bridge in order.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
@@ -258,6 +272,10 @@ Each phase ends at a gate. A failed gate stops the work.
 - Both the client and the daemon can answer terminal queries. Today only the
   writer's surface answers (`TerminalDeviceReport`); the new client keeps that
   rule until phase 5 moves the answers to the daemon.
+- Each attach decodes a fresh terminal from termiod's snapshot, which holds
+  termiod's own scrollback (about a thousand lines). A reconnect, a wake from
+  sleep or a handoff therefore drops older history the pane had kept, where the
+  embedded surface keeps it. Phase 7's resume by byte offset removes this.
 - A remote daemon and the app can run different releases for a while, so input
   events name keys by Ghostty's key names (`arrow_up`), never by the C enum's
   numbers.

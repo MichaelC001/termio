@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import GhosttyKit
 import GhosttyTerminal
 import GhosttyTheme
 import TermioShared
@@ -707,6 +708,10 @@ extension TermioStore {
                 pumpRendering(state, duration: 0.5)
             }
         }
+        // A link whose pane view has not mounted holds a terminal too.
+        for link in termiodLinks.values {
+            link.setStreamScrollback(bytes: streamScrollbackBytes)
+        }
     }
 
     /// Drives the terminal through its startup render handshake.
@@ -1083,4 +1088,11 @@ private struct WeakMainActorRef<Value: AnyObject>: @unchecked Sendable {
     private weak var referent: Value?
     init(_ value: Value) { referent = value }
     @MainActor var value: Value? { referent }
+}
+
+/// The embedded surface's Ghostty version, which its XTVERSION answer names.
+func embeddedGhosttyVersion() -> String {
+    let info = ghostty_info()
+    guard let version = info.version else { return "" }
+    return String(decoding: UnsafeRawBufferPointer(start: version, count: Int(info.version_len)), as: UTF8.self)
 }

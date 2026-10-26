@@ -1440,6 +1440,11 @@ async fn handle_conn(stream: UnixStream, manager: Manager) -> Result<()> {
             if !negotiated_caps.iter().any(|cap| cap == "vt_stream") {
                 negotiated_caps.retain(|cap| cap != "vt_input");
             }
+            // The answers arrive as an event, and `vt_stale` hands answering
+            // back: neither reaches a client without events.
+            if !negotiated_caps.iter().any(|cap| cap == "events") {
+                negotiated_caps.retain(|cap| cap != "vt_answers");
+            }
             // The two are different planes and an attachment reads one. The
             // exact one wins; grid_diff is a degrade for bad networks.
             if negotiated_caps.iter().any(|cap| cap == "vt_stream") {
@@ -3057,7 +3062,8 @@ fn subscribed_to(subscriptions: &HashSet<String>, event: &Event) -> bool {
         | Event::Paste { .. }
         | Event::Mouse { .. }
         | Event::Wheel { .. }
-        | Event::Focus { .. } => false,
+        | Event::Focus { .. }
+        | Event::Answers { .. } => false,
         Event::Unknown => false,
     }
 }
@@ -3095,6 +3101,7 @@ async fn run_attach(
             && connection.capabilities.contains("grid_diff"),
         vt_stream: connection.capabilities.contains("snapshot")
             && connection.capabilities.contains("vt_stream"),
+        vt_answers: connection.capabilities.contains("vt_answers"),
         reply: reply_tx,
     });
     let added = reply_rx.await.context("session ended while attaching")?;
@@ -3124,6 +3131,7 @@ async fn run_attach(
         && connection.capabilities.contains("vt_input");
     let supports_scrollback = supports_snapshot && connection.capabilities.contains("scrollback");
     let supports_grid_diff = supports_snapshot && connection.capabilities.contains("grid_diff");
+    let answers_negotiated = connection.capabilities.contains("vt_answers");
     let negotiated = connection.negotiated;
     let event_out = out.clone();
     let session_id = handle.id.to_string();
@@ -3349,6 +3357,28 @@ async fn run_attach(
                     )));
                     break;
                 }
+            }
+            Ok(Some(Frame::Event(Event::Answers {
+                xtversion,
+                foreground,
+                background,
+                cursor,
+                palette,
+                dark,
+            }))) if answers_negotiated => {
+                let palette: Option<Vec<[u8; 3]>> = palette.iter().map(|color| rgb(color)).collect();
+                let answers = termiod_vt::Answers {
+                    xtversion,
+                    foreground: foreground.as_deref().and_then(rgb),
+                    background: background.as_deref().and_then(rgb),
+                    cursor: cursor.as_deref().and_then(rgb),
+                    palette: palette.filter(|colors| colors.len() == 256),
+                    dark,
+                };
+                handle.send(SessionMsg::Answers {
+                    id: client_id.clone(),
+                    answers,
+                });
             }
             Ok(Some(Frame::Event(event))) => drop(event),
             Ok(Some(Frame::Control(_))) => {
@@ -3667,4 +3697,14 @@ mod spawn_argv_tests {
         assert!(spec.command.is_none());
         assert!(resolve_spawn_argv(&spec).is_empty());
     }
+}
+
+/// `rrggbb`, as the `answers` event carries colors.
+fn rgb(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
