@@ -362,6 +362,9 @@ impl View {
 /// view lock is held: two changes can never reach subscribers out of order.
 pub struct ViewStore {
     view: Mutex<View>,
+    /// Set while a handoff carries the view. A change after the snapshot
+    /// would be lost, and the new image would issue its revision again.
+    frozen: std::sync::atomic::AtomicBool,
     file: Option<PathBuf>,
     registry: Registry,
 }
@@ -411,6 +414,7 @@ impl ViewStore {
         registry.install_view(view.clone());
         ViewStore {
             view: Mutex::new(view),
+            frozen: std::sync::atomic::AtomicBool::new(false),
             file,
             registry,
         }
@@ -418,6 +422,19 @@ impl ViewStore {
 
     pub fn snapshot(&self) -> View {
         self.view.lock().unwrap().clone()
+    }
+
+    /// The view a handoff carries. Every change after it is refused with
+    /// [`Frozen`] until [`ViewStore::thaw`], which an aborted handoff calls.
+    pub fn freeze(&self) -> View {
+        let guard = self.view.lock().unwrap();
+        self.frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+        guard.clone()
+    }
+
+    pub fn thaw(&self) {
+        self.frozen
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Apply `change` to the view. `change` returns its result and whether it
@@ -428,6 +445,9 @@ impl ViewStore {
         change: impl FnOnce(&mut View) -> Result<(T, bool)>,
     ) -> Result<(T, u64)> {
         let mut guard = self.view.lock().unwrap();
+        if self.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Frozen.into());
+        }
         let mut next = guard.clone();
         let (result, changed) = change(&mut next)?;
         if !changed {
@@ -450,6 +470,18 @@ impl ViewStore {
         Ok((result, revision))
     }
 }
+
+/// A view change refused because a handoff is carrying the view.
+#[derive(Debug)]
+pub struct Frozen;
+
+impl std::fmt::Display for Frozen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the view is being handed to a new daemon; reconnect and ask again")
+    }
+}
+
+impl std::error::Error for Frozen {}
 
 fn revision_floor() -> u64 {
     std::time::SystemTime::now()
@@ -770,6 +802,22 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(VIEW_FILE)).unwrap()).unwrap();
         assert_eq!(saved, carried);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_frozen_view_refuses_changes_until_thawed() {
+        let store = ViewStore::open(None, Registry::new(), None);
+        let carried = store.freeze();
+        let refused = store
+            .change(|view| Ok(((), view.add_project("/work", None).1)))
+            .unwrap_err();
+        assert!(refused.is::<Frozen>(), "{refused:#}");
+        assert_eq!(store.snapshot(), carried);
+        store.thaw();
+        let ((), revision) = store
+            .change(|view| Ok(((), view.add_project("/work", None).1)))
+            .unwrap();
+        assert_eq!(revision, carried.revision + 1);
     }
 
     #[test]

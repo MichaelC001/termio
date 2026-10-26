@@ -282,6 +282,7 @@ impl Manager {
     /// mean one unreadable state directory blocked every upgrade until restart.
     fn end_handoff(&self) {
         self.inner.lock().unwrap().handing_off = false;
+        self.view.thaw();
     }
 
     fn find(&self, id: &SessionId) -> Option<SessionHandle> {
@@ -1244,7 +1245,7 @@ async fn hand_over(
         // Assigned by `pack`, with the session masters.
         listener_fd: -1,
         sessions: Vec::new(),
-        view: Some(manager.view.snapshot()),
+        view: Some(manager.view.freeze()),
     };
     let blob_fd = match crate::handoff::pack(blob, listener_fd, sessions, staged) {
         Ok(fd) => fd.into_raw_fd(),
@@ -1786,7 +1787,7 @@ async fn process_control(
                                 revision,
                                 re: seq,
                             },
-                            Err(e) => error(seq, ErrorCode::Internal, format!("{e:#}"), false),
+                            Err(e) => view_error(seq, ErrorCode::Internal, e),
                         }
                     }
                     Ok(_) => error(seq, ErrorCode::NotFound, format!("not a directory: {path}"), false),
@@ -1826,7 +1827,7 @@ async fn process_control(
                             Ok(((), true))
                         }) {
                             Ok(((), revision)) => Control::Revised { revision, re: seq },
-                            Err(e) => error(seq, ErrorCode::NotFound, format!("{e:#}"), false),
+                            Err(e) => view_error(seq, ErrorCode::NotFound, e),
                         },
                     },
                 }
@@ -1848,7 +1849,7 @@ async fn process_control(
                             .change(|view| Ok(((), view.remove_session(&session))))
                         {
                             Ok(((), revision)) => Control::Revised { revision, re: seq },
-                            Err(e) => error(seq, ErrorCode::Internal, format!("{e:#}"), false),
+                            Err(e) => view_error(seq, ErrorCode::Internal, e),
                         },
                     },
                 }
@@ -3392,6 +3393,16 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
     }
 }
 
+/// The reply for a view change that failed: `busy`, worth retrying, while a
+/// handoff carries the view; otherwise `code`.
+fn view_error(seq: Option<u64>, code: ErrorCode, e: anyhow::Error) -> Control {
+    if e.is::<crate::view::Frozen>() {
+        error(seq, ErrorCode::Busy, format!("{e:#}"), true)
+    } else {
+        error(seq, code, format!("{e:#}"), false)
+    }
+}
+
 /// Kill every session in `sessions` that is still running. An ended one is
 /// skipped. A kill that cannot be delivered because the session is crossing a
 /// handoff is an error the caller retries, as `kill` reports it: closing what
@@ -3433,13 +3444,14 @@ async fn placement_cwd(cwd: &str) -> String {
     } else {
         std::path::PathBuf::from(cwd)
     };
+    // A plain thread, not the runtime's blocking pool: one stuck on a dead
+    // mount is abandoned, and the pool would wait for it when the daemon exits.
+    let (tx, rx) = oneshot::channel();
     let resolve = path.clone();
-    let canonical = tokio::time::timeout(
-        Duration::from_secs(1),
-        tokio::task::spawn_blocking(move || std::fs::canonicalize(resolve)),
-    )
-    .await;
-    match canonical {
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::canonicalize(resolve));
+    });
+    match tokio::time::timeout(Duration::from_secs(1), rx).await {
         Ok(Ok(Ok(canonical))) => canonical,
         _ => path,
     }
