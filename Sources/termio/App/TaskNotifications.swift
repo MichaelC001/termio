@@ -327,7 +327,7 @@ extension TaskNotificationCenter: UNUserNotificationCenterDelegate {
         completionHandler([.list])
     }
 
-    /// A click focuses the originating session — same verb as `termio sessions focus`.
+    /// A click focuses the originating session — same verb as `termio session focus`.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,

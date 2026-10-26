@@ -133,7 +133,7 @@ final class TerminalContextMenu: NSObject {
         menu.addItem(surfaceItem(localized("Copy"), action: "copy:", symbol: "doc.on.doc"))
         menu.addItem(storeItem(localized("Paste"), action: #selector(paste), symbol: "doc.on.clipboard"))
         // The session's deep link (`termio://session/<uuid>`) — the canonical
-        // address every `termio sessions` command takes and the form that stays
+        // address every `termio session` command takes and the form that stays
         // self-describing when pasted into an agent prompt, so wiring one agent
         // to drive another is a right-click instead of a `list` round-trip.
         if clickedSessionID != nil {

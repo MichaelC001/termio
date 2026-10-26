@@ -142,7 +142,7 @@ no throughput regression (16–24×), the backlog drop fires ("dropping slow cli
   smokes and cross-compiles on macOS, a second does the same natively on
   `ubuntu-24.04-arm`, both from this checkout.
 
-**Deploy path:** `termio server -H ukvps deploy` cross-compiles the daemon
+**Deploy path:** `termio -H ukvps server deploy` cross-compiles the daemon
 (aarch64-musl) from the Mac and scps it. Stop the running daemon first (`ssh ukvps
 pkill -x termiod`) or scp fails with `ETXTBSY`. SSH host alias `ukvps`
 (130.162.188.52, user ubuntu) is in `~/.ssh/config`.
@@ -157,7 +157,7 @@ pkill -x termiod`) or scp fails with `ETXTBSY`. SSH host alias `ukvps`
 
 ## 5. How to orchestrate the sibling agents (read carefully — real gotchas)
 
-You drive siblings with the `termio sessions` CLI (scoped to this project;
+You drive siblings with the `termio session` CLI (scoped to this project;
 `--json` for machine output). Core verbs: `list`, `spawn "<prompt>" --agent codex`,
 `send <handle> "<text>"`, `read <handle>`, `run "<cmd>"`, `watch`, `focus`, `close`.
 
@@ -166,7 +166,7 @@ You drive siblings with the `termio sessions` CLI (scoped to this project;
    see the hook-gate gotcha below.
 2. **Dispatch with `send --wait --timeout <ms>`.** Long tasks usually **time out**
    the wait (reply: "still working after the wait") — that's fine; then **poll**
-   `termio sessions list --json` until the session's status ≠ `working`, and read
+   `termio session list --json` until the session's status ≠ `working`, and read
    the result. A background poll loop works well.
 3. **Read the reply from the Codex transcript, not the screen.** The screen
    (`read`) only shows the tail. Get the latest file at
@@ -181,10 +181,10 @@ You drive siblings with the `termio sessions` CLI (scoped to this project;
 **CRITICAL GOTCHA — the Codex hook-trust gate.** A freshly `spawn`ed Codex boots
 into a "⚠ N hooks need review / Press t to trust all" gate (termio's own
 `agent report` hook, "modified since last trusted"). **You cannot clear it with
-`termio sessions send "t"`** — `send` appends a Return, so `t\n` = trust-all
+`termio session send "t"`** — `send` appends a Return, so `t\n` = trust-all
 *then* the Return triggers "enter to review hooks", reopening the gate. It needs a
 **bare keypress**. Workarounds: (a) **reuse an already-unblocked Codex** (best), or
-(b) `termio sessions focus <handle>` and ask the **human to press `t` once** in the
+(b) `termio session focus <handle>` and ask the **human to press `t` once** in the
 pane, then re-send your task (the spawn's queued prompt is usually lost in the
 churn — resend it). This bit us twice; budget for it.
 

@@ -846,10 +846,10 @@
 	<string>Leave a path empty to launch the agent the way %@’s login shell would. Which agents appear at all is Settings ▸ Agents.</string>
 	<key>Let your agents coordinate?</key>
 	<string>Let your agents coordinate?</string>
-	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</key>
-	<string>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.</string>
-	<key>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</key>
-	<string>Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command. Installs the termio skill into each agent's skills folder.</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio session` command.</key>
+	<string>Lets an agent see and drive its sibling sessions in this project via the `termio session` command.</string>
+	<key>Lets an agent see and drive its sibling sessions in this project via the `termio session` command. Installs the termio skill into each agent's skills folder.</key>
+	<string>Lets an agent see and drive its sibling sessions in this project via the `termio session` command. Installs the termio skill into each agent's skills folder.</string>
 	<key>Light</key>
 	<string>Light</string>
 	<key>Limits need Keychain access.</key>
@@ -2048,10 +2048,10 @@
 	<string>set a command and URL pattern for the custom relay</string>
 	<key>ssh unavailable</key>
 	<string>ssh unavailable</string>
-	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
+	<key>termio can teach the agents you run (Claude Code, Codex, …) a `termio session` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</key>
-	<string>termio can teach the agents you run (Claude Code, Codex, …) a `termio sessions` command so they can see, drive, and read each other's sessions in a project.
+	<string>termio can teach the agents you run (Claude Code, Codex, …) a `termio session` command so they can see, drive, and read each other's sessions in a project.
 
 Enabling adds a short note to your ~/.claude/CLAUDE.md and installs status hooks. You can turn it off anytime in Settings ▸ Agents.</string>
 	<key>termio couldn’t read “%@”, so it was not removed.</key>

@@ -42,7 +42,7 @@ iPhone 都只是接上去。
 | | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Agent 監控 | ✓ 靠 hook | – | ✓ | ✓ | – | ✓ 分頁標記 |
-| Agent 編排 API | ✓ `termio sessions` | – | ✓ CLI 和 socket API | ✓ socket API | – | – |
+| Agent 編排 API | ✓ `termio session` | – | ✓ CLI 和 socket API | ✓ socket API | – | – |
 | Agent 通知 | ✓ 選單列 | – | ✓ | ✓ toast、系統通知或聲音 | – | – |
 | 多工 | ✓ 常駐程式持有 PTY | – | 重啟後復原 | ✓ 伺服器持有 PTY | ✓ 伺服器持有 PTY | 重啟後復原 |
 | 遠端 Linux | ✓ 原生支援 | – | ✓ SSH 工作區 | ✓ 透過 SSH 接上 | ✓ 原生支援 | – |
@@ -101,7 +101,7 @@ brew install --cask termio-sh/tap/termio
 <td width="62%"><img alt="Codex 和 Claude Code 旁顯示工作階段類型及即時狀態" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>狀態一眼看清</h3>
-<p>工作中、閒置、完成，還是<em>需要你</em>——每一列都有標記。同一份清單就是 <code>termio sessions list</code>。</p>
+<p>工作中、閒置、完成，還是<em>需要你</em>——每一列都有標記。同一份清單就是 <code>termio session list</code>。</p>
 </td>
 </tr>
 <tr>
@@ -140,21 +140,21 @@ brew install --cask termio-sh/tap/termio
 
 ```sh
 termio .                                    # 把目前目錄當作專案開啟
-termio sessions list                        # 誰在工作、閒置，或在等你
-termio sessions spawn "fix the flaky test"  # 用一段提示啟動新的 Agent 工作階段
-termio sessions run "pnpm test --watch"     # 用一條命令啟動一般終端機工作階段
-termio sessions send ab12cd34 "1"           # 回答同伴的權限確認
-termio sessions read ab12cd34 --lines 40    # 印出某個工作階段目前的畫面
-termio sessions watch                       # 即時串流狀態變化
-termio sessions focus ab12cd34              # 在應用程式裡把某個工作階段切到前景
-termio sessions close ab12cd34              # 關掉它
+termio session list                        # 誰在工作、閒置，或在等你
+termio session spawn "fix the flaky test"  # 用一段提示啟動新的 Agent 工作階段
+termio session run "pnpm test --watch"     # 用一條命令啟動一般終端機工作階段
+termio session send ab12cd34 "1"           # 回答同伴的權限確認
+termio session read ab12cd34 --lines 40    # 印出某個工作階段目前的畫面
+termio session watch                       # 即時串流狀態變化
+termio session focus ab12cd34              # 在應用程式裡把某個工作階段切到前景
+termio session close ab12cd34              # 關掉它
 termio notify "the migration finished"      # 送出一則 macOS 通知
 ```
 
 `--wait` 一直等到這一輪結束，回來時帶上最終狀態和可以去讀的紀錄行範圍。`--json` 讓任何 `sessions` 命令輸出機器可讀的結果。`--agent` 決定 `spawn` 啟動哪個 Agent。`--direction` / `--ratio` 決定新窗格落在哪、佔多大。
 
 ```sh
-termio sessions spawn "run the migration" --agent codex --wait
+termio session spawn "run the migration" --agent codex --wait
 ```
 
 工作階段控制會往每個 Agent 的技能目錄（`~/.claude/skills`、`~/.codex/skills`）裝一個 `termio` [Agent 技能](https://termio.sh/skill.md)，並在每次啟動時保持它最新。其他 Agent 也可以直接從這個儲存庫裝同一個技能：

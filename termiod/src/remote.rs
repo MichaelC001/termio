@@ -123,7 +123,7 @@ fn batch_args() -> Vec<String> {
     args
 }
 
-/// `termio server --host <host> deploy`: the lifecycle loop against a host,
+/// `termio --host <host> server deploy`: the lifecycle loop against a host,
 /// sending this build, or a prebuilt `--bin` daemon with the `termio` beside it.
 pub async fn deploy(
     host: String,
@@ -142,11 +142,11 @@ pub async fn deploy(
     Ok(reconcile(&node, options).await)
 }
 
-/// `termio server --host <host> <verb>…`: the same words, run by the host's
-/// own `termio`. `tty` asks ssh for a terminal, which only an interactive
-/// attach needs. Returns the remote command's exit status.
-pub fn run_server_verb(host: &str, tty: bool, words: &[String]) -> Result<i32> {
-    let mut command = format!("{} server", remote_control_bin());
+/// `termio --host <host> <verb>…`: the same words, run by the host's own
+/// `termio`. `tty` asks ssh for a terminal, which only an interactive attach
+/// needs. Returns the remote command's exit status.
+pub fn run_verb(host: &str, tty: bool, words: &[String]) -> Result<i32> {
+    let mut command = remote_control_bin();
     for word in words {
         command.push(' ');
         command.push_str(&shell_quote(word));
@@ -715,7 +715,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
         bail!(
             "cross-compiling for {target} needs cargo, and there is none on this machine.\n  \
              • install Rust: https://rustup.rs\n  \
-             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
+             • or build on the host and deploy with: termio -H <host> server deploy --bin <path>"
         );
     };
     // Checked before cargo runs rather than left to the build script's panic:
@@ -727,7 +727,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
             "cross-compiling for {target} needs zig — the terminal engine termiod embeds\n\
              is built by it.\n  \
              • brew install zig\n  \
-             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
+             • or build on the host and deploy with: termio -H <host> server deploy --bin <path>"
         );
     }
     eprintln!("[deploy] cross-compiling for {target}…");
@@ -757,7 +757,7 @@ fn cross_compile(target: &str) -> Result<Artifacts> {
              The target's std is usually the missing piece — the link itself needs no\n\
              external toolchain (termiod/.cargo/config.toml uses the bundled rust-lld):\n  \
              • rustup target add {target}\n  \
-             • or build on the host and deploy with: termio server -H <host> deploy --bin <path>"
+             • or build on the host and deploy with: termio -H <host> server deploy --bin <path>"
         );
     }
     let dir = env!("CARGO_MANIFEST_DIR");

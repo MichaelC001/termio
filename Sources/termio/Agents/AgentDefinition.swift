@@ -364,7 +364,7 @@ extension AgentDefinition {
     static var kimi: AgentDefinition { AgentCatalog.shared.definition(for: "kimi") }
     static var grok: AgentDefinition { AgentCatalog.shared.definition(for: "grok") }
 
-    /// Resolves a free-text agent name from the CLI (`termio sessions send --agent claude`)
+    /// Resolves a free-text agent name from the CLI (`termio session send --agent claude`)
     /// to a definition, accepting the id, the display name, and common aliases.
     static func resolve(_ raw: String?) -> AgentDefinition? {
         guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {

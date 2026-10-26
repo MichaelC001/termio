@@ -588,7 +588,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// The active screen as plain text, one line per row, whatever part of
-    /// scrollback the view shows: what `termio sessions read` reports.
+    /// scrollback the view shows: what `termio session read` reports.
     func activeText() throws -> String {
         try locked {
             var rows: UInt16 = 0

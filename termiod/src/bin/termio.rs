@@ -13,9 +13,9 @@
 //!
 //! What clap could not express stays hand-rolled, in the dispatch below
 //! rather than the parser: `termio [DIR]` treats any non-verb first argument
-//! as a directory (the `code .` shape, an `external_subcommand`), `remote` is
-//! an argv passthrough whose help belongs to the daemon, and `send`'s first
-//! positional is a target only if it looks like an address.
+//! as a directory (the `code .` shape, an `external_subcommand`), `--host`
+//! re-runs the typed words on another machine, and `send`'s first positional
+//! is a target only if it looks like an address.
 //!
 //! The per-verb prose is the shell client's, verbatim, carried as clap
 //! `long_about`. `termiod/tests/cli_compat.py` still holds the wire bytes,
@@ -31,20 +31,59 @@ use termiod::app_socket::{self, Outcome};
 use termiod::channel::{self, Channel};
 use termiod::{lifecycle, version};
 
-const AFTER_HELP: &str = "\
-<session> = a termio://session/<uuid> link or a bare id/prefix — printed by
-`termio sessions list` / a `spawn` reply.
+/// The root help lists commands by what they act on, the way Rex's does;
+/// clap has one heading for all subcommands, so the list is written here. A
+/// test holds it to the visible subcommands.
+const ROOT_TEMPLATE: &str = "\
+{about-with-newline}
+{usage-heading} {usage}
 
-Every one-shot command times out after ${TERMIO_CLI_TIMEOUT:-15}s
-(TERMIO_CLI_TIMEOUT overrides).";
+Sessions:
+  session     List, start, drive and close sessions [alias: sessions]
+  agent       Report an agent's status; install or remove agent hooks
+  notify      Post a macOS notification from an agent
+
+Machines:
+  server      A machine's termiod: status, logs, deploy, service, Tailscale
+  pair        Print the link that pairs a phone or a browser
+
+App:
+  open        Open DIR (default: the current directory) as a project
+  sim         Drive the iOS Simulator shown in the Simulator pane
+
+Other:
+  version     Show the versions of this client, the app and termiod
+  completion  Print a shell completion script
+  help        Print help for a command
+
+Options:
+{options}{after-help}";
+
+const ROOT_EXAMPLES: &str = "\
+Examples:
+  termio .
+  termio session ls
+  termio session spawn \"fix the failing test\" --agent codex
+  termio session send 8de0b387 \"run the tests\" --wait
+  termio -H mybox session ls
+  termio -H mybox server deploy";
 
 #[derive(Parser)]
 #[command(
     name = "termio",
-    about = "Drive the running termio app — open projects, run agent sessions, report status.",
-    after_long_help = AFTER_HELP
+    about = "Run and supervise coding-agent sessions on your own machines.",
+    help_template = ROOT_TEMPLATE,
+    after_help = ROOT_EXAMPLES
 )]
 struct Cli {
+    /// Run the command on this SSH host, with that machine's termio. HOST is
+    /// an alias from `~/.ssh/config`, or user@host. It goes before the command.
+    ///
+    /// A root flag, not a global one: after the command word, `-H` is the
+    /// verb's own text, such as a prompt that starts with `-H`.
+    #[arg(short = 'H', long, value_name = "HOST")]
+    host: Option<String>,
+
     #[command(subcommand)]
     verb: Option<Verb>,
 }
@@ -57,17 +96,18 @@ enum Verb {
         dir: Option<PathBuf>,
     },
 
-    /// Sessions in this project — list, start, drive, close.
-    Sessions {
+    /// List, start, drive and close sessions.
+    #[command(alias = "sessions", long_about = SESSION_HELP, after_help = SESSION_EXAMPLES)]
+    Session {
         #[command(subcommand)]
         verb: Option<SessionVerb>,
     },
 
-    /// Post a macOS notification (e.g. "I'm done").
+    /// Post a macOS notification from an agent.
     #[command(long_about = NOTIFY_HELP)]
     Notify(NotifyArgs),
 
-    /// Report this agent's activity (hook contract).
+    /// Report an agent's status; install or remove agent hooks.
     Agent {
         #[command(subcommand)]
         verb: AgentVerb,
@@ -80,15 +120,16 @@ enum Verb {
         verb: SimVerb,
     },
 
-    /// Print the pairing token that lets a phone or a browser attach.
+    /// Print the link that pairs a phone or a browser.
     ///
-    /// The token authenticates the WebSocket pipe. It is not the session write
-    /// token, and it never expires: `--rotate` is the only revocation.
+    /// The token in it authenticates the WebSocket pipe. It is not the session
+    /// write token, and it never expires: `--rotate` is the only revocation.
     Pair(termiod::server::PairArgs),
 
-    /// A machine's termiod — status, logs, sessions, deploy, Tailscale.
+    /// A machine's termiod: status, logs, deploy, service, Tailscale.
     ///
-    /// This machine's by default; `--host` reaches another over SSH.
+    /// This machine's by default; `termio -H <host> server …` acts on another.
+    /// Sessions are `termio session`'s.
     Server(termiod::server::ServerArgs),
 
     /// Bridge the framed protocol over stdin/stdout to the local daemon.
@@ -99,10 +140,12 @@ enum Verb {
     #[command(hide = true)]
     Stdio,
 
-    /// One table: this client, the running app, the local termiod, and every
-    /// known remote as of last connect.
+    /// Show the versions of this client, the app and termiod.
+    ///
+    /// One table: this client, the running app, this machine's termiod, and
+    /// every remote as of its last connect.
     Version {
-        /// Output the table as JSON.
+        /// Print the reply as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -123,39 +166,47 @@ enum Verb {
 
 #[derive(Subcommand)]
 enum SessionVerb {
-    /// List the sessions in this project with their live status.
-    #[command(long_about = LIST_HELP, visible_alias = "ls")]
+    /// List this project's sessions and their status.
+    #[command(long_about = LIST_HELP, visible_alias = "ls", after_help = LIST_EXAMPLES)]
     List(ListArgs),
 
-    /// Stream status transitions until Ctrl-C.
-    #[command(long_about = WATCH_HELP)]
+    /// Print status changes as they happen, until Ctrl-C.
+    #[command(long_about = WATCH_HELP, after_help = WATCH_EXAMPLES)]
     Watch(WatchArgs),
 
-    /// Start a NEW agent session on the prompt.
-    #[command(long_about = SPAWN_HELP)]
+    /// Start a new agent session on a prompt.
+    #[command(long_about = SPAWN_HELP, after_help = SPAWN_EXAMPLES)]
     Spawn(SpawnArgs),
 
-    /// Start a NEW terminal session running a shell command.
-    #[command(long_about = RUN_HELP)]
+    /// Start a new terminal session that runs a shell command.
+    #[command(long_about = RUN_HELP, after_help = RUN_EXAMPLES)]
     Run(RunArgs),
 
-    /// Type a prompt (or menu answer) into a session.
-    #[command(long_about = SEND_HELP)]
+    /// Start a session on termiod that no app window shows.
+    #[command(long_about = CREATE_HELP, after_help = CREATE_EXAMPLES)]
+    Create(termiod::server::CreateArgs),
+
+    /// Attach this terminal to a session.
+    #[command(long_about = ATTACH_HELP, after_help = ATTACH_EXAMPLES)]
+    Attach(termiod::server::AttachArgs),
+
+    /// Type text into a session, then press Return.
+    #[command(long_about = SEND_HELP, after_help = SEND_EXAMPLES)]
     Send(SendArgs),
 
     /// Deprecated, agent-only alias of `send`.
     #[command(long_about = SEND_HELP, hide = true)]
     Answer(SendArgs),
 
-    /// Print a session's current screen.
-    #[command(long_about = READ_HELP)]
+    /// Print a session's screen.
+    #[command(long_about = READ_HELP, after_help = READ_EXAMPLES)]
     Read(ReadArgs),
 
-    /// Close session tabs.
-    #[command(long_about = CLOSE_HELP)]
+    /// Close sessions and end their programs.
+    #[command(alias = "kill", long_about = CLOSE_HELP, after_help = CLOSE_EXAMPLES)]
     Close(CloseArgs),
 
-    /// Select the session in the app.
+    /// Show a session in the app.
     #[command(long_about = FOCUS_HELP)]
     Focus(FocusArgs),
 }
@@ -378,6 +429,7 @@ enum AgentVerb {
 
     /// Remove every agent integration termio has installed on this machine.
     Uninstall {
+        /// Print the reply as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -386,7 +438,7 @@ enum AgentVerb {
 /// `--json` reads the same on every verb that answers, so it is declared once.
 #[derive(Args)]
 struct Output {
-    /// Machine-readable output.
+    /// Print the reply as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -406,13 +458,12 @@ impl Output {
 /// is a parse error rather than a flag that is silently ignored.
 #[derive(Args)]
 struct Wait {
-    /// Block until the turn settles; the reply carries the final status and
-    /// the transcript line range to read (exit 0 settled, 1 error — including
-    /// a stalled or vanished session, 3 timed out).
+    /// Return when the turn settles, with its status and transcript lines.
     #[arg(long)]
     wait: bool,
 
-    /// Cap for --wait (default 300000, clamped 1000–600000); implies --wait.
+    /// Stop waiting after MS milliseconds (default 300000, 1000–600000).
+    /// Implies --wait.
     #[arg(
         long,
         value_name = "MS",
@@ -479,6 +530,10 @@ impl AgentState {
 
 #[derive(Args)]
 struct ListArgs {
+    /// Every session this machine's termiod hosts, in every project.
+    #[arg(long)]
+    all: bool,
+
     #[command(flatten)]
     output: Output,
 }
@@ -500,7 +555,7 @@ struct WatchArgs {
 
 #[derive(Args)]
 struct SpawnArgs {
-    /// The prompt, e.g. `termio sessions spawn "fix the build"`.
+    /// The prompt, e.g. `termio session spawn "fix the build"`.
     #[arg(value_name = "PROMPT", required = true)]
     words: Vec<String>,
 
@@ -520,7 +575,7 @@ struct SpawnArgs {
 
 #[derive(Args)]
 struct RunArgs {
-    /// The shell command, e.g. `termio sessions run "pnpm dev"`.
+    /// The shell command, e.g. `termio session run "pnpm dev"`.
     #[arg(value_name = "COMMAND", required = true)]
     words: Vec<String>,
 
@@ -536,17 +591,16 @@ struct RunArgs {
 
 #[derive(Args)]
 struct SendArgs {
-    /// A session address followed by the text — or text alone, which spawns.
+    /// The session, then the text. Text alone starts a new agent, like `spawn`.
     #[arg(value_name = "SESSION|TEXT", required = true)]
     words: Vec<String>,
 
-    /// Press a named key (escape, up, tab, ctrl-c, f2, …) after the text;
-    /// repeatable, in order. Any --key suppresses the implicit Return.
+    /// Press this key after the text, such as escape, up or ctrl-c.
+    /// Repeatable. Drops the Return.
     #[arg(long = "key", value_name = "NAME")]
     keys: Vec<String>,
 
-    /// Deliver the text as-is, with no Return after it — the way to answer a
-    /// gate that wants a bare keypress.
+    /// Type the text with no Return after it.
     #[arg(long)]
     no_enter: bool,
 
@@ -559,7 +613,7 @@ struct SendArgs {
 
 #[derive(Args)]
 struct ReadArgs {
-    /// The session to read, as a termio://session link or a bare id.
+    /// The session: a link, an id, an id prefix or a name.
     #[arg(value_name = "SESSION")]
     session: String,
 
@@ -573,7 +627,7 @@ struct ReadArgs {
 
 #[derive(Args)]
 struct CloseArgs {
-    /// The sessions to close, as termio://session links or bare ids.
+    /// The sessions: links, ids, id prefixes or names.
     #[arg(value_name = "SESSION", required = true)]
     sessions: Vec<String>,
 
@@ -583,7 +637,7 @@ struct CloseArgs {
 
 #[derive(Args)]
 struct FocusArgs {
-    /// The session to select, as a termio://session link or a bare id.
+    /// The session: a link, an id or an id prefix.
     #[arg(value_name = "SESSION")]
     session: String,
 
@@ -614,10 +668,6 @@ async fn daemon_read(
     format: &str,
 ) -> Option<i32> {
     let token = read_token(channel, target)?;
-    let sessions = match termiod::client::sessions_of_running_daemon().await {
-        Ok(Some(sessions)) => sessions,
-        _ => return None,
-    };
     let token_lower = token.to_lowercase();
     // Daemon-first claims only the canonical app-created population:
     // sessions whose daemon name is a UUID, matched by a hex/dash token. An
@@ -628,11 +678,38 @@ async fn daemon_read(
     {
         return None;
     }
+    let listing = tokio::time::timeout(
+        termiod::server::LOOKUP_TIMEOUT,
+        termiod::client::sessions_of_running_daemon(),
+    );
+    let sessions = match listing.await {
+        Ok(Ok(Some(sessions))) => sessions,
+        // A stalled daemon has had its time: with no app to answer instead,
+        // that is the reply, not a second wait.
+        Err(_) if !app_running(channel) => {
+            control_error_reply(
+                format,
+                "daemon",
+                &format!("termiod did not answer within {}s", termiod::server::LOOKUP_TIMEOUT.as_secs()),
+            );
+            return Some(1);
+        }
+        _ => return None,
+    };
+    // A session named exactly the token is that session, as `send` and
+    // `close` resolve it, unless the name is an app session's own UUID.
+    if sessions
+        .iter()
+        .any(|info| info.name == token && !uuid_shaped(&info.name.to_lowercase()))
+    {
+        return None;
+    }
     let matches: Vec<&termiod::protocol::SessionInfo> = sessions
         .iter()
         .filter(|info| {
             let name = info.name.to_lowercase();
-            uuid_shaped(&name) && (name == token_lower || name.starts_with(&token_lower))
+            uuid_shaped(&name)
+                && (name == token_lower || (token_lower.len() >= 8 && name.starts_with(&token_lower)))
         })
         .collect();
     match matches.len() {
@@ -687,7 +764,7 @@ async fn serve_daemon_read(
     format: &str,
 ) -> i32 {
     let mut rows =
-        match termiod::client::observe_screen_rows(&info.name, info.rows, info.cols).await {
+        match termiod::client::observe_screen_rows(&info.id, info.rows, info.cols).await {
             Ok(rows) => rows,
             Err(error) => {
                 control_error_reply(format, "daemon", &format!("{error:#}"));
@@ -707,11 +784,11 @@ async fn serve_daemon_read(
         object.insert("screen", serde_json::Value::from(screen));
         object.insert(
             "target",
-            serde_json::Value::from(format!(
-                "{}://session/{}",
-                channel.url_scheme(),
-                info.name.to_lowercase()
-            )),
+            serde_json::Value::from(if uuid_shaped(&info.name.to_lowercase()) {
+                format!("{}://session/{}", channel.url_scheme(), info.name.to_lowercase())
+            } else {
+                info.id.clone()
+            }),
         );
         object.insert("title", serde_json::Value::from(read_title(info)));
         match serde_json::to_string(&object) {
@@ -845,6 +922,14 @@ async fn main() -> Result<()> {
     let command = Cli::command().version(version_line);
     let cli = Cli::from_arg_matches(&command.get_matches())?;
 
+    let host = match &cli.verb {
+        Some(Verb::Server(args)) => cli.host.clone().or_else(|| args.host.clone()),
+        _ => cli.host.clone(),
+    };
+    if let Some(host) = host {
+        return on_host(host, cli.verb).await;
+    }
+
     match cli.verb {
         None => open_project(&channel, Path::new(".")),
         Some(Verb::Open { dir }) => {
@@ -862,7 +947,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Verb::Pair(args)) => termiod::server::pair(args),
-        Some(Verb::Server(args)) => termiod::server::run(args).await,
+        Some(Verb::Server(args)) => termiod::server::run(args, None).await,
         Some(Verb::Stdio) => termiod::client::stdio().await,
         Some(Verb::Agent { verb }) => match verb {
             AgentVerb::Report(args) => agent_report(args).await,
@@ -871,16 +956,45 @@ async fn main() -> Result<()> {
         },
         Some(Verb::Notify(args)) => notify(&channel, args),
         Some(Verb::Sim { verb }) => simulator(&channel, verb),
-        Some(Verb::Sessions { verb }) => {
+        Some(Verb::Session { verb }) => {
             sessions(
                 &channel,
                 verb.unwrap_or(SessionVerb::List(ListArgs {
+                    all: false,
                     output: Output { json: false },
                 })),
             )
             .await
         }
     }
+}
+
+/// `termio -H <host> …`. `server deploy` runs its loop from here, because it
+/// is what puts a build on the host. Everything else runs as the same words on
+/// the host, so the host answers with its own build. Opening a project and
+/// printing this binary's completions are about this machine, so they refuse.
+async fn on_host(host: String, verb: Option<Verb>) -> Result<()> {
+    use termiod::server::ServerCmd;
+    // Only an interactive attach needs a terminal on the far side.
+    let tty = match verb {
+        None | Some(Verb::Open { .. }) | Some(Verb::Directory(_)) => {
+            bail!("--host runs a command on another machine; opening a project happens on this one")
+        }
+        Some(Verb::Completion { .. }) => {
+            bail!("--host runs a command on another machine; completions are for this one")
+        }
+        Some(Verb::Server(args)) => {
+            if matches!(args.cmd, ServerCmd::Deploy { .. }) {
+                return termiod::server::run(args, Some(host)).await;
+            }
+            matches!(&args.cmd, ServerCmd::Attach(attach) if !attach.observe)
+        }
+        Some(Verb::Session {
+            verb: Some(SessionVerb::Attach(args)),
+        }) => !args.observe,
+        Some(_) => false,
+    };
+    termiod::server::run_on_host(&host, tty)
 }
 
 fn fail(message: &str) -> ! {
@@ -908,28 +1022,25 @@ fn join(words: &[String]) -> String {
 async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
     // The app is contacted only once argv is fully diagnosed. clap has already
     // rejected what it can see; the checks below are the ones that need to
-    // know which verb they are on, and they run before `require_socket` for
-    // the same reason — a malformed command should say so, not report that the
+    // know which verb they are on, and they run before the request for the
+    // same reason — a malformed command should say so, not report that the
     // app is down.
+    //
+    // The app answers whenever it runs, and its project scope and Session
+    // control switch hold. termiod answers only when there is no app: the
+    // request reached no one, so the termiod half cannot act twice.
     let mut agent = String::new();
     let mut extra = String::new();
     let mut client_timeout = app_socket::client_timeout();
 
-    let (operation, output, target, text) = match verb {
-        SessionVerb::List(args) => {
-            let format = args.output.format();
-            app_socket::require_socket(channel);
-            exit_outcome(app_socket::request_once(
-                channel,
-                client_timeout,
-                "list",
-                format,
-                "",
-                "",
-                "",
-                "",
-            ));
+    let (operation, output, target, text, fallback) = match verb {
+        SessionVerb::List(args) if args.all => {
+            daemon_reply(args.output.format(), termiod::server::list_sessions(args.output.json, true).await);
         }
+
+        // Without an app there is no project, so `ls` lists what termiod
+        // holds — the same as `--all`.
+        SessionVerb::List(args) => ("list", args.output, String::new(), String::new(), Fallback::List),
 
         SessionVerb::Watch(args) => {
             // Exit codes tell a supervising agent how the watch ended: Ctrl-C
@@ -953,16 +1064,24 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             std::process::exit(code);
         }
 
+        SessionVerb::Create(args) => {
+            let format = if args.json { "json" } else { "text" };
+            daemon_reply(format, termiod::server::create_session(args, None).await);
+        }
+
+        SessionVerb::Attach(args) => {
+            daemon_reply("text", termiod::server::attach_session(args).await);
+        }
+
         SessionVerb::Close(args) => {
             // One request per tab; any failure fails the whole command, but
             // every target still gets its attempt and its own reply line. A
             // target carrying whitespace splits, the way the shell client's
             // unquoted expansion split it.
             let format = args.output.format();
-            app_socket::require_socket(channel);
             let mut failed = 0;
             for target in args.sessions.iter().flat_map(|word| word.split_whitespace()) {
-                if app_socket::request_once(
+                let reply = app_socket::request_reply(
                     channel,
                     client_timeout,
                     "close",
@@ -971,15 +1090,31 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                     "",
                     "",
                     "",
-                ) != Outcome::Ok
-                {
+                );
+                let outcome = match on_termiod(&reply, target).await {
+                    Err((code, message)) => {
+                        control_error_reply(format, &code, &message);
+                        Outcome::Error
+                    }
+                    Ok(Some(info)) => {
+                        match termiod::server::close_session(&info.id, args.output.json).await {
+                            Ok(()) => Outcome::Ok,
+                            Err(error) => {
+                                control_error_reply(format, "daemon", &format!("{error:#}"));
+                                Outcome::Error
+                            }
+                        }
+                    }
+                    Ok(None) => app_socket::finish(reply, format, ""),
+                };
+                if outcome != Outcome::Ok {
                     failed = 1;
                 }
             }
             std::process::exit(failed);
         }
 
-        SessionVerb::Focus(args) => ("focus", args.output, args.session, String::new()),
+        SessionVerb::Focus(args) => ("focus", args.output, args.session, String::new(), Fallback::None),
 
         SessionVerb::Read(args) => {
             // Device verb, daemon first (unify-server-plane Stage 10): a
@@ -987,17 +1122,17 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             // VT — including sessions no window ever opened, and boxes with
             // no app at all. A target the daemon does not own (a session on
             // a remote device, an app-side title match, a foreign-channel
-            // link) falls through to the app, which keeps its coverage.
+            // link) goes to the app, which keeps its coverage.
             if let Some(code) =
                 daemon_read(channel, &args.session, args.lines, args.output.format()).await
             {
                 std::process::exit(code);
             }
-            app_socket::require_socket(channel);
             if let Some(lines) = args.lines {
                 extra = format!("\"lines\":{lines}");
             }
-            ("read", args.output, args.session, String::new())
+            let fallback = Fallback::Read { lines: args.lines };
+            ("read", args.output, args.session, String::new(), fallback)
         }
 
         // `spawn` and the no-target `send` alias both start a fresh session:
@@ -1010,33 +1145,68 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             // is still visible.
             if let Some(named) = &args.agent {
                 if named.eq_ignore_ascii_case("terminal") || named.eq_ignore_ascii_case("shell") {
-                    fail("termio: spawn starts agents — for a plain terminal running a command, use `termio sessions run \"<command>\"`");
+                    fail("termio: spawn starts agents — for a plain terminal running a command, use `termio session run \"<command>\"`");
                 }
                 agent = named.clone();
             }
             placement(&mut extra, &args.placement);
             waiting(&mut extra, &args.wait, &mut client_timeout);
-            ("send", args.output, String::new(), join(&args.words))
+            ("send", args.output, String::new(), join(&args.words), Fallback::None)
         }
 
         // `run` is the same spawn with the agent pinned to the plain shell —
         // the payload is a command line, not a prompt.
         SessionVerb::Run(args) => {
             agent = "terminal".to_string();
+            let fallback = Fallback::Run {
+                line: join(&args.words),
+                app_only: args.wait.waiting()
+                    || args.placement.direction.is_some()
+                    || args.placement.ratio.is_some(),
+            };
             placement(&mut extra, &args.placement);
             waiting(&mut extra, &args.wait, &mut client_timeout);
-            ("send", args.output, String::new(), join(&args.words))
+            ("send", args.output, String::new(), join(&args.words), fallback)
         }
 
         SessionVerb::Send(args) | SessionVerb::Answer(args) => {
+            let format = args.output.format();
             // A leading address targets an existing session. Without one,
             // `send` is a back-compat alias for `spawn`; the strict is_address
             // shape check keeps a prompt that merely opens with a word from
-            // being mistaken for an address.
-            let addressed = args
-                .words
-                .first()
-                .is_some_and(|word| app_socket::is_address(word));
+            // being mistaken for an address. With no app there is no spawn
+            // to fall back on, so a name that termiod holds addresses it.
+            let mut addressed = app_socket::is_address(&args.words[0]);
+            if !addressed {
+                // Asked in this order so the app is probed only when termiod
+                // does hold a session by that name: a probe is a connection
+                // the app answers. With a socket file, the lookup is brief,
+                // because it delays every prompt sent to the app; with none,
+                // there is no app and it gets the full lookup time.
+                let lookup = if app_socket::socket_path(channel).exists() {
+                    std::time::Duration::from_secs(1)
+                } else {
+                    termiod::server::LOOKUP_TIMEOUT
+                };
+                let mut found = termiod::server::resolve_running(&args.words[0], lookup).await;
+                // Probed once, and only when the answer matters: a probe is a
+                // connection the app answers.
+                let mut app = None;
+                let mut app_up = || *app.get_or_insert_with(|| app_running(channel));
+                // A socket file the app left behind is no app: the lookup
+                // then gets its full time.
+                if found.is_err() && lookup < termiod::server::LOOKUP_TIMEOUT && !app_up() {
+                    found = termiod::server::resolve_running(&args.words[0], termiod::server::LOOKUP_TIMEOUT).await;
+                }
+                match found {
+                    Ok(found) => addressed = found.is_some() && !app_up(),
+                    Err(error) if !app_up() => {
+                        let (code, message) = lookup_error(&error);
+                        refuse(format, code, &message)
+                    }
+                    Err(_) => {}
+                }
+            }
             let (target, words) = if addressed {
                 (args.words[0].clone(), &args.words[1..])
             } else {
@@ -1068,22 +1238,122 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                     .collect();
                 push(&mut extra, &format!("\"keys\":[{}]", names.join(",")));
             }
+            let fallback = Fallback::Send {
+                first: args.words[0].clone(),
+                enter: !args.no_enter,
+                app_only: !args.keys.is_empty() || args.wait.waiting(),
+            };
             waiting(&mut extra, &args.wait, &mut client_timeout);
-            ("send", args.output, target, join(words))
+            ("send", args.output, target, join(words), fallback)
         }
     };
 
-    app_socket::require_socket(channel);
-    exit_outcome(app_socket::request_once(
+    let format = output.format();
+    let reply = app_socket::request_reply(
         channel,
         client_timeout,
         operation,
-        output.format(),
+        format,
         &target,
         &agent,
         &text,
         &extra,
-    ));
+    );
+    let no_app = matches!(reply, app_socket::Reply::NoApp(..));
+    match fallback {
+        Fallback::List if no_app => {
+            daemon_reply(format, termiod::server::list_sessions(output.json, true).await);
+        }
+        // With no app to show a pane, the command runs in a session on
+        // termiod, typed into a login shell as the app types it.
+        Fallback::Run { line, app_only } if no_app => {
+            if app_only {
+                refuse(format, "needs_app", "--wait, --direction and --ratio need the Termio app, and it is not running");
+            }
+            let create = termiod::server::CreateArgs {
+                name: None,
+                cwd: std::env::current_dir()
+                    .ok()
+                    .map(|directory| directory.display().to_string()),
+                json: output.json,
+                argv: Vec::new(),
+            };
+            daemon_reply(format, termiod::server::run_session(create, line).await);
+        }
+        // An unaddressed send starts an agent, which only the app can do.
+        Fallback::Send { first, .. } if target.is_empty() && no_app => refuse(
+            format,
+            "not_found",
+            &format!("no session matches '{first}', and starting an agent needs the Termio app, which is not running"),
+        ),
+        Fallback::Send { enter, app_only, .. } if !target.is_empty() => {
+            match on_termiod(&reply, &target).await {
+                Ok(Some(info)) => {
+                    if app_only {
+                        refuse(format, "needs_app", "--key and --wait need the Termio app, and it is not running");
+                    }
+                    if text.is_empty() {
+                        refuse(format, "no_text", "send needs text to send.");
+                    }
+                    daemon_reply(
+                        format,
+                        termiod::server::send_to_session(&info.id, &text, enter, output.json).await,
+                    );
+                }
+                Ok(None) => {}
+                Err((code, message)) => refuse(format, &code, &message),
+            }
+        }
+        Fallback::Read { lines } => match on_termiod(&reply, &target).await {
+            Ok(Some(info)) => {
+                std::process::exit(serve_daemon_read(channel, &info, lines, format).await)
+            }
+            Ok(None) => {}
+            Err((code, message)) => refuse(format, &code, &message),
+        },
+        _ => {}
+    }
+    exit_outcome(app_socket::finish(reply, format, &extra));
+}
+
+/// What a verb does on termiod when there is no app.
+enum Fallback {
+    None,
+    List,
+    Run { line: String, app_only: bool },
+    Send { first: String, enter: bool, app_only: bool },
+    Read { lines: Option<u64> },
+}
+
+/// The termiod session to act on when `reply` found no app, or the error to
+/// report as `(code, message)`. `Ok(None)` when there is an app: its reply is
+/// the answer.
+async fn on_termiod(
+    reply: &app_socket::Reply,
+    target: &str,
+) -> Result<Option<termiod::protocol::SessionInfo>, (String, String)> {
+    if !matches!(reply, app_socket::Reply::NoApp(..)) {
+        return Ok(None);
+    }
+    match termiod::server::resolve_running(target, termiod::server::LOOKUP_TIMEOUT).await {
+        Ok(Some(info)) => Ok(Some(info)),
+        Ok(None) => Err(("not_found".to_string(), format!("no session matches '{target}'"))),
+        Err(error) => {
+            let (code, message) = lookup_error(&error);
+            Err((code.to_string(), message))
+        }
+    }
+}
+
+/// The reply code for a failed lookup: `ambiguous` when the target matches
+/// more than one session, `daemon` when termiod did not answer.
+fn lookup_error(error: &anyhow::Error) -> (&'static str, String) {
+    let code = if error.downcast_ref::<termiod::server::Ambiguous>().is_some() {
+        "ambiguous"
+    } else {
+        "daemon"
+    };
+    (code, format!("{error:#}"))
 }
 
 fn placement(extra: &mut String, placement: &Placement) {
@@ -1117,6 +1387,40 @@ fn push(extra: &mut String, fragment: &str) {
         extra.push(',');
     }
     extra.push_str(fragment);
+}
+
+/// Whether there is an app, by the same rule a request uses: a socket file
+/// is an app unless no process listens on it.
+fn app_running(channel: &Channel) -> bool {
+    match std::os::unix::net::UnixStream::connect(app_socket::socket_path(channel)) {
+        Ok(_) => true,
+        Err(error) => match error.kind() {
+            std::io::ErrorKind::NotFound => false,
+            std::io::ErrorKind::ConnectionRefused => {
+                app_socket::has_listener(&app_socket::socket_path(channel))
+            }
+            _ => true,
+        },
+    }
+}
+
+/// Ends the command with an error in the reply contract, on stdout like the
+/// app's own errors.
+fn refuse(format: &str, code: &str, message: &str) -> ! {
+    control_error_reply(format, code, message);
+    std::process::exit(1);
+}
+
+/// Ends the command on a daemon call's result: an error in the app's reply
+/// shape, so a script reads one contract whichever side answered.
+fn daemon_reply(format: &str, result: Result<()>) -> ! {
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(error) => {
+            control_error_reply(format, "daemon", &format!("{error:#}"));
+            std::process::exit(1);
+        }
+    }
 }
 
 extern "C" fn watch_interrupted(_: libc::c_int) {
@@ -1386,11 +1690,10 @@ fn open_project(channel: &Channel, directory: &Path) -> Result<()> {
 }
 
 const NOTIFY_HELP: &str = "\
-Post a macOS notification from the running app. The agent uses this to ping you
-directly — \"build finished\", \"need a decision\" — regardless of whether termio is
-frontmost (unlike the automatic completion banner). --title overrides the default
-(the calling agent's name); the banner's subtitle is the project, and clicking it
-focuses the session that posted it.";
+Post a macOS notification from the running app, such as \"build finished\" or
+\"need a decision\", whether or not Termio is in front. --title replaces the
+default title, the calling agent's name. Clicking the banner shows the session
+that posted it.";
 
 const SIM_HELP: &str = "\
 Drive the iOS Simulator shown in termio's Simulator pane, so an agent can run
@@ -1435,131 +1738,164 @@ With --marker, print the first element, in tree order, whose label (or
 button that shares it, so check the type. When the reply names a modal, stay
 inside it. --json prints idb's full accessibility document instead.";
 
+const SESSION_HELP: &str = "\
+List, start, drive and close sessions.
+
+With the Termio app running, these commands act on the sessions of the
+project you run them in. With no app running, they act on this machine's
+termiod. `create`, `attach` and `ls --all` always act on termiod, and so
+does `read` of a session the app opened.
+`termio -H <host> session …` acts on another machine.
+
+A SESSION is a termio://session/<id> link, an id, an id prefix of 8 or more
+characters, or a name. `ls` and a `spawn` reply print them. With the app
+running, `send` reads a first word that is not a link or id as prompt text.
+
+A command waits up to $TERMIO_CLI_TIMEOUT seconds (default 15) for the app.";
+
+const SESSION_EXAMPLES: &str = "\
+Examples:
+  termio session ls
+  termio session spawn \"fix the failing test\"
+  termio session send 8de0b387 \"run the tests\" --wait
+  termio session read 8de0b387 --lines 20
+  termio -H mybox session ls";
+
 const LIST_HELP: &str = "\
-List the sessions in this project with their live status (working / idle /
-done / needs-you). `--json` adds each session's transcript path once its
-agent has reported one.";
+List this project's sessions and their status: working, idle, done or
+needs-you. --json adds each agent's transcript path once it has reported one.
+
+--all lists every session this machine's termiod hosts instead, in every
+project. With no app running, that is what `ls` lists.";
+
+const LIST_EXAMPLES: &str = "\
+Examples:
+  termio session ls
+  termio session ls --json
+  termio session ls --all";
 
 const WATCH_HELP: &str = "\
-Block and stream one line per session status transition until interrupted.
-On attach it first prints a snapshot line per session with its current
-status (tagged \"snapshot\":true in --json); --no-snapshot skips that.
---state takes a comma-separated filter (working, idle, done, needs-you,
-stalled); the default reports the two states a supervisor acts on: done,
-needs-you.
-In --json mode the app writes {\"heartbeat\":true} after 30s of silence so a
-dead stream is distinguishable from a quiet one.
+Print one line each time a session's status changes, until Ctrl-C. It starts
+with one line per session; --no-snapshot skips them.
 
-`stalled` is a watch-plane signal, not a real status: the session is still
-working, but for 20+ minutes has made no repo change and next-to-no
-transcript growth — the unattended-runaway pattern. Sustained output (a
-long build streaming logs) suppresses it. The event carries the reasoning
-in `evidence` (\"working 42m, no repo change, transcript +3 lines\"), fires
-once per quiet stretch, and re-arms when progress resumes. Opt in with
---state stalled; it is not in the default filter.
+--state picks the states to print, from working, idle, done, needs-you and
+stalled (default: done,needs-you). `stalled` means working for 20 minutes or
+more with no repository change and almost no transcript growth; the line says
+why. In --json, a {\"heartbeat\":true} line follows 30 seconds of silence.
 
-exit codes: 0 after Ctrl-C (normal end of supervision), 2 when the stream
-closes from the app side (termio quit or died).";
+Needs the Termio app. Exit codes: 0 after Ctrl-C, 2 when the app closed the
+stream.";
+
+const WATCH_EXAMPLES: &str = "\
+Examples:
+  termio session watch
+  termio session watch --state done,needs-you,stalled --json";
 
 const SPAWN_HELP: &str = "\
-Start a NEW agent session on the prompt. Replies immediately with the new
-session's termio://session link; the prompt is
-typed in once the agent finishes booting. --agent picks the agent (e.g. claudeCode, codex, grok,
-pi); the default is the calling agent's own kind.
+Start a new agent session on PROMPT, in a pane beside yours. The reply is the
+session's link. The prompt is typed in once the agent has started.
 
---direction places the new pane relative to yours (right or down) instead of
-the automatic stack; --ratio is the new pane's share of the split (e.g. 0.25
-for a short strip) and holds against later spawns. Panes without a stated
-ratio share their run evenly.
+--agent picks the agent (default: the kind that calls). --direction and --ratio
+place the pane. --wait returns when the agent's first turn settles.
 
-Readiness is judged from the screen, so an agent sitting on a startup gate —
-a trust prompt, a usage notice, a first-run dialog — looks ready while it is
-actually waiting for a keypress, and swallows the prompt as its answer. The
-reply cannot know this; it has already been sent. When it happens the session
-is flagged in `sessions list` (`prompt_undelivered` in --json), so check there
-before waiting on a reply that will never come, then resend with
-`sessions send`.
+An agent that stops on a startup prompt, such as a trust prompt, takes PROMPT
+as its answer. `session ls --json` then flags it as prompt_undelivered; send
+the prompt again with `session send`.
 
---wait holds the reply until the spawned agent's first turn settles (or
---timeout ms elapse; default 300000, clamped 1000–600000). The reply then
-carries the final status, the transcript path, and the cursor..cursor_end
-line range holding the response. A session that stops to ask you something
-returns immediately as needs-you, with the on-screen question in `prompt`.
+Needs the Termio app. Exit codes: 0 done, 1 error, 3 timed out.";
 
-A prompt that shows no effect within 5s fails fast as prompt_stalled (the
-input was eaten) rather than burning the timeout; a session that closes or
-whose agent exits mid-wait fails as session_closed / agent_gone.
-
-exit codes: 0 settled, 1 error (including stalled/vanished), 3 timed out.";
+const SPAWN_EXAMPLES: &str = "\
+Examples:
+  termio session spawn \"fix the failing test\"
+  termio session spawn \"review this branch\" --agent codex --direction down
+  termio session spawn \"write the changelog\" --wait --json";
 
 const RUN_HELP: &str = "\
-Start a NEW plain terminal session and type the shell command into it — a
-dev server, a test run, a build — visible in a split pane, no LLM involved.
-Replies immediately with the session's address; drive it further with
-`send`, read its output with `read` (a plain command has no
-transcript; its screen is the result), close it with `close`.
+Start a new terminal session and run COMMAND in it, such as a dev server or a
+test run. The reply is the session's link. A plain command has no transcript;
+`session read` prints its screen.
 
---direction places the pane relative to yours (right or down); --ratio is its
-share of the split — `--direction down --ratio 0.25` is a log strip under
-your pane, not a column beside it.
+--direction and --ratio place the pane: `--direction down --ratio 0.25` is a
+strip under yours. --wait returns when the screen stops changing.
 
---wait settles when the screen goes still after the command's output (or
-returns needs-you / times out, exactly as with send).
+With no app running, the command runs in a session on termiod instead.
+Exit codes: 0 done, 1 error, 3 timed out.";
 
-exit codes: 0 settled, 1 error (including stalled/vanished), 3 timed out.";
+const RUN_EXAMPLES: &str = "\
+Examples:
+  termio session run \"pnpm dev\" --direction down --ratio 0.25
+  termio session run \"cargo test\" --wait";
+
+const CREATE_HELP: &str = "\
+Start a session on termiod that no app window shows, and print its id. It runs
+PROGRAM, or your login shell, until it exits or you close it. Attach to it
+with `session attach`.";
+
+const CREATE_EXAMPLES: &str = "\
+Examples:
+  termio session create --name build -- cargo watch -x test
+  termio -H mybox session create --name api --cwd ~/api -- npm start";
+
+const ATTACH_HELP: &str = "\
+Attach this terminal to a session on termiod. Detach with Ctrl-\\; the session
+keeps running. A name that matches no session creates one with that name.
+
+--observe watches without a keyboard and needs no terminal.";
+
+const ATTACH_EXAMPLES: &str = "\
+Examples:
+  termio session attach build
+  termio session attach 8de0b387 --observe
+  termio -H mybox session attach api";
 
 const READ_HELP: &str = "\
-Print the session's current screen (its viewport, right-trimmed, trailing
-blank rows dropped) without focusing it. The result channel for `run`
-sessions, and a quick peek at any agent's live TUI. --lines keeps only
-the last N rows. Scrollback is not included.";
+Print a session's screen, without the scrollback, and leave the session where
+it is. --lines keeps the last N rows. It is how you read a `run` session's
+result, or check on an agent.";
+
+const READ_EXAMPLES: &str = "\
+Examples:
+  termio session read 8de0b387
+  termio session read build --lines 20";
 
 const SEND_HELP: &str = "\
-Type text into an existing session and submit it with a real Return
-keypress — a prompt to drive it, or a menu choice (\"1\", \"yes\") to answer a
-permission prompt. Addresses come from `termio sessions list` or a `spawn`
-reply — a termio://session link or bare id, copied verbatim.
+Type text into a session, then press Return: a prompt, or an answer such as
+\"1\" or \"yes\". Without a SESSION, `send` starts a new agent, like `spawn`.
 
-The text reaches the terminal verbatim, so --no-enter (no Return after it)
-delivers a bare keypress: the lone `t` a trust gate waits for.
+--no-enter types the text and no Return: the lone `t` a trust prompt waits
+for.
 
---key presses a NAMED key, repeatable and in order, after the text:
-`send <session> --key escape` to back out of a menu, `--key up --key enter`
-to rerun the last entry. Use it instead of writing escape bytes yourself —
-a key's bytes depend on the mode the program negotiated (Up is ESC[A in
-normal mode, ESC O A in application mode), so only the terminal's own key
-encoder can get them right. Any --key suppresses the implicit Return; name
-`--key enter` when you want one. An unknown name is an error, never text.
+--key presses a named key after the text, in the order given, and drops the
+Return; add `--key enter` for one. Names: enter escape tab space backspace
+delete insert up down left right home end pageup pagedown f1-f12, a single
+character, and ctrl- or shift- chords (ctrl-c, shift-tab). Option and Command
+chords are refused. For a meta chord, send `--key escape --key b`.
 
-Key names follow kitty and tmux, both spellings accepted: enter, escape,
-tab, space, backspace, delete, insert, up, down, left, right, home, end,
-pageup, pagedown, f1–f12, and single characters — prefixed with ctrl-/c-
-or shift-/s- for chords (ctrl-c, c-c, shift-tab). Ctrl and Shift are the
-modifiers a program sees: macOS spends Option composing text (option-b is
-∫, not meta-b) and Command drives the app, so those chords are refused
-rather than silently dropped. A meta chord is ESC then the key:
-`--key escape --key b`.
+--wait returns when the turn the text started settles. The reply carries the
+status, the transcript path and the line range of the answer.
 
---wait holds the reply until the turn the text kicked off settles (or
---timeout ms elapse; default 300000, clamped 1000–600000). The reply then
-carries the final status, the transcript path, and the cursor..cursor_end
-line range holding the response. A session that stops to ask you something
-returns immediately as needs-you, with the on-screen question in `prompt`.
+--key and --wait need the Termio app. Exit codes: 0 done, 1 error, including
+a stalled or closed session, 3 timed out.";
 
-A prompt that shows no effect within 5s fails fast as prompt_stalled (the
-input was eaten) rather than burning the timeout; a session that closes or
-whose agent exits mid-wait fails as session_closed / agent_gone.
-
-exit codes: 0 settled, 1 error (including stalled/vanished), 3 timed out.
-
-`answer` is a deprecated, agent-only alias; `send` without a target aliases `spawn`.";
+const SEND_EXAMPLES: &str = "\
+Examples:
+  termio session send 8de0b387 \"run the tests\"
+  termio session send 8de0b387 --key escape
+  termio session send 8de0b387 t --no-enter
+  termio session send 8de0b387 \"summarise the diff\" --wait --json";
 
 const CLOSE_HELP: &str = "\
-Close one or more session tabs. Each target gets its own attempt and reply
-line; any failure fails the whole command.";
+Close sessions and end their programs. Each SESSION gets its own attempt and
+reply line; if any fails, the command fails. `kill` is the same command.";
+
+const CLOSE_EXAMPLES: &str = "\
+Examples:
+  termio session close 8de0b387
+  termio session close build api";
 
 const FOCUS_HELP: &str = "\
-Select the session in the app and bring termio to the front.";
+Select the session in the app and bring Termio to the front. Needs the
+Termio app.";
 
 #[cfg(test)]
 mod tests {
@@ -1591,6 +1927,33 @@ mod tests {
         assert_eq!(read_token(&release(), "https://example.com/session/x"), None);
         assert_eq!(read_token(&release(), "termio://nothing-here"), None);
         assert_eq!(read_token(&release(), "termio://session/"), None);
+    }
+
+    /// The root help is written by hand, so it must name every command a
+    /// person can run, and nothing else.
+    #[test]
+    fn the_root_help_lists_exactly_the_visible_commands() {
+        let mut command = Cli::command();
+        command.build();
+        let visible: Vec<String> = command
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        for name in &visible {
+            assert!(
+                ROOT_TEMPLATE.contains(&format!("\n  {name:<12}")),
+                "the root help leaves out `{name}`"
+            );
+        }
+        let listed = ROOT_TEMPLATE
+            .lines()
+            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|name| !name.starts_with('{'));
+        for name in listed {
+            assert!(visible.iter().any(|v| v == name), "the root help lists `{name}`, which is not a command");
+        }
     }
 
     #[test]

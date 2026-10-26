@@ -1,7 +1,7 @@
 import XCTest
 @testable import termio
 
-/// `termio sessions send --key <name>` exists because a key's bytes are not a
+/// `termio session send --key <name>` exists because a key's bytes are not a
 /// property of the key: Up is `ESC [ A` in normal cursor mode and `ESC O A` in
 /// application mode, and ctrl-c is `0x03` or `CSI 99;5u` depending on whether the
 /// program turned on the kitty keyboard protocol. Naming the key hands that choice

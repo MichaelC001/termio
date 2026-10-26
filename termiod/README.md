@@ -52,8 +52,8 @@ client verb is `termio`'s.
 ```sh
 termio server attach demo              # create-on-missing; Ctrl-\ detaches
 termio server attach build -- npm run dev
-termio server list
-termio server list --json
+termio session ls --all
+termio session ls --all --json
 termio server create --name api --cwd ~/proj -- bash
 termio server send api "npm test"      # inject without attach
 termio server kill api
@@ -102,9 +102,9 @@ host (zmx lesson).
 Transport is **system OpenSSH** only — no public listener. The **host still runs on the VPS**; SSH only reaches it.
 
 ```sh
-termio server -H my-vps deploy           # install or update ~/.local/bin/termiod, verify it
-termio server -H my-vps ls
-termio server -H my-vps attach demo -- bash
+termio -H my-vps server deploy           # install or update ~/.local/bin/termiod, verify it
+termio -H my-vps session ls --all
+termio -H my-vps session attach demo -- bash
 ```
 
 `deploy` is one loop for every state a box can be in — nothing installed, an

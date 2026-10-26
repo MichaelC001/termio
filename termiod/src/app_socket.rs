@@ -194,11 +194,56 @@ pub fn request_once(
     text: &str,
     extra: &str,
 ) -> Outcome {
+    let reply = request_reply(channel, timeout_seconds, op, format, target, agent, text, extra);
+    finish(reply, format, extra)
+}
+
+/// What came back from one request to the app.
+pub enum Reply {
+    /// The app's reply, unprinted.
+    Answered(String),
+    /// No app: there is no socket file, or the file refused the connection
+    /// and the app is not a running process (it quit and left the file). The
+    /// request reached no one, so another owner may act instead. Unprinted;
+    /// `finish` reports it. A refusal while the app runs is a busy app, whose
+    /// backlog is full, and stays an error.
+    NoApp(PathBuf, std::io::ErrorKind),
+    /// Any other failure, already reported on stderr.
+    Failed,
+}
+
+/// One request to the app. Failures other than an absent app are reported
+/// here, on stderr.
+pub fn request_reply(
+    channel: &Channel,
+    timeout_seconds: u64,
+    op: &str,
+    format: &str,
+    target: &str,
+    agent: &str,
+    text: &str,
+    extra: &str,
+) -> Reply {
     let socket = socket_path(channel);
     let request = build_request(op, format, target, agent, text, extra);
     let response = exchange(&socket, &request, timeout_seconds);
     let response = match response {
         Ok(bytes) => bytes,
+        // Only a connect fails these ways, so the request reached no one.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || (error.kind() == std::io::ErrorKind::ConnectionRefused
+                    && !has_listener(&socket)) =>
+        {
+            return Reply::NoApp(socket, error.kind());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            eprintln!(
+                "termio: the app refused the connection to {} — it is running but busy; try again",
+                socket.display()
+            );
+            return Reply::Failed;
+        }
         Err(error) => {
             // A refused connect and a live-but-silent app are different
             // failures with different fixes: EPERM is a sandbox denying this
@@ -209,19 +254,12 @@ pub fn request_once(
                     "termio: the OS denied the connection to {} — this process is likely sandboxed (Codex workspace-write blocks unix sockets); termio itself is fine and restarting it will not help — run the command outside the sandbox",
                     socket.display()
                 ),
-                std::io::ErrorKind::NotFound => eprintln!(
-                    "termio: no socket at {} — termio isn't running; start it first",
-                    socket.display()
-                ),
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => eprintln!(
                     "termio: no reply from the app within {timeout_seconds}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT"
                 ),
-                _ => eprintln!(
-                    "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
-                    socket.display()
-                ),
+                _ => eprintln!("termio: the app's socket at {} failed: {error}", socket.display()),
             }
-            return Outcome::Error;
+            return Reply::Failed;
         }
     };
     let response = String::from_utf8_lossy(&response);
@@ -230,8 +268,64 @@ pub fn request_once(
         eprintln!(
             "termio: no reply from the app within {timeout_seconds}s — it may be busy or wedged; check the app, or raise TERMIO_CLI_TIMEOUT"
         );
-        return Outcome::Error;
+        return Reply::Failed;
     }
+    Reply::Answered(response.to_string())
+}
+
+/// Whether a process holds the socket at `socket` by its path. A refused
+/// connect means either a socket file the app left behind when it quit, or a
+/// live app whose backlog is full. Only the second has a holder: the path
+/// names the app's listening socket and the connections it accepted, never a
+/// client's end. `lsof` matches the path as it was bound, so both the path
+/// and its canonical form are asked. Never true where `lsof` is missing.
+pub fn has_listener(socket: &Path) -> bool {
+    let held = |path: &Path| {
+        std::process::Command::new("lsof")
+            .arg("-t")
+            .arg(path)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|found| found.status.success() && !found.stdout.trim_ascii().is_empty())
+            .unwrap_or(false)
+    };
+    held(socket)
+        || std::fs::canonicalize(socket)
+            .ok()
+            .filter(|canonical| canonical != socket)
+            .is_some_and(|canonical| held(&canonical))
+}
+
+/// Prints a reply from `request_reply` and turns it into the outcome the exit
+/// code reports.
+pub fn finish(reply: Reply, format: &str, extra: &str) -> Outcome {
+    let response = match reply {
+        Reply::Answered(response) => response,
+        Reply::NoApp(socket, kind) => {
+            if kind == std::io::ErrorKind::NotFound {
+                eprintln!("termio: app is not running (no control socket at {})", socket.display());
+            } else {
+                eprintln!(
+                    "termio: nothing is listening at {} (connection refused) — the socket file outlived the app that made it; restart termio",
+                    socket.display()
+                );
+            }
+            // A JSON caller reads stdout only, so it gets the error contract.
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "error": "needs_app",
+                        "message": "this needs the Termio app, and it is not running",
+                        "schema_version": 1,
+                    })
+                );
+            }
+            return Outcome::Error;
+        }
+        Reply::Failed => return Outcome::Error,
+    };
     println!("{response}");
     if response.starts_with("error:") || response.contains("\"ok\":false") {
         return Outcome::Error;
@@ -380,6 +474,20 @@ mod tests {
         std::fs::write(dir.join("session-control.sock"), b"").unwrap();
         assert_eq!(resolve_in(&dir), dir.join("app.sock"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn only_a_bound_listener_counts() {
+        let directory = std::env::temp_dir().join(format!("termio-listener-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("app.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(has_listener(&path));
+        drop(listener);
+        assert!(!has_listener(&path), "a socket file outlived its listener");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

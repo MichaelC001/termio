@@ -972,7 +972,7 @@ final class TermioStore: ObservableObject {
         if status != .needsAttention { blockingAttention.remove(id) }
         // The tray and window title present status, so a real change pings them.
         sessionRuntimeDidChange.send()
-        // Push the genuine transition to any `termio sessions watch` clients scoped
+        // Push the genuine transition to any `termio session watch` clients scoped
         // to this session's project. The hub does the socket writes off the main
         // thread, so a watcher never slows the agent tick that produced the event.
         if let session = session(id), let project = project(for: id) {
@@ -1847,7 +1847,7 @@ final class TermioStore: ObservableObject {
     }
 
     /// Selects a session in the sidebar and brings termio to the front — the
-    /// "come look at this" verb shared by `termio sessions focus` and a
+    /// "come look at this" verb shared by `termio session focus` and a
     /// task-notification click (which may find the window miniaturized).
     func revealSession(_ id: Session.ID) {
         guard session(id) != nil else { return }

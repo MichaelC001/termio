@@ -42,7 +42,7 @@ iPhone 都只是附着上去。
 | | Termio | [Ghostty](https://ghostty.org) | [cmux](https://cmux.com) | [herdr](https://herdr.dev) | [Superlogical](https://superlogical.com) | [Otty](https://otty.sh) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Agent 监控 | ✓ 靠 hook | – | ✓ | ✓ | – | ✓ 标签徽标 |
-| Agent 编排 API | ✓ `termio sessions` | – | ✓ CLI 和 socket API | ✓ socket API | – | – |
+| Agent 编排 API | ✓ `termio session` | – | ✓ CLI 和 socket API | ✓ socket API | – | – |
 | Agent 通知 | ✓ 菜单栏托盘 | – | ✓ | ✓ toast、系统通知或声音 | – | – |
 | 多路复用 | ✓ 守护进程持有 PTY | – | 重启后恢复 | ✓ 服务端持有 PTY | ✓ 服务端持有 PTY | 重启后恢复 |
 | 远程 Linux | ✓ 原生支持 | – | ✓ SSH 工作区 | ✓ 通过 SSH 附着 | ✓ 原生支持 | – |
@@ -101,7 +101,7 @@ brew install --cask termio-sh/tap/termio
 <td width="62%"><img alt="Codex 和 Claude Code 旁显示项目会话类型及实时状态" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>状态一眼看清</h3>
-<p>工作中、空闲、完成，还是<em>需要你</em>——每一行都有标记。同一份列表就是 <code>termio sessions list</code>。</p>
+<p>工作中、空闲、完成，还是<em>需要你</em>——每一行都有标记。同一份列表就是 <code>termio session list</code>。</p>
 </td>
 </tr>
 <tr>
@@ -140,21 +140,21 @@ brew install --cask termio-sh/tap/termio
 
 ```sh
 termio .                                    # 把当前目录作为项目打开
-termio sessions list                        # 谁在工作、空闲，或在等你
-termio sessions spawn "fix the flaky test"  # 用一段提示启动新的 Agent 会话
-termio sessions run "pnpm test --watch"     # 用一条命令启动普通终端会话
-termio sessions send ab12cd34 "1"           # 回答同伴的权限确认
-termio sessions read ab12cd34 --lines 40    # 打印某个会话当前的屏幕
-termio sessions watch                       # 实时流式输出状态变化
-termio sessions focus ab12cd34              # 在应用里把某个会话切到前台
-termio sessions close ab12cd34              # 关掉它
+termio session list                        # 谁在工作、空闲，或在等你
+termio session spawn "fix the flaky test"  # 用一段提示启动新的 Agent 会话
+termio session run "pnpm test --watch"     # 用一条命令启动普通终端会话
+termio session send ab12cd34 "1"           # 回答同伴的权限确认
+termio session read ab12cd34 --lines 40    # 打印某个会话当前的屏幕
+termio session watch                       # 实时流式输出状态变化
+termio session focus ab12cd34              # 在应用里把某个会话切到前台
+termio session close ab12cd34              # 关掉它
 termio notify "the migration finished"      # 发一条 macOS 通知
 ```
 
 `--wait` 一直等到这一轮结束，回来时带上最终状态和可以去读的记录行范围。`--json` 让任何 `sessions` 命令输出机器可读的结果。`--agent` 决定 `spawn` 启动哪个 Agent。`--direction` / `--ratio` 决定新面板落在哪、占多大。
 
 ```sh
-termio sessions spawn "run the migration" --agent codex --wait
+termio session spawn "run the migration" --agent codex --wait
 ```
 
 会话控制会往每个 Agent 的技能目录（`~/.claude/skills`、`~/.codex/skills`）装一个 `termio` [Agent 技能](https://termio.sh/skill.md)，并在每次启动时保持它最新。其他 Agent 也可以直接从这个仓库装同一个技能：

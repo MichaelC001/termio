@@ -96,7 +96,7 @@ extension TermioStore {
 
     /// Adds a session to a project and drops it in **beside** a visible pane as a
     /// split, instead of replacing the view the way `addSession` does. This is the
-    /// path the CLI / an agent spawning a sibling takes (`termio sessions spawn`):
+    /// path the CLI / an agent spawning a sibling takes (`termio session spawn`):
     /// there the whole point is to *see* the new agent next to the one you were
     /// watching, not to have it hijack the terminal area and push its predecessor
     /// off to a sidebar row.

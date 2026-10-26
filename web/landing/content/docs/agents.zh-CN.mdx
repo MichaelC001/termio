@@ -3,8 +3,8 @@ title: 同时运行多个 Agent
 description: 让一支 Agent 队伍并排工作，一眼读出它们的实时状态，并知道每个 Agent 是通过哪条信号汇报的——program status 协议、hooks、终端标题，还是最后才用的屏幕。
 x-i18n:
   source_path: agents.mdx
-  source_hash: 8e57abb9f418350d049a26f95b954da4221313efc227e7287e4376547f35e9fd
-  generated_at: 2026-10-19
+  source_hash: bdf393896f34370fbfc9f8d0a5a16967b2cf0ecd90b0d02396384bc24392b620
+  generated_at: 2026-10-25
 ---
 
 Termio 就是为同时运行多个 Agent 造的。侧栏是你的控制台：每个会话是一行，每一行都汇报
@@ -150,14 +150,14 @@ worktree 并把它们嵌在项目下面，所以这是一次右键，而不是�
 
 ## 让 Agent 互相驱动
 
-一旦一支队伍变成常态，你接下来想要的就是让一个 Agent 来管这支队伍。`termio sessions` 就是
+一旦一支队伍变成常态，你接下来想要的就是让一个 Agent 来管这支队伍。`termio session` 就是
 这套 API：一个 Agent 可以列出它的同级、按一个提示词开出新的、回答一个卡住的会话，以及阻塞
 到某一轮结束——全都走一个本地 socket，并限定在它自己的项目里。
 
 ```bash
-termio sessions list
-termio sessions spawn "update the changelog for 0.54" --agent codex
-termio sessions watch
+termio session list
+termio session spawn "update the changelog for 0.54" --agent codex
+termio session watch
 ```
 
 它是可选的，打开它的同时还会安装一个小技能，让你的 Agent 知道这些命令存在。完整的动词参考
@@ -171,6 +171,6 @@ termio sessions watch
     你关闭、退出或重启时，正在跑的 Agent 会怎么样。
   </Card>
   <Card href="/zh-CN/docs/cli" title="命令行工具">
-    `termio sessions` 编排 API，一个动词一个动词地讲。
+    `termio session` 编排 API，一个动词一个动词地讲。
   </Card>
 </Cards>

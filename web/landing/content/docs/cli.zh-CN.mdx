@@ -1,13 +1,13 @@
 ---
 title: 命令行工具
-description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio sessions 编排 API。
+description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: 9a5038116786d31bb481f0fa23182d7b019551edc463e32b41a2d78350711744
-  generated_at: 2026-10-17
+  source_hash: bab8b7badd494c930ab1b4a200264e58488401d825f6b56c07c20edaa5d6feb1
+  generated_at: 2026-10-26
 ---
 
-`termio` 是这个应用在 shell 一侧的入口：它打开项目，而通过 `termio sessions`，它就是
+`termio` 是这个应用在 shell 一侧的入口：它打开项目，而通过 `termio session`，它就是
 一个 Agent 用来查看和驱动兄弟会话的编排 API。开关在
 [会话控制](/docs/session-control)。
 
@@ -25,7 +25,7 @@ termio ~/code/myapp    # 打开指定文件夹
 
 ## 编排模型
 
-`termio sessions` 这一族命令是 Termio 的编排 API：它让一个 Agent——或你自己的脚本——看见并
+`termio session` 这一族命令是 Termio 的编排 API：它让一个 Agent——或你自己的脚本——看见并
 指挥同一个项目里的同伴会话。在动词参考之前，先说下面一切都遵循的设计规则：
 
 - **默认按项目限定作用域。** 每条命令都会把调用方解析到它自己的项目（通过 PTY 携带的会话
@@ -46,22 +46,24 @@ termio ~/code/myapp    # 打开指定文件夹
 
 | 命令 | 作用 |
 | --- | --- |
-| `termio sessions list` | 列出本项目里的会话及其实时状态。 |
-| `termio sessions watch` | 阻塞并按行流式输出每次状态变化——轮询 `list` 的推送式替代。 |
-| `termio sessions spawn "<prompt>"` | 用这段提示启动一个新的 Agent 会话；立即返回它的会话链接。 |
-| `termio sessions run "<command>"` | 启动一个新的普通终端会话并输入那条 shell 命令——开发服务器、跑测试——在一个可见窗格里，不涉及 LLM。 |
-| `termio sessions send <link> "<text>"` | 往已有会话里输入文本，并用一次真实的回车提交——可以是驱动它的提示，也可以是回答权限确认的选项（`"1"`、`"yes"`）。 |
-| `termio sessions read <link>` | 打印会话当前的屏幕内容而不聚焦它（`--lines N` 只取尾部）——这是 `run` 会话的结果通道。 |
-| `termio sessions close <link>` | 关闭一个或多个会话标签。 |
-| `termio sessions focus <link>` | 在应用里把某个会话带到最前。 |
+| `termio session list` | 列出本项目里的会话及其实时状态。 |
+| `termio session watch` | 阻塞并按行流式输出每次状态变化——轮询 `list` 的推送式替代。 |
+| `termio session spawn "<prompt>"` | 用这段提示启动一个新的 Agent 会话；立即返回它的会话链接。 |
+| `termio session run "<command>"` | 启动一个新的普通终端会话并输入那条 shell 命令——开发服务器、跑测试——在一个可见窗格里，不涉及 LLM。 |
+| `termio session send <link> "<text>"` | 往已有会话里输入文本，并用一次真实的回车提交——可以是驱动它的提示，也可以是回答权限确认的选项（`"1"`、`"yes"`）。 |
+| `termio session read <link>` | 打印会话当前的屏幕内容而不聚焦它（`--lines N` 只取尾部）——这是 `run` 会话的结果通道。 |
+| `termio session close <link>` | 关闭一个或多个会话，其中的程序随之结束。 |
+| `termio session focus <link>` | 在应用里把某个会话带到最前。 |
+| `termio session create -- <program>` | 在本机的 Termio server 上启动一个没有任何应用窗口显示的会话，并打印它的 id。 |
+| `termio session attach <link>` | 把当前终端接入一个会话。Ctrl-\ 断开，会话继续运行。 |
 
-`<link>` 就是 `list` 打印的 `termio://session/<uuid>` 地址（裸 id、唯一 id 前缀或会话标题
-同样可用）。命令会自动限定在当前项目里，而 `termio sessions <verb> --help` 会为任意单个
-动词打印针对性的帮助。
+`<link>` 就是 `list` 打印的 `termio://session/<uuid>` 地址（裸 id、唯一 id 前缀、会话标题
+或会话名同样可用）。命令会自动限定在当前项目里，而 `termio session <verb> --help` 会为任意
+单个动词打印针对性的帮助。`ls` 是 `list` 的简写，`sessions` 是 `session` 的旧名，两者都仍然可用。
 
 <DocsImage
   src="/screenshots/docs/18-sessions-list.png?v=20261017"
-  alt="termio sessions list 命令在 Codex 和 Claude Code 下方列出八个项目会话"
+  alt="termio session list 命令在 Codex 和 Claude Code 下方列出八个项目会话"
   width={2584}
   height={1714}
 />
@@ -76,6 +78,14 @@ termio ~/code/myapp    # 打开指定文件夹
 `spawn` 在会话存在的那一刻就返回：回复里带着新会话的链接，而提示本身会在 Agent 启动完成后
 输入进去。加 `--agent <id>`（例如 `codex`、`grok`、`pi`）来选择 Agent；默认与调用方同类。
 
+`--direction right` 或 `--direction down` 把新窗格放在你的窗格右边或下方。`--ratio` 是它在
+分割里所占的比例：`--direction down --ratio 0.25` 就是你窗格下方的一条窄带。写明的比例在之后的
+派生中保持不变；没写比例的窗格平分它们所在的那一列。`run` 接受同样的两个参数。
+
+是否就绪是看屏幕判断的。一个停在启动提示上的 Agent（比如信任提示或首次运行说明）看起来已经
+就绪，会把你的提示当成对那个提示的回答。回复无法知道这件事。此时 `list --json` 会把这个会话
+标记为 `prompt_undelivered`：在等待回复之前先查一下，然后用 `send` 把提示再发一次。
+
 ## 运行普通命令
 
 队伍里并非什么都是 Agent。`run` 用一条 shell 命令启动一个*终端*会话——开发服务器、测试
@@ -84,9 +94,28 @@ watcher、构建——放在一个你能看、也能接手的可见窗格里；�
 对话记录。
 
 ```bash
-termio sessions run "pnpm test"
-termio sessions read 1a2b3c4d --lines 40
+termio session run "pnpm test"
+termio session read 1a2b3c4d --lines 40
 ```
+
+## 按键
+
+`send` 输入文本后会按一次回车。有两个参数可以改变这一点：
+
+- `--no-enter` 只输入文本，不按回车：信任提示要等的就是那个单独的 `t`。
+- `--key <name>` 在文本之后按下一个具名按键，按给出的顺序，并且不再按回车；需要回车时
+  加上 `--key enter`。`--key escape` 退出菜单，`--key up --key enter` 重跑上一条。
+
+请用 `--key`，不要自己写转义字节。一个键的字节取决于程序要求的模式：上箭头在普通模式下是
+`ESC [ A`，在应用模式下是 `ESC O A`，所以只有终端自己的按键编码器能编对。未知的键名会报错，
+绝不会被当成文本。
+
+键名沿用 kitty 和 tmux 的写法，两种拼法都接受：`enter`、`escape`、`tab`、`space`、
+`backspace`、`delete`、`insert`、`up`、`down`、`left`、`right`、`home`、`end`、`pageup`、
+`pagedown`、`f1`–`f12`，以及单个字符；组合键用 `ctrl-`/`c-` 或 `shift-`/`s-` 前缀
+（`ctrl-c`、`c-c`、`shift-tab`）。Ctrl 和 Shift 是程序能看到的修饰键。macOS 把 Option 用于
+输入字符、把 Command 用于应用本身，所以这两类组合键会被拒绝。Meta 组合键就是先按 Escape
+再按那个键：`--key escape --key b`。
 
 ## 等待结果：`--wait`
 
@@ -95,8 +124,8 @@ termio sessions read 1a2b3c4d --lines 40
 1000–600000）：
 
 ```bash
-termio sessions send termio://session/ab12cd34-9f2e-4c31-b8d7-3e5a12c90f44 "run the tests" --wait
-termio sessions spawn "summarize the failing CI job" --wait --timeout 120000
+termio session send termio://session/ab12cd34-9f2e-4c31-b8d7-3e5a12c90f44 "run the tests" --wait
+termio session spawn "summarize the failing CI job" --wait --timeout 120000
 ```
 
 调用会阻塞到这一轮尘埃落定——会话被观察到处于 `working`，随后离开该状态——回复里带着最终的
@@ -138,11 +167,50 @@ termio sessions spawn "summarize the failing CI job" --wait --timeout 120000
 - **退出码。** Ctrl-C 之后是 `0`（监督的正常结束），流从应用侧关闭时是 `2`——「我选择停止」
   和「Termio 不见了」是两种不同的结果。
 
+## 没有应用时的会话
+
+每个会话都运行在 [Termio server](/docs/server) 上，应用只是看到它的一种方式。所以
+`termio session` 完全不依赖应用：
+
+- 应用在运行时，命令作用于你所在项目的会话，如上文所述。项目范围和会话控制开关照常生效，
+  只有一个例外：对应用打开的会话执行 `read`，直接由 Termio server 回答。
+- 没有应用在运行时，所有命令都交给 Termio server。`list` 列出这台设备上的全部会话，`run`
+  在那里新开一个 shell 会话并把命令输入进去。只要没有别的会话同名，会话名也可以当作地址。
+
+即使应用在运行，`list --all` 也会列出这台设备上的全部会话。`create` 和 `attach` 总是作用于
+server：
+
+```bash
+termio session create --name build -- cargo watch -x test
+termio session attach build          # Ctrl-\ 断开
+termio session ls --all
+```
+
+应用运行时，`send`、`read` 和 `close` 只有在应用把 `create` 建的会话显示在你的项目里时才能找到它。
+这时 `send` 要用 `termio session ls` 给出的链接：单写一个名字会被当成提示词。
+
+只有应用才有的：`spawn`、`watch`、`focus`、窗格摆放、`--key` 和 `--wait`。需要其中之一的命令
+会直接说明。
+
+## 另一台设备：`-H`
+
+`-H <host>`（`--host`）通过你自己的 SSH、用那台设备自己的 `termio`，在另一台设备上运行任意
+命令。主机是 `~/.ssh/config` 里的别名，或者 `user@host`。`-H` 写在命令之前。
+
+```bash
+termio -H mybox session ls
+termio -H mybox session attach api
+termio -H mybox server deploy        # 先在那边安装或更新 server
+```
+
+`server deploy` 是唯一在本地运行的命令，因为正是它把构建放到那台设备上。其他命令都在那边
+运行，所以那台设备用它自己的构建来回答。参见 [远程主机](/docs/remote-hosts)。
+
 ## 被派生的会话知道谁派生了它
 
 当一个 Termio 会话派生另一个时，送达的提示会以一小段来源说明开头：它写明调用方的链接，并且
 只允许一条回传通道——任务中途的一个问题，或一行完成提示，通过
-`termio sessions send <caller-link> …` 发送。除此之外什么都不走这条路：没有对话，也不能把
+`termio session send <caller-link> …` 发送。除此之外什么都不走这条路：没有对话，也不能把
 任务反向委派回去。结果仍然以对话记录为事实——监督者去读工人的对话记录，`watch` 作为兜底。
 从普通 shell（不在任何 Termio 会话里）发起的 `spawn` 不会带这段说明。
 
@@ -154,7 +222,7 @@ termio sessions spawn "summarize the failing CI job" --wait --timeout 120000
 会话的：
 
 ```sh
-termio sessions send <session> -- --force
+termio session send <session> -- --force
 ```
 
 一次性命令会在 15 秒的客户端超时后放弃，而不是在应用繁忙时一直挂着（可用
@@ -175,7 +243,8 @@ JSON 回复都带 `"schema_version": 1`；在同一个版本内字段只会*新�
 
 稳定的错误码：`disabled`、`no_scope`、`bad_op`、`bad_request`、`no_text`、`no_target`、
 `not_found`、`ambiguous`、`wrong_agent`、`bad_agent`、`no_agent`、`start_failed`、
-`not_live`——以及仅在 `--wait` 上出现的 `prompt_stalled`、`session_closed` 和 `agent_gone`。
+`not_live`、`needs_app`（只有应用才提供的参数，却在没有应用运行时使用）、`daemon`（Termio
+server 没有应答）——以及仅在 `--wait` 上出现的 `prompt_stalled`、`session_closed` 和 `agent_gone`。
 
 成功回复，按动词分（下表为简洁起见省略 `schema_version` 和 `"ok": true`）：
 
@@ -188,6 +257,9 @@ JSON 回复都带 `"schema_version": 1`；在同一个版本内字段只会*新�
 | `send`/`spawn`/`run` 加 `--wait` | `target`、`title`、`status`、`timed_out`、`created?`、`transcript?`、`cursor?`、`cursor_end?`、`prompt?` |
 | `close` | `closed`、`title` |
 | `focus` | `focused` |
+| `list --all`，以及没有应用时的 `list` | `sessions: [{id, name, cwd, command, pid, status, …}]`——Termio server 自己的行 |
+| `create` | `id` |
+| 没有应用时的 `run`、`send`、`read`、`close` | 同上，`target` 为会话的 id；对应用打开的会话执行 `read` 时保留它的链接 |
 
 两个等待型动词共用同一种回复结构（`--wait` 在任何地方都是同一个意思）：最终的 `status`，以及
 承载回应的对话记录行号区间 `cursor`..`cursor_end`。`prompt` 只在 `needs-you` 结果里出现——
@@ -211,6 +283,6 @@ JSON 回复都带 `"schema_version": 1`；在同一个版本内字段只会*新�
 <Callout type="tip">
   正是这套东西让一个 Agent 能把活交给另一个——在同伴会话里 `spawn` 一个任务，然后 `watch`
   （或轮询 `list`）直到它汇报 **完成**，再去读结果。同时盯着好几个时，
-  `termio sessions watch` 会在其中任何一个变成 **完成** 或 **需要你** 的那一刻打印出它的
+  `termio session watch` 会在其中任何一个变成 **完成** 或 **需要你** 的那一刻打印出它的
   链接——一个 Agent 监督一支队伍，全都在你自己的机器上。
 </Callout>

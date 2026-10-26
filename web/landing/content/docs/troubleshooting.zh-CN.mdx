@@ -3,7 +3,7 @@ title: 问题排查
 description: 真正会出问题的那些事——状态点不动、Agent 起不来、重启之后会话不见了、一台机器不应答了、手机连不上——每一条都给一个去看而不是去猜的办法。
 x-i18n:
   source_path: troubleshooting.mdx
-  source_hash: c277008d9315f44556aa53edfb76be12a4301fbee2ae9e32f69c3571a9be7360
+  source_hash: 9b7977d2714a1a0209fe8158bb1ee4aa2f5c1c7d2ac8c851065773606e7fc4bc
   generated_at: 2026-10-26
 ---
 
@@ -16,12 +16,12 @@ x-i18n:
 
 ```bash
 termio server status           # 这里装了什么，有没有 daemon 在应答？
-termio server list             # 它手上有哪些会话？
+termio session ls --all        # 它手上有哪些会话？
 termio server logs -n 200      # 没人看着的时候发生了什么
 ```
 
 尤其是 `termio server status`，它终结了相当一部分「它坏了」的报告：它会说装的是哪个二进制、哪个
-版本，以及 socket 上到底有没有东西在听。想问另一台机器，`termio server -H <box> status` 会通过
+版本，以及 socket 上到底有没有东西在听。想问另一台机器，`termio -H <box> server status` 会通过
 你自己的 SSH 配置去查那台机器上的 daemon。
 
 ## 状态点从来不变
@@ -64,7 +64,7 @@ Termio 会在启动时、以及在你把它切回前台时重新写入自己的 
 好。这一遍只扫本机：另一台机器上是什么样就一直是什么样，直到你去那边修——在那台机器的
 **Agent** 页面上按**重新安装 Hooks 和技能**。
 
-## `termio sessions` 说 `disabled`
+## `termio session` 说 `disabled`
 
 编排 API 是可选的。打开**设置 ▸ Agents ▸ 会话控制**，它同时会安装 `termio` 技能，让 Agent
 知道这些命令存在。
@@ -98,8 +98,8 @@ termio server service status
 
 ```bash
 ssh mybox true                 # SSH 本身通不通？
-termio server -H mybox ls       # 那边的 server 在应答吗？
-termio server -H mybox deploy     # 重装并校验一遍
+termio -H mybox session ls --all       # 那边的 server 在应答吗？
+termio -H mybox server deploy     # 重装并校验一遍
 ```
 
 `deploy` 是一次对账，所以对一台状态糟糕的机器跑它是安全的。密钥是到处都能用的那种凭据，

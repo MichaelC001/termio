@@ -1293,7 +1293,7 @@ impl StatusEngine {
     /// promotion holds off while the human is the one causing the changes.
     ///
     /// Fed from the daemon's own write path, which is the choke point *every*
-    /// input crosses — this Mac, a phone, and `termio sessions send` alike.
+    /// input crosses — this Mac, a phone, and `termio session send` alike.
     /// The Mac's version only ever saw its own keystrokes.
     pub fn note_user_input(&mut self, now: Instant) {
         if self
