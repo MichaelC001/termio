@@ -1219,8 +1219,9 @@ extension TermioStore {
     /// `asking` is false when the caller has already confirmed a larger
     /// removal, such as a workspace: then no dialog shows at all, and sessions
     /// the host placed in the project from elsewhere in the sidebar are left
-    /// running, with the host's project kept for them.
-    func removeProject(_ id: Project.ID, asking: Bool = true) {
+    /// running, with the host's project kept for them. `alsoEnding` lists the
+    /// other sessions that larger removal ends, so the host may end them here.
+    func removeProject(_ id: Project.ID, asking: Bool = true, alsoEnding: [Session] = []) {
         guard let project = projects.first(where: { $0.id == id }) else { return }
         let hostCheckouts = hostCheckouts(of: project)
         // The host ends every live session placed in its project, and some of
@@ -1251,7 +1252,7 @@ extension TermioStore {
 
         let removedSessions = projects[projectIndex].sessions
         let removedSessionIDs = Set(removedSessions.map(\.id))
-        let ending = removedSessions + others
+        let ending = removedSessions + others + alsoEnding
         for (device, path) in hostCheckouts {
             // Per machine: a name like `build` can exist on two boxes at once.
             let there = Set(sessions(authoredFor: device).map(\.id))
