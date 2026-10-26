@@ -432,6 +432,10 @@ impl ViewStore {
         guard.clone()
     }
 
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn thaw(&self) {
         self.frozen
             .store(false, std::sync::atomic::Ordering::SeqCst);

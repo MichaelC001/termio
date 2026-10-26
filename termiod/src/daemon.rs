@@ -260,7 +260,9 @@ impl Manager {
         // Only once every session is installed again: a create that slipped in
         // before this point would have been spawned into a daemon that was
         // still handing over. The handoff claim goes with it — this attempt is
-        // over, and the next one is allowed to try.
+        // over, and the next one is allowed to try. The view thaws first, so a
+        // create admitted by the line below can place its session.
+        self.view.thaw();
         self.inner.lock().unwrap().draining = false;
         lost
     }
@@ -1723,7 +1725,12 @@ async fn process_control(
             let unknown_project = place.project.as_ref().filter(|project| {
                 !manager.view.snapshot().projects.iter().any(|known| &&known.id == project)
             });
-            let response = if let Some(project) = unknown_project {
+            let response = if manager.view.is_frozen() {
+                // A session spawned now could not be placed: its pane would be
+                // missing for the life of this image, or lose its project in
+                // the next one.
+                error(seq, ErrorCode::Busy, format!("{:#}", crate::view::Frozen), true)
+            } else if let Some(project) = unknown_project {
                 // Refused before the spawn: a session nobody can find in the
                 // view is the state this whole design removes.
                 error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false)
