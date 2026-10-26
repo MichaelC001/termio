@@ -5,6 +5,7 @@ import GhosttyKit
 import GhosttyTerminal
 import GhosttyTheme
 import TermioShared
+import TermioStream
 
 /// Resolves an agent's on-disk conversation entries from the declarative store
 /// descriptor its manifest supplies (`ResumeSpec.Store`) — one probe for every agent,

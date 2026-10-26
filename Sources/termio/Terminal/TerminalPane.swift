@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import GhosttyTerminal
 import TermioShared
+import TermioStream
 
 extension Notification.Name {
     /// Posted by the toolbar's close button to dismiss whichever content overlay (file editor,

@@ -19,20 +19,20 @@ import os
 /// Two threads use it: the link's reader writes bytes and applies markers, and
 /// the renderer copies the screen out once a frame. One lock covers both, held
 /// by the renderer only for `ghostty_render_state_begin_update`.
-final class TermiodStreamTerminal: @unchecked Sendable {
-    enum Failure: Error, Equatable {
+public final class TermiodStreamTerminal: @unchecked Sendable {
+    public enum Failure: Error, Equatable {
         case engine(String, GhosttyResult)
     }
 
     /// The cell metrics termiod's sidecar resizes with (`resize_reflowing` in
     /// `termiod/vt/src/lib.rs`). The grid does not depend on them, but pixel
     /// sizes reach size reports and image placement, so both ends use one pair.
-    static let cellWidth: UInt32 = 8
-    static let cellHeight: UInt32 = 16
+    public static let cellWidth: UInt32 = 8
+    public static let cellHeight: UInt32 = 16
     /// The decoder's cap on unfinished input carried in a snapshot, matching
     /// the daemon's `CONTINUATION_LIMIT`. A snapshot taken mid-sequence carries
     /// the partial sequence; a larger one than this is refused, not truncated.
-    static let continuationLimit = 1 << 20
+    public static let continuationLimit = 1 << 20
 
     private let terminal: GhosttyTerminal
     /// The screen as the renderer last copied it. Owned here, not by the
@@ -44,7 +44,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// bytes, viewport moves and resizes. A hover reads it to skip copying
     /// the line under a pointer that has not moved.
     private var changesLocked: UInt64 = 0
-    var changes: UInt64 { locked { changesLocked } }
+    public var changes: UInt64 { locked { changesLocked } }
     /// Raised by the renderer before it asks for `lock`. NSLock is not fair, and
     /// a reader writing chunk after chunk re-takes it before a waiting renderer
     /// wakes: the phase 1 spike measured frames starved for up to 34 ms.
@@ -68,7 +68,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     private let dragEvent: GhosttySelectionGestureEvent
     private let releaseEvent: GhosttySelectionGestureEvent
 
-    enum Signal: Equatable {
+    public enum Signal: Equatable, Sendable {
         case title(String)
         case workingDirectory(String)
         case bell
@@ -84,13 +84,15 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     private var theme: Theme?
     /// How long a program may hold the screen before the hold is ended for
     /// it, as libghostty's own example does.
-    static let holdLimit: Duration = .seconds(1)
+    public static let holdLimit: Duration = .seconds(1)
 
     /// Decodes the daemon's native snapshot (`S` format 4) into a new terminal.
     /// An attach always builds a fresh one: nothing the previous terminal held
     /// may survive into the new stream.
-    init(
-        nativeSnapshot: Data, onReply: @escaping (Data) -> Void = { _ in },
+    /// `xtversion` is the name XTVERSION reports, the app's embedded Ghostty
+    /// (`ghostty <version>`); empty reports libghostty's own.
+    public init(
+        nativeSnapshot: Data, xtversion: String = "", onReply: @escaping (Data) -> Void = { _ in },
         onSignal: @escaping (Signal) -> Void = { _ in },
         readClipboard: @escaping () -> String? = { nil }
     ) throws {
@@ -128,6 +130,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         self.onReply = onReply
         self.onSignal = onSignal
         self.readClipboard = readClipboard
+        // Allocated once nothing before it can throw: a terminal that fails to
+        // decode never owns it.
+        let name = Array(xtversion.utf8)
+        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: max(1, name.count))
+        _ = buffer.initialize(from: name)
+        xtversionBytes = UnsafeBufferPointer(rebasing: buffer[0 ..< name.count])
         let userdata = Unmanaged.passUnretained(self).toOpaque()
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata), "ghostty_terminal_set(userdata)")
         let reply: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
@@ -262,7 +270,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// libghostty-vt leaves to the embedder: a `file` or `kitty-shell-cwd` URL
     /// naming this machine. A shell on a box reached with ssh reports a path
     /// that does not exist here, and is ignored, as the embedded surface does.
-    static func workingDirectory(fromOSC7 reported: String, localHost: String) -> String? {
+    public static func workingDirectory(fromOSC7 reported: String, localHost: String) -> String? {
         let raw = reported.hasPrefix("kitty-shell-cwd://")
         guard raw || reported.hasPrefix("file://") else { return nil }
         let rest = reported.dropFirst(raw ? "kitty-shell-cwd://".count : "file://".count)
@@ -309,7 +317,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// The largest decoded PNG accepted, in RGBA bytes. termiod refuses past
     /// the same size (`DECODED_LIMIT` in `termiod/vt/src/kitty_png.rs`).
-    static let pngDecodedLimit = 10_000_000
+    public static let pngDecodedLimit = 10_000_000
 
     /// libghostty-vt decodes no PNG itself; it calls a process-wide hook. The
     /// decoded size decides how many cells a Kitty image covers and so where
@@ -337,12 +345,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
         let result = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, unsafeBitCast(hook, to: UnsafeRawPointer.self))
         if result != GHOSTTY_SUCCESS {
-            Log.termiod.error("PNG decoder not installed: \(result.rawValue, privacy: .public)")
+            StreamLog.logger.error("PNG decoder not installed: \(result.rawValue, privacy: .public)")
         }
     }()
 
     /// Straight (not premultiplied) RGBA at the size `pngHeader` accepted.
-    static func decodePNG(_ bytes: UnsafeRawBufferPointer) -> (width: UInt32, height: UInt32, pixels: [UInt8])? {
+    public static func decodePNG(_ bytes: UnsafeRawBufferPointer) -> (width: UInt32, height: UInt32, pixels: [UInt8])? {
         guard let (width, height) = pngHeader(bytes), let base = bytes.baseAddress else { return nil }
         let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: base), count: bytes.count, deallocator: .none)
         let pixels = pngPixels(data, width: Int(width), height: Int(height))
@@ -387,7 +395,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// matching CRC, up to an IEND with no body. Bytes after IEND are ignored.
     /// Neither dimension may be 0 or past 2^31 - 1, and the decoded RGBA may
     /// not pass `pngDecodedLimit`. Keep in step with `kitty_png::header`.
-    static func pngHeader(_ bytes: UnsafeRawBufferPointer) -> (UInt32, UInt32)? {
+    public static func pngHeader(_ bytes: UnsafeRawBufferPointer) -> (UInt32, UInt32)? {
         let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         guard bytes.count >= signature.count, bytes.prefix(signature.count).elementsEqual(signature) else { return nil }
         func word(_ at: Int) -> UInt32 {
@@ -436,6 +444,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     deinit {
+        UnsafeMutableBufferPointer(mutating: xtversionBytes).deallocate()
         ghostty_selection_gesture_event_free(pressEvent)
         ghostty_selection_gesture_event_free(dragEvent)
         ghostty_selection_gesture_event_free(releaseEvent)
@@ -465,8 +474,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             out.pointee = answer
             return true
         }
-        let version: GhosttyTerminalXtversionFn = { _, _ in
-            GhosttyString(ptr: TermiodStreamTerminal.xtversion.baseAddress, len: TermiodStreamTerminal.xtversion.count)
+        let version: GhosttyTerminalXtversionFn = { _, userdata in
+            guard let userdata else { return GhosttyString(ptr: nil, len: 0) }
+            let name = Unmanaged<TermiodStreamTerminal>.fromOpaque(userdata).takeUnretainedValue().xtversionBytes
+            return GhosttyString(ptr: name.baseAddress, len: name.count)
         }
         let size: GhosttyTerminalSizeFn = { terminal, _, out in
             guard let out else { return false }
@@ -491,16 +502,10 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, unsafeBitCast(scheme, to: UnsafeRawPointer.self)), "ghostty_terminal_set(color scheme)")
     }
 
-    /// "ghostty <version>", as the embedded surface answers XTVERSION. Allocated
-    /// once and never freed: the callback hands the engine this pointer.
-    nonisolated(unsafe) private static let xtversion: UnsafeBufferPointer<UInt8> = {
-        let bytes = Array("ghostty \(embeddedGhosttyVersion())".utf8)
-        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bytes.count)
-        _ = buffer.initialize(from: bytes)
-        return UnsafeBufferPointer(buffer)
-    }()
+    /// The XTVERSION name, owned here for as long as the engine may read it.
+    private let xtversionBytes: UnsafeBufferPointer<UInt8>
 
-    func write(_ bytes: Data) {
+    public func write(_ bytes: Data) {
         locked { writeLocked(bytes) }
         while rendererWaiting.withLock({ $0 }) { sched_yield() }
     }
@@ -519,7 +524,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// termiod's own limits, about a thousand lines, which are the daemon's
     /// memory budget per session and not what a pane should show. The line
     /// limit is removed so the byte limit alone decides, as in Ghostty.
-    func setScrollbackLimit(bytes: Int) throws {
+    public func setScrollbackLimit(bytes: Int) throws {
         try locked {
             var limit = max(0, bytes)
             try Self.check(ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &limit), "ghostty_terminal_set(scrollback bytes)")
@@ -527,7 +532,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func scrollbackRows() throws -> Int {
+    public func scrollbackRows() throws -> Int {
         try locked {
             var rows = 0
             try get(GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &rows)
@@ -538,7 +543,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The theme: libghostty resolves "default foreground" and palette indices
     /// against these, so a session drawn by two Macs follows each one's theme.
     /// A decoded snapshot carries none of the daemon's, which never sets any.
-    func setTheme(_ colors: Theme) throws {
+    public func setTheme(_ colors: Theme) throws {
         let report = try locked { () -> Data? in
             // A program that turned on color scheme reports (mode 2031) is told
             // when the appearance changes, as Ghostty tells it.
@@ -590,7 +595,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// scheme it is in now. A terminal decoded on reattach starts with no
     /// theme, so a change made while the pane was detached reaches the program
     /// only this way; a report repeating the current scheme does no harm.
-    func reportColorSchemeIfSubscribed() {
+    public func reportColorSchemeIfSubscribed() {
         let report = locked { () -> Data? in
             guard let theme, (try? mode(ghostty_mode_new(2031, false))) == true else { return nil }
             return Data((theme.dark ? "\u{1b}[?997;1n" : "\u{1b}[?997;2n").utf8)
@@ -598,8 +603,21 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         if let report { onReply(report) }
     }
 
-    struct Theme: Equatable {
-        static func == (left: Theme, right: Theme) -> Bool {
+    public struct Theme: Equatable {
+        public init(foreground: GhosttyColorRgb, background: GhosttyColorRgb, cursor: GhosttyColorRgb?, palette: [GhosttyColorRgb], cursorStyle: GhosttyTerminalCursorStyle, cursorBlink: Bool, cursorText: GhosttyColorRgb? = nil, minimumContrast: Double = 1, selectionBackground: GhosttyColorRgb? = nil, selectionForeground: GhosttyColorRgb? = nil, dark: Bool = false) {
+            self.dark = dark
+            self.foreground = foreground
+            self.background = background
+            self.cursor = cursor
+            self.palette = palette
+            self.cursorStyle = cursorStyle
+            self.cursorBlink = cursorBlink
+            self.cursorText = cursorText
+            self.minimumContrast = minimumContrast
+            self.selectionBackground = selectionBackground
+            self.selectionForeground = selectionForeground
+        }
+        public static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
             return left.dark == right.dark
                 && left.cursorStyle == right.cursorStyle && left.cursorBlink == right.cursorBlink
@@ -615,26 +633,26 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 && zip(left.palette, right.palette).allSatisfy(same)
         }
 
-        var foreground: GhosttyColorRgb
-        var background: GhosttyColorRgb
-        var cursor: GhosttyColorRgb?
+        public var foreground: GhosttyColorRgb
+        public var background: GhosttyColorRgb
+        public var cursor: GhosttyColorRgb?
         /// Exactly 256 entries.
-        var palette: [GhosttyColorRgb]
+        public var palette: [GhosttyColorRgb]
         /// The cursor settings, as the defaults a program's DECSCUSR can override.
-        var cursorStyle: GhosttyTerminalCursorStyle
-        var cursorBlink: Bool
+        public var cursorStyle: GhosttyTerminalCursorStyle
+        public var cursorBlink: Bool
         /// The color of a character under a block cursor; nil is the background.
-        var cursorText: GhosttyColorRgb? = nil
+        public var cursorText: GhosttyColorRgb? = nil
         /// The WCAG ratio a glyph keeps against its own background, 1 for none.
-        var minimumContrast: Double = 1
+        public var minimumContrast: Double = 1
         /// The theme's selection colors; nil is Ghostty's default, the
         /// default foreground behind the default background.
-        var selectionBackground: GhosttyColorRgb? = nil
-        var selectionForeground: GhosttyColorRgb? = nil
+        public var selectionBackground: GhosttyColorRgb? = nil
+        public var selectionForeground: GhosttyColorRgb? = nil
         /// The appearance this theme was picked for, which a program asking
         /// for the color scheme is told: Ghostty reports the window's
         /// appearance, and either slot in Settings may hold any theme.
-        var dark = false
+        public var dark = false
     }
 
     /// Runs `body` with the screen's render state, under the terminal lock so
@@ -644,19 +662,19 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// output (mode 2026): then it keeps the frame copied when the hold began,
     /// and a program that redraws hold after hold shows each finished frame in
     /// turn. A hold longer than `holdLimit` is ended for the program.
-    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
+    public func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
         try withFrame { state, theme, _ in try body(state, theme) }
     }
 
     /// The image storage as a frame sees it. The render state says where each
     /// image goes; only the pixels and the animation clock live in the
     /// terminal, so they are read here, under the frame's lock.
-    struct FrameImages {
+    public struct FrameImages {
         fileprivate let terminal: GhosttyTerminal
 
         /// An image's pixels as straight-alpha RGBA, with the generation they
         /// belong to, or nil while it has none.
-        func pixels(id: UInt32) -> ImagePixels? {
+        public func pixels(id: UInt32) -> ImagePixels? {
             guard let graphics = storage(), let image = ghostty_kitty_graphics_image(graphics, id) else { return nil }
             var width: UInt32 = 0
             var height: UInt32 = 0
@@ -698,16 +716,23 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    struct ImagePixels {
-        var width: Int
-        var height: Int
-        var channels: Int
-        var generation: UInt64
-        var bytes: Data
+    public struct ImagePixels {
+        public init(width: Int, height: Int, channels: Int, generation: UInt64, bytes: Data) {
+            self.width = width
+            self.height = height
+            self.channels = channels
+            self.generation = generation
+            self.bytes = bytes
+        }
+        public var width: Int
+        public var height: Int
+        public var channels: Int
+        public var generation: UInt64
+        public var bytes: Data
 
         /// Premultiplied RGBA, which the image shader filters without the
         /// colour of transparent pixels bleeding into the edges.
-        func rgba() -> [UInt8] {
+        public func rgba() -> [UInt8] {
             let count = width * height
             var rgba = [UInt8](repeating: 255, count: count * 4)
             bytes.withUnsafeBytes { raw in
@@ -731,7 +756,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?, FrameImages) throws -> Result) throws -> Result {
+    public func withFrame<Result>(_ body: (GhosttyRenderState, Theme?, FrameImages) throws -> Result) throws -> Result {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
@@ -776,7 +801,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// (mode 1007), which termiod encodes; otherwise it moves this view
     /// through scrollback. termiod decides again against its own modes and
     /// sends nothing for a turn that is scrollback there.
-    var wheelGoesToProgram: Bool {
+    public var wheelGoesToProgram: Bool {
         locked {
             var tracking = false
             _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
@@ -788,7 +813,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Whether the program asked for mouse reports, so a click is its.
-    var tracksMouse: Bool {
+    public var tracksMouse: Bool {
         locked {
             var tracking = false
             _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
@@ -797,7 +822,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// The grid's size in cells.
-    var grid: (rows: UInt16, cols: UInt16) {
+    public var grid: (rows: UInt16, cols: UInt16) {
         locked {
             var rows: UInt16 = 0
             var cols: UInt16 = 0
@@ -809,7 +834,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// Moves this view through scrollback by `rows`, negative up. Only the
     /// client's view moves; the session is untouched.
-    func scrollViewport(rows: Int) {
+    public func scrollViewport(rows: Int) {
         locked {
             var behavior = GhosttyTerminalScrollViewport()
             behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
@@ -821,7 +846,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// The active screen as plain text, one line per row, whatever part of
     /// scrollback the view shows: what `termio session read` reports.
-    func activeText() throws -> String {
+    public func activeText() throws -> String {
         try locked {
             var rows: UInt16 = 0
             var cols: UInt16 = 0
@@ -857,24 +882,35 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// Where the pointer is, for a selection: the viewport cell under it and
     /// its position in the pane, in pixels.
-    struct SelectionPoint: Equatable {
-        var column: UInt16
-        var row: UInt16
-        var x: Double
-        var y: Double
+    public struct SelectionPoint: Equatable {
+        public init(column: UInt16, row: UInt16, x: Double, y: Double) {
+            self.column = column
+            self.row = row
+            self.x = x
+            self.y = y
+        }
+        public var column: UInt16
+        public var row: UInt16
+        public var x: Double
+        public var y: Double
     }
 
     /// What a drag needs to tell which cell the pointer is over at the edges.
-    struct SelectionGeometry: Equatable {
-        var cellWidth: UInt32
-        var paddingLeft: UInt32
-        var screenHeight: UInt32
+    public struct SelectionGeometry: Equatable {
+        public init(cellWidth: UInt32, paddingLeft: UInt32, screenHeight: UInt32) {
+            self.cellWidth = cellWidth
+            self.paddingLeft = paddingLeft
+            self.screenHeight = screenHeight
+        }
+        public var cellWidth: UInt32
+        public var paddingLeft: UInt32
+        public var screenHeight: UInt32
     }
 
     /// A mouse press starting or extending a selection. `time` is monotonic
     /// nanoseconds, which double- and triple-click are told from; `interval`
     /// is the system's double-click interval.
-    func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64, distance: Double) {
+    public func pressSelection(at point: SelectionPoint, time: UInt64, interval: UInt64, distance: Double) {
         locked {
             guard var reference = viewportReference(point) else { return }
             var position = GhosttySurfacePosition(x: point.x, y: point.y)
@@ -894,7 +930,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func dragSelection(to point: SelectionPoint, geometry: SelectionGeometry, rectangle: Bool) {
+    public func dragSelection(to point: SelectionPoint, geometry: SelectionGeometry, rectangle: Bool) {
         locked {
             guard var reference = viewportReference(point) else { return }
             var position = GhosttySurfacePosition(x: point.x, y: point.y)
@@ -913,7 +949,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func releaseSelection(at point: SelectionPoint?) {
+    public func releaseSelection(at point: SelectionPoint?) {
         locked {
             if let point, var reference = viewportReference(point) {
                 _ = ghostty_selection_gesture_event_set(releaseEvent, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &reference)
@@ -936,7 +972,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func selectAll() {
+    public func selectAll() {
         locked {
             var selection = GhosttySelection()
             selection.size = MemoryLayout<GhosttySelection>.size
@@ -946,14 +982,14 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
-    func clearSelection() {
+    public func clearSelection() {
         locked {
             ghostty_selection_gesture_reset(gesture, terminal)
             _ = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
         }
     }
 
-    var hasSelection: Bool {
+    public var hasSelection: Bool {
         locked {
             var selection = GhosttySelection()
             selection.size = MemoryLayout<GhosttySelection>.size
@@ -964,7 +1000,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The selection as Ghostty copies it (`Screen.selectionString`): plain
     /// text, soft wraps joined, trailing whitespace trimmed. Nil when nothing
     /// is selected.
-    var selectedText: String? {
+    public var selectedText: String? {
         locked {
             var options = GhosttyTerminalSelectionFormatOptions()
             options.size = MemoryLayout<GhosttyTerminalSelectionFormatOptions>.size
@@ -1004,11 +1040,11 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Where Ghostty's scrolling bindings move the view.
-    enum ViewportMove: Equatable {
+    public enum ViewportMove: Equatable {
         case top, bottom, pageUp, pageDown, previousPrompt, nextPrompt
     }
 
-    func moveViewport(_ move: ViewportMove) {
+    public func moveViewport(_ move: ViewportMove) {
         locked {
             var rows: UInt16 = 0
             _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
@@ -1030,41 +1066,57 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// A link under the pointer: what it opens and the cells it covers, one
     /// range per row, since a long one wraps.
-    struct Link: Equatable {
-        struct Segment: Equatable {
+    public struct Link: Equatable {
+        public init(url: String, segments: [Segment]) {
+            self.url = url
+            self.segments = segments
+        }
+        public struct Segment: Equatable {
             var row: UInt16
             var columns: ClosedRange<UInt16>
         }
 
-        var url: String
-        var segments: [Segment]
+        public var url: String
+        public var segments: [Segment]
     }
 
     /// The text of the soft-wrapped line under a pointer, copied under `lock`,
     /// with the cell each UTF-16 unit came from (in screen rows), and where the
     /// viewport begins in screen rows. The match runs on it after the lock is
     /// released. A line longer than the copy budget is cut, and says so.
-    struct LineText: Equatable {
-        struct Cell: Equatable {
+    public struct LineText: Equatable {
+        public init(
+            text: String, cells: [Cell], pointer: Cell, viewportTop: UInt32, viewportRows: UInt16,
+            cutBefore: Bool = false, cutAfter: Bool = false
+        ) {
+            self.text = text
+            self.cells = cells
+            self.pointer = pointer
+            self.viewportTop = viewportTop
+            self.viewportRows = viewportRows
+            self.cutBefore = cutBefore
+            self.cutAfter = cutAfter
+        }
+        public struct Cell: Equatable {
             var row: UInt32
             var column: UInt16
         }
 
-        var text: String
-        var cells: [Cell]
-        var pointer: Cell
-        var viewportTop: UInt32
-        var viewportRows: UInt16
-        var cutBefore = false
-        var cutAfter = false
+        public var text: String
+        public var cells: [Cell]
+        public var pointer: Cell
+        public var viewportTop: UInt32
+        public var viewportRows: UInt16
+        public var cutBefore = false
+        public var cutAfter = false
     }
 
     /// How many cells either side of the pointer's row a wrapped line is
     /// followed for, into scrollback or below the view: a URL of a couple of
     /// thousand characters, at a cost that stays flat however wide the pane.
-    static let lineCellBudget = 1024
+    public static let lineCellBudget = 1024
 
-    enum Under: Equatable {
+    public enum Under: Equatable {
         case hyperlink(Link)
         case text(LineText)
     }
@@ -1072,7 +1124,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The link at a viewport cell, as Ghostty finds it (`Surface.linkAtPin`):
     /// an OSC 8 hyperlink first, then a URL or a path in the whole soft-wrapped
     /// line, followed past the edges of the view as Ghostty's `selectLine` is.
-    func link(at point: SelectionPoint) -> Link? {
+    public func link(at point: SelectionPoint) -> Link? {
         switch lineUnder(point) {
         case .hyperlink(let link): return link
         case .text(let line): return Self.link(in: line)
@@ -1082,8 +1134,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
     /// What is under a pointer: a hyperlink, or the text of its line to
     /// search. Only this runs under `lock`.
-    func lineUnder(_ point: SelectionPoint) -> Under? {
-        locked {
+    public func lineUnder(_ point: SelectionPoint) -> Under? {
+        locked { () -> Under? in
             var rows: UInt16 = 0
             var cols: UInt16 = 0
             var total = 0
@@ -1173,7 +1225,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// The link a line's text holds under its pointer, in viewport rows. A
     /// link that runs into a cut edge of the line is not offered: opening the
     /// part of it that was copied would open the wrong place.
-    static func link(in line: LineText) -> Link? {
+    public static func link(in line: LineText) -> Link? {
         guard let index = line.cells.firstIndex(of: line.pointer) else { return nil }
         for range in linkRanges(in: line.text, around: index) {
             let covered = line.cells[range.location ..< range.location + range.length]
@@ -1199,14 +1251,14 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// How far either side of the pointer paths are searched for. Ghostty's
     /// path patterns cost the square of what they search, so a pasted blob
     /// thousands of characters long is searched only near the pointer.
-    static let pathWindow = 256
+    public static let pathWindow = 256
 
     /// Ghostty's links in a text (`config/url.zig`), left to right, none
     /// overlapping: what its one pattern finds scanning from the start. URLs
     /// with a scheme are found over the whole text by `schemeURL`, which
     /// matches Ghostty's scheme branch in one pass; paths by Ghostty's own
     /// path branches, within `pathWindow` of `index`.
-    static func linkRanges(in text: String, around index: Int? = nil) -> [NSRange] {
+    public static func linkRanges(in text: String, around index: Int? = nil) -> [NSRange] {
         let units = Array(text.utf16)
         let window: Range<Int> = index.map { max(0, $0 - pathWindow) ..< min(units.count, $0 + pathWindow) }
             ?? 0 ..< units.count
@@ -1284,7 +1336,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// Ghostty's scheme branch, in one pass:
     /// `scheme(?:ipv6|chars+(?:\(\w*\)|\[\w*\])?)+(?<![,.])`. Its pattern says
     /// this with nested repetition, which ICU backtracks through exponentially.
-    static func schemeURL(in units: [UInt16], schemeAt scheme: NSRange) -> NSRange? {
+    public static func schemeURL(in units: [UInt16], schemeAt scheme: NSRange) -> NSRange? {
         let limit = units.count
         func ascii(_ character: Unicode.Scalar) -> UInt16 { UInt16(character.value) }
         /// The width in units of the `\w` character at `index`, or nil.
@@ -1407,7 +1459,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// becomes `\$\d{0,9}`; the dot lookaheads scan once, possessively, up to
     /// the first dot; and repetition no later step can use is possessive. Its
     /// scheme branch is `schemeURL`.
-    static let pathPattern: NSRegularExpression? = {
+    public static let pathPattern: NSRegularExpression? = {
         let pathCharacters = #"[\w\-.~:\/?#@!$&*+;=%]"#
         let noTrailingColon = #"(?<!:)"#
         let dottedLookahead = #"(?=[\w\-~:\/?#@!$&*+;=%]*+\.)"#
@@ -1426,13 +1478,13 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             return try NSRegularExpression(pattern: rooted + "|" + bare)
         } catch {
             // Only detected paths go; URLs and OSC 8 hyperlinks still work.
-            Log.termiod.error("path pattern does not compile: \(String(describing: error), privacy: .public)")
+            StreamLog.logger.error("path pattern does not compile: \(String(describing: error), privacy: .public)")
             return nil
         }
     }()
 
     /// Whether the view follows the live screen, rather than showing history.
-    var followsLiveScreen: Bool {
+    public var followsLiveScreen: Bool {
         locked {
             var active = true
             _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &active)
@@ -1441,12 +1493,12 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     }
 
     /// Back to the live screen, as a keystroke does in Ghostty.
-    func scrollViewportToBottom() {
+    public func scrollViewportToBottom() {
         locked { scrollToBottomLocked() }
     }
 
     /// The cursor's cell on the active screen.
-    var cursorPosition: (x: UInt16, y: UInt16)? {
+    public var cursorPosition: (x: UInt16, y: UInt16)? {
         locked {
             var x: UInt16 = 0
             var y: UInt16 = 0
@@ -1468,7 +1520,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// applied at this byte (`SidecarCommand::Resize` in `termiod/src/session.rs`).
     /// `reflow` is set when no shell held the terminal, and the screen rewraps;
     /// otherwise this is `resize_for_shell`.
-    func resize(rows: UInt16, cols: UInt16, reflow: Bool) throws {
+    public func resize(rows: UInt16, cols: UInt16, reflow: Bool) throws {
         try locked {
             changesLocked &+= 1
             if reflow {
@@ -1483,18 +1535,28 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// grid and its pixel size, the cursor, the active screen, and the screen
     /// serialised as VT with styles, modes, charsets and keyboard state. The
     /// parity test reads it against what termiod's VT recorded.
-    struct Screen: Equatable {
-        var rows: UInt16
-        var cols: UInt16
-        var widthPixels: UInt32
-        var heightPixels: UInt32
-        var cursorX: UInt16
-        var cursorY: UInt16
-        var alternate: Bool
-        var vt: Data
+    public struct Screen: Equatable {
+        public init(rows: UInt16, cols: UInt16, widthPixels: UInt32, heightPixels: UInt32, cursorX: UInt16, cursorY: UInt16, alternate: Bool, vt: Data) {
+            self.rows = rows
+            self.cols = cols
+            self.widthPixels = widthPixels
+            self.heightPixels = heightPixels
+            self.cursorX = cursorX
+            self.cursorY = cursorY
+            self.alternate = alternate
+            self.vt = vt
+        }
+        public var rows: UInt16
+        public var cols: UInt16
+        public var widthPixels: UInt32
+        public var heightPixels: UInt32
+        public var cursorX: UInt16
+        public var cursorY: UInt16
+        public var alternate: Bool
+        public var vt: Data
     }
 
-    func screen() throws -> Screen {
+    public func screen() throws -> Screen {
         try locked { try screenLocked() }
     }
 
@@ -1662,3 +1724,8 @@ final class TermiodStreamTerminal: @unchecked Sendable {
 
 /// `GHOSTTY_MODE_WRAPAROUND` is a function-like macro, which Swift does not import.
 private let GHOSTTY_MODE_WRAPAROUND_VALUE = ghostty_mode_new(7, false)
+
+/// This module's log, filed where the Mac's termiod lines go.
+enum StreamLog {
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "sh.termio.app", category: "termiod")
+}

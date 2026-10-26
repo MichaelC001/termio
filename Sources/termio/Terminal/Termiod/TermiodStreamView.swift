@@ -819,6 +819,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
 }
 
 import SwiftUI
+import TermioStream
 
 /// Mounts a `TermiodStreamView` for a pane whose link is on the `vt_stream`
 /// plane, in place of the embedded surface. Mounted only while the pane is on

@@ -51,6 +51,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "TermioShared", package: "Shared"),
+                .product(name: "TermioStream", package: "Shared"),
             ],
             path: "Sources/termio",
             // The vendored Highlightr copy ships its own README; it's documentation, not
@@ -108,6 +109,7 @@ let package = Package(
                 // The shared diff model the iOS reader parses with — pure logic,
                 // so it is tested here rather than in an Xcode-only test bundle.
                 .product(name: "TermioShared", package: "Shared"),
+                .product(name: "TermioStream", package: "Shared"),
             ],
             path: "Tests/termioTests",
             // The Markdown feature sheet is both the end-to-end fixture

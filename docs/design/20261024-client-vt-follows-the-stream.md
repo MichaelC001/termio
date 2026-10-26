@@ -256,8 +256,18 @@ Each phase ends at a gate. A failed gate stops the work.
    and a cursor report (`termiod/tests/vt_answers.rs`). **Mac (#804):** every
    attach offers `vt_answers`; the link drops the replies the app's surfaces
    make while termiod answers, and answers again after `vt_stale`.
-6. **iOS.** The phone's mirror is a live surface fed through the companion
-   bridge, so the marker must cross the bridge in order.
+6. **iOS.** The phone streams over its own termiod path (`TermiodSession`,
+   `docs/design/20260824-ios-as-device-client.md`), not the companion bridge:
+   `D` and `E` already share one channel there, so markers keep their order
+   with no new wire messages, and the bridge is due to be deleted
+   (`20260831-companion-second-protocol-retires.md`). The companion path stays
+   on keyframes until then. **Step one done (#807):** the terminal and the
+   renderer live in Shared's `TermioStream` module, which iOS can link.
+   **Deferred, on purpose:** a UIKit view to replace the package's
+   `UITerminalView` (about 3,200 lines: keyboard, input method, sticky
+   modifiers, key bar, scrolling, pinch zoom), and `TermiodSession` offering
+   `vt_stream`, `vt_input` and `vt_resume`. The Mac comes first; the phone keeps
+   the embedded surface and keyframes meanwhile.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
    stream with no snapshot.
 
