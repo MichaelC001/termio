@@ -182,7 +182,7 @@ enum RemotePairing {
                     try process.run()
                 } catch {
                     continuation.resume(throwing: Failure(
-                        message: localized("Could not run termiod: \(error.localizedDescription)")))
+                        message: localized("Could not run termio: \(error.localizedDescription)")))
                     return
                 }
                 let stdout = out.fileHandleForReading.readDataToEndOfFile()

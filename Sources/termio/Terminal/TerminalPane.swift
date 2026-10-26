@@ -196,29 +196,35 @@ struct TerminalPane: View {
                     .opacity(isVisible ? 1 : 0)
                     .allowsHitTesting(isVisible)
                 if let link = store.runtime(for: id).streamLink {
-                    // The stream view never letterboxes: it draws the session's
-                    // grid anchored top-left and declares what the pane holds.
-                    TermiodStreamPane(
-                        link: link,
-                        sessionID: id,
-                        appearance: store.streamAppearance(),
-                        colors: store.streamTheme(dark: colorScheme == .dark),
-                        isSelected: isSelected,
-                        isVisible: isVisible,
-                        copyOnSelect: settings.copyOnSelect,
-                        onViewport: { grid in store.reportViewport(grid, for: id) },
-                        onVisibility: { store.reportRendering($0, for: id) },
-                        onFocused: { selectFocusedSurface(id) }
-                    )
-                    // One view per link: a relaunch attaches a new one.
-                    .id(ObjectIdentifier(link))
-                    .frame(width: rect.width, height: rect.height)
-                    .background(paneBackground)
-                    .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
-                                                 topLeading: notch != nil))
-                    .position(x: rect.midX, y: rect.midY)
-                    .opacity(isVisible ? 1 : 0)
-                    .allowsHitTesting(isVisible)
+                    // Stays mounted while the view comes and goes, so the link
+                    // hears a hidden pane stop counting toward the session's size.
+                    StreamLinkReport(isVisible: isVisible, colors: store.streamTheme(dark: colorScheme == .dark),
+                                     link: link) { store.reportRendering($0, for: id) }
+                        .id(ObjectIdentifier(link))
+                    // Unlike the embedded surface, which owns its terminal and so
+                    // stays mounted at zero opacity, the stream view is mounted
+                    // only on screen: the terminal lives in the link, and a new
+                    // view at the same size declares a grid the link already holds.
+                    if isVisible {
+                        // The stream view never letterboxes: it draws the session's
+                        // grid anchored top-left and declares what the pane holds.
+                        TermiodStreamPane(
+                            link: link,
+                            sessionID: id,
+                            appearance: store.streamAppearance(),
+                            takesKeyboard: Self.terminalMayTakeKeyboard(id, store: store),
+                            copyOnSelect: settings.copyOnSelect,
+                            onViewport: { grid in store.reportViewport(grid, for: id) },
+                            onFocused: { selectFocusedSurface(id) }
+                        )
+                        // One view per link: a relaunch attaches a new one.
+                        .id(ObjectIdentifier(link))
+                        .frame(width: rect.width, height: rect.height)
+                        .background(paneBackground)
+                        .clipShape(PaneCard.bodyClip(leading: true, trailing: panel.frame == nil,
+                                                     topLeading: notch != nil))
+                        .position(x: rect.midX, y: rect.midY)
+                    }
                 } else {
                 SharedGridLetterbox(
                     runtime: store.runtime(for: id),
@@ -526,6 +532,12 @@ struct TerminalPane: View {
     /// windowed, and explicitly resign the previously focused surface before moving.
     private func requestTerminalFocus(for id: Session.ID, reason: TerminalFocusReason) {
         guard let session = store.session(id) else { return }
+        // A stream pane has no embedded view for the driver to find, and would
+        // be retried forever; its own view is focused directly instead.
+        if store.runtimes[id]?.streamLink != nil {
+            focusStreamPane(id, reason: reason)
+            return
+        }
         let state = store.surface(for: session)
         focusDriver.moveFocus(
             to: state,
@@ -533,21 +545,48 @@ struct TerminalPane: View {
             reason: reason,
             canFocus: { [weak store] in
                 guard let store else { return false }
-                // An open detail keeps the keyboard while it is on screen: in its panel, or
-                // maximized over the window, which shows it whether the panel is open or not.
-                let hasDetail = store.openFileURL != nil || store.openingRemoteFile != nil || store.openDiff != nil
-                let detailShown = hasDetail && (store.inspectorVisible || store.inspectorMaximized)
-                return store.selectedSessionID == id
-                    && store.visiblePaneIDs.contains(id)
-                    && !detailShown
-                    && store.paletteMode == nil
+                // A session that turned into a stream pane after this request
+                // has no embedded view left to find; stop retrying.
+                return store.runtimes[id]?.streamLink == nil
+                    && Self.terminalMayTakeKeyboard(id, store: store)
             }
         )
     }
 
+    /// The driver's rule for a stream pane: a repair takes the keyboard only from
+    /// nothing or the window itself, never from a field; the other reasons
+    /// replace whatever holds it. A pane not mounted yet takes it when its view
+    /// enters the window.
+    private func focusStreamPane(_ id: Session.ID, reason: TerminalFocusReason) {
+        guard Self.terminalMayTakeKeyboard(id, store: store),
+              let root = AppDelegate.mainWindow?.contentView,
+              let view = streamView(for: id, under: root),
+              let window = view.window
+        else { return }
+        let current = window.firstResponder
+        guard current !== view else { return }
+        if !reason.replacesCurrentResponder, current != nil, current !== window { return }
+        window.makeFirstResponder(view)
+    }
+
+    /// Whether the session's terminal may take the keyboard now: the embedded
+    /// surface's focus driver and the stream view ask the same question.
+    static func terminalMayTakeKeyboard(_ id: Session.ID, store: TermioStore) -> Bool {
+        // An open detail keeps the keyboard while it is on screen: in its panel, or
+        // maximized over the window, which shows it whether the panel is open or not.
+        let hasDetail = store.openFileURL != nil || store.openingRemoteFile != nil || store.openDiff != nil
+        let detailShown = hasDetail && (store.inspectorVisible || store.inspectorMaximized)
+        return store.selectedSessionID == id
+            && store.visiblePaneIDs.contains(id)
+            && !detailShown
+            && store.paletteMode == nil
+    }
+
     private func injectTerminalFocusOrphan() {
+        // The injector drives the embedded surface's view; a stream pane has none.
         guard AppChannel.isDev,
               let id = store.selectedSessionID,
+              store.runtimes[id]?.streamLink == nil,
               let session = store.session(id) else { return }
         let state = store.surface(for: session)
         focusDriver.injectOrphan(
@@ -812,6 +851,27 @@ private struct SharedGridLetterbox<Content: View>: View {
     }
 }
 
+/// Keeps a stream pane's link told whether the pane is on screen and which
+/// colors to use, from a view that stays mounted while the pane's own view is
+/// mounted only when it shows: a hidden pane's terminal still answers color
+/// queries from a program running in it.
+private struct StreamLinkReport: View {
+    let isVisible: Bool
+    let colors: TermiodStreamTerminal.Theme?
+    let link: TermiodSessionLink
+    let report: (Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .onChange(of: isVisible, initial: true) { _, visible in report(visible) }
+            .onChange(of: colors, initial: true) { _, colors in
+                if let colors { link.setStreamTheme(colors) }
+            }
+    }
+}
+
 /// One focus state per terminal, matching Ghostty's SurfaceView model. The Boolean
 /// binding is retained only to report a clicked split pane back to the store; moving
 /// focus is handled from AppKit by TerminalFocusDriver, never by waiting for this value
@@ -894,6 +954,16 @@ private func applySurfaceVisibility(_ visible: Bool, for state: TerminalViewStat
           let view = terminalView(matching: state, under: root)
     else { return }
     view.setSurfaceVisible(visible)
+}
+
+/// The stream view mounted for a session, if its pane is on screen.
+@MainActor
+private func streamView(for id: Session.ID, under root: NSView) -> TermiodStreamView? {
+    if let view = root as? TermiodStreamView, view.sessionID == id { return view }
+    for child in root.subviews {
+        if let match = streamView(for: id, under: child) { return match }
+    }
+    return nil
 }
 
 /// The AppKit terminal view a `TerminalViewState` is mounted in. SwiftUI hands the

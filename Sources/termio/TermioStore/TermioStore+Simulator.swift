@@ -391,9 +391,11 @@ extension TermioStore {
                 }
                 let label = string(element["label"])
                 let value = string(element["value"])
+                // The helper sends an empty field's placeholder in place of its value.
+                let placeholder = value == nil ? string(element["placeholder"]) : nil
                 let identifier = string(element["identifier"])
                 let children = element["children"] as? [[String: Any]] ?? []
-                guard keepSilent || label != nil || value != nil || identifier != nil else {
+                guard keepSilent || label != nil || value != nil || placeholder != nil || identifier != nil else {
                     walk(children, depth: depth, level: level + 1, keepSilent: false)
                     continue
                 }
@@ -401,6 +403,7 @@ extension TermioStore {
                 line += string(element["type"]) ?? "Element"
                 if let label { line += " \"\(label)\"" }
                 if let value, value != label { line += " = \"\(value)\"" }
+                if let placeholder { line += " placeholder \"\(placeholder)\"" }
                 if let identifier { line += " #\(identifier)" }
                 if let frame = element["frame"] as? [String: Any],
                    let x = frame["x"] as? NSNumber, let y = frame["y"] as? NSNumber,

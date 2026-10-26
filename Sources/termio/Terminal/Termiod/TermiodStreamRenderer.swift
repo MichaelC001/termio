@@ -32,20 +32,20 @@ final class TermiodStreamRenderer {
         case metal(String)
     }
 
+    /// Made once for every pane: a pane that built its own paid for a shader
+    /// compile and a 64 MB atlas, and a tab switch that mounts one should not.
+    private static let shared = Result { try TermiodStreamRenderResources() }
+
     /// Whether a renderer can be made on this Mac at all: a Metal device and
     /// shaders that compile. Asked once, before a link offers the plane.
-    static let isAvailable: Bool = {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let library = try? device.makeLibrary(source: streamShaderSource, options: nil)
-        else { return false }
-        return (try? pipeline(device, library, "glyph_vertex", "glyph_fragment")) != nil
-    }()
+    static var isAvailable: Bool {
+        (try? shared.get()) != nil
+    }
 
-    let device: MTLDevice
-    private let queue: MTLCommandQueue
-    private let rectanglePipeline: MTLRenderPipelineState
-    private let glyphPipeline: MTLRenderPipelineState
+    private let resources: TermiodStreamRenderResources
+    var device: MTLDevice { resources.device }
     private let builder: TermiodStreamFrameBuilder
+    private let images: TermiodStreamImages
     private(set) var atlas: TermiodGlyphAtlas
     private(set) var appearance: Appearance
     private var scale: CGFloat
@@ -54,20 +54,12 @@ final class TermiodStreamRenderer {
     private var glyphs: [TermiodStreamGlyph] = []
 
     init(appearance: Appearance, scale: CGFloat) throws {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
-            throw Failure.metal("no Metal device")
-        }
-        self.device = device
-        self.queue = queue
+        resources = try Self.shared.get()
         self.appearance = appearance
         self.scale = scale
-        // Compiled from source at runtime: a SwiftPM resource bundle is the one
-        // thing termio must never ship (AGENTS.md, "Dependencies").
-        let library = try device.makeLibrary(source: streamShaderSource, options: nil)
-        rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
-        glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
         builder = try TermiodStreamFrameBuilder()
-        atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+        images = try TermiodStreamImages()
+        atlas = try resources.atlas(appearance: appearance, scale: scale)
     }
 
     /// One cell in points, which is what a pane measures its viewport with.
@@ -89,7 +81,7 @@ final class TermiodStreamRenderer {
         self.appearance = appearance
         self.scale = scale
         if fontChanged {
-            atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+            atlas = try resources.atlas(appearance: appearance, scale: scale)
             builder.invalidate()
         }
         return fontChanged || paddingChanged
@@ -98,9 +90,10 @@ final class TermiodStreamRenderer {
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
     func draw(
-        _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil
+        _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
+        link: TermiodStreamTerminal.Link? = nil
     ) throws {
-        let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit)
+        let changed = try prepare(terminal, focused: focused, force: force, preedit: preedit, link: link)
         guard changed || force else { return }
         // A frame the GPU cannot take yet is dropped, not queued: the next
         // tick draws the newer screen anyway.
@@ -108,7 +101,7 @@ final class TermiodStreamRenderer {
             builder.invalidate()
             return
         }
-        guard let drawable = layer.nextDrawable(), let buffer = queue.makeCommandBuffer() else {
+        guard let drawable = layer.nextDrawable(), let buffer = resources.queue.makeCommandBuffer() else {
             inFlight.signal()
             builder.invalidate()
             return
@@ -128,14 +121,14 @@ final class TermiodStreamRenderer {
     func image(
         of terminal: TermiodStreamTerminal, width: Int, height: Int, focused: Bool = true, preedit: String? = nil
     ) throws -> CGImage {
-        _ = try prepare(terminal, focused: focused, force: true, preedit: preedit)
+        _ = try prepare(terminal, focused: focused, force: true, preedit: preedit, link: nil)
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: descriptor),
-              let buffer = queue.makeCommandBuffer(),
+              let buffer = resources.queue.makeCommandBuffer(),
               encode(into: buffer, texture: texture)
         else { throw Failure.metal("offscreen frame") }
         buffer.commit()
@@ -154,15 +147,23 @@ final class TermiodStreamRenderer {
         return image
     }
 
-    private func prepare(_ terminal: TermiodStreamTerminal, focused: Bool, force: Bool, preedit: String?) throws -> Bool {
+    private func prepare(
+        _ terminal: TermiodStreamTerminal, focused: Bool, force: Bool, preedit: String?, link: TermiodStreamTerminal.Link?
+    ) throws -> Bool {
         // A forced frame may follow a terminal swap, after which no cached row
         // describes the screen.
         if force { builder.invalidate() }
         // Ghostty's blink: 600 ms on, 600 ms off.
         let blinkOn = Int(Date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
-        return try terminal.withFrame { state, theme in
-            try builder.build(from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit)
+        let changed = try terminal.withFrame { state, theme, storage in
+            let text = try builder.build(
+                from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit, link: link
+            )
+            let pictures = images.read(state, storage: storage, force: force)
+            return text || pictures
         }
+        images.upload(device: device)
+        return changed
     }
 
     private func encode(into buffer: MTLCommandBuffer, texture: MTLTexture) -> Bool {
@@ -185,16 +186,32 @@ final class TermiodStreamRenderer {
             origin: SIMD2(Float(appearance.paddingX * scale).rounded(), Float(appearance.paddingY * scale).rounded())
         )
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<TermiodStreamUniforms>.stride, index: 1)
+        // Images are drawn in Ghostty's three layers around the text, at the
+        // renderer's cell size: the terminal places them on cells of
+        // `TermiodStreamTerminal.cellWidth` by `cellHeight` pixels, the pair
+        // termiod's VT shares, so a program's layout is the same on both.
+        let images = self.images
+        let layout = TermiodStreamImages.Layout(
+            origin: uniforms.origin, cell: uniforms.cell,
+            textureWidth: texture.width, textureHeight: texture.height
+        )
+        func drawImages(_ layer: GhosttyRenderStateImageLayer) {
+            images.encode(layer, layout: layout, encoder: encoder, pipeline: resources.imagePipeline)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<TermiodStreamUniforms>.stride, index: 1)
+        }
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND)
         // Rectangles carry their own pass order: backgrounds and the block
         // cursor go under the text, decorations and the thin cursors over it.
         drawRectangles(rectangles.filter { !$0.overText }, encoder: encoder)
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT)
         if !glyphs.isEmpty,
            let data = device.makeBuffer(bytes: glyphs, length: glyphs.count * MemoryLayout<TermiodStreamGlyph>.stride) {
-            encoder.setRenderPipelineState(glyphPipeline)
+            encoder.setRenderPipelineState(resources.glyphPipeline)
             encoder.setVertexBuffer(data, offset: 0, index: 0)
             encoder.setFragmentTexture(atlas.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: glyphs.count)
         }
+        drawImages(GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT)
         drawRectangles(rectangles.filter(\.overText), encoder: encoder)
         encoder.endEncoding()
         return true
@@ -204,9 +221,69 @@ final class TermiodStreamRenderer {
         guard !items.isEmpty,
               let data = device.makeBuffer(bytes: items, length: items.count * MemoryLayout<TermiodStreamRectangle>.stride)
         else { return }
-        encoder.setRenderPipelineState(rectanglePipeline)
+        encoder.setRenderPipelineState(resources.rectanglePipeline)
         encoder.setVertexBuffer(data, offset: 0, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: items.count)
+    }
+}
+
+/// What every stream pane draws with: one device, queue and set of
+/// pipelines, and one glyph atlas per font and scale. A pane keeps only its
+/// frame builder, its terminal's images and its own in-flight limit.
+@MainActor
+final class TermiodStreamRenderResources {
+    private struct AtlasKey: Hashable {
+        var fontFamily: String
+        var fallbackFamilies: [String]
+        var fontSize: CGFloat
+        var scale: CGFloat
+    }
+
+    private struct WeakAtlas {
+        weak var atlas: TermiodGlyphAtlas?
+    }
+
+    let device: MTLDevice
+    let queue: MTLCommandQueue
+    let rectanglePipeline: MTLRenderPipelineState
+    let glyphPipeline: MTLRenderPipelineState
+    let imagePipeline: MTLRenderPipelineState
+    /// Weak, so an atlas goes when the last pane using that font closes or
+    /// moves on to another one.
+    private var atlases: [AtlasKey: WeakAtlas] = [:]
+    /// The atlas handed out last, held strongly: a pane is mounted only while
+    /// it shows, so switching to a session that is not a stream pane would
+    /// otherwise drop the atlas and rasterize every glyph again on the way back.
+    private var current: TermiodGlyphAtlas?
+
+    init() throws {
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
+            throw TermiodStreamRenderer.Failure.metal("no Metal device")
+        }
+        self.device = device
+        self.queue = queue
+        // Compiled from source at runtime: a SwiftPM resource bundle is the one
+        // thing termio must never ship (AGENTS.md, "Dependencies").
+        let library = try device.makeLibrary(source: streamShaderSource, options: nil)
+        rectanglePipeline = try Self.pipeline(device, library, "rectangle_vertex", "rectangle_fragment")
+        glyphPipeline = try Self.pipeline(device, library, "glyph_vertex", "glyph_fragment")
+        imagePipeline = try Self.pipeline(device, library, "image_vertex", "image_fragment")
+    }
+
+    func atlas(appearance: TermiodStreamRenderer.Appearance, scale: CGFloat) throws -> TermiodGlyphAtlas {
+        let key = AtlasKey(
+            fontFamily: appearance.fontFamily, fallbackFamilies: appearance.fallbackFamilies,
+            fontSize: appearance.fontSize, scale: scale
+        )
+        if let atlas = atlases[key]?.atlas {
+            current = atlas
+            return atlas
+        }
+        atlases = atlases.filter { $0.value.atlas != nil }
+        let atlas = try TermiodGlyphAtlas(device: device, appearance: appearance, scale: scale)
+        atlases[key] = WeakAtlas(atlas: atlas)
+        current = atlas
+        return atlas
     }
 
     private static func pipeline(
@@ -215,7 +292,9 @@ final class TermiodStreamRenderer {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: vertex)
         descriptor.fragmentFunction = library.makeFunction(name: fragment)
-        guard let attachment = descriptor.colorAttachments[0] else { throw Failure.metal("no color attachment") }
+        guard let attachment = descriptor.colorAttachments[0] else {
+            throw TermiodStreamRenderer.Failure.metal("no color attachment")
+        }
         attachment.pixelFormat = .bgra8Unorm
         attachment.isBlendingEnabled = true
         // Every fragment is premultiplied.
@@ -303,6 +382,23 @@ vertex VertexOut glyph_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
     return out;
 }
 
+struct Image { float2 origin; float2 size; float2 uvOrigin; float2 uvSize; };
+struct ImageOut { float4 position [[position]]; float2 uv; };
+
+vertex ImageOut image_vertex(uint vid [[vertex_id]], constant Image& image [[buffer(0)]],
+                             constant Uniforms& u [[buffer(1)]]) {
+    ImageOut out;
+    out.position = clip(image.origin + corners[vid] * image.size, u.viewport);
+    out.uv = image.uvOrigin + corners[vid] * image.uvSize;
+    return out;
+}
+
+fragment float4 image_fragment(ImageOut in [[stage_in]], texture2d<float> pixels [[texture(0)]]) {
+    constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);
+    // Uploaded premultiplied.
+    return pixels.sample(s, in.uv);
+}
+
 fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
     constexpr sampler s(coord::normalized, filter::nearest);
     float4 texel = atlas.sample(s, in.uv);
@@ -311,6 +407,218 @@ fragment float4 glyph_fragment(VertexOut in [[stage_in]], texture2d<float> atlas
     return float4(in.color.rgb * coverage, coverage);
 }
 """
+
+/// The Kitty images on screen: the placements the render state lists, and a
+/// texture for each image generation they show. The list is read again only
+/// when its generation moves, and pixels only for a generation not yet held.
+final class TermiodStreamImages {
+    struct Placement: Equatable {
+        var id: UInt32
+        var generation: UInt64
+        var layer: GhosttyRenderStateImageLayer
+        var z: Int32
+        var column: Int32
+        var row: Int32
+        var offsetX: UInt32
+        var offsetY: UInt32
+        var width: UInt32
+        var height: UInt32
+        var sourceX: UInt32
+        var sourceY: UInt32
+        var sourceWidth: UInt32
+        var sourceHeight: UInt32
+    }
+
+    struct Key: Hashable {
+        var id: UInt32
+        var generation: UInt64
+    }
+
+    struct Layout {
+        var origin: SIMD2<Float>
+        var cell: SIMD2<Float>
+        var textureWidth: Int
+        var textureHeight: Int
+    }
+
+    private struct Quad {
+        var origin: SIMD2<Float>
+        var size: SIMD2<Float>
+        var uvOrigin: SIMD2<Float>
+        var uvSize: SIMD2<Float>
+    }
+
+    nonisolated(unsafe) private var iterator: GhosttyRenderStateImageIterator?
+    private(set) var placements: [Placement] = []
+    private var listGeneration: UInt64?
+    private var columns: UInt16 = 0
+    private var rows: UInt16 = 0
+    private var textures: [Key: MTLTexture] = [:]
+    private var sizes: [Key: (width: Int, height: Int)] = [:]
+    private var pending: [Key: TermiodStreamTerminal.ImagePixels] = [:]
+    /// A placement whose pixels have not arrived: looked for every frame.
+    private var missing = false
+
+    init() throws {
+        guard ghostty_render_state_image_iterator_new(nil, &iterator) == GHOSTTY_SUCCESS else {
+            throw TermiodStreamRenderer.Failure.metal("render state image iterator")
+        }
+    }
+
+    deinit {
+        ghostty_render_state_image_iterator_free(iterator)
+    }
+
+    /// Under the frame's lock: rereads the list if it moved, and copies the
+    /// pixels the textures lack. Returns whether the frame must be drawn for
+    /// the images' sake.
+    func read(_ state: GhosttyRenderState, storage: TermiodStreamTerminal.FrameImages, force: Bool) -> Bool {
+        var generation: UInt64 = 0
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &generation)
+        guard force || missing || generation != listGeneration else { return false }
+        let moved = force || generation != listGeneration
+        listGeneration = generation
+        if moved {
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLS, &columns)
+            _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows)
+            placements = list(state)
+        }
+        missing = false
+        var arrived = false
+        for key in Set(placements.map { Key(id: $0.id, generation: $0.generation) })
+        where textures[key] == nil && pending[key] == nil {
+            // An image's pixels move to a new generation together, so a read
+            // that finds another generation is the next frame's to draw.
+            if let pixels = storage.pixels(id: key.id), pixels.generation == key.generation {
+                pending[key] = pixels
+                arrived = true
+            } else {
+                missing = true
+            }
+        }
+        return moved || arrived
+    }
+
+    private func list(_ state: GhosttyRenderState) -> [Placement] {
+        guard ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &iterator) == GHOSTTY_SUCCESS
+        else { return [] }
+        var placements: [Placement] = []
+        while ghostty_render_state_image_iterator_next(iterator) {
+            var kind = GHOSTTY_IMAGE_PROTOCOL_KITTY
+            guard ghostty_render_state_image_get(iterator, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &kind)
+                    == GHOSTTY_SUCCESS,
+                  kind == GHOSTTY_IMAGE_PROTOCOL_KITTY
+            else { continue }
+            var placement = Placement(
+                id: 0, generation: 0, layer: GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT, z: 0, column: 0, row: 0,
+                offsetX: 0, offsetY: 0, width: 0, height: 0, sourceX: 0, sourceY: 0, sourceWidth: 0, sourceHeight: 0
+            )
+            func read<Value>(_ key: GhosttyRenderStateImageData, _ value: inout Value) -> Bool {
+                ghostty_render_state_image_get(iterator, key, &value) == GHOSTTY_SUCCESS
+            }
+            guard read(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &placement.id),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &placement.generation),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &placement.layer),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &placement.z),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &placement.column),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &placement.row),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X, &placement.offsetX),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y, &placement.offsetY),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH, &placement.width),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT, &placement.height),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X, &placement.sourceX),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y, &placement.sourceY),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH, &placement.sourceWidth),
+                  read(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT, &placement.sourceHeight),
+                  placement.width > 0, placement.height > 0
+            else { continue }
+            placements.append(placement)
+        }
+        // Iteration order is not drawing order: lower z first within a layer.
+        return placements.enumerated()
+            .sorted { $0.element.z != $1.element.z ? $0.element.z < $1.element.z : $0.offset < $1.offset }
+            .map(\.element)
+    }
+
+    /// Outside the lock: turns copied pixels into textures, and lets go of
+    /// textures no placement shows any more.
+    func upload(device: MTLDevice) {
+        for (key, pixels) in pending {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm, width: pixels.width, height: pixels.height, mipmapped: false
+            )
+            descriptor.usage = .shaderRead
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                Log.termiod.error("image texture \(pixels.width)x\(pixels.height) failed")
+                continue
+            }
+            pixels.rgba().withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                texture.replace(
+                    region: MTLRegionMake2D(0, 0, pixels.width, pixels.height), mipmapLevel: 0,
+                    withBytes: base, bytesPerRow: pixels.width * 4
+                )
+            }
+            textures[key] = texture
+            sizes[key] = (pixels.width, pixels.height)
+        }
+        pending.removeAll()
+        let shown = Set(placements.map { Key(id: $0.id, generation: $0.generation) })
+        for key in textures.keys where !shown.contains(key) {
+            textures[key] = nil
+            sizes[key] = nil
+        }
+    }
+
+    /// The quads of one layer, in pixels of the drawable, clipped to the grid.
+    func quads(_ layer: GhosttyRenderStateImageLayer, layout: Layout) -> [(Key, SIMD4<Float>, SIMD4<Float>)] {
+        let scale = SIMD2(
+            layout.cell.x / Float(TermiodStreamTerminal.cellWidth),
+            layout.cell.y / Float(TermiodStreamTerminal.cellHeight)
+        )
+        return placements.compactMap { placement in
+            let key = Key(id: placement.id, generation: placement.generation)
+            guard placement.layer == layer, let size = sizes[key], size.width > 0, size.height > 0 else { return nil }
+            let origin = layout.origin + SIMD2(Float(placement.column), Float(placement.row)) * layout.cell
+                + SIMD2(Float(placement.offsetX), Float(placement.offsetY)) * scale
+            let extent = SIMD2(Float(placement.width), Float(placement.height)) * scale
+            let image = SIMD2(Float(size.width), Float(size.height))
+            let uv = SIMD4(
+                Float(placement.sourceX) / image.x, Float(placement.sourceY) / image.y,
+                Float(placement.sourceWidth) / image.x, Float(placement.sourceHeight) / image.y
+            )
+            return (key, SIMD4(origin.x, origin.y, extent.x, extent.y), uv)
+        }
+    }
+
+    func encode(
+        _ layer: GhosttyRenderStateImageLayer, layout: Layout, encoder: MTLRenderCommandEncoder,
+        pipeline: MTLRenderPipelineState
+    ) {
+        let quads = quads(layer, layout: layout)
+        guard !quads.isEmpty else { return }
+        // A placement is reported at its full size even when part of it is
+        // off the grid; the scissor keeps it to the cells.
+        let left = max(0, Int(layout.origin.x))
+        let top = max(0, Int(layout.origin.y))
+        let width = min(layout.textureWidth - left, Int(Float(columns) * layout.cell.x))
+        let height = min(layout.textureHeight - top, Int(Float(rows) * layout.cell.y))
+        guard width > 0, height > 0 else { return }
+        encoder.setScissorRect(MTLScissorRect(x: left, y: top, width: width, height: height))
+        encoder.setRenderPipelineState(pipeline)
+        for (key, rectangle, uv) in quads {
+            guard let texture = textures[key] else { continue }
+            var quad = Quad(
+                origin: SIMD2(rectangle.x, rectangle.y), size: SIMD2(rectangle.z, rectangle.w),
+                uvOrigin: SIMD2(uv.x, uv.y), uvSize: SIMD2(uv.z, uv.w)
+            )
+            encoder.setVertexBytes(&quad, length: MemoryLayout<Quad>.stride, index: 0)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        encoder.setScissorRect(MTLScissorRect(x: 0, y: 0, width: layout.textureWidth, height: layout.textureHeight))
+    }
+}
 
 /// The pixel size of one cell and where the baseline and decorations sit in it.
 struct TermiodCellMetrics: Equatable {
@@ -638,10 +946,16 @@ final class TermiodStreamFrameBuilder {
     private var preeditGlyphs: [TermiodStreamGlyph] = []
     private var preeditCells: (y: UInt16, first: UInt16, last: UInt16)?
     private var lastPreedit: PreeditState?
+    private var hoveredLink: TermiodStreamTerminal.Link?
+    private var linkUnderline: [TermiodStreamRectangle] = []
     nonisolated(unsafe) private var rowIterator: GhosttyRenderStateRowIterator?
     nonisolated(unsafe) private var cells: GhosttyRenderStateRowCells?
     private var codepoints = [UInt32](repeating: 0, count: 32)
     private var stale = true
+    /// The atlas the cached rows name sprites in, and its generation then.
+    /// Panes share an atlas, so another pane can empty it between two builds.
+    private weak var builtAtlas: TermiodGlyphAtlas?
+    private var builtGeneration = 0
 
     init() throws {
         guard ghostty_render_state_row_iterator_new(nil, &rowIterator) == GHOSTTY_SUCCESS,
@@ -663,7 +977,7 @@ final class TermiodStreamFrameBuilder {
     /// Returns false when nothing changed since the last build.
     func build(
         from state: GhosttyRenderState, atlas: TermiodGlyphAtlas, focused: Bool, blinkOn: Bool = true,
-        theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil
+        theme: TermiodStreamTerminal.Theme? = nil, preedit: String? = nil, link: TermiodStreamTerminal.Link? = nil
     ) throws -> Bool {
         let contrast = theme?.minimumContrast ?? 1
         if contrast != minimumContrast {
@@ -686,7 +1000,8 @@ final class TermiodStreamFrameBuilder {
         var colors = GhosttyRenderStateColors()
         colors.size = MemoryLayout<GhosttyRenderStateColors>.size
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
-        let full = stale || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
+        let atlasMoved = builtAtlas !== atlas || builtGeneration != atlas.generation
+        let full = stale || atlasMoved || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
         var changed = false
         if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE {
             stale = false
@@ -706,16 +1021,43 @@ final class TermiodStreamFrameBuilder {
                 rebuildRows(state, full: true, colors: colors, atlas: atlas)
                 atlas.mayEmpty = true
             }
+            builtAtlas = atlas
+            builtGeneration = atlas.generation
             var clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE
             _ = ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean)
         }
         // The cursor moves without dirtying any cell, so it is compared on
         // its own every frame.
+        // A link under the pointer with ⌘ held is underlined, as Ghostty
+        // underlines it.
+        if link != hoveredLink {
+            hoveredLink = link
+            linkUnderline = (link?.segments ?? []).map { segment in
+                let metrics = atlas.metrics
+                return TermiodStreamRectangle(
+                    cellX: segment.columns.lowerBound, cellY: segment.row, x: 0,
+                    y: Int16(clamping: metrics.underlinePosition),
+                    width: UInt16(clamping: metrics.width * (Int(segment.columns.upperBound - segment.columns.lowerBound) + 1)),
+                    height: UInt16(clamping: metrics.underlineThickness),
+                    r: colors.foreground.r, g: colors.foreground.g, b: colors.foreground.b, a: 255, overText: true
+                )
+            }
+            changed = true
+        }
         let preeditState = PreeditState(state, text: preedit, colors: colors)
         if changed || preeditState != lastPreedit {
             lastPreedit = preeditState
             buildPreedit(preeditState, atlas: atlas)
             changed = true
+            // The composed text can empty the atlas after the rows were built
+            // from it; this frame is encoded against the emptied one.
+            if atlas.generation != builtGeneration {
+                atlas.mayEmpty = false
+                rebuildRows(state, full: true, colors: colors, atlas: atlas)
+                buildPreedit(preeditState, atlas: atlas)
+                atlas.mayEmpty = true
+                builtGeneration = atlas.generation
+            }
         }
         // Ghostty draws no cursor while there is text being composed.
         var cursorState = preeditState.text.isEmpty
@@ -1102,6 +1444,7 @@ final class TermiodStreamFrameBuilder {
         }
         rectangles.append(contentsOf: cursor)
         rectangles.append(contentsOf: preeditRectangles)
+        rectangles.append(contentsOf: linkUnderline)
         for (index, row) in rowGlyphs.enumerated() {
             for glyph in row where !covered(glyph.cellX, row: index) {
                 var glyph = glyph

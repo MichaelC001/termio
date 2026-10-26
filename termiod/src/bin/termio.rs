@@ -366,8 +366,8 @@ enum SimVerb {
 
 #[derive(Args)]
 struct SimDevice {
-    /// The simulator to act on, by UDID or name (default: the one the
-    /// Simulator pane shows, else the first booted one).
+    /// The simulator to act on, by UDID or name (default: a booted one, see
+    /// `termio sim --help`).
     #[arg(long, value_name = "DEVICE", global = true)]
     device: Option<String>,
 
@@ -1472,26 +1472,30 @@ soon as the device is drawing — a few seconds — not once it has booted; the
 next command waits for the boot to finish (half a minute, minutes on a first
 boot), so start the build in between.
 
-  termio sim attach
-  xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 16 Pro' build
-  termio sim launch build/Debug-iphonesimulator/MyApp.app
+  termio sim attach --device \"iPhone 17\"
+  xcodebuild -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 17' \\
+    -derivedDataPath build build
+  termio sim launch build/Build/Products/Debug-iphonesimulator/MyApp.app
   termio sim inspect
   termio sim tap --label \"Continue\"
   termio sim swipe 200 700 200 200
   termio sim text \"hello@example.com\" && termio sim key return
   termio sim screenshot --out /tmp/screen.png
 
-With no --device, a session drives the device it used last, else a booted one
-no other session is driving, else the first booted one. Build with xcodebuild
-in your shell; `logs` reads the app's log and `crash-report` its last crash.
+With no --device, a command uses the first of these that is booted: the device
+this session used last; the device the pane shows, unless another session is
+driving it; a device no other session is driving; any device. When nothing is
+booted, name one with `attach --device`. Build with xcodebuild in your shell;
+`logs` reads the app's log and `crash-report` its last crash.
 Needs a Mac with Apple silicon and macOS 15 or later.";
 
 const SIM_INSPECT_HELP: &str = "\
 Print the frontmost app's accessibility tree, one element per line:
-type, label, value, identifier, then the frame as x,y width x height in device
-points. Elements that say nothing are folded away, and elements wholly off
-the screen are counted, not printed. With X Y, print the element drawn at that
-point, as a tap there would find it — the read that resolves what covers what.
+type, label, value (or an empty field's placeholder), identifier, then the
+frame as x,y width x height in device points. Elements that say nothing are
+folded away, and elements wholly off the screen are counted, not printed.
+With X Y, print the element drawn at that point, as a tap there would find
+it — the read that resolves what covers what.
 With --marker, print the first element, in tree order, whose label (or
 --match value, role or id) contains the text; a title can match before the
 button that shares it, so check the type. When the reply names a modal, stay

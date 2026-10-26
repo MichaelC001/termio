@@ -21,6 +21,9 @@ final class Device: @unchecked Sendable {
     private let logger = ControlCoreGlobalConfiguration.defaultLogger
     private var hid: SimulatorHID?
     private var readers: [AXBridgeFrontmostMethod: any UIAutomation] = [:]
+    /// The host-side reader, for the one attribute the in-simulator one cannot
+    /// fetch: a text field's placeholder.
+    private var hostReader: (any UIAutomation)?
     private var frontmostMethod: AXBridgeFrontmostMethod = .windowServer
     private var framebuffer: Framebuffer?
     private var attachment: FramebufferAttachment?
@@ -231,6 +234,7 @@ final class Device: @unchecked Sendable {
         framebuffer = nil
         hid = nil
         readers.removeAll()
+        hostReader = nil
         strokeEdge = nil
         // A connection or reader still being made belongs to the boot left
         // behind; this makes it be thrown away when it arrives.
@@ -326,6 +330,7 @@ final class Device: @unchecked Sendable {
             interface = .upright
             hid = nil
             readers.removeAll()
+            hostReader = nil
             strokeEdge = nil
             generation += 1
             // An attached display is checked every few seconds and rebinds on
@@ -401,7 +406,8 @@ final class Device: @unchecked Sendable {
 
     private func frontmostWindowSize() async -> CGSize? {
         let options = AccessibilityRequestOptions(format: .complete, keys: [.frameDict, .frame])
-        guard let document = try? await withFrontmost({ try await $0.describe(.frontmost, options: options).document }),
+        // One attempt: a guess at the turn is not worth waiting out an app's start.
+        guard let document = try? await frontmostOnce({ try await $0.describe(.frontmost, options: options).document }),
               let data = try? JSONEncoder().encode(document),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let root = (object["elements"] as? [[String: Any]])?.first,
@@ -506,14 +512,82 @@ final class Device: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         if let point {
-            guard let response = try await automation().hitTest(at: point, options: options) else {
-                return Data("{\"elements\":[]}".utf8)
-            }
-            return try encoder.encode(response.document)
+            guard let response = try await whileStarting({ try await automation().hitTest(at: point, options: options) })
+            else { return Data("{\"elements\":[]}".utf8) }
+            return await notingPlaceholders(try encoder.encode(response.document))
         }
         let query: AccessibilityElementQuery = marker.map { .marker(value: $0, key: matchKey, depth: .max) } ?? .frontmost
         let document = try await withFrontmost { try await $0.describe(query, options: options).document }
-        return try encoder.encode(document)
+        return await notingPlaceholders(try encoder.encode(document))
+    }
+
+    /// iOS reports an empty text field's placeholder as its value, and the
+    /// in-simulator reader cannot fetch the placeholder to tell the two apart:
+    /// an agent read `ws://mac-hostname:8787` as text to delete
+    /// (termio-sh/termio#774). The host's reader can, though it is slower, so
+    /// only each text field that has a value is read again there. One whose
+    /// value is its placeholder has its value dropped; the placeholder is added
+    /// either way. Text typed to match the placeholder exactly reads as empty,
+    /// which nothing in the tree can tell apart.
+    private func notingPlaceholders(_ data: Data) async -> Data {
+        guard var document = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              var elements = document["elements"] as? [[String: Any]]
+        else { return data }
+        var changed = false
+        // One failed host read gives up on the rest: an app too busy to answer
+        // one field will not answer the next, and each wait is seconds long.
+        var failed = false
+        func note(_ elements: inout [[String: Any]]) async {
+            for index in elements.indices {
+                if !failed, Self.textTypes.contains(elements[index]["type"] as? String ?? ""),
+                   let value = elements[index]["value"] as? String, !value.isEmpty,
+                   let frame = Self.rect(elements[index]["frame"]) {
+                    do {
+                        if let placeholder = try await placeholder(of: frame) {
+                            elements[index]["placeholder"] = placeholder
+                            if value == placeholder { elements[index]["value"] = NSNull() }
+                            changed = true
+                        }
+                    } catch {
+                        Wire.log("reading a placeholder at \(frame) failed: \(error.localizedDescription)")
+                        failed = true
+                    }
+                }
+                if var children = elements[index]["children"] as? [[String: Any]], !children.isEmpty {
+                    await note(&children)
+                    elements[index]["children"] = children
+                }
+            }
+        }
+        await note(&elements)
+        guard changed else { return data }
+        document["elements"] = elements
+        return (try? JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])) ?? data
+    }
+
+    /// The fields UIKit gives a placeholder. A text view has none.
+    private static let textTypes: Set<String> = ["TextField", "SecureTextField", "SearchField"]
+
+    /// The placeholder of the text field at `frame`, read by the host's reader
+    /// at its centre; nil when that lands on anything but the same field.
+    private func placeholder(of frame: CGRect) async throws -> String? {
+        let reader = try lock.withLock { () throws -> any UIAutomation in
+            if let hostReader { return hostReader }
+            let created = try simulator.uiAutomation(backend: .accessibility)
+            hostReader = created
+            return created
+        }
+        let options = AccessibilityRequestOptions(format: .complete, keys: [.frame, .frameDict, .type, .placeholder])
+        guard let response = try await reader.hitTest(at: CGPoint(x: frame.midX, y: frame.midY), options: options),
+              let data = try? JSONEncoder().encode(response.document),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let element = (object["elements"] as? [[String: Any]])?.first,
+              let found = Self.rect(element["frame"]),
+              abs(found.minX - frame.minX) <= 1, abs(found.minY - frame.minY) <= 1,
+              abs(found.width - frame.width) <= 1, abs(found.height - frame.height) <= 1,
+              let placeholder = element["placeholder"] as? String, !placeholder.isEmpty
+        else { return nil }
+        return placeholder
     }
 
     /// Taps the centre of the element whose label contains `label`, and returns
@@ -574,6 +648,10 @@ final class Device: @unchecked Sendable {
     /// home screen, and a centre-point hit-test misses a screen whose middle is
     /// empty. The first method that answers is kept for the next read.
     private func withFrontmost<T>(_ body: (any UIAutomation) async throws -> T) async throws -> T {
+        try await whileStarting { try await frontmostOnce(body) }
+    }
+
+    private func frontmostOnce<T>(_ body: (any UIAutomation) async throws -> T) async throws -> T {
         let preferred = lock.withLock { frontmostMethod }
         let methods = [preferred] + AXBridgeFrontmostMethod.ordered.filter { $0 != preferred }
         var lastError: (any Error)?
@@ -588,6 +666,57 @@ final class Device: @unchecked Sendable {
             }
         }
         throw lastError ?? HelperError.notAttached(simulator.udid)
+    }
+
+
+    /// How long a just-launched app is given to start answering. Short,
+    /// because a `tap --label` waits inline: touches from the pane queue behind
+    /// it, and one failed attempt alone can take five seconds. The last retry
+    /// may start just inside it, so the worst case is about one attempt more.
+    /// An app that never starts its accessibility server fails after this,
+    /// not at once.
+    private static let startupGrace: TimeInterval = 6
+
+    /// Runs a read again while the app it lands on is still starting. An app
+    /// launched a moment ago can miss its first accessibility request, or have
+    /// no accessibility server yet, and answers a second or two later; an agent
+    /// that taps right after `launch` met that as a failed tap
+    /// (termio-sh/termio#773). Only reads are repeated, and these failures
+    /// wrote nothing to the app, so a tap still lands once.
+    private func whileStarting<T>(_ body: () async throws -> T) async throws -> T {
+        let deadline = Date().addingTimeInterval(Self.startupGrace)
+        var pause: UInt64 = 300_000_000
+        while true {
+            let started = Date()
+            do {
+                return try await body()
+            } catch where Self.isStarting(error)
+                // Retried only if another attempt as long as this one still fits:
+                // a fast refusal is retried, a five-second timeout is not.
+                && Date().addingTimeInterval(Double(pause) / 1_000_000_000 + Date().timeIntervalSince(started))
+                    < deadline {
+                Wire.log("retrying a read while the app starts: \(error.localizedDescription)")
+                try await Task.sleep(nanoseconds: pause)
+                pause = min(pause * 2, 1_000_000_000)
+            }
+        }
+    }
+
+    private static func isStarting(_ error: any Error) -> Bool {
+        switch error {
+        case let error as UIAutomationError:
+            switch error {
+            case .applicationNotResponding, .applicationUnavailable: return true
+            default: return false
+            }
+        case let error as AXBridgeError:
+            switch error {
+            case .applicationNotResponding, .applicationUnavailable: return true
+            default: return false
+            }
+        default:
+            return false
+        }
     }
 
     private func automation(_ method: AXBridgeFrontmostMethod? = nil) throws -> any UIAutomation {

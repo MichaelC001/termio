@@ -58,26 +58,29 @@ final class TermiodStreamView: NSView {
     /// Mouse buttons down that were reported to the program, so their
     /// releases are too, wherever the pointer is let go.
     fileprivate var reportedButtons: Set<UInt8> = []
+    /// Where the program last saw the pointer, for releasing buttons the view
+    /// never gets a mouse-up for.
+    fileprivate var lastPointer: Termiod.InputEvent.Pointer?
     fileprivate var scrollRemainder = CGPoint.zero
     /// Keys whose press the program saw, by keycode, so each gets its release
     /// even when the pane loses the keyboard first.
     fileprivate var heldKeys: [UInt16: Termiod.InputEvent.Key] = [:]
     /// A left-button selection is in progress.
     fileprivate var selecting = false
+    /// The link under the pointer while ⌘ is held.
+    fileprivate var hoveredLink: TermiodStreamTerminal.Link?
+    /// What the last hover looked at, so a resting pointer over unchanged
+    /// text costs one counter read a frame, not a copy of its line.
+    fileprivate var hoverKey: HoverKey?
+    fileprivate var hoverLine: TermiodStreamTerminal.LineText?
     /// Settings ▸ Copy on select.
     var copyOnSelect = false
     /// Keys an editing binding took, whose releases the program never sees.
     fileprivate var consumedKeys: Set<UInt16> = []
     fileprivate var trackingArea: NSTrackingArea?
-    /// Off while the pane is not on screen: a hidden pane draws nothing, as
-    /// `setSurfaceVisible` arranges for the embedded surface.
-    var isShowing = true {
-        didSet {
-            guard isShowing != oldValue else { return }
-            displayLinkHandle?.isPaused = !isShowing
-            needsFullDraw = true
-        }
-    }
+    /// The pane may take the keyboard, so a view mounted for it does as soon
+    /// as it is in a window.
+    var claimsFocus = false
 
     init(appearance: TermiodStreamRenderer.Appearance) {
         super.init(frame: .zero)
@@ -136,12 +139,33 @@ final class TermiodStreamView: NSView {
         return true
     }
 
+    /// A pane going off screen takes its view with it (Rex's rule: the
+    /// terminal lives in the link, a view only while someone looks). Leaving
+    /// here, rather than trusting a `resignFirstResponder` during removal,
+    /// sends the program its key releases and focus-out, and drops unfinished
+    /// input.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            if hasMarkedText() {
+                inputContext?.discardMarkedText()
+                unmarkText()
+            }
+            focused = false
+            releaseHeldButtons()
+            if selecting { releaseSelection(nil) }
+            clearHoveredLink()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
         guard let window else {
             displayLinkHandle?.invalidate()
             displayLinkHandle = nil
+            // A pane leaving the window leaves no hand pointer behind.
+            clearHoveredLink()
             return
         }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
@@ -150,10 +174,15 @@ final class TermiodStreamView: NSView {
             )
         }
         viewDidChangeBackingProperties()
+        if claimsFocus {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.claimsFocus, let window = self.window, window.firstResponder !== self else { return }
+                window.makeFirstResponder(self)
+            }
+        }
         guard displayLinkHandle == nil else { return }
         let link = displayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
-        link.isPaused = !isShowing
         displayLinkHandle = link
     }
 
@@ -197,14 +226,18 @@ final class TermiodStreamView: NSView {
     }
 
     @objc private func tick() {
-        guard isShowing, let renderer, let terminal = terminal() else { return }
+        guard let renderer, let terminal = terminal() else { return }
+        // Every frame, as Ghostty does: output scrolls under a resting
+        // pointer, and ⌘ can be let go, or the app left, anywhere.
+        updateHoveredLink(command: NSEvent.modifierFlags.contains(.command))
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
         do {
             try renderer.draw(
                 terminal, into: metalLayer, focused: focused, force: needsFullDraw || replaced,
-                preedit: markedText.length > 0 ? markedText.string : nil
+                preedit: markedText.length > 0 ? markedText.string : nil,
+                link: hoveredLink
             )
             needsFullDraw = false
         } catch {
@@ -274,6 +307,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// A modifier pressed or released alone, which the Kitty protocol can
     /// report. Its side decides which key it was.
     override func flagsChanged(with event: NSEvent) {
+        updateHoveredLink(command: event.modifierFlags.contains(.command))
         guard markedText.length == 0, terminal() != nil else { return }
         // Each side has its own device bit, so releasing one Shift while the
         // other is held reads as the release it is.
@@ -478,7 +512,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
         let area = NSTrackingArea(
-            rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self
+            rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self
         )
         addTrackingArea(area)
         trackingArea = area
@@ -511,8 +545,12 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     /// The pointer as a selection sees it: the viewport cell under it, and
     /// where it is in the pane in pixels.
     private func selectionPoint(_ event: NSEvent) -> TermiodStreamTerminal.SelectionPoint? {
+        selectionPoint(at: event.locationInWindow)
+    }
+
+    private func selectionPoint(at location: NSPoint) -> TermiodStreamTerminal.SelectionPoint? {
         guard let renderer else { return nil }
-        let point = convert(event.locationInWindow, from: nil)
+        let point = convert(location, from: nil)
         let scale = metalLayer.contentsScale
         let x = point.x * scale
         let y = (bounds.height - point.y) * scale
@@ -555,10 +593,10 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         needsFullDraw = true
     }
 
-    private func releaseSelection(_ event: NSEvent) {
+    private func releaseSelection(_ event: NSEvent?) {
         selecting = false
         guard let terminal = terminal() else { return }
-        terminal.releaseSelection(at: selectionPoint(event))
+        terminal.releaseSelection(at: event.flatMap(selectionPoint))
         if copyOnSelect, let text = terminal.selectedText, !text.isEmpty {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -591,6 +629,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
               let at = pointer(event), onGrid(at)
         else { return }
         reportedButtons.insert(button)
+        lastPointer = at
         sendInput(.mouse(.init(action: .press, button: button, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
                                at: at, buttonsHeld: true)))
     }
@@ -601,9 +640,24 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
                                at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
 
+    /// Releases every button the program saw go down, where it last saw the
+    /// pointer: the view is leaving, so their mouse-ups will never reach it.
+    private func releaseHeldButtons() {
+        guard let at = lastPointer else {
+            reportedButtons.removeAll()
+            return
+        }
+        for button in reportedButtons.sorted() {
+            reportedButtons.remove(button)
+            sendInput(.mouse(.init(action: .release, button: button, mods: 0, at: at,
+                                   buttonsHeld: !reportedButtons.isEmpty)))
+        }
+    }
+
     private func motion(_ event: NSEvent, _ button: UInt8?) {
         guard let terminal = terminal(), terminal.tracksMouse, let at = pointer(event) else { return }
         let held = button.flatMap { reportedButtons.contains($0) ? $0 : nil }
+        lastPointer = at
         sendInput(.mouse(.init(action: .motion, button: held, mods: TermiodStreamKeyboard.mods(event.modifierFlags),
                                at: at, buttonsHeld: !reportedButtons.isEmpty)))
     }
@@ -634,7 +688,72 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     override func otherMouseUp(with event: NSEvent) {
         if let button = Self.otherButton(event) { release(event, button) }
     }
-    override func mouseMoved(with event: NSEvent) { motion(event, nil) }
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredLink(command: event.modifierFlags.contains(.command))
+        motion(event, nil)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        clearHoveredLink()
+    }
+
+    /// Ghostty's link hover: with ⌘ held, the link under the pointer is
+    /// underlined and the pointer becomes a hand. The app's ⌘-click monitor
+    /// opens `TerminalLinkState.hoveredURL`, as it does for the embedded
+    /// surface, even inside a program tracking the mouse.
+    fileprivate func updateHoveredLink(command: Bool) {
+        guard command, NSApp.isActive, let window, window.isKeyWindow, let terminal = terminal() else {
+            clearHoveredLink()
+            return
+        }
+        let location = window.mouseLocationOutsideOfEventStream
+        // A panel or sheet over the pane takes the pointer, as it takes the click.
+        guard bounds.contains(convert(location, from: nil)),
+              let hit = window.contentView?.hitTest(location), hit === self || hit.isDescendant(of: self),
+              let point = selectionPoint(at: location)
+        else {
+            clearHoveredLink()
+            return
+        }
+        let key = HoverKey(
+            terminal: ObjectIdentifier(terminal), column: point.column, row: point.row, changes: terminal.changes
+        )
+        guard key != hoverKey else { return }
+        hoverKey = key
+        switch terminal.lineUnder(point) {
+        case .hyperlink(let link):
+            hoverLine = nil
+            setHoveredLink(link)
+        case .text(let line):
+            // Output elsewhere on screen leaves this line as it was.
+            guard line != hoverLine else { return }
+            hoverLine = line
+            setHoveredLink(TermiodStreamTerminal.link(in: line))
+        case .none:
+            hoverLine = nil
+            setHoveredLink(nil)
+        }
+    }
+
+    fileprivate struct HoverKey: Equatable {
+        var terminal: ObjectIdentifier
+        var column: UInt16
+        var row: UInt16
+        var changes: UInt64
+    }
+
+    /// The pointer stopped hovering: the next ⌘ looks afresh.
+    fileprivate func clearHoveredLink() {
+        hoverKey = nil
+        hoverLine = nil
+        setHoveredLink(nil)
+    }
+
+    fileprivate func setHoveredLink(_ link: TermiodStreamTerminal.Link?) {
+        guard link != hoveredLink else { return }
+        hoveredLink = link
+        TerminalLinkState.update(hoveredURL: link?.url)
+    }
     override func mouseDragged(with event: NSEvent) {
         if selecting { dragSelection(event) } else { motion(event, 1) }
     }
@@ -702,25 +821,19 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
 import SwiftUI
 
 /// Mounts a `TermiodStreamView` for a pane whose link is on the `vt_stream`
-/// plane, in place of the embedded surface.
+/// plane, in place of the embedded surface. Mounted only while the pane is on
+/// screen: the terminal lives in the link, so a hidden pane holds no view,
+/// layer or drawables, and showing it again draws the link's current screen.
 struct TermiodStreamPane: NSViewRepresentable {
     let link: TermiodSessionLink
     let sessionID: Session.ID
     let appearance: TermiodStreamRenderer.Appearance
-    let colors: TermiodStreamTerminal.Theme?
-    let isSelected: Bool
-    let isVisible: Bool
+    /// The session is selected and nothing else holds the keyboard: no open
+    /// detail, no palette.
+    let takesKeyboard: Bool
     let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
-    let onVisibility: (Bool) -> Void
     let onFocused: () -> Void
-
-    final class Coordinator {
-        var themeApplied: TermiodStreamTerminal.Theme?
-        var visible: Bool?
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> TermiodStreamView {
         let view = TermiodStreamView(appearance: appearance)
@@ -741,17 +854,19 @@ struct TermiodStreamPane: NSViewRepresentable {
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
-        view.isShowing = isVisible
-        if let colors, context.coordinator.themeApplied != colors {
-            context.coordinator.themeApplied = colors
-            link.setStreamTheme(colors)
-        }
-        if context.coordinator.visible != isVisible {
-            context.coordinator.visible = isVisible
-            onVisibility(isVisible)
-        }
-        if isSelected, isVisible, let window = view.window, window.firstResponder !== view {
-            DispatchQueue.main.async { window.makeFirstResponder(view) }
+        // This runs on every store change. Taking the keyboard each time would
+        // pull it out of a field the user is typing in, such as a sidebar
+        // rename, so it is taken on the way in, or when nothing holds it — the
+        // embedded surface's orphan repair, after that field went away. A view
+        // not yet in a window takes it in `viewDidMoveToWindow`.
+        let gained = takesKeyboard && !view.claimsFocus
+        view.claimsFocus = takesKeyboard
+        if takesKeyboard, let window = view.window, window.firstResponder !== view,
+           gained || window.firstResponder == nil || window.firstResponder === window {
+            DispatchQueue.main.async { [weak view] in
+                guard let view, view.claimsFocus, view.window === window else { return }
+                window.makeFirstResponder(view)
+            }
         }
     }
 }

@@ -38,10 +38,16 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// thread at the byte its hold begins; it is only ever touched under `lock`.
     private let renderState: GhosttyRenderState
     private let lock = NSLock()
+    /// Raised under `lock` by everything that can change what a cell shows:
+    /// bytes, viewport moves and resizes. A hover reads it to skip copying
+    /// the line under a pointer that has not moved.
+    private var changesLocked: UInt64 = 0
+    var changes: UInt64 { locked { changesLocked } }
     /// Raised by the renderer before it asks for `lock`. NSLock is not fair, and
     /// a reader writing chunk after chunk re-takes it before a waiting renderer
     /// wakes: the phase 1 spike measured frames starved for up to 34 ms.
     private let rendererWaiting = OSAllocatedUnfairLock(initialState: false)
+    private let animationClock = ContinuousClock.now
     /// What the terminal answers a program's query with — a cursor position
     /// report, a mode report. Called on the writing thread, inside `write`.
     private let onReply: (Data) -> Void
@@ -316,6 +322,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             let bytes = buffer.bindMemory(to: UInt8.self)
             guard let base = bytes.baseAddress else { return }
             ghostty_terminal_vt_write(terminal, base, bytes.count)
+            changesLocked &+= 1
         }
     }
 
@@ -406,6 +413,93 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// and a program that redraws hold after hold shows each finished frame in
     /// turn. A hold longer than `holdLimit` is ended for the program.
     func withFrame<Result>(_ body: (GhosttyRenderState, Theme?) throws -> Result) throws -> Result {
+        try withFrame { state, theme, _ in try body(state, theme) }
+    }
+
+    /// The image storage as a frame sees it. The render state says where each
+    /// image goes; only the pixels and the animation clock live in the
+    /// terminal, so they are read here, under the frame's lock.
+    struct FrameImages {
+        fileprivate let terminal: GhosttyTerminal
+
+        /// An image's pixels as straight-alpha RGBA, with the generation they
+        /// belong to, or nil while it has none.
+        func pixels(id: UInt32) -> ImagePixels? {
+            guard let graphics = storage(), let image = ghostty_kitty_graphics_image(graphics, id) else { return nil }
+            var width: UInt32 = 0
+            var height: UInt32 = 0
+            var format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA
+            var pointer: UnsafePointer<UInt8>?
+            var length = 0
+            var generation: UInt64 = 0
+            guard ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &format) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &pointer) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &length) == GHOSTTY_SUCCESS,
+                  ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation)
+                    == GHOSTTY_SUCCESS,
+                  let pointer, width > 0, height > 0
+            else { return nil }
+            let channels: Int
+            switch format {
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: channels = 4
+            case GHOSTTY_KITTY_IMAGE_FORMAT_RGB: channels = 3
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA: channels = 2
+            case GHOSTTY_KITTY_IMAGE_FORMAT_GRAY: channels = 1
+            default: return nil
+            }
+            let count = Int(width) * Int(height) * channels
+            guard length >= count else { return nil }
+            // Only the copy happens under the lock; `rgba()` converts later.
+            return ImagePixels(
+                width: Int(width), height: Int(height), channels: channels, generation: generation,
+                bytes: Data(bytes: pointer, count: count)
+            )
+        }
+
+        private func storage() -> GhosttyKittyGraphics? {
+            var graphics: GhosttyKittyGraphics?
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) == GHOSTTY_SUCCESS
+            else { return nil }
+            return graphics
+        }
+    }
+
+    struct ImagePixels {
+        var width: Int
+        var height: Int
+        var channels: Int
+        var generation: UInt64
+        var bytes: Data
+
+        /// Premultiplied RGBA, which the image shader filters without the
+        /// colour of transparent pixels bleeding into the edges.
+        func rgba() -> [UInt8] {
+            let count = width * height
+            var rgba = [UInt8](repeating: 255, count: count * 4)
+            bytes.withUnsafeBytes { raw in
+                let source = raw.bindMemory(to: UInt8.self)
+                for index in 0 ..< count {
+                    let at = index * channels
+                    let alpha = channels == 4 ? source[at + 3] : channels == 2 ? source[at + 1] : 255
+                    let red = source[at]
+                    let green = channels >= 3 ? source[at + 1] : red
+                    let blue = channels >= 3 ? source[at + 2] : red
+                    func premultiplied(_ value: UInt8) -> UInt8 {
+                        UInt8((UInt16(value) * UInt16(alpha) + 127) / 255)
+                    }
+                    rgba[index * 4] = premultiplied(red)
+                    rgba[index * 4 + 1] = premultiplied(green)
+                    rgba[index * 4 + 2] = premultiplied(blue)
+                    rgba[index * 4 + 3] = alpha
+                }
+            }
+            return rgba
+        }
+    }
+
+    func withFrame<Result>(_ body: (GhosttyRenderState, Theme?, FrameImages) throws -> Result) throws -> Result {
         rendererWaiting.withLock { $0 = true }
         lock.lock()
         rendererWaiting.withLock { $0 = false }
@@ -417,9 +511,26 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             heldSince = nil
         }
         if heldSince == nil {
+            advanceAnimationsLocked()
             try Self.check(ghostty_render_state_update(renderState, terminal), "ghostty_render_state_update")
         }
-        return try body(renderState, theme)
+        return try body(renderState, theme, FrameImages(terminal: terminal))
+    }
+
+    /// Shows each playing animation's frame for now, as Ghostty's renderer
+    /// drives it: the terminal keeps no clock of its own. It runs before the
+    /// update, so the image list names the frame the storage holds, and on
+    /// this terminal's own clock, which only moves forward while it lives.
+    private func advanceAnimationsLocked() {
+        var graphics: GhosttyKittyGraphics?
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) == GHOSTTY_SUCCESS,
+              let graphics
+        else { return }
+        let elapsed = ContinuousClock.now - animationClock
+        let milliseconds = UInt64(max(0, elapsed.components.seconds)) * 1000
+            + UInt64(max(0, elapsed.components.attoseconds) / 1_000_000_000_000_000)
+        var next: UInt64 = 0
+        _ = ghostty_kitty_graphics_animation_tick(graphics, milliseconds, &next)
     }
 
     private func locked<Result>(_ body: () throws -> Result) rethrows -> Result {
@@ -472,6 +583,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
             behavior.value.delta = rows
             ghostty_terminal_scroll_viewport(terminal, behavior)
+            changesLocked &+= 1
         }
     }
 
@@ -680,8 +792,412 @@ final class TermiodStreamTerminal: @unchecked Sendable {
                 behavior.value.delta_prompt = move == .previousPrompt ? -1 : 1
             }
             ghostty_terminal_scroll_viewport(terminal, behavior)
+            changesLocked &+= 1
         }
     }
+
+    /// A link under the pointer: what it opens and the cells it covers, one
+    /// range per row, since a long one wraps.
+    struct Link: Equatable {
+        struct Segment: Equatable {
+            var row: UInt16
+            var columns: ClosedRange<UInt16>
+        }
+
+        var url: String
+        var segments: [Segment]
+    }
+
+    /// The text of the soft-wrapped line under a pointer, copied under `lock`,
+    /// with the cell each UTF-16 unit came from (in screen rows), and where the
+    /// viewport begins in screen rows. The match runs on it after the lock is
+    /// released. A line longer than the copy budget is cut, and says so.
+    struct LineText: Equatable {
+        struct Cell: Equatable {
+            var row: UInt32
+            var column: UInt16
+        }
+
+        var text: String
+        var cells: [Cell]
+        var pointer: Cell
+        var viewportTop: UInt32
+        var viewportRows: UInt16
+        var cutBefore = false
+        var cutAfter = false
+    }
+
+    /// How many cells either side of the pointer's row a wrapped line is
+    /// followed for, into scrollback or below the view: a URL of a couple of
+    /// thousand characters, at a cost that stays flat however wide the pane.
+    static let lineCellBudget = 1024
+
+    enum Under: Equatable {
+        case hyperlink(Link)
+        case text(LineText)
+    }
+
+    /// The link at a viewport cell, as Ghostty finds it (`Surface.linkAtPin`):
+    /// an OSC 8 hyperlink first, then a URL or a path in the whole soft-wrapped
+    /// line, followed past the edges of the view as Ghostty's `selectLine` is.
+    func link(at point: SelectionPoint) -> Link? {
+        switch lineUnder(point) {
+        case .hyperlink(let link): return link
+        case .text(let line): return Self.link(in: line)
+        case .none: return nil
+        }
+    }
+
+    /// What is under a pointer: a hyperlink, or the text of its line to
+    /// search. Only this runs under `lock`.
+    func lineUnder(_ point: SelectionPoint) -> Under? {
+        locked {
+            var rows: UInt16 = 0
+            var cols: UInt16 = 0
+            var total = 0
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols)
+            _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total)
+            guard point.row < rows, point.column < cols,
+                  var pointerRef = cellReference(column: point.column, row: point.row)
+            else { return nil }
+            if let uri = hyperlink(&pointerRef) {
+                var first = point.column
+                var last = point.column
+                while first > 0, var reference = cellReference(column: first - 1, row: point.row),
+                      hyperlink(&reference) == uri {
+                    first -= 1
+                }
+                while last + 1 < cols, var reference = cellReference(column: last + 1, row: point.row),
+                      hyperlink(&reference) == uri {
+                    last += 1
+                }
+                return .hyperlink(Link(url: uri, segments: [.init(row: point.row, columns: first ... last)]))
+            }
+            var screen = GhosttyPointCoordinate()
+            var top = GhosttyPointCoordinate()
+            guard ghostty_terminal_point_from_grid_ref(terminal, &pointerRef, GHOSTTY_POINT_TAG_SCREEN, &screen)
+                    == GHOSTTY_SUCCESS,
+                  var viewportTop = cellReference(column: 0, row: 0),
+                  ghostty_terminal_point_from_grid_ref(terminal, &viewportTop, GHOSTTY_POINT_TAG_SCREEN, &top)
+                    == GHOSTTY_SUCCESS
+            else { return nil }
+            var pointer = LineText.Cell(row: screen.y, column: point.column)
+            switch wide(&pointerRef) {
+            case GHOSTTY_CELL_WIDE_SPACER_TAIL where point.column > 0:
+                // The right half of a wide character is that character.
+                pointer.column -= 1
+            case GHOSTTY_CELL_WIDE_SPACER_HEAD:
+                // The last column before a wide character that wrapped stands
+                // for it, at the start of the next row.
+                pointer = .init(row: screen.y + 1, column: 0)
+            default:
+                break
+            }
+            let reach = UInt32(max(1, Self.lineCellBudget / Int(max(cols, 1))))
+            var first = screen.y
+            while first > 0, screen.y - first < reach, wraps(screenRow: first - 1) { first -= 1 }
+            var last = screen.y
+            while Int(last) + 1 < total, last - screen.y < reach, wraps(screenRow: last) { last += 1 }
+            var line = LineText(
+                text: "", cells: [], pointer: pointer, viewportTop: top.y, viewportRows: rows,
+                cutBefore: first > 0 && wraps(screenRow: first - 1),
+                cutAfter: Int(last) + 1 < total && wraps(screenRow: last)
+            )
+            var buffer = [UInt32](repeating: 0, count: 16)
+            for row in first ... last {
+                for column in 0 ..< cols {
+                    guard var reference = screenReference(column: column, row: row) else { return nil }
+                    var length = 0
+                    var result = buffer.withUnsafeMutableBufferPointer {
+                        ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
+                    }
+                    if result == GHOSTTY_OUT_OF_SPACE, length > buffer.count {
+                        buffer = [UInt32](repeating: 0, count: length)
+                        result = buffer.withUnsafeMutableBufferPointer {
+                            ghostty_grid_ref_graphemes(&reference, $0.baseAddress, $0.count, &length)
+                        }
+                    }
+                    var cell = ""
+                    if result == GHOSTTY_SUCCESS, length > 0 {
+                        for scalar in buffer.prefix(length).compactMap(Unicode.Scalar.init) {
+                            cell.unicodeScalars.append(scalar)
+                        }
+                    }
+                    if cell.isEmpty {
+                        // A wide character's second half adds no text.
+                        let kind = wide(&reference)
+                        if kind == GHOSTTY_CELL_WIDE_SPACER_TAIL || kind == GHOSTTY_CELL_WIDE_SPACER_HEAD { continue }
+                        cell = " "
+                    }
+                    line.text += cell
+                    line.cells += Array(repeating: .init(row: row, column: column), count: cell.utf16.count)
+                }
+            }
+            return .text(line)
+        }
+    }
+
+    /// The link a line's text holds under its pointer, in viewport rows. A
+    /// link that runs into a cut edge of the line is not offered: opening the
+    /// part of it that was copied would open the wrong place.
+    static func link(in line: LineText) -> Link? {
+        guard let index = line.cells.firstIndex(of: line.pointer) else { return nil }
+        for range in linkRanges(in: line.text, around: index) {
+            let covered = line.cells[range.location ..< range.location + range.length]
+            guard covered.contains(line.pointer) else { continue }
+            if line.cutBefore && range.location == 0 || line.cutAfter && range.location + range.length == line.cells.count {
+                return nil
+            }
+            var segments: [Link.Segment] = []
+            for cell in covered {
+                let row = Int64(cell.row) - Int64(line.viewportTop)
+                guard row >= 0, row < Int64(line.viewportRows) else { continue }
+                if let last = segments.last, last.row == UInt16(row) {
+                    segments[segments.count - 1].columns = last.columns.lowerBound ... cell.column
+                } else {
+                    segments.append(.init(row: UInt16(row), columns: cell.column ... cell.column))
+                }
+            }
+            return Link(url: (line.text as NSString).substring(with: range), segments: segments)
+        }
+        return nil
+    }
+
+    /// How far either side of the pointer paths are searched for. Ghostty's
+    /// path patterns cost the square of what they search, so a pasted blob
+    /// thousands of characters long is searched only near the pointer.
+    static let pathWindow = 256
+
+    /// Ghostty's links in a text (`config/url.zig`), left to right, none
+    /// overlapping: what its one pattern finds scanning from the start. URLs
+    /// with a scheme are found over the whole text by `schemeURL`, which
+    /// matches Ghostty's scheme branch in one pass; paths by Ghostty's own
+    /// path branches, within `pathWindow` of `index`.
+    static func linkRanges(in text: String, around index: Int? = nil) -> [NSRange] {
+        let units = Array(text.utf16)
+        let window: Range<Int> = index.map { max(0, $0 - pathWindow) ..< min(units.count, $0 + pathWindow) }
+            ?? 0 ..< units.count
+        var urls: [NSRange] = []
+        if let schemes = schemePattern {
+            var end = 0
+            for match in schemes.matches(in: text, range: NSRange(location: 0, length: units.count))
+            where match.range.location >= end {
+                if let range = schemeURL(in: units, schemeAt: match.range) {
+                    urls.append(range)
+                    end = range.location + range.length
+                }
+            }
+        }
+        func isPathCharacter(_ index: Int) -> Bool {
+            guard let scalar = Unicode.Scalar(units[index]) else { return true }
+            return scalar == "_" || CharacterSet.alphanumerics.contains(scalar) || "-.~:/?#@!$&*+;=%".unicodeScalars.contains(scalar)
+        }
+        // Ghostty's paths carry across a single space not after a colon.
+        func joins(_ space: Int) -> Bool {
+            space > 0 && space + 1 < units.count && units[space] == 0x20
+                && isPathCharacter(space - 1) && units[space - 1] != 0x3A && isPathCharacter(space + 1)
+        }
+        // A path whose characters run past a window edge the text goes past
+        // may be longer than what was searched, and is passed over.
+        func isCut(_ range: NSRange) -> Bool {
+            var start = range.location
+            while start > window.lowerBound, isPathCharacter(start - 1) || joins(start - 1) { start -= 1 }
+            if start == window.lowerBound, start > 0, isPathCharacter(start - 1) || joins(start - 1) { return true }
+            var end = range.location + range.length
+            while end < window.upperBound, isPathCharacter(end) || joins(end) { end += 1 }
+            return end == window.upperBound && end < units.count && (isPathCharacter(end) || joins(end))
+        }
+        // The next path from `position`, seen through the window. One search
+        // answers every later position up to the path it found, and a search
+        // that found none answers all of them.
+        var searchedFrom: Int?
+        var found: NSRange?
+        func nextPath(from position: Int) -> (range: NSRange, whole: Bool)? {
+            if let searchedFrom, searchedFrom <= position, found.map({ $0.location >= position }) ?? true {
+                return found.map { ($0, !isCut($0)) }
+            }
+            let start = max(position, window.lowerBound)
+            searchedFrom = position
+            found = nil
+            guard let paths = pathPattern, start < window.upperBound,
+                  let match = paths.firstMatch(
+                      in: text, options: .withTransparentBounds,
+                      range: NSRange(location: start, length: window.upperBound - start)
+                  )
+            else { return nil }
+            found = match.range
+            return (match.range, !isCut(match.range))
+        }
+        var ranges: [NSRange] = []
+        var position = 0
+        var next = 0
+        while true {
+            while next < urls.count, urls[next].location < position { next += 1 }
+            let url = next < urls.count ? urls[next] : nil
+            let path = nextPath(from: position)
+            // Leftmost first, and a URL before a path at the same place.
+            if let url, path.map({ url.location <= $0.range.location }) ?? true {
+                ranges.append(url)
+                position = url.location + url.length
+            } else if let path {
+                if path.whole { ranges.append(path.range) }
+                position = path.range.location + max(path.range.length, 1)
+            } else {
+                return ranges
+            }
+        }
+    }
+
+    /// Ghostty's scheme branch, in one pass:
+    /// `scheme(?:ipv6|chars+(?:\(\w*\)|\[\w*\])?)+(?<![,.])`. Its pattern says
+    /// this with nested repetition, which ICU backtracks through exponentially.
+    static func schemeURL(in units: [UInt16], schemeAt scheme: NSRange) -> NSRange? {
+        let limit = units.count
+        func ascii(_ character: Unicode.Scalar) -> UInt16 { UInt16(character.value) }
+        /// The width in units of the `\w` character at `index`, or nil.
+        func word(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            let unit = units[index]
+            if UTF16.isLeadSurrogate(unit), index + 1 < limit, UTF16.isTrailSurrogate(units[index + 1]) {
+                let scalar = UTF16.decode(UTF16.EncodedScalar([unit, units[index + 1]]))
+                return CharacterSet.alphanumerics.contains(scalar) ? 2 : nil
+            }
+            guard let scalar = Unicode.Scalar(unit) else { return nil }
+            return scalar == "_" || CharacterSet.alphanumerics.contains(scalar) ? 1 : nil
+        }
+        func urlCharacter(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            return word(at: index) ?? ("-.~:/?#@!$&*+,;=%".utf16.contains(units[index]) ? 1 : nil)
+        }
+        /// The end of a bracketed IPv6 host with an optional port at `index`.
+        func ipv6(at index: Int) -> Int? {
+            guard index < limit, units[index] == ascii("[") else { return nil }
+            var end = index + 1
+            while end < limit, ":0123456789abcdefABCDEF".utf16.contains(units[end]) { end += 1 }
+            guard end > index + 1, end < limit, units[end] == ascii("]") else { return nil }
+            end += 1
+            if end < limit, units[end] == ascii(":") {
+                var port = end + 1
+                while port < limit, "0123456789".utf16.contains(units[port]) { port += 1 }
+                if port > end + 1 { end = port }
+            }
+            return end
+        }
+        /// The end of a `(word)` or `[word]` suffix at `index`.
+        func suffix(at index: Int) -> Int? {
+            guard index < limit else { return nil }
+            let close: UInt16
+            switch units[index] {
+            case ascii("("): close = ascii(")")
+            case ascii("["): close = ascii("]")
+            default: return nil
+            }
+            var end = index + 1
+            while let width = word(at: end) { end += width }
+            return end < limit && units[end] == close ? end + 1 : nil
+        }
+        let body = scheme.location + scheme.length
+        var index = body
+        while true {
+            if let end = ipv6(at: index) {
+                index = end
+                continue
+            }
+            let run = index
+            while let width = urlCharacter(at: index) { index += width }
+            guard index > run else { break }
+            if let end = suffix(at: index) { index = end }
+        }
+        while index > body, units[index - 1] == ascii(".") || units[index - 1] == ascii(",") {
+            index -= 1
+        }
+        return index > body ? NSRange(location: scheme.location, length: index - scheme.location) : nil
+    }
+
+    private static let schemePattern = try? NSRegularExpression(
+        pattern: #"https?://|mailto:|ftp://|file:|ssh:|git://|ssh://|tel:|magnet:|ipfs://|ipns://|gemini://|gopher://|news:"#
+    )
+
+    private func cellReference(column: UInt16, row: UInt16) -> GhosttyGridRef? {
+        var target = GhosttyPoint()
+        target.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        target.value.coordinate = GhosttyPointCoordinate(x: column, y: UInt32(row))
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        guard ghostty_terminal_grid_ref(terminal, target, &reference) == GHOSTTY_SUCCESS else { return nil }
+        return reference
+    }
+
+    private func hyperlink(_ reference: inout GhosttyGridRef) -> String? {
+        var length = 0
+        guard ghostty_grid_ref_hyperlink_uri(&reference, nil, 0, &length) == GHOSTTY_OUT_OF_SPACE, length > 0 else {
+            return nil
+        }
+        var bytes = [UInt8](repeating: 0, count: length)
+        guard bytes.withUnsafeMutableBufferPointer({
+            ghostty_grid_ref_hyperlink_uri(&reference, $0.baseAddress, length, &length)
+        }) == GHOSTTY_SUCCESS else { return nil }
+        return String(decoding: bytes.prefix(length), as: UTF8.self)
+    }
+
+    private func wide(_ reference: inout GhosttyGridRef) -> GhosttyCellWide {
+        var raw: GhosttyCell = 0
+        var wide = GHOSTTY_CELL_WIDE_NARROW
+        if ghostty_grid_ref_cell(&reference, &raw) == GHOSTTY_SUCCESS {
+            _ = ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide)
+        }
+        return wide
+    }
+
+    private func screenReference(column: UInt16, row: UInt32) -> GhosttyGridRef? {
+        var target = GhosttyPoint()
+        target.tag = GHOSTTY_POINT_TAG_SCREEN
+        target.value.coordinate = GhosttyPointCoordinate(x: column, y: row)
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        guard ghostty_terminal_grid_ref(terminal, target, &reference) == GHOSTTY_SUCCESS else { return nil }
+        return reference
+    }
+
+    /// Whether a screen row continues on the next one.
+    private func wraps(screenRow row: UInt32) -> Bool {
+        guard var reference = screenReference(column: 0, row: row) else { return false }
+        var gridRow: GhosttyRow = 0
+        guard ghostty_grid_ref_row(&reference, &gridRow) == GHOSTTY_SUCCESS else { return false }
+        var wrapped = false
+        _ = ghostty_row_get(gridRow, GHOSTTY_ROW_DATA_WRAP, &wrapped)
+        return wrapped
+    }
+
+    /// Ghostty's path branches of its link pattern (`src/config/url.zig`), with
+    /// changes that keep its matches: a lookbehind must be bounded, so `\$\d*`
+    /// becomes `\$\d{0,9}`; the dot lookaheads scan once, possessively, up to
+    /// the first dot; and repetition no later step can use is possessive. Its
+    /// scheme branch is `schemeURL`.
+    static let pathPattern: NSRegularExpression? = {
+        let pathCharacters = #"[\w\-.~:\/?#@!$&*+;=%]"#
+        let noTrailingColon = #"(?<!:)"#
+        let dottedLookahead = #"(?=[\w\-~:\/?#@!$&*+;=%]*+\.)"#
+        let undottedLookahead = #"(?![\w\-~:\/?#@!$&*+;=%]*+\.)"#
+        let dottedSpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]*[\/.])*"#
+        let anySpaceSegments = #"(?:(?<!:) (?!\w+:\/\/)(?!\.{0,2}\/)(?!~\/)[\w\-.~:\/?#@!$&*+;=%]+)*"#
+        let rootedPrefix = #"(?:\.\.\/|\.\/|(?<!\w)~\/|(?<!\w)(?:[\w][\w\-.]*\/)*+(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))"#
+        let rooted = rootedPrefix + "(?:" + dottedLookahead + pathCharacters + "+" + dottedSpaceSegments + noTrailingColon
+            + "|" + undottedLookahead + pathCharacters + "+" + anySpaceSegments + noTrailingColon + ")"
+        // Ghostty puts the dotted lookahead before these lookbehinds. ICU
+        // tries each at every position, and a lookahead that scans the rest
+        // of a long word there costs its square; lookbehinds first is the
+        // same match.
+        let bare = #"(?<!\$\d{0,9})(?<!\w)"# + dottedLookahead + #"[\w][\w\-.]*\/"# + pathCharacters + "+" + noTrailingColon
+        do {
+            return try NSRegularExpression(pattern: rooted + "|" + bare)
+        } catch {
+            // Only detected paths go; URLs and OSC 8 hyperlinks still work.
+            Log.termiod.error("path pattern does not compile: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }()
 
     /// Whether the view follows the live screen, rather than showing history.
     var followsLiveScreen: Bool {
@@ -713,6 +1229,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         var behavior = GhosttyTerminalScrollViewport()
         behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
         ghostty_terminal_scroll_viewport(terminal, behavior)
+        changesLocked &+= 1
     }
 
     /// Applies an `E vt_resize` marker: the same operation the daemon's sidecar
@@ -721,6 +1238,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
     /// otherwise this is `resize_for_shell`.
     func resize(rows: UInt16, cols: UInt16, reflow: Bool) throws {
         try locked {
+            changesLocked &+= 1
             if reflow {
                 try resizeReflowing(rows: rows, cols: cols)
             } else {

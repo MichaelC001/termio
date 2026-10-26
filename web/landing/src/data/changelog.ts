@@ -17,6 +17,20 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.65.0",
+    date: "2026-10-25",
+    title: "Tailscale, built in",
+    changes: {
+      new: [
+        "Built-in Tailscale: Settings ▸ Server ▸ Pairing puts this Mac on your tailnet without the Tailscale app, so your iPhone can pair over Tailscale. Only the Tailscale account that signs in gets in.",
+        "The Linux installer joins your tailnet with Tailscale built in, so a box needs no Tailscale install to pair with your Mac or iPhone.",
+      ],
+      improved: [
+        "Every command is now termio. The server's commands moved under termio server, such as termio server tailscale on and termio server stop, and --host runs any of them on another machine over SSH.",
+      ],
+    },
+  },
+  {
     version: "0.64.1",
     date: "2026-10-25",
     title: "The panel divider, on the line",
