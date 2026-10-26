@@ -17,6 +17,26 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.66.0",
+    date: "2026-10-26",
+    title: "Sessions from any shell",
+    changes: {
+      new: [
+        "termio session works without the app: it lists, starts, types into, reads and closes this machine's sessions directly. termio session create and termio session attach start or join one from your shell.",
+        "-H <host> runs any termio command on another machine over SSH, such as termio -H mybox session ls.",
+        "On a Linux server, termio . opens the folder as a project on that server.",
+      ],
+      improved: [
+        "termio sessions is now termio session. The old name still works.",
+        "termio sim --help shows a working build-and-launch example and the order a command picks a device in.",
+      ],
+      fixed: [
+        "Stopping the Termio server with built-in Tailscale on no longer leaves a stale status behind.",
+        "termio sim tap --label no longer fails right after termio sim launch, and termio sim inspect shows an empty text field's placeholder as a placeholder.",
+      ],
+    },
+  },
+  {
     version: "0.65.0",
     date: "2026-10-25",
     title: "Tailscale, built in",
