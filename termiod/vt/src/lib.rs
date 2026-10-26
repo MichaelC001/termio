@@ -433,6 +433,15 @@ impl VtTerminal {
             terminal.set_continuation_limit(CONTINUATION_LIMIT),
             "Terminal::set_continuation_limit",
         )?;
+        // Grapheme clustering (mode 2027), as Ghostty's default
+        // `grapheme-width-method = unicode` sets it: a skin-tone or ZWJ emoji is
+        // one grapheme in one cell, not a cell per codepoint. Clients decode it
+        // from the snapshot, so every VT of a session clusters alike. A full
+        // reset turns it off again, as libghostty-vt has no mode defaults.
+        check(
+            terminal.set_mode(Mode::GRAPHEME_CLUSTER, true),
+            "set_mode(GRAPHEME_CLUSTER, true)",
+        )?;
         Self::wrap(terminal)
     }
 
@@ -1291,6 +1300,16 @@ mod tests {
         terminal.vt_write(b"\x1b[?12$p\x1bP$q q\x1b\\");
         let alone = String::from_utf8(terminal.take_replies()).unwrap();
         assert!(alone.starts_with("\x1b[?12;") && alone.ends_with(" q\x1b\\"), "nobody writes: answered here, {alone:?}");
+    }
+
+    /// A skin-tone emoji is one grapheme in one wide cell, as in Ghostty, so
+    /// the cursor lands two columns on, not four.
+    #[test]
+    fn a_modified_emoji_is_one_grapheme() {
+        let mut terminal = VtTerminal::new(4, 20).expect("terminal");
+        terminal.vt_write("👍🏽x".as_bytes());
+        let screen = terminal.snapshot().expect("cells");
+        assert_eq!(screen.cursor_x, 3);
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only
