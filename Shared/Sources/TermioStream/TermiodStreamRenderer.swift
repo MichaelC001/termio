@@ -750,6 +750,26 @@ public final class TermiodGlyphAtlas {
         /// One grapheme can be one cell or two (mode 2027 decides an emoji's
         /// width), and an emoji's sprite is sized to its cells.
         public var cells: Int
+        /// A glyph a run shaped to (`ligatures`), drawn as itself, `shift`
+        /// pixels right of its cell; nil draws `graphemes`.
+        public var glyph: CGGlyph? = nil
+        public var shift: Int = 0
+    }
+
+    /// What one character of a shaped run draws.
+    public enum Shaped: Equatable {
+        /// What the character draws on its own.
+        case same
+        /// A glyph its neighbours swapped in, `shift` pixels right of its cell.
+        case glyph(CGGlyph, shift: Int)
+        /// Nothing: a ligature glyph from a character before it covers it.
+        case covered
+    }
+
+    private struct RunKey: Hashable {
+        var run: [UInt16]
+        var bold: Bool
+        var italic: Bool
     }
 
     /// Replaced, never rewritten, when the atlas is emptied: a frame still on
@@ -764,6 +784,7 @@ public final class TermiodGlyphAtlas {
     /// glyph that does not fit then is dropped, not drawn from a stale slot.
     public var mayEmpty = true
     private var slots: [Key: Slot?] = [:]
+    private var shaped: [RunKey: [Shaped]?] = [:]
     private var shelfX = 0
     private var shelfY = 0
     private var shelfHeight = 0
@@ -838,9 +859,71 @@ public final class TermiodGlyphAtlas {
     /// The sprite for a grapheme, rasterized on first use. Nil for a grapheme
     /// with nothing to draw, or once the atlas is full.
     public func slot(graphemes: [UInt32], bold: Bool, italic: Bool, cells: Int) -> Slot? {
-        let key = Key(graphemes: graphemes, bold: bold, italic: italic, cells: cells)
+        lookup(Key(graphemes: graphemes, bold: bold, italic: italic, cells: cells))
+    }
+
+    /// The sprite for a glyph a shaped run swapped in. An empty glyph, the
+    /// spacer a ligature font puts after its ligature, is an empty sprite.
+    public func slot(glyph: CGGlyph, shift: Int, bold: Bool, italic: Bool) -> Slot? {
+        lookup(Key(graphemes: [], bold: bold, italic: italic, cells: 1, glyph: glyph, shift: shift))
+    }
+
+    /// How a run of characters in one style shapes, as Ghostty shapes runs:
+    /// a font with programming ligatures (Fira Code, JetBrains Mono) swaps in
+    /// glyphs by their neighbours, which shaping each cell alone never sees.
+    /// One entry per character; nil when every character draws as it does
+    /// alone, or when a fallback face would draw part of the run.
+    public func ligatures(_ run: [UInt16], bold: Bool, italic: Bool) -> [Shaped]? {
+        let key = RunKey(run: run, bold: bold, italic: italic)
+        if let cached = shaped[key] { return cached }
+        let result = shape(run, font: fonts[(bold ? 1 : 0) + (italic ? 2 : 0)])
+        // Runs repeat on a screen; a cap keeps a stream of novel ones bounded.
+        if shaped.count >= 4096 { shaped.removeAll(keepingCapacity: true) }
+        shaped[key] = result
+        return result
+    }
+
+    private func shape(_ run: [UInt16], font: CTFont) -> [Shaped]? {
+        let string = String(utf16CodeUnits: run, count: run.count) as CFString
+        guard let attributed = CFAttributedStringCreate(nil, string, [kCTFontAttributeName: font] as CFDictionary),
+              let runs = CTLineGetGlyphRuns(CTLineCreateWithAttributedString(attributed)) as? [CTRun],
+              runs.count == 1, let line = runs.first,
+              let used = (CTRunGetAttributes(line) as NSDictionary)[kCTFontAttributeName] as CFTypeRef?,
+              CFGetTypeID(used) == CTFontGetTypeID(),
+              CFEqual(CTFontCopyPostScriptName(unsafeBitCast(used, to: CTFont.self)), CTFontCopyPostScriptName(font))
+        else { return nil }
+        let count = CTRunGetGlyphCount(line)
+        var glyphs = [CGGlyph](repeating: 0, count: count)
+        var indices = [CFIndex](repeating: 0, count: count)
+        var positions = [CGPoint](repeating: .zero, count: count)
+        var advances = [CGSize](repeating: .zero, count: count)
+        CTRunGetGlyphs(line, CFRange(location: 0, length: count), &glyphs)
+        CTRunGetStringIndices(line, CFRange(location: 0, length: count), &indices)
+        CTRunGetPositions(line, CFRange(location: 0, length: count), &positions)
+        CTRunGetAdvances(line, CFRange(location: 0, length: count), &advances)
+        var alone = [CGGlyph](repeating: 0, count: run.count)
+        var characters = run
+        CTFontGetGlyphsForCharacters(font, &characters, &alone, run.count)
+        var result = [Shaped](repeating: .covered, count: run.count)
+        var seen = Set<Int>()
+        // Where the pen stood when the glyph's cell began, as Ghostty's shaper
+        // keeps it: measured against the cell grid instead, the font's
+        // fractional advance would add up along the run and walk every glyph
+        // off its cell, ligatures or not.
+        var pen: CGFloat = 0
+        for (glyph, (index, (position, advance))) in zip(glyphs, zip(indices, zip(positions, advances))) {
+            // Two glyphs for one character is not a cell's worth of drawing.
+            guard index >= 0, index < run.count, seen.insert(index).inserted else { return nil }
+            let shift = Int((position.x - pen).rounded())
+            pen += advance.width
+            result[index] = glyph == alone[index] && shift == 0 ? .same : .glyph(glyph, shift: shift)
+        }
+        return result.allSatisfy { $0 == .same } ? nil : result
+    }
+
+    private func lookup(_ key: Key) -> Slot? {
         if let cached = slots[key] { return cached }
-        var slot = rasterize(key, cells: cells)
+        var slot = rasterize(key, cells: key.cells)
         if slot == nil, exhausted, mayEmpty, let fresh = try? Self.makeTexture(device, size: size) {
             // Full: start over rather than stop drawing new characters. The
             // screen's own glyphs come back on the rebuild this triggers.
@@ -851,7 +934,7 @@ public final class TermiodGlyphAtlas {
             shelfHeight = 0
             exhausted = false
             generation += 1
-            slot = rasterize(key, cells: cells)
+            slot = rasterize(key, cells: key.cells)
         }
         slots[key] = slot
         return slot
@@ -928,6 +1011,7 @@ public final class TermiodGlyphAtlas {
     }
 
     private func rasterize(_ key: Key, cells: Int) -> Slot? {
+        if let glyph = key.glyph { return rasterize(glyph: glyph, key: key) }
         if Self.fillsCell(key.graphemes) { return rasterizeFillingCell(key) }
         var text = String.UnicodeScalarView()
         for codepoint in key.graphemes {
@@ -991,6 +1075,46 @@ public final class TermiodGlyphAtlas {
             size: SIMD2(UInt16(width), UInt16(height)),
             offset: SIMD2(Int16(clamping: left), Int16(clamping: top)),
             colored: colored
+        )
+    }
+
+    private func rasterize(glyph: CGGlyph, key: Key) -> Slot? {
+        let font = fonts[(key.bold ? 1 : 0) + (key.italic ? 2 : 0)]
+        var glyph = glyph
+        let bounds = CTFontGetBoundingRectsForGlyphs(font, .horizontal, &glyph, nil, 1)
+        guard bounds.width > 0, bounds.height > 0 else {
+            return Slot(origin: SIMD2(0, 0), size: SIMD2(0, 0), offset: SIMD2(0, 0), colored: false)
+        }
+        let padding = 1
+        let width = Int(bounds.width.rounded(.up)) + 2 * padding
+        let height = Int(bounds.height.rounded(.up)) + 2 * padding
+        guard let origin = allocate(width: width, height: height) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return false }
+            context.setShouldAntialias(true)
+            context.setShouldSmoothFonts(false)
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            var position = CGPoint(x: CGFloat(padding) - bounds.minX, y: CGFloat(padding) - bounds.minY)
+            CTFontDrawGlyphs(font, &glyph, &position, 1, context)
+            return true
+        }
+        guard drawn else { return nil }
+        texture.replace(
+            region: MTLRegionMake2D(origin.x, origin.y, width, height),
+            mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4
+        )
+        let top = metrics.baseline - Int(bounds.maxY.rounded(.up)) - padding
+        let left = Int(bounds.minX.rounded(.down)) - padding + key.shift
+        return Slot(
+            origin: SIMD2(UInt16(origin.x), UInt16(origin.y)),
+            size: SIMD2(UInt16(width), UInt16(height)),
+            offset: SIMD2(Int16(clamping: left), Int16(clamping: top)),
+            colored: false
         )
     }
 
@@ -1102,8 +1226,17 @@ public final class TermiodStreamFrameBuilder {
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
         let atlasMoved = builtAtlas !== atlas || builtGeneration != atlas.generation
         let full = stale || atlasMoved || dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || rowRectangles.count != Int(rows)
+        // A cursor that moved leaves one row's runs whole again and breaks
+        // another's, and moving it dirties neither.
+        let cursorBreak = Self.shapingBreak(state)
+        var cursorRows: Set<Int> = []
+        if cursorBreak?.x != shapingCursor?.x || cursorBreak?.y != shapingCursor?.y {
+            if let old = shapingCursor?.y { cursorRows.insert(old) }
+            if let new = cursorBreak?.y { cursorRows.insert(new) }
+            shapingCursor = cursorBreak
+        }
         var changed = false
-        if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE {
+        if full || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || !cursorRows.isEmpty {
             stale = false
             changed = true
             background = colors.background
@@ -1113,7 +1246,7 @@ public final class TermiodStreamFrameBuilder {
                 rowWideStarts = Array(repeating: [], count: Int(rows))
             }
             let generation = atlas.generation
-            rebuildRows(state, full: full, colors: colors, atlas: atlas)
+            rebuildRows(state, full: full, also: cursorRows, colors: colors, atlas: atlas)
             // The atlas was emptied to make room partway through, so rows
             // built before that point name sprites that are gone.
             if atlas.generation != generation {
@@ -1173,7 +1306,8 @@ public final class TermiodStreamFrameBuilder {
     }
 
     private func rebuildRows(
-        _ state: GhosttyRenderState, full: Bool, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas
+        _ state: GhosttyRenderState, full: Bool, also extra: Set<Int> = [], colors: GhosttyRenderStateColors,
+        atlas: TermiodGlyphAtlas
     ) {
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &rowIterator)
         var y = 0
@@ -1182,7 +1316,7 @@ public final class TermiodStreamFrameBuilder {
             guard y < rowRectangles.count else { break }
             var rowDirty = false
             _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &rowDirty)
-            guard full || rowDirty else { continue }
+            guard full || rowDirty || extra.contains(y) else { continue }
             rebuildRow(y, colors: colors, atlas: atlas)
             var clean = false
             _ = ghostty_render_state_row_set(rowIterator, GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean)
@@ -1238,6 +1372,20 @@ public final class TermiodStreamFrameBuilder {
     }
 
     private var lastCursorState: CursorState?
+    /// The cell runs were last broken at: the cursor's, shown or hidden, as
+    /// Ghostty breaks them.
+    private var shapingCursor: (x: UInt16, y: Int)?
+
+    private static func shapingBreak(_ state: GhosttyRenderState) -> (x: UInt16, y: Int)? {
+        var hasValue = false
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &hasValue)
+        guard hasValue else { return nil }
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &x)
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &y)
+        return (x, Int(y))
+    }
 
     /// Everything the composed text's drawing depends on.
     private struct PreeditState: Equatable {
@@ -1310,6 +1458,7 @@ public final class TermiodStreamFrameBuilder {
     private func rebuildRow(_ y: Int, colors: GhosttyRenderStateColors, atlas: TermiodGlyphAtlas) {
         var rectangles: [TermiodStreamRectangle] = []
         var glyphs: [TermiodStreamGlyph] = []
+        var ligatureCells: [LigatureCell] = []
         var wideStarts: Set<UInt16> = []
         let metrics = atlas.metrics
         _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells)
@@ -1390,8 +1539,19 @@ public final class TermiodStreamFrameBuilder {
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {
                 continue
             }
+            // Before contrast, which follows each cell's own background: Ghostty
+            // never breaks a run on the background.
+            let styled = foreground
             if minimumContrast > 1, !slot.colored, !TermiodGlyphAtlas.isGraphic(grapheme) {
                 foreground = Self.contrasted(foreground, against: background, minimum: minimumContrast)
+            }
+            if grapheme.count == 1, let unit = Self.ligaturePunctuation(grapheme[0]) {
+                let look = LigatureCell.Look(
+                    red: styled.r, green: styled.g, blue: styled.b, alpha: alpha, inverse: style.inverse,
+                    selected: selection?.contains(x) == true,
+                    cursor: shapingCursor.map { $0.y == y && $0.x == x } ?? false)
+                ligatureCells.append(LigatureCell(
+                    glyph: glyphs.count, x: x, unit: unit, bold: style.bold, italic: style.italic, look: look))
             }
             glyphs.append(TermiodStreamGlyph(
                 cellX: x, cellY: UInt16(y),
@@ -1402,9 +1562,86 @@ public final class TermiodStreamFrameBuilder {
                 colored: slot.colored ? 1 : 0
             ))
         }
+        applyLigatures(ligatureCells, to: &glyphs, atlas: atlas)
         rowRectangles[y] = rectangles
         rowGlyphs[y] = glyphs
         rowWideStarts[y] = wideStarts
+    }
+
+    /// A cell a ligature can join: one character of ASCII punctuation, the
+    /// whole of what programming ligatures are made of (`=>`, `!=`, `-->`).
+    private struct LigatureCell {
+        var glyph: Int
+        var x: UInt16
+        var unit: UInt16
+        var bold: Bool
+        var italic: Bool
+        /// What decides how the cell's glyph is drawn. A run breaks where any
+        /// of it changes, as Ghostty's does on any style but the background,
+        /// at a selection's edges and around the cursor: one glyph spans the
+        /// run's cells, and it can only be drawn one way.
+        var look: Look
+
+        struct Look: Equatable {
+            var red: UInt8
+            var green: UInt8
+            var blue: UInt8
+            var alpha: UInt8
+            var inverse: Bool
+            var selected: Bool
+            var cursor: Bool
+        }
+
+        func joins(_ next: LigatureCell) -> Bool {
+            next.x == x + 1 && next.bold == bold && next.italic == italic && next.look == look && !look.cursor
+        }
+    }
+
+    private static func ligaturePunctuation(_ codepoint: UInt32) -> UInt16? {
+        let punctuation = (0x21...0x2F).contains(codepoint) || (0x3A...0x40).contains(codepoint)
+            || (0x5B...0x60).contains(codepoint) || (0x7B...0x7E).contains(codepoint)
+        return punctuation ? UInt16(codepoint) : nil
+    }
+
+    /// Shapes each run of adjacent punctuation in one style and swaps in the
+    /// glyphs its neighbours select, as Ghostty's run shaper draws them.
+    private func applyLigatures(
+        _ cells: [LigatureCell], to glyphs: inout [TermiodStreamGlyph], atlas: TermiodGlyphAtlas
+    ) {
+        var covered: [Int] = []
+        var start = 0
+        while start < cells.count {
+            var end = start + 1
+            while end < cells.count, cells[end - 1].joins(cells[end]) { end += 1 }
+            let run = cells[start ..< end]
+            start = end
+            guard run.count >= 2, let first = run.first,
+                  let shaped = atlas.ligatures(run.map(\.unit), bold: first.bold, italic: first.italic)
+            else { continue }
+            // All of the run's glyphs, or none of them: a cell a ligature
+            // covers must not vanish while its ligature is not drawn.
+            var slots: [(Int, TermiodGlyphAtlas.Slot)] = []
+            var complete = true
+            for (cell, result) in zip(run, shaped) {
+                guard case let .glyph(glyph, shift) = result else { continue }
+                guard let slot = atlas.slot(glyph: glyph, shift: shift, bold: cell.bold, italic: cell.italic) else {
+                    complete = false
+                    break
+                }
+                slots.append((cell.glyph, slot))
+            }
+            guard complete else { continue }
+            for (index, slot) in slots {
+                glyphs[index].atlasX = slot.origin.x
+                glyphs[index].atlasY = slot.origin.y
+                glyphs[index].atlasWidth = slot.size.x
+                glyphs[index].atlasHeight = slot.size.y
+                glyphs[index].offsetX = slot.offset.x
+                glyphs[index].offsetY = slot.offset.y
+            }
+            for (cell, result) in zip(run, shaped) where result == .covered { covered.append(cell.glyph) }
+        }
+        for index in covered.sorted(by: >) { glyphs.remove(at: index) }
     }
 
     private func appendDecorations(
