@@ -253,7 +253,7 @@ extension TermioStore {
     /// which is exactly why this plane signals and never kills — no new
     /// `SessionStatus` case, and the sidebar and menu bar do not move.
     ///
-    /// The default `termio sessions watch` filter is done + needs-you, so this
+    /// The default `termio session watch` filter is done + needs-you, so this
     /// stays opt-in behind `--state stalled`. The evidence sentence is worded
     /// here rather than on the device, because it is prose a person reads.
     func applyTermiodStalled(_ stall: Termiod.StalledPayload, for id: Session.ID) {

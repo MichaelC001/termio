@@ -3,7 +3,7 @@ title: Termio server
 description: 一台机器上跑着什么，才让会话比应用活得久——termiod 怎么装、怎么保活、怎么原地升级，以及出问题时怎么查。
 x-i18n:
   source_path: server.mdx
-  source_hash: 2eb929e7250432daddc08a314bc3df296d7569889dbe8a276c23dca060a671f0
+  source_hash: ed135392cd22190538e8819e626902d97b4a9e718ceea1c1121e263c58ec7bc8
   generated_at: 2026-10-25
 ---
 
@@ -57,15 +57,15 @@ curl -fsSL https://www.termio.sh/install | sh
 
 ```bash
 termio server deploy           # 在本机安装或更新，然后校验
-termio server -H mybox deploy  # 同样的事，走你自己的 SSH 配置
+termio -H mybox server deploy  # 同样的事，走你自己的 SSH 配置
 ```
 
 `deploy` 是一次调和：无论机器处于什么状态，跑完都落到同一个状态。Termio 读
 `~/.ssh/config` 找主机，所以一台你已经能 `ssh` 上去的机器不需要任何新配置。参见
 [设备](/docs/devices)。
 
-`-H`（`--host`）对每一条 `termio server` 命令都有效，不只是 `deploy`：
-`termio server -H mybox status`、`termio server -H mybox attach api`。
+`-H`（`--host`）对每一条 `termio` 命令都有效，不只是 `deploy`：
+`termio -H mybox server status`、`termio -H mybox session attach api`。
 
 ## 让它一直活着
 
@@ -118,13 +118,12 @@ termio server handoff
 | 命令 | 它告诉你什么 |
 | --- | --- |
 | `termio server status` | 这台机器上有什么：二进制、它的版本，以及 socket 上是否真的有守护进程在应答。 |
-| `termio server list` | 宿主正持有的会话——加 `--host <box>` 可以问另一台机器。 |
+| `termio session ls --all` | 宿主正持有的会话——加 `--host <box>` 可以问另一台机器。 |
 | `termio server logs` | 没有观察者连着的时候，server 记下了什么。`-f` 跟随输出，`--path` 打印文件路径，方便附进 bug 报告。 |
 
 <Callout type="note">
-  `termiod` 是 server 自己的命令，和应用替你安装的
-  [`termio` 命令行工具](/docs/cli)是两回事。你很少需要手动敲 `termiod`——应用会替你跑
-  这些——但当某台机器不对劲、你想看而不是猜的时候，它就在那儿。
+  `termiod` 就是 server 进程本身，它只负责运行。本页的每一条命令都属于
+  [`termio` 命令行工具](/docs/cli)，应用和安装脚本会把它放到你的 `PATH` 上。
 </Callout>
 
 ## 停掉它

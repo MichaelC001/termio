@@ -64,8 +64,8 @@ lands (see the protocol doc's roadmap).
 ## The one-liner
 
 ```sh
-termio server -H my-vps deploy        # install or update it, then verify
-termio server -H my-vps attach api    # create the session if missing, attach
+termio -H my-vps server deploy        # install or update it, then verify
+termio -H my-vps session attach api    # create the session if missing, attach
 ```
 
 `--host` (`-H`) works with every `termio server` verb. `deploy` runs its loop
@@ -74,7 +74,7 @@ on the box, over your own `ssh`. `my-vps` is any `~/.ssh/config` alias (or
 `user@host`). `attach` is `ssh -t my-vps termio server attach api`.
 
 Close your laptop mid-session; the daemon on the VPS owns the PTY, so the agent
-keeps running. Reconnect with `termio server -H my-vps attach <id>`.
+keeps running. Reconnect with `termio -H my-vps session attach <id>`.
 
 ## Cross-compiling on the Mac
 
@@ -101,7 +101,7 @@ rustup target add aarch64-unknown-linux-musl   # ARM VPS (Graviton, Ampere, Pi)
 rustup target add x86_64-unknown-linux-musl     # Intel/AMD VPS
 ```
 
-`termio server -H <host> deploy` runs `uname -sm` on the host, picks the matching
+`termio -H <host> server deploy` runs `uname -sm` on the host, picks the matching
 target — the slice bundled beside the binary when there is one, a cross-compile
 otherwise — and installs. On a Linux box the `termio` client installs beside the
 daemon in the same pass, so a box's client and daemon are always the same build.
@@ -120,7 +120,7 @@ install one and override `linker` in `.cargo/config.toml`, or build on the host
 and deploy the prebuilt binary:
 
 ```sh
-termio server -H my-vps deploy --bin path/to/linux/termiod
+termio -H my-vps server deploy --bin path/to/linux/termiod
 ```
 
 ## What deploy does
@@ -129,7 +129,7 @@ One reconcile loop (`src/lifecycle.rs`; the design is
 `docs/design/20260827-termiod-lifecycle-reconcile.md`):
 
 ```sh
-termio server -H my-vps deploy
+termio -H my-vps server deploy
 #  ssh  my-vps ~/.local/bin/termio server status --json   # observe: binary, daemon, sessions
 #  scp  <bundled slice>  my-vps:.local/bin/termiod.new
 #  ssh  my-vps 'chmod +x … && mv termiod termiod.prev && mv termiod.new termiod'   # stage
@@ -339,9 +339,9 @@ Missing `pair.token` splits by where the bind came from:
 ## Reconnect workflow
 
 ```sh
-termio server -H my-vps ls                         # what's running on the VPS
-termio server -H my-vps attach <id|name>             # reattach; Ctrl-\ detaches
-termio server -H my-vps attach build -- npm run dev  # attach-or-create by name
+termio -H my-vps session ls --all                         # what's running on the VPS
+termio -H my-vps session attach <id|name>             # reattach; Ctrl-\ detaches
+termio -H my-vps session attach build -- npm run dev  # attach-or-create by name
 ```
 
 Session survives: SSH disconnects, laptop sleep, network drops. It ends only on

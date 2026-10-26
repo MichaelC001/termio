@@ -305,7 +305,7 @@ extension TermioStore {
         // question, and the window is only sometimes the answer. Surfaces are
         // made lazily on first render, but not every caller is a pane: a phone
         // opening a session this Mac never showed surfaces it here to spawn the
-        // agent with its resume arguments, and `termio sessions send` does the
+        // agent with its resume arguments, and `termio session send` does the
         // same for a background session. Declaring the window's grid for a pane
         // with no screen behind it made that attachment the newest-used
         // candidate the daemon sizes by, so every open moved the PTY to a width

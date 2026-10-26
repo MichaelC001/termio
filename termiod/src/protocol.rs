@@ -1705,7 +1705,7 @@ pub enum InputAction {
     Motion,
 }
 
-/// A row in `termio server list`.
+/// A row in `termio session ls --all`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,

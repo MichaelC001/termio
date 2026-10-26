@@ -88,7 +88,7 @@ struct AgentSettingsTab: View {
                 Toggle(isOn: $settings.sessionControlEnabled) {
                     SettingsLabel(
                         title: localized("Session control"),
-                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio sessions` command.")
+                        subtext: localized("Lets an agent see and drive its sibling sessions in this project via the `termio session` command.")
                     )
                 }
                 .toggleStyle(.switch)

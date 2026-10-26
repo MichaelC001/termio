@@ -1,6 +1,6 @@
 import Foundation
 
-/// A key named on `termio sessions send --key <name>`, resolved into the fields of
+/// A key named on `termio session send --key <name>`, resolved into the fields of
 /// one libghostty key event.
 ///
 /// A key's bytes are not a property of the key — they are a property of the key

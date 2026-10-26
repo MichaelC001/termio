@@ -149,7 +149,7 @@ struct SessionRowDragAndDrop: ViewModifier {
                 // token: a drag carries plain text, so any text target — a terminal,
                 // an editor, a text field — will accept it. Shipping the link means a
                 // stray drop pastes something that works (`termio://session/<uuid>`,
-                // what `termio sessions` takes) instead of leaking an internal id.
+                // what `termio session` takes) instead of leaking an internal id.
                 // A pane recognises one of these rows by parsing that link back off the
                 // drag pasteboard (see `TermioStore.resolveDraggedSession`), so plain
                 // text is the whole payload: SwiftUI rebuilds the item provider on the

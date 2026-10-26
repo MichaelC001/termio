@@ -377,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         menuBar = MenuBarController(store: store) { [weak self] id in
             // The tray's "come look at this" — same verb as a notification click
-            // and `termio sessions focus` (select + acknowledge + raise).
+            // and `termio session focus` (select + acknowledge + raise).
             self?.store.revealSession(id)
         }
 

@@ -78,7 +78,7 @@ scanning the QR code in the Mac app's Settings ▸ Mobile.
 <td width="62%"><img alt="Project session types and live states beside Codex and Claude Code" src="web/landing/public/screenshots/docs/05-session-statuses.png" width="100%" /></td>
 <td width="38%" valign="top">
 <h3>Status at a glance</h3>
-<p>Working, idle, done, or <em>needs you</em> — a mark on every row. The same list is <code>termio sessions list</code>.</p>
+<p>Working, idle, done, or <em>needs you</em> — a mark on every row. The same list is <code>termio session list</code>.</p>
 </td>
 </tr>
 <tr>
@@ -117,21 +117,21 @@ The `termio` CLI drives the running app. An agent inside Termio can spawn a sibl
 
 ```sh
 termio .                                    # open the current directory as a project
-termio sessions list                        # who's working, idle, or waiting on you
-termio sessions spawn "fix the flaky test"  # start a new agent session on a prompt
-termio sessions run "pnpm test --watch"     # start a plain terminal session on a command
-termio sessions send ab12cd34 "1"           # answer a sibling's permission prompt
-termio sessions read ab12cd34 --lines 40    # print what's on a session's screen
-termio sessions watch                       # stream status changes as they happen
-termio sessions focus ab12cd34              # bring a session forward in the app
-termio sessions close ab12cd34              # close it
+termio session list                        # who's working, idle, or waiting on you
+termio session spawn "fix the flaky test"  # start a new agent session on a prompt
+termio session run "pnpm test --watch"     # start a plain terminal session on a command
+termio session send ab12cd34 "1"           # answer a sibling's permission prompt
+termio session read ab12cd34 --lines 40    # print what's on a session's screen
+termio session watch                       # stream status changes as they happen
+termio session focus ab12cd34              # bring a session forward in the app
+termio session close ab12cd34              # close it
 termio notify "the migration finished"      # post a macOS notification
 ```
 
 `--wait` blocks until the turn settles and comes back with the final status and the transcript range to read. `--json` makes any `sessions` command machine-readable. `--agent` picks which agent `spawn` starts. `--direction` / `--ratio` decide where the new pane lands and how big it is.
 
 ```sh
-termio sessions spawn "run the migration" --agent codex --wait
+termio session spawn "run the migration" --agent codex --wait
 ```
 
 Session control installs a `termio` [agent skill](https://termio.sh/skill.md) into each agent's skills folder (`~/.claude/skills`, `~/.codex/skills`) and keeps it current on every launch. Any other agent can install the same skill from this repo:
