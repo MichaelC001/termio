@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import TermioShared
+import TermioStream
 
 /// Whether a person currently has their hands on this app's geometry — a
 /// window edge, a split divider, an inspector divider.
@@ -1850,6 +1851,9 @@ final class TermiodSessionLink: @unchecked Sendable {
         DispatchQueue.main.async { [self] in onStreaming?(streaming) }
     }
 
+    /// What XTVERSION names in a stream pane: the embedded surface's Ghostty.
+    private static let xtversion = "ghostty \(embeddedGhosttyVersion())"
+
     /// A native snapshot: the session's whole state, decoded into a terminal
     /// that replaces the previous one. Called on the reader thread, so every
     /// byte after it reaches the new terminal.
@@ -1860,6 +1864,7 @@ final class TermiodSessionLink: @unchecked Sendable {
         do {
             let terminal = try TermiodStreamTerminal(
                 nativeSnapshot: native,
+                xtversion: Self.xtversion,
                 onReply: { [weak self] reply in
                     // Answering is the writer's job alone (`TerminalDeviceReport`),
                     // which `sendDeviceReport` enforces.

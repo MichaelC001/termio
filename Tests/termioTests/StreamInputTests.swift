@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import GhosttyVt
 import TermioShared
 import XCTest
+@testable import TermioStream
 @testable import termio
 
 /// Input on the `vt_stream` plane: the client turns keystrokes into events
