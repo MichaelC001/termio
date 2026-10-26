@@ -1,5 +1,7 @@
+import CoreGraphics
 import Foundation
 import GhosttyVt
+import ImageIO
 import os
 
 /// The client's own copy of a session's screen on the `vt_stream` plane: a
@@ -92,6 +94,7 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         onSignal: @escaping (Signal) -> Void = { _ in },
         readClipboard: @escaping () -> String? = { nil }
     ) throws {
+        Self.installPNGDecoder
         terminal = try nativeSnapshot.withUnsafeBytes { buffer in
             try Self.decode(buffer.bindMemory(to: UInt8.self))
         }
@@ -301,6 +304,110 @@ final class TermiodStreamTerminal: @unchecked Sendable {
             throw Failure.engine("ghostty_snapshot_decoder_decode", GHOSTTY_INVALID_VALUE)
         }
         return decoded
+    }
+
+    /// The largest decoded PNG accepted, in RGBA bytes. termiod's decoder
+    /// refuses past the same size (`DECODED_LIMIT` in `termiod/vt/src/kitty_png.rs`).
+    static let pngDecodedLimit = 10_000_000
+
+    /// libghostty-vt decodes no PNG itself; it calls a process-wide hook. The
+    /// decoded size decides how many cells a Kitty image covers and so where
+    /// the cursor lands after it, so this must accept the PNGs termiod's
+    /// decoder accepts, at the same sizes, or the screens drift apart. Both
+    /// take the size from the header, refuse a PNG over the limit before
+    /// decoding it, and refuse one that does not end in its IEND chunk.
+    private static let installPNGDecoder: Void = {
+        let hook: GhosttySysDecodePngFn = { _, allocator, data, length, out in
+            guard let data, let out,
+                  let image = TermiodStreamTerminal.decodePNG(Data(bytes: data, count: length)),
+                  let buffer = ghostty_alloc(allocator, image.pixels.count)
+            else { return false }
+            image.pixels.withUnsafeBufferPointer { pixels in
+                if let base = pixels.baseAddress {
+                    buffer.update(from: base, count: pixels.count)
+                }
+            }
+            out.pointee = GhosttySysImage(
+                width: image.width, height: image.height, data: buffer, data_len: image.pixels.count
+            )
+            return true
+        }
+        let result = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, unsafeBitCast(hook, to: UnsafeRawPointer.self))
+        if result != GHOSTTY_SUCCESS {
+            Log.termiod.error("PNG decoder not installed: \(result.rawValue, privacy: .public)")
+        }
+    }()
+
+    /// Straight (not premultiplied) RGBA, which is what libghostty stores.
+    static func decodePNG(_ data: Data) -> (width: UInt32, height: UInt32, pixels: [UInt8])? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard pngChunksAreWhole(data),
+              let source = CGImageSourceCreateWithData(data as CFData, options),
+              CGImageSourceGetType(source) as String? == "public.png",
+              CGImageSourceGetStatus(source) == .statusComplete,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0
+        else { return nil }
+        let (count, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow, count <= pngDecodedLimit / 4,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, options),
+              image.width == width, image.height == height
+        else { return nil }
+        // The image's own RGB space, so no colour conversion changes the
+        // values a program sent; termiod passes them through untouched.
+        let space = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpaceCreateDeviceRGB()
+        var pixels = [UInt8](repeating: 0, count: count * 4)
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            ) else { return false }
+            context.setBlendMode(.copy)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        // A bitmap context only holds premultiplied alpha.
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = UInt16(pixels[index + 3])
+            guard alpha != 255 else { continue }
+            for channel in index ..< index + 3 {
+                pixels[channel] = alpha == 0 ? 0 : UInt8(min(255, (UInt16(pixels[channel]) * 255 + alpha / 2) / alpha))
+            }
+        }
+        return (UInt32(width), UInt32(height), pixels)
+    }
+
+    /// ImageIO draws a PNG whose IEND is missing or whose chunk CRC is wrong;
+    /// termiod's `png` crate refuses both. So every chunk up to IEND must be
+    /// present with a matching CRC, and bytes after IEND are ignored, as the
+    /// crate ignores them.
+    static func pngChunksAreWhole(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        guard bytes.starts(with: signature) else { return false }
+        var offset = signature.count
+        while offset + 12 <= bytes.count {
+            let length = bytes[offset ..< offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            let body = offset + 4
+            guard length <= Int(Int32.max), body + 4 + length + 4 <= bytes.count else { return false }
+            let stored = bytes[body + 4 + length ..< body + 8 + length].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+            guard crc32(bytes[body ..< body + 4 + length]) == stored else { return false }
+            if bytes[body ..< body + 4].elementsEqual("IEND".utf8) { return true }
+            offset = body + 8 + length
+        }
+        return false
+    }
+
+    private static let crcTable: [UInt32] = (0 ..< 256).map { index in
+        (0 ..< 8).reduce(UInt32(index)) { value, _ in value & 1 == 1 ? 0xEDB8_8320 ^ (value >> 1) : value >> 1 }
+    }
+
+    private static func crc32(_ bytes: ArraySlice<UInt8>) -> UInt32 {
+        ~bytes.reduce(UInt32.max) { crcTable[Int(($0 ^ UInt32($1)) & 0xFF)] ^ ($0 >> 8) }
     }
 
     deinit {

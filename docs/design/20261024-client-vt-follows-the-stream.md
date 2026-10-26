@@ -207,7 +207,11 @@ Each phase ends at a gate. A failed gate stops the work.
      image, so a client that diverges here fails the test. An image is drawn
      over the cells the VT gave it, scaled per axis from 8 by 16 to the
      font's cell: a font whose cell is not 1:2 stretches it slightly, the
-     price of one layout for every client of a session.
+     price of one layout for every client of a session. **Raw done (#791).**
+     PNG: termiod decodes with the `png` crate, the Mac with ImageIO behind
+     a chunk walk, because ImageIO draws a PNG with no IEND or a bad CRC that
+     the crate refuses. Both take the size from the header and refuse past
+     10 MB decoded. The fixture covers each refusal.
 
    Rex's server sends the title, PWD, bell, notifications, progress and OSC 52
    to clients as events, because its consumers include clients that do not
