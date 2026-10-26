@@ -116,12 +116,11 @@ final class TermiodStreamRenderer {
         buffer.commit()
     }
 
-    /// For a texture the CPU writes or reads: shared memory where the GPU has
-    /// it (Apple silicon). An Intel or AMD GPU takes no shared texture, so it
-    /// gets a managed one, whose CPU writes are copied up for it.
-    static func cpuTextureStorage(_ device: MTLDevice) -> MTLStorageMode {
-        device.hasUnifiedMemory ? .shared : .managed
-    }
+    /// For a texture the CPU writes or reads. On an Intel Mac no GPU takes a
+    /// shared texture, an integrated one included, though it reports unified
+    /// memory; managed is the macOS default and works on every GPU, Apple
+    /// silicon's included.
+    static let cpuTextureStorage = MTLStorageMode.managed
 
     /// The whole screen drawn into an image of the given pixel size, for
     /// looking at a frame without a window — the renderer's own tests.
@@ -133,7 +132,7 @@ final class TermiodStreamRenderer {
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
         )
         descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = Self.cpuTextureStorage(device)
+        descriptor.storageMode = Self.cpuTextureStorage
         guard let texture = device.makeTexture(descriptor: descriptor),
               let buffer = resources.queue.makeCommandBuffer(),
               encode(into: buffer, texture: texture)
@@ -729,7 +728,7 @@ final class TermiodGlyphAtlas {
             pixelFormat: .bgra8Unorm, width: size, height: size, mipmapped: false
         )
         descriptor.usage = .shaderRead
-        descriptor.storageMode = TermiodStreamRenderer.cpuTextureStorage(device)
+        descriptor.storageMode = TermiodStreamRenderer.cpuTextureStorage
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             throw TermiodStreamRenderer.Failure.metal("atlas texture")
         }
