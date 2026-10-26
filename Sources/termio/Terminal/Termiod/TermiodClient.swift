@@ -3215,6 +3215,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// the end of its stream and the reconnect loop takes over. `shutdown`,
     /// not `close`, so the descriptor cannot be reused under the reader.
     func dropConnection() {
+        dispatchPrecondition(condition: .notOnQueue(workQueue))
         workQueue.sync { [self] in
             guard let transport else { return }
             Darwin.shutdown(transport.readDescriptor, SHUT_RDWR)
