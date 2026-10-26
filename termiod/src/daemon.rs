@@ -918,7 +918,7 @@ pub async fn serve(
     }
 
     // The tailnet helper stops on the same signal as the WebSocket listener.
-    crate::tailnet::start(wss_shutdown.subscribe());
+    let tailnet = crate::tailnet::start(wss_shutdown.subscribe());
 
     // Other platforms never spawn this: the boxes termiod serves there are
     // servers that do not idle-sleep, and the mechanism is caffeinate anyway.
@@ -1048,6 +1048,7 @@ pub async fn serve(
     // back to serving, and taking the WebSocket listener down on the way past
     // would leave the phone disconnected from a daemon that never went anywhere.
     let _ = wss_shutdown.send(true);
+    crate::tailnet::finish(tailnet).await;
 
     manager.begin_draining(EndReason::DaemonStopped);
     let drained = manager.finish_draining(EndReason::DaemonStopped).await;

@@ -484,6 +484,8 @@
 	<string>Copy ssh Command</string>
 	<key>Could not run ssh: %@</key>
 	<string>Could not run ssh: %@</string>
+	<key>Could not run termio: %@</key>
+	<string>Could not run termio: %@</string>
 	<key>Couldn't read plan limits.</key>
 	<string>Couldn't read plan limits.</string>
 	<key>Couldn’t change the Themes folder</key>
