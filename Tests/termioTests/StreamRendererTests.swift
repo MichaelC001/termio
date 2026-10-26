@@ -95,6 +95,34 @@ final class StreamRendererTests: XCTestCase {
         return (changed, rectangles, glyphs)
     }
 
+    /// A font with programming ligatures draws `=>` from the glyphs its
+    /// neighbours select, as Ghostty's run shaper does; a font without them,
+    /// and a lone `=`, draw as before.
+    func testAPunctuationRunIsShapedAsOne() throws {
+        let ligatured = TermiodStreamRenderer.Appearance(
+            fontFamily: "JetBrains Mono", fallbackFamilies: [], fontSize: 13,
+            paddingX: 8, paddingY: 2, backgroundOpacity: 1
+        )
+        let installed = CTFontCreateWithFontDescriptor(
+            CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: "JetBrains Mono"] as CFDictionary), 13, nil)
+        try XCTSkipUnless((CTFontCopyFamilyName(installed) as String) == "JetBrains Mono", "JetBrains Mono is not installed")
+        let renderer = try TermiodStreamRenderer(appearance: ligatured, scale: 2)
+        let atlas = renderer.atlas
+        XCTAssertNotNil(atlas.ligatures(Array("=>".utf16), bold: false, italic: false))
+        XCTAssertNil(try TermiodGlyphAtlas(device: renderer.device, appearance: appearance, scale: 2)
+            .ligatures(Array("=>".utf16), bold: false, italic: false), "Menlo has no ligatures")
+
+        let terminal = try terminal()
+        terminal.write(Data("a => b = c".utf8))
+        let (_, _, glyphs) = try builtFrame(terminal, TermiodStreamFrameBuilder(), atlas)
+        let alone = try XCTUnwrap(atlas.slot(graphemes: [0x3D], bold: false, italic: false, cells: 1))
+        func origin(at column: UInt16) -> SIMD2<UInt16>? {
+            glyphs.first { $0.cellX == column && $0.cellY == 0 }.map { SIMD2($0.atlasX, $0.atlasY) }
+        }
+        XCTAssertNotEqual(origin(at: 2), alone.origin, "the = of => drew as a lone =")
+        XCTAssertEqual(origin(at: 7), alone.origin, "a lone = changed")
+    }
+
     /// Moving the cursor dirties no cell, and a frame must still follow it;
     /// hiding a block cursor gives the character under it its own color back.
     func testTheCursorRedrawsOnItsOwnAndLeavesNoTrace() throws {
