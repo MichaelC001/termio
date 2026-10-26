@@ -466,6 +466,9 @@ struct Session {
     answers_live: bool,
     /// What the VT was last told to answer with.
     applied_answers: Option<termiod_vt::Answers>,
+    /// Replies that arrived while a paste was open, which would otherwise
+    /// become part of the pasted text. Sent when it closes.
+    held_replies: Vec<u8>,
     /// The transcript address the last hook report carried, kept for the stall
     /// detector's probe 3. Deliberately not on `SessionInfo`: it describes one
     /// report, and a stale path surviving in a roster is a fact nobody
@@ -547,9 +550,16 @@ impl Session {
     /// answers for itself. Never for a replay, nor once the VT is stale, when
     /// the writer is told (`vt_stale`) and answers again.
     fn sync_answering(&mut self) {
+        // A writer that has not said yet, and nobody writing, keep the last
+        // answers: what the previous writer, or the previous image, said.
+        let last = || self.applied_answers.clone().unwrap_or_default();
         let answers = match self.writer.as_ref() {
-            Some(writer) => self.clients.get(writer).and_then(|entry| entry.answers.clone()),
-            None => Some(self.applied_answers.clone().unwrap_or_default()),
+            Some(writer) => self
+                .clients
+                .get(writer)
+                .and_then(|entry| entry.answers.clone())
+                .map(|answers| if answers == termiod_vt::Answers::default() { last() } else { answers }),
+            None => Some(last()),
         };
         let answering = self.answers_live && self.vt.is_live() && answers.is_some();
         if let Some(answers) = answers.filter(|_| answering) {
@@ -564,11 +574,24 @@ impl Session {
         }
     }
 
-    /// Replies the VT wrote, onto the PTY's input path. Dropped if answering
-    /// stopped since the bytes were parsed.
+    /// Replies the VT wrote, onto the PTY's input path. Not gated again here:
+    /// `SetAnswering` travels the sidecar's FIFO with the bytes, so a reply
+    /// exists only for a query parsed while the host was the one to answer.
+    /// Held while a paste is open, which it would otherwise join.
     fn write_replies(&mut self, replies: Vec<u8>) {
-        if self.answering && !replies.is_empty() {
+        if replies.is_empty() {
+            return;
+        }
+        if self.paste_in_progress.is_some() {
+            self.held_replies.extend_from_slice(&replies);
+        } else {
             let _ = self.input_tx.send(replies);
+        }
+    }
+
+    fn flush_held_replies(&mut self) {
+        if self.paste_in_progress.is_none() && !self.held_replies.is_empty() {
+            let _ = self.input_tx.send(std::mem::take(&mut self.held_replies));
         }
     }
 
@@ -578,6 +601,7 @@ impl Session {
         if let Some((_, true)) = self.paste_in_progress.take() {
             let _ = self.input_tx.send(PASTE_END.to_vec());
         }
+        self.flush_held_replies();
     }
 
     /// The write token only ever moves through here, and only ever onto a
@@ -698,6 +722,7 @@ impl Session {
         self.note_use(id);
         self.apply_size_policy();
         let _ = self.input_tx.send(bytes);
+        self.flush_held_replies();
     }
 
     /// Tells the program whether the writer's pane has focus, if it asked for
@@ -2398,6 +2423,7 @@ fn start(
         answering: false,
         answers_live: false,
         applied_answers: None,
+        held_replies: Vec::new(),
         status_engine: StatusEngine::new(
             std::time::Instant::now(),
             status::resolve_facts(
@@ -2734,6 +2760,12 @@ fn spawn_sidecar_sharing(
                                     fault = Some(format!("VT resize failed: {error}"));
                                 }
                                 refresh_input(&input, Some(terminal));
+                                // In-band size reports (mode 2048) are written
+                                // by the resize itself, not by any output.
+                                let replies = terminal.take_replies();
+                                if !replies.is_empty() && result_tx.send(SidecarResult::Replies(replies)).is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -2807,8 +2839,14 @@ fn spawn_sidecar_sharing(
                         }
                     }
                     SidecarCommand::SetAnswers(answers) => {
-                        if let Some(Err(error)) = terminal.as_mut().map(|terminal| terminal.set_answers(&answers)) {
-                            eprintln!("termiod: VT answers not applied: {error}");
+                        if let Some(terminal) = terminal.as_mut() {
+                            if let Err(error) = terminal.set_answers(&answers) {
+                                eprintln!("termiod: VT answers not applied: {error}");
+                            }
+                            let replies = terminal.take_replies();
+                            if !replies.is_empty() && result_tx.send(SidecarResult::Replies(replies)).is_err() {
+                                break;
+                            }
                         }
                     }
                     SidecarCommand::Shutdown => break,
@@ -3018,6 +3056,17 @@ async fn run(
                         Some(Ok(native)) => native,
                         _ => None,
                     };
+                    // Replies to bytes the sidecar parsed before it stopped are
+                    // still in flight; on the input path they cross with the
+                    // session, which the new image does not answer again.
+                    while let Ok(result) = sidecar_results.try_recv() {
+                        if let SidecarResult::Replies(replies) = result {
+                            session.held_replies.extend_from_slice(&replies);
+                        }
+                    }
+                    if !session.held_replies.is_empty() {
+                        let _ = session.input_tx.send(std::mem::take(&mut session.held_replies));
+                    }
                     // The PTY writer stops at once and hands back what it
                     // had not written, which crosses with the session.
                     let carried = session.into_carried(native);
@@ -3344,6 +3393,19 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     answers: vt_answers.then(termiod_vt::Answers::default),
                 },
             );
+            // `vt_stale` went out once, to whoever was attached; a client
+            // arriving later must hear it too, or it would wait for the host
+            // to answer queries the host can no longer answer.
+            if vt_answers {
+                if let Some(reason) = session.vt.refusal().map(str::to_string) {
+                    if let Some(entry) = session.clients.get(&id) {
+                        let _ = entry.out.send(ClientEvent::Event(Event::VtStale {
+                            session: session.id.to_string(),
+                            reason,
+                        }));
+                    }
+                }
+            }
             // Enabling precedes this client's in-band Snapshot request, so
             // later Writes can only produce G results after its S boundary.
             session.sync_grid_diff_interest();
@@ -3834,6 +3896,7 @@ mod tests {
                 answering: false,
                 answers_live: false,
                 applied_answers: None,
+                held_replies: Vec::new(),
                 status_engine: super::StatusEngine::new(
                     std::time::Instant::now(),
                     super::status::SessionFacts::default(),
@@ -4008,6 +4071,22 @@ mod tests {
         assert!(!session.answering);
         session.sync_answering();
         assert!(!session.answering, "a stale VT answered again");
+    }
+
+    /// A reply that arrives between a paste's pieces would become part of the
+    /// pasted text, so it waits for the paste to close.
+    #[tokio::test]
+    async fn a_reply_waits_for_an_open_paste_to_close() {
+        let (sidecar_tx, _sidecar_rx) = std_mpsc::channel();
+        let (mut session, _events) = test_session(sidecar_tx, Arc::new(SidecarQueue::new()));
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+        session.input_tx = input_tx;
+        session.paste_in_progress = Some((ClientId::new("mac"), true));
+        session.write_replies(b"\x1b[1;1R".to_vec());
+        assert!(input_rx.try_recv().is_err(), "a reply joined an open paste");
+        session.close_open_paste();
+        assert_eq!(input_rx.try_recv().unwrap(), super::PASTE_END.to_vec());
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[1;1R".to_vec());
     }
 
     fn declare_viewport(session: &mut Session, id: &str, rows: u16, cols: u16, rendering: bool) {
@@ -5467,6 +5546,7 @@ mod tests {
             answering: false,
             answers_live: false,
             applied_answers: None,
+            held_replies: Vec::new(),
             status_engine: super::StatusEngine::new(
                 std::time::Instant::now(),
                 super::status::SessionFacts::default(),

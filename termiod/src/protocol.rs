@@ -1701,6 +1701,7 @@ pub enum Event {
     /// for the color queries (an empty palette is the engine's), and whether
     /// that theme is dark. Sent on attach and whenever the theme changes.
     Answers {
+        #[serde(default)]
         xtversion: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         foreground: Option<String>,

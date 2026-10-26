@@ -237,12 +237,24 @@ struct Answering {
 
 /// One leaked copy per distinct name: the XTVERSION callback must hand back
 /// a string that outlives it, and a host meets only a few app versions.
+/// Names past `NAME_LIMIT` bytes are cut (Ghostty's own answer buffer holds
+/// 288), and past `NAMES_LIMIT` distinct ones a new name is not kept.
 fn interned(name: &str) -> &'static str {
     use std::sync::{Mutex, OnceLock};
+    const NAME_LIMIT: usize = 256;
+    const NAMES_LIMIT: usize = 64;
     static NAMES: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+    let mut end = name.len().min(NAME_LIMIT);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let name = &name[..end];
     let mut names = NAMES.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap_or_else(|poison| poison.into_inner());
     if let Some(known) = names.iter().find(|known| **known == name) {
         return known;
+    }
+    if names.len() >= NAMES_LIMIT {
+        return "";
     }
     let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
     names.push(leaked);
@@ -313,7 +325,9 @@ fn listen(
 /// DA1 with clipboard access, which termio leaves at Ghostty's default, and
 /// Ghostty's DA2; XTVERSION as the writer's terminal names itself; size
 /// reports in `CELL_WIDTH` by `CELL_HEIGHT` cells; the writer's color scheme.
-/// What the engine writes back goes to `replies`, and only while on.
+/// One difference stays: the engine answers DA3, which Ghostty does not, and
+/// the callback is not told which level was asked. What the engine writes
+/// back goes to `replies`, and only while on.
 fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answering>) -> Result<()> {
     const PRIMARY: PrimaryDeviceAttributes = PrimaryDeviceAttributes::new(
         ConformanceLevel(62),
@@ -435,7 +449,15 @@ impl VtTerminal {
     pub fn set_answers(&mut self, answers: &Answers) -> Result<()> {
         let rgb = |color: [u8; 3]| RgbColor { r: color[0], g: color[1], b: color[2] };
         self.answering.xtversion.set(interned(&answers.xtversion));
-        self.answering.dark.set(answers.dark);
+        let scheme_changed = self.answering.dark.replace(answers.dark) != answers.dark;
+        // A program that turned on color scheme reports (mode 2031) is told
+        // when the writer's appearance changes, as Ghostty tells it.
+        if scheme_changed && self.answering.on.get() {
+            if let (Some(dark), Ok(true)) = (answers.dark, self.terminal.mode(Mode::COLOR_SCHEME_REPORT)) {
+                let report: &[u8] = if dark { b"\x1b[?997;1n" } else { b"\x1b[?997;2n" };
+                self.answering.replies.borrow_mut().extend_from_slice(report);
+            }
+        }
         check(self.terminal.set_default_fg_color(answers.foreground.map(rgb)), "Terminal::set_default_fg_color")?;
         check(self.terminal.set_default_bg_color(answers.background.map(rgb)), "Terminal::set_default_bg_color")?;
         check(self.terminal.set_default_cursor_color(answers.cursor.map(rgb)), "Terminal::set_default_cursor_color")?;
@@ -1190,6 +1212,31 @@ mod tests {
         let light = super::Answers { dark: Some(false), ..dark.clone() };
         assert_eq!(answer(b"\x1b[?996n", Some(&light)), "\x1b[?997;2n");
         assert_eq!(answer(b"\x1b]11;?\x07", Some(&dark)), "\x1b]11;rgb:1111/2222/3333\x07");
+    }
+
+    /// The two answers no query asks for: a scheme report when the writer's
+    /// appearance changes under mode 2031, and the in-band size report a
+    /// resize writes under mode 2048.
+    #[test]
+    fn unsolicited_reports_follow_their_modes() {
+        let mut terminal = VtTerminal::new(24, 80).expect("terminal");
+        terminal.resize(24, 80).expect("resize");
+        terminal.set_answering(true);
+        let light = super::Answers { dark: Some(false), ..Default::default() };
+        let dark = super::Answers { dark: Some(true), ..Default::default() };
+        terminal.set_answers(&light).expect("answers");
+        terminal.set_answers(&dark).expect("answers");
+        assert!(terminal.take_replies().is_empty(), "reported a scheme nobody asked to hear");
+        terminal.vt_write(b"\x1b[?2031h");
+        terminal.set_answers(&light).expect("answers");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[?997;2n");
+        terminal.set_answers(&light).expect("answers");
+        assert!(terminal.take_replies().is_empty(), "reported a scheme that did not change");
+
+        terminal.vt_write(b"\x1b[?2048h");
+        terminal.take_replies();
+        terminal.resize(30, 100).expect("resize");
+        assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[48;30;100;480;800t");
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only
