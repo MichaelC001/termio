@@ -82,7 +82,15 @@ pub enum SessionMsg {
         scrollback: bool,
         grid_diff: bool,
         vt_stream: bool,
+        /// Negotiated `vt_answers`: this client answers no query itself while
+        /// it writes, so the host's VT does.
+        vt_answers: bool,
         reply: oneshot::Sender<AddClientReply>,
+    },
+    /// What a `vt_answers` client wants queries answered with while it writes.
+    Answers {
+        id: ClientId,
+        answers: termiod_vt::Answers,
     },
     /// A client asks to be repainted: it lost bytes somewhere downstream and
     /// cannot reconstruct the screen from what it has.
@@ -221,6 +229,10 @@ struct ClientEntry {
     /// Whether this attachment's pane has focus, as it last said. The writer's
     /// is what a program asking for focus reports is told.
     focused: Option<bool>,
+    /// `Some` when it negotiated `vt_answers`: what the host answers with while
+    /// it writes. `None` is a client that answers for itself, so the host's VT
+    /// must not answer too, or the program would read every answer twice.
+    answers: Option<termiod_vt::Answers>,
 }
 
 /// Whether this attachment can hold the write token.
@@ -447,6 +459,13 @@ struct Session {
     /// `docs/design/20260831-companion-second-protocol-retires.md` §3.
     status_engine: StatusEngine,
     support_query: SupportQuery,
+    /// Whether the VT answers the program's queries now (`sync_answering`).
+    answering: bool,
+    /// Off until the previous image's output has been replayed into the VT:
+    /// a query in the replay was answered long ago.
+    answers_live: bool,
+    /// What the VT was last told to answer with.
+    applied_answers: Option<termiod_vt::Answers>,
     /// The transcript address the last hook report carried, kept for the stall
     /// detector's probe 3. Deliberately not on `SessionInfo`: it describes one
     /// report, and a stale path surviving in a roster is a fact nobody
@@ -519,6 +538,37 @@ impl Session {
         // may have said it has focus while it could not report it.
         if changed {
             self.report_writer_focus();
+        }
+        self.sync_answering();
+    }
+
+    /// The host's VT answers the program's queries while the writer
+    /// negotiated `vt_answers`, or while nobody writes; a writer without it
+    /// answers for itself. Never for a replay, nor once the VT is stale, when
+    /// the writer is told (`vt_stale`) and answers again.
+    fn sync_answering(&mut self) {
+        let answers = match self.writer.as_ref() {
+            Some(writer) => self.clients.get(writer).and_then(|entry| entry.answers.clone()),
+            None => Some(self.applied_answers.clone().unwrap_or_default()),
+        };
+        let answering = self.answers_live && self.vt.is_live() && answers.is_some();
+        if let Some(answers) = answers.filter(|_| answering) {
+            if self.applied_answers.as_ref() != Some(&answers) {
+                self.send_sidecar(SidecarCommand::SetAnswers(answers.clone()));
+                self.applied_answers = Some(answers);
+            }
+        }
+        if answering != self.answering {
+            self.answering = answering;
+            self.send_sidecar(SidecarCommand::SetAnswering(answering));
+        }
+    }
+
+    /// Replies the VT wrote, onto the PTY's input path. Dropped if answering
+    /// stopped since the bytes were parsed.
+    fn write_replies(&mut self, replies: Vec<u8>) {
+        if self.answering && !replies.is_empty() {
+            let _ = self.input_tx.send(replies);
         }
     }
 
@@ -910,6 +960,7 @@ impl Session {
         // sender is still there; the VT is down the moment it has.
         self.send_sidecar(SidecarCommand::Shutdown);
         self.vt = Vt::down(reason.clone());
+        self.answering = false;
         self.emit_event(Event::VtStale {
             session: self.id.to_string(),
             reason: reason.clone(),
@@ -2344,6 +2395,9 @@ fn start(
         events,
         vt: Vt::live(sidecar.commands, sidecar.queue),
         support_query: SupportQuery::default(),
+        answering: false,
+        answers_live: false,
+        applied_answers: None,
         status_engine: StatusEngine::new(
             std::time::Instant::now(),
             status::resolve_facts(
@@ -2372,6 +2426,9 @@ fn start(
         }
         session.push_ring(chunk);
     }
+    // Live output from here on: a query in it is the program waiting.
+    session.answers_live = true;
+    session.sync_answering();
     // `push_ring` may have set this itself, if what was carried no longer fits
     // the cap; either way the previous actor's verdict still applies.
     session.ring_reconstructs_screen &= replay.faithful;
@@ -2589,9 +2646,11 @@ fn spawn_sidecar_sharing(
                     SidecarCommand::Write(bytes) => {
                         let mut signals = osc.scan(&bytes);
                         pending_bytes = pending_bytes.saturating_add(bytes.len() as u64);
+                        let mut replies = Vec::new();
                         if let Some(terminal) = terminal.as_mut() {
                             terminal.vt_write(&bytes);
                             programs.note(terminal.take_events());
+                            replies.append(&mut terminal.take_replies());
                         }
                         parsed.release(bytes.len());
                         loop {
@@ -2603,6 +2662,7 @@ fn spawn_sidecar_sharing(
                                     if let Some(terminal) = terminal.as_mut() {
                                         terminal.vt_write(&bytes);
                                         programs.note(terminal.take_events());
+                                        replies.append(&mut terminal.take_replies());
                                     }
                                     parsed.release(bytes.len());
                                 }
@@ -2613,6 +2673,9 @@ fn spawn_sidecar_sharing(
                                 Err(std_mpsc::TryRecvError::Empty) => break,
                                 Err(std_mpsc::TryRecvError::Disconnected) => return,
                             }
+                        }
+                        if !replies.is_empty() && result_tx.send(SidecarResult::Replies(replies)).is_err() {
+                            break;
                         }
                         if refresh_input(&input, terminal.as_ref())
                             && result_tx.send(SidecarResult::FocusReportsOn).is_err()
@@ -2738,6 +2801,16 @@ fn spawn_sidecar_sharing(
                         watch_text = text;
                     }
                     SidecarCommand::SetGridDiff(wanted) => grid_diff_wanted = wanted,
+                    SidecarCommand::SetAnswering(on) => {
+                        if let Some(terminal) = terminal.as_mut() {
+                            terminal.set_answering(on);
+                        }
+                    }
+                    SidecarCommand::SetAnswers(answers) => {
+                        if let Some(Err(error)) = terminal.as_mut().map(|terminal| terminal.set_answers(&answers)) {
+                            eprintln!("termiod: VT answers not applied: {error}");
+                        }
+                    }
                     SidecarCommand::Shutdown => break,
                     SidecarCommand::Carry(reply) => {
                         let native = match (&fault, terminal.as_ref()) {
@@ -3035,6 +3108,7 @@ async fn run(
                         }
                     }
                     Some(SidecarResult::FocusReportsOn) => session.report_writer_focus(),
+                    Some(SidecarResult::Replies(replies)) => session.write_replies(replies),
                     Some(SidecarResult::Screen(tick)) => {
                         let now = std::time::Instant::now();
                         if let Some(change) =
@@ -3191,6 +3265,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             scrollback,
             grid_diff,
             vt_stream,
+            vt_answers,
             reply,
         } => {
             // Only interactive attachments are numbered: the sequence exists
@@ -3266,6 +3341,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
+                    answers: vt_answers.then(termiod_vt::Answers::default),
                 },
             );
             // Enabling precedes this client's in-band Snapshot request, so
@@ -3379,6 +3455,14 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             }
         }
         SessionMsg::InputEvent { id, event } => session.input_event(&id, event),
+        SessionMsg::Answers { id, answers } => {
+            if let Some(entry) = session.clients.get_mut(&id) {
+                if entry.answers.is_some() {
+                    entry.answers = Some(answers);
+                }
+            }
+            session.sync_answering();
+        }
         SessionMsg::Viewport {
             id,
             rows,
@@ -3747,6 +3831,9 @@ mod tests {
                 events,
                 vt: Vt::live(sidecar_tx, sidecar_queue),
                 support_query: super::SupportQuery::default(),
+                answering: false,
+                answers_live: false,
+                applied_answers: None,
                 status_engine: super::StatusEngine::new(
                     std::time::Instant::now(),
                     super::status::SessionFacts::default(),
@@ -3795,6 +3882,7 @@ mod tests {
             // routing them here would put a wall clock in an ordering test.
             SidecarResult::Osc(_) | SidecarResult::Screen(_) => {}
             SidecarResult::FocusReportsOn => session.report_writer_focus(),
+            SidecarResult::Replies(replies) => session.write_replies(replies),
         }
     }
 
@@ -3846,10 +3934,80 @@ mod tests {
                 scrollback: false,
                 grid_diff: false,
                 vt_stream: false,
+                vt_answers: false,
                 reply,
             },
         );
         client_rx
+    }
+
+    /// The answering switch, from the commands the sidecar is sent: never
+    /// before the replay is behind the VT, on while nobody writes or the
+    /// writer negotiated `vt_answers`, off for a writer that answers for
+    /// itself, and off for good once the VT is stale.
+    #[tokio::test]
+    async fn the_vt_answers_only_for_a_writer_that_does_not() {
+        let (sidecar_tx, sidecar_rx) = std_mpsc::channel();
+        let (mut session, _events) = test_session(sidecar_tx, Arc::new(SidecarQueue::new()));
+        let switches = |rx: &std_mpsc::Receiver<SidecarCommand>| {
+            let mut seen = Vec::new();
+            while let Ok(command) = rx.try_recv() {
+                match command {
+                    SidecarCommand::SetAnswering(on) => seen.push(format!("answering {on}")),
+                    SidecarCommand::SetAnswers(answers) => seen.push(format!("answers {:?}", answers.xtversion)),
+                    _ => {}
+                }
+            }
+            seen
+        };
+        let attach = |session: &mut Session, id: &str, vt_answers: bool| {
+            let (out, _rx) = mpsc::unbounded_channel();
+            let (reply, _reply_rx) = oneshot::channel();
+            handle_msg(
+                session,
+                SessionMsg::AddClient {
+                    id: ClientId::new(id),
+                    interactive: true,
+                    rows: 24,
+                    cols: 80,
+                    rendering: true,
+                    out,
+                    backlog: Arc::new(ClientBacklog::new()),
+                    snapshot: false,
+                    scrollback: false,
+                    grid_diff: false,
+                    vt_stream: false,
+                    vt_answers,
+                    reply,
+                },
+            );
+        };
+
+        session.sync_answering();
+        assert!(switches(&sidecar_rx).is_empty(), "answered before the replay was behind it");
+        session.answers_live = true;
+        session.sync_answering();
+        assert_eq!(switches(&sidecar_rx), ["answers \"\"", "answering true"]);
+
+        attach(&mut session, "old-mac", false);
+        assert_eq!(switches(&sidecar_rx), ["answering false"]);
+        handle_msg(&mut session, SessionMsg::RemoveClient { id: ClientId::new("old-mac") });
+        assert_eq!(switches(&sidecar_rx), ["answering true"]);
+
+        attach(&mut session, "mac", true);
+        handle_msg(
+            &mut session,
+            SessionMsg::Answers {
+                id: ClientId::new("mac"),
+                answers: termiod_vt::Answers { xtversion: "ghostty 1.3.1".to_string(), ..Default::default() },
+            },
+        );
+        assert_eq!(switches(&sidecar_rx), ["answers \"ghostty 1.3.1\""]);
+
+        session.mark_vt_stale("test".to_string());
+        assert!(!session.answering);
+        session.sync_answering();
+        assert!(!session.answering, "a stale VT answered again");
     }
 
     fn declare_viewport(session: &mut Session, id: &str, rows: u16, cols: u16, rendering: bool) {
@@ -3912,6 +4070,7 @@ mod tests {
                 scrollback: false,
                 grid_diff: false,
                 vt_stream: false,
+                vt_answers: false,
                 reply,
             },
         );
@@ -4594,6 +4753,7 @@ mod tests {
                 scrollback: false,
                 grid_diff: false,
                 vt_stream: true,
+                vt_answers: false,
                 reply,
             },
         );
@@ -4754,6 +4914,7 @@ mod tests {
                 scrollback: true,
                 grid_diff: false,
                 vt_stream: true,
+                vt_answers: false,
                 reply,
             },
         );
@@ -5289,6 +5450,7 @@ mod tests {
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
+                    answers: None,
                 },
             )]),
             writer: Some(ClientId::new("writer")),
@@ -5302,6 +5464,9 @@ mod tests {
             events,
             vt: Vt::live(sidecar_tx, Arc::new(SidecarQueue::new())),
             support_query: super::SupportQuery::default(),
+            answering: false,
+            answers_live: false,
+            applied_answers: None,
             status_engine: super::StatusEngine::new(
                 std::time::Instant::now(),
                 super::status::SessionFacts::default(),
@@ -5444,6 +5609,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         answer.await.expect("attached");
@@ -5600,6 +5766,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -5662,6 +5829,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         answer.await.expect("attached");
@@ -5713,6 +5881,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         answer.await.expect("attached to the adopted session");
@@ -5775,6 +5944,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         answer.await.expect("attached");
@@ -5857,6 +6027,7 @@ mod tests {
             scrollback: false,
             grid_diff: false,
             vt_stream: false,
+            vt_answers: false,
             reply,
         });
         let granted = answer.await.expect("attached");

@@ -56,6 +56,11 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // The host's view: `view`, `project_add`, `project_remove`, `create`'s
     // `place`, and the `view:host` resource.
     "view",
+    // The host's VT answers the program's terminal queries, from the writer's
+    // `answers`, so a client that negotiated it answers none itself. Needs
+    // `events`: the answers arrive as one, and `vt_stale` hands answering
+    // back to the writer.
+    "vt_answers",
 ];
 /// Snapshot payload carrying packed cells.
 ///
@@ -1691,6 +1696,23 @@ pub enum Event {
     /// The client's pane gained or lost focus. Reported to a program that
     /// asked (mode 1004), and remembered, so one that asks later is told.
     Focus { focused: bool },
+    /// What the host answers terminal queries with while this client writes
+    /// (`vt_answers`): its terminal name for XTVERSION, its theme as `rrggbb`
+    /// for the color queries (an empty palette is the engine's), and whether
+    /// that theme is dark. Sent on attach and whenever the theme changes.
+    Answers {
+        xtversion: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        foreground: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        palette: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dark: Option<bool>,
+    },
     #[serde(other)]
     Unknown,
 }
