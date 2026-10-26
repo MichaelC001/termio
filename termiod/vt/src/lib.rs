@@ -352,7 +352,12 @@ fn answer_queries(terminal: &mut Terminal<'static, 'static>, answering: &Rc<Answ
     let writes = answering.clone();
     check(
         terminal.on_pty_write(move |_terminal, data| {
-            let pane_answers = data.starts_with(b"\x1b[48;") || data.starts_with(b"\x1b]5522;");
+            // The cursor's blink (DECRQM 12) and style (DECRQSS ` q`) are the
+            // pane's too: this VT holds only the engine's default cursor.
+            let pane_answers = data.starts_with(b"\x1b[48;")
+                || data.starts_with(b"\x1b]5522;")
+                || data.starts_with(b"\x1b[?12;")
+                || (data.starts_with(b"\x1bP") && data.ends_with(b" q\x1b\\"));
             if writes.on.get() && (writes.alone.get() || !pane_answers) {
                 writes.replies.borrow_mut().extend_from_slice(data);
             }
@@ -1266,8 +1271,9 @@ mod tests {
         assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[48;30;100;480;800t");
     }
 
-    /// While somebody writes, their pane answers size reports and kitty
-    /// clipboard reads: this VT would report 8 by 16 cells and refuse.
+    /// While somebody writes, their pane answers size reports, kitty
+    /// clipboard reads and the cursor's style and blink: this VT would report
+    /// 8 by 16 cells, refuse, and give the engine's default cursor.
     #[test]
     fn a_writers_pane_answers_sizes_and_the_kitty_clipboard() {
         let mut terminal = VtTerminal::new(24, 80).expect("terminal");
@@ -1278,8 +1284,13 @@ mod tests {
         terminal.set_alone(false);
         terminal.vt_write(b"\x1b]5522;type=read\x1b\\\x1b[18t\x1b[?2048h");
         terminal.resize(30, 100).expect("resize");
+        terminal.vt_write(b"\x1b[?12$p\x1bP$q q\x1b\\");
         terminal.vt_write(b"\x1b[c");
         assert_eq!(String::from_utf8(terminal.take_replies()).unwrap(), "\x1b[?62;22;52c");
+        terminal.set_alone(true);
+        terminal.vt_write(b"\x1b[?12$p\x1bP$q q\x1b\\");
+        let alone = String::from_utf8(terminal.take_replies()).unwrap();
+        assert!(alone.starts_with("\x1b[?12;") && alone.ends_with(" q\x1b\\"), "nobody writes: answered here, {alone:?}");
     }
 
     /// A PNG moves the cursor past the rows it covers on any thread, not only

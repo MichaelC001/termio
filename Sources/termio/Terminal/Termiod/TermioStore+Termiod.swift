@@ -2118,7 +2118,7 @@ extension TermioStore {
     /// What termiod answers a program's terminal queries with on this Mac's
     /// behalf (`vt_answers`): the embedded surface's name, and the theme and
     /// appearance the window shows, as the embedded surface would answer.
-    func hostAnswers() -> Termiod.HostAnswers? {
+    func hostAnswers(windowAppearance: NSAppearance? = nil) -> Termiod.HostAnswers? {
         let dark: Bool
         switch settings.appearanceMode {
         case .light: dark = false
@@ -2126,7 +2126,9 @@ extension TermioStore {
         case .system:
             // The window's, as the embedded surface reports it; the app's can
             // lag it while the window's appearance observer runs.
-            let appearance = NSApp.mainWindow?.effectiveAppearance ?? NSApp.effectiveAppearance
+            // `mainWindow` is nil while the app is inactive, so the observer
+            // hands over the appearance it was told about.
+            let appearance = windowAppearance ?? NSApp.mainWindow?.effectiveAppearance ?? NSApp.effectiveAppearance
             dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         }
         guard let theme = streamTheme(dark: dark) else { return nil }
@@ -2139,8 +2141,8 @@ extension TermioStore {
 
     /// Hands every link the current answers: on a theme change, and when the
     /// window's appearance flips.
-    func refreshHostAnswers() {
-        guard let answers = hostAnswers() else { return }
+    func refreshHostAnswers(windowAppearance: NSAppearance? = nil) {
+        guard let answers = hostAnswers(windowAppearance: windowAppearance) else { return }
         for link in termiodLinks.values { link.setHostAnswers(answers) }
     }
 

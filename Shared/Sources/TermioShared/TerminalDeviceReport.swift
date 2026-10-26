@@ -94,7 +94,10 @@ public enum TerminalDeviceReport {
         case 0x5B: // ESC [
             guard let final = bytes[2...].first(where: { $0 >= 0x40 && $0 <= 0x7E }) else { return false }
             switch final {
-            case 0x63, 0x6E, 0x52, 0x79: return true // c n R y
+            // DECRQM 12, the cursor blink, is the pane's: only it knows the
+            // user's cursor setting, and termiod's VT holds the engine default.
+            case 0x79: return !bytes.starts(with: Array("\u{1b}[?12;".utf8)) // y
+            case 0x63, 0x6E, 0x52: return true // c n R
             case 0x75: return bytes[2] == 0x3F // ? u
             default: return false
             }
@@ -103,7 +106,9 @@ public enum TerminalDeviceReport {
             var index = 2
             while index < bytes.count, bytes[index] >= 0x30, bytes[index] <= 0x39 { index += 1 }
             guard index + 1 < bytes.count else { return false }
-            if bytes[index] == 0x24 { return true } // $r DECRQSS
+            // DECRQSS, except the cursor style (` q`), which is the pane's for
+            // the reason DECRQM 12 is.
+            if bytes[index] == 0x24 { return !bytes.suffix(4).elementsEqual(Array(" q\u{1b}\\".utf8)) } // $r
             // XTGETTCAP, from Ghostty's terminfo, except its name.
             let name = Array(bytes[(index + 2)...].prefix(4).map { $0 | 0x20 }) // lowercase hex
             return bytes[index] == 0x2B && name != Array("544e".utf8)
@@ -115,8 +120,8 @@ public enum TerminalDeviceReport {
                 index += 1
             }
             return number == 4 || (10...19).contains(number) || number == 21
-        case 0x5F: // ESC _: kitty graphics, which termiod's VT holds too
-            return bytes[2] == 0x47
+        case 0x5F: // ESC _: kitty graphics and the glyph protocol, which termiod's VT holds too
+            return bytes[2] == 0x47 || bytes[2...].starts(with: Array("25a1;".utf8))
         default:
             return false
         }

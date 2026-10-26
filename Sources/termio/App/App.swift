@@ -282,10 +282,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // (see `appearanceObserver`). Pinned Light/Dark modes never see the effective appearance
         // change out from under them, so this is a no-op there; re-applying is idempotent and
         // can't loop (it changes no appearance-affecting property).
-        appearanceObserver = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+        appearanceObserver = window.observe(\.effectiveAppearance, options: [.new]) { [weak self] window, _ in
             MainActor.assumeIsolated {
                 self?.applyWindowTransparency()
-                self?.store.refreshHostAnswers()
+                self?.store.refreshHostAnswers(windowAppearance: window.effectiveAppearance)
             }
         }
         // After the split view has restored its autosaved collapse state.
