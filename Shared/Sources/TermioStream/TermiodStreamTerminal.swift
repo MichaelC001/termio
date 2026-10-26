@@ -1726,6 +1726,6 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
 private let GHOSTTY_MODE_WRAPAROUND_VALUE = ghostty_mode_new(7, false)
 
 /// This module's log, filed where the Mac's termiod lines go.
-public enum StreamLog {
-    public static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "sh.termio", category: "termiod")
+enum StreamLog {
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "sh.termio.app", category: "termiod")
 }

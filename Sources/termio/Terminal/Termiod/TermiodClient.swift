@@ -1752,15 +1752,15 @@ final class TermiodSessionLink: @unchecked Sendable {
         DispatchQueue.main.async { [self] in onStreaming?(streaming) }
     }
 
+    /// What XTVERSION names in a stream pane: the embedded surface's Ghostty.
+    private static let xtversion = "ghostty \(embeddedGhosttyVersion())"
+
     /// A native snapshot: the session's whole state, decoded into a terminal
     /// that replaces the previous one. Called on the reader thread, so every
     /// byte after it reaches the new terminal.
     ///
     /// Returns false when it could not be decoded. The reader must then stop:
     /// the connection is being replaced, and nothing more it reads may land.
-    /// What XTVERSION names in a stream pane: the embedded surface's Ghostty.
-    private static let xtversion = "ghostty \(embeddedGhosttyVersion())"
-
     private func receiveStreamSnapshot(_ native: Data) -> Bool {
         do {
             let terminal = try TermiodStreamTerminal(
