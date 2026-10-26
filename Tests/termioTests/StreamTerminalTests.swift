@@ -26,6 +26,10 @@ final class StreamTerminalTests: XCTestCase {
             switch fields[0] {
             case "attach":
                 terminal = try TermiodStreamTerminal(nativeSnapshot: try Self.hex(fields[1]))
+                // As a pane does (the Scrollback setting). Left at the limit
+                // the snapshot carries, a terminal on 4 KB pages (Intel)
+                // prunes rows termiod's own VT, on 16 KB pages, kept.
+                try terminal?.setScrollbackLimit(bytes: 10_000_000)
             case "bytes":
                 try XCTUnwrap(terminal).write(try Self.hex(fields[1]))
             case "resize":
