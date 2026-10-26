@@ -48,6 +48,29 @@ final class TerminalDeviceReportTests: XCTestCase {
         XCTAssertTrue(TerminalDeviceReport.isReport(bytes("\u{1B}]52;c;aGVsbG8=\u{1B}\\")))
     }
 
+    /// What termiod's VT answers itself under `vt_answers`, whose surface copy
+    /// would be a second answer, and what only the surface can answer.
+    func testHostAnsweredRepliesAreTheOnesTermiodMakes() {
+        func host(_ text: String) -> Bool { TerminalDeviceReport.isHostAnswered(Data(text.utf8)) }
+        for answered in [
+            "\u{1b}[?62;22;52c", "\u{1b}[>1;10;0c", "\u{1b}[12;40R", "\u{1b}[0n", "\u{1b}[?997;1n",
+            "\u{1b}[?2026;2$y", "\u{1b}[?0u", "\u{1b}P>|ghostty 1.3.1+abc\u{1b}\\", "\u{1b}P1$r0m\u{1b}\\",
+            "\u{1b}]11;rgb:1111/2222/3333\u{7}", "\u{1b}]4;1;rgb:cccc/6666/6666\u{7}", "\u{1b}_Gi=1;OK\u{1b}\\",
+            "\u{1b}P1+r636F6C6F7273=323536\u{1b}\\", "\u{1b}]21;foreground=rgb:ff/ff/ff\u{1b}\\",
+            "\u{1b}_25a1;s;fmt=glyf\u{1b}\\",
+        ] {
+            XCTAssertTrue(host(answered), answered.debugDescription)
+        }
+        for kept in [
+            "\u{1b}[I", "\u{1b}[O", "\u{1b}[8;24;80t", "\u{1b}[4;384;640t",
+            "\u{1b}]52;c;aGVsbG8=\u{7}", "\u{1b}P1+r544E=787465726D2D67686F73747479\u{1b}\\",
+            // The user's cursor: only the pane knows it.
+            "\u{1b}[?12;2$y", "\u{1b}P1$r6 q\u{1b}\\",
+        ] {
+            XCTAssertFalse(host(kept), kept.debugDescription)
+        }
+    }
+
     func testKeystrokesAreNotReports() {
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("ls -la\r")))
         XCTAssertFalse(TerminalDeviceReport.isReport(bytes("\u{1B}")))

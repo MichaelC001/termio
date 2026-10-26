@@ -49,6 +49,13 @@ public enum Termiod {
         "snapshot", "events", viewportCapability, spawnCommandCapability,
     ]
 
+    /// termiod's VT answers the program's terminal queries, from the writer's
+    /// `HostAnswers`, so this client answers none while the host does: until
+    /// `vt_stale`, when answering comes back to it. Offered only by a client
+    /// that sends answers and routes every reply its surface makes through
+    /// one gate; any other answers for itself, as before.
+    public static let answersCapability = "vt_answers"
+
     /// The host computes the PTY size as a policy over the attachments that are
     /// rendering (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     /// Gate the five-byte `R` on it: an older host reads a payload of any other
@@ -406,6 +413,9 @@ public enum Termiod {
         /// predates the field reads anyway.
         let rendering: Bool?
         let mode = "interact"
+        /// Sent with the attach, so the host answers with them from the moment
+        /// it grants the token (`vt_answers`).
+        let answers: HostAnswers.Fields?
         let seq: UInt64
     }
 
@@ -1814,7 +1824,8 @@ public enum Termiod {
         specification: CreateSpecification?,
         rows: UInt16,
         cols: UInt16,
-        rendering: Bool = true
+        rendering: Bool = true,
+        answers: HostAnswers? = nil
     ) throws -> Data {
         try encodeControl(AttachOperation(
             target: target,
@@ -1822,6 +1833,7 @@ public enum Termiod {
             rows: rows,
             cols: cols,
             rendering: rendering ? nil : false,
+            answers: answers?.fields,
             seq: 1
         ))
     }
@@ -1836,6 +1848,60 @@ public enum Termiod {
 
     public static func detachPayload() throws -> Data {
         try encodeControl(DetachOperation())
+    }
+
+    /// What termiod answers a program's terminal queries with while this client
+    /// writes (`vt_answers`): the name XTVERSION reports, the theme as `rrggbb`
+    /// for the color queries, and whether the appearance is dark.
+    public struct HostAnswers: Equatable, Sendable {
+        public var xtversion: String
+        public var foreground: String?
+        public var background: String?
+        public var cursor: String?
+        /// 256 entries, or none for the engine's palette.
+        public var palette: [String]
+        public var dark: Bool
+
+        public init(xtversion: String, foreground: String?, background: String?, cursor: String?,
+                    palette: [String], dark: Bool) {
+            self.xtversion = xtversion
+            self.foreground = foreground
+            self.background = background
+            self.cursor = cursor
+            self.palette = palette
+            self.dark = dark
+        }
+
+        /// The answers as the attach request and the `answers` event carry them.
+        public struct Fields: Encodable, Sendable {
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public var fields: Fields {
+            Fields(xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                   palette: palette, dark: dark)
+        }
+
+        private struct Wire: Encodable {
+            let ev = "answers"
+            let xtversion: String
+            let foreground: String?
+            let background: String?
+            let cursor: String?
+            let palette: [String]
+            let dark: Bool
+        }
+
+        public func payload() throws -> Data {
+            try encodeControl(Wire(
+                xtversion: xtversion, foreground: foreground, background: background, cursor: cursor,
+                palette: palette, dark: dark))
+        }
     }
 
     /// Input a `vt_stream` client sends as an `E` event. termiod encodes it

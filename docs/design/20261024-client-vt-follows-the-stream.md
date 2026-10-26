@@ -3,7 +3,7 @@ title: The client VT follows the stream
 status: draft
 type: design
 created: 2026-10-24
-updated: 2026-10-25
+updated: 2026-10-26
 related:
   - 20260730-termiod-session-protocol.md
   - 20260901-pty-size-is-not-the-write-token.md
@@ -243,10 +243,19 @@ Each phase ends at a gate. A failed gate stops the work.
    answering back to the writer. A writer without `vt_answers` answers for
    itself, so a program never reads one answer twice. The answers are the
    embedded surface's: Ghostty's DA1 and DA2, size reports in 8 by 16 cells,
-   the writer's colors and scheme. XTGETTCAP is not answered on either side
-   of the stream yet: libghostty-vt carries no terminfo table.
-   **Daemon done:** a session with no window open is answered DA1, DA2 and a
-   cursor report (`termiod/tests/vt_answers.rs`). The Mac client follows.
+   the writer's colors and scheme, and XTGETTCAP except the terminal's name
+   (`TN`). While someone writes, the writer's pane keeps what only it knows:
+   focus reports, the clipboard, size reports (the embedded surface in its
+   real pixels, the stream pane in 8 by 16 cells), `TN`, and
+   the cursor's style and blink (DECRQSS ` q`, DECRQM 12), which follow the
+   user's setting. Two Kitty limits are accepted on purpose: the daemon's VT
+   takes direct transfers only and stores 10 MB, so a program that sends a
+   file or temp-file transfer, or more than 10 MB, is told it failed, while
+   the pane still draws what reaches it.
+   **Daemon done (#801):** a session with no window open is answered DA1, DA2
+   and a cursor report (`termiod/tests/vt_answers.rs`). **Mac (#804):** every
+   attach offers `vt_answers`; the link drops the replies the app's surfaces
+   make while termiod answers, and answers again after `vt_stale`.
 6. **iOS.** The phone's mirror is a live surface fed through the companion
    bridge, so the marker must cross the bridge in order.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the

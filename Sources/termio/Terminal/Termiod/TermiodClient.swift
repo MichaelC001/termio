@@ -1581,8 +1581,23 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Whether this link asks for the `vt_stream` plane. Only a pane does: the
     /// phone bridge forwards raw bytes to a surface of its own.
     private let offersStream: Bool
+    /// Whether this link offers `vt_answers`: a Mac pane, which sends its
+    /// answers and routes every reply its surface makes through
+    /// `sendDeviceReport`. The companion's bridge does not: the phone's theme
+    /// is not the Mac's, so the phone answers for itself.
+    private let offersAnswers: Bool
     /// Set when the daemon refused the plane; the link stays on keyframes.
     private var streamRefused = false
+    /// termiod granted `vt_answers` on this connection.
+    private var hostAnswersGranted = false
+    /// termiod answers this session's queries with this pane's answers on
+    /// this connection, so the surface's own replies are dropped, until
+    /// `vt_stale` hands answering back. Only once answers have gone out: a
+    /// pane that sent none answers for itself. Work-queue state.
+    private var hostAnswers = false
+    private var hostAnswersStale = false
+    /// What termiod answers with while this pane writes. Work-queue state.
+    private var answersToSend: Termiod.HostAnswers?
     /// The client terminal while the link is on the `vt_stream` plane, replaced
     /// by every native snapshot. Lock-guarded: the reader thread swaps it and
     /// the view reads it each frame.
@@ -1686,6 +1701,28 @@ final class TermiodSessionLink: @unchecked Sendable {
         }
     }
 
+    /// What termiod answers this session's queries with while this pane
+    /// writes: the embedded surface's terminal name and the pane's theme.
+    func setHostAnswers(_ answers: Termiod.HostAnswers) {
+        workQueue.async { [self] in
+            guard answersToSend != answers else { return }
+            answersToSend = answers
+            sendAnswersLocked()
+        }
+    }
+
+    private func sendAnswersLocked() {
+        guard hostAnswersGranted, attached, let answers = answersToSend, let transport else { return }
+        do {
+            try Termiod.writeFrame(transport.writeDescriptor, kind: .event, payload: try answers.payload())
+            hostAnswers = true
+        } catch {
+            Log.termiod.error("""
+            answers to \(self.sessionName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)
+            """)
+        }
+    }
+
     /// The pane cannot draw this plane (no Metal renderer): attach again on
     /// keyframes, which the embedded surface can show.
     func abandonStream() {
@@ -1769,12 +1806,14 @@ final class TermiodSessionLink: @unchecked Sendable {
          rows: Int,
          cols: Int,
          rendering: Bool = true,
-         offersStream: Bool = false) {
+         offersStream: Bool = false,
+         offersAnswers: Bool = false) {
         self.sessionName = sessionName
         self.specification = specification
         self.route = route
         self.rendering = rendering
         self.offersStream = offersStream
+        self.offersAnswers = offersAnswers
         let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: cols))
         viewportGrid = grid
         // `rows`/`cols` are the size this attachment asks for, not one the
@@ -1820,7 +1859,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             let handshake = try Termiod.performHello(
                 channel, role: "attach",
                 caps: Termiod.attachCapabilities
-                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : []))
+                    + (offering ? [Termiod.streamCapability, Termiod.inputCapability] : [])
+                    // Only with answers to give: a pane whose theme did not
+                    // resolve answers for itself, or both would answer.
+                    + (offersAnswers && answersToSend != nil ? [Termiod.answersCapability] : []))
             clientID = handshake.clientID
             // A daemon that streams but does not take input events has already
             // put this connection on the stream plane, so the link cannot
@@ -1840,6 +1882,9 @@ final class TermiodSessionLink: @unchecked Sendable {
             // stream to show, and the pane must stay where its error is.
             let streamGranted = offering && handshake.capabilities.contains(Termiod.streamCapability)
             hostSizesByPolicy = handshake.capabilities.contains(Termiod.viewportCapability)
+            hostAnswersGranted = handshake.capabilities.contains(Termiod.answersCapability)
+            hostAnswers = false
+            hostAnswersStale = false
             let sizesByPolicy = hostSizesByPolicy
             DispatchQueue.main.async { [self] in onSizesByPolicy?(sizesByPolicy) }
             let device = handshake.device
@@ -1858,12 +1903,14 @@ final class TermiodSessionLink: @unchecked Sendable {
             // attachment as one somebody is looking at, and there is no
             // form of this frame that tells it otherwise.
             let declaredRendering = hostSizesByPolicy ? rendering : true
+            let answersWithAttach = hostAnswersGranted ? answersToSend : nil
             let payload = try Termiod.attachPayload(
                 target: sessionName,
                 specification: specification,
                 rows: requested.rows,
                 cols: requested.cols,
-                rendering: declaredRendering
+                rendering: declaredRendering,
+                answers: answersWithAttach
             )
             try Termiod.writeFrame(channel.writeDescriptor, kind: .control, payload: payload)
             let reply = try Termiod.readFrame(channel.readDescriptor)
@@ -1885,6 +1932,10 @@ final class TermiodSessionLink: @unchecked Sendable {
             attached = true
             setStreaming(streamGranted)
             isWriter = attachedPayload.writer
+            // Sent with the attach, so termiod had them before it granted the
+            // token, and once more as an event, which a termiod that predates
+            // the attach field still reads.
+            if answersWithAttach != nil { sendAnswersLocked() }
             DispatchQueue.main.async { [self] in
                 onDaemonSessionID?(attachedPayload.sessionId)
             }
@@ -2106,6 +2157,8 @@ final class TermiodSessionLink: @unchecked Sendable {
         guard !data.isEmpty else { return }
         workQueue.async { [self] in
             guard !closed, attached, isWriter else { return }
+            // termiod answered it already; replies it does not make still go.
+            if hostAnswers, !hostAnswersStale, TerminalDeviceReport.isHostAnswered(data) { return }
             do {
                 try sendDataLocked(data)
             } catch {
@@ -2716,6 +2769,9 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// dispatch-source shape once payloads span multiple reads). Ends on EOF,
     /// error, or the session's exit notice.
     private func startReader(_ socket: Int32) {
+        // Events from this connection carry it, so one that arrives after a
+        // reconnect does not act on the next connection.
+        let generation = reattachGeneration
         let thread = Thread { [weak self] in
             // A frame kind this client never negotiated is a host bug, not
             // traffic — logged once per kind so a misbehaving daemon is visible
@@ -2758,7 +2814,7 @@ final class TermiodSessionLink: @unchecked Sendable {
                 case .control:
                     if self.handleControl(frame.payload) { return }
                 case .event:
-                    if self.handleEvent(frame.payload) { return }
+                    if self.handleEvent(frame.payload, generation: generation) { return }
                 case .file, .upload:
                     // `F`/`U` never ride an attach channel at all — transfers use
                     // their own control channel, so the hot path stays raw.
@@ -2836,7 +2892,7 @@ final class TermiodSessionLink: @unchecked Sendable {
     /// Not private so the routing can be driven with real frames — which of the
     /// two information caches an arriving frame lands in is the kind of thing
     /// that goes wrong silently.
-    func handleEvent(_ payload: Data) -> Bool {
+    func handleEvent(_ payload: Data, generation: Int? = nil) -> Bool {
         let event: Termiod.IncomingEvent
         do {
             event = try Termiod.decodeEvent(payload)
@@ -2872,6 +2928,13 @@ final class TermiodSessionLink: @unchecked Sendable {
             // just stopped following the program. The embedded surface encodes
             // for itself, so the pane goes back to it.
             if isStreaming { abandonStream() }
+            // termiod's VT no longer follows the program, so its answers
+            // would be wrong: this pane answers again. Queries termiod's VT
+            // never parsed before it went stale go unanswered; that needs a
+            // VT 16 MiB behind its PTY.
+            workQueue.async { [self] in
+                if generation == nil || generation == reattachGeneration { hostAnswersStale = true }
+            }
         case .roster(let update):
             // Not filtered by name: events are fanned per session, so everything
             // arriving on this channel is about the session it was opened for.

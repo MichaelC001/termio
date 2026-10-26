@@ -320,7 +320,8 @@ extension TermioStore {
             command: agentCommand,
             viewport: onScreen ? nil : TerminalGrid(rows: 0, cols: 0),
             rendering: onScreen,
-            offersStream: Self.streamTerminalEnabled)
+            offersStream: Self.streamTerminalEnabled,
+            offersAnswers: true)
         let inMemory = InMemoryTerminalSession(
             write: { data in
                 // libghostty answers the host's terminal queries through this
@@ -712,6 +713,7 @@ extension TermioStore {
         for link in termiodLinks.values {
             link.setStreamScrollback(bytes: streamScrollbackBytes)
         }
+        refreshHostAnswers()
     }
 
     /// Drives the terminal through its startup render handshake.

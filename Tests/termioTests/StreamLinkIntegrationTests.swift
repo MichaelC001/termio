@@ -134,6 +134,66 @@ final class StreamLinkIntegrationTests: XCTestCase {
         XCTAssertFalse(link.isStreaming)
     }
 
+    /// With `vt_answers`, termiod answers the program and the pane stays
+    /// silent, so each query is answered once, with the name the pane gave.
+    func testTheHostAnswersOnceForAStreamPaneThatWrites() throws {
+        XCTAssertEqual(try answers(offersAnswers: true), "\u{1b}P>|ghostty test-name\u{1b}\\\u{1b}[?62;22;52c")
+    }
+
+    /// A link that does not offer it, as the phone's bridge does not, answers
+    /// for itself, and termiod stays silent: still one answer each.
+    func testALinkWithoutAnswersAnswersForItselfOnce() throws {
+        XCTAssertEqual(
+            try answers(offersAnswers: false),
+            "\u{1b}P>|ghostty \(embeddedGhosttyVersion())\u{1b}\\\u{1b}[?62;22;52c")
+    }
+
+    /// Every query class either side answers, answered once while termiod
+    /// answers: the ones it makes, and the ones it leaves to the pane.
+    func testEachQueryIsAnsweredOnceWhileTheHostAnswers() throws {
+        let cases: [(query: String, reply: String)] = [
+            ("\\033P+q636F6C6F7273\\033\\\\", "+r636F6C6F7273"),
+            ("\\033]21;foreground=?\\033\\\\", "]21;foreground="),
+            ("\\033[?6n", "R"),
+            ("\\033P$qm\\033\\\\", "$r"),
+            ("\\033[18t", "[8;"),
+        ]
+        for (query, reply) in cases {
+            let read = try answers(offersAnswers: true, query: query)
+            XCTAssertEqual(read.components(separatedBy: reply).count - 1, 1, "\(query): \(read.debugDescription)")
+        }
+        // The kitty clipboard is the pane's to answer; termiod's VT can only refuse.
+        let clipboard = try answers(offersAnswers: true, query: "\\033]5522;type=read:status=DATA\\033\\\\")
+        XCTAssertFalse(clipboard.contains("EPERM"), clipboard.debugDescription)
+    }
+
+    /// What a program that asks `query` and then DA1 after its first key
+    /// reads, collected until two quiet seconds pass.
+    private func answers(offersAnswers: Bool, query: String = "\\033[>q") throws -> String {
+        let file = NSTemporaryDirectory() + "answers-\(UUID().uuidString.prefix(8))"
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        let script = "stty raw -echo; dd bs=1 count=1 of=/dev/null 2>/dev/null; "
+            + "printf '\(query)\\033[c'; stty min 0 time 20; cat > \(file); exec cat"
+        let link = TermiodSessionLink(
+            sessionName: "answers-\(UUID().uuidString.prefix(8))",
+            specification: Termiod.CreateSpecification(
+                cwd: NSTemporaryDirectory(), argv: ["/bin/sh", "-c", script], env: [], rows: 20, cols: 60),
+            rows: 20, cols: 60, offersStream: true, offersAnswers: offersAnswers)
+        link.setHostAnswers(Termiod.HostAnswers(
+            xtversion: "ghostty test-name", foreground: "dddddd", background: "111111", cursor: nil,
+            palette: [], dark: true))
+        link.start()
+        defer { link.detach() }
+
+        wait("the link negotiated vt_stream") { link.isStreaming && link.streamTerminal != nil }
+        link.send(Data("x".utf8))
+        wait("the program collected its answers") {
+            ((try? String(contentsOfFile: file, encoding: .utf8)) ?? "").contains("c")
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+        return try String(contentsOfFile: file, encoding: .utf8)
+    }
+
     /// Without the capability the link stays on keyframes and has no terminal.
     func testALinkThatDoesNotOfferTheStreamStaysOnKeyframes() throws {
         let link = TermiodSessionLink(
