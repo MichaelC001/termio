@@ -215,7 +215,8 @@ way to see it. So `termio session` works with no app at all:
   directly.
 - With no app running, every command goes to the Termio server. `list` shows
   every session on the machine, `run` types its command into a new shell
-  session there, and a session’s name works as its address.
+  session there, and a session’s name works as its address while no other
+  session has it.
 
 `list --all` shows every session on the machine even when the app is running.
 `create` and `attach` always act on the server:
@@ -223,8 +224,11 @@ way to see it. So `termio session` works with no app at all:
 ```bash
 termio session create --name build -- cargo watch -x test
 termio session attach build          # Ctrl-\ detaches
-termio session read build --lines 20
+termio session ls --all
 ```
+
+While the app runs, `send`, `read` and `close` reach a session that `create`
+made only when the app shows it in your project.
 
 What only the app has: `spawn`, `watch`, `focus`, pane placement, `--key` and
 `--wait`. A command that needs one of them says so.

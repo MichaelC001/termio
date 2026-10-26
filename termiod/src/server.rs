@@ -729,6 +729,19 @@ pub async fn resolve(target: &str) -> Result<Option<SessionInfo>> {
     resolve_in(&sessions, target)
 }
 
+/// A target that matches more than one session: the `ambiguous` error of the
+/// reply contract, not a daemon failure.
+#[derive(Debug)]
+pub struct Ambiguous(pub String);
+
+impl std::fmt::Display for Ambiguous {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Ambiguous {}
+
 pub fn resolve_in(sessions: &[SessionInfo], target: &str) -> Result<Option<SessionInfo>> {
     let token = session_token(target);
     if let Some(info) = sessions.iter().find(|info| info.id == token) {
@@ -739,7 +752,7 @@ pub fn resolve_in(sessions: &[SessionInfo], target: &str) -> Result<Option<Sessi
     match named.as_slice() {
         [] => {}
         [only] => return Ok(Some((*only).clone())),
-        _ => bail!("more than one session is named '{target}'; use its id"),
+        _ => return Err(Ambiguous(format!("more than one session is named '{target}'; use its id")).into()),
     }
     let lower = token.to_lowercase();
     let prefix = lower.len() >= 8 && lower.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
@@ -756,7 +769,7 @@ pub fn resolve_in(sessions: &[SessionInfo], target: &str) -> Result<Option<Sessi
     match matches.as_slice() {
         [] => Ok(None),
         [only] => Ok(Some((*only).clone())),
-        _ => bail!("'{target}' matches more than one session; use a longer id"),
+        _ => Err(Ambiguous(format!("'{target}' matches more than one session; use a longer id")).into()),
     }
 }
 

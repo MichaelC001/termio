@@ -3,7 +3,7 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: 30e81821a451fbe19e488ee7fa3dca81f0a1b74a8709452f4c556c4ebdf5a9b3
+  source_hash: 6b78f177c38be59ea85e5ebf2fd5bbb51b1bad261569938483ada5c609d03474
   generated_at: 2026-10-26
 ---
 
@@ -175,7 +175,7 @@ termio session spawn "summarize the failing CI job" --wait --timeout 120000
 - 应用在运行时，命令作用于你所在项目的会话，如上文所述。项目范围和会话控制开关照常生效，
   只有一个例外：对应用打开的会话执行 `read`，直接由 Termio server 回答。
 - 没有应用在运行时，所有命令都交给 Termio server。`list` 列出这台设备上的全部会话，`run`
-  在那里新开一个 shell 会话并把命令输入进去，会话名也可以当作地址。
+  在那里新开一个 shell 会话并把命令输入进去。只要没有别的会话同名，会话名也可以当作地址。
 
 即使应用在运行，`list --all` 也会列出这台设备上的全部会话。`create` 和 `attach` 总是作用于
 server：
@@ -183,8 +183,10 @@ server：
 ```bash
 termio session create --name build -- cargo watch -x test
 termio session attach build          # Ctrl-\ 断开
-termio session read build --lines 20
+termio session ls --all
 ```
+
+应用运行时，`send`、`read` 和 `close` 只有在应用把 `create` 建的会话显示在你的项目里时才能找到它。
 
 只有应用才有的：`spawn`、`watch`、`focus`、窗格摆放、`--key` 和 `--wait`。需要其中之一的命令
 会直接说明。

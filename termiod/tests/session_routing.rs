@@ -187,7 +187,7 @@ fn without_the_app_the_replies_keep_the_contract() {
     assert!(screen_shows(&daemon, &ids[1], "second-dup"));
     let shared = termio(&daemon, &["session", "read", "--json", "Dup"]);
     let reply: serde_json::Value = serde_json::from_slice(&shared.stdout).expect("read --json");
-    assert_eq!(reply["ok"], false, "a shared name picked one session");
+    assert_eq!(reply["error"], "ambiguous", "a shared name: {reply}");
 
     let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
     assert!(!stdout(&listed).contains("null"), "ls --all --json: {}", stdout(&listed));

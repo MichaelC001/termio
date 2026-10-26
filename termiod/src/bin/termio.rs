@@ -1156,14 +1156,20 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
             let mut addressed = app_socket::is_address(&args.words[0]);
             if !addressed {
                 // Asked in this order so the app is probed only when termiod
-                // does hold a session by that name.
-                // Briefly: this delays every unaddressed send, which is most
-                // often a prompt for the app.
-                let brief = std::time::Duration::from_secs(1);
-                match termiod::server::resolve_running(&args.words[0], brief).await {
+                // does hold a session by that name: a probe is a connection
+                // the app answers. With a socket file, the lookup is brief,
+                // because it delays every prompt sent to the app; with none,
+                // there is no app and it gets the full lookup time.
+                let lookup = if app_socket::socket_path(channel).exists() {
+                    std::time::Duration::from_secs(1)
+                } else {
+                    termiod::server::LOOKUP_TIMEOUT
+                };
+                match termiod::server::resolve_running(&args.words[0], lookup).await {
                     Ok(found) => addressed = found.is_some() && !app_running(channel),
                     Err(error) if !app_running(channel) => {
-                        refuse(format, "daemon", &format!("{error:#}"))
+                        let (code, message) = lookup_error(&error);
+                        refuse(format, code, &message)
                     }
                     Err(_) => {}
                 }
@@ -1299,8 +1305,22 @@ async fn on_termiod(
     match termiod::server::resolve_running(target, termiod::server::LOOKUP_TIMEOUT).await {
         Ok(Some(info)) => Ok(Some(info)),
         Ok(None) => Err(("not_found".to_string(), format!("no session matches '{target}'"))),
-        Err(error) => Err(("daemon".to_string(), format!("{error:#}"))),
+        Err(error) => {
+            let (code, message) = lookup_error(&error);
+            Err((code.to_string(), message))
+        }
     }
+}
+
+/// The reply code for a failed lookup: `ambiguous` when the target matches
+/// more than one session, `daemon` when termiod did not answer.
+fn lookup_error(error: &anyhow::Error) -> (&'static str, String) {
+    let code = if error.downcast_ref::<termiod::server::Ambiguous>().is_some() {
+        "ambiguous"
+    } else {
+        "daemon"
+    };
+    (code, format!("{error:#}"))
 }
 
 fn placement(extra: &mut String, placement: &Placement) {
