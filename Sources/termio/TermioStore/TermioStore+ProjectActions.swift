@@ -1222,11 +1222,11 @@ extension TermioStore {
         let removedSessionIDs = Set(removedSessions.map(\.id))
         // Each machine this checkout is on: the row's own machine, and every
         // box a project here was cloned to. The host keeps its own record of a
-        // project, and without this the next roster brings the row back.
+        // project, and without removing it the next roster brings the row back.
         let removed = projects[projectIndex]
-        let closing = Set(removedSessions.compactMap(\.termiodDaemonID))
-        let aliases = Set(workspaces.compactMap(\.deviceAlias))
-        for alias in aliases {
+        var closing = Set(removedSessions.compactMap(\.termiodDaemonID))
+        var hostCheckouts: [(device: KnownDevice, path: String)] = []
+        for alias in Set(workspaces.compactMap(\.deviceAlias)).sorted() {
             let device = KnownDevice(
                 alias: alias,
                 deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)))
@@ -1237,9 +1237,30 @@ extension TermioStore {
             if let checkout = removed.remoteCheckout(device: device.deviceID, alias: alias) {
                 paths.insert(checkout)
             }
-            for path in paths {
-                removeHostProject(path: path, closing: closing, on: device)
+            for path in paths.sorted() { hostCheckouts.append((device, path)) }
+        }
+        // The host ends every live session placed in its project, and some of
+        // those may be rows elsewhere in this sidebar. Ending them is the
+        // user's call, so it is asked, and their rows close with the project.
+        var others: [Session] = []
+        for (device, path) in hostCheckouts {
+            let ids = Set(otherHostSessions(at: path, on: device, closing: closing))
+            others += sessions(authoredFor: device).filter {
+                $0.termiodDaemonID.map(ids.contains) == true
             }
+        }
+        if !others.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = localized("Remove “\(removed.name)”?")
+            alert.informativeText = localized(
+                "\(others.count) other sessions are running in this project. Removing it ends them too.")
+            alert.addButton(withTitle: localized("Remove"))
+            alert.addButton(withTitle: localized("Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            closing.formUnion(others.compactMap(\.termiodDaemonID))
+        }
+        for (device, path) in hostCheckouts {
+            removeHostProject(path: path, name: removed.name, closing: closing, on: device)
         }
         for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
@@ -1256,7 +1277,10 @@ extension TermioStore {
             transcriptPaths[sessionID] = nil
             clearActivityTracking(for: sessionID)
         }
-        projects.remove(at: projectIndex)
+        // By id: the alert above ran the event loop, and a roster may have
+        // added rows meanwhile.
+        projects.removeAll { $0.id == id }
+        for other in others { closeSession(other.id) }
 
         // Drop the removed sessions out of any split layout first — the prune
         // may already have moved the selection onto a surviving pane.

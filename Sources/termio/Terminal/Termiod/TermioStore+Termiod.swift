@@ -987,15 +987,13 @@ extension TermioStore {
         }
         hostViews[device.id] = view
         guard let alias = device.alias else { return }
-        let removing = (hostProjectsRemoving[device.id] ?? []).map {
-            ($0 as NSString).standardizingPath
-        }
+        let removing = Set((hostProjectsRemoving[device.id] ?? []).map(Self.hostPathKey))
         let deviceID = device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route)
         let known = KnownDevice(alias: alias, deviceID: deviceID)
         var added = false
         for hostProject in view.projects
         where projectIndex(forHostPath: hostProject.path, on: known) == nil
-            && !removing.contains((hostProject.path as NSString).standardizingPath) {
+            && !removing.contains(Self.hostPathKey(hostProject.path)) {
             projects.append(Project(
                 workspaceID: workspace(forDevice: alias, deviceID: deviceID),
                 name: hostProject.label,
@@ -1013,14 +1011,29 @@ extension TermioStore {
         if added { persistSoon() }
     }
 
+    /// A path on another machine, compared as text: `.` and `..` collapsed,
+    /// repeated and trailing slashes dropped. Never through this Mac's
+    /// filesystem, which knows nothing of that machine's symlinks.
+    nonisolated static func hostPathKey(_ path: String) -> String {
+        var parts: [Substring] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch part {
+            case ".": continue
+            case "..": if !parts.isEmpty { parts.removeLast() }
+            default: parts.append(part)
+            }
+        }
+        return "/" + parts.joined(separator: "/")
+    }
+
     /// The project row for a checkout the host knows at `path`: a project filed
     /// on that machine at that path, or a project here that was cloned there.
     func projectIndex(forHostPath path: String, on device: KnownDevice) -> Int? {
         guard let alias = device.alias else { return nil }
-        let wanted = (path as NSString).standardizingPath
+        let wanted = Self.hostPathKey(path)
         func same(_ other: String?) -> Bool {
             guard let other, !other.isEmpty else { return false }
-            return (other as NSString).standardizingPath == wanted
+            return Self.hostPathKey(other) == wanted
         }
         return projects.firstIndex { project in
             (same(project.path)
@@ -1029,24 +1042,38 @@ extension TermioStore {
         }
     }
 
-    /// The host project to remove with a row at `path`, or `nil` when the host
-    /// has none there or when a live session outside `closing` is placed in it.
-    nonisolated static func removableHostProject(
+    /// What removing a row at `path` does to the host's project there.
+    enum HostProjectRemoval: Equatable {
+        /// The host has no project there.
+        case none
+        /// Remove this project; only sessions in `closing` are placed in it.
+        case remove(String)
+        /// These live sessions outside `closing` are placed in the project.
+        case others(String, [String])
+    }
+
+    nonisolated static func hostProjectRemoval(
         at path: String, in view: Termiod.HostView, live: Set<String>, closing: Set<String>
-    ) -> String? {
-        let wanted = (path as NSString).standardizingPath
-        guard let hostProject = view.projects.first(where: {
-            ($0.path as NSString).standardizingPath == wanted
-        }) else { return nil }
+    ) -> HostProjectRemoval {
+        let wanted = hostPathKey(path)
+        guard let hostProject = view.projects.first(where: { hostPathKey($0.path) == wanted })
+        else { return .none }
         let others = Set(hostProject.sessions).intersection(live).subtracting(closing)
-        guard others.isEmpty else {
-            Log.termiod.info("""
-            kept project \(path, privacy: .public) on its host: \
-            \(others.count, privacy: .public) other live sessions are placed in it
-            """)
-            return nil
+        return others.isEmpty ? .remove(hostProject.id) : .others(hostProject.id, others.sorted())
+    }
+
+    /// The live sessions the host placed in its project at `path` that are not
+    /// in `closing`, from the last view and roster this app has.
+    func otherHostSessions(
+        at path: String, on device: KnownDevice, closing: Set<String>
+    ) -> [String] {
+        guard let view = hostViews[device.id] else { return [] }
+        let live = Set(rosterFetches[device.route.description]?.answer?.live.map(\.id) ?? [])
+        if case .others(_, let others) = Self.hostProjectRemoval(
+            at: path, in: view, live: live, closing: closing) {
+            return others
         }
-        return hostProject.id
+        return []
     }
 
     /// The project the host placed this session in, when the host has a view
@@ -1062,32 +1089,41 @@ extension TermioStore {
     }
 
     /// Removes the host's own record of a project whose row was just removed,
-    /// so the next roster does not bring the row back.
+    /// so the next roster does not bring the row back. `closing` is every
+    /// session the user agreed to end.
     ///
-    /// The host kills every live session its project's panes show. That is
-    /// what Remove Project does to the row's sessions anyway, but the host may
-    /// have placed other sessions there: ones this app filed under another row.
-    /// When any such session is live, the host keeps its project, and the row
-    /// comes back with those sessions in it.
-    func removeHostProject(path: String, closing daemonIDs: Set<String>, on device: KnownDevice) {
+    /// Decided on a fresh read, over the same connection as the removal, and
+    /// the host checks `closing` again when it acts: a session started on the
+    /// box since the last roster is in no list here, and the host would kill
+    /// it. When the removal does not happen, the user is told, and the next
+    /// roster brings the row back with the project the host still has.
+    func removeHostProject(
+        path: String, name: String, closing: Set<String>, on device: KnownDevice
+    ) {
         let route = device.route
         let key = device.id
-        guard device.alias != nil else { return }
-        hostProjectsRemoving[key, default: []].insert(path)
-        // Decided on a fresh read, not on the last roster: a session started on
-        // the box since then is in neither, and the host would kill it.
+        guard let alias = device.alias else { return }
+        hostProjectsRemoving[key, default: []].append(path)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var revision: UInt64?
+            var failure: String?
             do {
-                let (sessions, view) = try Termiod.rosterAndView(route: route)
-                if let view {
+                revision = try Termiod.removeHostProject(route: route, only: closing) {
+                    sessions, view in
                     let live = Set(sessions.sessions.filter(\.alive).map(\.id))
-                    if let project = Self.removableHostProject(
-                        at: path, in: view, live: live, closing: daemonIDs) {
-                        revision = try Termiod.removeHostProject(project, route: route)
+                    switch Self.hostProjectRemoval(
+                        at: path, in: view, live: live, closing: closing) {
+                    case .none:
+                        return nil
+                    case .remove(let project):
+                        return project
+                    case .others(_, let others):
+                        throw TermiodClientError.requestFailed(localized(
+                            "\(others.count) other sessions started in this project since you removed it."))
                     }
                 }
             } catch {
+                failure = error.localizedDescription
                 Log.termiod.error("""
                 removing project \(path, privacy: .public) from \
                 \(route.description, privacy: .public) failed: \
@@ -1097,9 +1133,19 @@ extension TermioStore {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.hostProjectsRemoving[key]?.remove(path)
+                    if let index = self.hostProjectsRemoving[key]?.firstIndex(of: path) {
+                        self.hostProjectsRemoving[key]?.remove(at: index)
+                    }
                     if let revision {
                         self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
+                    }
+                    if let failure {
+                        let alert = NSAlert()
+                        alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
+                        alert.informativeText = localized(
+                            "\(failure) The project stays on \(alias) and comes back here.")
+                        alert.alertStyle = .warning
+                        alert.runModal()
                     }
                 }
             }

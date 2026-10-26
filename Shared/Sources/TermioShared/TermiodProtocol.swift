@@ -434,6 +434,7 @@ public enum Termiod {
     private struct ProjectRemoveOperation: Encodable {
         let op = "project_remove"
         let project: String
+        let only: [String]
         let seq: UInt64
     }
 
@@ -1025,9 +1026,12 @@ public enum Termiod {
         }
 
         /// Externally tagged on the wire: `{"pane": {…}}` or `{"split": {…}}`.
+        /// A node of a kind a newer host added decodes as `unknown`, and shows
+        /// no session, so it never fails the whole view.
         public indirect enum Node: Decodable, Sendable, Equatable {
             case pane(Pane)
             case split(Split)
+            case unknown
 
             private enum CodingKeys: String, CodingKey {
                 case pane, split
@@ -1037,8 +1041,10 @@ public enum Termiod {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 if let pane = try container.decodeIfPresent(Pane.self, forKey: .pane) {
                     self = .pane(pane)
+                } else if let split = try container.decodeIfPresent(Split.self, forKey: .split) {
+                    self = .split(split)
                 } else {
-                    self = .split(try container.decode(Split.self, forKey: .split))
+                    self = .unknown
                 }
             }
 
@@ -1046,6 +1052,7 @@ public enum Termiod {
                 switch self {
                 case .pane(let pane): return pane.session.map { [$0] } ?? []
                 case .split(let split): return split.before.sessions + split.after.sessions
+                case .unknown: return []
                 }
             }
         }
@@ -1972,8 +1979,13 @@ public enum Termiod {
         try encodeControl(ViewOperation(seq: seq))
     }
 
-    public static func projectRemovePayload(project: String, seq: UInt64 = 1) throws -> Data {
-        try encodeControl(ProjectRemoveOperation(project: project, seq: seq))
+    /// `only`: the sessions the caller agreed to end. A host refuses the whole
+    /// removal with `conflict` when a live session outside it is placed in the
+    /// project. A host from before `only` ignores it.
+    public static func projectRemovePayload(
+        project: String, only: [String], seq: UInt64 = 1
+    ) throws -> Data {
+        try encodeControl(ProjectRemoveOperation(project: project, only: only, seq: seq))
     }
 
     public static func killPayload(target: String, seq: UInt64 = 1) throws -> Data {

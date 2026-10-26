@@ -1176,7 +1176,9 @@ final class TermioStore: ObservableObject {
     /// Project paths whose host removal is still in flight, by `KnownDevice.id`.
     /// A view read before the removal landed still lists them, and must not
     /// bring their rows back.
-    var hostProjectsRemoving: [String: Set<String>] = [:]
+    /// A path appears once per removal in flight, so two removals of one path
+    /// do not clear each other's guard.
+    var hostProjectsRemoving: [String: [String]] = [:]
 
     /// The lowest view revision each host may still apply, by `KnownDevice.id`:
     /// the revision a removal this app made returned. A roster that was already

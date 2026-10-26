@@ -1067,6 +1067,11 @@ pub enum Control {
     /// Remove a project row and kill the sessions its panes show.
     ProjectRemove {
         project: String,
+        /// The sessions the client agreed to end. When present, a live session
+        /// outside it placed in the project refuses the whole removal with
+        /// `conflict`, and nothing is killed. Absent: every session it shows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        only: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },

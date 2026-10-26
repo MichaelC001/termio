@@ -1128,38 +1128,65 @@ extension Termiod {
     }
 
     /// The roster and, from a host that owns a view, the view, over one
-    /// connection: on an SSH route that is one round trip, not two. The view is
-    /// `nil` from a host too old to have one.
+    /// connection and one round trip: both requests go out before either reply
+    /// is read, and the host answers them in order. The view is `nil` from a
+    /// host too old to have one, and when it cannot be read: the roster never
+    /// fails because of the view.
     static func rosterAndView(route: TermiodRoute) throws -> (SessionsPayload, HostView?) {
         try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            let asksView = handshake.capabilities.contains(viewCapability)
             try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
+            if asksView {
+                // A second `seq`: the host answers a repeated one from its reply
+                // cache, which here is the roster.
+                try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 2))
+            }
             let sessions = try readReply(transport) { reply -> SessionsPayload? in
                 if case .sessions(let payload) = reply { return payload }
                 return nil
             }
-            guard handshake.capabilities.contains(viewCapability) else { return (sessions, nil) }
-            // A second `seq`: the host answers a repeated one from its reply
-            // cache, which here is the roster.
+            guard asksView else { return (sessions, nil) }
+            do {
+                let view = try readReply(transport) { reply -> HostView? in
+                    if case .viewState(let payload) = reply { return payload.view }
+                    return nil
+                }
+                return (sessions, view)
+            } catch {
+                Log.termiod.error("""
+                view of \(route.description, privacy: .public) unreadable: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+                return (sessions, nil)
+            }
+        }
+    }
+
+    /// Removes the host's project at `path`, over one connection: it reads the
+    /// roster and the view, lets `decide` pick the project to remove, and sends
+    /// `project_remove` with `only`. Returns the view's revision after the
+    /// removal, or `nil` when the host has no view or `decide` removes nothing.
+    @discardableResult
+    static func removeHostProject(
+        route: TermiodRoute, only: Set<String>,
+        decide: (SessionsPayload, HostView) throws -> String?
+    ) throws -> UInt64? {
+        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+            guard handshake.capabilities.contains(viewCapability) else { return nil }
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
             try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 2))
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
             let view = try readReply(transport) { reply -> HostView? in
                 if case .viewState(let payload) = reply { return payload.view }
                 return nil
             }
-            return (sessions, view)
-        }
-    }
-
-    /// Removes a project from the host's view and returns the view's revision
-    /// after it, or `nil` from a host without a view. The host kills the
-    /// sessions its panes show, so a caller sends this only when those are
-    /// sessions it is closing anyway.
-    @discardableResult
-    static func removeHostProject(_ project: String, route: TermiodRoute) throws -> UInt64? {
-        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
-            guard handshake.capabilities.contains(viewCapability) else { return nil }
+            guard let project = try decide(sessions, view) else { return nil }
             try writeFrame(
                 transport.writeDescriptor, kind: .control,
-                payload: projectRemovePayload(project: project))
+                payload: projectRemovePayload(project: project, only: only.sorted(), seq: 3))
             return try readReply(transport) { reply -> UInt64? in
                 if case .revised(let payload) = reply { return payload.revision }
                 return nil

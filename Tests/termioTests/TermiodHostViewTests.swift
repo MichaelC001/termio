@@ -55,6 +55,20 @@ final class TermiodHostViewTests: XCTestCase {
         XCTAssertEqual(node.sessions, [])
     }
 
+    /// A node of a kind a newer host added must not fail the whole view.
+    func testANodeOfAnUnknownKindDecodes() throws {
+        let node = try decode(Termiod.HostView.Node.self, #"{"stack": {"panes": []}}"#)
+
+        XCTAssertEqual(node, .unknown)
+    }
+
+    /// Host paths compare as text. This Mac's filesystem knows nothing of the
+    /// other machine's symlinks, so `/private` is never stripped.
+    func testHostPathsCompareAsText() {
+        XCTAssertEqual(TermioStore.hostPathKey("/home//me/./app/../app/"), "/home/me/app")
+        XCTAssertEqual(TermioStore.hostPathKey("/private/var/x"), "/private/var/x")
+    }
+
     func testAHostProjectGetsARowInItsMachinesWorkspace() throws {
         let box = Workspace(name: "vps", deviceAlias: "vps")
         let store = makeStore(workspaces: [Workspace(name: "Sessions"), box])
@@ -137,10 +151,10 @@ final class TermiodHostViewTests: XCTestCase {
         let view = try decode(Termiod.HostView.self, viewJSON)
 
         XCTAssertEqual(
-            TermioStore.removableHostProject(
-                at: "/home/me/app/", in: view, live: ["s_one", "s_loose"],
+            TermioStore.hostProjectRemoval(
+                at: "/home/me/./app/", in: view, live: ["s_one", "s_loose"],
                 closing: ["s_one"]),
-            "p_app",
+            .remove("p_app"),
             "s_two is placed there but is not live")
     }
 
@@ -149,15 +163,18 @@ final class TermiodHostViewTests: XCTestCase {
     func testAHostProjectStaysWhileAnotherLiveSessionIsPlacedInIt() throws {
         let view = try decode(Termiod.HostView.self, viewJSON)
 
-        XCTAssertNil(TermioStore.removableHostProject(
-            at: "/home/me/app", in: view, live: ["s_one", "s_two"], closing: ["s_one"]))
+        XCTAssertEqual(
+            TermioStore.hostProjectRemoval(
+                at: "/home/me/app", in: view, live: ["s_one", "s_two"], closing: ["s_one"]),
+            .others("p_app", ["s_two"]))
     }
 
     func testNoHostProjectAtThePathRemovesNothing() throws {
         let view = try decode(Termiod.HostView.self, viewJSON)
 
-        XCTAssertNil(TermioStore.removableHostProject(
-            at: "/home/me/other", in: view, live: [], closing: []))
+        XCTAssertEqual(
+            TermioStore.hostProjectRemoval(at: "/home/me/other", in: view, live: [], closing: []),
+            .none)
     }
 }
 
@@ -248,12 +265,28 @@ final class TermiodHostViewIntegrationTests: XCTestCase {
         XCTAssertEqual(hostView.projectBySession[session]?.id, project)
         let live = Set(roster.sessions.filter(\.alive).map(\.id))
         XCTAssertTrue(live.contains(session))
-        XCTAssertEqual(
-            TermioStore.removableHostProject(
-                at: checkout.path, in: hostView, live: live, closing: [session]),
-            project, "the host's path is canonical, and the row's path still matches it")
+        // The host's path is canonical: `/private/var` on this Mac.
+        let resolved = try XCTUnwrap(realpath(checkout.path, nil))
+        let canonical = String(cString: resolved)
+        free(resolved)
 
-        try Termiod.removeHostProject(project, route: .local)
+        // A removal that agreed to end only other sessions is refused on the
+        // host, and the session keeps running.
+        XCTAssertThrowsError(try Termiod.removeHostProject(route: .local, only: ["s_other"]) { _, _ in
+            project
+        })
+        let (still, _) = try Termiod.rosterAndView(route: .local)
+        XCTAssertTrue(still.sessions.contains { $0.id == session && $0.alive })
+
+        let revision = try Termiod.removeHostProject(route: .local, only: [session]) {
+            sessions, view in
+            let live = Set(sessions.sessions.filter(\.alive).map(\.id))
+            guard case .remove(let id) = TermioStore.hostProjectRemoval(
+                at: canonical, in: view, live: live, closing: [session])
+            else { return nil }
+            return id
+        }
+        XCTAssertNotNil(revision)
 
         let (after, afterView) = try Termiod.rosterAndView(route: .local)
         XCTAssertEqual(afterView?.projects.map(\.id), [])
