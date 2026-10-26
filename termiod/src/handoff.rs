@@ -107,6 +107,18 @@ pub fn probe_token() -> String {
 /// open, and is named in the daemon's log on the way out.
 pub const CARRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// What the host answered queries with, carried so the next image answers the
+/// same until a writer says otherwise (`termiod_vt::Answers`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedAnswers {
+    pub xtversion: String,
+    pub foreground: Option<[u8; 3]>,
+    pub background: Option<[u8; 3]>,
+    pub cursor: Option<[u8; 3]>,
+    pub palette: Option<Vec<[u8; 3]>>,
+    pub dark: Option<bool>,
+}
+
 /// One session, packed for the crossing. The descriptor numbers are meaningless
 /// to anything but the process that wrote them, which is the same process that
 /// reads them back — that is the whole point of the exec.
@@ -141,6 +153,9 @@ pub struct CarriedSession {
     /// reads its rings and ignores the rest.
     #[serde(default)]
     pub native_len: u64,
+    /// What the host answered the program's queries with (`vt_answers`).
+    #[serde(default)]
+    pub answers: Option<CarriedAnswers>,
     /// The session's input encoders had lost the program's modes in an
     /// earlier handoff. A snapshot of that VT carries the loss, so the next
     /// image must not trust it either.
@@ -715,6 +730,7 @@ mod tests {
             ring_reconstructs_screen: true,
             status_clocks: None,
             native_len: 0,
+            answers: None,
             input_modes_unknown: false,
             paste_open: false,
             pending_len: 0,
@@ -737,5 +753,29 @@ mod tests {
             serde_json::from_value(older).expect("an older blob still crosses");
         assert!(decoded.status_clocks.is_none());
         assert!(!decoded.ring_reconstructs_screen);
+        assert!(decoded.answers.is_none(), "an older blob carries no answers");
+    }
+
+    /// The host's answers cross with the session, so the next image answers
+    /// with the last writer's name and theme rather than the engine's.
+    #[test]
+    fn a_carried_session_keeps_its_answers() {
+        let blob = serde_json::json!({
+            "id": "s_1", "name": "s_1", "cwd": "", "command": "sh", "pid": 1,
+            "rows": 24, "cols": 80, "created_unix": 0, "status": "working",
+            "master_fd": -1, "ring_len": 0,
+            "answers": {
+                "xtversion": "ghostty 1.3.1", "foreground": [221, 221, 221], "background": [17, 34, 51],
+                "cursor": null, "palette": null, "dark": true,
+            },
+        });
+        let decoded: CarriedSession = serde_json::from_value(blob).expect("the blob decodes");
+        let answers = decoded.answers.clone().expect("answers crossed");
+        assert_eq!(answers.xtversion, "ghostty 1.3.1");
+        assert_eq!(answers.background, Some([17, 34, 51]));
+        assert_eq!(answers.dark, Some(true));
+        let again: CarriedSession =
+            serde_json::from_value(serde_json::to_value(&decoded).expect("encodes")).expect("decodes");
+        assert_eq!(again.answers, decoded.answers);
     }
 }

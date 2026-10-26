@@ -113,6 +113,10 @@ pub(crate) enum SidecarCommand {
         native: bool,
     },
     SetGridDiff(bool),
+    /// Whether the VT answers the program's queries (`vt_answers`). Off until
+    /// the replay of a previous image's output is behind it.
+    SetAnswering(bool),
+    SetAnswers(termiod_vt::Answers),
     Shutdown,
     /// The daemon is handing this session to its next image: answer with the
     /// VT's native snapshot, taken after every byte sent before this, then
@@ -138,6 +142,8 @@ pub(crate) enum SidecarResult {
     Screen(ScreenTick),
     /// The program just turned focus reports (mode 1004) on.
     FocusReportsOn,
+    /// What the VT answered the program's queries with, for the PTY.
+    Replies(Vec<u8>),
 }
 
 pub(crate) struct SidecarCapture {
