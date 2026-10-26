@@ -132,8 +132,23 @@ final class StreamTerminalTests: XCTestCase {
         var reports = ""
         let terminal = try TermiodStreamTerminal(
             nativeSnapshot: snapshot, onReply: { reports += String(decoding: $0, as: UTF8.self) })
+        terminal.write(Data("\u{7}".utf8))
         try terminal.setTheme(theme(background: 250, dark: false))
-        terminal.write(Data("\u{7}\u{1b}[?2031h".utf8))
+        try terminal.setTheme(theme(background: 20, dark: true))
+        XCTAssertEqual(reports, "", "reported a change to a program that did not ask")
+        try terminal.setTheme(theme(background: 250, dark: false))
+        terminal.write(Data("\u{1b}[?2031h".utf8))
+        // The first theme is no change, even to a program that asked.
+        var first = ""
+        let fresh = try TermiodStreamTerminal(
+            nativeSnapshot: snapshot, onReply: { first += String(decoding: $0, as: UTF8.self) })
+        fresh.write(Data("\u{7}\u{1b}[?2031h".utf8))
+        try fresh.setTheme(theme(background: 20, dark: true))
+        XCTAssertEqual(first, "", "reported the first theme as a change")
+        // A reattached pane says once where it stands now.
+        reports = ""
+        terminal.reportColorSchemeIfSubscribed()
+        XCTAssertEqual(reports, "\u{1b}[?997;2n")
         reports = ""
         try terminal.setTheme(theme(background: 20, dark: true))
         XCTAssertEqual(reports, "\u{1b}[?997;1n")

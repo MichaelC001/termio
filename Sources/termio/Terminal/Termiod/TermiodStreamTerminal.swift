@@ -565,6 +565,18 @@ final class TermiodStreamTerminal: @unchecked Sendable {
         if let report { onReply(report) }
     }
 
+    /// Tells a program that turned on color scheme reports (mode 2031) the
+    /// scheme it is in now. A terminal decoded on reattach starts with no
+    /// theme, so a change made while the pane was detached reaches the program
+    /// only this way; a report repeating the current scheme does no harm.
+    func reportColorSchemeIfSubscribed() {
+        let report = locked { () -> Data? in
+            guard let theme, (try? mode(ghostty_mode_new(2031, false))) == true else { return nil }
+            return Data((theme.dark ? "\u{1b}[?997;1n" : "\u{1b}[?997;2n").utf8)
+        }
+        if let report { onReply(report) }
+    }
+
     struct Theme: Equatable {
         static func == (left: Theme, right: Theme) -> Bool {
             func same(_ a: GhosttyColorRgb, _ b: GhosttyColorRgb) -> Bool { a.r == b.r && a.g == b.g && a.b == b.b }
