@@ -189,6 +189,15 @@ fn without_the_app_the_replies_keep_the_contract() {
     let reply: serde_json::Value = serde_json::from_slice(&shared.stdout).expect("read --json");
     assert_eq!(reply["error"], "ambiguous", "a shared name: {reply}");
 
+    // A name made of hex digits is that session, not the prefix of an app
+    // session's UUID.
+    for (name, word) in [("1aaaaaaa-0000-4000-8000-000000000001", "uuid-named"), ("1", "named-one")] {
+        let script = format!("echo {word}; exec cat");
+        let made = termio(&daemon, &["session", "create", "--name", name, "--", "sh", "-c", &script]);
+        assert!(made.status.success(), "create {name}: {made:?}");
+    }
+    assert!(screen_shows(&daemon, "1", "named-one"), "read 1 took the UUID session");
+
     let listed = termio(&daemon, &["session", "ls", "--all", "--json"]);
     assert!(!stdout(&listed).contains("null"), "ls --all --json: {}", stdout(&listed));
 }

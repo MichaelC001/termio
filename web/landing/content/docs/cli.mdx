@@ -228,7 +228,8 @@ termio session ls --all
 ```
 
 While the app runs, `send`, `read` and `close` reach a session that `create`
-made only when the app shows it in your project.
+made only when the app shows it in your project. `send` then needs the link
+that `termio session ls` prints for it: a bare name is read as a prompt.
 
 What only the app has: `spawn`, `watch`, `focus`, pane placement, `--key` and
 `--wait`. A command that needs one of them says so.

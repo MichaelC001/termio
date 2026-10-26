@@ -3,7 +3,7 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: 6b78f177c38be59ea85e5ebf2fd5bbb51b1bad261569938483ada5c609d03474
+  source_hash: bab8b7badd494c930ab1b4a200264e58488401d825f6b56c07c20edaa5d6feb1
   generated_at: 2026-10-26
 ---
 
@@ -187,6 +187,7 @@ termio session ls --all
 ```
 
 应用运行时，`send`、`read` 和 `close` 只有在应用把 `create` 建的会话显示在你的项目里时才能找到它。
+这时 `send` 要用 `termio session ls` 给出的链接：单写一个名字会被当成提示词。
 
 只有应用才有的：`spawn`、`watch`、`focus`、窗格摆放、`--key` 和 `--wait`。需要其中之一的命令
 会直接说明。

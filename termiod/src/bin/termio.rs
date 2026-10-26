@@ -668,10 +668,19 @@ async fn daemon_read(
     format: &str,
 ) -> Option<i32> {
     let token = read_token(channel, target)?;
-    let sessions = match termiod::client::sessions_of_running_daemon().await {
-        Ok(Some(sessions)) => sessions,
+    let listing = tokio::time::timeout(
+        termiod::server::LOOKUP_TIMEOUT,
+        termiod::client::sessions_of_running_daemon(),
+    );
+    let sessions = match listing.await {
+        Ok(Ok(Some(sessions))) => sessions,
         _ => return None,
     };
+    // A session named exactly the token is that session, as `send` and
+    // `close` resolve it.
+    if sessions.iter().any(|info| info.name == token) {
+        return None;
+    }
     let token_lower = token.to_lowercase();
     // Daemon-first claims only the canonical app-created population:
     // sessions whose daemon name is a UUID, matched by a hex/dash token. An
@@ -686,7 +695,8 @@ async fn daemon_read(
         .iter()
         .filter(|info| {
             let name = info.name.to_lowercase();
-            uuid_shaped(&name) && (name == token_lower || name.starts_with(&token_lower))
+            uuid_shaped(&name)
+                && (name == token_lower || (token_lower.len() >= 8 && name.starts_with(&token_lower)))
         })
         .collect();
     match matches.len() {
@@ -1165,7 +1175,13 @@ async fn sessions(channel: &Channel, verb: SessionVerb) -> Result<()> {
                 } else {
                     termiod::server::LOOKUP_TIMEOUT
                 };
-                match termiod::server::resolve_running(&args.words[0], lookup).await {
+                let mut found = termiod::server::resolve_running(&args.words[0], lookup).await;
+                // A socket file the app left behind is no app: the lookup
+                // then gets its full time.
+                if found.is_err() && lookup < termiod::server::LOOKUP_TIMEOUT && !app_running(channel) {
+                    found = termiod::server::resolve_running(&args.words[0], termiod::server::LOOKUP_TIMEOUT).await;
+                }
+                match found {
                     Ok(found) => addressed = found.is_some() && !app_running(channel),
                     Err(error) if !app_running(channel) => {
                         let (code, message) = lookup_error(&error);
