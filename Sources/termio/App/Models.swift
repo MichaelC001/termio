@@ -271,6 +271,12 @@ struct Project: Identifiable, Hashable, Codable {
     /// resolves to a device.
     var remoteCheckouts: [String: String] = [:]
 
+    /// The id of this row's project in its machine's view
+    /// (`docs/design/20261025-termiod-owns-the-view.md`), once the host has
+    /// one. The row and the host project are matched by it, so a path this
+    /// app spells differently from the host's canonical one is still one row.
+    var hostProjectID: String?
+
     /// The machine a state file written **before** the hierarchy recorded on the
     /// checkout itself, and `nil` on every project this build writes.
     ///
@@ -291,6 +297,7 @@ struct Project: Identifiable, Hashable, Codable {
 extension Project {
     private enum CodingKeys: String, CodingKey {
         case id, workspaceID, name, path, branch, sessions, worktrees, pinned, remoteCheckouts
+        case hostProjectID
         case deviceAlias, deviceID
     }
 
@@ -315,6 +322,7 @@ extension Project {
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         remoteCheckouts =
             try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
+        hostProjectID = try container.decodeIfPresent(String.self, forKey: .hostProjectID)
         // Kept in the decoder after the live fields went: a file written before
         // the hierarchy is the only thing that still says which machine each
         // checkout is on, and dropping the keys here would lose the split that
@@ -338,6 +346,7 @@ extension Project {
         try container.encode(worktrees, forKey: .worktrees)
         try container.encode(pinned, forKey: .pinned)
         try container.encode(remoteCheckouts, forKey: .remoteCheckouts)
+        try container.encodeIfPresent(hostProjectID, forKey: .hostProjectID)
     }
 
     /// The recorded checkout for one machine, addressed by device where the app

@@ -1050,6 +1050,28 @@ extension TermioStore {
             selectedSessionID = existing.sessions.first?.id
             return
         }
+        // This Mac's host owns its projects: the row is drawn from the view the
+        // registration returns. A host that cannot be asked gets the row here,
+        // and the next view registers it.
+        if drawsFromHost(.thisMac) {
+            addHostProject(path: path, name: url.lastPathComponent, on: .thisMac) { [weak self] id in
+                guard let self else { return }
+                guard let id, let index = self.projects.firstIndex(where: { $0.id == id }) else {
+                    self.addLocalProjectRow(at: url, path: path)
+                    return
+                }
+                if self.projects[index].sessions.isEmpty {
+                    self.projects[index].sessions.insert(Session(title: "Terminal 1"), at: 0)
+                }
+                self.selectedSessionID = self.projects[index].sessions.first?.id
+                self.resolveBranchLabel(for: id, at: self.projects[index].path)
+            }
+            return
+        }
+        addLocalProjectRow(at: url, path: path)
+    }
+
+    private func addLocalProjectRow(at url: URL, path: String) {
         let session = Session(title: "Terminal 1")
         // The folder is on this Mac, so it is filed under a workspace on this Mac —
         // ⌘O and the welcome page reach here with any workspace current, a box's
@@ -1158,6 +1180,25 @@ extension TermioStore {
         var path = entry
         while path.count > 1, path.hasSuffix("/") { path.removeLast() }
         let name = (path as NSString).lastPathComponent
+        let device = KnownDevice(
+            alias: alias,
+            deviceID: TermiodDeviceRegistry.shared.deviceID(for: TermiodRoute(sshAlias: alias)))
+        if checkout(at: path, on: alias, device: device.deviceID) == nil, drawsFromHost(device) {
+            addHostProject(path: path, name: name.isEmpty ? alias : name, on: device) { [weak self] id in
+                guard let self else { return }
+                guard let id, let project = self.projects.first(where: { $0.id == id }) else {
+                    self.openRemoteProjectRow(at: path, named: name, on: alias)
+                    return
+                }
+                self.switchToWorkspace(project.workspaceID)
+                self.addRemoteTerminal(host: alias, project: id)
+            }
+            return
+        }
+        openRemoteProjectRow(at: path, named: name, on: alias)
+    }
+
+    private func openRemoteProjectRow(at path: String, named name: String, on alias: String) {
         let id = addRemoteProject(
             name: name.isEmpty ? alias : name,
             at: path,
@@ -1293,7 +1334,8 @@ extension TermioStore {
                     snapshot?.live.filter { names.contains($0.value) }.map(\.key) ?? [])
                 guard let snapshot,
                       case .others(_, let ids) = Self.hostProjectRemoval(
-                        at: path, in: snapshot.view, live: Set(snapshot.live.keys), closing: mine)
+                        at: path, id: hostID(of: project, on: device), in: snapshot.view,
+                        live: Set(snapshot.live.keys), closing: mine)
                 else { continue }
                 otherIDs[device.id, default: []].formUnion(ids)
                 for id in ids { otherNames[id] = snapshot.live[id] }
@@ -1345,7 +1387,8 @@ extension TermioStore {
                     .union(otherIDs[device.id] ?? []),
                 names: Set(endingThere.map(daemonSessionName(for:))))
             removeHostProject(
-                path: path, name: project.name, closing: closing, quiet: !asking, on: device)
+                path: path, hostID: hostID(of: project, on: device), name: project.name,
+                closing: closing, quiet: !asking, on: device)
         }
         for session in removedSessions {
             // Removing the project destroys its sessions, so the daemon has to
@@ -1382,6 +1425,10 @@ extension TermioStore {
     /// brings the row back.
     private func hostCheckouts(of project: Project) -> [(device: KnownDevice, path: String)] {
         var checkouts: [(device: KnownDevice, path: String)] = []
+        // This Mac's own host keeps a record too, once this app draws from it.
+        if workspace(owning: project)?.deviceAlias == nil, hostViews[KnownDevice.thisMac.id] != nil {
+            checkouts.append((.thisMac, project.path))
+        }
         for alias in Set(workspaces.compactMap(\.deviceAlias)).sorted() {
             let device = KnownDevice(
                 alias: alias,
@@ -1396,6 +1443,11 @@ extension TermioStore {
             for path in paths.sorted() { checkouts.append((device, path)) }
         }
         return checkouts
+    }
+
+    /// The id of `project` in `device`'s view, when the row is on that machine.
+    private func hostID(of project: Project, on device: KnownDevice) -> String? {
+        workspaceIDs(on: device).contains(project.workspaceID) ? project.hostProjectID : nil
     }
 
     /// Renames a session via a one-field prompt (the same `NSAlert` shape the
@@ -1636,7 +1688,7 @@ extension TermioStore {
     /// spawning a `git rev-parse` subprocess and blocking on its exit — a visible
     /// hitch to pay on the main thread just for sidebar chrome. The patch keys on
     /// the project id, so a project closed before git answers is simply a no-op.
-    private func resolveBranchLabel(for projectID: Project.ID, at path: String) {
+    func resolveBranchLabel(for projectID: Project.ID, at path: String) {
         DispatchQueue.global(qos: .userInitiated).async {
             guard let branch = Self.gitOutput(["rev-parse", "--abbrev-ref", "HEAD"], in: path),
                   !branch.isEmpty else { return }

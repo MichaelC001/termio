@@ -51,7 +51,7 @@ extension TermioStore {
         // when the caller chose one (a cloned repo directory): the remote
         // daemon `cd`s there before the process. Local sessions keep the full
         // spec, unchanged.
-        let specification = remoteHost == nil
+        var specification = remoteHost == nil
             ? Termiod.CreateSpecification(
                 cwd: cwd,
                 argv: argv,
@@ -65,6 +65,9 @@ extension TermioStore {
                 rows: UInt16(clamping: lastHostGridRows),
                 cols: UInt16(clamping: lastHostGridColumns),
                 command: command)
+        // The host files the pane where the row is, so the view and this
+        // sidebar agree without the host guessing from the cwd.
+        specification.place = hostPlace(for: session)
         let opening = viewport ?? TerminalGrid(
             rows: UInt16(clamping: lastHostGridRows), cols: UInt16(clamping: lastHostGridColumns))
         return TermiodSessionLink(
@@ -842,7 +845,7 @@ extension TermioStore {
             // host placed it in, and that project already has a row.
             if let view {
                 viewlessHosts.remove(device.id)
-                applyHostView(view, from: device, route: route)
+                applyHostView(view, from: device, route: route, live: live)
             } else {
                 viewlessHosts.insert(device.id)
             }
@@ -975,17 +978,18 @@ extension TermioStore {
 
     // MARK: - The host's view
 
-    /// Records a host's view and gives each of its projects a row.
+    /// Records a host's view and draws the sidebar from it.
     ///
-    /// A project registered on the box, by `termio .` there or by another
-    /// client, is a project on that machine, and a viewer of the machine should
-    /// see it as one. Only remote machines: on this Mac the app still authors
-    /// the tree, and `termio .` here goes to the app.
+    /// A host that offers `view_import` is drawn from (`drawFromHostView`),
+    /// this Mac's own host included. Until its view is seeded, this app seeds
+    /// it from its own tree first, so no row is lost.
     ///
-    /// Rows are only added. A project the host no longer has keeps its row,
-    /// because a row the app made itself was never in the host's view.
+    /// An older host that has a view only gets rows: each project registered
+    /// on a box, by `termio .` there or by another client, gets one in that
+    /// machine's workspace. On this Mac such a host adds nothing.
     func applyHostView(
-        _ view: Termiod.HostView, from device: KnownDevice, route: TermiodRoute
+        _ view: Termiod.HostView, from device: KnownDevice, route: TermiodRoute,
+        live: [Termiod.SessionInformation] = []
     ) {
         if let floor = hostViewFloors[device.id], view.revision < floor {
             Log.termiod.info("""
@@ -995,16 +999,27 @@ extension TermioStore {
             return
         }
         hostViews[device.id] = view
-        guard let alias = device.alias else { return }
+        let known = KnownDevice(
+            alias: device.alias,
+            deviceID: device.deviceID ?? device.alias.flatMap { _ in
+                TermiodDeviceRegistry.shared.deviceID(for: route)
+            })
+        if view.offersImport {
+            if view.seeded {
+                drawFromHostView(view, on: known, live: live)
+            } else {
+                importTree(to: known)
+            }
+            return
+        }
+        guard let alias = known.alias else { return }
         let removing = Set((hostProjectsRemoving[device.id] ?? []).map(Self.hostPathKey))
-        let deviceID = device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route)
-        let known = KnownDevice(alias: alias, deviceID: deviceID)
         var added = false
         for hostProject in view.projects
         where projectIndex(forHostPath: hostProject.path, on: known) == nil
             && !removing.contains(Self.hostPathKey(hostProject.path)) {
             projects.append(Project(
-                workspaceID: workspace(forDevice: alias, deviceID: deviceID),
+                workspaceID: workspace(forDevice: alias, deviceID: known.deviceID),
                 name: hostProject.label,
                 path: hostProject.path,
                 // The same "not a repo we can read" mark `addRemoteProject`
@@ -1018,6 +1033,365 @@ extension TermioStore {
             """)
         }
         if added { persistSoon() }
+    }
+
+    /// The workspaces on `device`: for this Mac, the ones with no alias.
+    func workspaceIDs(on device: KnownDevice) -> Set<Workspace.ID> {
+        Set(workspaces.filter { workspace in
+            if let alias = device.alias {
+                return workspace.isOn(alias: alias, device: device.deviceID)
+            }
+            return workspace.deviceAlias == nil
+        }.map(\.id))
+    }
+
+    /// This app's tree for one machine, as `view_import` takes it: the rows
+    /// in `projects` and the loose sessions of `workspaces`, in sidebar order.
+    /// Sessions that share a split group share a group; every other session
+    /// is a group of its own.
+    nonisolated static func viewImport(
+        projects: [Project], workspaces: [Workspace], splitGroups: [SplitNode],
+        name: (Session) -> String
+    ) -> Termiod.ViewImport {
+        func groups(of sessions: [Session]) -> [Termiod.ViewImport.Group] {
+            let byID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var grouped: Set<Session.ID> = []
+            var result: [Termiod.ViewImport.Group] = []
+            for session in sessions where !grouped.contains(session.id) {
+                let members = splitGroups.first { $0.contains(session.id) }?
+                    .leafIDs.filter { byID[$0] != nil } ?? [session.id]
+                grouped.formUnion(members)
+                result.append(.init(sessions: members.compactMap { byID[$0].map(name) }))
+            }
+            return result
+        }
+        return Termiod.ViewImport(
+            projects: projects.map { project in
+                Termiod.ViewImport.Project(
+                    path: project.path, label: project.name, pinned: project.pinned,
+                    groups: groups(of: project.sessions))
+            },
+            loose: workspaces.flatMap { groups(of: $0.looseSessions) })
+    }
+
+    /// Seeds `device`'s view from this app's tree for it, once. A host that is
+    /// already seeded keeps its own view, and this app draws that instead.
+    /// `state.json` is copied aside first, as the recovery path.
+    func importTree(to device: KnownDevice) {
+        guard !hostImports.contains(device.id) else { return }
+        hostImports.insert(device.id)
+        let onDevice = workspaceIDs(on: device)
+        let rows = projects.filter { onDevice.contains($0.workspaceID) }
+        let tree = Self.viewImport(
+            projects: rows, workspaces: workspaces.filter { onDevice.contains($0.id) },
+            splitGroups: splitGroups, name: daemonSessionName(for:))
+        let rowIDs = rows.map(\.id)
+        let route = device.route
+        StateFile().keepCopyBeforeView()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = Result { try Termiod.importView(route: route, tree: tree) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.hostImports.remove(device.id)
+                    switch outcome {
+                    case .success(let (ids, sessions, view)):
+                        if let ids {
+                            for (rowID, hostID) in zip(rowIDs, ids) {
+                                guard let index = self.projects.firstIndex(where: { $0.id == rowID })
+                                else { continue }
+                                self.projects[index].hostProjectID = hostID
+                            }
+                            Log.termiod.info("""
+                            seeded the view of \(route.description, privacy: .public) \
+                            with \(ids.count, privacy: .public) projects
+                            """)
+                        } else {
+                            Log.termiod.info("""
+                            the view of \(route.description, privacy: .public) was already \
+                            seeded; drawing the host's own
+                            """)
+                        }
+                        self.applyHostView(
+                            view, from: device, route: route,
+                            live: sessions.sessions.filter(\.alive))
+                    case .failure(let error):
+                        Log.termiod.error("""
+                        seeding the view of \(route.description, privacy: .public) failed: \
+                        \(error.localizedDescription, privacy: .public)
+                        """)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draws one machine's rows from its host's view. The host owns which
+    /// projects exist, their order, labels and pins, and which project each
+    /// live session sits in. This app keeps only what the view does not hold:
+    /// each session's agent, titles and resume state, and rows for sessions
+    /// that are not running.
+    ///
+    /// A row the host never had, such as one an older build added, is
+    /// registered with `project_add` rather than dropped. A row the host had
+    /// and no longer has was removed elsewhere, and goes.
+    ///
+    /// A live session is never moved out of a project into a loose group. No
+    /// op does that before arrangement lands, and a session opened while the
+    /// import ran can be placed loose by its cwd for a moment.
+    func drawFromHostView(
+        _ view: Termiod.HostView, on device: KnownDevice, live: [Termiod.SessionInformation]
+    ) {
+        let onDevice = workspaceIDs(on: device)
+        let removing = Set(hostProjectsRemoving[device.id] ?? [])
+        let removingPaths = Set(removing.map(Self.hostPathKey))
+        let before = projects
+        var rowFor: [String: Project.ID] = [:]
+        var created: [Project.ID] = []
+
+        for hostProject in view.projects
+        where !removing.contains(hostProject.id)
+            && !removingPaths.contains(Self.hostPathKey(hostProject.path)) {
+            let wanted = Self.hostPathKey(hostProject.path)
+            let index = projects.firstIndex {
+                onDevice.contains($0.workspaceID) && $0.hostProjectID == hostProject.id
+            } ?? projects.firstIndex {
+                onDevice.contains($0.workspaceID) && $0.hostProjectID == nil
+                    && Self.hostPathKey($0.path) == wanted
+            }
+            if let index {
+                if projects[index].hostProjectID != hostProject.id {
+                    projects[index].hostProjectID = hostProject.id
+                }
+                if projects[index].name != hostProject.label { projects[index].name = hostProject.label }
+                if projects[index].pinned != hostProject.pinned {
+                    projects[index].pinned = hostProject.pinned
+                }
+                rowFor[hostProject.id] = projects[index].id
+                continue
+            }
+            // A project here that was cloned to the box at that path is the
+            // row for the box's project; it stays filed where it is.
+            if let alias = device.alias, let clone = projects.first(where: {
+                $0.remoteCheckout(device: device.deviceID, alias: alias)
+                    .map(Self.hostPathKey) == wanted
+            }) {
+                rowFor[hostProject.id] = clone.id
+                continue
+            }
+            var project = Project(
+                workspaceID: device.alias.map { workspace(forDevice: $0, deviceID: device.deviceID) }
+                    ?? workspaceForThisMac.id,
+                name: hostProject.label,
+                path: hostProject.path,
+                // The same "not a repo we can read" mark a plain folder gets,
+                // until git is asked on this Mac.
+                branch: "—",
+                sessions: [])
+            project.pinned = hostProject.pinned
+            project.hostProjectID = hostProject.id
+            projects.append(project)
+            rowFor[hostProject.id] = project.id
+            created.append(project.id)
+            Log.termiod.info("""
+            project \(hostProject.path, privacy: .public) on \(device.name, privacy: .public) \
+            has a row now
+            """)
+        }
+
+        fileLiveSessions(by: view, rowFor: rowFor, on: device, live: live)
+
+        let hostIDs = Set(view.projects.map(\.id))
+        let gone = projects.filter {
+            onDevice.contains($0.workspaceID)
+                && $0.hostProjectID.map { !hostIDs.contains($0) && !removing.contains($0) } == true
+        }
+        for project in gone {
+            Log.termiod.info("""
+            project \(project.path, privacy: .public) was removed from \
+            \(device.name, privacy: .public); its row goes
+            """)
+            dropProjectRow(project.id)
+        }
+
+        orderRows(on: onDevice, as: view.projects.compactMap { rowFor[$0.id] })
+
+        for project in projects
+        where onDevice.contains(project.workspaceID) && project.hostProjectID == nil
+            && !removingPaths.contains(Self.hostPathKey(project.path)) {
+            registerRow(project, on: device)
+        }
+
+        if device.isLocal {
+            for id in created {
+                if let project = projects.first(where: { $0.id == id }) {
+                    resolveBranchLabel(for: id, at: project.path)
+                }
+            }
+        }
+        if projects != before { persistSoon() }
+    }
+
+    /// Moves each live session's row into the project the host placed it in.
+    private func fileLiveSessions(
+        by view: Termiod.HostView, rowFor: [String: Project.ID], on device: KnownDevice,
+        live: [Termiod.SessionInformation]
+    ) {
+        var idByName: [String: String] = [:]
+        for information in live where information.alive && !information.id.isEmpty {
+            idByName[Self.daemonKey(information)] = information.id
+        }
+        let placed = view.projectBySession
+        for session in allSessions where isAuthored(session, for: device) {
+            guard let id = idByName[daemonSessionName(for: session)],
+                  let hostProject = placed[id],
+                  let target = rowFor[hostProject.id]
+            else { continue }
+            if let current = projects.first(where: { $0.sessions.contains { $0.id == session.id } }),
+               current.id == target || current.hostProjectID == hostProject.id {
+                continue
+            }
+            moveSession(session.id, toProject: target)
+        }
+    }
+
+    /// Takes a session out of wherever it is filed and appends it to a
+    /// project's sessions. The surface is keyed by the session's id and stays.
+    private func moveSession(_ id: Session.ID, toProject target: Project.ID) {
+        guard projects.contains(where: { $0.id == target }) else { return }
+        var moved: Session?
+        for index in projects.indices {
+            if let at = projects[index].sessions.firstIndex(where: { $0.id == id }) {
+                moved = projects[index].sessions.remove(at: at)
+            }
+        }
+        for index in workspaces.indices {
+            if let at = workspaces[index].terminals.firstIndex(where: { $0.id == id }) {
+                moved = workspaces[index].terminals.remove(at: at)
+            }
+            if let at = workspaces[index].chats.firstIndex(where: { $0.id == id }) {
+                moved = workspaces[index].chats.remove(at: at)
+            }
+        }
+        guard let moved, let index = projects.firstIndex(where: { $0.id == target }) else { return }
+        projects[index].sessions.append(moved)
+    }
+
+    /// Puts the rows of one machine's workspaces in the host's order, in the
+    /// slots they already take in `projects`. Rows the host does not list keep
+    /// their places after the ones it does.
+    private func orderRows(on onDevice: Set<Workspace.ID>, as order: [Project.ID]) {
+        let slots = projects.indices.filter { onDevice.contains(projects[$0].workspaceID) }
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        let rows = slots.map { projects[$0] }
+        let ordered = rows.enumerated().sorted { left, right in
+            let leftRank = rank[left.element.id] ?? Int.max
+            let rightRank = rank[right.element.id] ?? Int.max
+            return leftRank == rightRank ? left.offset < right.offset : leftRank < rightRank
+        }.map(\.element)
+        guard ordered.map(\.id) != rows.map(\.id) else { return }
+        for (slot, row) in zip(slots, ordered) { projects[slot] = row }
+    }
+
+    /// Removes a row the host no longer has. The host ended its sessions when
+    /// it removed the project, so nothing is killed here; the surfaces go.
+    private func dropProjectRow(_ id: Project.ID) {
+        guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
+        let removed = projects[index].sessions
+        let removedIDs = Set(removed.map(\.id))
+        for session in removed {
+            surfaces[session.id] = nil
+            monitors[session.id] = nil
+            removeRuntime(for: session.id)
+            processSpawnedAt[session.id] = nil
+            transcriptPaths[session.id] = nil
+            clearActivityTracking(for: session.id)
+        }
+        projects.remove(at: index)
+        pruneSessionsFromSplit(removedIDs)
+        if let selected = selectedSessionID, removedIDs.contains(selected) {
+            selectedSessionID = sessions(inWorkspace: currentWorkspace.id).first?.id
+        }
+    }
+
+    /// Registers a row the host has never had, once per run.
+    private func registerRow(_ project: Project, on device: KnownDevice) {
+        guard !hostRegistrations.contains(project.id) else { return }
+        hostRegistrations.insert(project.id)
+        addHostProject(path: project.path, name: project.name, on: device) { _ in }
+    }
+
+    /// Whether this app draws `device`'s rows from its host's view and authors
+    /// changes there.
+    func drawsFromHost(_ device: KnownDevice) -> Bool {
+        guard let view = hostViews[device.id] else { return false }
+        return view.offersImport && view.seeded
+    }
+
+    /// Registers `path` as a project on `device`'s host and draws the row from
+    /// the view that comes back. `then` gets the row, or `nil` when the host
+    /// refused or could not be reached; the caller decides what that means.
+    func addHostProject(
+        path: String, name: String, on device: KnownDevice,
+        then: @escaping @MainActor (Project.ID?) -> Void
+    ) {
+        let route = device.route
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = Result {
+                try Termiod.addHostProject(route: route, path: path, label: name)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    switch outcome {
+                    case .success(let (hostID, sessions, view)):
+                        // A row this app already has at that path takes the id
+                        // first, so the view does not draw a second one.
+                        let onDevice = self.workspaceIDs(on: device)
+                        if let index = self.projects.firstIndex(where: {
+                            onDevice.contains($0.workspaceID) && $0.hostProjectID == nil
+                                && $0.path == path
+                        }) {
+                            self.projects[index].hostProjectID = hostID
+                        }
+                        self.applyHostView(
+                            view, from: device, route: route,
+                            live: sessions.sessions.filter(\.alive))
+                        then(self.projects.first {
+                            onDevice.contains($0.workspaceID) && $0.hostProjectID == hostID
+                        }?.id)
+                    case .failure(let error):
+                        Log.termiod.error("""
+                        registering \(path, privacy: .public) on \
+                        \(route.description, privacy: .public) failed: \
+                        \(error.localizedDescription, privacy: .public)
+                        """)
+                        then(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Where the host files a session's pane: the project of the row it sits
+    /// in, or a loose group for a loose row. `nil` lets the host place it by
+    /// its cwd, for a host this app does not draw from or a row it has not
+    /// registered yet.
+    func hostPlace(for session: Session) -> Termiod.Place? {
+        let device = KnownDevice(alias: session.termiodRemoteHost, deviceID: session.deviceID)
+        guard let view = hostViews[device.id], view.offersImport else { return nil }
+        guard let row = projects.first(where: { $0.sessions.contains { $0.id == session.id } })
+        else { return .loose }
+        if workspaceIDs(on: device).contains(row.workspaceID) {
+            return row.hostProjectID.map(Termiod.Place.project)
+        }
+        // A project here cloned to the box: the box's project at that path.
+        guard let alias = device.alias,
+              let checkout = row.remoteCheckout(device: device.deviceID, alias: alias)
+        else { return nil }
+        let wanted = Self.hostPathKey(checkout)
+        return view.projects.first { Self.hostPathKey($0.path) == wanted }
+            .map { Termiod.Place.project($0.id) }
     }
 
     /// A path on another machine, compared as text: `.` and `..` collapsed,
@@ -1037,7 +1411,17 @@ extension TermioStore {
 
     /// The project row for a checkout the host knows at `path`: a project filed
     /// on that machine at that path, or a project here that was cloned there.
-    func projectIndex(forHostPath path: String, on device: KnownDevice) -> Int? {
+    func projectIndex(
+        forHostPath path: String, id hostID: String? = nil, on device: KnownDevice
+    ) -> Int? {
+        if let hostID {
+            let onDevice = workspaceIDs(on: device)
+            if let index = projects.firstIndex(where: {
+                $0.hostProjectID == hostID && onDevice.contains($0.workspaceID)
+            }) {
+                return index
+            }
+        }
         guard let alias = device.alias else { return nil }
         let wanted = Self.hostPathKey(path)
         func same(_ other: String?) -> Bool {
@@ -1062,10 +1446,12 @@ extension TermioStore {
     }
 
     nonisolated static func hostProjectRemoval(
-        at path: String, in view: Termiod.HostView, live: Set<String>, closing: Set<String>
+        at path: String, id hostID: String? = nil, in view: Termiod.HostView,
+        live: Set<String>, closing: Set<String>
     ) -> HostProjectRemoval {
         let wanted = hostPathKey(path)
-        guard let hostProject = view.projects.first(where: { hostPathKey($0.path) == wanted })
+        guard let hostProject = view.projects.first(where: { $0.id == hostID })
+            ?? view.projects.first(where: { hostPathKey($0.path) == wanted })
         else { return .none }
         let others = Set(hostProject.sessions).intersection(live).subtracting(closing)
         return others.isEmpty ? .remove(hostProject.id) : .others(hostProject.id, others.sorted())
@@ -1098,7 +1484,7 @@ extension TermioStore {
               let view = hostViews[device.id],
               let hostProject = view.projectBySession[information.id]
         else { return nil }
-        return projectIndex(forHostPath: hostProject.path, on: device)
+        return projectIndex(forHostPath: hostProject.path, id: hostProject.id, on: device)
     }
 
     /// Removes the host's own record of a project whose row was just removed,
@@ -1116,13 +1502,17 @@ extension TermioStore {
     /// for a caller that confirmed a larger removal; otherwise the user is
     /// told. Any other failure is logged only, as a journaled kill is.
     func removeHostProject(
-        path: String, name: String, closing: (ids: Set<String>, names: Set<String>),
+        path: String, hostID: String? = nil, name: String,
+        closing: (ids: Set<String>, names: Set<String>),
         quiet: Bool, on device: KnownDevice
     ) {
         let route = device.route
         let key = device.id
-        guard let alias = device.alias else { return }
-        hostProjectsRemoving[key, default: []].append(path)
+        let machine = device.name
+        // The id too: this Mac's own host spells a path its canonical way,
+        // which need not be the row's.
+        let guards = [path] + (hostID.map { [$0] } ?? [])
+        hostProjectsRemoving[key, default: []].append(contentsOf: guards)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var revision: UInt64?
             var refused = false
@@ -1134,7 +1524,8 @@ extension TermioStore {
                         only.insert(information.id)
                     }
                     let live = Set(sessions.sessions.filter(\.alive).map(\.id))
-                    switch Self.hostProjectRemoval(at: path, in: view, live: live, closing: only) {
+                    switch Self.hostProjectRemoval(
+                        at: path, id: hostID, in: view, live: live, closing: only) {
                     case .none:
                         return nil
                     case .remove(let project):
@@ -1159,15 +1550,17 @@ extension TermioStore {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    if let index = self.hostProjectsRemoving[key]?.firstIndex(of: path) {
-                        self.hostProjectsRemoving[key]?.remove(at: index)
+                    for entry in guards {
+                        if let index = self.hostProjectsRemoving[key]?.firstIndex(of: entry) {
+                            self.hostProjectsRemoving[key]?.remove(at: index)
+                        }
                     }
                     if let revision {
                         self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
                     }
                     if refused {
                         let alert = NSAlert()
-                        alert.messageText = localized("Couldn’t remove “\(name)” from \(alias)")
+                        alert.messageText = localized("Couldn’t remove “\(name)” from \(machine)")
                         alert.informativeText = localized(
                             "Other sessions are running in this project. Close them, then remove the project again.")
                         alert.alertStyle = .warning

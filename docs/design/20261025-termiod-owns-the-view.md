@@ -315,7 +315,10 @@ iOS keyboard occludes the screen instead of resizing it.
    client has changed the view since startup. The import keeps the Mac's
    grouping, labels, pins and order, and matches sessions by daemon name.
 3. A second Mac that connects later gets `Conflict` and adopts the host's
-   view. Its own tree for that host is dropped.
+   view. A row of its own that the host never had is registered with
+   `project.add`, not dropped: dropping it is the loss the Risks section
+   names. A row the host had and no longer has was removed elsewhere, and
+   goes.
 4. The Mac keeps a copy of the old `state.json` for two releases, untouched,
    as a recovery path.
 
@@ -338,7 +341,11 @@ Each phase ships on its own.
      unless a live session the row did not hold is placed in it. Rows are
      only added from the view. A host project removed elsewhere keeps its row.
    - **1b.** The sidebar is drawn from the view, with `view.import`, for this
-     Mac's own host as well.
+     Mac's own host as well. The host is asked through a new `view_import`
+     capability, which also places every session `attach` creates. The Mac
+     sends `place` with each session, so the host files it by the row, not
+     by its cwd. A live session never moves out of a project into a loose
+     group in this phase: no op does that before arrangement lands.
 2. **Arrangement.** Add `pane.split`, `pane.move`,
    `pane.focus`, `pane.zoom` and `split.resize`. The Mac's split view draws
    from the view. Add the CLI verbs `split`, `focus`, `zoom` and `view`.
