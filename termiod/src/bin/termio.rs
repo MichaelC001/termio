@@ -1724,6 +1724,7 @@ async fn open_on_this_host(directory: &Path) -> Result<()> {
             cols,
             place: Some(termiod::view::Place {
                 project: Some(project.clone()),
+                ..Default::default()
             }),
             ..Default::default()
         };

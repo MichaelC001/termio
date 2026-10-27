@@ -1,6 +1,7 @@
 //! Acceptance for the host's view (`docs/design/20261025-termiod-owns-the-view.md`):
 //! a registered project, a session placed in it at `create`, the `view:host`
-//! resource, a kill that removes the pane, and a view that survives a restart.
+//! resource, a kill that removes the pane, a view that survives a restart, and
+//! a view seeded once from a client's tree.
 
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -68,13 +69,17 @@ struct Connection {
 
 impl Connection {
     fn open(daemon: &Daemon) -> Connection {
+        Connection::open_with(daemon, &["view", "resources", "events"])
+    }
+
+    fn open_with(daemon: &Daemon, caps: &[&str]) -> Connection {
         let mut stream = UnixStream::connect(&daemon.socket).expect("connect");
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("read timeout");
         let hello = json!({
             "op": "hello", "proto": 1, "min_proto": 1, "role": "control",
-            "caps": ["view", "resources", "events"], "client": "view-test",
+            "caps": caps, "client": "view-test",
         });
         write_frame(&mut stream, b'C', hello.to_string().as_bytes());
         let reply = Connection::read_control(&mut stream);
@@ -294,6 +299,222 @@ fn a_project_holds_its_sessions_and_survives_a_restart() {
     }));
     assert_eq!(removed["op"], "revised", "{removed}");
     assert_eq!(client.view()["projects"], json!([]));
+
+    drop(client);
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Opens `name` the way the Mac app does, by `attach` with `create_if_missing`,
+/// and leaves it running.
+fn attach_create(daemon: &Daemon, name: &str, spec: Value) -> Value {
+    let mut connection = Connection::open_with(daemon, &["view", "view_import"]);
+    let reply = connection.request(json!({
+        "op": "attach", "target": name, "create_if_missing": spec,
+        "rows": 24, "cols": 80, "mode": "interact",
+    }));
+    assert_eq!(reply["op"], "attached", "{reply}");
+    reply
+}
+
+fn id_of(connection: &mut Connection, name: &str) -> String {
+    let list = connection.request(json!({"op": "list"}));
+    list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|info| info["name"] == json!(name))
+        .unwrap_or_else(|| panic!("{name} in {list}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_client_seeds_the_view_once_and_places_what_it_opens() {
+    let dir = format!("/tmp/termiod-view-import-{}", std::process::id());
+    let _ = std::fs::remove_dir_all(&dir);
+    let alpha = format!("{dir}/alpha");
+    std::fs::create_dir_all(format!("{alpha}/src")).expect("checkout dir");
+    let alpha = std::fs::canonicalize(&alpha)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let gone = format!("{dir}/gone");
+
+    let daemon = start_daemon(&dir);
+    let mut client = Connection::open_with(&daemon, &["view", "view_import", "resources"]);
+    let sleeper = |cwd: &str, place: Value| {
+        json!({"cwd": cwd, "argv": ["/bin/sh", "-c", "sleep 60"], "place": place})
+    };
+
+    // Every session `attach` opens has a pane: before this, only `create` placed.
+    attach_create(&daemon, "row-1", sleeper(&format!("{alpha}/src"), json!({"loose": true})));
+    attach_create(
+        &daemon,
+        "row-2",
+        sleeper(&alpha, json!({"project": "project:missing"})),
+    );
+    let created = client.request(json!({
+        "op": "create", "name": "row-3", "cwd": "/", "argv": ["/bin/sh", "-c", "sleep 60"],
+    }));
+    assert_eq!(created["op"], "created", "{created}");
+    let (one, two, three) = (
+        id_of(&mut client, "row-1"),
+        id_of(&mut client, "row-2"),
+        id_of(&mut client, "row-3"),
+    );
+    let view = client.view();
+    assert_eq!(view["projects"], json!([]));
+    assert_eq!(view["loose"].as_array().unwrap().len(), 3, "{view}");
+    assert!(view.get("seeded").is_none(), "{view}");
+
+    let mut plain = Connection::open(&daemon);
+    let denied = plain.request(json!({"op": "view_import", "projects": []}));
+    assert_eq!(denied["code"], "denied", "{denied}");
+
+    let imported = client.request(json!({
+        "op": "view_import",
+        "projects": [
+            {"path": format!("{alpha}/"), "label": "Alpha", "pinned": true,
+             "groups": [{"sessions": ["row-2", "row-3", "row-2"]}]},
+            {"path": gone, "groups": [{"sessions": ["nobody"]}]},
+        ],
+        "loose": [{"label": "scratch", "sessions": ["row-1"]}],
+    }));
+    assert_eq!(imported["op"], "imported", "{imported}");
+    let ids = imported["projects"].as_array().unwrap().clone();
+    assert_eq!(ids.len(), 2, "{imported}");
+
+    let view = client.view();
+    assert_eq!(view["seeded"], json!(true), "{view}");
+    let first = &view["projects"][0];
+    assert_eq!(first["id"], ids[0]);
+    assert_eq!(first["path"], json!(alpha), "the host's own spelling");
+    assert_eq!(first["label"], json!("Alpha"));
+    assert_eq!(first["pinned"], json!(true));
+    assert_eq!(first["groups"].as_array().unwrap().len(), 1, "{view}");
+    assert_eq!(sessions_in(&first["groups"][0]), vec![two.clone(), three.clone()]);
+    // A folder that is gone keeps its row, with no panes to show.
+    let second = &view["projects"][1];
+    assert_eq!(second["path"], json!(gone));
+    assert_eq!(second["groups"], json!([]));
+    let loose = view["loose"].as_array().unwrap();
+    assert_eq!(loose.len(), 1, "{view}");
+    assert_eq!(loose[0]["label"], json!("scratch"));
+    assert_eq!(sessions_in(&loose[0]), vec![one.clone()]);
+
+    assert!(view["seed"].is_string(), "{view}");
+    let pinned = client.request(json!({"op": "project_set", "project": ids[0], "pinned": false}));
+    assert_eq!(pinned["op"], "revised", "{pinned}");
+    let view = client.view();
+    assert!(view["projects"][0].get("pinned").is_none(), "{view}");
+    let missing = client.request(json!({"op": "project_set", "project": "project:missing", "pinned": true}));
+    assert_eq!(missing["code"], "not_found", "{missing}");
+
+    let again = client.request(json!({"op": "view_import", "projects": []}));
+    assert_eq!(again["code"], "conflict", "only the first import is taken: {again}");
+    assert_eq!(client.view(), view);
+
+    // A new group goes where it is told, whatever its cwd.
+    let grouped = client.request(json!({
+        "op": "group_new", "project": ids[0], "label": "agent",
+        "spec": {"cwd": "/", "argv": ["/bin/sh", "-c", "sleep 60"]},
+    }));
+    assert_eq!(grouped["op"], "group_created", "{grouped}");
+    let loosely = client.request(json!({
+        "op": "group_new", "spec": {"cwd": alpha, "argv": ["/bin/sh", "-c", "sleep 60"]},
+    }));
+    assert_eq!(loosely["op"], "group_created", "{loosely}");
+    let refused = client.request(json!({
+        "op": "group_new", "project": "project:missing",
+        "spec": {"cwd": "/", "argv": ["/bin/true"]},
+    }));
+    assert_eq!(refused["code"], "not_found", "{refused}");
+    let view = client.view();
+    let groups = view["projects"][0]["groups"].as_array().unwrap();
+    let agent = groups.last().unwrap();
+    assert_eq!(agent["id"], grouped["group"]);
+    assert_eq!(agent["label"], json!("agent"));
+    assert_eq!(sessions_in(agent), vec![grouped["id"].as_str().unwrap().to_string()]);
+    assert_eq!(
+        sessions_in(view["loose"].as_array().unwrap().last().unwrap()),
+        vec![loosely["id"].as_str().unwrap().to_string()]
+    );
+
+    // Once seeded, a project the attach names places the session in it, and
+    // a cwd inside a project places it there unless the client says loose.
+    attach_create(&daemon, "row-4", sleeper("/", json!({"project": ids[0]})));
+    attach_create(&daemon, "row-5", sleeper(&alpha, json!({"loose": true})));
+    let (four, five) = (id_of(&mut client, "row-4"), id_of(&mut client, "row-5"));
+    let view = client.view();
+    let in_alpha: Vec<String> = view["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(sessions_in)
+        .collect();
+    assert!(in_alpha.contains(&four), "{view}");
+    assert!(!in_alpha.contains(&five), "{view}");
+
+    // A name reopened after its session ended takes over that pane.
+    let count = |view: &Value| view["projects"][0]["groups"].as_array().unwrap().len();
+    attach_create(
+        &daemon,
+        "row-6",
+        json!({"cwd": "/", "argv": ["/bin/sh", "-c", "sleep 0.5"], "place": {"project": ids[0]}}),
+    );
+    let ended = id_of(&mut client, "row-6");
+    wait_until(
+        || {
+            let list = client.request(json!({"op": "list"}));
+            !list["sessions"].as_array().unwrap().iter().any(|info| info["id"] == json!(ended))
+        },
+        "row-6 to exit",
+    );
+    let before = count(&client.view());
+    attach_create(&daemon, "row-6", sleeper("/", json!({"project": ids[0]})));
+    let reopened = id_of(&mut client, "row-6");
+    let view = client.view();
+    assert_eq!(count(&view), before, "no second pane: {view}");
+    let shown: Vec<String> = view["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(sessions_in)
+        .collect();
+    assert!(shown.contains(&reopened) && !shown.contains(&ended), "{view}");
+
+    // `group_new` asks for a new group, so it never takes over an ended pane.
+    attach_create(
+        &daemon,
+        "row-7",
+        json!({"cwd": "/", "argv": ["/bin/sh", "-c", "sleep 0.5"], "place": {"project": ids[0]}}),
+    );
+    let ended = id_of(&mut client, "row-7");
+    wait_until(
+        || {
+            let list = client.request(json!({"op": "list"}));
+            !list["sessions"].as_array().unwrap().iter().any(|info| info["id"] == json!(ended))
+        },
+        "row-7 to exit",
+    );
+    let before = count(&client.view());
+    let grouped = client.request(json!({
+        "op": "group_new", "project": ids[0], "label": "fresh",
+        "spec": {"name": "row-7", "cwd": "/", "argv": ["/bin/sh", "-c", "sleep 60"]},
+    }));
+    assert_eq!(grouped["op"], "group_created", "{grouped}");
+    assert_eq!(count(&client.view()), before + 1, "a new group");
+
+    // The seed survives a restart, so a client that comes back is refused too.
+    drop(client);
+    drop(plain);
+    drop(daemon);
+    let daemon = start_daemon(&dir);
+    let mut client = Connection::open_with(&daemon, &["view", "view_import"]);
+    let after = client.request(json!({"op": "view_import", "projects": []}));
+    assert_eq!(after["code"], "conflict", "{after}");
 
     drop(client);
     drop(daemon);

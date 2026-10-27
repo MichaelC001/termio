@@ -1134,8 +1134,11 @@ extension Termiod {
     /// host too old to have one, and when it cannot be read: the roster never
     /// fails because of the view.
     static func rosterAndView(route: TermiodRoute) throws -> (SessionsPayload, HostView?) {
-        try withControlChannel(route: route, caps: [viewCapability]) { transport, handshake in
+        try withControlChannel(
+            route: route, caps: [viewCapability, viewImportCapability]
+        ) { transport, handshake in
             let asksView = handshake.capabilities.contains(viewCapability)
+            let offersImport = handshake.capabilities.contains(viewImportCapability)
             try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload())
             if asksView {
                 // A second `seq`: the host answers a repeated one from its reply
@@ -1148,10 +1151,11 @@ extension Termiod {
             }
             guard asksView else { return (sessions, nil) }
             do {
-                let view = try readReply(transport) { reply -> HostView? in
+                var view = try readReply(transport) { reply -> HostView? in
                     if case .viewState(let payload) = reply { return payload.view }
                     return nil
                 }
+                view.offersImport = offersImport
                 return (sessions, view)
             } catch {
                 Log.termiod.error("""
@@ -1160,6 +1164,116 @@ extension Termiod {
                 """)
                 return (sessions, nil)
             }
+        }
+    }
+
+    /// Seeds a host's view from this app's tree, then reads the roster and
+    /// the view over the same connection. `projects` holds each imported
+    /// project's id in the order sent, or `nil` when the host was already
+    /// seeded and kept its own view.
+    static func importView(
+        route: TermiodRoute, tree: ViewImport
+    ) throws -> (projects: [String]?, sessions: SessionsPayload, view: HostView) {
+        try withControlChannel(
+            route: route, caps: [viewCapability, viewImportCapability]
+        ) { transport, handshake in
+            guard handshake.capabilities.contains(viewImportCapability) else {
+                throw TermiodClientError.requestFailed("the host does not take view_import")
+            }
+            try writeFrame(transport.writeDescriptor, kind: .control,
+                           payload: viewImportPayload(tree, seq: 1))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload(seq: 2))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 3))
+            var projects: [String]?
+            while true {
+                let frame = try readFrame(transport.readDescriptor)
+                guard frame.kind == .control else { continue }
+                switch try decodeControl(frame.payload) {
+                case .imported(let payload):
+                    projects = payload.projects
+                case .error(let payload) where payload.code == "conflict":
+                    projects = nil
+                case .error(let payload):
+                    throw TermiodClientError.requestFailed(payload.message)
+                default:
+                    continue
+                }
+                break
+            }
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            var view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            view.offersImport = true
+            return (projects, sessions, view)
+        }
+    }
+
+    /// Registers a directory as a project on a host, then reads the roster
+    /// and the view over the same connection.
+    static func addHostProject(
+        route: TermiodRoute, path: String, label: String?
+    ) throws -> (project: String, sessions: SessionsPayload, view: HostView) {
+        try withControlChannel(
+            route: route, caps: [viewCapability, viewImportCapability]
+        ) { transport, handshake in
+            guard handshake.capabilities.contains(viewImportCapability) else {
+                throw TermiodClientError.requestFailed("the host does not take view_import")
+            }
+            try writeFrame(transport.writeDescriptor, kind: .control,
+                           payload: projectAddPayload(path: path, label: label, seq: 1))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload(seq: 2))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 3))
+            let project = try readReply(transport) { reply -> String? in
+                if case .projectAdded(let payload) = reply { return payload.project }
+                return nil
+            }
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            var view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            view.offersImport = true
+            return (project, sessions, view)
+        }
+    }
+
+    /// Pins or unpins a host's project, then reads the roster and the view
+    /// over the same connection.
+    static func setHostProject(
+        route: TermiodRoute, project: String, pinned: Bool
+    ) throws -> (sessions: SessionsPayload, view: HostView) {
+        try withControlChannel(
+            route: route, caps: [viewCapability, viewImportCapability]
+        ) { transport, handshake in
+            guard handshake.capabilities.contains(viewImportCapability) else {
+                throw TermiodClientError.requestFailed("the host does not take project_set")
+            }
+            try writeFrame(transport.writeDescriptor, kind: .control,
+                           payload: projectSetPayload(project: project, pinned: pinned, seq: 1))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload(seq: 2))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 3))
+            _ = try readReply(transport) { reply -> UInt64? in
+                if case .revised(let payload) = reply { return payload.revision }
+                return nil
+            }
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            var view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            view.offersImport = true
+            return (sessions, view)
         }
     }
 

@@ -107,6 +107,11 @@ public enum Termiod {
     /// their cwd as it always has.
     public static let viewCapability = "view"
 
+    /// The host takes `view_import` and `group_new`, honours `place` on the
+    /// sessions `attach` creates, and places every one of them. A client draws
+    /// its sidebar from the view only on a host that offers this.
+    public static let viewImportCapability = "view_import"
+
     /// What a plain control channel (`list`, `kill`) offers: nothing. Both verbs
     /// are unconditional, and tombstones ride the `sessions` reply un-gated.
     public static let controlCapabilities: [String] = []
@@ -404,9 +409,13 @@ public enum Termiod {
         public let rows: UInt16
         public let cols: UInt16
         public let workstream: WorkstreamSpecification?
+        /// Where the host files the session's pane. Sent only to a host that
+        /// offers `view_import`.
+        public var place: Place?
 
         public init(cwd: String, argv: [String], env: [[String]], rows: UInt16, cols: UInt16,
-                    command: String? = nil, workstream: WorkstreamSpecification? = nil) {
+                    command: String? = nil, workstream: WorkstreamSpecification? = nil,
+                    place: Place? = nil) {
             self.cwd = cwd
             self.argv = argv
             self.command = command
@@ -414,6 +423,56 @@ public enum Termiod {
             self.rows = rows
             self.cols = cols
             self.workstream = workstream
+            self.place = place
+        }
+    }
+
+    /// A project on the host, by id, or a loose group whatever the cwd.
+    public struct Place: Encodable, Sendable, Equatable {
+        public let project: String?
+        public let loose: Bool
+
+        public static func project(_ id: String) -> Place { Place(project: id, loose: false) }
+        public static let loose = Place(project: nil, loose: true)
+
+        private enum CodingKeys: String, CodingKey { case project, loose }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(project, forKey: .project)
+            if loose { try container.encode(true, forKey: .loose) }
+        }
+    }
+
+    /// A client's own tree, sent once to seed a host's view. Sessions are
+    /// named by daemon name.
+    public struct ViewImport: Encodable, Sendable, Equatable {
+        public var projects: [Project]
+        public var loose: [Group]
+
+        public init(projects: [Project], loose: [Group]) {
+            self.projects = projects
+            self.loose = loose
+        }
+
+        public struct Project: Encodable, Sendable, Equatable {
+            public let path: String
+            public let label: String
+            public let pinned: Bool
+            public var groups: [Group]
+
+            public init(path: String, label: String, pinned: Bool, groups: [Group]) {
+                self.path = path
+                self.label = label
+                self.pinned = pinned
+                self.groups = groups
+            }
+        }
+
+        public struct Group: Encodable, Sendable, Equatable {
+            public let sessions: [String]
+
+            public init(sessions: [String]) { self.sessions = sessions }
         }
     }
 
@@ -459,6 +518,27 @@ public enum Termiod {
 
     private struct ViewOperation: Encodable {
         let op = "view"
+        let seq: UInt64
+    }
+
+    private struct ViewImportOperation: Encodable {
+        let op = "view_import"
+        let projects: [ViewImport.Project]
+        let loose: [ViewImport.Group]
+        let seq: UInt64
+    }
+
+    private struct ProjectAddOperation: Encodable {
+        let op = "project_add"
+        let path: String
+        let label: String?
+        let seq: UInt64
+    }
+
+    private struct ProjectSetOperation: Encodable {
+        let op = "project_set"
+        let project: String
+        let pinned: Bool?
         let seq: UInt64
     }
 
@@ -1022,6 +1102,14 @@ public enum Termiod {
         public let revision: UInt64
         public let projects: [Project]
         public let loose: [Group]
+        /// Whether a client has seeded the view with `view_import`.
+        public let seeded: Bool
+        /// A fresh id for each seeding. Project ids from another seed say
+        /// nothing about this view.
+        public let seed: String?
+        /// Whether the host that sent it offers `view_import`. Set by the
+        /// client that read it, never on the wire.
+        public var offersImport = false
 
         public struct Project: Decodable, Sendable, Equatable {
             public let id: String
@@ -1105,7 +1193,7 @@ public enum Termiod {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case revision, projects, loose
+            case revision, projects, loose, seeded, seed
         }
 
         public init(from decoder: Decoder) throws {
@@ -1113,7 +1201,12 @@ public enum Termiod {
             revision = try container.decode(UInt64.self, forKey: .revision)
             projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
             loose = try container.decodeIfPresent([Group].self, forKey: .loose) ?? []
+            seeded = try container.decodeIfPresent(Bool.self, forKey: .seeded) ?? false
+            seed = try container.decodeIfPresent(String.self, forKey: .seed)
         }
+
+        /// The daemon ids of the sessions a loose group's panes show.
+        public var looseSessions: Set<String> { Set(loose.flatMap(\.root.sessions)) }
 
         /// The project each placed session's pane is in, by daemon id.
         public var projectBySession: [String: Project] {
@@ -1130,6 +1223,17 @@ public enum Termiod {
     }
 
     public struct RevisedPayload: Decodable, Sendable {
+        public let revision: UInt64
+    }
+
+    public struct ImportedPayload: Decodable, Sendable {
+        /// Each imported project's id, in the order sent.
+        public let projects: [String]
+        public let revision: UInt64
+    }
+
+    public struct ProjectAddedPayload: Decodable, Sendable {
+        public let project: String
         public let revision: UInt64
     }
 
@@ -1794,6 +1898,8 @@ public enum Termiod {
         /// The reply to a view change that names nothing new, such as
         /// `project_remove`: the view's revision after it.
         case revised(RevisedPayload)
+        case imported(ImportedPayload)
+        case projectAdded(ProjectAddedPayload)
         case uploadOpened(UploadOpenedPayload)
         case uploadAck(UploadAckPayload)
         case uploadCommitted(UploadCommittedPayload)
@@ -1849,6 +1955,10 @@ public enum Termiod {
             return .viewState(try decoder.decode(ViewStatePayload.self, from: payload))
         case "revised":
             return .revised(try decoder.decode(RevisedPayload.self, from: payload))
+        case "imported":
+            return .imported(try decoder.decode(ImportedPayload.self, from: payload))
+        case "project_added":
+            return .projectAdded(try decoder.decode(ProjectAddedPayload.self, from: payload))
         case "upload_opened":
             return .uploadOpened(try decoder.decode(UploadOpenedPayload.self, from: payload))
         case "upload_ack":
@@ -2037,6 +2147,18 @@ public enum Termiod {
 
     public static func viewPayload(seq: UInt64 = 1) throws -> Data {
         try encodeControl(ViewOperation(seq: seq))
+    }
+
+    public static func viewImportPayload(_ tree: ViewImport, seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ViewImportOperation(projects: tree.projects, loose: tree.loose, seq: seq))
+    }
+
+    public static func projectSetPayload(project: String, pinned: Bool?, seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ProjectSetOperation(project: project, pinned: pinned, seq: seq))
+    }
+
+    public static func projectAddPayload(path: String, label: String?, seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ProjectAddOperation(path: path, label: label, seq: seq))
     }
 
     /// `only`: the sessions the caller agreed to end. A host refuses the whole

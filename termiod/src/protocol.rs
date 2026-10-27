@@ -56,6 +56,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // The host's view: `view`, `project_add`, `project_remove`, `create`'s
     // `place`, and the `view:host` resource.
     "view",
+    // `view_import`, `project_set`, `group_new`, `place.loose`, and placement of a session
+    // `attach` creates. A client draws its tree from the view only on a host
+    // that offers this: before it, a session the client opened had no pane.
+    "view_import",
     // The host's VT answers the program's terminal queries, from the writer's
     // `answers`, so a client that negotiated it answers none itself. Needs
     // `events`: the answers arrive as one, and `vt_stale` hands answering
@@ -1122,6 +1126,36 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Seed the view from a client's own tree. Taken once: a host whose view
+    /// is already seeded refuses with `conflict`, and the client adopts the
+    /// host's view. Capability `view_import`.
+    ViewImport {
+        #[serde(flatten)]
+        import: crate::view::Import,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Rename or pin a project. Capability `view_import`.
+    ProjectSet {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pinned: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
+    /// Start a session in a new group of its own: in `project`, or loose
+    /// without one, whatever its cwd. Capability `view_import`.
+    GroupNew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        spec: CreateSpec,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
 
     // Daemon → client responses.
     Ok {
@@ -1146,6 +1180,23 @@ pub enum Control {
     /// Reply to `project_add`: the project and the view's revision after it.
     ProjectAdded {
         project: String,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `view_import`: each imported project's id, in the order sent,
+    /// and the revision after the import.
+    Imported {
+        projects: Vec<String>,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        re: Option<u64>,
+    },
+    /// Reply to `group_new`: the session, its group and pane, and the revision.
+    GroupCreated {
+        id: String,
+        group: String,
+        pane: String,
         revision: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         re: Option<u64>,
@@ -1442,7 +1493,10 @@ impl Control {
             | Control::View { seq }
             | Control::ProjectAdd { seq, .. }
             | Control::ProjectRemove { seq, .. }
-            | Control::PaneClose { seq, .. } => *seq,
+            | Control::PaneClose { seq, .. }
+            | Control::ViewImport { seq, .. }
+            | Control::ProjectSet { seq, .. }
+            | Control::GroupNew { seq, .. } => *seq,
             _ => None,
         }
     }

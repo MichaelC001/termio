@@ -166,6 +166,21 @@ struct StateFile {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 
+    /// Copies `state.json` aside once, before this app first seeds a host's
+    /// view from it, and never touches the copy again. It is the recovery
+    /// path for two releases, should an import rearrange or drop rows.
+    func keepCopyBeforeView() {
+        let copy = url.appendingPathComponent("state-before-view.json")
+        guard FileManager.default.fileExists(atPath: stateURL.path),
+              !FileManager.default.fileExists(atPath: copy.path) else { return }
+        do {
+            try FileManager.default.copyItem(at: stateURL, to: copy)
+        } catch {
+            FileHandle.standardError.write(
+                Data("termio: failed to keep a copy of the state before the view: \(error)\n".utf8))
+        }
+    }
+
     /// Best-effort, atomic write. Failures are logged rather than crashing —
     /// losing a save is recoverable, trapping is not. Indented and key-sorted so
     /// the file reads like a config and diffs cleanly, not a one-line blob.

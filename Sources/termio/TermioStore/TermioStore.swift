@@ -1189,6 +1189,17 @@ final class TermioStore: ObservableObject {
     /// old to own one. Remove Project does not read them again.
     var viewlessHosts: Set<String> = []
 
+    /// Hosts this app is seeding with `view_import`, by `KnownDevice.id`. Their
+    /// views are not drawn until the import answers.
+    var hostImports: Set<String> = []
+
+    /// Rows this run asked a host to register with `project_add`. Asked once
+    /// per run: a folder the host cannot find keeps its row, unregistered.
+    var hostRegistrations: Set<Project.ID> = []
+
+    /// Rows whose `project_add` has not answered yet.
+    var hostRegistrationsPending: Set<Project.ID> = []
+
     /// Projects whose Remove Project is reading a host before it asks.
     var projectsBeingRead: Set<Project.ID> = []
 
