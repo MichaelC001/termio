@@ -1265,7 +1265,11 @@ extension TermioStore {
             """)
             // A session the host did not place there is still running. It
             // keeps a row, loose, and its link.
-            for session in project.sessions where liveNames.contains(daemonSessionName(for: session)) {
+            // A session that runs on another machine, in a project here
+            // cloned there, is not this host's to end either.
+            for session in project.sessions
+            where liveNames.contains(daemonSessionName(for: session))
+                || !isAuthored(session, for: device) {
                 moveSessionLoose(session.id, from: project)
             }
             dropProjectRow(project.id)
@@ -1344,11 +1348,16 @@ extension TermioStore {
 
     /// Takes a session out of a project row into its workspace's loose
     /// terminals, or chats for an agent.
+    /// A session on another machine goes to a workspace on that machine.
     private func moveSessionLoose(_ id: Session.ID, from project: Project) {
         guard let row = projects.firstIndex(where: { $0.id == project.id }),
-              let at = projects[row].sessions.firstIndex(where: { $0.id == id }),
-              let workspace = workspaces.firstIndex(where: { $0.id == project.workspaceID })
+              let at = projects[row].sessions.firstIndex(where: { $0.id == id })
         else { return }
+        let moving = projects[row].sessions[at]
+        let owner = moving.termiodRemoteHost.map {
+            workspace(forDevice: $0, deviceID: moving.deviceID)
+        } ?? project.workspaceID
+        guard let workspace = workspaces.firstIndex(where: { $0.id == owner }) else { return }
         let session = projects[row].sessions.remove(at: at)
         if session.agent == .terminal {
             workspaces[workspace].terminals.append(session)

@@ -524,10 +524,12 @@ impl View {
     }
 
     /// Point the pane that shows the ended session `old` at `new`, when that
-    /// pane sits where `place` asks. Returns the pane. A name reopened after
+    /// pane sits where `place` asks, or without a place, where `cwd` would
+    /// put the session. Returns the pane. A name reopened after
     /// its session ended keeps its pane, so each relaunch or reboot does not
     /// leave one more ended pane behind.
-    pub fn reuse_pane(&mut self, old: &str, new: &str, place: &Place) -> Option<String> {
+    pub fn reuse_pane(&mut self, old: &str, new: &str, place: &Place, cwd: &str) -> Option<String> {
+        let by_cwd = self.project_for(cwd).map(|index| self.projects[index].id.clone());
         let mut found: Option<(Option<String>, String)> = None;
         for project in &self.projects {
             for group in &project.groups {
@@ -545,7 +547,7 @@ impl View {
         let fits = match (&place.project, place.loose) {
             (Some(wanted), _) => project.as_ref() == Some(wanted),
             (None, true) => project.is_none(),
-            (None, false) => true,
+            (None, false) => project == by_cwd,
         };
         if !fits {
             return None;
@@ -1157,12 +1159,17 @@ mod tests {
             project: None,
             loose: true,
         };
-        assert_eq!(view.reuse_pane("old", "new", &loose), None, "not where it was asked for");
+        assert_eq!(view.reuse_pane("old", "new", &loose, "/work"), None, "not where it was asked for");
+        assert_eq!(
+            view.reuse_pane("old", "new", &Place::default(), "/elsewhere"),
+            None,
+            "not where its cwd puts it"
+        );
         let here = Place {
             project: Some(project),
             loose: false,
         };
-        assert_eq!(view.reuse_pane("old", "new", &here), Some(pane.clone()));
+        assert_eq!(view.reuse_pane("old", "new", &here, "/"), Some(pane.clone()));
         assert_eq!(view.session_of(&pane).as_deref(), Some("new"));
         assert_eq!(view.projects[0].groups.len(), 1);
     }

@@ -1389,6 +1389,13 @@ extension TermioStore {
                 ids: Set(endingThere.compactMap(\.termiodDaemonID))
                     .union(otherIDs[device.id] ?? []),
                 names: Set(endingThere.map(daemonSessionName(for:))))
+            // Another row here at the same folder holds the same host project:
+            // removing it on the host would take that row too.
+            if let shared = hostID(of: project, on: device), projects.contains(where: {
+                $0.id != project.id && hostID(of: $0, on: device) == shared
+            }) {
+                continue
+            }
             removeHostProject(
                 path: path, hostID: hostID(of: project, on: device), name: project.name,
                 closing: closing, quiet: !asking, on: device)

@@ -3541,8 +3541,6 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
     }
 }
 
-/// The reply for a view change that failed: `busy`, worth retrying, while a
-/// handoff carries the view; otherwise `code`.
 /// Why a spawn with a place was refused, before anything started.
 struct Refusal {
     code: ErrorCode,
@@ -3632,7 +3630,7 @@ async fn spawn_placed_reusing(
     let pane = match manager.view.change(|view| {
         if let Some(pane) = ended
             .iter()
-            .find_map(|old| view.reuse_pane(old, &session, &place))
+            .find_map(|old| view.reuse_pane(old, &session, &place, &cwd))
         {
             return Ok((pane, true));
         }
@@ -3657,6 +3655,8 @@ async fn spawn_placed_reusing(
     Ok((id, pane))
 }
 
+/// The reply for a view change that failed: `busy`, worth retrying, while a
+/// handoff carries the view; otherwise `code`.
 fn view_error(seq: Option<u64>, code: ErrorCode, e: anyhow::Error) -> Control {
     if e.is::<crate::view::Frozen>() {
         error(seq, ErrorCode::Busy, format!("{e:#}"), true)
