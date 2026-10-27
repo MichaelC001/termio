@@ -395,7 +395,12 @@ final class TermiodViewImportTests: XCTestCase {
         let session = store.projects[project].sessions[0]
         let looseSession = try XCTUnwrap(store.workspaces[0].terminals.first)
 
-        XCTAssertNil(store.hostPlace(for: session), "no view yet: the host uses the cwd")
+        XCTAssertNil(store.hostPlace(for: session), "no view and no id: the host uses the cwd")
+        XCTAssertEqual(store.hostPlace(for: looseSession), .loose)
+        store.projects[project].hostProjectID = "p_kept"
+        XCTAssertEqual(store.hostPlace(for: session), .project("p_kept"),
+                       "before the first view, the id the row kept")
+        store.projects[project].hostProjectID = nil
 
         store.hostViews[KnownDevice.thisMac.id] = try decodeView(
             #"{"revision": 1, "seeded": true, "projects": [], "loose": []}"#)

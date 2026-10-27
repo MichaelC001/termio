@@ -1560,9 +1560,18 @@ extension TermioStore {
     /// registered yet.
     func hostPlace(for session: Session) -> Termiod.Place? {
         let device = KnownDevice(alias: session.termiodRemoteHost, deviceID: session.deviceID)
-        guard let view = hostViews[device.id], view.offersImport else { return nil }
-        guard let row = projects.first(where: { $0.sessions.contains { $0.id == session.id } })
-        else { return .loose }
+        let row = projects.first(where: { $0.sessions.contains { $0.id == session.id } })
+        guard let view = hostViews[device.id] else {
+            // No view yet this run, as at launch: the id this row kept from
+            // its last run says where it goes. A host without `view_import`
+            // ignores `place`, and one that no longer has the project places
+            // the session by its cwd.
+            guard let row else { return .loose }
+            guard workspaceIDs(on: device).contains(row.workspaceID) else { return nil }
+            return row.hostProjectID.map(Termiod.Place.project)
+        }
+        guard view.offersImport else { return nil }
+        guard let row else { return .loose }
         if workspaceIDs(on: device).contains(row.workspaceID) {
             return row.hostProjectID.map(Termiod.Place.project)
         }
