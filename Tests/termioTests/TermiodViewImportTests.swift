@@ -297,6 +297,30 @@ final class TermiodViewImportTests: XCTestCase {
         XCTAssertTrue(store.projects.contains { $0.hostProjectID == "p_x" })
     }
 
+    /// This Mac's host spells a path through `realpath`, which keeps
+    /// `/private`. A row under `/tmp` is the host's project there, not a
+    /// second one.
+    func testARowUnderASymlinkIsTheHostsProject() throws {
+        let folder = "/tmp/termio-view-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let home = Workspace(name: "Sessions")
+        let row = Project(workspaceID: home.id, name: "x", path: folder, branch: "—", sessions: [])
+        let defaults = UserDefaults(suiteName: "view-import-\(UUID().uuidString)")
+            ?? UserDefaults.standard
+        let store = TermioStore(workspaces: [home], projects: [row],
+                                settings: AppSettings(defaults: defaults))
+        let view = try decodeView("""
+        {"revision": 2, "seeded": true, "projects": [
+          {"id": "p_x", "path": "/private\(folder)", "label": "x", "groups": []}], "loose": []}
+        """)
+
+        store.drawFromHostView(view, on: .thisMac, live: [])
+
+        XCTAssertEqual(store.projects.map(\.hostProjectID), ["p_x"])
+        XCTAssertEqual(store.projects.map(\.path), [folder])
+    }
+
     /// While this app's import is in flight, a view from another read is not
     /// drawn: its rows are not stamped yet.
     func testNoViewIsDrawnWhileTheImportRuns() throws {

@@ -1932,7 +1932,7 @@ async fn process_control(
                     loose: project.is_none(),
                     project,
                 });
-                match spawn_placed(manager, spec, true).await {
+                match spawn_placed_reusing(manager, spec, true, false).await {
                     Ok((id, Some(pane))) => {
                         let session = id.to_string();
                         // The pane was placed in a group of its own; the label
@@ -3567,6 +3567,17 @@ async fn spawn_placed(
     spec: crate::protocol::CreateSpec,
     strict: bool,
 ) -> std::result::Result<(SessionId, Option<String>), Refusal> {
+    spawn_placed_reusing(manager, spec, strict, true).await
+}
+
+/// `spawn_placed`, choosing whether a reopened name may take over the pane
+/// of the session it replaces. `group_new` asks for a new group, so it never does.
+async fn spawn_placed_reusing(
+    manager: &Manager,
+    spec: crate::protocol::CreateSpec,
+    strict: bool,
+    reuse: bool,
+) -> std::result::Result<(SessionId, Option<String>), Refusal> {
     let mut place = spec.place.clone().unwrap_or_default();
     let cwd = placement_cwd(spec.cwd.as_deref().unwrap_or_default()).await;
     let unknown = place.project.clone().filter(|project| {
@@ -3596,7 +3607,7 @@ async fn spawn_placed(
     }
     // Ended sessions under this name, newest first: a reopened name takes
     // over the pane of the one it replaces.
-    let ended: Vec<String> = match &spec.name {
+    let ended: Vec<String> = match spec.name.as_ref().filter(|_| reuse) {
         Some(name) => manager
             .graveyard
             .all()

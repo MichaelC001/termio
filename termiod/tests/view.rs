@@ -485,6 +485,28 @@ fn a_client_seeds_the_view_once_and_places_what_it_opens() {
         .collect();
     assert!(shown.contains(&reopened) && !shown.contains(&ended), "{view}");
 
+    // `group_new` asks for a new group, so it never takes over an ended pane.
+    attach_create(
+        &daemon,
+        "row-7",
+        json!({"cwd": "/", "argv": ["/bin/sh", "-c", "sleep 0.5"], "place": {"project": ids[0]}}),
+    );
+    let ended = id_of(&mut client, "row-7");
+    wait_until(
+        || {
+            let list = client.request(json!({"op": "list"}));
+            !list["sessions"].as_array().unwrap().iter().any(|info| info["id"] == json!(ended))
+        },
+        "row-7 to exit",
+    );
+    let before = count(&client.view());
+    let grouped = client.request(json!({
+        "op": "group_new", "project": ids[0], "label": "fresh",
+        "spec": {"name": "row-7", "cwd": "/", "argv": ["/bin/sh", "-c", "sleep 60"]},
+    }));
+    assert_eq!(grouped["op"], "group_created", "{grouped}");
+    assert_eq!(count(&client.view()), before + 1, "a new group");
+
     // The seed survives a restart, so a client that comes back is refused too.
     drop(client);
     drop(plain);

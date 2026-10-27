@@ -1180,6 +1180,8 @@ extension TermioStore {
             && projects[index].hostProjectID != nil && projects[index].hostSeed != view.seed {
             projects[index].hostProjectID = nil
             projects[index].hostSeed = nil
+            // Asked again: the answer it had belongs to the old seed.
+            hostRegistrations.remove(projects[index].id)
         }
 
         // A row this app has not registered may be the host's project under
@@ -1393,10 +1395,12 @@ extension TermioStore {
     }
 
     /// A row's path the way this machine's host spells it, as far as this Mac
-    /// can tell: with symlinks resolved here, and as written for a box,
-    /// whose links this Mac cannot see.
+    /// can tell: through `realpath` here, as the host does it, which keeps
+    /// `/private`; as written for a box, whose links this Mac cannot see.
     private func sameFolderKey(_ path: String, on device: KnownDevice) -> String {
-        device.isLocal ? URL(fileURLWithPath: path).resolvingSymlinksInPath().path : path
+        guard device.isLocal, let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// Registers a row the host has never had, once per run.
