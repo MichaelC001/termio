@@ -216,6 +216,8 @@ final class StreamTerminalView: UIView, UITextInput {
         if resigned {
             hasKeyboard = false
             releaseHeldKeys()
+            // Keyboard gone, composition gone: it must not stay drawn.
+            if !markedText.isEmpty { clearMarkedText() }
         }
         return resigned
     }
@@ -256,7 +258,33 @@ final class StreamTerminalView: UIView, UITextInput {
     }
 
     func deleteBackward() {
+        // An input method deleting from its own composition: the program has
+        // not seen that text, so nothing is sent.
+        if !markedText.isEmpty {
+            markedText.removeLast()
+            markedSelection = NSRange(location: (markedText as NSString).length, length: 0)
+            needsFullDraw = true
+            return
+        }
         press(.init(key: "backspace"))
+    }
+
+    /// The edge of this screen's own scrollback.
+    func scrollToEdge(top: Bool) {
+        terminal()?.scrollViewport(rows: top ? -1_000_000 : 1_000_000)
+        needsFullDraw = true
+    }
+
+    /// A Paste the controller performs (⌘V on a hardware keyboard, the menu).
+    var onPaste: () -> Void = {}
+
+    override func paste(_ sender: Any?) {
+        onPaste()
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) { return UIPasteboard.general.hasStrings }
+        return super.canPerformAction(action, withSender: sender)
     }
 
     private func press(_ key: Termiod.InputEvent.Key) {
@@ -348,7 +376,10 @@ enum StreamKeyboard {
         let text = typed.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) && !typed.isEmpty
             && mods & (control | command) == 0 ? typed : nil
         let unshifted = key.charactersIgnoringModifiers.unicodeScalars.first.map(\.value) ?? 0
-        return .init(action: action, key: name, mods: mods, consumedMods: text == nil ? 0 : mods & shift,
+        // Text consumed every modifier but Control and Command, as on the Mac:
+        // an Option-typed `@` on a German layout is `@`, not Alt+`@`.
+        return .init(action: action, key: name, mods: mods,
+                     consumedMods: text == nil ? 0 : mods & ~(control | command),
                      text: text, unshifted: unshifted)
     }
 

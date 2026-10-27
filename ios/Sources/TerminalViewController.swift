@@ -285,7 +285,7 @@ final class TerminalViewController: UIViewController {
         // Leaving the terminal (popping back to the session list) must take the
         // keyboard with it — otherwise the surface stays first responder and
         // the keyboard + key bar linger over the list.
-        terminalView.resignFirstResponder()
+        inputSurface.resignFirstResponder()
         // The container parks this screen rather than tearing it down, so the
         // attachment survives. It stops counting toward the session's size the
         // moment nobody is looking at it, or a session opened once on the phone
@@ -586,7 +586,7 @@ final class TerminalViewController: UIViewController {
         // The container PARKS this screen (the view slides away, no pop), so
         // viewWillDisappear never fires — drop the keyboard here or it and
         // the key bar linger over the session list.
-        terminalView.resignFirstResponder()
+        inputSurface.resignFirstResponder()
         if let onRequestBack {
             onRequestBack()
         } else {
@@ -606,13 +606,17 @@ final class TerminalViewController: UIViewController {
         if focused {
             focusInput()
         } else {
-            terminalView.resignFirstResponder()
+            inputSurface.resignFirstResponder()
         }
     }
 
     /// The terminal is the app's single input — first responder brings the
     /// system keyboard (typing straight into the PTY) with the key bar docked
     /// above it.
+    /// The view that takes the keyboard: the stream view while it stands in
+    /// for the embedded surface.
+    private var inputSurface: UIView { streamView ?? terminalView }
+
     private func focusInput() {
         if let streamView {
             streamView.becomeFirstResponder()
@@ -681,7 +685,10 @@ final class TerminalViewController: UIViewController {
             // scroll actions are primary-screen no-ops there. Fall back to
             // page keys, which those apps parse for their own history.
             if altScreenSniffer.isAlternate {
-                terminalView.send(Data((edge == .top ? "\u{1B}[5~" : "\u{1B}[6~").utf8))
+                let pageKey = Data((edge == .top ? "\u{1B}[5~" : "\u{1B}[6~").utf8)
+                if streamView != nil { companion?.send(pageKey) } else { terminalView.send(pageKey) }
+            } else if let streamView {
+                streamView.scrollToEdge(top: edge == .top)
             } else {
                 switch edge {
                 case .top: terminalView.scrollToTop()
@@ -990,6 +997,12 @@ final class TerminalViewController: UIViewController {
             if let session = transport as? TermiodSession {
                 session.onStreaming = { [weak self] streaming in self?.setStreaming(streaming) }
                 session.onStreamSignal = { [weak self] signal in self?.receiveStreamSignal(signal) }
+                session.onStreamData = { [weak self] data in
+                    DispatchQueue.main.async {
+                        self?.altScreenSniffer.consume(data)
+                        self?.followContentUnderKeyboard()
+                    }
+                }
                 applyStreamTheme(to: session)
             }
             return terminalSession
@@ -1151,6 +1164,10 @@ final class TerminalViewController: UIViewController {
             stream.backgroundColor = .clear
             stream.isOpaque = false
             stream.onPasteMenuRequested = { [weak self] point in self?.presentPasteMenu(at: point) }
+            stream.onPaste = { [weak self] in
+                guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+                self?.pasteIntoPrompt(text)
+            }
             stream.addInteraction(editMenuInteraction)
             let hadKeyboard = terminalView.isFirstResponder
             terminalHost.addSubview(stream)
@@ -1310,8 +1327,8 @@ final class TerminalViewController: UIViewController {
             case .began:
                 // Drop the keyboard as the drag starts, matching goBack() — but remember to hand
                 // it back if the swipe is cancelled.
-                terminalWasFirstResponderAtBackBegin = terminalView.isFirstResponder
-                terminalView.resignFirstResponder()
+                terminalWasFirstResponderAtBackBegin = inputSurface.isFirstResponder
+                inputSurface.resignFirstResponder()
                 onBackBegan?()
             case .changed:
                 onBackChanged?(max(0, tx))
@@ -1327,7 +1344,7 @@ final class TerminalViewController: UIViewController {
                 }
                 // A non-committed swipe returns to the terminal; restore the keyboard it had.
                 if !commit, terminalWasFirstResponderAtBackBegin {
-                    terminalView.becomeFirstResponder()
+                    focusInput()
                 }
                 onBackEnded?(vx, commit)
             default:

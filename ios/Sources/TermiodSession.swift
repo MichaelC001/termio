@@ -31,6 +31,9 @@ final class TermiodSession: DeviceSession {
     /// What the program tells the terminal that the screen acts on: title,
     /// bell, clipboard writes. Delivered on the main queue.
     var onStreamSignal: ((TermiodStreamTerminal.Signal) -> Void)?
+    /// The bytes a stream terminal just took, for the screen's own readers
+    /// (the alternate-screen sniffer, the keyboard pan). Off the main queue.
+    var onStreamData: ((Data) -> Void)?
 
     /// The terminal on the stream plane, which the stream view draws. An
     /// attach replaces it with a fresh one decoded from termiod's snapshot.
@@ -106,6 +109,10 @@ final class TermiodSession: DeviceSession {
     private var hostAnswers = false
     private var hostAnswersStale = false
     private var answers: Termiod.HostAnswers?
+    /// Input events from before the attach landed, as `pendingInput` holds
+    /// bytes, and the pane's focus, said again on every attach.
+    private var pendingEvents: [Termiod.InputEvent] = []
+    private var lastFocus: Bool?
 
     init(endpoint: DeviceEndpoint, sessionName: String, offersStream: Bool = false) {
         self.sessionName = sessionName
@@ -136,6 +143,9 @@ final class TermiodSession: DeviceSession {
                 refuseStream()
                 return
             }
+            // A host that no longer streams (an older binary after a rollback)
+            // sends keyframes: the screen goes back to the embedded surface.
+            if !handshake.caps.contains(Termiod.streamCapability) { setStreamTerminal(nil) }
             sendAttach()
         }
         // An attach channel carries one attachment and nothing else, so there is
@@ -147,6 +157,7 @@ final class TermiodSession: DeviceSession {
             guard let self else { return }
             if let terminal = streamTerminal {
                 terminal.write(data)
+                onStreamData?(data)
             } else {
                 onOutput?(data)
             }
@@ -213,18 +224,32 @@ final class TermiodSession: DeviceSession {
     /// as bytes do.
     func sendInput(_ event: Termiod.InputEvent) {
         queue.async { [self] in
-            guard attached, streamTerminal != nil else { return }
+            if case .focus(let focused) = event { lastFocus = focused }
+            guard attached else {
+                pendingEvents.append(event)
+                return
+            }
+            guard streamTerminal != nil else { return }
+            // One frame holds 16 MiB, and JSON can grow text sixfold.
+            if case .paste(let text, _) = event {
+                for piece in Termiod.InputEvent.pastePieces(text) { sendEvent(piece) }
+            } else {
+                sendEvent(event)
+            }
+        }
+    }
+
+    private func sendEvent(_ event: Termiod.InputEvent) {
+        do {
             if event.claimsWriter, !isWriter, !claimingWriter {
                 claimingWriter = true
                 if let payload = try? Termiod.claimWriterPayload() {
                     channel.send(kind: .control, payload: payload)
                 }
             }
-            do {
-                channel.send(kind: .event, payload: try event.payload())
-            } catch {
-                Log.device.error("input event for \(self.sessionName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            }
+            channel.send(kind: .event, payload: try event.payload())
+        } catch {
+            Log.device.error("input event for \(self.sessionName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -241,6 +266,9 @@ final class TermiodSession: DeviceSession {
     /// What termiod answers this session's queries with while this phone
     /// writes (`vt_answers`). Offered from the next connect on.
     func setHostAnswers(_ answers: Termiod.HostAnswers) {
+        // Only a screen that draws the stream sends answers and routes every
+        // reply through one gate; the embedded surface answers for itself.
+        guard offersStream else { return }
         queue.async { [self] in
             guard self.answers != answers else { return }
             let first = self.answers == nil
@@ -284,6 +312,9 @@ final class TermiodSession: DeviceSession {
 
     private func setStreamTerminal(_ terminal: TermiodStreamTerminal?) {
         streamLock.lock()
+        // The theme goes on in the same hold that publishes the terminal, so a
+        // change in between cannot land on the one being replaced.
+        if let terminal, let theme = streamThemeLocked { try? terminal.setTheme(theme) }
         let changed = (streamTerminalLocked == nil) != (terminal == nil)
         streamTerminalLocked = terminal
         streamLock.unlock()
@@ -319,6 +350,9 @@ final class TermiodSession: DeviceSession {
     /// parsed in between are repainted too.
     func noteSurfaceGrid(columns: Int, rows: Int) {
         queue.async { [self] in
+            // The embedded surface is hidden while the stream view draws; its
+            // grid asks nothing of the device.
+            guard streamTerminal == nil else { return }
             let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
             guard surfaceGrid != grid else { return }
             surfaceGrid = grid
@@ -410,12 +444,25 @@ final class TermiodSession: DeviceSession {
                 pendingInput.removeAll(keepingCapacity: false)
                 write(buffered)
             }
+            let events = pendingEvents
+            pendingEvents.removeAll()
+            if streamTerminal != nil {
+                // A program asking for focus reports hears where the pane stands.
+                if let lastFocus, !events.contains(where: { if case .focus = $0 { true } else { false } }) {
+                    sendEvent(.focus(lastFocus))
+                }
+                for event in events { sendInput(event) }
+            }
             notify(.connected)
         case .exited:
             attached = false
             notify(.closed)
         case .resizeClaim(let claim):
             applyWriter(claim.writer)
+        case .error(let failure) where failure.code == Termiod.streamUnavailableCode:
+            // termiod cannot give this screen an exact copy: keyframes from
+            // now on, as the Mac does.
+            refuseStream()
         case .error(let failure):
             // A refused claim answers here rather than with `writer_changed`,
             // and the flag has to clear either way: left set, one refusal would
@@ -499,10 +546,10 @@ final class TermiodSession: DeviceSession {
                     DispatchQueue.main.async { self?.onStreamSignal?(signal) }
                 }
             )
-            streamLock.lock()
-            if let theme = streamThemeLocked { try? terminal.setTheme(theme) }
-            streamLock.unlock()
+            // The embedded surface's cap: what the phone's memory allows.
+            try? terminal.setScrollbackLimit(bytes: 256_000)
             setStreamTerminal(terminal)
+            terminal.reportColorSchemeIfSubscribed()
         } catch {
             Log.device.error("""
             native snapshot on \(self.sessionName, privacy: .public) undecodable: \
