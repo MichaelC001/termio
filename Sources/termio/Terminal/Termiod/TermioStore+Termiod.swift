@@ -991,7 +991,8 @@ extension TermioStore {
         _ view: Termiod.HostView, from device: KnownDevice, route: TermiodRoute,
         live: [Termiod.SessionInformation] = []
     ) {
-        if let floor = hostViewFloors[device.id], view.revision < floor {
+        let floorKey = Self.floorKey(device, route: route)
+        if let floor = hostViewFloors[floorKey], view.revision < floor {
             Log.termiod.info("""
             ignored view \(view.revision, privacy: .public) of \
             \(route.description, privacy: .public): older than \(floor, privacy: .public)
@@ -1001,7 +1002,7 @@ extension TermioStore {
         hostViews[device.id] = view
         // A view is never older than one already drawn: a roster read before
         // a change this app made carries a view without that change.
-        hostViewFloors[device.id] = max(hostViewFloors[device.id] ?? 0, view.revision)
+        hostViewFloors[floorKey] = max(hostViewFloors[floorKey] ?? 0, view.revision)
         let known = KnownDevice(
             alias: device.alias,
             deviceID: device.deviceID ?? device.alias.flatMap { _ in
@@ -1039,6 +1040,14 @@ extension TermioStore {
             """)
         }
         if added { persistSoon() }
+    }
+
+    /// What a host's revision floor is keyed by: the machine once a handshake
+    /// named it, so two aliases of one box share one floor, and the alias
+    /// before that.
+    static func floorKey(_ device: KnownDevice, route: TermiodRoute) -> String {
+        guard device.alias != nil else { return device.id }
+        return device.deviceID ?? TermiodDeviceRegistry.shared.deviceID(for: route) ?? device.id
     }
 
     /// The workspaces on `device`: for this Mac, the ones with no alias.
@@ -1197,6 +1206,9 @@ extension TermioStore {
                 if projects[index].hostProjectID != hostProject.id {
                     projects[index].hostProjectID = hostProject.id
                     projects[index].hostSeed = view.seed
+                    // First matched: a pin set here before the host knew the
+                    // row is the newer word.
+                    pushPin(of: index, against: hostProject, on: device)
                 }
                 if projects[index].name != hostProject.label { projects[index].name = hostProject.label }
                 if projects[index].pinned != hostProject.pinned {
@@ -1243,11 +1255,17 @@ extension TermioStore {
             onDevice.contains($0.workspaceID)
                 && $0.hostProjectID.map { !hostIDs.contains($0) && !removing.contains($0) } == true
         }
+        let liveNames = Set(live.filter(\.alive).map(Self.daemonKey))
         for project in gone {
             Log.termiod.info("""
             project \(project.path, privacy: .public) was removed from \
             \(device.name, privacy: .public); its row goes
             """)
+            // A session the host did not place there is still running. It
+            // keeps a row, loose, and its link.
+            for session in project.sessions where liveNames.contains(daemonSessionName(for: session)) {
+                moveSessionLoose(session.id, from: project)
+            }
             dropProjectRow(project.id)
         }
 
@@ -1320,6 +1338,21 @@ extension TermioStore {
         }
         guard let moved, let index = projects.firstIndex(where: { $0.id == target }) else { return }
         projects[index].sessions.append(moved)
+    }
+
+    /// Takes a session out of a project row into its workspace's loose
+    /// terminals, or chats for an agent.
+    private func moveSessionLoose(_ id: Session.ID, from project: Project) {
+        guard let row = projects.firstIndex(where: { $0.id == project.id }),
+              let at = projects[row].sessions.firstIndex(where: { $0.id == id }),
+              let workspace = workspaces.firstIndex(where: { $0.id == project.workspaceID })
+        else { return }
+        let session = projects[row].sessions.remove(at: at)
+        if session.agent == .terminal {
+            workspaces[workspace].terminals.append(session)
+        } else {
+            workspaces[workspace].chats.append(session)
+        }
     }
 
     /// Puts the rows of one machine's workspaces in the host's order, in the
@@ -1425,6 +1458,9 @@ extension TermioStore {
                         }) {
                             self.projects[index].hostProjectID = hostID
                             self.projects[index].hostSeed = view.seed
+                            if let hostProject = view.projects.first(where: { $0.id == hostID }) {
+                                self.pushPin(of: index, against: hostProject, on: device)
+                            }
                         }
                         self.applyHostView(
                             view, from: device, route: route,
@@ -1473,6 +1509,14 @@ extension TermioStore {
                 }
             }
         }
+    }
+
+    /// Sends a row's pin to its host when the two disagree, and keeps the
+    /// host's copy agreeing until the reply is drawn.
+    private func pushPin(of index: Int, against hostProject: Termiod.HostView.Project,
+                         on device: KnownDevice) {
+        guard projects[index].pinned != hostProject.pinned else { return }
+        setHostPinned(projects[index], pinned: projects[index].pinned, on: device)
     }
 
     /// The machine a row is on, when this app draws that machine's rows from
@@ -1677,7 +1721,9 @@ extension TermioStore {
                         }
                     }
                     if let revision {
-                        self.hostViewFloors[key] = max(self.hostViewFloors[key] ?? 0, revision)
+                        let floorKey = Self.floorKey(device, route: route)
+                        self.hostViewFloors[floorKey] = max(
+                            self.hostViewFloors[floorKey] ?? 0, revision)
                     }
                     if refused {
                         let alert = NSAlert()

@@ -290,9 +290,9 @@ final class TermiodViewImportTests: XCTestCase {
         store.drawFromHostView(view, on: .thisMac, live: [])
         XCTAssertFalse(store.projects.contains { $0.hostProjectID == "p_x" })
 
-        // Once every row has asked, and the host still has a project no row
-        // is, it gets one.
-        for project in store.projects { store.hostRegistrations.insert(project.id) }
+        // That draw asked for every row; a test may not reach a host, so each
+        // answered at once. A project no row is gets one now.
+        XCTAssertTrue(store.hostRegistrationsPending.isEmpty)
         store.drawFromHostView(view, on: .thisMac, live: [])
         XCTAssertTrue(store.projects.contains { $0.hostProjectID == "p_x" })
     }
@@ -337,6 +337,29 @@ final class TermiodViewImportTests: XCTestCase {
         XCTAssertEqual(alpha.sessions.count, 3)
         XCTAssertTrue(store.projects.contains { $0.name == "Beta Docs" },
                       "an unregistered row stays")
+    }
+
+    /// A row the host removed goes, but a session in it that is still running
+    /// stays, loose.
+    func testARemovedRowKeepsItsRunningSessionLoose() throws {
+        let snapshot = try Self.snapshot(alpha: "/work/alpha", beta: "/work/beta", gone: "/work/gone")
+        let store = makeStore(snapshot)
+        let local = Set(store.workspaces.filter { $0.deviceAlias == nil }.map(\.id))
+        for index in store.projects.indices where local.contains(store.projects[index].workspaceID) {
+            store.projects[index].hostProjectID = "p_\(store.projects[index].name)"
+        }
+        let running = "52000000-0000-0000-0000-000000000001"
+        let view = try decodeView(#"""
+        {"revision": 6, "seeded": true, "projects": [
+          {"id": "p_alpha", "path": "/work/alpha", "label": "alpha", "groups": []},
+          {"id": "p_Beta Docs", "path": "/work/beta", "label": "Beta Docs", "groups": []}],
+         "loose": []}
+        """#)
+
+        store.drawFromHostView(view, on: .thisMac, live: [try information("s_run", name: running)])
+
+        XCTAssertNil(store.projects.first { $0.name == "gone" })
+        XCTAssertTrue(store.workspaces.flatMap(\.terminals).contains { $0.id.uuidString == running })
     }
 
     /// The pane goes where the row is: the row's project once it is
