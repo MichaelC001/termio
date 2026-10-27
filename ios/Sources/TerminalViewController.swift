@@ -997,8 +997,13 @@ final class TerminalViewController: UIViewController {
             if let session = transport as? TermiodSession {
                 session.onStreaming = { [weak self] streaming in self?.setStreaming(streaming) }
                 session.onStreamSignal = { [weak self] signal in self?.receiveStreamSignal(signal) }
+                // One main-queue pass for however many frames arrived since
+                // the last: a flood must not become a hop per frame.
+                let pendingData = PendingStreamData()
                 session.onStreamData = { [weak self] data in
+                    guard pendingData.append(data) else { return }
                     DispatchQueue.main.async {
+                        let data = pendingData.take()
                         self?.altScreenSniffer.consume(data)
                         self?.followContentUnderKeyboard()
                     }
@@ -2309,4 +2314,30 @@ enum EmbeddedGhostty {
         guard let version = info.version else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: version, count: Int(info.version_len)), as: UTF8.self)
     }()
+}
+
+/// Stream bytes gathered between main-queue passes. `append` says whether a
+/// pass has to be scheduled: only the first frame after a `take` schedules one.
+private final class PendingStreamData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var scheduled = false
+
+    func append(_ bytes: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        data.append(bytes)
+        guard !scheduled else { return false }
+        scheduled = true
+        return true
+    }
+
+    func take() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        scheduled = false
+        let taken = data
+        data = Data()
+        return taken
+    }
 }

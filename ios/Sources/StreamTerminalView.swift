@@ -83,11 +83,12 @@ final class StreamTerminalView: UIView, UITextInput {
     /// Where the cursor's cell is, in this view's coordinates: what the
     /// controller keeps above the keyboard.
     var cursorRect: CGRect? {
-        guard let renderer, let screen = try? terminal()?.screen() else { return nil }
+        // The cursor alone, not the screen: this runs as output arrives.
+        guard let renderer, let cursor = terminal()?.cursorPosition else { return nil }
         let cell = renderer.cellSize
         return CGRect(
-            x: renderer.appearance.paddingX + CGFloat(screen.cursorX) * cell.width,
-            y: renderer.appearance.paddingY + CGFloat(screen.cursorY) * cell.height,
+            x: renderer.appearance.paddingX + CGFloat(cursor.x) * cell.width,
+            y: renderer.appearance.paddingY + CGFloat(cursor.y) * cell.height,
             width: cell.width, height: cell.height)
     }
 
@@ -271,7 +272,7 @@ final class StreamTerminalView: UIView, UITextInput {
 
     /// The edge of this screen's own scrollback.
     func scrollToEdge(top: Bool) {
-        terminal()?.scrollViewport(rows: top ? -1_000_000 : 1_000_000)
+        terminal()?.moveViewport(top ? .top : .bottom)
         needsFullDraw = true
     }
 

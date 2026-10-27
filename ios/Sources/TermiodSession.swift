@@ -229,13 +229,17 @@ final class TermiodSession: DeviceSession {
                 pendingEvents.append(event)
                 return
             }
-            guard streamTerminal != nil else { return }
-            // One frame holds 16 MiB, and JSON can grow text sixfold.
-            if case .paste(let text, _) = event {
-                for piece in Termiod.InputEvent.pastePieces(text) { sendEvent(piece) }
-            } else {
-                sendEvent(event)
-            }
+            deliver(event)
+        }
+    }
+
+    private func deliver(_ event: Termiod.InputEvent) {
+        guard streamTerminal != nil else { return }
+        // One frame holds 16 MiB, and JSON can grow text sixfold.
+        if case .paste(let text, _) = event {
+            for piece in Termiod.InputEvent.pastePieces(text) { sendEvent(piece) }
+        } else {
+            sendEvent(event)
         }
     }
 
@@ -350,12 +354,12 @@ final class TermiodSession: DeviceSession {
     /// parsed in between are repainted too.
     func noteSurfaceGrid(columns: Int, rows: Int) {
         queue.async { [self] in
-            // The embedded surface is hidden while the stream view draws; its
-            // grid asks nothing of the device.
-            guard streamTerminal == nil else { return }
             let grid = TerminalGrid(rows: UInt16(clamping: rows), cols: UInt16(clamping: columns))
             guard surfaceGrid != grid else { return }
             surfaceGrid = grid
+            // Recorded, so a return to keyframes repaints right; but while the
+            // stream view draws, the hidden surface asks nothing of the device.
+            guard streamTerminal == nil else { return }
             guard attached, grid.rows > 0, grid.cols > 0 else { return }
             if authoritativeGrid != grid {
                 repaintPending = true
@@ -451,7 +455,8 @@ final class TermiodSession: DeviceSession {
                 if let lastFocus, !events.contains(where: { if case .focus = $0 { true } else { false } }) {
                     sendEvent(.focus(lastFocus))
                 }
-                for event in events { sendInput(event) }
+                // Inline, so input typed meanwhile cannot overtake these.
+                for event in events { deliver(event) }
             }
             notify(.connected)
         case .exited:
