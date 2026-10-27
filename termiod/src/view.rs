@@ -32,6 +32,10 @@ pub struct View {
     /// from any repository.
     #[serde(default)]
     pub loose: Vec<Group>,
+    /// Whether a client has seeded the view with `view_import`. Only the first
+    /// import is taken: a later client adopts what the host already has.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seeded: bool,
 }
 
 /// A directory registered on this host.
@@ -108,6 +112,40 @@ pub struct Place {
     /// A project id. Without it, the project whose path holds the cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// A loose group, whatever the cwd. A client that files a session apart
+    /// from any project says so, or a shell opened inside a project's folder
+    /// would land in that project.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loose: bool,
+}
+
+/// A client's own tree, sent once by `view_import` to seed the view. Sessions
+/// are named the way the client knows them: by daemon name, or by id.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    #[serde(default)]
+    pub projects: Vec<ImportProject>,
+    #[serde(default)]
+    pub loose: Vec<ImportGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportProject {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    #[serde(default)]
+    pub groups: Vec<ImportGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportGroup {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub sessions: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -213,6 +251,15 @@ impl View {
             .collect()
     }
 
+    /// The group that holds the pane `pane`.
+    pub fn group_of_mut(&mut self, pane: &str) -> Option<&mut Group> {
+        self.projects
+            .iter_mut()
+            .flat_map(|project| project.groups.iter_mut())
+            .chain(self.loose.iter_mut())
+            .find(|group| group.panes().iter().any(|shown| shown.id == pane))
+    }
+
     /// The session the terminal pane `pane` shows.
     pub fn session_of(&self, pane: &str) -> Option<String> {
         self.groups()
@@ -278,9 +325,8 @@ impl View {
             .ok_or_else(|| anyhow!("no such project: {id}"))?;
         let project = self.projects.remove(index);
         let view = View {
-            revision: 0,
             projects: vec![project],
-            loose: Vec::new(),
+            ..View::default()
         };
         Ok(view.sessions())
     }
@@ -298,37 +344,161 @@ impl View {
     }
 
     /// Give `session` a pane in a new group of its own and return the pane's
-    /// id. `place.project` picks the project; without it, the project whose
-    /// path holds `cwd`, else no project.
+    /// id. `place.project` picks the project and `place.loose` picks none;
+    /// without either, the project whose path holds `cwd`, else no project.
     pub fn place_terminal(&mut self, session: &str, cwd: &str, place: &Place) -> Result<String> {
-        let project = match &place.project {
-            Some(id) => Some(
-                self.projects
-                    .iter()
-                    .position(|project| &project.id == id)
-                    .ok_or_else(|| anyhow!("no such project: {id}"))?,
-            ),
-            None => self.project_for(cwd),
+        let project = match (&place.project, place.loose) {
+            (Some(_), true) => return Err(anyhow!("a place names a project or loose, not both")),
+            (Some(id), false) => Some(self.project_index(id)?),
+            (None, true) => None,
+            (None, false) => self.project_for(cwd),
         };
-        let pane = self.fresh_id("pane");
+        Ok(self.push_group(project, &[session.to_string()], None).1)
+    }
+
+    /// A new group showing `session`, in `project` or loose, with `label`.
+    /// Returns the group's id and the pane's.
+    pub fn new_group(
+        &mut self,
+        session: &str,
+        project: Option<&str>,
+        label: Option<String>,
+    ) -> Result<(String, String)> {
+        let project = project.map(|id| self.project_index(id)).transpose()?;
+        Ok(self.push_group(project, &[session.to_string()], label))
+    }
+
+    fn project_index(&self, id: &str) -> Result<usize> {
+        self.projects
+            .iter()
+            .position(|project| project.id == id)
+            .ok_or_else(|| anyhow!("no such project: {id}"))
+    }
+
+    /// Appends a group whose panes show `sessions`, side by side in equal
+    /// shares, and returns its id and its first pane's. `sessions` is never
+    /// empty.
+    fn push_group(
+        &mut self,
+        project: Option<usize>,
+        sessions: &[String],
+        label: Option<String>,
+    ) -> (String, String) {
+        let mut panes: Vec<String> = Vec::new();
+        for _ in sessions {
+            loop {
+                let id = self.fresh_id("pane");
+                if !panes.contains(&id) {
+                    panes.push(id);
+                    break;
+                }
+            }
+        }
+        let mut nodes: Vec<Node> = panes
+            .iter()
+            .zip(sessions)
+            .map(|(id, session)| {
+                Node::Pane(Pane {
+                    id: id.clone(),
+                    label: None,
+                    kind: PaneKind::Terminal {
+                        session: session.clone(),
+                    },
+                })
+            })
+            .collect();
+        let first = panes[0].clone();
+        let mut root = nodes.pop().expect("a group shows at least one session");
+        let mut inside = 1.0;
+        while let Some(before) = nodes.pop() {
+            inside += 1.0;
+            root = Node::Split(Split {
+                direction: Direction::Right,
+                ratio: 1.0 / inside,
+                before: Box::new(before),
+                after: Box::new(root),
+            });
+        }
+        let group_id = self.fresh_id("group");
         let group = Group {
-            id: self.fresh_id("group"),
-            label: None,
-            root: Node::Pane(Pane {
-                id: pane.clone(),
-                label: None,
-                kind: PaneKind::Terminal {
-                    session: session.to_string(),
-                },
-            }),
-            focused: pane.clone(),
+            id: group_id.clone(),
+            label,
+            root,
+            focused: first.clone(),
             zoomed: None,
         };
         match project {
             Some(index) => self.projects[index].groups.push(group),
             None => self.loose.push(group),
         }
-        Ok(pane)
+        (group_id, first)
+    }
+
+    /// Seed the view from a client's tree. `paths` holds each imported
+    /// project's path as this host spells it, in order, and `live` maps every
+    /// name and id a live session answers to onto its id. Returns each
+    /// imported project's id, in order.
+    ///
+    /// A merge, never a replacement: a project or a placement already here and
+    /// absent from the import stays. Imported projects come first, in the
+    /// client's order. A named session moves into its imported group; a name
+    /// no live session answers to is skipped, because a pane shows a running
+    /// session and the client places that row when it starts it.
+    pub fn import(
+        &mut self,
+        import: &Import,
+        paths: &[String],
+        live: &std::collections::HashMap<String, String>,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        for (entry, path) in import.projects.iter().zip(paths) {
+            let (id, _) = self.add_project(path, entry.label.as_deref());
+            if let Ok(index) = self.project_index(&id) {
+                if let Some(label) = &entry.label {
+                    self.projects[index].label = label.clone();
+                }
+                self.projects[index].pinned = entry.pinned;
+            }
+            ids.push(id);
+        }
+        let mut rest = std::mem::take(&mut self.projects);
+        for id in &ids {
+            if let Some(index) = rest.iter().position(|project| &project.id == id) {
+                self.projects.push(rest.remove(index));
+            }
+        }
+        self.projects.append(&mut rest);
+
+        let mut claimed: Vec<String> = Vec::new();
+        let mut targets: Vec<(Option<&String>, &ImportGroup)> = Vec::new();
+        for (entry, id) in import.projects.iter().zip(&ids) {
+            targets.extend(entry.groups.iter().map(|group| (Some(id), group)));
+        }
+        targets.extend(import.loose.iter().map(|group| (None, group)));
+        for (project, group) in targets {
+            let mut sessions = Vec::new();
+            for name in &group.sessions {
+                if let Some(session) = live.get(name) {
+                    if !claimed.contains(session) {
+                        claimed.push(session.clone());
+                        sessions.push(session.clone());
+                    }
+                }
+            }
+            if sessions.is_empty() {
+                continue;
+            }
+            for session in &sessions {
+                self.remove_session(session);
+            }
+            let index = project.and_then(|id| self.project_index(id).ok());
+            if project.is_some() && index.is_none() {
+                continue;
+            }
+            self.push_group(index, &sessions, group.label.clone());
+        }
+        self.seeded = true;
+        ids
     }
 
     /// Remove the pane that shows `session`. Returns whether there was one.
@@ -594,6 +764,7 @@ mod tests {
         let mut view = View::default();
         let place = Place {
             project: Some("project:missing".to_string()),
+            loose: false,
         };
         assert!(view.place_terminal("a", "/work", &place).is_err());
     }
@@ -835,6 +1006,88 @@ mod tests {
             .change(|view| Ok(((), view.add_project("/work", None).1)))
             .unwrap();
         assert_eq!(revision, carried.revision + 1);
+    }
+
+    fn live(names: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for (name, id) in names {
+            map.insert(name.to_string(), id.to_string());
+            map.insert(id.to_string(), id.to_string());
+        }
+        map
+    }
+
+    #[test]
+    fn an_import_merges_and_moves_named_sessions() {
+        let mut view = View::default();
+        let (kept, _) = view.add_project("/work/kept", None);
+        view.place_terminal("s1", "/tmp", &Place::default()).unwrap();
+        view.place_terminal("s2", "/tmp", &Place::default()).unwrap();
+        let import = Import {
+            projects: vec![ImportProject {
+                path: "/work/termio".into(),
+                label: Some("Termio".into()),
+                pinned: true,
+                groups: vec![ImportGroup {
+                    label: None,
+                    sessions: vec!["one".into(), "two".into(), "ghost".into()],
+                }],
+            }],
+            loose: vec![ImportGroup {
+                label: None,
+                sessions: vec!["one".into()],
+            }],
+        };
+        let ids = view.import(
+            &import,
+            &["/work/termio".to_string()],
+            &live(&[("one", "s1"), ("two", "s2")]),
+        );
+        assert!(view.seeded);
+        assert_eq!(view.projects.len(), 2);
+        assert_eq!(view.projects[0].id, ids[0], "imported projects come first");
+        assert_eq!(view.projects[1].id, kept, "a project the import omits stays");
+        assert_eq!(view.projects[0].label, "Termio");
+        assert!(view.projects[0].pinned);
+        assert_eq!(view.projects[0].groups.len(), 1);
+        assert_eq!(view.projects[0].sessions(), vec!["s1".to_string(), "s2".to_string()]);
+        assert!(view.loose.is_empty(), "a session is claimed by its first group only");
+        let Node::Split(split) = &view.projects[0].groups[0].root else {
+            panic!("two sessions share a split");
+        };
+        assert_eq!(split.ratio, 0.5);
+    }
+
+    #[test]
+    fn three_panes_share_a_group_equally() {
+        let mut view = View::default();
+        let sessions = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        view.push_group(None, &sessions, Some("three".into()));
+        let group = &view.loose[0];
+        assert_eq!(group.label.as_deref(), Some("three"));
+        assert_eq!(group.panes().len(), 3);
+        assert_eq!(Some(group.focused.clone()), terminal(&view, "a"));
+        let Node::Split(outer) = &group.root else { panic!("a split") };
+        assert!((outer.ratio - 1.0 / 3.0).abs() < 1e-9);
+        let Node::Split(inner) = outer.after.as_ref() else { panic!("a nested split") };
+        assert_eq!(inner.ratio, 0.5);
+    }
+
+    #[test]
+    fn a_loose_place_ignores_the_cwd() {
+        let mut view = View::default();
+        let (project, _) = view.add_project("/work", None);
+        let loose = Place {
+            project: None,
+            loose: true,
+        };
+        view.place_terminal("a", "/work/src", &loose).unwrap();
+        assert_eq!(view.loose.len(), 1);
+        let both = Place {
+            project: Some(project),
+            loose: true,
+        };
+        assert!(view.place_terminal("b", "/work", &both).is_err());
     }
 
     #[test]

@@ -1728,50 +1728,13 @@ async fn process_control(
 
     match control {
         Control::Create { spec, seq } => {
-            let place = spec.place.clone().unwrap_or_default();
-            let cwd = placement_cwd(spec.cwd.as_deref().unwrap_or_default()).await;
-            let unknown_project = place.project.as_ref().filter(|project| {
-                !manager.view.snapshot().projects.iter().any(|known| &&known.id == project)
-            });
-            let response = if manager.view.is_frozen() {
-                // A session spawned now could not be placed: its pane would be
-                // missing for the life of this image, or lose its project in
-                // the next one.
-                error(seq, ErrorCode::Busy, format!("{:#}", crate::view::Frozen), true)
-            } else if let Some(project) = unknown_project {
-                // Refused before the spawn: a session nobody can find in the
-                // view is the state this whole design removes.
-                error(seq, ErrorCode::NotFound, format!("no such project: {project}"), false)
-            } else {
-                match manager.create(spec) {
-                    Ok(id) => {
-                        let session = id.to_string();
-                        let pane = match manager.view.change(|view| {
-                            // The project can be removed while the session
-                            // spawns; a live session still gets a pane, loose.
-                            let pane = view
-                                .place_terminal(&session, &cwd, &place)
-                                .or_else(|_| {
-                                    // No cwd: loose, never some other project.
-                                    view.place_terminal(&session, "", &Place::default())
-                                })?;
-                            Ok((pane, true))
-                        }) {
-                            Ok((pane, _)) => Some(pane),
-                            Err(e) => {
-                                eprintln!("termiod: session {session} has no pane: {e:#}");
-                                None
-                            }
-                        };
-                        manager.publish_created(&id).await;
-                        Control::Created {
-                            id: session,
-                            pane,
-                            re: seq,
-                        }
-                    }
-                    Err(e) => error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false),
-                }
+            let response = match spawn_placed(manager, spec, true).await {
+                Ok((id, pane)) => Control::Created {
+                    id: id.to_string(),
+                    pane,
+                    re: seq,
+                },
+                Err(refusal) => refusal.reply(seq),
             };
             send_response(out, response_cache, seq, response);
         }
@@ -1898,6 +1861,90 @@ async fn process_control(
                             Err(e) => view_error(seq, ErrorCode::Internal, e),
                         },
                     },
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::ViewImport { import, seq } => {
+            let response = if !connection.capabilities.contains("view_import") {
+                error(seq, ErrorCode::Denied, "the view_import capability was not negotiated", false)
+            } else if manager.view.snapshot().seeded {
+                error(seq, ErrorCode::Conflict, "the view is already seeded", false)
+            } else {
+                let mut paths = Vec::new();
+                for project in &import.projects {
+                    // A folder that is gone keeps its row under the path the
+                    // client had: dropping it is the loss an import must not cause.
+                    paths.push(placement_cwd(&project.path).await);
+                }
+                let mut live = HashMap::new();
+                for info in manager.list().await {
+                    live.insert(info.name.clone(), info.id.clone());
+                    live.insert(info.id.clone(), info.id.clone());
+                }
+                match manager.view.change(|view| {
+                    // Checked again under the lock: two clients can import at once.
+                    if view.seeded {
+                        return Ok((None, false));
+                    }
+                    Ok((Some(view.import(&import, &paths, &live)), true))
+                }) {
+                    Ok((Some(projects), revision)) => Control::Imported {
+                        projects,
+                        revision,
+                        re: seq,
+                    },
+                    Ok((None, _)) => error(seq, ErrorCode::Conflict, "the view is already seeded", false),
+                    Err(e) => view_error(seq, ErrorCode::Internal, e),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
+        Control::GroupNew {
+            project,
+            label,
+            mut spec,
+            seq,
+        } => {
+            let response = if !connection.capabilities.contains("view_import") {
+                error(seq, ErrorCode::Denied, "the view_import capability was not negotiated", false)
+            } else {
+                spec.place = Some(crate::view::Place {
+                    loose: project.is_none(),
+                    project,
+                });
+                match spawn_placed(manager, spec, true).await {
+                    Ok((id, Some(pane))) => {
+                        let session = id.to_string();
+                        // The pane was placed in a group of its own; the label
+                        // and the group id are read back from the view.
+                        match manager.view.change(|view| {
+                            let group = view
+                                .group_of_mut(&pane)
+                                .ok_or_else(|| anyhow!("no such pane: {pane}"))?;
+                            let changed = label.is_some() && group.label != label;
+                            if label.is_some() {
+                                group.label = label.clone();
+                            }
+                            Ok((group.id.clone(), changed))
+                        }) {
+                            Ok((group, revision)) => Control::GroupCreated {
+                                id: session,
+                                group,
+                                pane,
+                                revision,
+                                re: seq,
+                            },
+                            Err(e) => view_error(seq, ErrorCode::Internal, e),
+                        }
+                    }
+                    Ok((id, None)) => error(
+                        seq,
+                        ErrorCode::Internal,
+                        format!("session {id} started but has no pane"),
+                        false,
+                    ),
+                    Err(refusal) => refusal.reply(seq),
                 }
             };
             send_response(out, response_cache, seq, response);
@@ -2070,15 +2117,14 @@ async fn process_control(
                             spec.rows = rows;
                             spec.cols = cols;
                         }
-                        match manager.create(spec) {
-                            Ok(id) => {
-                                manager.publish_created(&id).await;
-                                manager.find(&id)
-                            }
-                            Err(e) => {
-                                let response =
-                                    error(seq, ErrorCode::CreateFailed, format!("{e:#}"), false);
-                                send_response(out, response_cache, seq, response);
+                        // Placed like a `create`, so every session the
+                        // app opens has a pane. A project the client named
+                        // and the host no longer has is not worth refusing
+                        // the spawn over: the cwd places it instead.
+                        match spawn_placed(manager, spec, false).await {
+                            Ok((id, _)) => manager.find(&id),
+                            Err(refusal) => {
+                                send_response(out, response_cache, seq, refusal.reply(seq));
                                 return Ok(ControlFlow::Continue);
                             }
                         }
@@ -2763,6 +2809,8 @@ async fn process_control(
         | Control::ViewState { .. }
         | Control::ProjectAdded { .. }
         | Control::Revised { .. }
+        | Control::Imported { .. }
+        | Control::GroupCreated { .. }
         | Control::Sessions { .. }
         | Control::Attached { .. }
         | Control::Exited { .. }
@@ -3476,6 +3524,84 @@ fn error(re: Option<u64>, code: ErrorCode, message: impl Into<String>, retryable
 
 /// The reply for a view change that failed: `busy`, worth retrying, while a
 /// handoff carries the view; otherwise `code`.
+/// Why a spawn with a place was refused, before anything started.
+struct Refusal {
+    code: ErrorCode,
+    message: String,
+    retryable: bool,
+}
+
+impl Refusal {
+    fn reply(self, seq: Option<u64>) -> Control {
+        error(seq, self.code, self.message, self.retryable)
+    }
+}
+
+/// Spawn `spec` and give its session a pane where `spec.place` says. Returns
+/// the session and its pane; the pane is `None` only when placing failed
+/// after the spawn, which is logged.
+///
+/// `strict` refuses a place naming a project this host does not have, before
+/// anything spawns. Without it the cwd places the session instead.
+async fn spawn_placed(
+    manager: &Manager,
+    spec: crate::protocol::CreateSpec,
+    strict: bool,
+) -> std::result::Result<(SessionId, Option<String>), Refusal> {
+    let mut place = spec.place.clone().unwrap_or_default();
+    let cwd = placement_cwd(spec.cwd.as_deref().unwrap_or_default()).await;
+    let unknown = place.project.clone().filter(|project| {
+        !manager.view.snapshot().projects.iter().any(|known| &known.id == project)
+    });
+    if manager.view.is_frozen() {
+        // A session spawned now could not be placed: its pane would be
+        // missing for the life of this image, or lose its project in the next.
+        return Err(Refusal {
+            code: ErrorCode::Busy,
+            message: format!("{:#}", crate::view::Frozen),
+            retryable: true,
+        });
+    }
+    if let Some(project) = unknown {
+        if strict {
+            // Refused before the spawn: a session nobody can find in the view
+            // is the state this whole design removes.
+            return Err(Refusal {
+                code: ErrorCode::NotFound,
+                message: format!("no such project: {project}"),
+                retryable: false,
+            });
+        }
+        place.project = None;
+    }
+    let id = manager.create(spec).map_err(|e| Refusal {
+        code: ErrorCode::CreateFailed,
+        message: format!("{e:#}"),
+        retryable: false,
+    })?;
+    let session = id.to_string();
+    let pane = match manager.view.change(|view| {
+        // The project can be removed while the session spawns; a live session
+        // still gets a pane, loose, never in some other project.
+        let pane = view.place_terminal(&session, &cwd, &place).or_else(|_| {
+            let loose = crate::view::Place {
+                project: None,
+                loose: true,
+            };
+            view.place_terminal(&session, "", &loose)
+        })?;
+        Ok((pane, true))
+    }) {
+        Ok((pane, _)) => Some(pane),
+        Err(e) => {
+            eprintln!("termiod: session {session} has no pane: {e:#}");
+            None
+        }
+    };
+    manager.publish_created(&id).await;
+    Ok((id, pane))
+}
+
 fn view_error(seq: Option<u64>, code: ErrorCode, e: anyhow::Error) -> Control {
     if e.is::<crate::view::Frozen>() {
         error(seq, ErrorCode::Busy, format!("{e:#}"), true)
