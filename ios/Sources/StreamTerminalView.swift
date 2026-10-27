@@ -27,7 +27,8 @@ final class StreamTerminalView: UIView, UITextInput {
     var onPasteMenuRequested: (CGPoint) -> Void = { _ in }
 
     override class var layerClass: AnyClass { CAMetalLayer.self }
-    private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+    /// Always the view's own layer, given `layerClass`.
+    private var metalLayer: CAMetalLayer? { layer as? CAMetalLayer }
 
     private var renderer: TermiodStreamRenderer?
     private var displayLink: CADisplayLink?
@@ -52,14 +53,14 @@ final class StreamTerminalView: UIView, UITextInput {
     init(appearance: TermiodStreamRenderer.Appearance) {
         super.init(frame: .zero)
         accessibilityIdentifier = "terminal.stream"
-        metalLayer.pixelFormat = .bgra8Unorm
+        metalLayer?.pixelFormat = .bgra8Unorm
         // Theme colors are sRGB values, as the embedded surface treats them.
-        metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
-        metalLayer.framebufferOnly = true
-        metalLayer.isOpaque = appearance.backgroundOpacity >= 1
+        metalLayer?.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
+        metalLayer?.framebufferOnly = true
+        metalLayer?.isOpaque = appearance.backgroundOpacity >= 1
         do {
             let renderer = try TermiodStreamRenderer(appearance: appearance, scale: UIScreen.main.scale)
-            metalLayer.device = renderer.device
+            metalLayer?.device = renderer.device
             self.renderer = renderer
         } catch {
             Log.device.error("stream renderer unavailable: \(String(describing: error), privacy: .public)")
@@ -95,7 +96,7 @@ final class StreamTerminalView: UIView, UITextInput {
     func setAppearance(_ appearance: TermiodStreamRenderer.Appearance) {
         guard let renderer else { return }
         do {
-            metalLayer.isOpaque = appearance.backgroundOpacity >= 1
+            metalLayer?.isOpaque = appearance.backgroundOpacity >= 1
             if try renderer.update(appearance: appearance, scale: window?.screen.scale ?? UIScreen.main.scale) {
                 declareViewport()
             }
@@ -110,7 +111,7 @@ final class StreamTerminalView: UIView, UITextInput {
         displayLink?.invalidate()
         displayLink = nil
         guard let window else { return }
-        metalLayer.contentsScale = window.screen.scale
+        metalLayer?.contentsScale = window.screen.scale
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -119,6 +120,7 @@ final class StreamTerminalView: UIView, UITextInput {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        guard let metalLayer else { return }
         let scale = metalLayer.contentsScale
         let size = CGSize(width: max(1, bounds.width * scale), height: max(1, bounds.height * scale))
         if metalLayer.drawableSize != size {
@@ -140,7 +142,7 @@ final class StreamTerminalView: UIView, UITextInput {
     }
 
     @objc private func tick() {
-        guard let renderer, let terminal = terminal() else { return }
+        guard let renderer, let metalLayer, let terminal = terminal() else { return }
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
