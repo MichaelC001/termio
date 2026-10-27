@@ -1092,6 +1092,7 @@ extension TermioStore {
             projects: rows, workspaces: workspaces.filter { onDevice.contains($0.id) },
             splitGroups: splitGroups, name: daemonSessionName(for:))
         let rowIDs = rows.map(\.id)
+        let rowNames = rows.map { ($0.path, $0.name) }
         let route = device.route
         StateFile().keepCopyBeforeView()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1103,9 +1104,16 @@ extension TermioStore {
                     switch outcome {
                     case .success(let (ids, sessions, view)):
                         if let ids {
-                            for (rowID, hostID) in zip(rowIDs, ids) {
+                            for ((rowID, hostID), (path, name)) in zip(zip(rowIDs, ids), rowNames) {
                                 guard let index = self.projects.firstIndex(where: { $0.id == rowID })
-                                else { continue }
+                                else {
+                                    // Removed while the import ran: Remove
+                                    // Project found nothing on the host then.
+                                    self.removeHostProject(
+                                        path: path, hostID: hostID, name: name,
+                                        closing: ([], []), quiet: true, on: device)
+                                    continue
+                                }
                                 self.projects[index].hostProjectID = hostID
                                 self.projects[index].hostSeed = view.seed
                             }
@@ -1165,6 +1173,16 @@ extension TermioStore {
             projects[index].hostSeed = nil
         }
 
+        // A row this app has not registered may be the host's project under
+        // another spelling: `project_add` answers which. Until every such
+        // row has asked, no row is made from the view, or it would be a
+        // second row for the same folder.
+        let unregistered = projects.filter {
+            onDevice.contains($0.workspaceID) && $0.hostProjectID == nil
+        }
+        let mayCreate = unregistered.allSatisfy {
+            hostRegistrations.contains($0.id) && !hostRegistrationsPending.contains($0.id)
+        }
         for hostProject in view.projects
         where !removing.contains(hostProject.id)
             && !removingPaths.contains(Self.hostPathKey(hostProject.path)) {
@@ -1173,7 +1191,7 @@ extension TermioStore {
                 onDevice.contains($0.workspaceID) && $0.hostProjectID == hostProject.id
             } ?? projects.firstIndex {
                 onDevice.contains($0.workspaceID) && $0.hostProjectID == nil
-                    && Self.hostPathKey($0.path) == wanted
+                    && Self.hostPathKey(sameFolderKey($0.path, on: device)) == wanted
             }
             if let index {
                 if projects[index].hostProjectID != hostProject.id {
@@ -1196,6 +1214,7 @@ extension TermioStore {
                 rowFor[hostProject.id] = clone.id
                 continue
             }
+            guard mayCreate else { continue }
             var project = Project(
                 workspaceID: device.alias.map { workspace(forDevice: $0, deviceID: device.deviceID) }
                     ?? workspaceForThisMac.id,
@@ -1250,7 +1269,11 @@ extension TermioStore {
         if projects != before { persistSoon() }
     }
 
-    /// Moves each live session's row into the project the host placed it in.
+    /// Moves each live session's row into the project the host placed it in,
+    /// only from one registered row of this machine to another. A session in a
+    /// loose group, in a row not yet registered, or in a project here cloned
+    /// to the box stays: the host placed it by its cwd, not by its row, and
+    /// no op of this phase moves a pane.
     private func fileLiveSessions(
         by view: Termiod.HostView, rowFor: [String: Project.ID], on device: KnownDevice,
         live: [Termiod.SessionInformation]
@@ -1260,15 +1283,19 @@ extension TermioStore {
             idByName[Self.daemonKey(information)] = information.id
         }
         let placed = view.projectBySession
+        let onDevice = workspaceIDs(on: device)
+        let registered = Set(view.projects.map(\.id))
         for session in allSessions where isAuthored(session, for: device) {
             guard let id = idByName[daemonSessionName(for: session)],
                   let hostProject = placed[id],
-                  let target = rowFor[hostProject.id]
+                  let target = rowFor[hostProject.id],
+                  projects.first(where: { $0.id == target })
+                    .map({ onDevice.contains($0.workspaceID) }) == true,
+                  let current = projects.first(where: { $0.sessions.contains { $0.id == session.id } }),
+                  onDevice.contains(current.workspaceID),
+                  let currentHostID = current.hostProjectID, registered.contains(currentHostID),
+                  current.id != target, currentHostID != hostProject.id
             else { continue }
-            if let current = projects.first(where: { $0.sessions.contains { $0.id == session.id } }),
-               current.id == target || current.hostProjectID == hostProject.id {
-                continue
-            }
             moveSession(session.id, toProject: target)
         }
     }
@@ -1332,11 +1359,33 @@ extension TermioStore {
         }
     }
 
+    /// A row's path the way this machine's host spells it, as far as this Mac
+    /// can tell: with symlinks resolved here, and as written for a box,
+    /// whose links this Mac cannot see.
+    private func sameFolderKey(_ path: String, on device: KnownDevice) -> String {
+        device.isLocal ? URL(fileURLWithPath: path).resolvingSymlinksInPath().path : path
+    }
+
     /// Registers a row the host has never had, once per run.
     private func registerRow(_ project: Project, on device: KnownDevice) {
         guard !hostRegistrations.contains(project.id) else { return }
         hostRegistrations.insert(project.id)
-        addHostProject(path: project.path, name: project.name, on: device) { _ in }
+        hostRegistrationsPending.insert(project.id)
+        addHostProject(path: project.path, name: project.name, on: device) { [weak self] _ in
+            guard let self else { return }
+            self.hostRegistrationsPending.remove(project.id)
+            // The reply drew the view while this row was still pending; draw
+            // it again, now that every row may have asked. A turn later, so a
+            // refusal answered at once never re-enters the draw that asked.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self, let view = self.hostViews[device.id] else { return }
+                    self.applyHostView(
+                        view, from: device, route: device.route,
+                        live: self.rosterFetches[device.route.description]?.answer?.live ?? [])
+                }
+            }
+        }
     }
 
     /// Whether this app draws `device`'s rows from its host's view and authors
@@ -1436,10 +1485,12 @@ extension TermioStore {
 
     /// Whether this process may talk to `device`'s host. Under `swift test`
     /// only a test that pointed `TERMIOD_SOCK` at its own daemon may, and only
-    /// this Mac: a test must never seed or change the user's real view.
-    private func mayAskHost(_ device: KnownDevice) -> Bool {
+    /// this Mac, and only with `TERMIO_TEST_OWN_DAEMON` set beside it: a test
+    /// must never seed or change the user's real view.
+    func mayAskHost(_ device: KnownDevice) -> Bool {
         guard AppChannel.isRunningTests else { return true }
         return device.isLocal && getenv("TERMIOD_SOCK") != nil
+            && getenv("TERMIO_TEST_OWN_DAEMON") != nil
     }
 
     /// Where the host files a session's pane: the project of the row it sits
@@ -1580,6 +1631,7 @@ extension TermioStore {
         let machine = device.name
         // The id too: this Mac's own host spells a path its canonical way,
         // which need not be the row's.
+        guard mayAskHost(device) else { return }
         let guards = [path] + (hostID.map { [$0] } ?? [])
         hostProjectsRemoving[key, default: []].append(contentsOf: guards)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in

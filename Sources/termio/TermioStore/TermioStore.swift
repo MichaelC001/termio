@@ -1197,6 +1197,9 @@ final class TermioStore: ObservableObject {
     /// per run: a folder the host cannot find keeps its row, unregistered.
     var hostRegistrations: Set<Project.ID> = []
 
+    /// Rows whose `project_add` has not answered yet.
+    var hostRegistrationsPending: Set<Project.ID> = []
+
     /// Projects whose Remove Project is reading a host before it asks.
     var projectsBeingRead: Set<Project.ID> = []
 

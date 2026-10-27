@@ -217,38 +217,43 @@ final class TermiodViewImportTests: XCTestCase {
             }
         }
         let loose = "70000000-0000-0000-0000-000000000001"
+        let betaSession = "51000000-0000-0000-0000-000000000001"
         // The host lists beta first and renamed alpha. `p_gone` was removed
-        // elsewhere, `p_new` was added by `termio .`, and the loose terminal
-        // sits in alpha.
+        // elsewhere, `p_new` was added by `termio .`, and both beta's session
+        // and the loose terminal sit in alpha.
         let view = try decodeView("""
         {"revision": 9, "seeded": true,
          "projects": [
            {"id": "p_beta", "path": "/work/beta", "label": "Beta Docs", "pinned": true, "groups": []},
            {"id": "p_alpha", "path": "/private/work/alpha", "label": "Alpha", "groups": [
              {"id": "g1", "focused": "x1",
-              "root": {"pane": {"id": "x1", "kind": "terminal", "session": "s_loose"}}}]},
+              "root": {"split": {"direction": "right", "ratio": 0.5,
+                "before": {"pane": {"id": "x1", "kind": "terminal", "session": "s_loose"}},
+                "after": {"pane": {"id": "x2", "kind": "terminal", "session": "s_beta"}}}}}]},
            {"id": "p_new", "path": "/work/new", "label": "new", "groups": []}],
          "loose": []}
         """)
 
-        store.drawFromHostView(view, on: .thisMac,
-                               live: [try information("s_loose", name: loose)])
+        let live = [try information("s_loose", name: loose),
+                    try information("s_beta", name: betaSession)]
+        store.drawFromHostView(view, on: .thisMac, live: live)
 
         let local = Set(store.workspaces.filter { $0.deviceAlias == nil }.map(\.id))
         let rows = store.projects.filter { local.contains($0.workspaceID) }
         XCTAssertEqual(rows.map(\.hostProjectID), ["p_beta", "p_alpha", "p_new"])
         XCTAssertEqual(rows.map(\.name), ["Beta Docs", "Alpha", "new"])
         XCTAssertEqual(rows[1].path, "/work/alpha", "a row keeps this Mac's spelling")
-        XCTAssertTrue(rows[1].sessions.contains { $0.id.uuidString == loose })
-        XCTAssertFalse(store.workspaces.flatMap(\.terminals).contains { $0.id.uuidString == loose })
+        XCTAssertTrue(rows[1].sessions.contains { $0.id.uuidString == betaSession },
+                      "moved between registered rows")
+        XCTAssertTrue(store.workspaces.flatMap(\.terminals).contains { $0.id.uuidString == loose },
+                      "a loose row stays loose: the host placed it by its cwd")
         XCTAssertNil(store.projects.first { $0.id == gone }, "removed elsewhere")
         XCTAssertTrue(store.projects.contains { $0.path == "/home/me/app" },
                       "another machine's rows are not this view's")
 
         // Drawing the same view again changes nothing.
         let drawn = store.projects
-        store.drawFromHostView(view, on: .thisMac,
-                               live: [try information("s_loose", name: loose)])
+        store.drawFromHostView(view, on: .thisMac, live: live)
         XCTAssertEqual(store.projects, drawn)
     }
 
@@ -263,12 +268,33 @@ final class TermiodViewImportTests: XCTestCase {
         """#)
         let older = try decodeView(#"{"revision": 11, "seeded": true, "projects": [], "loose": []}"#)
 
+        for project in store.projects { store.hostRegistrations.insert(project.id) }
         store.applyHostView(newer, from: .thisMac, route: .local)
         let drawn = store.projects
         store.applyHostView(older, from: .thisMac, route: .local)
 
         XCTAssertEqual(store.projects, drawn)
         XCTAssertTrue(store.projects.contains { $0.hostProjectID == "p_new" })
+    }
+
+    /// A row that has not asked the host yet may be the host's project under
+    /// another spelling, so no row is made from the view until it has.
+    func testNoRowIsMadeWhileARowIsUnregistered() throws {
+        let snapshot = try Self.snapshot(alpha: "/work/alpha", beta: "/work/beta", gone: "/work/gone")
+        let store = makeStore(snapshot)
+        let view = try decodeView(#"""
+        {"revision": 4, "seeded": true, "projects": [
+          {"id": "p_x", "path": "/private/work/alpha", "label": "alpha", "groups": []}], "loose": []}
+        """#)
+
+        store.drawFromHostView(view, on: .thisMac, live: [])
+        XCTAssertFalse(store.projects.contains { $0.hostProjectID == "p_x" })
+
+        // Once every row has asked, and the host still has a project no row
+        // is, it gets one.
+        for project in store.projects { store.hostRegistrations.insert(project.id) }
+        store.drawFromHostView(view, on: .thisMac, live: [])
+        XCTAssertTrue(store.projects.contains { $0.hostProjectID == "p_x" })
     }
 
     /// While this app's import is in flight, a view from another read is not
@@ -354,6 +380,7 @@ final class TermiodViewImportIntegrationTests: XCTestCase {
         let socket = directory.appendingPathComponent("termiod.sock").path
         XCTAssertLessThan(socket.utf8.count, 104, "socket path must fit sun_path")
         setenv("TERMIOD_SOCK", socket, 1)
+        setenv("TERMIO_TEST_OWN_DAEMON", "1", 1)
 
         let serve = Process()
         serve.executableURL = URL(fileURLWithPath: binary)
@@ -377,6 +404,7 @@ final class TermiodViewImportIntegrationTests: XCTestCase {
         daemon?.waitUntilExit()
         if let directory { try? FileManager.default.removeItem(at: directory) }
         unsetenv("TERMIOD_SOCK")
+        unsetenv("TERMIO_TEST_OWN_DAEMON")
         try super.tearDownWithError()
     }
 
