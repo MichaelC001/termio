@@ -132,8 +132,12 @@ public final class TermiodStreamRenderer {
     /// For a texture the CPU writes or reads. On an Intel Mac no GPU takes a
     /// shared texture, an integrated one included, though it reports unified
     /// memory; managed is the macOS default and works on every GPU, Apple
-    /// silicon's included.
+    /// silicon's included. iOS has only Apple GPUs, and no managed storage.
+    #if os(macOS)
     public static let cpuTextureStorage = MTLStorageMode.managed
+    #else
+    public static let cpuTextureStorage = MTLStorageMode.shared
+    #endif
 
     /// The whole screen drawn into an image of the given pixel size, for
     /// looking at a frame without a window — the renderer's own tests.
@@ -150,12 +154,12 @@ public final class TermiodStreamRenderer {
               let buffer = resources.queue.makeCommandBuffer(),
               encode(into: buffer, texture: texture)
         else { throw Failure.metal("offscreen frame") }
-        if texture.storageMode == .managed {
-            // The GPU's copy is the one drawn into; this brings it back.
-            guard let blit = buffer.makeBlitCommandEncoder() else { throw Failure.metal("offscreen readback") }
-            blit.synchronize(resource: texture)
-            blit.endEncoding()
-        }
+        #if os(macOS)
+        // The GPU's copy is the one drawn into; this brings it back.
+        guard let blit = buffer.makeBlitCommandEncoder() else { throw Failure.metal("offscreen readback") }
+        blit.synchronize(resource: texture)
+        blit.endEncoding()
+        #endif
         buffer.commit()
         buffer.waitUntilCompleted()
         var pixels = [UInt8](repeating: 0, count: width * height * 4)

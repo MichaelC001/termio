@@ -11,6 +11,7 @@
 		8D1FBA366F9B1F691BE5B80C /* ShellCraftKit in Frameworks */ = {isa = PBXBuildFile; productRef = 7743B90C65830591DC83DD03 /* ShellCraftKit */; };
 		9389ADCADEBF1062AFF14D26 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = A216EACFB50B587F23FC6423 /* GhosttyTheme */; };
 		D4416179E3F5BCC68FFCCB09 /* TermioShared in Frameworks */ = {isa = PBXBuildFile; productRef = A617B1EB94E221554B6224A4 /* TermioShared */; };
+		5E7A3C1D9B2F4E6A8C0D1E2F /* TermioStream in Frameworks */ = {isa = PBXBuildFile; productRef = 6F8B4D2E0C3A5F7B9D1E2F30 /* TermioStream */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -90,6 +91,7 @@
 				9389ADCADEBF1062AFF14D26 /* GhosttyTheme in Frameworks */,
 				8D1FBA366F9B1F691BE5B80C /* ShellCraftKit in Frameworks */,
 				D4416179E3F5BCC68FFCCB09 /* TermioShared in Frameworks */,
+				5E7A3C1D9B2F4E6A8C0D1E2F /* TermioStream in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,6 +152,7 @@
 				A216EACFB50B587F23FC6423 /* GhosttyTheme */,
 				7743B90C65830591DC83DD03 /* ShellCraftKit */,
 				A617B1EB94E221554B6224A4 /* TermioShared */,
+				6F8B4D2E0C3A5F7B9D1E2F30 /* TermioStream */,
 			);
 			productName = TermioMobile;
 			productReference = C4B834BC028171A141441B55 /* TermioMobile.app */;
@@ -588,6 +591,10 @@
 		A617B1EB94E221554B6224A4 /* TermioShared */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TermioShared;
+		};
+		6F8B4D2E0C3A5F7B9D1E2F30 /* TermioStream */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TermioStream;
 		};
 		FAA1FBE1ACA056BF5D4F20E8 /* GhosttyTerminal */ = {
 			isa = XCSwiftPackageProductDependency;

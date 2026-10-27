@@ -1,3 +1,4 @@
+import GhosttyKit
 import GhosttyTerminal
 import GhosttyTheme
 import PhotosUI
@@ -2132,4 +2133,14 @@ private struct AlternateScreenSniffer {
         }
         return parameters.utf8.count > 32 ? .other : .incomplete
     }
+}
+
+/// The embedded surface's Ghostty, which a stream pane names in its XTVERSION
+/// answer as the embedded surface does.
+enum EmbeddedGhostty {
+    static let version: String = {
+        let info = ghostty_info()
+        guard let version = info.version else { return "" }
+        return String(decoding: UnsafeRawBufferPointer(start: version, count: Int(info.version_len)), as: UTF8.self)
+    }()
 }

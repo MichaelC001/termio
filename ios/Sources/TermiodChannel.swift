@@ -57,7 +57,9 @@ final class TermiodChannel {
 
     private let name: String
     private let role: String
-    private let capabilities: [String]
+    /// Offered in every hello, so a change takes effect on the next connect.
+    /// Delegate-queue only: the hello is sent there.
+    var capabilities: [String]
     private let link: WebSocketLink
     /// Delegate-queue only, and reset on every dial: a socket that died
     /// mid-frame leaves bytes that mean nothing to the next one.
