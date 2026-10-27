@@ -7,7 +7,7 @@ import UIKit
 /// The phone's view of a session on the `vt_stream` plane: the session's own
 /// terminal (`TermiodSession.streamTerminal`) drawn by the shared renderer, in
 /// place of the embedded surface, with input sent as events termiod encodes.
-final class StreamTerminalView: UIView, UIKeyInput {
+final class StreamTerminalView: UIView, UITextInput {
     /// The terminal to draw, read every frame: an attach replaces it.
     var terminal: () -> TermiodStreamTerminal? = { nil }
     /// The grid this screen could hold, each time it changes.
@@ -32,9 +32,13 @@ final class StreamTerminalView: UIView, UIKeyInput {
     private var renderer: TermiodStreamRenderer?
     private var displayLink: CADisplayLink?
     private var drawnTerminal: ObjectIdentifier?
-    private var needsFullDraw = true
+    fileprivate var needsFullDraw = true
     private var lastViewport: TerminalGrid?
     private var scrollRemainder: CGFloat = 0
+    /// The text an input method is composing, and its selection within it.
+    fileprivate var markedText = ""
+    fileprivate var markedSelection = NSRange(location: 0, length: 0)
+    weak var inputDelegate: UITextInputDelegate?
     /// Hardware keys whose press the program saw, so each gets its release.
     private var heldKeys: [UIKeyboardHIDUsage: Termiod.InputEvent.Key] = [:]
     private var hasKeyboard = false {
@@ -140,7 +144,9 @@ final class StreamTerminalView: UIView, UIKeyInput {
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
         do {
-            _ = try renderer.draw(terminal, into: metalLayer, focused: hasKeyboard, force: needsFullDraw || replaced)
+            _ = try renderer.draw(
+                terminal, into: metalLayer, focused: hasKeyboard, force: needsFullDraw || replaced,
+                preedit: markedText.isEmpty ? nil : markedText)
             needsFullDraw = false
         } catch {
             Log.device.error("stream frame failed: \(String(describing: error), privacy: .public)")
@@ -223,13 +229,15 @@ final class StreamTerminalView: UIView, UIKeyInput {
     var smartQuotesType: UITextSmartQuotesType { get { .no } set {} }
     var smartDashesType: UITextSmartDashesType { get { .no } set {} }
     var smartInsertDeleteType: UITextSmartInsertDeleteType { get { .no } set {} }
-    var keyboardType: UIKeyboardType { get { .asciiCapable } set {} }
+    var keyboardType: UIKeyboardType { get { .default } set {} }
 
     /// The soft keyboard's text. A character a US keyboard has a key for goes
     /// as that key, so the program's keyboard modes apply to it; anything else
     /// (a composed character, an emoji) is text, as the Mac sends text an
     /// input method commits outside a keystroke.
     func insertText(_ text: String) {
+        // Committing a composition ends it; what it commits is sent below.
+        if !markedText.isEmpty { clearMarkedText() }
         var pending = ""
         func flush() {
             guard !pending.isEmpty else { return }
@@ -422,4 +430,135 @@ enum StreamKeyboard {
         for (index, usage) in functions.enumerated() { table[usage] = "f\(index + 1)" }
         return table
     }()
+}
+
+// MARK: - Input method composition
+
+/// An offset into the text being composed. The terminal holds the committed
+/// text; the only document an input method edits here is its own preedit,
+/// which the renderer draws at the cursor until it is committed.
+final class StreamTextPosition: UITextPosition {
+    let offset: Int
+    init(_ offset: Int) { self.offset = offset }
+}
+
+final class StreamTextRange: UITextRange {
+    let range: NSRange
+    init(_ range: NSRange) { self.range = range }
+    override var start: UITextPosition { StreamTextPosition(range.location) }
+    override var end: UITextPosition { StreamTextPosition(range.location + range.length) }
+    override var isEmpty: Bool { range.length == 0 }
+}
+
+extension StreamTerminalView {
+    private var markedLength: Int { (markedText as NSString).length }
+
+    func clearMarkedText() {
+        markedText = ""
+        markedSelection = NSRange(location: 0, length: 0)
+        needsFullDraw = true
+    }
+
+    var markedTextRange: UITextRange? {
+        markedText.isEmpty ? nil : StreamTextRange(NSRange(location: 0, length: markedLength))
+    }
+
+    var selectedTextRange: UITextRange? {
+        get { StreamTextRange(markedSelection) }
+        set { if let range = newValue as? StreamTextRange { markedSelection = range.range } }
+    }
+
+    var markedTextStyle: [NSAttributedString.Key: Any]? {
+        get { nil }
+        set {}
+    }
+
+    func setMarkedText(_ text: String?, selectedRange: NSRange) {
+        markedText = text ?? ""
+        markedSelection = selectedRange
+        needsFullDraw = true
+    }
+
+    func unmarkText() {
+        let committed = markedText
+        clearMarkedText()
+        if !committed.isEmpty { insertText(committed) }
+    }
+
+    var beginningOfDocument: UITextPosition { StreamTextPosition(0) }
+    var endOfDocument: UITextPosition { StreamTextPosition(markedLength) }
+
+    func text(in range: UITextRange) -> String? {
+        guard let range = range as? StreamTextRange else { return nil }
+        let bounded = NSIntersectionRange(range.range, NSRange(location: 0, length: markedLength))
+        return (markedText as NSString).substring(with: bounded)
+    }
+
+    func replace(_ range: UITextRange, withText text: String) {
+        insertText(text)
+    }
+
+    func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
+        guard let from = fromPosition as? StreamTextPosition, let to = toPosition as? StreamTextPosition else { return nil }
+        return StreamTextRange(NSRange(location: min(from.offset, to.offset), length: abs(to.offset - from.offset)))
+    }
+
+    func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        guard let position = position as? StreamTextPosition else { return nil }
+        let moved = position.offset + offset
+        return (0...markedLength).contains(moved) ? StreamTextPosition(moved) : nil
+    }
+
+    func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+        switch direction {
+        case .left, .up: self.position(from: position, offset: -offset)
+        default: self.position(from: position, offset: offset)
+        }
+    }
+
+    func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        let left = (position as? StreamTextPosition)?.offset ?? 0
+        let right = (other as? StreamTextPosition)?.offset ?? 0
+        return left < right ? .orderedAscending : (left > right ? .orderedDescending : .orderedSame)
+    }
+
+    func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+        ((toPosition as? StreamTextPosition)?.offset ?? 0) - ((from as? StreamTextPosition)?.offset ?? 0)
+    }
+
+    var tokenizer: UITextInputTokenizer { UITextInputStringTokenizer(textInput: self) }
+
+    func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        switch direction {
+        case .left, .up: range.start
+        default: range.end
+        }
+    }
+
+    func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
+        textRange(from: position, to: position)
+    }
+
+    func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection {
+        .leftToRight
+    }
+
+    func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
+
+    /// The cursor's cell: where the preedit is drawn, and where the system
+    /// places the candidate window.
+    func firstRect(for range: UITextRange) -> CGRect { cursorRect ?? .zero }
+
+    func caretRect(for position: UITextPosition) -> CGRect {
+        guard let cell = cursorRect else { return .zero }
+        return CGRect(x: cell.minX, y: cell.minY, width: 2, height: cell.height)
+    }
+
+    func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
+
+    func closestPosition(to point: CGPoint) -> UITextPosition? { endOfDocument }
+
+    func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { range.end }
+
+    func characterRange(at point: CGPoint) -> UITextRange? { nil }
 }
