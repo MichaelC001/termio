@@ -86,6 +86,9 @@ extension TermioStore {
     /// `AgentIntegrationInstaller`) and the previous state is left alone. The
     /// place that *does* report is Settings, where the user asked.
     func syncAgentIntegration() {
+        // A test's store would otherwise send this to the release daemon's
+        // socket, or to whatever stub `TERMIOD_SOCK` names at that moment.
+        guard mayAskHost(.thisMac) else { return }
         let hooks: Termiod.AgentHalfAction =
             settings.agentHooksEnabled ? .install : .remove
         let skills: Termiod.AgentHalfAction =
