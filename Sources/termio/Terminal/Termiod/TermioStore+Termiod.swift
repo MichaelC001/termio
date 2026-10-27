@@ -2969,55 +2969,21 @@ extension TermioStore {
             background = "FFFFFF"
             overrides = [7: "4D4D4D", 15: "262626"]
         }
-        guard let definition,
-              let foreground = Self.rgb(definition.foreground),
-              let ground = Self.rgb(background ?? definition.background)
-        else { return nil }
-        var palette = Self.xtermPalette
-        for (index, hex) in definition.palette.merging(overrides, uniquingKeysWith: { $1 })
-        where (0..<256).contains(index) {
-            if let color = Self.rgb(hex) { palette[index] = color }
-        }
+        guard let definition else { return nil }
         let cursorStyle = switch settings.cursorStyle {
         case .block: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK
         case .bar: GHOSTTY_TERMINAL_CURSOR_STYLE_BAR
         case .underline: GHOSTTY_TERMINAL_CURSOR_STYLE_UNDERLINE
         }
         return TermiodStreamTerminal.Theme(
-            foreground: foreground, background: ground,
-            cursor: definition.cursorColor.flatMap(Self.rgb), palette: palette,
+            hexForeground: definition.foreground, background: background ?? definition.background,
+            palette: definition.palette.merging(overrides, uniquingKeysWith: { $1 }),
+            cursor: definition.cursorColor, cursorText: definition.cursorText,
+            selectionBackground: definition.selectionBackground, selectionForeground: definition.selectionForeground,
             cursorStyle: cursorStyle, cursorBlink: settings.cursorBlink,
-            cursorText: definition.cursorText.flatMap(Self.rgb),
             // `themeConfiguration`'s floor, for the same themes.
             minimumContrast: definition.isDark ? 1 : Self.lightContrastFloor,
-            selectionBackground: definition.selectionBackground.flatMap(Self.rgb),
-            selectionForeground: definition.selectionForeground.flatMap(Self.rgb),
             dark: dark
         )
     }
-
-    private static func rgb(_ hex: String) -> GhosttyColorRgb? {
-        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
-        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
-        return GhosttyColorRgb(r: UInt8(value >> 16 & 0xff), g: UInt8(value >> 8 & 0xff), b: UInt8(value & 0xff))
-    }
-
-    /// xterm's 256 colors: the 16 a theme usually overrides, the 6x6x6 cube,
-    /// and the grey ramp.
-    private static let xtermPalette: [GhosttyColorRgb] = {
-        let base: [UInt32] = [
-            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
-            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
-        ]
-        var colors = base.map { GhosttyColorRgb(r: UInt8($0 >> 16), g: UInt8($0 >> 8 & 0xff), b: UInt8($0 & 0xff)) }
-        let steps: [UInt8] = [0, 95, 135, 175, 215, 255]
-        for red in steps { for green in steps { for blue in steps {
-            colors.append(GhosttyColorRgb(r: red, g: green, b: blue))
-        } } }
-        for index in 0..<24 {
-            let level = UInt8(8 + index * 10)
-            colors.append(GhosttyColorRgb(r: level, g: level, b: level))
-        }
-        return colors
-    }()
 }

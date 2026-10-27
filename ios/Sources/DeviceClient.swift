@@ -1,5 +1,6 @@
 import Foundation
 import TermioShared
+import TermioStream
 
 /// The port the app's screens talk to, so they render *a machine* rather than a
 /// transport. `CompanionBackend` implements it over the Mac companion wire; the
@@ -146,7 +147,7 @@ enum DeviceBackends {
 
     /// `sessionID` is the session to attach to; nil connects to a peer that
     /// streams without one (the standalone companion proof of concept).
-    static func session(for endpoint: DeviceEndpoint, sessionID: String?) -> DeviceSession? {
+    @MainActor static func session(for endpoint: DeviceEndpoint, sessionID: String?) -> DeviceSession? {
         switch endpoint.kind {
         case .companion:
             return CompanionDeviceSession(url: endpoint.url, attachSessionID: sessionID)
@@ -154,7 +155,12 @@ enum DeviceBackends {
             // A device attaches to a session by name, and there is no
             // sessionless stream to fall back to.
             guard let sessionID else { return nil }
-            return TermiodSession(endpoint: endpoint, sessionName: sessionID)
+            if MobileSettings.shared.streamTerminal, let reason = TermiodStreamRenderer.unavailableReason {
+                Log.device.error("stream pane unavailable: \(reason, privacy: .public)")
+            }
+            return TermiodSession(
+                endpoint: endpoint, sessionName: sessionID,
+                offersStream: MobileSettings.shared.streamTerminal && TermiodStreamRenderer.isAvailable)
         }
     }
 }

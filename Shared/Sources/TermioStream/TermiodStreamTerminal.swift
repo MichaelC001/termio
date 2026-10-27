@@ -1729,3 +1729,51 @@ private let GHOSTTY_MODE_WRAPAROUND_VALUE = ghostty_mode_new(7, false)
 enum StreamLog {
     static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "sh.termio.app", category: "termiod")
 }
+
+extension TermiodStreamTerminal.Theme {
+    /// A theme from colors written as Ghostty's theme files write them
+    /// (`rrggbb`, with or without `#`), over xterm's 256: what the Mac and the
+    /// phone each build from their own theme settings. Nil when the
+    /// foreground or background does not parse.
+    public init?(
+        hexForeground foreground: String, background: String, palette: [Int: String], cursor: String?,
+        cursorText: String?, selectionBackground: String?, selectionForeground: String?,
+        cursorStyle: GhosttyTerminalCursorStyle, cursorBlink: Bool, minimumContrast: Double, dark: Bool
+    ) {
+        guard let foreground = Self.rgb(foreground), let ground = Self.rgb(background) else { return nil }
+        var colors = Self.xtermPalette
+        for (index, hex) in palette where (0..<256).contains(index) {
+            if let color = Self.rgb(hex) { colors[index] = color }
+        }
+        self.init(
+            foreground: foreground, background: ground, cursor: cursor.flatMap(Self.rgb), palette: colors,
+            cursorStyle: cursorStyle, cursorBlink: cursorBlink, cursorText: cursorText.flatMap(Self.rgb),
+            minimumContrast: minimumContrast, selectionBackground: selectionBackground.flatMap(Self.rgb),
+            selectionForeground: selectionForeground.flatMap(Self.rgb), dark: dark)
+    }
+
+    public static func rgb(_ hex: String) -> GhosttyColorRgb? {
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        return GhosttyColorRgb(r: UInt8(value >> 16 & 0xff), g: UInt8(value >> 8 & 0xff), b: UInt8(value & 0xff))
+    }
+
+    /// xterm's 256 colors: the 16 a theme usually overrides, the 6x6x6 cube,
+    /// and the grey ramp.
+    public static let xtermPalette: [GhosttyColorRgb] = {
+        let base: [UInt32] = [
+            0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5,
+            0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+        ]
+        var colors = base.map { GhosttyColorRgb(r: UInt8($0 >> 16), g: UInt8($0 >> 8 & 0xff), b: UInt8($0 & 0xff)) }
+        let steps: [UInt8] = [0, 95, 135, 175, 215, 255]
+        for red in steps { for green in steps { for blue in steps {
+            colors.append(GhosttyColorRgb(r: red, g: green, b: blue))
+        } } }
+        for index in 0..<24 {
+            let level = UInt8(8 + index * 10)
+            colors.append(GhosttyColorRgb(r: level, g: level, b: level))
+        }
+        return colors
+    }()
+}
