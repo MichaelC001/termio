@@ -1487,7 +1487,9 @@ extension TermioStore {
     func setHostPinned(_ project: Project, pinned: Bool, on device: KnownDevice) {
         guard mayAskHost(device), let hostID = project.hostProjectID else { return }
         let route = device.route
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // One queue: two quick toggles reach the host in the order they were
+        // made, so the last one wins.
+        Self.pinQueue.async { [weak self] in
             let outcome = Result {
                 try Termiod.setHostProject(route: route, project: hostID, pinned: pinned)
             }
@@ -1510,6 +1512,8 @@ extension TermioStore {
             }
         }
     }
+
+    private static let pinQueue = DispatchQueue(label: "sh.termio.host-pins", qos: .userInitiated)
 
     /// Sends a row's pin to its host when the two disagree, and keeps the
     /// host's copy agreeing until the reply is drawn.

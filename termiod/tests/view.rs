@@ -457,6 +457,34 @@ fn a_client_seeds_the_view_once_and_places_what_it_opens() {
     assert!(in_alpha.contains(&four), "{view}");
     assert!(!in_alpha.contains(&five), "{view}");
 
+    // A name reopened after its session ended takes over that pane.
+    let count = |view: &Value| view["projects"][0]["groups"].as_array().unwrap().len();
+    attach_create(
+        &daemon,
+        "row-6",
+        json!({"cwd": "/", "argv": ["/bin/sh", "-c", "sleep 0.5"], "place": {"project": ids[0]}}),
+    );
+    let ended = id_of(&mut client, "row-6");
+    wait_until(
+        || {
+            let list = client.request(json!({"op": "list"}));
+            !list["sessions"].as_array().unwrap().iter().any(|info| info["id"] == json!(ended))
+        },
+        "row-6 to exit",
+    );
+    let before = count(&client.view());
+    attach_create(&daemon, "row-6", sleeper("/", json!({"project": ids[0]})));
+    let reopened = id_of(&mut client, "row-6");
+    let view = client.view();
+    assert_eq!(count(&view), before, "no second pane: {view}");
+    let shown: Vec<String> = view["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(sessions_in)
+        .collect();
+    assert!(shown.contains(&reopened) && !shown.contains(&ended), "{view}");
+
     // The seed survives a restart, so a client that comes back is refused too.
     drop(client);
     drop(plain);

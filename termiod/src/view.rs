@@ -523,6 +523,52 @@ impl View {
         Ok(changed)
     }
 
+    /// Point the pane that shows the ended session `old` at `new`, when that
+    /// pane sits where `place` asks. Returns the pane. A name reopened after
+    /// its session ended keeps its pane, so each relaunch or reboot does not
+    /// leave one more ended pane behind.
+    pub fn reuse_pane(&mut self, old: &str, new: &str, place: &Place) -> Option<String> {
+        let mut found: Option<(Option<String>, String)> = None;
+        for project in &self.projects {
+            for group in &project.groups {
+                if let Some(pane) = group.panes().into_iter().find(|pane| pane.shows(old)) {
+                    found = Some((Some(project.id.clone()), pane.id.clone()));
+                }
+            }
+        }
+        for group in &self.loose {
+            if let Some(pane) = group.panes().into_iter().find(|pane| pane.shows(old)) {
+                found = Some((None, pane.id.clone()));
+            }
+        }
+        let (project, pane) = found?;
+        let fits = match (&place.project, place.loose) {
+            (Some(wanted), _) => project.as_ref() == Some(wanted),
+            (None, true) => project.is_none(),
+            (None, false) => true,
+        };
+        if !fits {
+            return None;
+        }
+        fn repoint(node: &mut Node, pane: &str, new: &str) {
+            match node {
+                Node::Pane(shown) if shown.id == pane => {
+                    shown.kind = PaneKind::Terminal {
+                        session: new.to_string(),
+                    };
+                }
+                Node::Pane(_) => {}
+                Node::Split(split) => {
+                    repoint(&mut split.before, pane, new);
+                    repoint(&mut split.after, pane, new);
+                }
+            }
+        }
+        let group = self.group_of_mut(&pane)?;
+        repoint(&mut group.root, &pane, new);
+        Some(pane)
+    }
+
     /// Remove the pane that shows `session`. Returns whether there was one.
     pub fn remove_session(&mut self, session: &str) -> bool {
         if !self.sessions().iter().any(|shown| shown == session) {
@@ -671,6 +717,12 @@ impl ViewStore {
                     "termiod: the view was not saved to {}: {error:#}",
                     file.display()
                 );
+                // The next restart may load an older file under this seed. A
+                // new seed tells a client that ids it learns from now on may
+                // be missing from that file without having been removed.
+                if next.seeded {
+                    next.seed = Some(next.fresh_id("seed"));
+                }
             }
         }
         let revision = next.revision;
@@ -1094,6 +1146,25 @@ mod tests {
         assert!((outer.ratio - 1.0 / 3.0).abs() < 1e-9);
         let Node::Split(inner) = outer.after.as_ref() else { panic!("a nested split") };
         assert_eq!(inner.ratio, 0.5);
+    }
+
+    #[test]
+    fn a_reopened_name_keeps_its_pane_where_it_was_asked_for() {
+        let mut view = View::default();
+        let (project, _) = view.add_project("/work", None);
+        let pane = view.place_terminal("old", "/work", &Place::default()).unwrap();
+        let loose = Place {
+            project: None,
+            loose: true,
+        };
+        assert_eq!(view.reuse_pane("old", "new", &loose), None, "not where it was asked for");
+        let here = Place {
+            project: Some(project),
+            loose: false,
+        };
+        assert_eq!(view.reuse_pane("old", "new", &here), Some(pane.clone()));
+        assert_eq!(view.session_of(&pane).as_deref(), Some("new"));
+        assert_eq!(view.projects[0].groups.len(), 1);
     }
 
     #[test]

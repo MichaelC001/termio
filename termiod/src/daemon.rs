@@ -3594,6 +3594,18 @@ async fn spawn_placed(
         }
         place.project = None;
     }
+    // Ended sessions under this name, newest first: a reopened name takes
+    // over the pane of the one it replaces.
+    let ended: Vec<String> = match &spec.name {
+        Some(name) => manager
+            .graveyard
+            .all()
+            .into_iter()
+            .filter(|grave| &grave.name == name)
+            .map(|grave| grave.id)
+            .collect(),
+        None => Vec::new(),
+    };
     let id = manager.create(spec).map_err(|e| Refusal {
         code: ErrorCode::CreateFailed,
         message: format!("{e:#}"),
@@ -3607,6 +3619,12 @@ async fn spawn_placed(
         return Ok((id, None));
     }
     let pane = match manager.view.change(|view| {
+        if let Some(pane) = ended
+            .iter()
+            .find_map(|old| view.reuse_pane(old, &session, &place))
+        {
+            return Ok((pane, true));
+        }
         // The project can be removed while the session spawns; a live session
         // still gets a pane, loose, never in some other project.
         let pane = view.place_terminal(&session, &cwd, &place).or_else(|_| {
