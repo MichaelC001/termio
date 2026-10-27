@@ -1,9 +1,11 @@
 import GhosttyKit
 import GhosttyTerminal
 import GhosttyTheme
+import GhosttyVt
 import PhotosUI
 import ShellCraftKit
 import TermioShared
+import TermioStream
 import UIKit
 import UniformTypeIdentifiers
 
@@ -185,6 +187,11 @@ final class TerminalViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // The embedded surface switches theme slots itself; the stream
+        // terminal is told.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _: UITraitCollection) in
+            if let session = self.companion as? TermiodSession { self.applyStreamTheme(to: session) }
+        }
         // The page trait comes from the window's app-wide Appearance override
         // (set in AppDelegate), and the backdrop is the active theme's
         // background: the surface renders with zero background opacity, so
@@ -336,6 +343,16 @@ final class TerminalViewController: UIViewController {
     private func layoutTerminalSurface() {
         let host = terminalHost.bounds
         guard host.width > 0, host.height > 0 else { return }
+        // The stream view takes the frame the embedded surface is given, scale
+        // and slide included, while it stands in for it.
+        defer {
+            if let streamView {
+                streamView.transform = .identity
+                streamView.bounds = terminalView.bounds
+                streamView.center = terminalView.center
+                streamView.transform = terminalView.transform
+            }
+        }
         // Everything below is measured against the keyboard-hidden height. The
         // keyboard occludes this rectangle, it never shrinks it: shrinking is a
         // viewport change, a viewport change is a PTY resize, and a PTY resize
@@ -369,7 +386,7 @@ final class TerminalViewController: UIViewController {
         // The same cursor-anchored slide as the full-size path, in scaled
         // space: with the keys up, the letterboxed picture rises just enough
         // to keep the cursor's row above them.
-        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        let caret = streamView?.cursorRect ?? terminalView.caretRect(for: terminalView.beginningOfDocument)
         var pan: CGFloat = 0
         if keyboardOverlap > 0, caret.maxY.isFinite, caret.maxY > 0 {
             let anchor = (caret.maxY + 2 * cell.height) * fit
@@ -400,7 +417,7 @@ final class TerminalViewController: UIViewController {
     private var keyboardPan: CGFloat {
         guard keyboardOverlap > 0 else { return 0 }
         guard let cell = cellSize else { return keyboardOverlap }
-        let caret = terminalView.caretRect(for: terminalView.beginningOfDocument)
+        let caret = streamView?.cursorRect ?? terminalView.caretRect(for: terminalView.beginningOfDocument)
         guard caret.maxY.isFinite, caret.maxY > 0 else { return keyboardOverlap }
         let anchor = caret.maxY + 2 * cell.height
         return min(keyboardOverlap, max(0, anchor - terminalHost.bounds.height))
@@ -431,6 +448,7 @@ final class TerminalViewController: UIViewController {
     }
 
     private var cellSize: CGSize? {
+        if let streamView { return streamView.cellSize }
         guard let metrics = surfaceMetrics,
               metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
         else { return nil }
@@ -596,7 +614,11 @@ final class TerminalViewController: UIViewController {
     /// system keyboard (typing straight into the PTY) with the key bar docked
     /// above it.
     private func focusInput() {
-        terminalView.becomeFirstResponder()
+        if let streamView {
+            streamView.becomeFirstResponder()
+        } else {
+            terminalView.becomeFirstResponder()
+        }
     }
 
     // MARK: - Terminal
@@ -635,8 +657,21 @@ final class TerminalViewController: UIViewController {
         // view's state machine, which reports every transition back so the
         // keycaps repaint (armed = tinted, locked = filled).
         let keyBar = terminalView.keyBar
-        keyBar.onKey = { [weak self] payload in self?.terminalView.send(payload) }
+        keyBar.onKey = { [weak self] payload in
+            guard let self else { return }
+            if streamView != nil {
+                companion?.send(payload)
+            } else {
+                terminalView.send(payload)
+            }
+        }
         keyBar.onSticky = { [weak self] key in
+            if let self, let streamView {
+                let mod = key == .ctrl ? StreamKeyboard.control : StreamKeyboard.alt
+                streamView.stickyMods = streamView.stickyMods == mod ? 0 : mod
+                updateStreamStickyVisuals()
+                return
+            }
             self?.terminalView.toggleStickyModifier(key == .ctrl ? .ctrl : .alt)
         }
         keyBar.onScrollEdge = { [weak self] edge in
@@ -860,6 +895,11 @@ final class TerminalViewController: UIViewController {
     /// Bracketed paste: the whole block lands as one literal insert instead of a
     /// line-by-line submit, and the TUI's own Return still sends it.
     private func pasteIntoPrompt(_ text: String) {
+        if streamView != nil, let session = companion as? TermiodSession {
+            // termiod brackets it as the program asked.
+            session.sendInput(.paste(text))
+            return
+        }
         terminalView.send(Data(("\u{1B}[200~" + text + "\u{1B}[201~").utf8))
     }
 
@@ -947,6 +987,11 @@ final class TerminalViewController: UIViewController {
             }
             companion = transport
             companionSession = terminalSession
+            if let session = transport as? TermiodSession {
+                session.onStreaming = { [weak self] streaming in self?.setStreaming(streaming) }
+                session.onStreamSignal = { [weak self] signal in self?.receiveStreamSignal(signal) }
+                applyStreamTheme(to: session)
+            }
             return terminalSession
         }
     }
@@ -1066,6 +1111,8 @@ final class TerminalViewController: UIViewController {
         // Re-assigned (not just relied on as dynamic) so a theme-name change
         // busts UIKit's resolved-color cache without a trait flip.
         view.backgroundColor = Self.backdropColor()
+        if let session = companion as? TermiodSession { applyStreamTheme(to: session) }
+        streamView?.setAppearance(streamAppearance())
         guard surfaceConfigured else { return }
         controller.setTheme(Self.terminalTheme())
         controller.setTerminalConfiguration(Self.appearanceConfiguration())
@@ -1081,6 +1128,103 @@ final class TerminalViewController: UIViewController {
         }
         RunLoop.main.add(timer, forMode: .common)
         restylePump = timer
+    }
+
+    // MARK: - Stream plane
+
+    /// The stream view, while the session is on the `vt_stream` plane. It
+    /// stands in for the embedded surface, which stays laid out, hidden.
+    private var streamView: StreamTerminalView?
+
+    private func setStreaming(_ streaming: Bool) {
+        if streaming {
+            guard streamView == nil, let session = companion as? TermiodSession else { return }
+            let stream = StreamTerminalView(appearance: streamAppearance())
+            stream.terminal = { [weak session] in session?.streamTerminal }
+            stream.sendInput = { [weak session] event in session?.sendInput(event) }
+            // The controller declares this screen's viewport, from the
+            // keyboard-hidden height (`layoutTerminalSurface`).
+            stream.onViewport = { _ in }
+            stream.onPinch = { [weak self] scale in self?.streamPinched(scale) }
+            stream.onStickyConsumed = { [weak self] in self?.updateStreamStickyVisuals() }
+            stream.inputAccessory = terminalView.keyBar
+            stream.backgroundColor = .clear
+            stream.isOpaque = false
+            stream.onPasteMenuRequested = { [weak self] point in self?.presentPasteMenu(at: point) }
+            stream.addInteraction(editMenuInteraction)
+            let hadKeyboard = terminalView.isFirstResponder
+            terminalHost.addSubview(stream)
+            streamView = stream
+            terminalView.isHidden = true
+            if hadKeyboard { stream.becomeFirstResponder() }
+        } else {
+            guard let stream = streamView else { return }
+            let hadKeyboard = stream.isFirstResponder
+            stream.removeFromSuperview()
+            streamView = nil
+            terminalView.addInteraction(editMenuInteraction)
+            terminalView.isHidden = false
+            if hadKeyboard { terminalView.becomeFirstResponder() }
+        }
+        // At once: the viewport this screen declares depends on whose cells
+        // are drawn, and the stream renderer's are not the embedded surface's.
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+    }
+
+    private func receiveStreamSignal(_ signal: TermiodStreamTerminal.Signal) {
+        switch signal {
+        case .title(let title):
+            terminalDidChangeTitle(title)
+        case .clipboard(let text):
+            UIPasteboard.general.string = text
+        case .workingDirectory, .bell, .notification:
+            break
+        }
+    }
+
+    /// The embedded surface's font size, padding and the system's fixed-pitch
+    /// face: libghostty's bundled font is the embedded surface's own.
+    private func streamAppearance() -> TermiodStreamRenderer.Appearance {
+        TermiodStreamRenderer.Appearance(
+            fontFamily: "", fallbackFamilies: [], fontSize: CGFloat(MobileSettings.shared.fontSize),
+            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY, backgroundOpacity: 0)
+    }
+
+    private func streamPinched(_ scale: CGFloat) {
+        let settings = MobileSettings.shared
+        let size = (settings.fontSize * Double(scale)).rounded()
+        settings.fontSize = min(max(size, MobileSettings.fontSizeRange.lowerBound), MobileSettings.fontSizeRange.upperBound)
+    }
+
+    private func updateStreamStickyVisuals() {
+        guard let streamView else { return }
+        let keyBar = terminalView.keyBar
+        keyBar.setStickyVisual(.ctrl, streamView.stickyMods == StreamKeyboard.control ? .armed : .off)
+        keyBar.setStickyVisual(.alt, streamView.stickyMods == StreamKeyboard.alt ? .armed : .off)
+    }
+
+    /// The theme of the appearance this page shows, for the stream terminal's
+    /// colors and for what termiod answers color queries with.
+    private func applyStreamTheme(to session: TermiodSession) {
+        let settings = MobileSettings.shared
+        let dark = traitCollection.userInterfaceStyle == .dark
+        let name = dark ? settings.darkThemeName : settings.lightThemeName
+        guard let definition = GhosttyThemeCatalog.theme(named: name)
+                ?? GhosttyThemeCatalog.theme(named: dark ? "Afterglow" : "Alabaster"),
+              let theme = TermiodStreamTerminal.Theme(
+                  hexForeground: definition.foreground, background: definition.background,
+                  palette: definition.palette, cursor: definition.cursorColor, cursorText: definition.cursorText,
+                  selectionBackground: definition.selectionBackground,
+                  selectionForeground: definition.selectionForeground,
+                  cursorStyle: GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK, cursorBlink: true, minimumContrast: 1, dark: dark)
+        else { return }
+        session.setStreamTheme(theme)
+        func hex(_ color: GhosttyColorRgb) -> String { String(format: "%02x%02x%02x", color.r, color.g, color.b) }
+        session.setHostAnswers(Termiod.HostAnswers(
+            xtversion: "ghostty \(EmbeddedGhostty.version)",
+            foreground: hex(theme.foreground), background: hex(theme.background), cursor: theme.cursor.map(hex),
+            palette: theme.palette.map(hex), dark: dark))
     }
 
     // MARK: - Drawer
@@ -1433,7 +1577,12 @@ extension TerminalViewController: UIEditMenuInteractionDelegate {
         guard UIPasteboard.general.hasStrings else { return nil }
         return UIMenu(options: .displayInline, children: [
             UIAction(title: localized("Paste")) { [weak self] _ in
-                self?.terminalView.paste(nil)
+                guard let self else { return }
+                if streamView != nil, let text = UIPasteboard.general.string, !text.isEmpty {
+                    pasteIntoPrompt(text)
+                } else {
+                    terminalView.paste(nil)
+                }
             },
         ])
     }

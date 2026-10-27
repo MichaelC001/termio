@@ -122,6 +122,10 @@ final class TermiodSession: DeviceSession {
         channel.onReady = { [weak self] handshake in
             guard let self else { return }
             hostSizesByPolicy = handshake.caps.contains(Termiod.viewportCapability)
+            Log.device.info("""
+            \(self.sessionName, privacy: .public) offered \(self.channel.capabilities.joined(separator: ","), privacy: .public); \
+            granted \(handshake.caps.joined(separator: ","), privacy: .public)
+            """)
             hostAnswersGranted = handshake.caps.contains(Termiod.answersCapability)
             hostAnswers = false
             hostAnswersStale = false
@@ -285,6 +289,7 @@ final class TermiodSession: DeviceSession {
         streamLock.unlock()
         guard changed else { return }
         let streaming = terminal != nil
+        if streaming { Log.device.info("\(self.sessionName, privacy: .public) is on the stream plane") }
         DispatchQueue.main.async { [onStreaming] in onStreaming?(streaming) }
     }
 

@@ -52,6 +52,12 @@ final class MobileSettings {
 
     private let defaults = UserDefaults.standard
 
+    /// A session on a device the phone reaches directly draws with termio's
+    /// own renderer on the `vt_stream` plane, instead of the embedded surface.
+    /// Hidden while it is new: set `TermioStreamTerminal` to YES to try it,
+    /// as a launch argument on the simulator.
+    var streamTerminal: Bool { defaults.bool(forKey: "TermioStreamTerminal") }
+
     var appearanceMode: AppearanceMode {
         didSet {
             defaults.set(appearanceMode.rawValue, forKey: Key.appearanceMode)

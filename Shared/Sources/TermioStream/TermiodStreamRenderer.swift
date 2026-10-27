@@ -52,6 +52,12 @@ public final class TermiodStreamRenderer {
         (try? shared.get()) != nil
     }
 
+    /// Why no renderer can be made, when none can.
+    public static var unavailableReason: String? {
+        if case .failure(let error) = shared { return String(describing: error) }
+        return nil
+    }
+
     private let resources: TermiodStreamRenderResources
     public var device: MTLDevice { resources.device }
     private let builder: TermiodStreamFrameBuilder
