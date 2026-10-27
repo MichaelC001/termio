@@ -36,6 +36,11 @@ pub struct View {
     /// import is taken: a later client adopts what the host already has.
     #[serde(default, skip_serializing_if = "is_false")]
     pub seeded: bool,
+    /// A fresh id for each seeding. A client that holds project ids from an
+    /// earlier seed, before this view was lost and seeded again, knows by it
+    /// that those ids say nothing about what was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<String>,
 }
 
 /// A directory registered on this host.
@@ -498,7 +503,24 @@ impl View {
             self.push_group(index, &sessions, group.label.clone());
         }
         self.seeded = true;
+        self.seed = Some(self.fresh_id("seed"));
         ids
+    }
+
+    /// Rename or pin a project. Returns whether anything changed.
+    pub fn set_project(&mut self, id: &str, label: Option<&str>, pinned: Option<bool>) -> Result<bool> {
+        let index = self.project_index(id)?;
+        let project = &mut self.projects[index];
+        let mut changed = false;
+        if let Some(label) = label.filter(|label| *label != project.label) {
+            project.label = label.to_string();
+            changed = true;
+        }
+        if let Some(pinned) = pinned.filter(|pinned| *pinned != project.pinned) {
+            project.pinned = pinned;
+            changed = true;
+        }
+        Ok(changed)
     }
 
     /// Remove the pane that shows `session`. Returns whether there was one.
@@ -1044,6 +1066,7 @@ mod tests {
             &live(&[("one", "s1"), ("two", "s2")]),
         );
         assert!(view.seeded);
+        assert!(view.seed.is_some());
         assert_eq!(view.projects.len(), 2);
         assert_eq!(view.projects[0].id, ids[0], "imported projects come first");
         assert_eq!(view.projects[1].id, kept, "a project the import omits stays");

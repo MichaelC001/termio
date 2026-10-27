@@ -535,6 +535,13 @@ public enum Termiod {
         let seq: UInt64
     }
 
+    private struct ProjectSetOperation: Encodable {
+        let op = "project_set"
+        let project: String
+        let pinned: Bool?
+        let seq: UInt64
+    }
+
     private struct ProjectRemoveOperation: Encodable {
         let op = "project_remove"
         let project: String
@@ -1097,6 +1104,9 @@ public enum Termiod {
         public let loose: [Group]
         /// Whether a client has seeded the view with `view_import`.
         public let seeded: Bool
+        /// A fresh id for each seeding. Project ids from another seed say
+        /// nothing about this view.
+        public let seed: String?
         /// Whether the host that sent it offers `view_import`. Set by the
         /// client that read it, never on the wire.
         public var offersImport = false
@@ -1183,7 +1193,7 @@ public enum Termiod {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case revision, projects, loose, seeded
+            case revision, projects, loose, seeded, seed
         }
 
         public init(from decoder: Decoder) throws {
@@ -1192,6 +1202,7 @@ public enum Termiod {
             projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
             loose = try container.decodeIfPresent([Group].self, forKey: .loose) ?? []
             seeded = try container.decodeIfPresent(Bool.self, forKey: .seeded) ?? false
+            seed = try container.decodeIfPresent(String.self, forKey: .seed)
         }
 
         /// The daemon ids of the sessions a loose group's panes show.
@@ -2140,6 +2151,10 @@ public enum Termiod {
 
     public static func viewImportPayload(_ tree: ViewImport, seq: UInt64 = 1) throws -> Data {
         try encodeControl(ViewImportOperation(projects: tree.projects, loose: tree.loose, seq: seq))
+    }
+
+    public static func projectSetPayload(project: String, pinned: Bool?, seq: UInt64 = 1) throws -> Data {
+        try encodeControl(ProjectSetOperation(project: project, pinned: pinned, seq: seq))
     }
 
     public static func projectAddPayload(path: String, label: String?, seq: UInt64 = 1) throws -> Data {

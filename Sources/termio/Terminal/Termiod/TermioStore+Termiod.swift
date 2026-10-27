@@ -999,12 +999,18 @@ extension TermioStore {
             return
         }
         hostViews[device.id] = view
+        // A view is never older than one already drawn: a roster read before
+        // a change this app made carries a view without that change.
+        hostViewFloors[device.id] = max(hostViewFloors[device.id] ?? 0, view.revision)
         let known = KnownDevice(
             alias: device.alias,
             deviceID: device.deviceID ?? device.alias.flatMap { _ in
                 TermiodDeviceRegistry.shared.deviceID(for: route)
             })
         if view.offersImport {
+            // The import's own reply stamps the rows; drawn before it, every
+            // row would be matched by path alone.
+            if hostImports.contains(device.id) { return }
             if view.seeded {
                 drawFromHostView(view, on: known, live: live)
             } else {
@@ -1078,7 +1084,7 @@ extension TermioStore {
     /// already seeded keeps its own view, and this app draws that instead.
     /// `state.json` is copied aside first, as the recovery path.
     func importTree(to device: KnownDevice) {
-        guard !hostImports.contains(device.id) else { return }
+        guard mayAskHost(device), !hostImports.contains(device.id) else { return }
         hostImports.insert(device.id)
         let onDevice = workspaceIDs(on: device)
         let rows = projects.filter { onDevice.contains($0.workspaceID) }
@@ -1101,6 +1107,7 @@ extension TermioStore {
                                 guard let index = self.projects.firstIndex(where: { $0.id == rowID })
                                 else { continue }
                                 self.projects[index].hostProjectID = hostID
+                                self.projects[index].hostSeed = view.seed
                             }
                             Log.termiod.info("""
                             seeded the view of \(route.description, privacy: .public) \
@@ -1149,6 +1156,15 @@ extension TermioStore {
         var rowFor: [String: Project.ID] = [:]
         var created: [Project.ID] = []
 
+        // Ids from another seed: the view was lost and seeded again, by this
+        // app or another. They say nothing about what was removed.
+        for index in projects.indices
+        where onDevice.contains(projects[index].workspaceID)
+            && projects[index].hostProjectID != nil && projects[index].hostSeed != view.seed {
+            projects[index].hostProjectID = nil
+            projects[index].hostSeed = nil
+        }
+
         for hostProject in view.projects
         where !removing.contains(hostProject.id)
             && !removingPaths.contains(Self.hostPathKey(hostProject.path)) {
@@ -1162,6 +1178,7 @@ extension TermioStore {
             if let index {
                 if projects[index].hostProjectID != hostProject.id {
                     projects[index].hostProjectID = hostProject.id
+                    projects[index].hostSeed = view.seed
                 }
                 if projects[index].name != hostProject.label { projects[index].name = hostProject.label }
                 if projects[index].pinned != hostProject.pinned {
@@ -1190,6 +1207,7 @@ extension TermioStore {
                 sessions: [])
             project.pinned = hostProject.pinned
             project.hostProjectID = hostProject.id
+            project.hostSeed = view.seed
             projects.append(project)
             rowFor[hostProject.id] = project.id
             created.append(project.id)
@@ -1335,6 +1353,10 @@ extension TermioStore {
         path: String, name: String, on device: KnownDevice,
         then: @escaping @MainActor (Project.ID?) -> Void
     ) {
+        guard mayAskHost(device) else {
+            then(nil)
+            return
+        }
         let route = device.route
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = Result {
@@ -1353,6 +1375,7 @@ extension TermioStore {
                                 && $0.path == path
                         }) {
                             self.projects[index].hostProjectID = hostID
+                            self.projects[index].hostSeed = view.seed
                         }
                         self.applyHostView(
                             view, from: device, route: route,
@@ -1371,6 +1394,52 @@ extension TermioStore {
                 }
             }
         }
+    }
+
+    /// Pins or unpins a row on its host, and draws the view that comes back.
+    /// The row flips at once; a host that refuses puts it back on the next
+    /// view.
+    func setHostPinned(_ project: Project, pinned: Bool, on device: KnownDevice) {
+        guard mayAskHost(device), let hostID = project.hostProjectID else { return }
+        let route = device.route
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = Result {
+                try Termiod.setHostProject(route: route, project: hostID, pinned: pinned)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    switch outcome {
+                    case .success(let (sessions, view)):
+                        self.applyHostView(
+                            view, from: device, route: route,
+                            live: sessions.sessions.filter(\.alive))
+                    case .failure(let error):
+                        Log.termiod.error("""
+                        pinning \(project.path, privacy: .public) on \
+                        \(route.description, privacy: .public) failed: \
+                        \(error.localizedDescription, privacy: .public)
+                        """)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The machine a row is on, when this app draws that machine's rows from
+    /// its host.
+    func hostDevice(of project: Project) -> KnownDevice? {
+        guard let workspace = workspace(owning: project) else { return nil }
+        let device = workspace.knownDevice ?? .thisMac
+        return drawsFromHost(device) ? device : nil
+    }
+
+    /// Whether this process may talk to `device`'s host. Under `swift test`
+    /// only a test that pointed `TERMIOD_SOCK` at its own daemon may, and only
+    /// this Mac: a test must never seed or change the user's real view.
+    private func mayAskHost(_ device: KnownDevice) -> Bool {
+        guard AppChannel.isRunningTests else { return true }
+        return device.isLocal && getenv("TERMIOD_SOCK") != nil
     }
 
     /// Where the host files a session's pane: the project of the row it sits

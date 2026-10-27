@@ -980,6 +980,9 @@ extension TermioStore {
     func togglePinned(_ id: Project.ID) {
         guard let index = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[index].pinned.toggle()
+        if let device = hostDevice(of: projects[index]) {
+            setHostPinned(projects[index], pinned: projects[index].pinned, on: device)
+        }
     }
 
     /// Pins or unpins a session into the sidebar's top "Pinned" working set. The row

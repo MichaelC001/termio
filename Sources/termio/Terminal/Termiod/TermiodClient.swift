@@ -1245,6 +1245,38 @@ extension Termiod {
         }
     }
 
+    /// Pins or unpins a host's project, then reads the roster and the view
+    /// over the same connection.
+    static func setHostProject(
+        route: TermiodRoute, project: String, pinned: Bool
+    ) throws -> (sessions: SessionsPayload, view: HostView) {
+        try withControlChannel(
+            route: route, caps: [viewCapability, viewImportCapability]
+        ) { transport, handshake in
+            guard handshake.capabilities.contains(viewImportCapability) else {
+                throw TermiodClientError.requestFailed("the host does not take project_set")
+            }
+            try writeFrame(transport.writeDescriptor, kind: .control,
+                           payload: projectSetPayload(project: project, pinned: pinned, seq: 1))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: listPayload(seq: 2))
+            try writeFrame(transport.writeDescriptor, kind: .control, payload: viewPayload(seq: 3))
+            _ = try readReply(transport) { reply -> UInt64? in
+                if case .revised(let payload) = reply { return payload.revision }
+                return nil
+            }
+            let sessions = try readReply(transport) { reply -> SessionsPayload? in
+                if case .sessions(let payload) = reply { return payload }
+                return nil
+            }
+            var view = try readReply(transport) { reply -> HostView? in
+                if case .viewState(let payload) = reply { return payload.view }
+                return nil
+            }
+            view.offersImport = true
+            return (sessions, view)
+        }
+    }
+
     /// The host refused to remove a project because other live sessions are
     /// placed in it.
     struct HostProjectConflict: Error {}

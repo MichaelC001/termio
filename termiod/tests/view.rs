@@ -404,6 +404,14 @@ fn a_client_seeds_the_view_once_and_places_what_it_opens() {
     assert_eq!(loose[0]["label"], json!("scratch"));
     assert_eq!(sessions_in(&loose[0]), vec![one.clone()]);
 
+    assert!(view["seed"].is_string(), "{view}");
+    let pinned = client.request(json!({"op": "project_set", "project": ids[0], "pinned": false}));
+    assert_eq!(pinned["op"], "revised", "{pinned}");
+    let view = client.view();
+    assert!(view["projects"][0].get("pinned").is_none(), "{view}");
+    let missing = client.request(json!({"op": "project_set", "project": "project:missing", "pinned": true}));
+    assert_eq!(missing["code"], "not_found", "{missing}");
+
     let again = client.request(json!({"op": "view_import", "projects": []}));
     assert_eq!(again["code"], "conflict", "only the first import is taken: {again}");
     assert_eq!(client.view(), view);

@@ -277,6 +277,11 @@ struct Project: Identifiable, Hashable, Codable {
     /// app spells differently from the host's canonical one is still one row.
     var hostProjectID: String?
 
+    /// The seed of the view `hostProjectID` came from. A host whose view was
+    /// lost and seeded again issues new ids, and a row holding one from the
+    /// old seed is matched again by path instead of being taken for removed.
+    var hostSeed: String?
+
     /// The machine a state file written **before** the hierarchy recorded on the
     /// checkout itself, and `nil` on every project this build writes.
     ///
@@ -297,7 +302,7 @@ struct Project: Identifiable, Hashable, Codable {
 extension Project {
     private enum CodingKeys: String, CodingKey {
         case id, workspaceID, name, path, branch, sessions, worktrees, pinned, remoteCheckouts
-        case hostProjectID
+        case hostProjectID, hostSeed
         case deviceAlias, deviceID
     }
 
@@ -323,6 +328,7 @@ extension Project {
         remoteCheckouts =
             try container.decodeIfPresent([String: String].self, forKey: .remoteCheckouts) ?? [:]
         hostProjectID = try container.decodeIfPresent(String.self, forKey: .hostProjectID)
+        hostSeed = try container.decodeIfPresent(String.self, forKey: .hostSeed)
         // Kept in the decoder after the live fields went: a file written before
         // the hierarchy is the only thing that still says which machine each
         // checkout is on, and dropping the keys here would lose the split that
@@ -347,6 +353,7 @@ extension Project {
         try container.encode(pinned, forKey: .pinned)
         try container.encode(remoteCheckouts, forKey: .remoteCheckouts)
         try container.encodeIfPresent(hostProjectID, forKey: .hostProjectID)
+        try container.encodeIfPresent(hostSeed, forKey: .hostSeed)
     }
 
     /// The recorded checkout for one machine, addressed by device where the app

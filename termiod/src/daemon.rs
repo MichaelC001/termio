@@ -1900,6 +1900,25 @@ async fn process_control(
             };
             send_response(out, response_cache, seq, response);
         }
+        Control::ProjectSet {
+            project,
+            label,
+            pinned,
+            seq,
+        } => {
+            let response = if !connection.capabilities.contains("view_import") {
+                error(seq, ErrorCode::Denied, "the view_import capability was not negotiated", false)
+            } else {
+                match manager.view.change(|view| {
+                    let changed = view.set_project(&project, label.as_deref(), pinned)?;
+                    Ok(((), changed))
+                }) {
+                    Ok(((), revision)) => Control::Revised { revision, re: seq },
+                    Err(e) => view_error(seq, ErrorCode::NotFound, e),
+                }
+            };
+            send_response(out, response_cache, seq, response);
+        }
         Control::GroupNew {
             project,
             label,
@@ -3553,7 +3572,8 @@ async fn spawn_placed(
     let unknown = place.project.clone().filter(|project| {
         !manager.view.snapshot().projects.iter().any(|known| &known.id == project)
     });
-    if manager.view.is_frozen() {
+    let frozen = manager.view.is_frozen();
+    if frozen && strict {
         // A session spawned now could not be placed: its pane would be
         // missing for the life of this image, or lose its project in the next.
         return Err(Refusal {
@@ -3580,6 +3600,12 @@ async fn spawn_placed(
         retryable: false,
     })?;
     let session = id.to_string();
+    if frozen {
+        // An `attach` opens its session anyway, as it always has. The handoff
+        // gives every carried session without a pane one on the other side.
+        manager.publish_created(&id).await;
+        return Ok((id, None));
+    }
     let pane = match manager.view.change(|view| {
         // The project can be removed while the session spawns; a live session
         // still gets a pane, loose, never in some other project.

@@ -252,6 +252,67 @@ final class TermiodViewImportTests: XCTestCase {
         XCTAssertEqual(store.projects, drawn)
     }
 
+    /// A roster read before a change this app made is older than the view
+    /// that change returned, and is not drawn.
+    func testAnOlderViewIsNotDrawnAfterANewerOne() throws {
+        let snapshot = try Self.snapshot(alpha: "/work/alpha", beta: "/work/beta", gone: "/work/gone")
+        let store = makeStore(snapshot)
+        let newer = try decodeView(#"""
+        {"revision": 12, "seeded": true, "projects": [
+          {"id": "p_new", "path": "/work/new", "label": "new", "groups": []}], "loose": []}
+        """#)
+        let older = try decodeView(#"{"revision": 11, "seeded": true, "projects": [], "loose": []}"#)
+
+        store.applyHostView(newer, from: .thisMac, route: .local)
+        let drawn = store.projects
+        store.applyHostView(older, from: .thisMac, route: .local)
+
+        XCTAssertEqual(store.projects, drawn)
+        XCTAssertTrue(store.projects.contains { $0.hostProjectID == "p_new" })
+    }
+
+    /// While this app's import is in flight, a view from another read is not
+    /// drawn: its rows are not stamped yet.
+    func testNoViewIsDrawnWhileTheImportRuns() throws {
+        let snapshot = try Self.snapshot(alpha: "/work/alpha", beta: "/work/beta", gone: "/work/gone")
+        let store = makeStore(snapshot)
+        store.hostImports.insert(KnownDevice.thisMac.id)
+        let view = try decodeView(#"""
+        {"revision": 3, "seeded": true, "projects": [
+          {"id": "p_alpha", "path": "/private/work/alpha", "label": "alpha", "groups": []}],
+         "loose": []}
+        """#)
+        let before = store.projects
+
+        store.applyHostView(view, from: .thisMac, route: .local)
+
+        XCTAssertEqual(store.projects, before)
+    }
+
+    /// A host whose view was lost and seeded again issues new ids. A row
+    /// holding an id from the old seed is not taken for removed.
+    func testARowFromAnOlderSeedIsKept() throws {
+        let snapshot = try Self.snapshot(alpha: "/work/alpha", beta: "/work/beta", gone: "/work/gone")
+        let store = makeStore(snapshot)
+        for index in store.projects.indices where store.projects[index].name == "alpha" {
+            store.projects[index].hostProjectID = "p_old"
+            store.projects[index].hostSeed = "seed:old"
+        }
+        let view = try decodeView(#"""
+        {"revision": 5, "seeded": true, "seed": "seed:new", "projects": [
+          {"id": "p_alpha", "path": "/work/alpha", "label": "alpha", "groups": []}], "loose": []}
+        """#)
+
+        store.drawFromHostView(view, on: .thisMac, live: [])
+
+        let alpha = try XCTUnwrap(store.projects.first { $0.name == "alpha" })
+        XCTAssertEqual(alpha.hostProjectID, "p_alpha", "matched again by path")
+        XCTAssertEqual(alpha.hostSeed, "seed:new")
+        XCTAssertEqual(alpha.sessions.count, 3)
+        XCTAssertTrue(store.projects.contains { $0.name == "Beta Docs" },
+                      "an unregistered row stays")
+    }
+
     /// The pane goes where the row is: the row's project once it is
     /// registered, a loose group for a loose row, and the cwd before either.
     func testASessionIsPlacedWhereItsRowIs() throws {
@@ -391,6 +452,7 @@ final class TermiodViewImportIntegrationTests: XCTestCase {
         for (rowID, hostID) in zip(rowIDs, projectIDs) {
             if let index = store.projects.firstIndex(where: { $0.id == rowID }) {
                 store.projects[index].hostProjectID = hostID
+                store.projects[index].hostSeed = view.seed
             }
         }
         let before = store.projects

@@ -56,7 +56,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     // The host's view: `view`, `project_add`, `project_remove`, `create`'s
     // `place`, and the `view:host` resource.
     "view",
-    // `view_import`, `group_new`, `place.loose`, and placement of a session
+    // `view_import`, `project_set`, `group_new`, `place.loose`, and placement of a session
     // `attach` creates. A client draws its tree from the view only on a host
     // that offers this: before it, a session the client opened had no pane.
     "view_import",
@@ -1135,6 +1135,16 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
     },
+    /// Rename or pin a project. Capability `view_import`.
+    ProjectSet {
+        project: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pinned: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+    },
     /// Start a session in a new group of its own: in `project`, or loose
     /// without one, whatever its cwd. Capability `view_import`.
     GroupNew {
@@ -1485,6 +1495,7 @@ impl Control {
             | Control::ProjectRemove { seq, .. }
             | Control::PaneClose { seq, .. }
             | Control::ViewImport { seq, .. }
+            | Control::ProjectSet { seq, .. }
             | Control::GroupNew { seq, .. } => *seq,
             _ => None,
         }
