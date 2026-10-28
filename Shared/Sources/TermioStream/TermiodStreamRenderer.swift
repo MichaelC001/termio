@@ -270,8 +270,8 @@ public final class TermiodStreamRenderer {
         let bottom = texture.height - top - builder.rowCount * cell.height
         return TermiodStreamFrameBuilder.PaddingExtension(
             left: left, top: top,
-            right: right >= 0 && right <= left + cell.width ? right : 0,
-            bottom: bottom >= 0 && bottom <= top + cell.height ? bottom : 0
+            right: right >= 0 && right < left + cell.width ? right : 0,
+            bottom: bottom >= 0 && bottom < top + cell.height ? bottom : 0
         )
     }
 
