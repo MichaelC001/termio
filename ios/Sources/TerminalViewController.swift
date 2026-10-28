@@ -364,8 +364,11 @@ final class TerminalViewController: UIViewController {
         }
         // A frame set under a transform is undefined; always start from identity.
         terminalView.transform = .identity
+        // Even when the estimated viewport matches, pixel rounding can leave
+        // the renderer a column short. Always give the shared grid its slack;
+        // switching back to the full host frame would reintroduce the mismatch.
         guard case .device = backend,
-              let grid = sharedGrid, grid != screen,
+              let grid = sharedGrid,
               let cell = cellSize, grid.cols > 0, grid.rows > 0
         else {
             // Full-height surface, slid up by exactly the content-aware pan:
@@ -378,8 +381,9 @@ final class TerminalViewController: UIViewController {
                 x: 0, y: -lastAppliedPan, width: host.width, height: fullHeight)
             return
         }
-        let width = CGFloat(grid.cols) * cell.width + 2 * Self.terminalPaddingX + cell.width / 2
-        let height = CGFloat(grid.rows) * cell.height + 2 * Self.terminalPaddingY + cell.height / 2
+        let padding = terminalPadding
+        let width = CGFloat(grid.cols) * cell.width + 2 * padding.width + cell.width / 2
+        let height = CGFloat(grid.rows) * cell.height + 2 * padding.height + cell.height / 2
         let fit = min(1, host.width / width, fullHeight / height)
         terminalView.bounds = CGRect(x: 0, y: 0, width: width, height: height)
         terminalView.transform = CGAffineTransform(scaleX: fit, y: fit)
@@ -442,9 +446,28 @@ final class TerminalViewController: UIViewController {
         let size = CGSize(
             width: terminalHost.bounds.width,
             height: terminalHost.bounds.height + keyboardOverlap)
+        let padding = terminalPadding
         return TerminalGrid.fitting(
             size, cell: cell,
-            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY)
+            paddingX: padding.width, paddingY: padding.height)
+    }
+
+    private var terminalDisplayScale: CGFloat {
+        max(1, terminalView.window?.screen.nativeScale ?? traitCollection.displayScale)
+    }
+
+    private var terminalPadding: CGSize {
+        if streamView != nil {
+            return CGSize(width: Self.terminalPaddingX, height: Self.terminalPaddingY)
+        }
+        // Ghostty uses 96 DPI on iOS (72 on macOS). Its config points therefore
+        // differ from UIKit points; match Surface.scaledPadding's pixel floor.
+        let scale = terminalDisplayScale
+        return CGSize(
+            width: TerminalGrid.paddingInViewPoints(
+                configuredPoints: Self.terminalPaddingX, contentScale: scale, dpi: 96),
+            height: TerminalGrid.paddingInViewPoints(
+                configuredPoints: Self.terminalPaddingY, contentScale: scale, dpi: 96))
     }
 
     private var cellSize: CGSize? {
@@ -452,7 +475,7 @@ final class TerminalViewController: UIViewController {
         guard let metrics = surfaceMetrics,
               metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0
         else { return nil }
-        let scale = max(1, traitCollection.displayScale)
+        let scale = terminalDisplayScale
         return CGSize(
             width: CGFloat(metrics.cellWidthPixels) / scale,
             height: CGFloat(metrics.cellHeightPixels) / scale)
@@ -1064,9 +1087,7 @@ final class TerminalViewController: UIViewController {
     /// The settings-driven half of the surface config — the single place the
     /// appearance keys are named, so creation and the live re-style path
     /// can't drift apart (same rule as the Mac app's applyAppearance).
-    /// The surface's margins in points. Named because `layoutTerminalSurface`
-    /// needs the same numbers to size a surface to an exact grid; Y is
-    /// libghostty's default, which the configuration below leaves alone.
+    /// Ghostty configuration points; convert to view points through `terminalPadding`.
     private static let terminalPaddingX: CGFloat = 8
     private static let terminalPaddingY: CGFloat = 2
 
@@ -1075,6 +1096,7 @@ final class TerminalViewController: UIViewController {
             builder.withBackgroundOpacity(0)
             builder.withFontSize(Float(MobileSettings.shared.fontSize))
             builder.withWindowPaddingX(Int(Self.terminalPaddingX))
+            builder.withWindowPaddingY(Int(Self.terminalPaddingY))
             // Without a font-family the phone rendered CJK unlike the Mac —
             // libghostty dropped in proportional PingFang whose metrics fight the
             // Latin face. Set the chain to match the desktop (see `terminalFontChain`).

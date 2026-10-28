@@ -12,6 +12,30 @@ import TermioShared
 final class TerminalViewportGridTests: XCTestCase {
     private let cell = CGSize(width: 8, height: 20)
 
+    func testIPhoneViewportMatchesMeasuredGhosttyGrid() {
+        let paddingX = TerminalGrid.paddingInViewPoints(
+            configuredPoints: 8, contentScale: 3, dpi: 96)
+        let paddingY = TerminalGrid.paddingInViewPoints(
+            configuredPoints: 2, contentScale: 3, dpi: 96)
+        XCTAssertEqual(paddingX * 3, 32)
+        XCTAssertEqual(paddingY * 3, 8)
+        // Measured on device: 1179 × 2247 pixels, with 29 × 56 pixel cells.
+        // Treating config points as UIKit points incorrectly declares 39 columns.
+        XCTAssertEqual(TerminalGrid.fitting(
+            CGSize(width: 393, height: 749),
+            cell: CGSize(width: 29.0 / 3, height: 56.0 / 3),
+            paddingX: paddingX, paddingY: paddingY), TerminalGrid(rows: 39, cols: 38))
+    }
+
+    func testPaddingFloorsPixelsBeforeConvertingToViewPoints() {
+        XCTAssertEqual(TerminalGrid.paddingInViewPoints(
+            configuredPoints: 8, contentScale: 2, dpi: 72), 8)
+        XCTAssertEqual(TerminalGrid.paddingInViewPoints(
+            configuredPoints: 8, contentScale: 2.5, dpi: 96), 26.0 / 2.5)
+        XCTAssertEqual(TerminalGrid.paddingInViewPoints(
+            configuredPoints: 2, contentScale: 2.5, dpi: 96), 6.0 / 2.5)
+    }
+
     private func grid(_ width: CGFloat, _ height: CGFloat,
                       paddingX: CGFloat = 4, paddingY: CGFloat = 2) -> TerminalGrid? {
         TerminalGrid.fitting(

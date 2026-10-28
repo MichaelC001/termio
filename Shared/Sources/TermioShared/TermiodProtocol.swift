@@ -2699,6 +2699,14 @@ public struct TerminalGrid: Equatable, Sendable, Codable {
         self.cols = cols
     }
 
+    /// Ghostty config uses typographic points, then floors padding to pixels.
+    /// Convert back to view points before comparing it with a view's bounds.
+    public static func paddingInViewPoints(
+        configuredPoints: CGFloat, contentScale: CGFloat, dpi: CGFloat
+    ) -> CGFloat {
+        (configuredPoints * contentScale * dpi / 72).rounded(.down) / contentScale
+    }
+
     /// How many whole cells a rectangle of this size can show — a client's
     /// *viewport*, the thing the host sizes sessions by.
     ///
