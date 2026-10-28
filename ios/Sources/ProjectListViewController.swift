@@ -74,6 +74,11 @@ final class ProjectListViewController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.sizeScrollingHeaderToFit()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // A full page, not a drawer. Tinted to the terminal theme so the whole
@@ -199,12 +204,7 @@ final class ProjectListViewController: UIViewController {
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(bar)
         NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             // Telegram's nav-bar glass buttons are 40pt circles.
             filterButton.widthAnchor.constraint(equalToConstant: 40),
             filterButton.heightAnchor.constraint(equalToConstant: 40),
@@ -264,12 +264,13 @@ final class ProjectListViewController: UIViewController {
             SectionCapView.self,
             forHeaderFooterViewReuseIdentifier: SectionCapView.reuseID
         )
+        tableView.setScrollingHeader(topBar, horizontalInset: 16, top: 8, bottom: 16)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         // The native tab controller contributes the correct safe-area and
         // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -483,7 +484,7 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        showsHeaders ? 28 : 0
+        showsHeaders ? WorkspaceSectionHeaderView.height : 0
     }
 
     /// A whitespace gap below each group — the divider-free separator,
@@ -509,19 +510,21 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
                     session: session,
                     isCurrent: session.key == store.currentSessionKey,
                     showsProject: true,
-                    showsSeparator: indexPath.row < attention.count - 1
+                    isFirst: indexPath.row == 0,
+                    isLast: indexPath.row == attention.count - 1
                 )
             }
-            .margins(.horizontal, 12)
+            .margins(.horizontal, ListCard.outerMargin)
             .margins(.vertical, 0)
         case .projects:
             cell.contentConfiguration = UIHostingConfiguration {
                 ProjectRow(
                     project: projects[indexPath.row],
-                    showsSeparator: indexPath.row < projects.count - 1
+                    isFirst: indexPath.row == 0,
+                    isLast: indexPath.row == projects.count - 1
                 )
             }
-            .margins(.horizontal, 12)
+            .margins(.horizontal, ListCard.outerMargin)
             .margins(.vertical, 0)
         }
         return cell
@@ -583,13 +586,19 @@ extension ProjectListViewController: UITableViewDataSource, UITableViewDelegate 
 /// opening one.
 private struct ProjectRow: View {
     let project: MockProject
-    var showsSeparator = false
+    var isFirst = false
+    var isLast = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            HugeIconShape(icon: .folder)
-                .stroke(Color.secondary, style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                .frame(width: 18, height: 18)
+        HStack(alignment: .center, spacing: ListCard.tileSpacing) {
+            ListTile {
+                // Filled, like the selected Projects tab and the folders in Files.
+                if let folder = HugeIcon.folder.solidImage(boxSize: 18) {
+                    Image(uiImage: folder)
+                        .renderingMode(.template)
+                        .foregroundStyle(Color.primary.opacity(0.85))
+                }
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(project.name)
                     .font(.body)
@@ -605,19 +614,9 @@ private struct ProjectRow: View {
             }
             Spacer(minLength: 4)
             summary
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            ListChevron()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        // Fill the hosting cell (see SessionRow): centers the content and
-        // pins the separator to the real cell bottom.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Inset past the folder mark (10 padding + 18 icon + 10 spacing).
-        .overlay(alignment: .bottom) {
-            if showsSeparator { RowSeparator(leadingInset: 38) }
-        }
+        .listCard(isFirst: isFirst, isLast: isLast)
     }
 
     @ViewBuilder
@@ -642,7 +641,7 @@ private struct ProjectRow: View {
 
 // MARK: - Section header
 
-/// A small gray caps label capping a group. Mail and Files head their groups the
+/// A gray label capping a group. Mail and Files head their groups the
 /// same way: the caption names what the rows under it are, and the rows say
 /// nothing more about where they live.
 private final class SectionCapView: UITableViewHeaderFooterView {
@@ -652,21 +651,23 @@ private final class SectionCapView: UITableViewHeaderFooterView {
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
         label.textColor = .secondaryLabel
         label.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -22),
-            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor, constant: ListCard.headerInset),
+            label.trailingAnchor.constraint(
+                lessThanOrEqualTo: contentView.trailingAnchor, constant: -ListCard.headerInset),
+            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(title: String) {
-        label.text = title.uppercased()
+        label.text = title
         isAccessibilityElement = true
         accessibilityTraits = .header
         accessibilityLabel = title

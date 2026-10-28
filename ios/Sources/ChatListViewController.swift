@@ -31,6 +31,11 @@ final class ChatListViewController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.sizeScrollingHeaderToFit()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         themeObserver = installThemeBackdrop()
@@ -73,14 +78,7 @@ final class ChatListViewController: UIViewController {
         bar.axis = .horizontal
         bar.alignment = .center
         bar.spacing = 8
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(bar)
-        NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            bar.heightAnchor.constraint(equalToConstant: 40),
-        ])
+        bar.heightAnchor.constraint(equalToConstant: 40).isActive = true
         return bar
     }
 
@@ -155,12 +153,13 @@ final class ChatListViewController: UIViewController {
             WorkspaceSectionHeaderView.self,
             forHeaderFooterViewReuseIdentifier: WorkspaceSectionHeaderView.reuseID
         )
+        tableView.setScrollingHeader(topBar, horizontalInset: 16, top: 8, bottom: 16)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         // The native tab controller contributes the correct safe-area and
         // adjusted scroll insets for both the classic and Liquid Glass bars.
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 16),
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -254,10 +253,11 @@ extension ChatListViewController: UITableViewDataSource, UITableViewDelegate {
                 session: session,
                 isCurrent: session.key == store.currentSessionKey,
                 showsProject: false,
-                showsSeparator: indexPath.row < sessions.count - 1
+                isFirst: indexPath.row == 0,
+                isLast: indexPath.row == sessions.count - 1
             )
         }
-        .margins(.horizontal, 12)
+        .margins(.horizontal, ListCard.outerMargin)
         .margins(.vertical, 0)
         return cell
     }

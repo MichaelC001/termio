@@ -18,39 +18,39 @@ extension Color {
 
 // MARK: - Session row
 
-/// A session row, ChatGPT-chat-list style: mostly just the title, the agent
-/// mark (or its working spinner) leading, the status dot trailing when it has
-/// something to say, and the current session wrapped in a rounded pill. When the session carries live
+/// A session row, Rex-list style: the agent's tile leading (its working
+/// spinner while it runs), the title at body size, the status dot when it has
+/// something to say, and a quiet chevron. When the session carries live
 /// activity text (a pending question, the running command), it appears as a
 /// gray preview line under the title — Messages' "last message", shown only
-/// when there is one, so quiet sessions stay one dense line. Cross-project
-/// strips (the root's "Needs You") pass `showsProject` so the row says where
-/// it lives.
+/// when there is one, so quiet sessions stay one line. Cross-project strips (the
+/// root's "Needs You") pass `showsProject` so the row says where it lives.
+///
+/// Each row draws its own slice of the group's card, so `isFirst` / `isLast`
+/// say which corners round and where the hairline stops.
 struct SessionRow: View {
     let session: MockSession
     let isCurrent: Bool
     var showsProject = false
-    /// Hairline under the row, Messages-style — set on every row but a
-    /// group's last, so the whitespace between groups stays clean.
-    var showsSeparator = false
+    var isFirst = false
+    var isLast = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Group {
+        HStack(alignment: .center, spacing: ListCard.tileSpacing) {
+            ListTile {
                 if session.status == .working {
                     WorkingIndicator(tint: .sessionWorkingInk)
                 } else {
                     AgentIconView(
                         ref: session.agent.iconRef,
-                        size: 14,
+                        size: 18,
                         tint: session.agent.tintColor
                     )
                 }
             }
-            .frame(width: 16, height: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title)
-                    .font(.subheadline)
+                    .font(.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if !subtitle.isEmpty {
@@ -62,30 +62,14 @@ struct SessionRow: View {
                 }
             }
             Spacer(minLength: 4)
-            // Like ProjectRow's trailing summary: the dot only enters the
-            // layout when it has something to say, so idle rows don't reserve
-            // invisible width and the title runs to the edge (no chevron —
-            // ChatGPT/Messages chat lists don't mark drill-down either).
+            // The dot only enters the layout when it has something to say, so
+            // idle rows don't reserve invisible width.
             if session.status == .done || session.status == .needsAttention {
                 StatusDot(status: session.status)
             }
+            ListChevron()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(
-            isCurrent ? Color.primary.opacity(0.08) : .clear,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        // Fill whatever height the hosting cell settles on (its self-sizing
-        // floor can exceed the row's ideal height), so the content centers
-        // and the separator pins to the real cell bottom — otherwise the
-        // title reads off-center between two separators.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Inset to the text's left edge (10 padding + 16 icon + 10 spacing),
-        // like the system separators under Messages' conversation rows.
-        .overlay(alignment: .bottom) {
-            if showsSeparator { RowSeparator(leadingInset: 36) }
-        }
+        .listCard(isFirst: isFirst, isLast: isLast, isHighlighted: isCurrent)
     }
 
     private var subtitle: String {
@@ -97,6 +81,133 @@ struct SessionRow: View {
         if let branch = session.worktreeBranch { parts.append(branch) }
         if !session.subtitle.isEmpty { parts.append(session.subtitle) }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Grouped card
+
+/// The metrics every home list shares, so a session row and a project row line
+/// up inside the same card and the section header sits over their tiles.
+enum ListCard {
+    static let cornerRadius: CGFloat = 18
+    static let horizontalPadding: CGFloat = 14
+    static let tileSize: CGFloat = 32
+    static let tileSpacing: CGFloat = 12
+    /// The hairline starts at the title, past the tile.
+    static let separatorInset: CGFloat = horizontalPadding + tileSize + tileSpacing
+    /// The cell margin outside the card; callers pass it to `UIHostingConfiguration`.
+    static let outerMargin: CGFloat = 16
+    /// Where a section header's text starts, over the tiles' leading edge.
+    static let headerInset: CGFloat = outerMargin + horizontalPadding
+}
+
+/// The rounded square a row's mark sits in, drawn like a macOS 26 app icon: a
+/// body lit from above, a specular rim brightest on the top edge, and a soft
+/// shadow under it. Hand-drawn rather than `glassEffect`, because the material
+/// is for floating controls and a list is content. The body stays neutral,
+/// never a hue: the mark inside keeps its own tint.
+struct ListTile<Content: View>: View {
+    @ViewBuilder let content: Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        let isDark = colorScheme == .dark
+        content
+            .shadow(color: .black.opacity(isDark ? 0.35 : 0.12), radius: 0.5, y: 0.5)
+            .frame(width: ListCard.tileSize, height: ListCard.tileSize)
+            .background {
+                shape.fill(LinearGradient(
+                    colors: isDark
+                        ? [Color.white.opacity(0.20), Color.white.opacity(0.07)]
+                        : [Color.white, Color.black.opacity(0.06)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+            }
+            .overlay {
+                shape.strokeBorder(LinearGradient(
+                    colors: isDark
+                        ? [Color.white.opacity(0.45), Color.white.opacity(0.06)]
+                        : [Color.white, Color.black.opacity(0.10)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ), lineWidth: 0.75)
+            }
+            .shadow(color: .black.opacity(isDark ? 0.40 : 0.14), radius: 2, y: 1)
+    }
+}
+
+struct ListChevron: View {
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.tertiary)
+    }
+}
+
+extension View {
+    /// One row's slice of its group's card: only the group's outer corners
+    /// round, and the hairline runs under every row but the last.
+    func listCard(isFirst: Bool, isLast: Bool, isHighlighted: Bool = false) -> some View {
+        let radius = ListCard.cornerRadius
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: isFirst ? radius : 0,
+            bottomLeadingRadius: isLast ? radius : 0,
+            bottomTrailingRadius: isLast ? radius : 0,
+            topTrailingRadius: isFirst ? radius : 0,
+            style: .continuous
+        )
+        return self
+            .padding(.horizontal, ListCard.horizontalPadding)
+            .padding(.vertical, 10)
+            // Fill whatever height the hosting cell settles on (its self-sizing
+            // floor can exceed the row's ideal height), so the content centers
+            // and the separator pins to the real cell bottom.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                if !isLast {
+                    RowSeparator(leadingInset: ListCard.separatorInset)
+                        .padding(.trailing, ListCard.horizontalPadding)
+                }
+            }
+            .background(Color.primary.opacity(isHighlighted ? 0.13 : 0.06), in: shape)
+            .contentShape(shape)
+    }
+}
+
+// MARK: - Scrolling title bar
+
+extension UITableView {
+    /// Puts a page's title bar into the scroll content, so it scrolls away with
+    /// the rows the way Rex's header does, instead of standing pinned over them.
+    /// The owner calls `sizeScrollingHeaderToFit()` from `viewDidLayoutSubviews`,
+    /// because a table header never sizes itself.
+    func setScrollingHeader(_ bar: UIView, horizontalInset: CGFloat, top: CGFloat, bottom: CGFloat) {
+        let container = UIView()
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: container.topAnchor, constant: top),
+            bar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: horizontalInset),
+            bar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -horizontalInset),
+            bar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -bottom),
+        ])
+        tableHeaderView = container
+    }
+
+    func sizeScrollingHeaderToFit() {
+        guard let header = tableHeaderView, bounds.width > 0 else { return }
+        let height = header.systemLayoutSizeFitting(
+            CGSize(width: bounds.width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        ).height
+        let size = CGSize(width: bounds.width, height: height)
+        guard header.frame.size != size else { return }
+        header.frame.size = size
+        // Reassigning is what makes the table re-read the header's height.
+        tableHeaderView = header
     }
 }
 
@@ -187,7 +298,7 @@ extension Array where Element == WorkspaceGroup {
     }
 }
 
-/// A small gray caps label capping a workspace group, with room for one
+/// A gray label capping a workspace group, with room for one
 /// trailing detail — the machine that workspace is on. Mail and Files head their
 /// groups the same way: the account or location names the section, and the rows
 /// underneath say nothing more about where they live.
@@ -198,17 +309,17 @@ final class WorkspaceSectionHeaderView: UITableViewHeaderFooterView {
     static let reuseID = "workspaceSectionHeader"
     /// The height a table should give it — the Projects list's, so the three
     /// workspace-grouped lists cap their groups identically.
-    static let height: CGFloat = 28
+    static let height: CGFloat = 40
 
     private let label = UILabel()
     private let detailLabel = UILabel()
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
         label.textColor = .secondaryLabel
         label.translatesAutoresizingMaskIntoConstraints = false
-        detailLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        detailLabel.font = .systemFont(ofSize: 15, weight: .regular)
         detailLabel.textColor = .tertiaryLabel
         detailLabel.textAlignment = .right
         // The workspace name is the section's identity; the machine gives way
@@ -218,12 +329,13 @@ final class WorkspaceSectionHeaderView: UITableViewHeaderFooterView {
         contentView.addSubview(label)
         contentView.addSubview(detailLabel)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
-            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor, constant: ListCard.headerInset),
+            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
             detailLabel.leadingAnchor.constraint(
                 greaterThanOrEqualTo: label.trailingAnchor, constant: 8),
             detailLabel.trailingAnchor.constraint(
-                equalTo: contentView.trailingAnchor, constant: -22),
+                equalTo: contentView.trailingAnchor, constant: -ListCard.headerInset),
             detailLabel.firstBaselineAnchor.constraint(equalTo: label.firstBaselineAnchor),
         ])
     }
@@ -231,7 +343,9 @@ final class WorkspaceSectionHeaderView: UITableViewHeaderFooterView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(title: String, detail: String? = nil) {
-        label.text = title.uppercased()
+        // The name as the user wrote it, like Rex's project headers: a
+        // workspace is a proper noun, and caps make it one you can't search for.
+        label.text = title
         detailLabel.text = detail
         detailLabel.isHidden = detail == nil
         isAccessibilityElement = true

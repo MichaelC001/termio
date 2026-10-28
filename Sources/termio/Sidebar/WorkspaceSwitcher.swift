@@ -113,22 +113,28 @@ struct WorkspaceSwitcherToolbarView: View {
         // word is a label for a decision the user never took.
         if store.hasMultipleWorkspaces {
             let current = store.currentWorkspace
-            // The name and nothing else. No device mark — the rows below already say
-            // which machine they are on — and no menu chevron: the toolbar band is
-            // three glyphs wide, and every point this control spends on decoration is
-            // a point the name truncates at.
-            Text(current.name)
-                // The very font the sidebar's rows and section headers use — not a copy of its
-                // definition, which is what this was and what let the two drift on paper. The band
-                // and the column below it share an x-height and read as one thing: this names that
-                // column, and a size step would separate it from what it names. Rank comes from
-                // weight instead — a label larger than the window title beside it is what makes a
-                // titlebar look mis-scaled.
-                .font(settings.interfaceFont)
-                .fontWeight(.medium)
+            // The name and a down chevron. No device mark — the rows below already
+            // say which machine they are on. The chevron is the pop-up's own cue
+            // that the word opens a menu; it lives inside the fixed box, so the name
+            // truncates a few points earlier instead of the box growing.
+            HStack(spacing: 4) {
+                Text(current.name)
+                    // The very font the sidebar's rows and section headers use — not a copy of its
+                    // definition, which is what this was and what let the two drift on paper. The band
+                    // and the column below it share an x-height and read as one thing: this names that
+                    // column, and a size step would separate it from what it names. Rank comes from
+                    // weight instead — a label larger than the window title beside it is what makes a
+                    // titlebar look mis-scaled.
+                    .font(settings.interfaceFont)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                // Hugeicons has no down chevron; the sidebar's disclosure chevron,
+                // turned, keeps it in the same stroke family.
+                HugeIconView(icon: .chevronRight, size: 7.5, color: color, lineWidthOverride: 1.75)
+                    .rotationEffect(.degrees(90))
+            }
                 .foregroundStyle(color)
-                .lineLimit(1)
-                .truncationMode(.middle)
                 // Leading, so every name starts at the same x. Centred, a short one would
                 // sit in the middle of the box and the label's left edge would move on each
                 // switch — the same shift by a different route.
