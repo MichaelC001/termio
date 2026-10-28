@@ -672,6 +672,17 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
     public struct FrameImages {
         fileprivate let terminal: GhosttyTerminal
 
+        /// The view's place in the screen and its history, read under the
+        /// frame's lock so a scrollbar polling it every frame keeps the
+        /// renderer's place in line for the lock.
+        public var scrollbar: Scrollbar? {
+            var state = GhosttyTerminalScrollbar()
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &state) == GHOSTTY_SUCCESS else {
+                return nil
+            }
+            return Scrollbar(total: state.total, offset: state.offset, length: state.len)
+        }
+
         /// An image's pixels as straight-alpha RGBA, with the generation they
         /// belong to, or nil while it has none.
         public func pixels(id: UInt32) -> ImagePixels? {
@@ -839,6 +850,25 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
             var behavior = GhosttyTerminalScrollViewport()
             behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
             behavior.value.delta = rows
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+            changesLocked &+= 1
+        }
+    }
+
+    /// Where the view sits in the screen and its history, in rows. libghostty
+    /// sends no change notification, so a scrollbar polls this each frame.
+    public struct Scrollbar: Equatable, Sendable {
+        public var total: UInt64
+        public var offset: UInt64
+        public var length: UInt64
+    }
+
+    /// Moves this view so `row`, in `Scrollbar.offset`'s row space, is at its top.
+    public func scrollViewport(toRow row: UInt64) {
+        locked {
+            var behavior = GhosttyTerminalScrollViewport()
+            behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW
+            behavior.value.row = Int(clamping: row)
             ghostty_terminal_scroll_viewport(terminal, behavior)
             changesLocked &+= 1
         }

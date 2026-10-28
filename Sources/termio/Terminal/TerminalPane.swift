@@ -217,7 +217,8 @@ struct TerminalPane: View {
                             takesKeyboard: Self.terminalMayTakeKeyboard(id, store: store),
                             copyOnSelect: settings.copyOnSelect,
                             onViewport: { grid in store.reportViewport(grid, for: id) },
-                            onFocused: { selectFocusedSurface(id) }
+                            onFocused: { selectFocusedSurface(id) },
+                            onTopEdgeColor: { color in store.runtime(for: id).streamTopEdgeColor = color }
                         )
                         // One view per link: a relaunch attaches a new one.
                         .id(ObjectIdentifier(link))
@@ -1750,9 +1751,33 @@ private struct PaneCardChrome: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .environment(\.colorScheme, headerScheme ?? colorScheme)
             Spacer(minLength: 0)
         }
-        .background(background, in: PaneCardShape(notch: notch))
+        .background(cardBackground, in: PaneCardShape(notch: notch))
+    }
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// The color a stream pane's program painted along its top edge, as Rex
+    /// carries it into the pane's chrome. A translucent card stays clear.
+    private var programColor: NSColor? {
+        guard !settings.isBackgroundTranslucent else { return nil }
+        let runtime = store.runtime(for: session.id)
+        guard runtime.streamLink != nil else { return nil }
+        return runtime.streamTopEdgeColor
+    }
+
+    private var cardBackground: Color {
+        programColor.map { Color(nsColor: $0) } ?? background
+    }
+
+    /// The header's text and icons follow the program's color, so a light
+    /// program in dark mode keeps a readable title.
+    private var headerScheme: ColorScheme? {
+        guard let color = programColor?.usingColorSpace(.sRGB) else { return nil }
+        let luminance = 0.2126 * color.redComponent + 0.7152 * color.greenComponent + 0.0722 * color.blueComponent
+        return luminance > 0.5 ? .light : .dark
     }
 
     private var header: some View {

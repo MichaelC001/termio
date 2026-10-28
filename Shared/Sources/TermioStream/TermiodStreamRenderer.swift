@@ -106,6 +106,11 @@ public final class TermiodStreamRenderer {
     /// Draws one frame into `layer` if the terminal changed since the last one,
     /// or `force` asks for it regardless (a resize, focus, or new appearance).
     /// True when a frame was presented.
+    /// `TermiodStreamFrameBuilder.topEdgeColor` as of the last frame built.
+    public var topEdgeColor: GhosttyColorRgb { builder.topEdgeColor }
+    /// The terminal's scrollbar state as of the last frame prepared.
+    public private(set) var scrollbar: TermiodStreamTerminal.Scrollbar?
+
     @discardableResult
     public func draw(
         _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
@@ -195,6 +200,7 @@ public final class TermiodStreamRenderer {
                 from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit, link: link
             )
             let pictures = images.read(state, storage: storage, force: force)
+            scrollbar = storage.scrollbar
             return text || pictures
         }
         images.upload(device: device)
@@ -202,7 +208,7 @@ public final class TermiodStreamRenderer {
     }
 
     private func encode(into buffer: MTLCommandBuffer, texture: MTLTexture) -> Bool {
-        builder.flatten(rectangles: &rectangles, glyphs: &glyphs)
+        builder.flatten(rectangles: &rectangles, glyphs: &glyphs, padding: paddingExtension(texture))
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = texture
         pass.colorAttachments[0].loadAction = .clear
@@ -250,6 +256,23 @@ public final class TermiodStreamRenderer {
         drawRectangles(rectangles.filter(\.overText), encoder: encoder)
         encoder.endEncoding()
         return true
+    }
+
+    /// The padding the edge cells paint. The right and bottom sides hold the
+    /// padding plus less than a cell when the grid fills the pane; a wider gap
+    /// means the session is sized for another screen, and stays the
+    /// background so the grid's edge shows.
+    private func paddingExtension(_ texture: MTLTexture) -> TermiodStreamFrameBuilder.PaddingExtension {
+        let left = Int((appearance.paddingX * scale).rounded())
+        let top = Int((appearance.paddingY * scale).rounded())
+        let cell = atlas.metrics
+        let right = texture.width - left - Int(builder.columns) * cell.width
+        let bottom = texture.height - top - builder.rowCount * cell.height
+        return TermiodStreamFrameBuilder.PaddingExtension(
+            left: left, top: top,
+            right: right >= 0 && right < left + cell.width ? right : 0,
+            bottom: bottom >= 0 && bottom < top + cell.height ? bottom : 0
+        )
     }
 
     private func drawRectangles(_ items: [TermiodStreamRectangle], encoder: MTLRenderCommandEncoder) {
@@ -1166,6 +1189,31 @@ public final class TermiodStreamFrameBuilder {
     public private(set) var background = GhosttyColorRgb(r: 0, g: 0, b: 0)
     private var rowRectangles: [[TermiodStreamRectangle]] = []
     private var rowGlyphs: [[TermiodStreamGlyph]] = []
+    /// Each row's cell backgrounds without the selection, or nil for a row
+    /// whose edges must not reach into the padding: the rows that
+    /// `window-padding-color = extend` paints the padding from.
+    private var rowEdgeBackgrounds: [[TermiodStreamRectangle]?] = []
+    public private(set) var columns: UInt16 = 0
+    public var rowCount: Int { rowRectangles.count }
+
+    /// The color along the grid's top edge: the top row's background when the
+    /// program painted all of it one color, otherwise the terminal's default
+    /// background, which a program may have changed with OSC 11. The pane's
+    /// header takes it, so a full-screen program's color reaches the title.
+    public var topEdgeColor: GhosttyColorRgb {
+        guard let row = rowEdgeBackgrounds.first, let row, let first = row.first, first.cellX == 0 else {
+            return background
+        }
+        var next = 0
+        for cell in row {
+            guard Int(cell.cellX) == next, cell.r == first.r, cell.g == first.g, cell.b == first.b else {
+                return background
+            }
+            next += max(1, Int(cell.width) / max(1, cellWidth))
+        }
+        return next >= Int(columns) ? GhosttyColorRgb(r: first.r, g: first.g, b: first.b) : background
+    }
+    private var cellWidth = 1
     /// The columns where a wide character starts, per row, so a cursor on one
     /// covers both of its cells.
     private var rowWideStarts: [Set<UInt16>] = []
@@ -1231,6 +1279,7 @@ public final class TermiodStreamFrameBuilder {
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         var rows: UInt16 = 0
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows)
+        _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLS, &columns)
         var colors = GhosttyRenderStateColors()
         colors.size = MemoryLayout<GhosttyRenderStateColors>.size
         _ = ghostty_render_state_get(state, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors)
@@ -1253,6 +1302,7 @@ public final class TermiodStreamFrameBuilder {
             if rowRectangles.count != Int(rows) {
                 rowRectangles = Array(repeating: [], count: Int(rows))
                 rowGlyphs = Array(repeating: [], count: Int(rows))
+                rowEdgeBackgrounds = Array(repeating: nil, count: Int(rows))
                 rowWideStarts = Array(repeating: [], count: Int(rows))
             }
             let generation = atlas.generation
@@ -1470,7 +1520,10 @@ public final class TermiodStreamFrameBuilder {
         var glyphs: [TermiodStreamGlyph] = []
         var ligatureCells: [LigatureCell] = []
         var wideStarts: Set<UInt16> = []
+        var edgeBackgrounds: [TermiodStreamRectangle] = []
+        var extendsEdges = true
         let metrics = atlas.metrics
+        cellWidth = metrics.width
         _ = ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells)
         // Ghostty draws every selected cell alike: the theme's selection
         // colors, or the default foreground behind the default background.
@@ -1516,6 +1569,16 @@ public final class TermiodStreamFrameBuilder {
                 swap(&foreground, &background)
                 paintsBackground = true
             }
+            // The cell's own background, before the selection paints over it:
+            // what the padding takes, and what decides whether it may.
+            let ownsBackground = paintsBackground
+            if paintsBackground {
+                edgeBackgrounds.append(TermiodStreamRectangle(
+                    cellX: x, cellY: UInt16(y), x: 0, y: 0,
+                    width: UInt16(metrics.width) * span, height: UInt16(metrics.height),
+                    r: background.r, g: background.g, b: background.b, a: 255
+                ))
+            }
             if let selection, selection.contains(x) {
                 background = selectionColors.background ?? colors.foreground
                 foreground = selectionColors.foreground ?? colors.background
@@ -1546,6 +1609,11 @@ public final class TermiodStreamFrameBuilder {
             }
             let grapheme = Array(codepoints.prefix(Int(length)))
             if grapheme == [0x20] { continue }
+            // Ghostty's `neverExtendBg`: a Powerline segment drawn to the cell
+            // edge would smear its color across the padding.
+            if ownsBackground, grapheme.contains(where: { (0xE0B0 ... 0xE0D7).contains($0) }) {
+                extendsEdges = false
+            }
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {
                 continue
             }
@@ -1574,6 +1642,7 @@ public final class TermiodStreamFrameBuilder {
         }
         applyLigatures(ligatureCells, to: &glyphs, atlas: atlas)
         rowRectangles[y] = rectangles
+        rowEdgeBackgrounds[y] = extendsEdges ? edgeBackgrounds : nil
         rowGlyphs[y] = glyphs
         rowWideStarts[y] = wideStarts
     }
@@ -1773,9 +1842,29 @@ public final class TermiodStreamFrameBuilder {
         return ratio(white, background) > ratio(black, background) ? white : black
     }
 
-    public func flatten(rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph]) {
+    /// The padding around the grid, in pixels, that the edge cells' backgrounds
+    /// reach into. A side is zero where the grid does not fill the pane.
+    public struct PaddingExtension: Equatable {
+        public var left = 0
+        public var top = 0
+        public var right = 0
+        public var bottom = 0
+
+        public init(left: Int = 0, top: Int = 0, right: Int = 0, bottom: Int = 0) {
+            self.left = left
+            self.top = top
+            self.right = right
+            self.bottom = bottom
+        }
+    }
+
+    public func flatten(
+        rectangles: inout [TermiodStreamRectangle], glyphs: inout [TermiodStreamGlyph],
+        padding: PaddingExtension = PaddingExtension()
+    ) {
         rectangles.removeAll(keepingCapacity: true)
         glyphs.removeAll(keepingCapacity: true)
+        appendPaddingExtension(padding, into: &rectangles)
         // The cells under composed text show only the composition.
         func covered(_ x: UInt16, row: Int) -> Bool {
             guard let cells = preeditCells, Int(cells.y) == row else { return false }
@@ -1807,5 +1896,48 @@ public final class TermiodStreamFrameBuilder {
             }
         }
         glyphs.append(contentsOf: preeditGlyphs)
+    }
+
+    /// Ghostty's `window-padding-color = extend`, as Rex draws it: an edge
+    /// cell's background continues to the pane's edge, so a program's colored
+    /// bar reads as full width while its text keeps the padding.
+    private func appendPaddingExtension(_ padding: PaddingExtension, into rectangles: inout [TermiodStreamRectangle]) {
+        guard padding != PaddingExtension(), columns > 0, !rowEdgeBackgrounds.isEmpty else { return }
+        let last = rowEdgeBackgrounds.count - 1
+        for (row, backgrounds) in rowEdgeBackgrounds.enumerated() {
+            guard let backgrounds, !backgrounds.isEmpty else { continue }
+            // Each span reaches up from the first row and down from the last;
+            // the outer two reach sideways, and into the corners there.
+            var spans: [(cell: TermiodStreamRectangle, x: Int, width: Int)] = []
+            if row == 0 || row == last {
+                spans = backgrounds.map { ($0, 0, Int($0.width)) }
+            }
+            if padding.left > 0, let first = backgrounds.first, first.cellX == 0 {
+                rectangles.append(Self.offset(first, x: -padding.left, y: 0, width: padding.left, height: Int(first.height)))
+                spans.append((first, -padding.left, padding.left))
+            }
+            if padding.right > 0, let end = backgrounds.last,
+               Int(end.cellX) + Int(end.width) / max(1, cellWidth) >= Int(columns) {
+                rectangles.append(Self.offset(end, x: Int(end.width), y: 0, width: padding.right, height: Int(end.height)))
+                spans.append((end, Int(end.width), padding.right))
+            }
+            for span in spans {
+                if row == 0, padding.top > 0 {
+                    rectangles.append(Self.offset(span.cell, x: span.x, y: -padding.top, width: span.width, height: padding.top))
+                }
+                if row == last, padding.bottom > 0 {
+                    rectangles.append(Self.offset(
+                        span.cell, x: span.x, y: Int(span.cell.height), width: span.width, height: padding.bottom))
+                }
+            }
+        }
+    }
+
+    private static func offset(_ cell: TermiodStreamRectangle, x: Int, y: Int, width: Int, height: Int) -> TermiodStreamRectangle {
+        TermiodStreamRectangle(
+            cellX: cell.cellX, cellY: cell.cellY, x: Int16(clamping: x), y: Int16(clamping: y),
+            width: UInt16(clamping: width), height: UInt16(clamping: height),
+            r: cell.r, g: cell.g, b: cell.b, a: cell.a
+        )
     }
 }
