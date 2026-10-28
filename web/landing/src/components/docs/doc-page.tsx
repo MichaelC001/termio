@@ -230,12 +230,21 @@ export async function DocPage({
         path: `web/landing/content/docs/${page.path}`,
       }}
     >
-      {/* The tree section provides context without repeating the page title. */}
-      {section && (
-        <p className="docs-eyebrow -mb-2 text-[14px] leading-normal text-muted-foreground">
-          {section}
-        </p>
-      )}
+      {/* The pane's header row: where the page sits in the tree. */}
+      <nav
+        aria-label="Breadcrumb"
+        className="docs-breadcrumb flex items-center gap-1.5 text-[13px] leading-normal text-muted-foreground"
+      >
+        {section && (
+          <>
+            <span>{section}</span>
+            <span aria-hidden="true">›</span>
+          </>
+        )}
+        <span aria-current="page" className="text-foreground">
+          {page.data.title}
+        </span>
+      </nav>
       <DocsTitle className="text-[33.75px] font-normal leading-[40.5px] tracking-[-0.02em]">
         {page.data.title}
       </DocsTitle>
