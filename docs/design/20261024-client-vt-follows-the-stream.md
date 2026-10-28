@@ -1,9 +1,9 @@
 ---
 title: The client VT follows the stream
-status: draft
+status: active
 type: design
 created: 2026-10-24
-updated: 2026-10-26
+updated: 2026-10-28
 related:
   - 20260730-termiod-session-protocol.md
   - 20260901-pty-size-is-not-the-write-token.md
@@ -278,13 +278,22 @@ Each phase ends at a gate. A failed gate stops the work.
    (`20260831-companion-second-protocol-retires.md`). The companion path stays
    on keyframes until then. **Step one done (#807):** the terminal and the
    renderer live in Shared's `TermioStream` module, which iOS can link.
-   **Deferred, on purpose:** a UIKit view to replace the package's
-   `UITerminalView` (about 3,200 lines: keyboard, input method, sticky
-   modifiers, key bar, scrolling, pinch zoom), and `TermiodSession` offering
-   `vt_stream`, `vt_input` and `vt_resume`. The Mac comes first; the phone keeps
-   the embedded surface and keyframes meanwhile.
+   **Step two done (#813):** `TermiodSession` offers `vt_stream` and
+   `vt_input`, and `StreamTerminalView` draws the stream with the soft
+   keyboard, input method composition, hardware keys, the key bar's sticky
+   modifiers, scrolling, pinch and Paste. It draws in the embedded surface's
+   font chain at its size: off the Mac Ghostty reads a size at 96 dpi, so the
+   stream pane scales the setting by 96/72. It is behind the hidden
+   `TermioStreamTerminal` default, off.
+   **Open:** the default stays off until a real phone has typed through a
+   Chinese or Japanese input method and held a long session across lock and
+   unlock; the simulator can test neither. The companion path stays on
+   keyframes, and with it the hold machinery, until the bridge is retired.
 7. **Resume by byte offset**, as Rex's `RESUME` does: a reconnect continues the
-   stream with no snapshot.
+   stream with no snapshot. **Done on the Mac and the phone (#815).** On the
+   phone a reconnect no longer asks for a snapshot while the session streams,
+   and the WebSocket link drops a late message from a socket it replaced,
+   which a resumed terminal would otherwise keep.
 
    Mechanism (`vt_resume`, on top of `vt_stream`). Each session actor names
    its stream with a random epoch and numbers its bytes and its `vt_resize`

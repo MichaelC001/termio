@@ -456,10 +456,9 @@ final class TerminalViewController: UIViewController {
         max(1, terminalView.window?.screen.nativeScale ?? traitCollection.displayScale)
     }
 
+    /// The stream pane draws with the same padding, so the two panes fit the
+    /// same grid.
     private var terminalPadding: CGSize {
-        if streamView != nil {
-            return CGSize(width: Self.terminalPaddingX, height: Self.terminalPaddingY)
-        }
         // Ghostty uses 96 DPI on iOS (72 on macOS). Its config points therefore
         // differ from UIKit points; match Surface.scaledPadding's pixel floor.
         let scale = terminalDisplayScale
@@ -1227,12 +1226,18 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// The embedded surface's font size, padding and the system's fixed-pitch
-    /// face: libghostty's bundled font is the embedded surface's own.
+    /// The embedded surface's font chain, size and padding. Ghostty skips a
+    /// family it cannot load, and the first one left sets the cell, so the
+    /// chain is cut the same way here. Off the Mac Ghostty reads a size at 96
+    /// dots per inch, not 72 (`default_dpi` in its `font/face.zig`), so the
+    /// same setting draws a third larger there.
     private func streamAppearance() -> TermiodStreamRenderer.Appearance {
-        TermiodStreamRenderer.Appearance(
-            fontFamily: "", fallbackFamilies: [], fontSize: CGFloat(MobileSettings.shared.fontSize),
-            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY, backgroundOpacity: 0)
+        let installed = Set(UIFont.familyNames)
+        let chain = Self.terminalFontChain().filter(installed.contains)
+        return TermiodStreamRenderer.Appearance(
+            fontFamily: chain.first ?? "", fallbackFamilies: Array(chain.dropFirst()),
+            fontSize: CGFloat(MobileSettings.shared.fontSize) * 96 / 72,
+            paddingX: terminalPadding.width, paddingY: terminalPadding.height, backgroundOpacity: 0)
     }
 
     private func streamPinched(_ scale: CGFloat) {
