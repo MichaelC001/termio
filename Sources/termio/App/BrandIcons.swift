@@ -97,10 +97,9 @@ struct AgentIconView: View {
         case .image(let url):
             AgentImageView(url: url, size: size)
         case .terminalGlyph:
-            // A thin stroke already reads lighter than the filled brand tiles, so
-            // paint it at full label strength (`.primary`) — anything less looks
-            // washed out next to the row text and the opaque vendor marks.
-            HugeIconView(icon: .terminal, size: size, color: .primary)
+            // Filled, so it carries the same weight as the opaque vendor marks
+            // beside it; a thin outline read washed out next to them.
+            HugeIconSolidView(icon: .terminal, size: size, color: .primary)
         case .huge(let icon):
             HugeIconView(icon: icon, size: size, color: .primary)
         case .vector(let logo):

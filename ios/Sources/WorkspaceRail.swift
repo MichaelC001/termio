@@ -183,6 +183,11 @@ final class WorkspaceRailViewController: UIViewController {
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.sizeScrollingHeaderToFit()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Opaque, and on the same themed canvas as the pages behind it: the
@@ -217,13 +222,6 @@ final class WorkspaceRailViewController: UIViewController {
         // page, and a title sized for a full width would truncate on this one.
         title.font = .systemFont(ofSize: 22, weight: .bold)
         title.textColor = .label
-        title.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(title)
-        NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
-            title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-        ])
         return title
     }
 
@@ -240,10 +238,11 @@ final class WorkspaceRailViewController: UIViewController {
             RailMachineHeaderView.self,
             forHeaderFooterViewReuseIdentifier: RailMachineHeaderView.reuseID
         )
+        tableView.setScrollingHeader(topBar, horizontalInset: ListCard.headerInset, top: 16, bottom: 12)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 12),
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -275,7 +274,7 @@ extension WorkspaceRailViewController: UITableViewDataSource, UITableViewDelegat
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        showsMachineHeadings ? 28 : 0
+        showsMachineHeadings ? WorkspaceSectionHeaderView.height : 0
     }
 
     /// A whitespace gap under each group, like every other list in the app.
@@ -293,10 +292,11 @@ extension WorkspaceRailViewController: UITableViewDataSource, UITableViewDelegat
             WorkspaceRailRow(
                 name: workspace.name,
                 isSelected: workspace.id == scope.selectedID,
-                showsSeparator: indexPath.row < workspaces.count - 1
+                isFirst: indexPath.row == 0,
+                isLast: indexPath.row == workspaces.count - 1
             )
         }
-        .margins(.horizontal, 12)
+        .margins(.horizontal, ListCard.outerMargin)
         .margins(.vertical, 0)
         return cell
     }
@@ -309,15 +309,25 @@ extension WorkspaceRailViewController: UITableViewDataSource, UITableViewDelegat
 
 // MARK: - Rows
 
-/// One workspace. The name, and a checkmark on the one in scope — the same two
-/// halves the Mac's own workspace menu draws, so the two switchers read alike.
+/// One workspace: a glass tile carrying its initial, the name, and a checkmark
+/// on the one in scope — the same name-and-check halves the Mac's own workspace
+/// menu draws, so the two switchers read alike. The tile is Slack's workspace
+/// icon in the list's glass style; a workspace has no glyph of its own.
 private struct WorkspaceRailRow: View {
     let name: String
     let isSelected: Bool
-    var showsSeparator = false
+    var isFirst = false
+    var isLast = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ListCard.tileSpacing) {
+            ListTile {
+                Text(initial)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary.opacity(0.9))
+            }
+            // Decoration: the name beside it is what VoiceOver should read.
+            .accessibilityHidden(true)
             Text(name)
                 .font(.body)
                 .lineLimit(1)
@@ -329,23 +339,17 @@ private struct WorkspaceRailRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 11)
-        .background(
-            isSelected ? Color.primary.opacity(0.08) : .clear,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottom) {
-            if showsSeparator { RowSeparator(leadingInset: 10) }
-        }
+        .listCard(isFirst: isFirst, isLast: isLast, isHighlighted: isSelected)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
+
+    private var initial: String {
+        name.trimmingCharacters(in: .whitespaces).first.map { String($0).uppercased() } ?? "·"
+    }
 }
 
-/// The machine heading over a group of workspaces. Its case is left alone,
-/// unlike the uppercased captions elsewhere: this is an `~/.ssh/config` alias, a
+/// The machine heading over a group of workspaces. Its case is left alone: this is an `~/.ssh/config` alias, a
 /// literal the user typed, and recasing it makes it something they can't find
 /// again.
 private final class RailMachineHeaderView: UITableViewHeaderFooterView {
@@ -355,14 +359,16 @@ private final class RailMachineHeaderView: UITableViewHeaderFooterView {
 
     override init(reuseIdentifier: String?) {
         super.init(reuseIdentifier: reuseIdentifier)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
         label.textColor = .secondaryLabel
         label.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 22),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -22),
-            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor, constant: ListCard.headerInset),
+            label.trailingAnchor.constraint(
+                lessThanOrEqualTo: contentView.trailingAnchor, constant: -ListCard.headerInset),
+            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
         ])
     }
 

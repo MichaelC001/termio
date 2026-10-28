@@ -251,10 +251,11 @@ extension ProjectDetailViewController: UITableViewDataSource, UITableViewDelegat
             SessionRow(
                 session: session,
                 isCurrent: session.key == store.currentSessionKey,
-                showsSeparator: indexPath.row < project.sessions.count - 1
+                isFirst: indexPath.row == 0,
+                isLast: indexPath.row == project.sessions.count - 1
             )
         }
-        .margins(.horizontal, 12)
+        .margins(.horizontal, ListCard.outerMargin)
         .margins(.vertical, 0)
         return cell
     }

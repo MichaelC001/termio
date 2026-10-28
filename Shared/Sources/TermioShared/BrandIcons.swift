@@ -83,7 +83,7 @@ public struct AgentIconView: View {
                 .font(.system(size: size))
                 .foregroundStyle(tint)
         } else {
-            HugeIconView(icon: .terminal, size: size, color: .monochromeInk)
+            HugeIconSolidView(icon: .terminal, size: size, color: .monochromeInk)
         }
     }
 
@@ -136,7 +136,7 @@ public struct BrandImageView: View {
             // The name arrived over the wire from a peer whose bundle may not
             // match ours (an older Mac naming an asset this build dropped) —
             // degrade to the terminal glyph, visibly, never an invisible tile.
-            HugeIconView(icon: .terminal, size: size, color: .monochromeInk)
+            HugeIconSolidView(icon: .terminal, size: size, color: .monochromeInk)
         }
     }
 
@@ -667,6 +667,96 @@ public struct HugeIconView: View {
 
     private var lineWidth: CGFloat {
         lineWidthOverride ?? max(1.1, size * 1.5 / icon.viewBox)
+    }
+}
+
+/// A `HugeIcon`'s filled twin: the mark's body filled, its interior detail
+/// punched back out — a closed run as a hole, an open one as a cleared stroke.
+/// The same reading as the iOS selected tab's `solidImage`, drawn in SwiftUI so
+/// the Mac sidebar and the phone's rows fill the same glyph the same way. A
+/// mark with no solid reading (`solidSubpaths == nil`) stays an outline.
+public struct HugeIconSolidView: View {
+    let icon: HugeIcon
+    let size: CGFloat
+    let color: Color
+
+    public init(icon: HugeIcon, size: CGFloat, color: Color) {
+        self.icon = icon
+        self.size = size
+        self.color = color
+    }
+
+    public var body: some View {
+        if let solid = icon.solidSubpaths {
+            Canvas { context, canvasSize in
+                let rect = CGRect(origin: .zero, size: canvasSize)
+                let subpaths = HugeIconShape(icon: icon).path(in: rect).cgPath.glyphSubpaths
+                var body = Path()
+                for (index, subpath) in subpaths.enumerated() where solid.contains(index) {
+                    body.addPath(Path(subpath.path))
+                }
+                context.fill(body, with: .color(color), style: FillStyle(eoFill: true))
+
+                // A shade heavier than the outline's own line: a cleared mark on
+                // a solid body reads thinner than the same line drawn on its own.
+                let detailWidth = max(1.4, canvasSize.width * 2.0 / icon.viewBox)
+                context.blendMode = .clear
+                for (index, subpath) in subpaths.enumerated() where !solid.contains(index) {
+                    if subpath.isClosed {
+                        context.fill(Path(subpath.path), with: .color(.black), style: FillStyle(eoFill: true))
+                    } else {
+                        context.stroke(
+                            Path(subpath.path),
+                            with: .color(.black),
+                            style: StrokeStyle(lineWidth: detailWidth, lineCap: .round, lineJoin: .round)
+                        )
+                    }
+                }
+            }
+            .frame(width: size, height: size)
+        } else {
+            HugeIconView(icon: icon, size: size, color: color)
+        }
+    }
+}
+
+/// One `M`-delimited run of a glyph, and whether it closed — a closed run
+/// bounds an area (the gear's bore), an open one is a line (the terminal's
+/// prompt), and the solid renderer punches each out accordingly.
+public struct GlyphSubpath {
+    public let path: CGPath
+    public let isClosed: Bool
+}
+
+public extension CGPath {
+    /// The path split at each `moveTo`, so a glyph's body can be filled while
+    /// its interior detail is drawn separately. Walking the built path rather
+    /// than splitting the source string keeps relative `m` subpaths correct.
+    var glyphSubpaths: [GlyphSubpath] {
+        var paths: [CGMutablePath] = []
+        var closed: [Bool] = []
+        applyWithBlock { element in
+            let points = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint:
+                let subpath = CGMutablePath()
+                subpath.move(to: points[0])
+                paths.append(subpath)
+                closed.append(false)
+            case .addLineToPoint:
+                paths.last?.addLine(to: points[0])
+            case .addQuadCurveToPoint:
+                paths.last?.addQuadCurve(to: points[1], control: points[0])
+            case .addCurveToPoint:
+                paths.last?.addCurve(to: points[2], control1: points[0], control2: points[1])
+            case .closeSubpath:
+                paths.last?.closeSubpath()
+                if !closed.isEmpty { closed[closed.count - 1] = true }
+            @unknown default:
+                break
+            }
+        }
+        return zip(paths, closed).map { GlyphSubpath(path: $0, isClosed: $1) }
     }
 }
 

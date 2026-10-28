@@ -105,7 +105,7 @@ extension HugeIcon {
     func solidImage(boxSize: CGFloat) -> UIImage? {
         guard let solidSubpaths else { return nil }
         let bounds = CGRect(x: 0, y: 0, width: boxSize, height: boxSize)
-        let subpaths = HugeIconShape(icon: self).path(in: bounds).cgPath.subpaths
+        let subpaths = HugeIconShape(icon: self).path(in: bounds).cgPath.glyphSubpaths
         // A shade heavier than the outline's own line: a cleared mark on a solid
         // body reads thinner than the same line drawn on its own.
         let detailWidth = max(1.4, boxSize * 2.0 / viewBox)
@@ -138,42 +138,3 @@ extension HugeIcon {
     }
 }
 
-/// One `M`-delimited run of a glyph, and whether it closed — a closed run
-/// bounds an area (the gear's bore), an open one is a line (the terminal's
-/// prompt), and the solid renderer punches each out accordingly.
-private struct Subpath {
-    let path: CGPath
-    let isClosed: Bool
-}
-
-private extension CGPath {
-    /// The path split at each `moveTo`, so a glyph's body can be filled while
-    /// its interior detail is drawn separately. Walking the built path rather
-    /// than splitting the source string keeps relative `m` subpaths correct.
-    var subpaths: [Subpath] {
-        var paths: [CGMutablePath] = []
-        var closed: [Bool] = []
-        applyWithBlock { element in
-            let points = element.pointee.points
-            switch element.pointee.type {
-            case .moveToPoint:
-                let subpath = CGMutablePath()
-                subpath.move(to: points[0])
-                paths.append(subpath)
-                closed.append(false)
-            case .addLineToPoint:
-                paths.last?.addLine(to: points[0])
-            case .addQuadCurveToPoint:
-                paths.last?.addQuadCurve(to: points[1], control: points[0])
-            case .addCurveToPoint:
-                paths.last?.addCurve(to: points[2], control1: points[0], control2: points[1])
-            case .closeSubpath:
-                paths.last?.closeSubpath()
-                if !closed.isEmpty { closed[closed.count - 1] = true }
-            @unknown default:
-                break
-            }
-        }
-        return zip(paths, closed).map { Subpath(path: $0, isClosed: $1) }
-    }
-}
