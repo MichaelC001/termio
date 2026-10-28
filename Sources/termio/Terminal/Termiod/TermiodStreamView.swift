@@ -257,9 +257,6 @@ final class TermiodStreamView: NSView {
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
-        if let state = terminal.scrollbar {
-            scroller.apply(state, cellHeight: renderer.cellSize.height, replaced: replaced)
-        }
         do {
             if try renderer.draw(
                 terminal, into: metalLayer, focused: focused, force: needsFullDraw || replaced,
@@ -269,6 +266,9 @@ final class TermiodStreamView: NSView {
                 framesPresented += 1
             }
             needsFullDraw = false
+            if let state = renderer.scrollbar {
+                scroller.apply(state, cellHeight: renderer.cellSize.height, replaced: replaced)
+            }
             let edge = renderer.topEdgeColor
             if reportedTopEdge.map({ $0 != (edge.r, edge.g, edge.b) }) ?? true {
                 reportedTopEdge = (edge.r, edge.g, edge.b)
@@ -392,6 +392,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
         guard event.type == .keyDown, window?.firstResponder === self, terminal() != nil else { return false }
         if markedText.length == 0, let move = TermiodStreamKeyboard.viewportMove(event) {
             terminal()?.moveViewport(move)
+            scroller.userScrolled()
             needsFullDraw = true
             consumedKeys.insert(event.keyCode)
             return true
@@ -849,6 +850,7 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
                                    mods: TermiodStreamKeyboard.mods(event.modifierFlags), at: at)))
         } else if clampedRows != 0 {
             terminal.scrollViewport(rows: clampedRows)
+            scroller.userScrolled()
             needsFullDraw = true
         }
     }
@@ -871,6 +873,10 @@ final class TermiodStreamScroller: NSScrollView {
     /// The user is dragging the knob, so the VT follows the clip view and
     /// not the other way round.
     private var liveScrolling = false
+    /// The wheel or a scrolling key moved the view since the last frame, so
+    /// the next change shows the scroller. Output and trimmed history move
+    /// the state too, and must not.
+    private var pendingFlash = false
 
     init() {
         super.init(frame: .zero)
@@ -879,8 +885,6 @@ final class TermiodStreamScroller: NSScrollView {
         hasVerticalScroller = false
         hasHorizontalScroller = false
         autohidesScrollers = true
-        // Overlay always: a legacy scroller would take columns from a grid
-        // the daemon sizes.
         scrollerStyle = .overlay
         verticalScrollElasticity = .none
         horizontalScrollElasticity = .none
@@ -895,6 +899,18 @@ final class TermiodStreamScroller: NSScrollView {
         NotificationCenter.default.addObserver(
             self, selector: #selector(liveScrollEnded), name: NSScrollView.didEndLiveScrollNotification, object: self
         )
+    }
+
+    /// Overlay always, even when the system setting changes while the pane
+    /// is open: a legacy scroller would cover columns of a grid the daemon
+    /// sizes, and take their clicks.
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+
+    func userScrolled() {
+        pendingFlash = true
     }
 
     @objc private func liveScrollStarted() {
@@ -918,42 +934,46 @@ final class TermiodStreamScroller: NSScrollView {
         return hit is NSScroller ? hit : nil
     }
 
+    /// AppKit clamps the clip view against the old document while the frame
+    /// changes; that is layout, not the user scrolling.
     override func setFrameSize(_ newSize: NSSize) {
+        applying = true
         super.setFrameSize(newSize)
+        applying = false
         if let state { layoutDocument(state) }
     }
 
     /// Called every frame. Ghostty's renderer polls the same state, since
     /// libghostty reports no change.
     func apply(_ state: TermiodStreamTerminal.Scrollbar, cellHeight: CGFloat, replaced: Bool) {
+        let flash = pendingFlash && !replaced
+        pendingFlash = false
         guard state != self.state || cellHeight != self.cellHeight || replaced else { return }
-        let previous = self.state
         self.state = state
         self.cellHeight = cellHeight
         lastSentRow = state.offset
         hasVerticalScroller = state.total > state.length
         layoutDocument(state)
-        // Only a move of the view shows the scroller: output at the bottom
-        // moves `offset` alone, output under a view held in history moves
-        // the distance from the bottom alone.
-        if let previous, !replaced, previous.offset != state.offset,
-           Self.belowView(previous) != Self.belowView(state) {
-            flashScrollers()
-        }
+        if flash { flashScrollers() }
+    }
+
+    private static func above(_ state: TermiodStreamTerminal.Scrollbar) -> UInt64 {
+        state.total > state.length ? state.total - state.length : 0
     }
 
     private static func belowView(_ state: TermiodStreamTerminal.Scrollbar) -> UInt64 {
-        state.total &- state.offset &- state.length
+        let travel = above(state)
+        return travel > state.offset ? travel - state.offset : 0
     }
 
     private func layoutDocument(_ state: TermiodStreamTerminal.Scrollbar) {
         guard cellHeight > 0 else { return }
         applying = true
         defer { applying = false }
-        // The padding below the grid stays below the last row, as in Ghostty.
-        let padding = max(0, bounds.height - CGFloat(state.length) * cellHeight)
-        let height = CGFloat(state.total) * cellHeight + padding
-        document.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(height, bounds.height))
+        // The travel is exactly the rows above and below the view, so every
+        // knob position is a row, even when the pane clips the grid.
+        let travel = CGFloat(Self.above(state)) * cellHeight
+        document.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height + travel)
         guard !liveScrolling else { return }
         contentView.scroll(to: NSPoint(x: 0, y: CGFloat(Self.belowView(state)) * cellHeight))
         reflectScrolledClipView(contentView)
@@ -962,7 +982,7 @@ final class TermiodStreamScroller: NSScrollView {
     @objc private func clipBoundsChanged() {
         guard !applying, let state, cellHeight > 0 else { return }
         let below = contentView.bounds.minY / cellHeight
-        let top = Double(state.total) - Double(state.length) - Double(below)
+        let top = Double(Self.above(state)) - Double(below)
         let row = UInt64(max(0, top.rounded()))
         guard row != lastSentRow else { return }
         lastSentRow = row

@@ -108,6 +108,8 @@ public final class TermiodStreamRenderer {
     /// True when a frame was presented.
     /// `TermiodStreamFrameBuilder.topEdgeColor` as of the last frame built.
     public var topEdgeColor: GhosttyColorRgb { builder.topEdgeColor }
+    /// The terminal's scrollbar state as of the last frame prepared.
+    public private(set) var scrollbar: TermiodStreamTerminal.Scrollbar?
 
     @discardableResult
     public func draw(
@@ -198,6 +200,7 @@ public final class TermiodStreamRenderer {
                 from: state, atlas: atlas, focused: focused, blinkOn: blinkOn, theme: theme, preedit: preedit, link: link
             )
             let pictures = images.read(state, storage: storage, force: force)
+            scrollbar = storage.scrollbar
             return text || pictures
         }
         images.upload(device: device)
@@ -267,8 +270,8 @@ public final class TermiodStreamRenderer {
         let bottom = texture.height - top - builder.rowCount * cell.height
         return TermiodStreamFrameBuilder.PaddingExtension(
             left: left, top: top,
-            right: right >= 0 && right <= left + 2 * cell.width ? right : 0,
-            bottom: bottom >= 0 && bottom <= top + 2 * cell.height ? bottom : 0
+            right: right >= 0 && right <= left + cell.width ? right : 0,
+            bottom: bottom >= 0 && bottom <= top + cell.height ? bottom : 0
         )
     }
 
@@ -1566,6 +1569,9 @@ public final class TermiodStreamFrameBuilder {
                 swap(&foreground, &background)
                 paintsBackground = true
             }
+            // The cell's own background, before the selection paints over it:
+            // what the padding takes, and what decides whether it may.
+            let ownsBackground = paintsBackground
             if paintsBackground {
                 edgeBackgrounds.append(TermiodStreamRectangle(
                     cellX: x, cellY: UInt16(y), x: 0, y: 0,
@@ -1605,7 +1611,7 @@ public final class TermiodStreamFrameBuilder {
             if grapheme == [0x20] { continue }
             // Ghostty's `neverExtendBg`: a Powerline segment drawn to the cell
             // edge would smear its color across the padding.
-            if paintsBackground, grapheme.contains(where: { (0xE0B0 ... 0xE0D7).contains($0) }) {
+            if ownsBackground, grapheme.contains(where: { (0xE0B0 ... 0xE0D7).contains($0) }) {
                 extendsEdges = false
             }
             guard let slot = atlas.slot(graphemes: grapheme, bold: style.bold, italic: style.italic, cells: Int(span)) else {

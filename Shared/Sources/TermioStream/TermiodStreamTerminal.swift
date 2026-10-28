@@ -672,6 +672,17 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
     public struct FrameImages {
         fileprivate let terminal: GhosttyTerminal
 
+        /// The view's place in the screen and its history, read under the
+        /// frame's lock so a scrollbar polling it every frame keeps the
+        /// renderer's place in line for the lock.
+        public var scrollbar: Scrollbar? {
+            var state = GhosttyTerminalScrollbar()
+            guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &state) == GHOSTTY_SUCCESS else {
+                return nil
+            }
+            return Scrollbar(total: state.total, offset: state.offset, length: state.len)
+        }
+
         /// An image's pixels as straight-alpha RGBA, with the generation they
         /// belong to, or nil while it has none.
         public func pixels(id: UInt32) -> ImagePixels? {
@@ -850,14 +861,6 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
         public var total: UInt64
         public var offset: UInt64
         public var length: UInt64
-    }
-
-    public var scrollbar: Scrollbar? {
-        locked {
-            var state = GhosttyTerminalScrollbar()
-            guard (try? get(GHOSTTY_TERMINAL_DATA_SCROLLBAR, &state)) != nil else { return nil }
-            return Scrollbar(total: state.total, offset: state.offset, length: state.len)
-        }
     }
 
     /// Moves this view so `row`, in `Scrollbar.offset`'s row space, is at its top.
