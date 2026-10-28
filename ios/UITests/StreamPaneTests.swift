@@ -75,4 +75,18 @@ final class StreamPaneTests: XCTestCase {
         stream.typeText("echo after the cut\n")
         shoot("after", settle: 3)
     }
+
+    func testFontCompare() throws {
+        for stream in ["YES", "NO"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-pair-device", try invite(), "-TermioStreamTerminal", stream]
+            app.launch()
+            app.buttons["home.tab.terminals"].tap()
+            let session = app.cells.firstMatch
+            XCTAssertTrue(session.waitForExistence(timeout: 15))
+            session.tap()
+            shoot("stream-\(stream)", settle: 5)
+            app.terminate()
+        }
+    }
 }

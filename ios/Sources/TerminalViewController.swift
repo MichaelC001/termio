@@ -1227,11 +1227,17 @@ final class TerminalViewController: UIViewController {
         }
     }
 
-    /// The embedded surface's font size, padding and the system's fixed-pitch
-    /// face: libghostty's bundled font is the embedded surface's own.
+    /// The embedded surface's font chain, size and padding. Ghostty skips a
+    /// family it cannot load, and the first one left sets the cell, so the
+    /// chain is cut the same way here. Off the Mac Ghostty reads a size at 96
+    /// dots per inch, not 72 (`default_dpi` in its `font/face.zig`), so the
+    /// same setting draws a third larger there.
     private func streamAppearance() -> TermiodStreamRenderer.Appearance {
-        TermiodStreamRenderer.Appearance(
-            fontFamily: "", fallbackFamilies: [], fontSize: CGFloat(MobileSettings.shared.fontSize),
+        let installed = Set(UIFont.familyNames)
+        let chain = Self.terminalFontChain().filter(installed.contains)
+        return TermiodStreamRenderer.Appearance(
+            fontFamily: chain.first ?? "", fallbackFamilies: Array(chain.dropFirst()),
+            fontSize: CGFloat(MobileSettings.shared.fontSize) * 96 / 72,
             paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY, backgroundOpacity: 0)
     }
 
