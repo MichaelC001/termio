@@ -17,6 +17,28 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.67.0",
+    date: "2026-10-27",
+    title: "Termio's own terminal renderer",
+    changes: {
+      new: [
+        "Terminal panes draw with Termio's own renderer, so a resize or a restart never scrambles the screen.",
+        "Terminal panes show a scrollbar while you scroll through history.",
+        "The sidebar shows each machine's projects the way that machine's Termio server keeps them. Your existing sidebar is imported once, and a copy of the old state is kept.",
+        "Projects you open with termio . on a remote machine show in that machine's workspace on the Mac.",
+      ],
+      improved: [
+        "A program's colored bars reach the edge of the pane, and its background color reaches the pane header.",
+        "Programming ligatures draw in fonts that have them.",
+        "A pane that loses its connection for a moment picks up where it left off and keeps its scrollback.",
+        "Programs get their terminal queries answered even while no window shows the session.",
+      ],
+      fixed: [
+        "Emoji with skin tones and other combined emoji draw as one glyph.",
+      ],
+    },
+  },
+  {
     version: "0.66.0",
     date: "2026-10-26",
     title: "Sessions from any shell",
