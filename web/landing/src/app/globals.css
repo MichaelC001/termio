@@ -61,32 +61,31 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* The site's palette — Apple's HIG light system, matched to developer.apple.com:
-   a neutral #f4f4f6 canvas with pure-white cards, #1d1d1f ink (Apple's soft
-   near-black, not pure black), the signature #86868b secondary gray, #d2d2d7
-   hairlines, and a soft-black (#1d1d1f) primary for buttons. Fully monochrome —
-   no colored accent. The light half of the site's appearance switch. */
+/* The site's palette, shared by the landing page and the docs the way Linear's
+   site and docs share one token set: a white canvas, near-neutral greys a step
+   apart for raised surfaces, #282a30 ink, and a near-black primary for buttons.
+   Fully monochrome, no colored accent. The light half of the appearance switch. */
 :root {
   color-scheme: light;
-  /* The light palette's raw values, named once. The docs surface re-applies these
-     when the reader's system is in light mode (see `.docs-surface`), so the two
-     places that resolve a light theme can never drift apart. */
-  /* A soft grey canvas rather than white, so white glass cards read above it. */
-  --light-background: #f4f4f6;
-  --light-foreground: #1d1d1f;
-  --light-card: #ffffff;
+  /* The light palette's raw values, named once. The appearance rules below
+     re-apply them, so the places that resolve a light theme cannot drift. */
+  --light-background: #ffffff;
+  --light-foreground: #282a30;
+  /* Cards and the docs sidebar sit one step off the white page; with no border
+     on either rail, that step is what separates the tree from the text. */
+  --light-card: #f9f8f9;
   --light-popover: #ffffff;
-  --light-primary: #14171c;
+  --light-primary: #282a30;
   --light-primary-foreground: #ffffff;
-  --light-secondary: #e8e8ed;
-  --light-muted-foreground: #6e6e73;
-  --light-accent: #e1e1e7;
-  --light-border: #d2d2d7;
-  --light-input: #d2d2d7;
+  --light-secondary: #f4f2f4;
+  --light-muted-foreground: #6f6e77;
+  --light-accent: #eeedef;
+  --light-border: #e4e2e4;
+  --light-input: #dcdbdd;
   /* Code blocks sit on their own surface: near-black in dark mode, a quiet grey in
      light mode. A near-black block on a white page reads as a hole. */
-  --light-code: #f5f5f7;
-  --light-selection: rgba(0, 0, 0, 0.08);
+  --light-code: #f4f2f4;
+  --light-selection: rgba(40, 42, 48, 0.1);
 
   --background: var(--light-background);
   --foreground: var(--light-foreground);
@@ -94,8 +93,6 @@
   --card-foreground: var(--light-foreground);
   --popover: var(--light-popover);
   --popover-foreground: var(--light-foreground);
-  /* Premium near-black for buttons — a hair cooler and deeper than the ink, so the
-     CTA reads as an object rather than heavy text. */
   --primary: var(--light-primary);
   --primary-foreground: var(--light-primary-foreground);
   --secondary: var(--light-secondary);
@@ -135,28 +132,26 @@
   --sidebar-primary-foreground: var(--light-primary-foreground);
 }
 
-/* The dark palette, the site's base — a near-black canvas with light ink.
+/* The dark palette, the site's base: Linear's near-black canvas with light ink.
    Applied to <html> so the whole page resolves these tokens (and shadcn `dark:`
    variants fire); the appearance rules below swap the light palette over it.
    Product mocks reuse the class so a drawn app window stays dark on any page. */
 .dark {
   color-scheme: dark;
-  /* Raw values, named once — the docs' theme switch re-applies this same palette
-     when a reader picks Dark while their system is Light. */
-  --dark-background: #08080a;
-  --dark-foreground: #f4f4f6;
-  /* Card sits one clear step above the page black — #0c0c0f was only ~4 gray
-     levels off #08080a, invisible on most panels. */
-  --dark-card: #121217;
-  --dark-popover: #0e0e12;
-  --dark-primary: #ffffff;
-  --dark-primary-foreground: #08080a;
-  --dark-secondary: #161619;
-  --dark-muted-foreground: #8e8e98;
-  --dark-border: rgba(255, 255, 255, 0.1);
-  --dark-input: rgba(255, 255, 255, 0.14);
-  --dark-code: #0c0c0f;
-  --dark-selection: rgba(255, 255, 255, 0.16);
+  /* Raw values, named once. The theme switch re-applies this same palette when a
+     reader picks Dark while their system is Light. */
+  --dark-background: #08090a;
+  --dark-foreground: #f7f8f8;
+  --dark-card: #0f1011;
+  --dark-popover: #141516;
+  --dark-primary: #f7f8f8;
+  --dark-primary-foreground: #08090a;
+  --dark-secondary: #1c1c1f;
+  --dark-muted-foreground: #8a8f98;
+  --dark-border: #23252a;
+  --dark-input: #34343a;
+  --dark-code: #0f1011;
+  --dark-selection: rgba(247, 248, 248, 0.16);
 
   --background: var(--dark-background);
   --foreground: var(--dark-foreground);
@@ -185,55 +180,19 @@
   --sidebar-primary-foreground: var(--dark-primary-foreground);
 }
 
-/* Scoped raw palettes also reach portaled menus without changing the landing. */
+/* The docs share the site palette; only the focus ring and the reading font
+   differ. */
 html:has(.docs-surface) {
   --ring: var(--foreground);
   --font-docs-sans: cursorSans, "cursorSans Fallback", system-ui, "Helvetica Neue",
     Helvetica, Arial, sans-serif, "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Noto Sans SC";
-  --light-background: #f7f7f4;
-  --light-foreground: #26251e;
-  /* The sidebar's surface, a step off the page — the `bg-card` against
-     `bg-background` that Cursor's docs use, #F0EFEA on #F7F7F4. It is what
-     separates the tree from the text now that neither rail carries a border.
-
-     It reaches the sidebar through `--sidebar`, not through this token directly:
-     fumadocs paints `#nd-sidebar` from an unlayered rule reading the shadcn
-     `--sidebar*` family, so the `bg-fd-card` class on the aside never wins. Dark
-     already had the split (--dark-card sits above --dark-background); light had
-     card equal to background, so the sidebar vanished into the page. */
-  --light-card: #f0efea;
-  --light-popover: #f7f7f4;
-  --light-primary: #26251e;
-  --light-primary-foreground: #f7f7f4;
-  --light-secondary: #eeeee9;
-  --light-muted-foreground: #7a7974;
-  --light-accent: #e8e8e2;
-  --light-border: #ddddd5;
-  --light-input: #ddddd5;
-  --light-code: #eeeee9;
-  --light-selection: rgba(38, 37, 30, 0.1);
-
-  --dark-background: #1b1b18;
-  --dark-foreground: #eeeee8;
-  --dark-card: #21211d;
-  --dark-popover: #242420;
-  --dark-primary: #eeeee8;
-  --dark-primary-foreground: #1b1b18;
-  --dark-secondary: #292924;
-  --dark-muted-foreground: #a2a29a;
-  --dark-border: #383831;
-  --dark-input: #46463d;
-  --dark-code: #242420;
-  --dark-selection: rgba(238, 238, 232, 0.16);
-
 }
 
 /* The site's appearance: the reader's system by default, overridable by the
    switch in the docs header and the landing footer. `<html class="dark">` is the
-   base; the rules below swap the light palette in over it. The docs get their
-   warm palette from the raw `--light-*` / `--dark-*` values redefined above, so
-   the same rules serve both surfaces.
+   base; the rules below swap the light palette in over it, for the landing page
+   and the docs alike.
 
    Three states, and the selectors are ordered so the more specific one wins:
      - no `data-theme` on <html>  → follow the OS (the media query below)
@@ -563,9 +522,8 @@ html[data-theme-switching] *::after {
       0 1px 1px light-dark(rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.35)),
       0 12px 32px -14px light-dark(rgb(20 20 30 / 0.16), rgb(0 0 0 / 0.7));
   }
-  /* The docs no longer use the floating glass pill — they have their own header
-     (components/docs/docs-header.tsx) — so there is no light variant to declare
-     here. If glass ever returns to a docs page, its override has to live in this
+  /* The docs do not use the floating glass pill, so there is no light variant
+     to declare here. If glass ever returns to a docs page, its override has to live in this
      layer beside the rule above: a copy in @layer components would lose to any
      utility no matter how specific. */
 
@@ -664,51 +622,50 @@ html[data-theme-switching] *::after {
     @apply bg-background text-foreground;
   }
 
-  /* Integrating our own header with the library's frame.
-     `#nd-docs-layout` carries inline styles, which no stylesheet rule can beat —
-     but they are written in terms of variables, and those we can set:
-
-       --fd-docs-row-1: var(--fd-banner-height, 0px)   ← where the rails stick
-       rail height:     calc(--fd-docs-height - --fd-docs-row-1)
-
-     With the library's own nav disabled, `--fd-header-height` is 0 and the rails
-     stuck to the top of the viewport — sliding under our sticky header, which is
-     what made the sidebar look clipped and the page feel unstable while
-     scrolling. Our header occupies exactly the row the library reserves for a
-     banner, so that is the variable to fill.
-
-     `min-height` is then set here rather than left at `--fd-docs-height`: the
-     grid starts 3.5rem down the page, so a full 100dvh of minimum height made
-     every page — even a short one — scroll by exactly the height of the header,
-     and the scrollbar appeared and disappeared as you moved between pages. */
-  #nd-docs-layout {
-    /* 3.5rem of bar plus its 1px bottom border: the rails stick to this value,
-       so if it under-counts by a pixel their top edge sits behind the border and
-       the boundary shimmers as content scrolls past it. */
-    --fd-banner-height: calc(3.5rem + 1px);
-    min-height: calc(100dvh - 3.5rem - 1px);
-  }
-
   /* A scrollbar that comes and goes shifts the whole column sideways when you
      move between a short page and a long one. Docs pages always reserve it. */
   html:has(.docs-surface) {
     overflow-y: scroll;
   }
 
-  /* Our own header carries the wordmark, and the collapse toggle is off, so the
-     sidebar's title row has nothing left in it — drop the row rather than leave
-     it holding empty space above the search field. */
-  #nd-sidebar a[href="/"]:empty {
-    display: none;
-  }
-  #nd-sidebar div:has(> a[href="/"]:empty:only-child) {
-    display: none;
-  }
   /* The floating "expand" affordance that pairs with collapsing — inert while
      `collapsible` is off, but it is still a fixed element in the layer stack. */
   [data-sidebar-panel] {
     display: none;
   }
+
+  /* The page and its table of contents sit in one rounded pane, inset from the
+     window, with the sidebar's surface as the frame around it: the shape of a
+     terminal pane in a macOS window. The pane is drawn as a fixed overlay whose
+     spread shadow paints the frame colour everywhere outside the rounded rect,
+     so text scrolling past the top edge disappears under the frame instead of
+     crossing it. It sits below the sidebar (z-20) and above the page, and
+     passes every click through. Below `md` there is no sidebar to frame it. */
+  @media (width >= 768px) {
+    .docs-surface {
+      --docs-pane-inset: 8px;
+    }
+    #nd-docs-layout::after {
+      content: "";
+      position: fixed;
+      inset: var(--docs-pane-inset);
+      left: var(--fd-sidebar-width);
+      z-index: 15;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 0 0 100vmax var(--sidebar);
+      pointer-events: none;
+    }
+    /* The page's own padding starts inside the pane, not at the window edge. */
+    #nd-page,
+    #nd-toc {
+      margin-block: var(--docs-pane-inset);
+    }
+    #nd-toc {
+      margin-right: var(--docs-pane-inset);
+    }
+  }
+
 }
 
 /* Fumadocs' Shiki rules are unlayered and follow the landing's permanent .dark
@@ -929,6 +886,11 @@ html[data-theme="light"]:has(.docs-surface) {
   .docs-surface #nd-sidebar a[data-active="true"] {
     font-weight: 500;
   }
+  .docs-surface #nd-sidebar a.docs-sidebar-download,
+  .docs-surface #nd-sidebar a.docs-sidebar-download:hover {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
   .docs-surface #nd-sidebar a[data-active="true"]::before {
     content: none;
   }
@@ -975,46 +937,6 @@ html[data-theme="light"]:has(.docs-surface) {
   .docs-surface .docs-page-action:hover,
   .docs-surface .docs-page-action[data-popup-open] {
     color: var(--foreground);
-  }
-  .docs-surface .docs-header-bar {
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  }
-  .docs-surface .docs-header-search {
-    width: clamp(40px, calc(100vw - 256px), 360px);
-    height: 36px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: transparent;
-    padding-inline: 12px;
-    font-size: 14px;
-    white-space: nowrap;
-  }
-  .docs-surface .docs-header-search > svg {
-    flex-shrink: 0;
-  }
-  /* Keep the search control available without crowding the logo or appearance
-     controls; the shortcut hint returns when the full field has room for it. */
-  @media (width < 1024px) {
-    .docs-surface .docs-header-search > div {
-      display: none;
-    }
-  }
-  @media (width < 380px) {
-    .docs-surface .docs-header-search {
-      justify-content: center;
-      gap: 0;
-      font-size: 0;
-    }
-  }
-  @media (width >= 640px) {
-    .docs-surface .docs-header-search {
-      width: clamp(40px, calc(100vw - 384px), 360px);
-    }
-  }
-  @media (width >= 768px) {
-    .docs-surface .docs-header-search {
-      width: clamp(40px, calc(100vw - 544px), 360px);
-    }
   }
   .docs-surface #nd-sidebar p {
     color: var(--muted-foreground);
@@ -1068,4 +990,31 @@ html[data-theme="light"]:has(.docs-surface) {
   pointer-events: none;
 }
 
+/* Unlayered: these override the library's own utility classes on the same
+   elements (`inline-flex`, `xl:pt-14`), which a layered rule cannot beat. */
+/* Search is one button in the wordmark row, not a field under it. The mobile
+   bar already carries the library's own button, so ours stays in the sidebar. */
+#nd-sidebar [data-search-full],
+#nd-subnav .docs-search-button {
+  display: none;
+}
 
+/* The breadcrumb is the pane's header row: it takes the space the article's
+   top padding used to hold, and on wide screens it stays pinned under the
+   pane's top edge while the page scrolls. Narrower widths keep the library's
+   sticky table-of-contents bar in that spot, so there it scrolls away. */
+#nd-page {
+  padding-top: 0;
+}
+.docs-breadcrumb {
+  min-height: 3rem;
+  margin-bottom: 1rem;
+  background: var(--background);
+}
+@media (width >= 1280px) {
+  .docs-breadcrumb {
+    position: sticky;
+    top: calc(var(--docs-pane-inset) + 1px);
+    z-index: 10;
+  }
+}
